@@ -4,6 +4,12 @@ Milestones are outcome gates, not promises to build the entire list. Do not
 start a later milestone merely because it is documented; first verify that the
 earlier outcome is useful in the owner's workflow.
 
+## Current status
+
+**M0 PASS (2026-09-01).** The M0 exit criteria have been audited and passed.
+**M1 is current.** Executable M1 implementation may begin through explicitly
+scoped issues. No M1 product code is included in this closeout.
+
 ## M0 — Repository foundation
 
 **Outcome:** A new contributor or agent can understand the product and begin M1
@@ -142,4 +148,3 @@ than using browser scraping or delaying earlier value.
 Runtime failure feedback, history/audit, team quota pools, fleet policy, central
 dashboard, signed catalog releases and commercial curation are hypotheses. Add
 them only after regular personal use validates the core.
-

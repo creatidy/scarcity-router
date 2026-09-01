@@ -17,10 +17,10 @@ conflict explicitly in `docs/decisions.md`; do not choose silently.
 
 ## Current phase
 
-M0 is documentation and contract design only. Do not add executable product
-code until M0 exit criteria in `docs/roadmap.md` are met and implementation of
-M1 is explicitly started. Documentation utilities or repository metadata must
-not masquerade as a working broker.
+M0 is complete and M1 is the current milestone. Executable product code may now
+be added only for explicitly scoped M1 work. M1 begins with read-only collector
+reconnaissance and normalized status collectors, not routing. Documentation
+utilities or repository metadata must not masquerade as a working broker.
 
 ## Product boundary
 
@@ -137,4 +137,3 @@ Document copied or substantially adapted MIT-licensed code and preserve the
 required notices. Architectural inspiration alone does not require runtime
 coupling. Keep the project under Apache-2.0 unless an explicit licensing
 decision supersedes it.
-

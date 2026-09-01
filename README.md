@@ -10,9 +10,11 @@ The core rule is simple:
 
 > **Choose the least scarce model that is capable enough for the task.**
 
-The project is currently in **M0: documentation and contract design**. There is
-no installable or executable broker yet. Commands and responses below are
-target UX, not claims about implemented behavior.
+The project completed **M0: documentation and contract design** on 2026-09-01
+and is now in **M1: capacity collectors and normalized status**. Executable work
+may begin only through explicitly scoped M1 issues. There is no installable or
+executable broker yet. Commands and responses below are target UX, not claims
+about implemented behavior.
 
 ## Why it exists
 
@@ -121,6 +123,6 @@ Each topic has one primary source of truth:
 - Likely implementation stack: Python 3.12+, `uv`, `pytest`, typed schemas, a
   small CLI, a small HTTP layer and the official MCP SDK. This is not binding.
 
-See the [roadmap](docs/roadmap.md) before starting implementation. M0 contains
-documentation only; M1 begins with normalized status collectors, not routing.
-
+See the [roadmap](docs/roadmap.md) before starting implementation. M0 was
+documentation-only and is complete. M1 is current and begins with normalized
+status collectors, not routing.
