@@ -216,3 +216,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Local provider/session credentials and quota snapshots
+credentials/
+secrets/
+sessions/
+quota-snapshots/
