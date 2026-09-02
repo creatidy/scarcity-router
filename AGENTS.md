@@ -153,6 +153,18 @@ requires contract/fixture tests. Selection work requires deterministic policy
 tests and explanation assertions. Security-sensitive work requires negative
 tests for leakage and unsafe endpoints.
 
+Type-checking gate: before committing or opening/updating a PR, run
+`make check` and require it to pass with **0 type errors** (exit 0). The
+gate is `basedpyright` — plain `pyright` is not an acceptable substitute —
+running at its full default strict ruleset over `scarcity_router/` and
+`tests/`; the `tools/` reconnaissance scripts are excluded from the gate
+because they are not part of the product contract. Warnings are reported
+but do not block the build (gated on errors only, see `failOnWarnings = false`
+in `pyproject.toml`). Do not weaken the gate by overriding `typeCheckingMode`
+or adding broad `reportXxx = none` suppressions to make it pass; fix the
+underlying typing. `make typecheck` runs the type checker alone and
+`make test` runs the unit tests alone.
+
 ## Decision discipline
 
 Do not invent answers for unresolved issues. Add or update an entry in

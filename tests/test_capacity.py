@@ -16,9 +16,9 @@ credential access occurs.
 
 from __future__ import annotations
 
-import copy
 import json
 import unittest
+from typing import Any
 
 from scarcity_router import (
     CapacityDiagnostic,
@@ -30,7 +30,7 @@ from scarcity_router import (
 )
 
 
-def _clone(payload: dict) -> dict:
+def _clone(payload: dict[str, Any]) -> dict[str, Any]:
     """Deep-copy a payload (JSON round-trip keeps the exact JSON shape)."""
     return json.loads(json.dumps(payload))
 
@@ -45,8 +45,8 @@ def _window(
     remaining: int | None = 94,
     resets_at: str | None = "2026-09-02T04:00:00.000Z",
     window_id: str | None = None,
-) -> dict:
-    d: dict = {"resource": resource, "kind": kind}
+) -> dict[str, Any]:
+    d: dict[str, Any] = {"resource": resource, "kind": kind}
     if duration_seconds is not None:
         d["duration_seconds"] = duration_seconds
     if used is not None:
@@ -60,7 +60,7 @@ def _window(
     return d
 
 
-def openai_healthy() -> dict:
+def openai_healthy() -> dict[str, Any]:
     return {
         "schema_version": 1,
         "provider": "openai",
@@ -76,7 +76,7 @@ def openai_healthy() -> dict:
     }
 
 
-def zai_healthy() -> dict:
+def zai_healthy() -> dict[str, Any]:
     return {
         "schema_version": 1,
         "provider": "zai",
@@ -102,7 +102,7 @@ def zai_healthy() -> dict:
     }
 
 
-def ollama_healthy() -> dict:
+def ollama_healthy() -> dict[str, Any]:
     return {
         "schema_version": 1,
         "provider": "ollama",
@@ -408,7 +408,7 @@ class CredentialSafety(unittest.TestCase):
     leading punctuation, over-length, or non-ASCII. This covers the core
     guarantee that no credential shape with those characters can slip in."""
 
-    def _unsafe(self, where: str, bad_value: str) -> dict:
+    def _unsafe(self, where: str, bad_value: str) -> dict[str, Any]:
         p = openai_healthy()
         if where == "plan":
             p["plan"] = bad_value
@@ -471,7 +471,7 @@ class ApiExports(unittest.TestCase):
 
 
 class InvalidSnapshots(unittest.TestCase):
-    def assert_rejected(self, payload: dict) -> None:
+    def assert_rejected(self, payload: dict[str, Any]) -> None:
         with self.assertRaises(CapacityValidationError):
             CapacitySnapshot.from_dict(_clone(payload))
 
@@ -738,6 +738,94 @@ class InvalidSnapshots(unittest.TestCase):
                 "model_name": "m",
                 "configured_context_tokens": "big",
             })
+
+
+# ══════════════════════════ REGRESSION: findings 1 & 2 ═══════════════════════
+
+
+class ConstructorInvariants(unittest.TestCase):
+    """Every public dataclass must enforce the same invariants on the
+    direct-constructor path that ``from_dict`` enforces (finding 1). A frozen
+    dataclass with no ``__post_init__`` let callers bypass validation entirely,
+    producing objects that violated the contract but never raised. These tests
+    pin the constructor down to the same rules."""
+
+    def test_diagnostic_rejects_invalid_code(self) -> None:
+        with self.assertRaises(CapacityValidationError):
+            CapacityDiagnostic(code="not-a-real-code")
+
+    def test_diagnostic_valid_builds(self) -> None:
+        d = CapacityDiagnostic(code="window_semantics_unknown", window_id="win-a")
+        self.assertEqual(d.code, "window_semantics_unknown")
+
+    def test_window_rejects_contradictory_pair(self) -> None:
+        with self.assertRaises(CapacityValidationError):
+            CapacityWindow(
+                resource="tokens",
+                kind="unknown",
+                used_percent=60,
+                remaining_percent=60,
+            )
+
+    def test_window_rejects_five_hour_wrong_duration(self) -> None:
+        with self.assertRaises(CapacityValidationError):
+            CapacityWindow(
+                resource="tokens",
+                kind="five_hour",
+                duration_seconds=1,
+            )
+
+    def test_window_valid_builds(self) -> None:
+        w = CapacityWindow(
+            resource="tokens",
+            kind="five_hour",
+            duration_seconds=18_000,
+            used_percent=6,
+            remaining_percent=94,
+        )
+        self.assertEqual(w.used_percent, 6)
+
+    def test_local_runtime_present_requires_model_name(self) -> None:
+        with self.assertRaises(CapacityValidationError):
+            LocalRuntime(reachable=True, model_presence="present")
+
+    def test_local_runtime_unreachable_requires_unknown(self) -> None:
+        with self.assertRaises(CapacityValidationError):
+            LocalRuntime(reachable=False, model_presence="present", model_name="m")
+
+    def test_snapshot_rejects_non_ok_with_missing_code(self) -> None:
+        # status "unavailable" requires the "quota_unavailable" diagnostic.
+        with self.assertRaises(CapacityValidationError):
+            CapacitySnapshot(
+                schema_version=1,
+                provider="openai",
+                source="codex_app_server",
+                retrieved_at="2026-09-02T04:00:00.000Z",
+                status="unavailable",
+                windows=(),
+                diagnostics=(),
+            )
+
+
+class FromDictMissingKeyGuard(unittest.TestCase):
+    """``from_dict`` must raise ``CapacityValidationError`` for missing required
+    keys (and an empty mapping), never leak a raw ``KeyError`` (finding 2)."""
+
+    def test_snapshot_empty_mapping(self) -> None:
+        with self.assertRaises(CapacityValidationError):
+            CapacitySnapshot.from_dict({})
+
+    def test_window_missing_kind(self) -> None:
+        with self.assertRaises(CapacityValidationError):
+            CapacityWindow.from_dict({"resource": "tokens"})
+
+    def test_diagnostic_missing_code(self) -> None:
+        with self.assertRaises(CapacityValidationError):
+            CapacityDiagnostic.from_dict({})
+
+    def test_local_runtime_missing_both(self) -> None:
+        with self.assertRaises(CapacityValidationError):
+            LocalRuntime.from_dict({})
 
 
 if __name__ == "__main__":

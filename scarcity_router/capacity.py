@@ -6,13 +6,22 @@ Implements the frozen v1 normalized capacity contract from docs/capacity-model.m
 - snapshot, status, windows, local runtime, diagnostics
 - validation of all v1 invariants
 - deterministic JSON-compatible serialization
+
+The v1 invariants are enforced at *construction* so an invalid object can never
+exist as a public, serializable value whether it is produced by ``from_dict()``
+or by a direct public constructor. The private ``_v_*`` validators are the single
+source of truth for the rules; ``from_dict`` uses them to check the serialized
+shape and produce a well-typed value, while ``__post_init__`` applies the same
+rules to the stored attributes. This is one validation path, not duplicated rules.
 """
 
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
 
 from .errors import CapacityValidationError
 
@@ -77,7 +86,7 @@ _KIND_DURATION: dict[str, int] = {
     "weekly": 604_800,
 }
 
-# ── Validators ────────────────────────────────────────────────────────────────
+# ── Validators (single source of truth for the v1 rules) ─────────────────────
 
 _CANONICAL_TS_RE = re.compile(
     r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$"
@@ -130,7 +139,7 @@ def _v_ts(value: object, field: str) -> str:
         )
     try:
         datetime.fromisoformat(s[:-1] + "+00:00")
-    except (ValueError, TypeError):
+    except ValueError:
         raise CapacityValidationError(f"{field}: invalid date/time in {s!r}")
     return s
 
@@ -168,18 +177,50 @@ def _v_pct_pair(used: object | None, remain: object | None, ctx: str) -> None:
             )
 
 
-def _v_exact_keys(
+def _v_exact_shape(
     obj: object,
-    allowed: frozenset[str],
+    required: tuple[str, ...],
+    optional: tuple[str, ...],
     label: str,
-) -> None:
-    if not isinstance(obj, dict):
+) -> Mapping[str, object]:
+    """Validate the serialized shape of one record and narrow it to a mapping.
+
+    Verifies the value is a mapping, rejects unknown keys, and reports any
+    missing required keys as :class:`CapacityValidationError`. After this the
+    caller may read required keys directly (``m[key]``) without a ``KeyError``.
+    Semantics of the field values are NOT checked here; the ``_v_*`` validators
+    and ``__post_init__`` own those rules.
+    """
+    if not isinstance(obj, Mapping):
         raise CapacityValidationError(
-            f"{label}: expected dict, got {type(obj).__name__}"
+            f"{label}: expected a dict-like mapping, got {type(obj).__name__}"
         )
+    allowed = frozenset(required) | frozenset(optional)
     extra = set(obj.keys()) - allowed
     if extra:
         raise CapacityValidationError(f"{label}: unknown keys {sorted(extra)}")
+    missing = [key for key in required if key not in obj]
+    if missing:
+        raise CapacityValidationError(f"{label}: missing required keys {sorted(missing)}")
+    return obj
+
+
+def _v_opt_ts(value: object | None, field: str) -> str | None:
+    return None if value is None else _v_ts(value, field)
+
+
+def _v_opt_safe_id(value: object | None, field: str) -> str | None:
+    return None if value is None else _v_safe_id(value, field)
+
+
+def _v_opt_int(
+    value: object | None,
+    field: str,
+    *,
+    lo: int | None = None,
+    hi: int | None = None,
+) -> int | None:
+    return None if value is None else _v_int(value, field, lo=lo, hi=hi)
 
 
 # ── Dataclasses ────────────────────────────────────────────────────────────────
@@ -191,27 +232,31 @@ class CapacityDiagnostic:
     code: str
     window_id: str | None = None
 
-    _ALL_KEYS = frozenset({"code", "window_id"})
+    _REQUIRED = ("code",)
+    _OPTIONAL = ("window_id",)
+
+    def __post_init__(self) -> None:
+        code = _v_enum(self.code, _DIAGNOSTIC_CODES, "diagnostic.code")
+        wid = self.window_id
+        if code in _WINDOW_SCOPED_CODES:
+            if wid is not None:
+                _v_safe_id(wid, "diagnostic.window_id")
+        elif wid is not None:
+            raise CapacityValidationError(
+                f"diagnostic: code {code!r} is not window-scoped and "
+                "must not carry window_id"
+            )
 
     @classmethod
     def from_dict(cls, d: object) -> "CapacityDiagnostic":
-        _v_exact_keys(d, cls._ALL_KEYS, "diagnostic")
-        dd = d  # guaranteed dict by above
-        code = _v_enum(dd["code"], _DIAGNOSTIC_CODES, "diagnostic.code")
-        wid = dd.get("window_id")
-        if code not in _WINDOW_SCOPED_CODES:
-            if wid is not None:
-                raise CapacityValidationError(
-                    f"diagnostic: code {code!r} is not window-scoped and "
-                    "must not carry window_id"
-                )
-            wid = None
-        elif wid is not None:
-            wid = _v_safe_id(wid, "diagnostic.window_id")
-        return cls(code=code, window_id=wid)
+        dd = _v_exact_shape(d, cls._REQUIRED, cls._OPTIONAL, "diagnostic")
+        return cls(
+            code=_v_enum(dd["code"], _DIAGNOSTIC_CODES, "diagnostic.code"),
+            window_id=_v_opt_safe_id(dd.get("window_id"), "diagnostic.window_id"),
+        )
 
-    def to_dict(self) -> dict[str, object]:
-        out: dict[str, object] = {"code": self.code}
+    def to_dict(self) -> dict[str, Any]:
+        out: dict[str, Any] = {"code": self.code}
         if self.window_id is not None:
             out["window_id"] = self.window_id
         return out
@@ -229,63 +274,62 @@ class CapacityWindow:
     resets_at: str | None = None
     window_id: str | None = None
 
-    _ALL_KEYS = frozenset({
-        "resource",
-        "kind",
+    _REQUIRED = ("resource", "kind")
+    _OPTIONAL = (
         "duration_seconds",
         "used_percent",
         "remaining_percent",
         "resets_at",
         "provider_metadata",
-    })
+    )
+
+    def __post_init__(self) -> None:
+        _v_enum(self.resource, _RESOURCE_VALUES, "window.resource")
+        kind = _v_enum(self.kind, _KIND_VALUES, "window.kind")
+
+        duration = self.duration_seconds
+        if duration is not None:
+            dur = _v_int(duration, "window.duration_seconds", lo=1)
+            fixed = _KIND_DURATION.get(kind)
+            if fixed is not None and dur != fixed:
+                raise CapacityValidationError(
+                    f"window: kind={kind!r} requires duration_seconds={fixed}, "
+                    f"got {dur}"
+                )
+
+        _v_pct_pair(self.used_percent, self.remaining_percent, "window")
+
+        if self.resets_at is not None:
+            _v_ts(self.resets_at, "window.resets_at")
+
+        if self.window_id is not None:
+            _v_safe_id(self.window_id, "window.window_id")
 
     @classmethod
     def from_dict(cls, d: object) -> "CapacityWindow":
-        _v_exact_keys(d, cls._ALL_KEYS, "window")
-        dd = d  # guaranteed dict
-        resource = _v_enum(dd["resource"], _RESOURCE_VALUES, "window.resource")
-        kind = _v_enum(dd["kind"], _KIND_VALUES, "window.kind")
-
-        duration = dd.get("duration_seconds")
-        if duration is not None:
-            duration = _v_int(duration, "window.duration_seconds", lo=1)
-            fixed = _KIND_DURATION.get(kind)
-            if fixed is not None and duration != fixed:
-                raise CapacityValidationError(
-                    f"window: kind={kind!r} requires duration_seconds={fixed}, "
-                    f"got {duration}"
-                )
-
-        used = dd.get("used_percent")
-        remain = dd.get("remaining_percent")
-        _v_pct_pair(used, remain, "window")
-
-        resets_at = dd.get("resets_at")
-        if resets_at is not None:
-            resets_at = _v_ts(resets_at, "window.resets_at")
-
-        window_id = None
+        dd = _v_exact_shape(d, cls._REQUIRED, cls._OPTIONAL, "window")
+        # provider_metadata has a fixed v1 shape: exactly the key "window_id".
+        window_id: str | None = None
         pm = dd.get("provider_metadata")
         if pm is not None:
-            if not isinstance(pm, dict) or set(pm.keys()) != {"window_id"}:
+            if not isinstance(pm, Mapping) or set(pm.keys()) != {"window_id"}:
                 raise CapacityValidationError(
                     "window.provider_metadata: must be a dict with exactly key "
                     "'window_id'"
                 )
             window_id = _v_safe_id(pm["window_id"], "window.provider_metadata.window_id")
-
         return cls(
-            resource=resource,
-            kind=kind,
-            duration_seconds=duration,
-            used_percent=used,
-            remaining_percent=remain,
-            resets_at=resets_at,
+            resource=_v_enum(dd["resource"], _RESOURCE_VALUES, "window.resource"),
+            kind=_v_enum(dd["kind"], _KIND_VALUES, "window.kind"),
+            duration_seconds=_v_opt_int(dd.get("duration_seconds"), "window.duration_seconds", lo=1),
+            used_percent=_v_opt_int(dd.get("used_percent"), "window.used_percent", lo=0, hi=100),
+            remaining_percent=_v_opt_int(dd.get("remaining_percent"), "window.remaining_percent", lo=0, hi=100),
+            resets_at=_v_opt_ts(dd.get("resets_at"), "window.resets_at"),
             window_id=window_id,
         )
 
-    def to_dict(self) -> dict[str, object]:
-        out: dict[str, object] = {
+    def to_dict(self) -> dict[str, Any]:
+        out: dict[str, Any] = {
             "resource": self.resource,
             "kind": self.kind,
         }
@@ -312,43 +356,28 @@ class LocalRuntime:
     configured_context_tokens: int | None = None
     effective_context_tokens: int | None = None
 
-    _ALL_KEYS = frozenset({
-        "reachable",
-        "model_presence",
+    _REQUIRED = ("reachable", "model_presence")
+    _OPTIONAL = (
         "model_name",
         "configured_context_tokens",
         "effective_context_tokens",
-    })
+    )
 
-    @classmethod
-    def from_dict(cls, d: object) -> "LocalRuntime":
-        _v_exact_keys(d, cls._ALL_KEYS, "local_runtime")
-        dd = d  # guaranteed dict
-        reachable = _v_bool(dd["reachable"], "local_runtime.reachable")
+    def __post_init__(self) -> None:
+        reachable = _v_bool(self.reachable, "local_runtime.reachable")
         model_presence = _v_enum(
-            dd["model_presence"],
+            self.model_presence,
             _MODEL_PRESENCE_VALUES,
             "local_runtime.model_presence",
         )
-        model_name = dd.get("model_name")
-        if model_name is not None:
-            model_name = _v_safe_id(model_name, "local_runtime.model_name")
-        configured = dd.get("configured_context_tokens")
-        if configured is not None:
-            configured = _v_int(
-                configured,
-                "local_runtime.configured_context_tokens",
-                lo=1,
-            )
-        effective = dd.get("effective_context_tokens")
-        if effective is not None:
-            effective = _v_int(
-                effective,
-                "local_runtime.effective_context_tokens",
-                lo=1,
-            )
+        if self.model_name is not None:
+            _v_safe_id(self.model_name, "local_runtime.model_name")
+        if self.configured_context_tokens is not None:
+            _v_int(self.configured_context_tokens, "local_runtime.configured_context_tokens", lo=1)
+        if self.effective_context_tokens is not None:
+            _v_int(self.effective_context_tokens, "local_runtime.effective_context_tokens", lo=1)
 
-        if model_presence in ("present", "missing") and model_name is None:
+        if model_presence in ("present", "missing") and self.model_name is None:
             raise CapacityValidationError(
                 "local_runtime: model_name is required when model_presence is "
                 "'present' or 'missing'"
@@ -358,16 +387,32 @@ class LocalRuntime:
                 "local_runtime: model_presence must be 'unknown' when "
                 "reachable is False"
             )
+
+    @classmethod
+    def from_dict(cls, d: object) -> "LocalRuntime":
+        dd = _v_exact_shape(d, cls._REQUIRED, cls._OPTIONAL, "local_runtime")
         return cls(
-            reachable=reachable,
-            model_presence=model_presence,
-            model_name=model_name,
-            configured_context_tokens=configured,
-            effective_context_tokens=effective,
+            reachable=_v_bool(dd["reachable"], "local_runtime.reachable"),
+            model_presence=_v_enum(
+                dd["model_presence"],
+                _MODEL_PRESENCE_VALUES,
+                "local_runtime.model_presence",
+            ),
+            model_name=_v_opt_safe_id(dd.get("model_name"), "local_runtime.model_name"),
+            configured_context_tokens=_v_opt_int(
+                dd.get("configured_context_tokens"),
+                "local_runtime.configured_context_tokens",
+                lo=1,
+            ),
+            effective_context_tokens=_v_opt_int(
+                dd.get("effective_context_tokens"),
+                "local_runtime.effective_context_tokens",
+                lo=1,
+            ),
         )
 
-    def to_dict(self) -> dict[str, object]:
-        out: dict[str, object] = {
+    def to_dict(self) -> dict[str, Any]:
+        out: dict[str, Any] = {
             "reachable": self.reachable,
             "model_presence": self.model_presence,
         }
@@ -394,33 +439,82 @@ class CapacitySnapshot:
     plan: str | None = None
     local_runtime: LocalRuntime | None = None
 
-    _ALL_KEYS = frozenset({
+    _REQUIRED = (
         "schema_version",
         "provider",
         "source",
-        "plan",
         "retrieved_at",
         "status",
         "windows",
-        "local_runtime",
         "diagnostics",
-    })
+    )
+    _OPTIONAL = ("plan", "local_runtime")
 
-    @classmethod
-    def from_dict(cls, d: object) -> "CapacitySnapshot":
-        _v_exact_keys(d, cls._ALL_KEYS, "snapshot")
-        dd = d  # guaranteed dict
-
-        sv = dd["schema_version"]
+    def __post_init__(self) -> None:
+        sv = self.schema_version
         if isinstance(sv, bool) or not isinstance(sv, int) or sv != SCHEMA_VERSION:
             raise CapacityValidationError(
                 f"schema_version: expected int {SCHEMA_VERSION}, got {sv!r}"
             )
 
-        provider = _v_safe_id(dd["provider"], "provider")
-        source = _v_safe_id(dd["source"], "source")
-        retrieved_at = _v_ts(dd["retrieved_at"], "retrieved_at")
-        status = _v_enum(dd["status"], _STATUS_VALUES, "status")
+        _v_safe_id(self.provider, "provider")
+        _v_safe_id(self.source, "source")
+        _v_ts(self.retrieved_at, "retrieved_at")
+        status = _v_enum(self.status, _STATUS_VALUES, "status")
+        if self.plan is not None:
+            _v_safe_id(self.plan, "plan")
+
+        windows = self.windows
+        if not isinstance(windows, tuple):
+            raise CapacityValidationError(
+                "snapshot.windows: expected tuple, "
+                f"got {type(windows).__name__}"
+            )
+        for window in windows:
+            if not isinstance(window, CapacityWindow):
+                raise CapacityValidationError(
+                    "snapshot.windows: element must be a CapacityWindow, "
+                    f"got {type(window).__name__}"
+                )
+
+        if not isinstance(self.diagnostics, tuple):
+            raise CapacityValidationError(
+                "snapshot.diagnostics: expected tuple, "
+                f"got {type(self.diagnostics).__name__}"
+            )
+        codes: set[str] = set()
+        for diag in self.diagnostics:
+            if not isinstance(diag, CapacityDiagnostic):
+                raise CapacityValidationError(
+                    "snapshot.diagnostics: element must be a CapacityDiagnostic, "
+                    f"got {type(diag).__name__}"
+                )
+            codes.add(diag.code)
+
+        local_runtime = self.local_runtime
+        if local_runtime is not None and not isinstance(local_runtime, LocalRuntime):
+            raise CapacityValidationError(
+                "snapshot.local_runtime: must be a LocalRuntime, "
+                f"got {type(local_runtime).__name__}"
+            )
+
+        # Cross-field invariants.
+        if status in _STATUSES_WITHOUT_WINDOWS and windows:
+            raise CapacityValidationError(
+                f"snapshot: status={status!r} requires an empty windows array, "
+                f"got {len(windows)} window(s)"
+            )
+        if status != "ok":
+            required_code = _STATUS_REQUIRED_CODE.get(status)
+            if required_code is not None and required_code not in codes:
+                raise CapacityValidationError(
+                    f"snapshot: status={status!r} requires diagnostic code "
+                    f"{required_code!r} in diagnostics"
+                )
+
+    @classmethod
+    def from_dict(cls, d: object) -> "CapacitySnapshot":
+        dd = _v_exact_shape(d, cls._REQUIRED, cls._OPTIONAL, "snapshot")
 
         raw_windows = dd["windows"]
         if not isinstance(raw_windows, list):
@@ -439,45 +533,25 @@ class CapacitySnapshot:
             CapacityDiagnostic.from_dict(x) for x in raw_diagnostics
         )
 
-        plan = dd.get("plan")
-        if plan is not None:
-            plan = _v_safe_id(plan, "plan")
-
-        local_runtime = None
+        local_runtime: LocalRuntime | None = None
         raw_lr = dd.get("local_runtime")
         if raw_lr is not None:
             local_runtime = LocalRuntime.from_dict(raw_lr)
 
-        # Cross-field invariants
-        if status in _STATUSES_WITHOUT_WINDOWS and windows:
-            raise CapacityValidationError(
-                f"snapshot: status={status!r} requires an empty windows array, "
-                f"got {len(windows)} window(s)"
-            )
-        if status != "ok":
-            required_code = _STATUS_REQUIRED_CODE.get(status)
-            if required_code is not None:
-                codes = {diag.code for diag in diagnostics}
-                if required_code not in codes:
-                    raise CapacityValidationError(
-                        f"snapshot: status={status!r} requires diagnostic code "
-                        f"{required_code!r} in diagnostics"
-                    )
-
         return cls(
-            schema_version=SCHEMA_VERSION,
-            provider=provider,
-            source=source,
-            retrieved_at=retrieved_at,
-            status=status,
+            schema_version=_v_int(dd["schema_version"], "schema_version"),
+            provider=_v_safe_id(dd["provider"], "provider"),
+            source=_v_safe_id(dd["source"], "source"),
+            retrieved_at=_v_ts(dd["retrieved_at"], "retrieved_at"),
+            status=_v_enum(dd["status"], _STATUS_VALUES, "status"),
             windows=windows,
             diagnostics=diagnostics,
-            plan=plan,
+            plan=_v_opt_safe_id(dd.get("plan"), "plan"),
             local_runtime=local_runtime,
         )
 
-    def to_dict(self) -> dict[str, object]:
-        out: dict[str, object] = {}
+    def to_dict(self) -> dict[str, Any]:
+        out: dict[str, Any] = {}
         out["schema_version"] = self.schema_version
         out["provider"] = self.provider
         out["source"] = self.source
