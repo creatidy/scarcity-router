@@ -1,0 +1,6 @@
+{
+  "code": 401,
+  "msg": "Authentication failed",
+  "data": null,
+  "success": false
+}

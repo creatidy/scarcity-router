@@ -65,9 +65,16 @@ unit=6, number=1 -> weekly token window
 
 These are validated adapter mappings, not universal constants. Unknown units or
 combinations must preserve safe metadata and yield unknown semantics rather
-than being guessed. Array position is not semantic. The adapter needs fixtures
-for known windows, unknown windows, missing values, invalid percentages,
-authentication failure and schema change.
+than being guessed. Array position is not semantic.
+
+Each observed window carries `nextResetTime`, a 13-digit epoch-**millisecond**
+value, and `percentage` is the **used** percentage (remaining is the complement).
+Both are current provider evidence, not a permanent contract; the authoritative
+record and the required fail-safe fixtures live in
+`poc-evidence.md` and `tests/fixtures/zai-coding-plan/`.
+
+The adapter needs fixtures for known windows, unknown windows, missing values,
+invalid percentages, authentication failure and schema change.
 
 The currently observed Kilo auth location is `~/.local/share/kilo/auth.json`.
 Discovery must read only the necessary provider entry, must never dump the file,

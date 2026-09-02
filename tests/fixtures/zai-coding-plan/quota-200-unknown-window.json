@@ -1,0 +1,23 @@
+{
+  "code": 200,
+  "msg": "Operation successful",
+  "data": {
+    "limits": [
+      {
+        "type": "TOKENS_LIMIT",
+        "unit": 7,
+        "number": 1,
+        "percentage": 41,
+        "nextResetTime": 1788000000000
+      },
+      {
+        "type": "TOKENS_LIMIT",
+        "unit": 6,
+        "number": 1,
+        "percentage": 72
+      }
+    ],
+    "level": "pro"
+  },
+  "success": true
+}
