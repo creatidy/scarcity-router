@@ -149,9 +149,27 @@ direction was chosen. Dates use UTC.
 
 ### U-004 — Z.ai reset metadata and schema drift
 
-- The exact raw reset-field mapping and behavior for unknown numeric units need
-  redacted fixtures and tests.
-- Default remains fail-safe unknown semantics.
+- **Status:** Resolved (narrowed residual remains), 2026-09-01
+- **Decision:** The reset-field mapping is fixed to `nextResetTime`, a
+  13-digit epoch-**millisecond** value carried by every observed window. Window
+  identity is the validated `(type, unit, number)` combination:
+  `{(TOKENS_LIMIT,3,5): five-hour tokens, (TOKENS_LIMIT,6,1): weekly tokens}`.
+  A `TIME_LIMIT` entry is a distinct non-token window and is not a tokens window.
+  The future adapter reports any unlisted `(unit, number)` (or a `TOKENS_LIMIT`
+  missing `unit`/`number`) as an **unknown** window with preserved raw fields,
+  and never defaults a percentage to 0 or 100 — the unknown-window policy from
+  `docs/capacity-model.md` governs selection. `percentage` is the **used**
+  percentage (evidence-backed via the `TIME_LIMIT` counter triple).
+- **Evidence:** 2026-09-01 M1 reconnaissance recorded in
+  `docs/poc-evidence.md` ("2026-09-01 M1 reconnaissance") and the redacted
+  fixtures in `tests/fixtures/zai-coding-plan/` (known, unknown-window,
+  missing-weekly, degraded-values, schema-changed and auth-failed shapes).
+- **Narrowed residual (not blocking M1 collector):** (a) confirm used-orientation
+  with a second-snapshot check that `percentage` moves with consumption;
+  (b) treat the `(unit, number)` mapping and `nextResetTime` cadence as
+  provider-specific evidence, not permanent constants, and re-verify on schema
+  change; (c) exact `TIME_LIMIT` counter semantics (`usage`/`currentValue`/
+  `remaining`) are observed but only the used/remaining reading is relied on.
 
 ### U-005 — Ollama inspection contract
 
