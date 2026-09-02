@@ -137,9 +137,50 @@ direction was chosen. Dates use UTC.
 
 ### U-002 — Exact first serialized capacity contract
 
-- Field names, enum wire values, freshness representation and schema versioning
-  must be frozen before M1 CLI output becomes public.
-- Evidence needed: successful and failure fixtures for all three sources.
+- **Status:** Resolved
+- **Date:** 2026-09-02
+- **Decision:** M1 adapters target the v1 internal serialized contract in
+  `docs/capacity-model.md`. Every snapshot carries integer `schema_version: 1`,
+  stable `provider` and `source` identifiers, optional safe `plan`, required
+  UTC `retrieved_at`, one of the six frozen provider statuses, an unordered
+  `windows` array, optional `local_runtime` facts and allowlisted diagnostic
+  codes. Account identifiers, freshness/cache fields, raw provider responses and
+  provider-specific orientation fields are excluded.
+- **Window semantics:** A window has independent normalized `resource`
+  (`tokens`, `time` or `unknown`) and `kind` (`five_hour`, `weekly` or
+  `unknown`) values, optional positive `duration_seconds`, an optional validated
+  percentage pair, optional canonical `resets_at` and an optional safe opaque
+  provider `window_id`. Known period kinds carry fixed durations. Unknown
+  windows survive normalization and array position has no meaning. A pair is
+  either `(used_percent, remaining_percent)` with an exact complement or is
+  omitted; an unvalidated provider orientation never becomes a guessed value.
+- **Time and local facts:** `retrieved_at` and `resets_at` use UTC RFC 3339
+  strings with exactly three fractional-second digits and `Z`. Ollama uses an
+  empty quota-window array plus reachability, model-presence and independently
+  validated configured/effective context fields; it never uses an unlimited or
+  100% quota sentinel.
+- **Boundary:** This is an internal M1 adapter/core contract, not REST, MCP or
+  CLI versioning. `U-003` still owns age, refresh, caching and staleness policy;
+  M2 still owns scarcity and selection.
+- **Reason:** Two independent subscription adapters need the same provider-free
+  semantics while Z.ai and Codex wire formats evolve independently. Omitting
+  account and freshness fields keeps v1 minimal and avoids prematurely
+  publishing security-sensitive or policy-shaped data.
+- **Evidence and validation:** The current OpenAI/Codex and Z.ai observations,
+  including known five-hour/weekly windows, unknown-window behavior, reset
+  conversion and Z.ai's evidence-backed used-oriented percentage, informed the
+  adapter boundary only. The normalized contract contains no Z.ai raw
+  `percentage`, epoch-millisecond value, `unit`/`number` pair or Codex
+  `primary`/`secondary` concept. The required OpenAI, Z.ai, schema-drift,
+  authentication, Ollama and missing-versus-zero scenarios are model-checked in
+  the contract document.
+- **Rejected alternatives:** Keeping `freshness`, stale thresholds or cache
+  lifetime in the snapshot would preempt `U-003`; using one raw provider
+  percentage would leak orientation; storing independently supplied used and
+  remaining values would allow contradictions; treating unknown windows as
+  healthy or discarding them would lose evidence; account IDs and raw metadata
+  were rejected for security and minimality; encoding local availability as a
+  fake quota percentage was rejected as semantically false.
 
 ### U-003 — Refresh and staleness policy
 
@@ -202,4 +243,3 @@ direction was chosen. Dates use UTC.
 
 Add a new numbered entry with its status, date, evidence and `Supersedes: D-nnn`.
 Do not rewrite history or change an accepted decision silently.
-
