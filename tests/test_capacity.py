@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import json
 import unittest
-from typing import Any
+from typing import cast
 
 from scarcity_router import (
     CapacityDiagnostic,
@@ -30,9 +30,19 @@ from scarcity_router import (
 )
 
 
-def _clone(payload: dict[str, Any]) -> dict[str, Any]:
+def _clone(payload: dict[str, object]) -> dict[str, object]:
     """Deep-copy a payload (JSON round-trip keeps the exact JSON shape)."""
-    return json.loads(json.dumps(payload))
+    return cast("dict[str, object]", json.loads(json.dumps(payload)))
+
+
+def _windows(payload: dict[str, object]) -> list[dict[str, object]]:
+    """Typed view of the serialized ``windows`` array for mutation tests."""
+    return cast("list[dict[str, object]]", payload["windows"])
+
+
+def _diagnostics(payload: dict[str, object]) -> list[dict[str, object]]:
+    """Typed view of the serialized ``diagnostics`` array for shape tests."""
+    return cast("list[dict[str, object]]", payload["diagnostics"])
 
 
 # ── payload builders ──────────────────────────────────────────────────────────
@@ -45,8 +55,8 @@ def _window(
     remaining: int | None = 94,
     resets_at: str | None = "2026-09-02T04:00:00.000Z",
     window_id: str | None = None,
-) -> dict[str, Any]:
-    d: dict[str, Any] = {"resource": resource, "kind": kind}
+) -> dict[str, object]:
+    d: dict[str, object] = {"resource": resource, "kind": kind}
     if duration_seconds is not None:
         d["duration_seconds"] = duration_seconds
     if used is not None:
@@ -60,7 +70,7 @@ def _window(
     return d
 
 
-def openai_healthy() -> dict[str, Any]:
+def openai_healthy() -> dict[str, object]:
     return {
         "schema_version": 1,
         "provider": "openai",
@@ -76,7 +86,7 @@ def openai_healthy() -> dict[str, Any]:
     }
 
 
-def zai_healthy() -> dict[str, Any]:
+def zai_healthy() -> dict[str, object]:
     return {
         "schema_version": 1,
         "provider": "zai",
@@ -102,7 +112,7 @@ def zai_healthy() -> dict[str, Any]:
     }
 
 
-def ollama_healthy() -> dict[str, Any]:
+def ollama_healthy() -> dict[str, object]:
     return {
         "schema_version": 1,
         "provider": "ollama",
@@ -151,7 +161,7 @@ class ValidSnapshots(unittest.TestCase):
 
     def test_4_known_used_zero(self) -> None:
         payload = openai_healthy()
-        w = payload["windows"][0]
+        w = _windows(payload)[0]
         w["used_percent"] = 0
         w["remaining_percent"] = 100
         snap = CapacitySnapshot.from_dict(_clone(payload))
@@ -160,7 +170,7 @@ class ValidSnapshots(unittest.TestCase):
 
     def test_5_known_remaining_zero(self) -> None:
         payload = openai_healthy()
-        w = payload["windows"][0]
+        w = _windows(payload)[0]
         w["used_percent"] = 100
         w["remaining_percent"] = 0
         snap = CapacitySnapshot.from_dict(_clone(payload))
@@ -169,9 +179,9 @@ class ValidSnapshots(unittest.TestCase):
 
     def test_6_percentage_pair_omitted(self) -> None:
         payload = openai_healthy()
-        w = payload["windows"][0]
-        w.pop("used_percent")
-        w.pop("remaining_percent")
+        w = _windows(payload)[0]
+        _ = w.pop("used_percent")
+        _ = w.pop("remaining_percent")
         snap = CapacitySnapshot.from_dict(_clone(payload))
         self.assertIsNone(snap.windows[0].used_percent)
         self.assertIsNone(snap.windows[0].remaining_percent)
@@ -179,7 +189,7 @@ class ValidSnapshots(unittest.TestCase):
     def test_7_canonical_timestamps(self) -> None:
         payload = openai_healthy()
         payload["retrieved_at"] = "2026-09-01T22:49:51.250Z"
-        payload["windows"][0]["resets_at"] = "2026-09-02T04:00:00.999Z"
+        _windows(payload)[0]["resets_at"] = "2026-09-02T04:00:00.999Z"
         snap = CapacitySnapshot.from_dict(_clone(payload))
         self.assertEqual(snap.retrieved_at, "2026-09-01T22:49:51.250Z")
         self.assertEqual(snap.windows[0].resets_at, "2026-09-02T04:00:00.999Z")
@@ -192,7 +202,7 @@ class ValidSnapshots(unittest.TestCase):
         self.assertEqual(json.dumps(serialized, sort_keys=True),
                          json.dumps(snap.to_dict(), sort_keys=True))
         # Round-trips through validation.
-        reparsed = CapacitySnapshot.from_dict(json.loads(json.dumps(serialized)))
+        reparsed = CapacitySnapshot.from_dict(_clone(serialized))
         self.assertEqual(reparsed, snap)
         self.assertEqual(reparsed.to_dict(), serialized)
 
@@ -304,7 +314,7 @@ class FailSafeStates(unittest.TestCase):
 
 class LocalRuntimeValidation(unittest.TestCase):
     def test_reachable_present(self) -> None:
-        lr = LocalRuntime.from_dict({
+        lr =                 _ = LocalRuntime.from_dict({
             "reachable": True,
             "model_presence": "present",
             "model_name": "qwen3.8:27b",
@@ -314,7 +324,7 @@ class LocalRuntimeValidation(unittest.TestCase):
 
     def test_unreachable_requires_unknown(self) -> None:
         with self.assertRaises(CapacityValidationError):
-            LocalRuntime.from_dict({
+            _ =                 _ = LocalRuntime.from_dict({
                 "reachable": False,
                 "model_presence": "present",
                 "model_name": "qwen3.8:27b",
@@ -322,13 +332,13 @@ class LocalRuntimeValidation(unittest.TestCase):
 
     def test_present_requires_model_name(self) -> None:
         with self.assertRaises(CapacityValidationError):
-            LocalRuntime.from_dict({
+            _ =                 _ = LocalRuntime.from_dict({
                 "reachable": True,
                 "model_presence": "present",
             })
 
     def test_context_fields_are_optional_ints(self) -> None:
-        lr = LocalRuntime.from_dict({
+        lr =                 _ = LocalRuntime.from_dict({
             "reachable": True,
             "model_presence": "present",
             "model_name": "qwen3.8:27b",
@@ -358,7 +368,9 @@ class SerializationShape(unittest.TestCase):
         # Distinguish int 0 from bool False explicitly by type identity.
         self.assertIs(type(d["used_percent"]), int)
         self.assertNotIsInstance(d["used_percent"], bool)
-        self.assertEqual(d["used_percent"] + d["remaining_percent"], 100)
+        self.assertEqual(
+            cast(int, d["used_percent"]) + cast(int, d["remaining_percent"]), 100
+        )
         # Re-parsing preserves the integer shape exactly.
         w2 = CapacityWindow.from_dict(d)
         self.assertIs(type(w2.used_percent), int)
@@ -368,11 +380,11 @@ class SerializationShape(unittest.TestCase):
         snap = CapacitySnapshot.from_dict(_clone(openai_healthy()))
         s = snap.to_dict()
         self.assertEqual(s["status"], "ok")
-        self.assertEqual(s["windows"][0]["resource"], "tokens")
-        self.assertEqual(s["windows"][0]["kind"], "five_hour")
+        self.assertEqual(_windows(s)[0]["resource"], "tokens")
+        self.assertEqual(_windows(s)[0]["kind"], "five_hour")
 
     def test_diagnostics_shape(self) -> None:
-        payload = {
+        payload: dict[str, object] = {
             "schema_version": 1,
             "provider": "zai",
             "source": "zai_usage_endpoint",
@@ -388,10 +400,10 @@ class SerializationShape(unittest.TestCase):
         }
         snap = CapacitySnapshot.from_dict(_clone(payload))
         d = snap.to_dict()
-        codes = {x["code"] for x in d["diagnostics"]}
+        codes = {x["code"] for x in _diagnostics(d)}
         self.assertIn("window_semantics_unknown", codes)
         self.assertIn("percentage_unknown", codes)
-        diag_with_wid = [x for x in d["diagnostics"] if x["code"] == "window_semantics_unknown"][0]
+        diag_with_wid = [x for x in _diagnostics(d) if x["code"] == "window_semantics_unknown"][0]
         self.assertEqual(diag_with_wid["window_id"], "win-a")
 
     def test_no_python_impl_detail_in_serialized(self) -> None:
@@ -408,14 +420,14 @@ class CredentialSafety(unittest.TestCase):
     leading punctuation, over-length, or non-ASCII. This covers the core
     guarantee that no credential shape with those characters can slip in."""
 
-    def _unsafe(self, where: str, bad_value: str) -> dict[str, Any]:
+    def _unsafe(self, where: str, bad_value: str) -> dict[str, object]:
         p = openai_healthy()
         if where == "plan":
             p["plan"] = bad_value
         elif where == "source":
             p["source"] = bad_value
         elif where == "window_id":
-            p["windows"][0]["provider_metadata"] = {"window_id": bad_value}
+            _windows(p)[0]["provider_metadata"] = {"window_id": bad_value}
         elif where == "diag_wid":
             p["status"] = "ok"
             p["diagnostics"] = [{"code": "window_semantics_unknown", "window_id": bad_value}]
@@ -443,7 +455,7 @@ class CredentialSafety(unittest.TestCase):
                     CapacityValidationError,
                     msg=f"{label} in {where} ({bad!r})",
                 ):
-                    CapacitySnapshot.from_dict(self._unsafe(where, bad))
+                    _ = CapacitySnapshot.from_dict(self._unsafe(where, bad))
 
     def test_safe_shaped_id_is_accepted(self) -> None:
         # A safe-shaped identifier (matches [a-z0-9][a-z0-9._:-]{0,63}) is
@@ -464,16 +476,16 @@ class ApiExports(unittest.TestCase):
         self.assertTrue(callable(CapacityWindow.from_dict))
         self.assertTrue(callable(CapacityDiagnostic.from_dict))
         self.assertTrue(callable(LocalRuntime.from_dict))
-        self.assertTrue(issubclass(CapacityValidationError, CapacityError))
+        self.assertIn(CapacityError, CapacityValidationError.__mro__)
 
 
 # ═════════════════════════ INVALID — must be rejected ═════════════════════════
 
 
 class InvalidSnapshots(unittest.TestCase):
-    def assert_rejected(self, payload: dict[str, Any]) -> None:
+    def assert_rejected(self, payload: dict[str, object]) -> None:
         with self.assertRaises(CapacityValidationError):
-            CapacitySnapshot.from_dict(_clone(payload))
+            _ = CapacitySnapshot.from_dict(_clone(payload))
 
     def test_01_unsupported_schema_version_wrong_int(self) -> None:
         p = openai_healthy()
@@ -497,47 +509,47 @@ class InvalidSnapshots(unittest.TestCase):
 
     def test_04_only_one_percent_present_used(self) -> None:
         p = openai_healthy()
-        w = p["windows"][0]
-        w.pop("remaining_percent")
+        w = _windows(p)[0]
+        _ = w.pop("remaining_percent")
         self.assert_rejected(p)
 
     def test_04b_only_one_present_remaining(self) -> None:
         p = openai_healthy()
-        w = p["windows"][0]
-        w.pop("used_percent")
+        w = _windows(p)[0]
+        _ = w.pop("used_percent")
         self.assert_rejected(p)
 
     def test_05_percentage_out_of_range_high(self) -> None:
         p = openai_healthy()
-        w = p["windows"][0]
+        w = _windows(p)[0]
         w["used_percent"] = 101
         w["remaining_percent"] = 99
         self.assert_rejected(p)
 
     def test_05b_percentage_out_of_range_negative(self) -> None:
         p = openai_healthy()
-        w = p["windows"][0]
+        w = _windows(p)[0]
         w["used_percent"] = -1
         w["remaining_percent"] = 101
         self.assert_rejected(p)
 
     def test_05c_percentage_non_integer(self) -> None:
         p = openai_healthy()
-        w = p["windows"][0]
+        w = _windows(p)[0]
         w["used_percent"] = 6.5
         w["remaining_percent"] = 93.5
         self.assert_rejected(p)
 
     def test_05d_percentage_boolean_rejected(self) -> None:
         p = openai_healthy()
-        w = p["windows"][0]
+        w = _windows(p)[0]
         w["used_percent"] = True
         w["remaining_percent"] = False
         self.assert_rejected(p)
 
     def test_06_contradictory_pair(self) -> None:
         p = openai_healthy()
-        w = p["windows"][0]
+        w = _windows(p)[0]
         w["used_percent"] = 40
         w["remaining_percent"] = 55  # 40+55 = 95, not 100
         self.assert_rejected(p)
@@ -564,7 +576,7 @@ class InvalidSnapshots(unittest.TestCase):
 
     def test_07e_non_canonical_reset_window(self) -> None:
         p = openai_healthy()
-        p["windows"][0]["resets_at"] = "2026-09-02T04:00:00Z"
+        _windows(p)[0]["resets_at"] = "2026-09-02T04:00:00Z"
         self.assert_rejected(p)
 
     def test_07f_invalid_calendar_date(self) -> None:
@@ -605,7 +617,7 @@ class InvalidSnapshots(unittest.TestCase):
         for fake in ({"quota_percent": 100}, {"unlimited": True},
                      {"scarcity": 0.0}, {"percentage": 42}, {"remaining": 100}):
             with self.assertRaises(CapacityValidationError, msg=f"rejected {fake}"):
-                LocalRuntime.from_dict({
+                _ =                 _ = LocalRuntime.from_dict({
                     "reachable": True,
                     "model_presence": "present",
                     "model_name": "qwen3.8:27b",
@@ -670,12 +682,12 @@ class InvalidSnapshots(unittest.TestCase):
 
     def test_12b_unknown_window_key(self) -> None:
         p = openai_healthy()
-        p["windows"][0]["unknown_key"] = "x"
+        _windows(p)[0]["unknown_key"] = "x"
         self.assert_rejected(p)
 
     def test_12c_provider_metadata_extra_key(self) -> None:
         p = openai_healthy()
-        p["windows"][0]["provider_metadata"] = {
+        _windows(p)[0]["provider_metadata"] = {
             "window_id": "win",
             "raw": "extra",
         }
@@ -683,17 +695,17 @@ class InvalidSnapshots(unittest.TestCase):
 
     def test_13_five_hour_wrong_duration(self) -> None:
         p = openai_healthy()
-        p["windows"][0]["duration_seconds"] = 3600
+        _windows(p)[0]["duration_seconds"] = 3600
         self.assert_rejected(p)
 
     def test_13b_weekly_wrong_duration(self) -> None:
         p = openai_healthy()
-        p["windows"][1]["duration_seconds"] = 86400
+        _windows(p)[1]["duration_seconds"] = 86400
         self.assert_rejected(p)
 
     def test_14_unknown_kind_does_not_require_duration(self) -> None:
         p = openai_healthy()
-        p["windows"][0] = _window(kind="unknown", duration_seconds=None, used=10, remaining=90)
+        _windows(p)[0] = _window(kind="unknown", duration_seconds=None, used=10, remaining=90)
         snap = CapacitySnapshot.from_dict(_clone(p))
         self.assertIsNone(snap.windows[0].duration_seconds)
 
@@ -712,18 +724,18 @@ class InvalidSnapshots(unittest.TestCase):
 
     def test_17_window_unknown_resource_rejects_invalid(self) -> None:
         with self.assertRaises(CapacityValidationError):
-            CapacityWindow.from_dict({"resource": "credits", "kind": "unknown"})
+            _ = CapacityWindow.from_dict({"resource": "credits", "kind": "unknown"})
 
     def test_18_local_runtime_rejects_invalid_presence(self) -> None:
         with self.assertRaises(CapacityValidationError):
-            LocalRuntime.from_dict({
+            _ =                 _ = LocalRuntime.from_dict({
                 "reachable": True,
                 "model_presence": "degraded",
             })
 
     def test_19_local_runtime_rejects_non_positive_context(self) -> None:
         with self.assertRaises(CapacityValidationError):
-            LocalRuntime.from_dict({
+            _ =                 _ = LocalRuntime.from_dict({
                 "reachable": True,
                 "model_presence": "present",
                 "model_name": "m",
@@ -732,7 +744,7 @@ class InvalidSnapshots(unittest.TestCase):
 
     def test_20_local_runtime_rejects_invalid_context_type(self) -> None:
         with self.assertRaises(CapacityValidationError):
-            LocalRuntime.from_dict({
+            _ =                 _ = LocalRuntime.from_dict({
                 "reachable": True,
                 "model_presence": "present",
                 "model_name": "m",
@@ -752,7 +764,7 @@ class ConstructorInvariants(unittest.TestCase):
 
     def test_diagnostic_rejects_invalid_code(self) -> None:
         with self.assertRaises(CapacityValidationError):
-            CapacityDiagnostic(code="not-a-real-code")
+            _ = CapacityDiagnostic(code="not-a-real-code")
 
     def test_diagnostic_valid_builds(self) -> None:
         d = CapacityDiagnostic(code="window_semantics_unknown", window_id="win-a")
@@ -760,7 +772,7 @@ class ConstructorInvariants(unittest.TestCase):
 
     def test_window_rejects_contradictory_pair(self) -> None:
         with self.assertRaises(CapacityValidationError):
-            CapacityWindow(
+            _ = CapacityWindow(
                 resource="tokens",
                 kind="unknown",
                 used_percent=60,
@@ -769,7 +781,7 @@ class ConstructorInvariants(unittest.TestCase):
 
     def test_window_rejects_five_hour_wrong_duration(self) -> None:
         with self.assertRaises(CapacityValidationError):
-            CapacityWindow(
+            _ = CapacityWindow(
                 resource="tokens",
                 kind="five_hour",
                 duration_seconds=1,
@@ -787,16 +799,16 @@ class ConstructorInvariants(unittest.TestCase):
 
     def test_local_runtime_present_requires_model_name(self) -> None:
         with self.assertRaises(CapacityValidationError):
-            LocalRuntime(reachable=True, model_presence="present")
+            _ = LocalRuntime(reachable=True, model_presence="present")
 
     def test_local_runtime_unreachable_requires_unknown(self) -> None:
         with self.assertRaises(CapacityValidationError):
-            LocalRuntime(reachable=False, model_presence="present", model_name="m")
+            _ = LocalRuntime(reachable=False, model_presence="present", model_name="m")
 
     def test_snapshot_rejects_non_ok_with_missing_code(self) -> None:
         # status "unavailable" requires the "quota_unavailable" diagnostic.
         with self.assertRaises(CapacityValidationError):
-            CapacitySnapshot(
+            _ = CapacitySnapshot(
                 schema_version=1,
                 provider="openai",
                 source="codex_app_server",
@@ -813,20 +825,20 @@ class FromDictMissingKeyGuard(unittest.TestCase):
 
     def test_snapshot_empty_mapping(self) -> None:
         with self.assertRaises(CapacityValidationError):
-            CapacitySnapshot.from_dict({})
+            _ = CapacitySnapshot.from_dict({})
 
     def test_window_missing_kind(self) -> None:
         with self.assertRaises(CapacityValidationError):
-            CapacityWindow.from_dict({"resource": "tokens"})
+            _ = CapacityWindow.from_dict({"resource": "tokens"})
 
     def test_diagnostic_missing_code(self) -> None:
         with self.assertRaises(CapacityValidationError):
-            CapacityDiagnostic.from_dict({})
+            _ = CapacityDiagnostic.from_dict({})
 
     def test_local_runtime_missing_both(self) -> None:
         with self.assertRaises(CapacityValidationError):
-            LocalRuntime.from_dict({})
+            _ =                 _ = LocalRuntime.from_dict({})
 
 
 if __name__ == "__main__":
-    unittest.main(verbosity=2)
+    _ = unittest.main(verbosity=2)

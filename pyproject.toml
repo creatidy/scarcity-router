@@ -1,27 +1,22 @@
-[project]
-name = "scarcity-router"
-version = "0.1.0"
-description = "Local-first broker that recommends the least scarce capable model."
-requires-python = ">=3.12"
-# No runtime dependencies: the v1 normalized capacity contract uses only the
-# standard library. basedpyright is a development-only tool (installed by the
-# developer), not a package dependency, and is therefore intentionally not
-# listed here.
+# Tooling-only configuration. There is intentionally no [project] table:
+# package name, release version and publication metadata are an unresolved
+# decision (U-008 in docs/decisions.md) and must not be chosen incidentally by
+# development tooling. basedpyright is the declared development-only gate,
+# resolved and pinned via uv.lock so every run uses the same tool version.
+
+[dependency-groups]
+dev = [
+    "basedpyright>=1.0.0",
+]
 
 [tool.basedpyright]
-# typeCheckingMode is intentionally NOT set: basedpyright's default is its
-# full strict ruleset, the differentiator over plain pyright. Overriding it to
-# a weaker mode ("strict"/"standard"/"basic") turns off diagnostics, which the
-# review rejects ("no broad suppression"). Keep the default so every
-# diagnostic the tool can raise is still detected and reported.
-#
-# failOnWarnings is an *exit-code* policy, not suppression: basedpyright still
-# detects and prints all warnings (111 here), it simply does not force a
-# non-zero exit on them. The gate therefore fails on *errors* only, per the
-# review's "0 errors" bar, without hiding any finding.
-failOnWarnings = false
-# Scope the gate to in-task code. `tools/` (read-only reconnaissance) is
-# deliberately excluded: it is not part of this issue's check scope and must
-# not force unrelated files to pass.
+# Explicitly document the default ruleset so the gate is self-describing and
+# stable. This is not a downgrade: "recommended" is basedpyright's default and
+# its strictest supported mode. Do not replace it with basic/standard/strict,
+# add reportXxx = none overrides, or introduce baselines; fix the underlying
+# typing instead. Any narrow suppression needs explicit justification.
+typeCheckingMode = "recommended"
+# Scope: maintained product and test code. Reconnaissance scripts in tools/
+# are outside this issue's cleanup scope but are not permanently excluded;
+# the gate definition stays future-compatible with including them.
 include = ["scarcity_router", "tests"]
-useLibraryCodeForTypes = false

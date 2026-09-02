@@ -1,24 +1,18 @@
-# Gate for the in-task normalized-capacity contract.
+# Repository gate. Tooling is repo-managed and reproducible: basedpyright is
+# declared as a dev dependency in pyproject.toml, pinned in uv.lock, and
+# invoked through the uv-managed environment, never a global executable.
+# Plain `pyright` is never substituted for basedpyright.
 #
-#   make check      → run the unit tests, then the basedpyright gate.
-#   make typecheck  → basedpyright gate only (exit 0 on 0 errors).
-#   make test       → unit tests only.
-#
-# The typechecker gate is `basedpyright` (NOT plain pyright): it runs at its
-# full default strict ruleset and is configured to fail on *errors* only —
-# warnings are still detected and reported, but do not block the build.
-# `python` is not assumed to be on PATH; `python3` is used explicitly.
-
-PYTHON := python3
+#   make test       -> full unit-test suite (auto-discovers tests/)
+#   make typecheck  -> repo-managed basedpyright (default "recommended" gate)
+#   make check      -> test + typecheck; must exit 0 before every commit/PR
 
 .PHONY: check typecheck test
 
-check:
-	$(PYTHON) -m unittest tests.test_capacity
-	basedpyright
+check: test typecheck
 
 typecheck:
-	basedpyright
+	uv run basedpyright
 
 test:
-	$(PYTHON) -m unittest tests.test_capacity
+	uv run python -m unittest discover -s tests -p "test_*.py"

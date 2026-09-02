@@ -153,17 +153,19 @@ requires contract/fixture tests. Selection work requires deterministic policy
 tests and explanation assertions. Security-sensitive work requires negative
 tests for leakage and unsafe endpoints.
 
-Type-checking gate: before committing or opening/updating a PR, run
-`make check` and require it to pass with **0 type errors** (exit 0). The
-gate is `basedpyright` — plain `pyright` is not an acceptable substitute —
-running at its full default strict ruleset over `scarcity_router/` and
-`tests/`; the `tools/` reconnaissance scripts are excluded from the gate
-because they are not part of the product contract. Warnings are reported
-but do not block the build (gated on errors only, see `failOnWarnings = false`
-in `pyproject.toml`). Do not weaken the gate by overriding `typeCheckingMode`
-or adding broad `reportXxx = none` suppressions to make it pass; fix the
-underlying typing. `make typecheck` runs the type checker alone and
-`make test` runs the unit tests alone.
+Type-checking gate: Python changes require `basedpyright`; plain `pyright` is
+not an acceptable substitute. The tool is repo-managed and reproducible: it is
+declared as a development-only dependency in `pyproject.toml`, pinned in
+`uv.lock`, and invoked through the uv-managed environment (`uv run
+basedpyright`), never a global executable. Before committing or
+opening/updating a PR, run `make check` (full test suite + typecheck) and
+require exit 0. basedpyright runs its default `recommended` ruleset; any
+finding that makes that gate fail must be resolved by fixing the underlying
+typing or code structure. Do not weaken the gate by downgrading
+`typeCheckingMode`, adding `reportXxx = none` overrides, excluding product or
+test code, or baselining findings; a narrow suppression requires an explicit
+justification reported with the change. `make typecheck` runs the type
+checker alone and `make test` runs the test suite alone.
 
 ## Decision discipline
 

@@ -21,7 +21,7 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import ClassVar, TypeVar, cast
 
 from .errors import CapacityValidationError
 
@@ -94,6 +94,8 @@ _CANONICAL_TS_RE = re.compile(
 
 _SAFE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._:-]{0,63}$")
 
+T = TypeVar("T")
+
 
 def _v_bool(value: object, field: str) -> bool:
     if not isinstance(value, bool):
@@ -116,7 +118,7 @@ def _v_safe_id(value: object, field: str) -> str:
     if not _SAFE_ID_RE.match(s):
         raise CapacityValidationError(
             f"{field}: unsafe identifier {s!r}; "
-            "must match [a-z0-9][a-z0-9._:-]{0,63} (lowercase, max 64 chars)"
+            + "must match [a-z0-9][a-z0-9._:-]{0,63} (lowercase, max 64 chars)"
         )
     return s
 
@@ -135,10 +137,10 @@ def _v_ts(value: object, field: str) -> str:
     if not _CANONICAL_TS_RE.match(s):
         raise CapacityValidationError(
             f"{field}: non-canonical timestamp {s!r}; "
-            "expected YYYY-MM-DDTHH:MM:SS.sssZ"
+            + "expected YYYY-MM-DDTHH:MM:SS.sssZ"
         )
     try:
-        datetime.fromisoformat(s[:-1] + "+00:00")
+        _ = datetime.fromisoformat(s[:-1] + "+00:00")
     except ValueError:
         raise CapacityValidationError(f"{field}: invalid date/time in {s!r}")
     return s
@@ -166,7 +168,7 @@ def _v_pct_pair(used: object | None, remain: object | None, ctx: str) -> None:
     if (used is None) != (remain is None):
         raise CapacityValidationError(
             f"{ctx}: used_percent and remaining_percent must both be present "
-            "or both absent"
+            + "or both absent"
         )
     if used is not None:
         u = _v_int(used, f"{ctx}.used_percent", lo=0, hi=100)
@@ -175,6 +177,43 @@ def _v_pct_pair(used: object | None, remain: object | None, ctx: str) -> None:
             raise CapacityValidationError(
                 f"{ctx}: used_percent {u} + remaining_percent {r} != 100"
             )
+
+
+def _as_str_object_mapping(value: object) -> Mapping[str, object] | None:
+    """Narrow a boundary mapping to ``str`` keys, or return ``None``.
+
+    Python does not enforce annotations at runtime, so serialized input can be
+    a mapping of any key type. ``isinstance`` cannot express the type
+    parameters; this is the single explicit narrowing point for boundary data.
+    """
+    if isinstance(value, Mapping):
+        return cast(Mapping[str, object], value)
+    return None
+
+
+def _v_tuple_of(value: object, item_type: type[T], label: str) -> None:
+    """Runtime shape guard: ``value`` must be a tuple of ``item_type``.
+
+    Python does not enforce dataclass annotations at runtime, so direct
+    construction can pass any container; this keeps the constructor invariant.
+    """
+    if not isinstance(value, tuple):
+        raise CapacityValidationError(
+            f"{label}: expected tuple, got {type(value).__name__}"
+        )
+    for item in cast("tuple[object, ...]", value):
+        if not isinstance(item, item_type):
+            raise CapacityValidationError(
+                f"{label}: element must be a {item_type.__name__}, "
+                + f"got {type(item).__name__}"
+            )
+
+
+def _v_instance_of(value: object, cls: type[T], label: str) -> None:
+    if not isinstance(value, cls):
+        raise CapacityValidationError(
+            f"{label}: must be a {cls.__name__}, got {type(value).__name__}"
+        )
 
 
 def _v_exact_shape(
@@ -191,18 +230,19 @@ def _v_exact_shape(
     Semantics of the field values are NOT checked here; the ``_v_*`` validators
     and ``__post_init__`` own those rules.
     """
-    if not isinstance(obj, Mapping):
+    m = _as_str_object_mapping(obj)
+    if m is None:
         raise CapacityValidationError(
             f"{label}: expected a dict-like mapping, got {type(obj).__name__}"
         )
     allowed = frozenset(required) | frozenset(optional)
-    extra = set(obj.keys()) - allowed
+    extra = set(m.keys()) - allowed
     if extra:
         raise CapacityValidationError(f"{label}: unknown keys {sorted(extra)}")
-    missing = [key for key in required if key not in obj]
+    missing = [key for key in required if key not in m]
     if missing:
         raise CapacityValidationError(f"{label}: missing required keys {sorted(missing)}")
-    return obj
+    return m
 
 
 def _v_opt_ts(value: object | None, field: str) -> str | None:
@@ -232,19 +272,19 @@ class CapacityDiagnostic:
     code: str
     window_id: str | None = None
 
-    _REQUIRED = ("code",)
-    _OPTIONAL = ("window_id",)
+    _REQUIRED: ClassVar[tuple[str, ...]] = ("code",)
+    _OPTIONAL: ClassVar[tuple[str, ...]] = ("window_id",)
 
     def __post_init__(self) -> None:
         code = _v_enum(self.code, _DIAGNOSTIC_CODES, "diagnostic.code")
         wid = self.window_id
         if code in _WINDOW_SCOPED_CODES:
             if wid is not None:
-                _v_safe_id(wid, "diagnostic.window_id")
+                _ = _v_safe_id(wid, "diagnostic.window_id")
         elif wid is not None:
             raise CapacityValidationError(
                 f"diagnostic: code {code!r} is not window-scoped and "
-                "must not carry window_id"
+                + "must not carry window_id"
             )
 
     @classmethod
@@ -255,8 +295,8 @@ class CapacityDiagnostic:
             window_id=_v_opt_safe_id(dd.get("window_id"), "diagnostic.window_id"),
         )
 
-    def to_dict(self) -> dict[str, Any]:
-        out: dict[str, Any] = {"code": self.code}
+    def to_dict(self) -> dict[str, object]:
+        out: dict[str, object] = {"code": self.code}
         if self.window_id is not None:
             out["window_id"] = self.window_id
         return out
@@ -274,8 +314,8 @@ class CapacityWindow:
     resets_at: str | None = None
     window_id: str | None = None
 
-    _REQUIRED = ("resource", "kind")
-    _OPTIONAL = (
+    _REQUIRED: ClassVar[tuple[str, ...]] = ("resource", "kind")
+    _OPTIONAL: ClassVar[tuple[str, ...]] = (
         "duration_seconds",
         "used_percent",
         "remaining_percent",
@@ -284,7 +324,7 @@ class CapacityWindow:
     )
 
     def __post_init__(self) -> None:
-        _v_enum(self.resource, _RESOURCE_VALUES, "window.resource")
+        _ = _v_enum(self.resource, _RESOURCE_VALUES, "window.resource")
         kind = _v_enum(self.kind, _KIND_VALUES, "window.kind")
 
         duration = self.duration_seconds
@@ -293,17 +333,16 @@ class CapacityWindow:
             fixed = _KIND_DURATION.get(kind)
             if fixed is not None and dur != fixed:
                 raise CapacityValidationError(
-                    f"window: kind={kind!r} requires duration_seconds={fixed}, "
-                    f"got {dur}"
+                    f"window: kind={kind!r} requires duration_seconds={fixed}, got {dur}"
                 )
 
         _v_pct_pair(self.used_percent, self.remaining_percent, "window")
 
         if self.resets_at is not None:
-            _v_ts(self.resets_at, "window.resets_at")
+            _ = _v_ts(self.resets_at, "window.resets_at")
 
         if self.window_id is not None:
-            _v_safe_id(self.window_id, "window.window_id")
+            _ = _v_safe_id(self.window_id, "window.window_id")
 
     @classmethod
     def from_dict(cls, d: object) -> "CapacityWindow":
@@ -312,12 +351,15 @@ class CapacityWindow:
         window_id: str | None = None
         pm = dd.get("provider_metadata")
         if pm is not None:
-            if not isinstance(pm, Mapping) or set(pm.keys()) != {"window_id"}:
+            pm_map = _as_str_object_mapping(pm)
+            if pm_map is None or set(pm_map.keys()) != {"window_id"}:
                 raise CapacityValidationError(
                     "window.provider_metadata: must be a dict with exactly key "
-                    "'window_id'"
+                    + "'window_id'"
                 )
-            window_id = _v_safe_id(pm["window_id"], "window.provider_metadata.window_id")
+            window_id = _v_safe_id(
+                pm_map["window_id"], "window.provider_metadata.window_id"
+            )
         return cls(
             resource=_v_enum(dd["resource"], _RESOURCE_VALUES, "window.resource"),
             kind=_v_enum(dd["kind"], _KIND_VALUES, "window.kind"),
@@ -328,8 +370,8 @@ class CapacityWindow:
             window_id=window_id,
         )
 
-    def to_dict(self) -> dict[str, Any]:
-        out: dict[str, Any] = {
+    def to_dict(self) -> dict[str, object]:
+        out: dict[str, object] = {
             "resource": self.resource,
             "kind": self.kind,
         }
@@ -356,8 +398,8 @@ class LocalRuntime:
     configured_context_tokens: int | None = None
     effective_context_tokens: int | None = None
 
-    _REQUIRED = ("reachable", "model_presence")
-    _OPTIONAL = (
+    _REQUIRED: ClassVar[tuple[str, ...]] = ("reachable", "model_presence")
+    _OPTIONAL: ClassVar[tuple[str, ...]] = (
         "model_name",
         "configured_context_tokens",
         "effective_context_tokens",
@@ -371,21 +413,21 @@ class LocalRuntime:
             "local_runtime.model_presence",
         )
         if self.model_name is not None:
-            _v_safe_id(self.model_name, "local_runtime.model_name")
+            _ = _v_safe_id(self.model_name, "local_runtime.model_name")
         if self.configured_context_tokens is not None:
-            _v_int(self.configured_context_tokens, "local_runtime.configured_context_tokens", lo=1)
+            _ = _v_int(self.configured_context_tokens, "local_runtime.configured_context_tokens", lo=1)
         if self.effective_context_tokens is not None:
-            _v_int(self.effective_context_tokens, "local_runtime.effective_context_tokens", lo=1)
+            _ = _v_int(self.effective_context_tokens, "local_runtime.effective_context_tokens", lo=1)
 
         if model_presence in ("present", "missing") and self.model_name is None:
             raise CapacityValidationError(
                 "local_runtime: model_name is required when model_presence is "
-                "'present' or 'missing'"
+                + "'present' or 'missing'"
             )
         if not reachable and model_presence != "unknown":
             raise CapacityValidationError(
                 "local_runtime: model_presence must be 'unknown' when "
-                "reachable is False"
+                + "reachable is False"
             )
 
     @classmethod
@@ -411,8 +453,8 @@ class LocalRuntime:
             ),
         )
 
-    def to_dict(self) -> dict[str, Any]:
-        out: dict[str, Any] = {
+    def to_dict(self) -> dict[str, object]:
+        out: dict[str, object] = {
             "reachable": self.reachable,
             "model_presence": self.model_presence,
         }
@@ -439,7 +481,7 @@ class CapacitySnapshot:
     plan: str | None = None
     local_runtime: LocalRuntime | None = None
 
-    _REQUIRED = (
+    _REQUIRED: ClassVar[tuple[str, ...]] = (
         "schema_version",
         "provider",
         "source",
@@ -448,68 +490,48 @@ class CapacitySnapshot:
         "windows",
         "diagnostics",
     )
-    _OPTIONAL = ("plan", "local_runtime")
+    _OPTIONAL: ClassVar[tuple[str, ...]] = ("plan", "local_runtime")
 
     def __post_init__(self) -> None:
-        sv = self.schema_version
-        if isinstance(sv, bool) or not isinstance(sv, int) or sv != SCHEMA_VERSION:
+        sv = _v_int(self.schema_version, "schema_version")
+        if sv != SCHEMA_VERSION:
             raise CapacityValidationError(
                 f"schema_version: expected int {SCHEMA_VERSION}, got {sv!r}"
             )
 
-        _v_safe_id(self.provider, "provider")
-        _v_safe_id(self.source, "source")
-        _v_ts(self.retrieved_at, "retrieved_at")
+        _ = _v_safe_id(self.provider, "provider")
+        _ = _v_safe_id(self.source, "source")
+        _ = _v_ts(self.retrieved_at, "retrieved_at")
         status = _v_enum(self.status, _STATUS_VALUES, "status")
         if self.plan is not None:
-            _v_safe_id(self.plan, "plan")
+            _ = _v_safe_id(self.plan, "plan")
 
         windows = self.windows
-        if not isinstance(windows, tuple):
-            raise CapacityValidationError(
-                "snapshot.windows: expected tuple, "
-                f"got {type(windows).__name__}"
-            )
-        for window in windows:
-            if not isinstance(window, CapacityWindow):
-                raise CapacityValidationError(
-                    "snapshot.windows: element must be a CapacityWindow, "
-                    f"got {type(window).__name__}"
-                )
+        _ = _v_tuple_of(self.windows, CapacityWindow, "snapshot.windows")
 
-        if not isinstance(self.diagnostics, tuple):
-            raise CapacityValidationError(
-                "snapshot.diagnostics: expected tuple, "
-                f"got {type(self.diagnostics).__name__}"
-            )
+        diagnostics = self.diagnostics
+        _ = _v_tuple_of(self.diagnostics, CapacityDiagnostic, "snapshot.diagnostics")
         codes: set[str] = set()
-        for diag in self.diagnostics:
-            if not isinstance(diag, CapacityDiagnostic):
-                raise CapacityValidationError(
-                    "snapshot.diagnostics: element must be a CapacityDiagnostic, "
-                    f"got {type(diag).__name__}"
-                )
+        for diag in diagnostics:
             codes.add(diag.code)
 
-        local_runtime = self.local_runtime
-        if local_runtime is not None and not isinstance(local_runtime, LocalRuntime):
-            raise CapacityValidationError(
-                "snapshot.local_runtime: must be a LocalRuntime, "
-                f"got {type(local_runtime).__name__}"
+        if self.local_runtime is not None:
+            _ = _v_instance_of(
+                self.local_runtime, LocalRuntime, "snapshot.local_runtime"
             )
 
         # Cross-field invariants.
         if status in _STATUSES_WITHOUT_WINDOWS and windows:
             raise CapacityValidationError(
                 f"snapshot: status={status!r} requires an empty windows array, "
-                f"got {len(windows)} window(s)"
+                + f"got {len(windows)} window(s)"
             )
         if status != "ok":
             required_code = _STATUS_REQUIRED_CODE.get(status)
             if required_code is not None and required_code not in codes:
                 raise CapacityValidationError(
                     f"snapshot: status={status!r} requires diagnostic code "
-                    f"{required_code!r} in diagnostics"
+                    + f"{required_code!r} in diagnostics"
                 )
 
     @classmethod
@@ -521,16 +543,18 @@ class CapacitySnapshot:
             raise CapacityValidationError(
                 f"snapshot.windows: expected list, got {type(raw_windows).__name__}"
             )
-        windows = tuple(CapacityWindow.from_dict(w) for w in raw_windows)
+        windows = tuple(
+            CapacityWindow.from_dict(w) for w in cast("list[object]", raw_windows)
+        )
 
         raw_diagnostics = dd["diagnostics"]
         if not isinstance(raw_diagnostics, list):
             raise CapacityValidationError(
-                f"snapshot.diagnostics: expected list, got "
-                f"{type(raw_diagnostics).__name__}"
+                f"snapshot.diagnostics: expected list, got {type(raw_diagnostics).__name__}"
             )
         diagnostics = tuple(
-            CapacityDiagnostic.from_dict(x) for x in raw_diagnostics
+            CapacityDiagnostic.from_dict(x)
+            for x in cast("list[object]", raw_diagnostics)
         )
 
         local_runtime: LocalRuntime | None = None
@@ -550,8 +574,8 @@ class CapacitySnapshot:
             local_runtime=local_runtime,
         )
 
-    def to_dict(self) -> dict[str, Any]:
-        out: dict[str, Any] = {}
+    def to_dict(self) -> dict[str, object]:
+        out: dict[str, object] = {}
         out["schema_version"] = self.schema_version
         out["provider"] = self.provider
         out["source"] = self.source
