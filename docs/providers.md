@@ -10,8 +10,8 @@ normalized capacity snapshot. It must:
 - parse into the normalized model without leaking raw provider types inward;
 - preserve all relevant quota windows and reset times;
 - return explicit health/failure status and safe diagnostics;
-- carry retrieval time, plan/account metadata when safely known and source
-  mechanism;
+- carry retrieval time, safe plan metadata when known and source mechanism;
+  account identifiers are not part of the v1 snapshot;
 - have redacted fixtures, parser tests and contract tests;
 - treat new fields tolerantly and changed required semantics conservatively;
 - never print, return or persist credentials.
@@ -116,4 +116,3 @@ For each adapter, freeze minimal redacted provider-shaped fixtures and assert:
 
 Live integration checks may complement fixtures, but tests must not require or
 record the owner's credentials.
-

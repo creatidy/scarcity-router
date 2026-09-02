@@ -33,10 +33,10 @@ status such as `schema_changed` while the rest of the service remains healthy.
 
 ### Capacity store/view
 
-Holds the most recent normalized snapshots, their retrieval time and freshness.
-The initial implementation may be in-memory and refreshed on demand. Durable
-history is not needed for M1. Secrets and raw Authorization values never enter
-the normalized state.
+Holds the most recent v1 normalized snapshots and their retrieval timestamps.
+Freshness evaluation, refresh behavior and durable history are separate concerns;
+the initial implementation may be in-memory and refreshed on demand. Secrets and
+raw Authorization values never enter the normalized state.
 
 ### Catalog
 
@@ -87,15 +87,16 @@ The domain must not import a provider, web framework, MCP SDK, CLI framework or
 Kilo-specific module. Provider adapters may depend on small protocol helpers but
 not on the selector.
 
-## Conceptual contracts
+## Domain contracts
 
-The following domain records are required; field names are conceptual until M1
-publishes a schema:
+M1 freezes `docs/capacity-model.md` as the v1 serialized capacity contract:
 
-- `CapacitySnapshot`: provider, account/plan if known, source mechanism,
-  retrieval time, freshness, status, windows and local availability.
-- `CapacityWindow`: provider metadata, known semantic kind where validated,
-  duration, used/remaining percentage and reset time.
+- `CapacitySnapshot`: schema version, provider/source identifiers, optional safe
+  plan, retrieval time, status, windows, optional local runtime and safe
+  diagnostics. Account identifiers and freshness fields are not in v1.
+- `CapacityWindow`: validated resource and period kind, optional duration,
+  complementary used/remaining percentage pair, optional reset time and an
+  allowlisted opaque provider window identifier.
 - `ModelProfile`: stable model identity, variants, provider, hard properties,
   capability assessments and provenance.
 - `TaskRequirement`: level, capability minima, hard constraints and optional
@@ -103,7 +104,9 @@ publishes a schema:
 - `SelectionDecision`: selected candidate, ranked alternatives, exclusions,
   reasons, capacity/catalog versions and degraded/unknown indicators.
 
-Schemas must distinguish omitted, unknown, unsupported, unavailable and zero.
+Schemas must distinguish omitted, unknown, unsupported, unavailable and zero. The
+capacity contract uses omitted optional fields for unknown values and explicit
+`unknown` enum values for unresolved window/runtime semantics.
 
 ## Configuration boundaries
 
@@ -132,4 +135,3 @@ explanation must identify degraded inputs.
 Persistent history, runtime failure feedback, central team quota pools,
 multi-user policy, signed catalog releases and commercial services are future
 possibilities, not foundations to build in M1.
-
