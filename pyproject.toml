@@ -10,11 +10,13 @@ dev = [
 ]
 
 [tool.basedpyright]
-# Explicitly document the default ruleset so the gate is self-describing and
-# stable. This is not a downgrade: "recommended" is basedpyright's default and
-# its strictest supported mode. Do not replace it with basic/standard/strict,
-# add reportXxx = none overrides, or introduce baselines; fix the underlying
-# typing instead. Any narrow suppression needs explicit justification.
+# "recommended" is this project's selected mode; it is basedpyright's default.
+# It enables all diagnostic rules and reports less severe findings as
+# warnings, and the CLI's default policy fails on warnings as well, so every
+# reported diagnostic is blocking for this project. Do not replace it with
+# basic/standard/strict, add reportXxx = none overrides, or introduce
+# baselines; fix the underlying typing instead. Any narrow suppression needs
+# explicit justification.
 typeCheckingMode = "recommended"
 # Scope: maintained product and test code. Reconnaissance scripts in tools/
 # are outside this issue's cleanup scope but are not permanently excluded;
