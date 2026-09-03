@@ -67,6 +67,11 @@ These are validated adapter mappings, not universal constants. Unknown units or
 combinations must preserve safe metadata and yield unknown semantics rather
 than being guessed. Array position is not semantic.
 
+Status (M1): the response parser is implemented and fixture-tested in
+`scarcity_router/providers/zai.py` (`parse_zai_quota_response`); live
+acquisition (credential discovery and the authenticated request) is not
+implemented.
+
 Each observed window carries `nextResetTime`, a 13-digit epoch-**millisecond**
 value, and `percentage` is the **used** percentage (remaining is the complement).
 Both are current provider evidence, not a permanent contract; the authoritative
