@@ -126,3 +126,8 @@ Each topic has one primary source of truth:
 See the [roadmap](docs/roadmap.md) before starting implementation. M0 was
 documentation-only and is complete. M1 is current and begins with normalized
 status collectors, not routing.
+
+The portable descriptive model policy is available at
+[`model-policy.json`](model-policy.json). External consumers needing
+reproducible policy should pin a commit or release rather than assume `main`
+never changes.

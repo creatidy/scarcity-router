@@ -6,6 +6,10 @@ The default selector chooses the least scarce candidate that is capable enough
 for the task. It does not maximize capability without regard to scarcity, and
 it does not choose a weak model merely because it is abundant.
 
+The portable descriptive class and profile policy is maintained in
+[`model-policy.json`](../model-policy.json); this document remains authoritative
+for the selector decision sequence and scarcity behavior.
+
 ## Inputs
 
 - A task profile or explicit capability minima.
@@ -137,4 +141,3 @@ valuable for tests, policy debugging, demonstrations and documentation.
 A future client may report quota exhaustion or temporary provider failure. Such
 feedback may create short-lived runtime state until refresh, but is not required
 for the first selector. It must never silently alter catalog capability.
-

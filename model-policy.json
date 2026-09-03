@@ -1,0 +1,614 @@
+{
+  "schema_version": 1,
+  "policy_version": 1,
+  "updated_at": "2026-09-03",
+  "versioning": {
+    "schema_version": {
+      "meaning": "The machine-readable artifact shape.",
+      "change_policy": "Change only when the artifact shape changes incompatibly."
+    },
+    "policy_version": {
+      "meaning": "The compatible policy content version.",
+      "change_policy": "Increment when policy content changes without an incompatible shape change."
+    },
+    "updated_at": {
+      "meaning": "The UTC policy assessment and update date.",
+      "format": "YYYY-MM-DD"
+    }
+  },
+  "purpose": "Portable descriptive policy for model capability archetypes, task profiles and current owner workflow exemplars.",
+  "policy_invariants": {
+    "classes_are_descriptive_metadata": true,
+    "classes_are_non_exclusive": true,
+    "classes_are_rankings": false,
+    "class_membership_establishes_task_eligibility": false,
+    "task_profiles_and_explicit_requirements_are_selector_facing": true,
+    "capability_minima_must_be_satisfied": true,
+    "hard_constraints_must_be_satisfied": true,
+    "runtime_capacity_is_independent": true,
+    "scarcity_and_reservation_policy_is_independent": true,
+    "principle": "Choose the least scarce model that satisfies the actual task requirements.",
+    "separation": {
+      "model_classes_answer": "What kind of work is this model especially appropriate for?",
+      "capability_vectors_answer": "Is this model capable enough for this exact task?",
+      "runtime_capacity_answers": "Can I afford to use it now?",
+      "user_policy_answers": "Should I preserve it for something more important?",
+      "selector_answers": "Which capable sufficient model is least scarce under the active policy?"
+    },
+    "selector_sequence": [
+      "resolve_task_requirements",
+      "filter_hard_constraints",
+      "require_every_capability_minimum",
+      "apply_runtime_capacity_eligibility",
+      "apply_scarcity_and_reservation_policy",
+      "rank_sufficient_eligible_candidates",
+      "explain_the_decision"
+    ],
+    "forbidden_shortcuts": [
+      "if task == \"deep_coding\": choose_a_deep_technical_reasoner()",
+      "choose a model directly from class membership",
+      "rank model classes as if they were model quality tiers",
+      "map a task level directly to a specific model",
+      "treat a workflow exemplar as guaranteed capability"
+    ]
+  },
+  "capability_dimensions": [
+    {
+      "id": "reasoning",
+      "label": "REASONING",
+      "description": "Ability to analyze, infer, resolve ambiguity and sustain useful reasoning."
+    },
+    {
+      "id": "coding",
+      "label": "CODING",
+      "description": "Ability to produce, modify, understand and debug software."
+    },
+    {
+      "id": "scientific_methodological",
+      "label": "SCIENTIFIC_METHODOLOGICAL",
+      "description": "Ability to interpret evidence and evaluate scientific or methodological correctness."
+    },
+    {
+      "id": "writing_editorial",
+      "label": "WRITING_EDITORIAL",
+      "description": "Ability to preserve meaning and produce clear, coherent and well-structured prose."
+    },
+    {
+      "id": "tool_use",
+      "label": "TOOL_USE",
+      "description": "Ability to use tools reliably, interpret their results and carry work through operational steps."
+    },
+    {
+      "id": "translation_multilingual",
+      "label": "TRANSLATION_MULTILINGUAL",
+      "description": "Ability to translate faithfully across languages while preserving semantics, terminology and register."
+    }
+  ],
+  "capability_dimension_policy": {
+    "translation_multilingual": {
+      "status": "first_class_capability_dimension",
+      "reason": "Translation quality changes real routing decisions and must not be approximated solely from writing_editorial.",
+      "not_inferred_solely_from": "writing_editorial"
+    },
+    "orchestration_dimension": {
+      "status": "deferred",
+      "dedicated_dimension_included": false,
+      "current_representation": {
+        "capability_dimensions": [
+          "reasoning",
+          "tool_use",
+          "writing_editorial"
+        ],
+        "hard_requirements": [
+          "adequate_context",
+          "adequate_output_allowance"
+        ]
+      },
+      "reason": "Real routing experiments must first show that the existing dimensions cannot distinguish suitable orchestration models reliably."
+    }
+  },
+  "model_capability_classes": [
+    {
+      "id": "execution_generalist",
+      "label": "EXECUTION_GENERALIST",
+      "intent": "A strong general-purpose model optimized for actually doing technical work.",
+      "typical_strengths": [
+        "coding",
+        "tool_use",
+        "repository_operations",
+        "structured_transformations",
+        "debugging",
+        "implementation",
+        "extraction",
+        "mechanical_preparation",
+        "testing_and_qa",
+        "routine_to_advanced_technical_reasoning"
+      ],
+      "typical_task_profiles": [
+        "mechanical",
+        "routine_coding",
+        "general_reasoning"
+      ],
+      "typical_workflow_roles": [
+        "evidence_preparation_without_specialist_adjudication"
+      ],
+      "task_level_guidance": {
+        "levels": [
+          "L0",
+          "L1",
+          "L2",
+          "L3"
+        ],
+        "scope": "L0, L1 and L2, plus much of L3",
+        "guidance": "Escalate because of reasoning difficulty, not merely because work is large or long."
+      },
+      "usage_guidance": [
+        "This is not a cheap, weak or low-intelligence class.",
+        "It should be capable of independently completing ordinary professional engineering work and making ordinary implementation judgments.",
+        "Do not escalate solely because many files exist, the task is long or the output is large."
+      ]
+    },
+    {
+      "id": "orchestration_synthesis",
+      "label": "ORCHESTRATION_SYNTHESIS",
+      "intent": "A model particularly suited to maintaining intent and coherence across long-running, multi-stage work.",
+      "typical_strengths": [
+        "reasoning",
+        "tool_use",
+        "planning",
+        "dependency_interpretation",
+        "long_context_synthesis",
+        "editorial_judgment",
+        "maintaining_state_across_complex_workflows",
+        "coordinating_workers",
+        "document_restructuring",
+        "coherent_long_form_generation"
+      ],
+      "typical_task_profiles": [
+        "orchestration",
+        "editorial",
+        "general_reasoning"
+      ],
+      "typical_workflow_roles": [
+        "complex_synthesis"
+      ],
+      "task_level_guidance": {
+        "levels": [
+          "L2",
+          "L3",
+          "L4"
+        ],
+        "scope": "L2 and L3, and sometimes L4 when difficulty is primarily synthesis rather than specialist domain judgment",
+        "guidance": "Use when the main question is what is happening across the whole project, what should happen next and how to preserve intended structure and meaning."
+      },
+      "usage_guidance": [
+        "Do not treat this class as automatically superior for coding or scientific adjudication."
+      ]
+    },
+    {
+      "id": "deep_technical_reasoner",
+      "label": "DEEP_TECHNICAL_REASONER",
+      "intent": "A high-capability escalation class for technically difficult problems where additional reasoning depth is likely to materially improve the result.",
+      "typical_strengths": [
+        "very_strong_reasoning",
+        "very_strong_coding",
+        "architecture",
+        "difficult_debugging",
+        "algorithmic_reasoning",
+        "ambiguity_resolution",
+        "complex_cross_component_analysis",
+        "difficult_technical_synthesis"
+      ],
+      "typical_task_profiles": [
+        "deep_coding",
+        "general_reasoning"
+      ],
+      "typical_workflow_roles": [
+        "advanced_architecture",
+        "advanced_debugging"
+      ],
+      "task_level_guidance": {
+        "levels": [
+          "L3",
+          "L4",
+          "L5"
+        ],
+        "scope": "L3 and L4, plus selected L5 technical work",
+        "guidance": "Use when the ordinary execution model lacks sufficient reasoning margin or the problem is intrinsically difficult."
+      },
+      "usage_guidance": [
+        "Do not select merely because the task is long, many files are involved, the task looks important or the model is more prestigious."
+      ]
+    },
+    {
+      "id": "scientific_methodological_specialist",
+      "label": "SCIENTIFIC_METHODOLOGICAL_SPECIALIST",
+      "intent": "A specialist class where domain judgment and correctness of interpretation are primary.",
+      "typical_strengths": [
+        "scientific_methodological",
+        "high_reasoning",
+        "evidence_interpretation",
+        "methodological_criticism",
+        "claim_to_source_adjudication",
+        "medical_and_scientific_reasoning",
+        "independent_review"
+      ],
+      "typical_task_profiles": [
+        "scientific_review",
+        "methodological_review",
+        "evidence_adjudication",
+        "expert_consultation"
+      ],
+      "task_level_guidance": {
+        "levels": [
+          "L4",
+          "L5"
+        ],
+        "scope": "Usually L4; L5 where consequences or difficulty justify it",
+        "guidance": "Domain judgment and correctness of interpretation take priority over mechanical preparation."
+      },
+      "usage_guidance": [
+        "Another model may extract claims and candidate evidence.",
+        "The specialist adjudicates the claims and evidence.",
+        "An execution model may apply straightforward remediation.",
+        "The specialist reviews scientifically meaningful deltas when needed.",
+        "Independence may be a hard task constraint when the reviewer must operate separately from the model that produced the reviewed artifact.",
+        "Session independence is a policy concept only and is not implemented in Scarcity Router yet."
+      ]
+    },
+    {
+      "id": "translation_editorial_specialist",
+      "label": "TRANSLATION_EDITORIAL_SPECIALIST",
+      "intent": "A specialist class for high-fidelity translation where semantic preservation, terminology, register and editorial quality materially matter.",
+      "typical_strengths": [
+        "translation_multilingual",
+        "writing_editorial",
+        "semantic_fidelity",
+        "terminology_preservation",
+        "contextual_ambiguity_resolution"
+      ],
+      "typical_task_profiles": [
+        "translation",
+        "translation_review",
+        "bilingual_editorial_sync"
+      ],
+      "task_level_guidance": {
+        "levels": [
+          "L2",
+          "L3",
+          "L4"
+        ],
+        "scope": "L2 for ordinary translation; L3-L4 for technical, scientific, legal or publication-quality translation",
+        "guidance": "Translation quality is a genuine capability concern and is not inferred solely from general writing quality."
+      },
+      "usage_guidance": [
+        "The same model may belong simultaneously to this class and another specialist class."
+      ]
+    }
+  ],
+  "task_levels": [
+    {
+      "id": "L0",
+      "name": "mechanical",
+      "description": "Deterministic work with minimal judgment."
+    },
+    {
+      "id": "L1",
+      "name": "routine",
+      "description": "Well-defined, low-ambiguity work with obvious expected behavior."
+    },
+    {
+      "id": "L2",
+      "name": "standard",
+      "description": "Normal professional work requiring understanding and some reasoning."
+    },
+    {
+      "id": "L3",
+      "name": "advanced",
+      "description": "Substantial reasoning, implementation complexity, debugging, ambiguity resolution or architecture."
+    },
+    {
+      "id": "L4",
+      "name": "expert",
+      "description": "Subtle, high-value work where mistakes materially matter, including difficult implementation, methodological review or scientific interpretation."
+    },
+    {
+      "id": "L5",
+      "name": "critical",
+      "description": "Work requiring the strongest suitable available capability because errors are especially costly or reasoning is genuinely frontier-level."
+    }
+  ],
+  "task_profile_policy": {
+    "profiles_are_selector_facing": true,
+    "class_affinities_are_hints_not_requirements": true,
+    "expansion_rule": "At selection time a profile expands into explicit per-dimension capability minima and hard requirements; class affinities provide role hints only.",
+    "numeric_minima_included": false,
+    "numeric_minima_status": "deferred_to_m2_calibration",
+    "hard_requirements_remain_task_specific": true
+  },
+  "task_profiles": [
+    {
+      "id": "mechanical",
+      "intent": "Deterministic extraction, formatting, inventory, preparation and repetitive QA with minimal judgment.",
+      "selector_facing": true,
+      "indicative_capability_needs": [
+        "tool_use",
+        "writing_editorial"
+      ],
+      "hard_requirement_categories": [
+        "task-specific context and output limits",
+        "required tools and privacy or locality constraints"
+      ],
+      "class_affinities": [
+        {
+          "class_id": "execution_generalist",
+          "relationship": "likely"
+        }
+      ]
+    },
+    {
+      "id": "routine_coding",
+      "intent": "Well-defined implementation or maintenance work with low ambiguity.",
+      "selector_facing": true,
+      "indicative_capability_needs": [
+        "coding",
+        "reasoning",
+        "tool_use"
+      ],
+      "hard_requirement_categories": [
+        "task-specific context and output limits",
+        "required tools and privacy or locality constraints"
+      ],
+      "class_affinities": [
+        {
+          "class_id": "execution_generalist",
+          "relationship": "likely"
+        }
+      ]
+    },
+    {
+      "id": "deep_coding",
+      "intent": "Difficult implementation, architecture or debugging requiring substantial technical reasoning.",
+      "selector_facing": true,
+      "indicative_capability_needs": [
+        "coding",
+        "reasoning",
+        "tool_use"
+      ],
+      "hard_requirement_categories": [
+        "task-specific context and output limits",
+        "required tools and privacy or locality constraints"
+      ],
+      "class_affinities": [
+        {
+          "class_id": "deep_technical_reasoner",
+          "relationship": "likely"
+        },
+        {
+          "class_id": "execution_generalist",
+          "relationship": "alternative",
+          "condition": "Any execution_generalist whose actual capability vector satisfies the required minima."
+        }
+      ]
+    },
+    {
+      "id": "scientific_review",
+      "intent": "Review of scientific claims, evidence and methodological correctness.",
+      "selector_facing": true,
+      "indicative_capability_needs": [
+        "scientific_methodological",
+        "reasoning"
+      ],
+      "hard_requirement_categories": [
+        "task-specific context and output limits",
+        "privacy, locality and reviewer-independence constraints when specified"
+      ],
+      "class_affinities": [
+        {
+          "class_id": "scientific_methodological_specialist",
+          "relationship": "likely"
+        }
+      ]
+    },
+    {
+      "id": "editorial",
+      "intent": "Coherent restructuring, editing and quality improvement of written material.",
+      "selector_facing": true,
+      "indicative_capability_needs": [
+        "writing_editorial",
+        "reasoning"
+      ],
+      "hard_requirement_categories": [
+        "task-specific context and output limits",
+        "privacy or locality constraints"
+      ],
+      "class_affinities": [
+        {
+          "class_id": "orchestration_synthesis",
+          "relationship": "likely"
+        }
+      ]
+    },
+    {
+      "id": "general_reasoning",
+      "intent": "Reasoning work without a more specific task profile.",
+      "selector_facing": true,
+      "indicative_capability_needs": [
+        "reasoning"
+      ],
+      "hard_requirement_categories": [
+        "task-specific context and output limits",
+        "privacy, locality, tool and provider constraints when specified"
+      ],
+      "class_affinities": [
+        {
+          "class_id": "execution_generalist",
+          "relationship": "likely"
+        }
+      ]
+    },
+    {
+      "id": "orchestration",
+      "intent": "Multi-stage planning, project recovery, dependency interpretation and worker coordination.",
+      "selector_facing": true,
+      "indicative_capability_needs": [
+        "reasoning",
+        "tool_use",
+        "writing_editorial"
+      ],
+      "indicative_strength_guidance": {
+        "reasoning": "strong",
+        "tool_use": "strong",
+        "writing_editorial": "useful"
+      },
+      "hard_requirement_categories": [
+        "adequate context allowance",
+        "adequate output allowance",
+        "task-specific tool, privacy or locality constraints"
+      ],
+      "class_affinities": [
+        {
+          "class_id": "orchestration_synthesis",
+          "relationship": "likely"
+        }
+      ]
+    },
+    {
+      "id": "translation",
+      "intent": "High-fidelity translation and bilingual editorial synchronization.",
+      "selector_facing": true,
+      "indicative_capability_needs": [
+        "translation_multilingual",
+        "writing_editorial",
+        "reasoning"
+      ],
+      "indicative_strength_guidance": {
+        "translation_multilingual": "strong",
+        "writing_editorial": "strong",
+        "reasoning": "sufficient for contextual ambiguity"
+      },
+      "hard_requirement_categories": [
+        "context and output limits appropriate to the source and target material",
+        "task-specific privacy or locality constraints"
+      ],
+      "class_affinities": [
+        {
+          "class_id": "translation_editorial_specialist",
+          "relationship": "likely"
+        }
+      ]
+    }
+  ],
+  "task_level_relationship": {
+    "task_level_describes": "difficulty_and_consequence",
+    "model_class_describes": "the_kind_of_capability_a_model_is_especially_suited_to_provide",
+    "examples_are_explanatory_defaults": true,
+    "examples_are_not_selector_shortcuts": true,
+    "examples": [
+      {
+        "task_level": "L1",
+        "task": "routine coding",
+        "class_guidance": [
+          {
+            "class_id": "execution_generalist",
+            "condition": "when its actual capability vector is sufficient"
+          }
+        ]
+      },
+      {
+        "task_level": "L3",
+        "task": "difficult debugging",
+        "class_guidance": [
+          {
+            "class_id": "execution_generalist",
+            "condition": "if its actual capability vector is sufficient"
+          },
+          {
+            "class_id": "deep_technical_reasoner",
+            "condition": "otherwise, when additional reasoning depth is needed"
+          }
+        ]
+      },
+      {
+        "task_level": "L3",
+        "task": "restructuring a long technical document",
+        "class_guidance": [
+          {
+            "class_id": "orchestration_synthesis",
+            "condition": "when coherent whole-project synthesis is the main difficulty"
+          }
+        ]
+      },
+      {
+        "task_level": "L4",
+        "task": "scientific evidence adjudication",
+        "class_guidance": [
+          {
+            "class_id": "scientific_methodological_specialist",
+            "condition": "when domain judgment and interpretation correctness are primary"
+          }
+        ]
+      },
+      {
+        "task_level": "L3",
+        "task": "publication-quality technical translation",
+        "class_guidance": [
+          {
+            "class_id": "translation_editorial_specialist",
+            "condition": "when semantic fidelity, terminology and register materially matter"
+          }
+        ]
+      }
+    ]
+  },
+  "current_workflow_examples": {
+    "status": "dated_assessment",
+    "dated_assessment": true,
+    "assessment_date": "2026-09-03",
+    "scope": "current_owner_workflow_policy",
+    "part_of_class_definitions": false,
+    "numeric_capability_ratings_included": false,
+    "revisable_as_models_are_reassessed": true,
+    "archetype_role_semantics": {
+      "primary_archetypes": "The owner's primary current archetype assessment for the model.",
+      "secondary_archetypes": "A possible secondary archetype assessment, not a requirement or guarantee."
+    },
+    "models": [
+      {
+        "model_name": "GLM-5.3-Flash Max",
+        "primary_archetypes": [
+          "execution_generalist"
+        ],
+        "secondary_archetypes": []
+      },
+      {
+        "model_name": "GPT-5.6 Luna Max",
+        "primary_archetypes": [
+          "orchestration_synthesis"
+        ],
+        "secondary_archetypes": [
+          "execution_generalist"
+        ]
+      },
+      {
+        "model_name": "GLM-5.3 Max",
+        "primary_archetypes": [
+          "deep_technical_reasoner"
+        ],
+        "secondary_archetypes": [
+          "execution_generalist"
+        ]
+      },
+      {
+        "model_name": "GPT-5.6 Sol High",
+        "primary_archetypes": [
+          "scientific_methodological_specialist",
+          "translation_editorial_specialist"
+        ],
+        "secondary_archetypes": [
+          "orchestration_synthesis"
+        ]
+      }
+    ]
+  }
+}
