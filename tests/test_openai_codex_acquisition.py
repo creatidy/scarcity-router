@@ -298,6 +298,7 @@ class SuccessfulSession(_AcquisitionCase):
         for fixture in (
             "ratelimits-ok-plus.json",
             "ratelimits-full-shape-ok.json",
+            "ratelimits-additional-bucket-exhausted.json",
             "ratelimits-slots-swapped.json",
             "ratelimits-unknown-duration.json",
             "ratelimits-exhausted-reached.json",
@@ -531,6 +532,48 @@ class MalformedAndBoundedOutput(_AcquisitionCase):
                     [d.code for d in snapshot.diagnostics], ["schema_changed"]
                 )
 
+    def test_non_finite_exponent_values_rejected(self) -> None:
+        # Valid JSON numeric syntax that parses to infinity must fail closed
+        # exactly like the literal NaN/Infinity constants.
+        bad_lines: tuple[bytes, ...] = (
+            b'{"id":2,"result":{"rateLimits":{"primary":{"usedPercent":1e10000,'
+            + b'"windowDurationMins":300},"secondary":{"usedPercent":3,'
+            + b'"windowDurationMins":10080}}}}\n',
+            b'{"id":2,"result":{"rateLimits":{"primary":{"usedPercent":6,'
+            + b'"windowDurationMins":1e9999},"secondary":{"usedPercent":3,'
+            + b'"windowDurationMins":10080}}}}\n',
+            b'{"id":2,"result":{"rateLimits":{"primary":{"usedPercent":6,'
+            + b'"windowDurationMins":300},"secondary":{"usedPercent":-1e10000,'
+            + b'"windowDurationMins":10080}}}}\n',
+        )
+        for bad in bad_lines:
+            with self.subTest(bad=bad[:40]):
+                _ = self._install_fake([INIT_RESPONSE, bad])
+                roots = self._make_installation()
+                snapshot = self._collect(discovery_roots=[roots])
+                self.assertEqual(snapshot.status, "schema_changed")
+                self.assertEqual(
+                    [d.code for d in snapshot.diagnostics], ["schema_changed"]
+                )
+
+    def test_deeply_nested_payloads_rejected_as_drift(self) -> None:
+        # Adversarial nesting within the line budget must surface as a safe
+        # schema_changed status, never as an uncaught RecursionError.
+        bad_lines: tuple[bytes, ...] = (
+            b'{"id":2,"result":{"rateLimits":' + b'{"a":' * 5000 + b"1" + b"}" * 5000 + b"}}\n",
+            b'{"id":2,"result":' + b"[" * 10_000 + b"]" * 10_000 + b"}\n",
+        )
+        for bad in bad_lines:
+            with self.subTest(bad=bad[:24]):
+                self.assertLessEqual(len(bad), acq.MAX_LINE_BYTES + 1)
+                _ = self._install_fake([INIT_RESPONSE, bad])
+                roots = self._make_installation()
+                snapshot = self._collect(discovery_roots=[roots])
+                self.assertEqual(snapshot.status, "schema_changed")
+                self.assertEqual(
+                    [d.code for d in snapshot.diagnostics], ["schema_changed"]
+                )
+
     def test_non_standard_json_constants_rejected(self) -> None:
         bad_lines: tuple[bytes, ...] = (
             b'{"id":2,"result":{"rateLimits":{"primary":{"usedPercent":NaN,'
@@ -652,6 +695,52 @@ class SafeTermination(_AcquisitionCase):
         roots = self._make_installation()
         snapshot = self._collect(discovery_roots=[roots])
         self.assertEqual(snapshot.status, "ok")
+        self.assertEqual(fake.events, ["terminate", "kill"])
+        self.assertTrue(fake.stdin.closed)
+
+    def test_reader_startup_failure_terminates_child(self) -> None:
+        # Regression: a reader-start failure before the session begins must
+        # still terminate and reap the child and return a safe snapshot —
+        # never leak the process and never raise.
+        fake = self._install_fake(
+            [
+                INIT_RESPONSE,
+                _read_response(_fixture_result("ratelimits-ok-plus.json")),
+            ]
+        )
+        roots = self._make_installation()
+        with mock.patch.object(
+            acq.BoundedLineReader,
+            "start",
+            side_effect=RuntimeError("cannot start new thread"),
+        ):
+            snapshot = self._collect(discovery_roots=[roots])
+        self.assertEqual(snapshot.status, "unavailable")
+        self.assertEqual(
+            [d.code for d in snapshot.diagnostics], ["source_unavailable"]
+        )
+        self.assertEqual(snapshot.windows, ())
+        self.assertEqual(fake.events, ["terminate"])
+        self.assertTrue(fake.stdin.closed)
+        self.assertEqual(fake.written_messages(), [])  # no session ran
+        self._assert_no_output()
+
+    def test_reader_startup_failure_kills_stubborn_child(self) -> None:
+        fake = self._install_fake(
+            [
+                INIT_RESPONSE,
+                _read_response(_fixture_result("ratelimits-ok-plus.json")),
+            ],
+            stubborn=True,
+        )
+        roots = self._make_installation()
+        with mock.patch.object(
+            acq.BoundedLineReader,
+            "start",
+            side_effect=RuntimeError("cannot start new thread"),
+        ):
+            snapshot = self._collect(discovery_roots=[roots])
+        self.assertEqual(snapshot.status, "unavailable")
         self.assertEqual(fake.events, ["terminate", "kill"])
         self.assertTrue(fake.stdin.closed)
 

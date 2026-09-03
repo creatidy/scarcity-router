@@ -1,7 +1,6 @@
 {
   "rateLimits": {
     "limitId": "codex",
-    "limitName": null,
     "primary": {
       "usedPercent": 6,
       "windowDurationMins": 300,
@@ -12,19 +11,21 @@
       "windowDurationMins": 10080,
       "resetsAt": 1788748064
     },
-    "credits": {
-      "hasCredits": true,
-      "unlimited": false,
-      "balance": 1000
-    },
-    "individualLimit": {
-      "limit": 100,
-      "enforcementMode": "HARD_CAP"
-    },
-    "spendControlReached": false,
     "planType": "pro",
     "rateLimitReachedType": null
   },
-  "rateLimitsByLimitId": null,
+  "rateLimitsByLimitId": {
+    "gpt-reserve": {
+      "limitId": "gpt-reserve",
+      "primary": {
+        "usedPercent": 100,
+        "windowDurationMins": 300,
+        "resetsAt": 1788306212
+      },
+      "secondary": null,
+      "planType": null,
+      "rateLimitReachedType": null
+    }
+  },
   "rateLimitResetCredits": null
 }

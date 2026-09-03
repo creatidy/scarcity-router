@@ -22,15 +22,19 @@ Security contract (docs/security.md):
   exceptions, diagnostics or snapshots;
 - stdout is read only through a bounded reader: per-line and total byte
   budgets, strict UTF-8 and strict JSON decoding that rejects duplicate
-  object keys at every nesting depth and non-standard constants such as
-  NaN/Infinity, so each protocol message has exactly one interpretation;
-  budget and decoding violations surface as safe statuses, never as raw
-  content in exceptions;
+  object keys at every nesting depth and non-finite numbers (literal
+  NaN/Infinity constants and non-finite exponent results such as
+  ``1e10000``), with decoder recursion failures on adversarially nested
+  payloads treated as drift; so each protocol message has exactly one
+  finite interpretation. Budget and decoding violations surface as safe
+  statuses, never as raw content in exceptions;
 - requests are exactly three bounded writes (initialize, initialized
   notification, rate-limits read); there is no retry, no prompt and no other
   method call, so collection can never issue a model request;
-- every failure path terminates the child: stdin is closed, the process is
-  terminated (then killed if it refuses to exit) and the reader is joined;
+- every failure path terminates and reaps the child — including a reader
+  startup failure before the session begins: stdin is closed, the process
+  is terminated (then killed if it refuses to exit) and the reader is
+  joined;
 - binary discovery is read-only and bounded: it lists only the two evidenced
   VS Code extension roots, considers only ``openai.chatgpt-*`` directories,
   and validates the installation layout through the extension's own
@@ -66,6 +70,7 @@ credential-free, path-free messages.
 from __future__ import annotations
 
 import json
+import math
 import os
 import platform
 import queue
@@ -147,6 +152,19 @@ class _AmbiguousJson(ValueError):
 def _reject_json_constant(_name: str) -> object:
     """``json.loads`` ``parse_constant`` hook: reject NaN/Infinity."""
     raise _AmbiguousJson()
+
+
+def _finite_float(text: str) -> float:
+    """``json.loads`` ``parse_float`` hook: reject non-finite results.
+
+    Standard JSON numeric syntax such as ``1e10000`` parses to ``inf`` in
+    Python; a non-finite quantity is not the validated protocol and must
+    fail closed exactly like the literal NaN/Infinity constants.
+    """
+    value = float(text)
+    if not math.isfinite(value):
+        raise _AmbiguousJson()
+    return value
 
 
 def _object_without_duplicate_keys(
@@ -332,6 +350,7 @@ class BoundedLineReader:
     _max_total_bytes: int
     _queue: "queue.Queue[tuple[str, bytes | None]]"
     _thread: threading.Thread
+    _started: bool
 
     def __init__(
         self,
@@ -347,9 +366,11 @@ class BoundedLineReader:
         self._thread = threading.Thread(
             target=self._loop, daemon=True, name="codex-app-server-stdout"
         )
+        self._started = False
 
     def start(self) -> None:
         self._thread.start()
+        self._started = True
 
     def get(self, timeout: float) -> tuple[str, bytes | None]:
         """Fetch the next reader event, blocking up to ``timeout`` seconds.
@@ -359,7 +380,9 @@ class BoundedLineReader:
         return self._queue.get(timeout=timeout)
 
     def join(self, timeout: float) -> None:
-        self._thread.join(timeout=timeout)
+        """Join the reader thread if it was ever started; never raises."""
+        if self._started:
+            self._thread.join(timeout=timeout)
 
     def _put(self, kind: str, chunk: bytes | None) -> None:
         self._queue.put((kind, chunk))
@@ -500,9 +523,11 @@ def _next_message(
     ``("eof", None)``, ``("failed", None)``, ``("oversized", None)`` or
     ``("malformed", None)``. Blank separator lines are tolerated and
     skipped; every other line must decode as strict UTF-8 JSON with no
-    duplicate object keys at any nesting depth and no non-standard
-    constants (NaN/Infinity), so one deliberate interpretation exists per
-    message.
+    duplicate object keys at any nesting depth and no non-finite numbers
+    (literal NaN/Infinity constants and non-finite exponent results such as
+    ``1e10000``), so one deliberate finite interpretation exists per
+    message. Decoder recursion failures on adversarially nested payloads
+    are protocol drift, not crashes.
     """
     while True:
         remaining = deadline - clock()
@@ -526,9 +551,13 @@ def _next_message(
                 text,
                 object_pairs_hook=_object_without_duplicate_keys,
                 parse_constant=_reject_json_constant,
+                parse_float=_finite_float,
             )
-        except ValueError:
-            # Covers JSONDecodeError, duplicate keys and NaN/Infinity.
+        except (ValueError, RecursionError):
+            # Covers JSONDecodeError, duplicate keys, NaN/Infinity and
+            # non-finite exponents (all ValueError), and adversarially
+            # deep nesting (RecursionError). Narrow by design: nothing
+            # else is swallowed.
             return "malformed", None
 
 
@@ -672,7 +701,15 @@ def collect_openai_codex_capacity(
         max_line_bytes=MAX_LINE_BYTES,
         max_total_bytes=MAX_TOTAL_BYTES,
     )
-    reader.start()
+    try:
+        reader.start()
+    except RuntimeError:
+        # Reader startup failed (for example the thread could not be
+        # started): an operational transport failure, not telemetry. The
+        # child is still terminated and reaped by the explicit shutdown —
+        # it must never leak because the session never began.
+        _shutdown(proc, reader)
+        return _snapshot("unavailable", "source_unavailable", retrieved_at)
     try:
         return _run_session(
             proc,

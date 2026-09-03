@@ -114,23 +114,29 @@ App-server wire facts (structure-only probes; no model prompt issued):
 Protocol schema facts (read-only serde string-table inspection of the
 installed codex binary; structure only, no message text):
 
-- the rate-limit result is the protocol's `RateLimitSnapshot` with **nine**
-  members: `limitId`, `limitName`, `primary`, `secondary`, `credits`,
+- the `account/rateLimits/read` result is the protocol's
+  `GetAccountRateLimitsResponse` envelope with the members `rateLimits`,
+  `rateLimitsByLimitId` (additional metered buckets keyed by limit id) and
+  `rateLimitResetCredits` (evidenced `ResetCreditStatus`: available /
+  redeeming);
+- `rateLimits` is the protocol's `RateLimitSnapshot` with **nine** members:
+  `limitId`, `limitName`, `primary`, `secondary`, `credits`,
   `individualLimit`, `spendControlReached`, `planType`,
   `rateLimitReachedType` (matches the extension's view model and the PoC
   subset; `RateLimitWindow` has the three PoC members
   `usedPercent`/`windowDurationMins`/`resetsAt`);
-- `credits`, `individualLimit` and `spendControlReached` are optional
-  non-window metadata members — object- or null-valued — distinct from the
-  two window slots;
+- `credits` is the evidenced `CreditsSnapshot` (`hasCredits`, `unlimited`,
+  `balance`) and `individualLimit` a spend-control limit object; both are
+  non-window metadata, while `spendControlReached` is a **boolean
+  spend-control blocker**;
 - the plan-type enum members observed in the binary string tables are
   `free`, `go`, `plus`, `pro`, `prolite`, `team`, `edu`, `edu_pro`,
   `enterprise`, `ent26`, `enterprise_cbp_automation`,
   `enterprise_cbp_usage_based`, `self_serve_business_prolite`,
   `self_serve_business_usage_based`, `run` (snake_case; the PoC observed
-  `plus` on the wire). Multi-word members are omitted from the adapter's
-  plan allowlist because the v1 safe-ID grammar cannot represent the
-  evidenced snake_case form and a camelCase wire form is unconfirmed;
+  `plus` on the wire). The v1 safe-ID grammar permits underscores, so every
+  evidenced member is preserved verbatim in the adapter's plan allowlist;
+  only genuinely unknown or unsafe text is omitted;
 - `rateLimitReachedType` members observed: `rate_limit_reached`,
   `workspace_member_credits_depleted`,
   `workspace_owner_usage_limit_reached`,

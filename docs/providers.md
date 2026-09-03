@@ -51,19 +51,30 @@ supported Codex installation, a bounded supervised `codex app-server`
 subprocess with discarded stderr, the proven
 initialize/initialized/`account/rateLimits/read` exchange with responses
 matched by request identity and message structure (never timing), bounded
-line/total output budgets, ambiguity-safe JSONL decoding (duplicate keys
-and NaN/Infinity rejected), and safe failure mapping to the v1 statuses.
-The parser validates the complete evidenced snapshot shape (U-010):
-`primary`/`secondary` are the only window slots and are classified by
-validated `windowDurationMins`, never slot position; `credits`,
-`individualLimit` and `spendControlReached` are tolerated non-window
-metadata; additive scalar members are tolerated while additive structured
-members under unknown keys fail closed; `limitId` must be the evidenced
-`"codex"` identity; a snapshot missing either expected window kind
-degrades to `unknown` with its validated partial windows; duplicate known
-periods fail closed; a non-null `rateLimitReachedType` (backend exhaustion)
-degrades to `unknown` with percentage pairs withheld; plan labels accept
-only validated enum members that satisfy the v1 safe-ID grammar.
+line/total output budgets, ambiguity-safe JSONL decoding (duplicate keys,
+NaN/Infinity constants, non-finite exponents such as `1e10000` and
+adversarial deep nesting all rejected as drift), bounded startup/session
+timeouts, and terminate→(bounded wait)→kill cleanup on every path —
+including a reader startup failure before the session begins, so the child
+never leaks.
+The parser validates the complete evidenced response envelope (U-010):
+the `GetAccountRateLimitsResponse` members `rateLimits` (required
+nine-member snapshot), `rateLimitsByLimitId` (additional metered buckets)
+and `rateLimitResetCredits` (opaque metadata); `primary`/`secondary` are
+the only window slots and are classified by validated `windowDurationMins`,
+never slot position; `credits` and `individualLimit` are tolerated
+non-window metadata; additive scalar members are tolerated while additive
+structured members under unknown keys fail closed; `limitId` must be the
+evidenced `"codex"` identity; a snapshot missing either expected window
+kind degrades to `unknown` with its validated partial windows; duplicate
+known periods fail closed. Three backend blockers never yield a healthy
+snapshot: a non-null `rateLimitReachedType`, `spendControlReached == true`,
+and an exhausted additional `rateLimitsByLimitId` bucket — each degrades to
+`unknown`, and reached/exhausted blockers additionally withhold the
+percentage pairs; a present-but-healthy additional bucket also degrades to
+`unknown` with its validated pairs. Plan labels accept every validated enum
+member the v1 safe-ID grammar permits as-is (underscores included, e.g.
+`edu_pro`, `enterprise_cbp_automation`), verbatim and never rewritten.
 
 Supported discovery (U-001, evidence in `docs/poc-evidence.md`):
 `openai.chatgpt-*` extension directories under `~/.vscode/extensions` or
@@ -82,10 +93,12 @@ unsupported and unresolved (U-001 residual); error-response text is never
 parsed, so protocol error responses map to `unknown` until failure shapes
 are captured as evidence; the selected binary path and versions are
 validated but not surfaced, because v1 has no field for them (future
-`doctor`/`status` work reports them); the reached-enum and multi-word plan
-value wire casing is unconfirmed (snake_case is evidenced; camelCase is
-tolerated for reached, omitted for plans); live CLI/status integration is
-not implemented, and the automated suite contains no live-account test —
+`doctor`/`status` work reports them); the reached-enum wire casing is
+unconfirmed (snake_case is evidenced from string tables; camelCase is
+tolerated); credit-state and reset-credit semantics
+(`credits`/`individualLimit`/`rateLimitResetCredits`) are not interpreted
+beyond blocker signals (documented residual); live CLI/status integration
+is not implemented, and the automated suite contains no live-account test —
 all transport tests use synthetic JSONL process fakes and fixtures under
 `tests/fixtures/openai-codex-appserver/`.
 

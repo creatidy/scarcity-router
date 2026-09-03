@@ -293,20 +293,24 @@ direction was chosen. Dates use UTC.
 
 ### U-010 — Codex rate-limit snapshot semantics under v1
 
-- **Status:** Resolved, 2026-09-03
+- **Status:** Resolved, 2026-09-03 (updated same day after schema review)
 - **Decision:** The OpenAI adapter validates the complete evidenced
-  `RateLimitSnapshot` shape and normalizes it under the existing v1 contract
-  as follows:
-  - **Membership.** The snapshot has the nine evidenced members
-    (`limitId`, `limitName`, `primary`, `secondary`, `credits`,
-    `individualLimit`, `spendControlReached`, `planType`,
-    `rateLimitReachedType`). `primary`/`secondary` are the only window
-    slots; `credits`, `individualLimit` and `spendControlReached` are
-    known non-window metadata (absent/null/boolean/object tolerated,
-    never interpreted or surfaced); additive scalar members are tolerated;
-    an additive *structured* member under an unknown key fails closed to
-    `schema_changed` because it may carry an uninterpretable constraining
-    window.
+  `GetAccountRateLimitsResponse` envelope and normalizes it under the
+  existing v1 contract as follows:
+  - **Envelope.** The result carries the evidenced members `rateLimits`,
+    `rateLimitsByLimitId` and `rateLimitResetCredits`. `rateLimits` is
+    required and must be the nine-member snapshot (`limitId`, `limitName`,
+    `primary`, `secondary`, `credits`, `individualLimit`,
+    `spendControlReached`, `planType`, `rateLimitReachedType`). Additive
+    scalar members are tolerated at both levels; additive *structured*
+    members under unknown keys fail closed to `schema_changed` because they
+    may carry uninterpretable constraining data.
+  - **Membership.** `primary`/`secondary` are the only window slots;
+    `credits` and `individualLimit` are known non-window metadata
+    (absent/null/object tolerated, never interpreted or surfaced —
+    credit-state semantics are a residual, not guessed);
+    `rateLimitResetCredits` (evidenced `ResetCreditStatus`:
+    available/redeeming) is opaque metadata with no v1 representation.
   - **Identity.** `limitId` must be exactly the evidenced quota identity
     `"codex"`; anything else is `schema_changed`, never healthy.
   - **Coverage.** A snapshot missing either expected window kind
@@ -314,33 +318,40 @@ direction was chosen. Dates use UTC.
     validated partial windows preserved (`telemetry_unknown`); two slot
     windows sharing one known period are `schema_changed`. An absent
     window is never synthesized and never reported as healthy emptiness.
-  - **Reached state.** A non-null `rateLimitReachedType` (evidenced enum
+  - **Backend blockers.** Three evidenced blocker classes never yield a
+    healthy snapshot: a non-null `rateLimitReachedType` (evidenced enum
     members `rate_limit_reached`, `workspace_member_credits_depleted`,
     `workspace_owner_usage_limit_reached`,
     `workspace_member_usage_limit_reached`, casing unconfirmed, plus any
-    unknown non-null string) asserts backend exhaustion. v1 has no reached
-    field, so the honest representation is: `status: "unknown"` with
-    `telemetry_unknown`, windows preserved with identity/duration/reset
-    facts, and the percentage pairs withheld with per-window
-    `percentage_unknown` diagnostics — remaining capacity is never inferred
-    from percentages when the backend says the limit is reached. Known
-    exhaustion *without* a reached flag stays `ok` with the `(100, 0)`
-    pair.
-  - **Plan labels.** `plan` accepts only validated plan enum members that
-    satisfy the v1 safe-ID grammar as-is: `free`, `go`, `plus`, `pro`,
-    `prolite`, `team`, `edu`, `enterprise`, `ent26`, `run`. Multi-word
-    members (evidenced snake_case, e.g. `edu_pro`) are omitted because the
-    grammar cannot represent the evidenced wire form and the camelCase
-    form is unconfirmed; everything else is omitted, never leaked.
+    unknown non-null string); the boolean `spendControlReached == true`;
+    and an exhausted additional `rateLimitsByLimitId` bucket (its own
+    reached flag non-null or a window slot at `usedPercent == 100`). Each
+    degrades to `status: "unknown"` with `telemetry_unknown`; reached
+    flags and exhausted buckets additionally withhold the main windows'
+    percentage pairs (`percentage_unknown` per window) because remaining
+    capacity must not be inferred while a backend-enforced block exists.
+    A present-but-not-exhausted additional bucket also degrades to
+    `unknown` (v1 cannot represent capacity metered across buckets) while
+    keeping the main windows' validated pairs. Known exhaustion *without*
+    any blocker stays `ok` with the `(100, 0)` pair.
+  - **Plan labels.** `plan` accepts every validated plan enum member the
+    v1 safe-ID grammar permits as-is (underscores included): `free`, `go`,
+    `plus`, `pro`, `prolite`, `team`, `edu`, `edu_pro`, `enterprise`,
+    `ent26`, `enterprise_cbp_automation`, `enterprise_cbp_usage_based`,
+    `self_serve_business_prolite`, `self_serve_business_usage_based`,
+    `run`. Values are preserved verbatim, never rewritten; everything else
+    is omitted, never leaked.
   - **Decoding.** JSONL decoding is ambiguity-safe: duplicate object keys
-    at any depth and non-standard constants (NaN/Infinity) are rejected as
-    protocol drift (`schema_changed`).
+    at any depth, literal NaN/Infinity constants, non-finite exponent
+    results such as `1e10000`, and adversarial deep nesting are all
+    rejected as protocol drift (`schema_changed`), without broad exception
+    swallowing.
 - **Evidence:** the 2026-09-01 PoC shape plus the 2026-09-03 reconnaissance
   in `docs/poc-evidence.md`, including read-only serde string-table
-  inspection of the installed codex binary (`RateLimitSnapshot` with nine
-  members, plan-type and reached-type enum members); no live capture was
-  possible (the read errored during reconnaissance), so the PoC shape
-  remains the validated success mapping.
+  inspection of the installed codex binary (`GetAccountRateLimitsResponse`,
+  `RateLimitSnapshot`, `CreditsSnapshot`, `RateLimitReachedType`, plan
+  enum); no live capture was possible (the read errored during
+  reconnaissance), so the PoC shape remains the validated success mapping.
 - **Boundary:** this is adapter-edge semantics under the frozen v1 contract;
   it adds no v1 fields or diagnostics and does not preempt U-003
   (freshness) or M2 (scarcity/selection).

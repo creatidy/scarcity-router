@@ -36,6 +36,7 @@ RESET_1788000000 = "2026-08-29T10:40:00.000Z"
 ALL_FIXTURES = (
     "ratelimits-ok-plus.json",
     "ratelimits-full-shape-ok.json",
+    "ratelimits-additional-bucket-exhausted.json",
     "ratelimits-slots-swapped.json",
     "ratelimits-unknown-duration.json",
     "ratelimits-exhausted-reached.json",
@@ -209,12 +210,26 @@ class FullShapeFixture(unittest.TestCase):
         self.assertEqual(snap.status, "ok")
         self.assertEqual(_codes(snap), set())
 
-    def test_boolean_spend_control_metadata_tolerated(self) -> None:
-        payload = _rate_limits(
-            dict(_BOTH_SLOTS), extra={"spendControlReached": True}
-        )
+    def test_boolean_spend_control_blocker_never_reports_healthy(self) -> None:
+        payload = _rate_limits(dict(_BOTH_SLOTS), extra={"spendControlReached": True})
         snap = parse_codex_rate_limits_result(payload, retrieved_at=RETRIEVED_AT)
-        self.assertEqual(snap.status, "ok")
+        self.assertEqual(snap.status, "unknown")
+        self.assertIn("telemetry_unknown", _codes(snap))
+        for window in snap.windows:
+            self.assertIsNone(window.used_percent)
+            self.assertIsNone(window.remaining_percent)
+        self.assertIn("percentage_unknown", _codes(snap))
+
+    def test_non_boolean_spend_control_value_is_drift(self) -> None:
+        for bad in ("yes", 1, ["blocked"], {"blocked": True}):
+            with self.subTest(bad=bad):
+                payload = _rate_limits(
+                    dict(_BOTH_SLOTS), extra={"spendControlReached": bad}
+                )
+                snap = parse_codex_rate_limits_result(
+                    payload, retrieved_at=RETRIEVED_AT
+                )
+                self.assertEqual(snap.status, "schema_changed", msg=repr(bad))
 
 
 class UnknownDurationFixture(unittest.TestCase):
@@ -671,6 +686,152 @@ class WindowStructureDrift(unittest.TestCase):
         self.assertEqual(window.duration_seconds, 10**60 * 60)
 
 
+class EnvelopeAndAdditionalBuckets(unittest.TestCase):
+    """GetAccountRateLimitsResponse envelope: buckets, credits, blockers."""
+
+    def _bucket(
+        self,
+        *,
+        used_percent: object = 5,
+        reached: object = None,
+    ) -> dict[str, object]:
+        return {
+            "limitId": "gpt-reserve",
+            "primary": _window(used_percent, 300),
+            "secondary": None,
+            "planType": None,
+            "rateLimitReachedType": reached,
+        }
+
+    def test_null_and_empty_bucket_maps_are_healthy(self) -> None:
+        bucket_maps: tuple[object, ...] = (None, {})
+        for buckets in bucket_maps:
+            with self.subTest(buckets=buckets):
+                payload: dict[str, object] = {
+                    "rateLimits": _rate_limits(dict(_BOTH_SLOTS))["rateLimits"],
+                    "rateLimitsByLimitId": buckets,
+                    "rateLimitResetCredits": None,
+                }
+                snap = parse_codex_rate_limits_result(
+                    payload, retrieved_at=RETRIEVED_AT
+                )
+                self.assertEqual(snap.status, "ok")
+                self.assertEqual(_codes(snap), set())
+
+    def test_present_bucket_degrades_to_unknown(self) -> None:
+        payload: dict[str, object] = {
+            "rateLimits": _rate_limits(dict(_BOTH_SLOTS))["rateLimits"],
+            "rateLimitsByLimitId": {"gpt-reserve": self._bucket()},
+        }
+        snap = parse_codex_rate_limits_result(payload, retrieved_at=RETRIEVED_AT)
+        self.assertEqual(snap.status, "unknown")
+        self.assertIn("telemetry_unknown", _codes(snap))
+        # The main quota windows remain validated facts with their pairs:
+        # overall capacity is unknown because more buckets are metered.
+        for window in snap.windows:
+            self.assertIsNotNone(window.used_percent)
+        self.assertNotIn("percentage_unknown", _codes(snap))
+
+    def test_exhausted_bucket_withholds_pairs(self) -> None:
+        for bucket in (
+            self._bucket(used_percent=100),
+            self._bucket(reached="rate_limit_reached"),
+        ):
+            with self.subTest(bucket=bucket):
+                payload: dict[str, object] = {
+                    "rateLimits": _rate_limits(dict(_BOTH_SLOTS))["rateLimits"],
+                    "rateLimitsByLimitId": {"gpt-reserve": bucket},
+                }
+                snap = parse_codex_rate_limits_result(
+                    payload, retrieved_at=RETRIEVED_AT
+                )
+                self.assertEqual(snap.status, "unknown")
+                for window in snap.windows:
+                    self.assertIsNone(window.used_percent)
+                    self.assertIsNone(window.remaining_percent)
+                self.assertIn("percentage_unknown", _codes(snap))
+                self.assertIn("telemetry_unknown", _codes(snap))
+
+    def test_exhausted_bucket_fixture(self) -> None:
+        snap = parse_codex_rate_limits_result(
+            _load("ratelimits-additional-bucket-exhausted.json"),
+            retrieved_at=RETRIEVED_AT,
+        )
+        self.assertEqual(snap.status, "unknown")
+        self.assertEqual(snap.plan, "pro")
+        for window in snap.windows:
+            self.assertIsNone(window.used_percent)
+        self.assertIn("telemetry_unknown", _codes(snap))
+        self.assertNotIn("gpt-reserve", _canonical_json(snap))
+
+    def test_non_object_bucket_value_is_drift(self) -> None:
+        payload: dict[str, object] = {
+            "rateLimits": _rate_limits(dict(_BOTH_SLOTS))["rateLimits"],
+            "rateLimitsByLimitId": {"gpt-reserve": "unlimited"},
+        }
+        snap = parse_codex_rate_limits_result(payload, retrieved_at=RETRIEVED_AT)
+        self.assertEqual(snap.status, "schema_changed")
+        self.assertEqual(snap.windows, ())
+
+    def test_non_mapping_bucket_container_is_drift(self) -> None:
+        bad_containers: tuple[object, ...] = ([], "codex", 5)
+        for buckets in bad_containers:
+            with self.subTest(buckets=buckets):
+                payload: dict[str, object] = {
+                    "rateLimits": _rate_limits(dict(_BOTH_SLOTS))["rateLimits"],
+                    "rateLimitsByLimitId": buckets,
+                }
+                snap = parse_codex_rate_limits_result(
+                    payload, retrieved_at=RETRIEVED_AT
+                )
+                self.assertEqual(snap.status, "schema_changed", msg=repr(buckets))
+
+    def test_reset_credits_tolerated_as_opaque_metadata(self) -> None:
+        payload: dict[str, object] = {
+            "rateLimits": _rate_limits(dict(_BOTH_SLOTS))["rateLimits"],
+            "rateLimitResetCredits": {"status": "available", "count": 2},
+        }
+        snap = parse_codex_rate_limits_result(payload, retrieved_at=RETRIEVED_AT)
+        self.assertEqual(snap.status, "ok")
+        self.assertNotIn("available", _canonical_json(snap))
+
+    def test_non_object_reset_credits_is_drift(self) -> None:
+        bad_values: tuple[object, ...] = ("available", 2, True, [])
+        for bad in bad_values:
+            with self.subTest(bad=bad):
+                payload: dict[str, object] = {
+                    "rateLimits": _rate_limits(dict(_BOTH_SLOTS))["rateLimits"],
+                    "rateLimitResetCredits": bad,
+                }
+                snap = parse_codex_rate_limits_result(
+                    payload, retrieved_at=RETRIEVED_AT
+                )
+                self.assertEqual(snap.status, "schema_changed", msg=repr(bad))
+
+    def test_additive_envelope_structured_member_is_drift(self) -> None:
+        for extra in (
+            {"newLimits": {"x": 1}},
+            {"extraList": [{"x": 1}]},
+        ):
+            with self.subTest(extra=extra):
+                payload: dict[str, object] = {
+                    "rateLimits": _rate_limits(dict(_BOTH_SLOTS))["rateLimits"],
+                    **extra,
+                }
+                snap = parse_codex_rate_limits_result(
+                    payload, retrieved_at=RETRIEVED_AT
+                )
+                self.assertEqual(snap.status, "schema_changed", msg=repr(extra))
+
+    def test_additive_envelope_scalar_member_tolerated(self) -> None:
+        payload: dict[str, object] = {
+            "rateLimits": _rate_limits(dict(_BOTH_SLOTS))["rateLimits"],
+            "newScalar": True,
+        }
+        snap = parse_codex_rate_limits_result(payload, retrieved_at=RETRIEVED_AT)
+        self.assertEqual(snap.status, "ok")
+
+
 class EnvelopeAndStructure(unittest.TestCase):
     def test_non_mapping_results_fail_closed(self) -> None:
         bad_payloads: tuple[object, ...] = ([], "result", None, 42, True)
@@ -710,8 +871,10 @@ class EnvelopeAndStructure(unittest.TestCase):
 class PlanNormalization(unittest.TestCase):
     def test_evidenced_plan_labels_are_retained(self) -> None:
         for plan in (
-            "free", "go", "plus", "pro", "prolite",
-            "team", "edu", "enterprise", "ent26", "run",
+            "free", "go", "plus", "pro", "prolite", "team", "edu", "edu_pro",
+            "enterprise", "ent26", "enterprise_cbp_automation",
+            "enterprise_cbp_usage_based", "self_serve_business_prolite",
+            "self_serve_business_usage_based", "run",
         ):
             with self.subTest(plan=plan):
                 payload = _rate_limits(dict(_BOTH_SLOTS), plan_type=plan)
@@ -723,7 +886,7 @@ class PlanNormalization(unittest.TestCase):
 
     def test_unevidenced_or_unsafe_labels_are_omitted(self) -> None:
         for level in (
-            "luna", "edu_pro", "selfServeBusinessProlite", "Plus", "plus!",
+            "luna", "edu-pro", "selfServeBusinessProlite", "Plus", "plus!",
             "", None,
         ):
             with self.subTest(level=level):
@@ -741,18 +904,18 @@ class PlanNormalization(unittest.TestCase):
         self.assertEqual(snap.status, "ok")
         self.assertIsNone(snap.plan)
 
-    def test_multi_word_snake_members_fail_the_safe_id_grammar(self) -> None:
-        # The evidenced multi-word plan members are snake_case on the wire;
-        # the v1 safe-ID grammar cannot represent them, so they are omitted
-        # rather than rewritten (documented residual in U-001/U-010).
+    def test_multi_word_evidenced_members_are_preserved_verbatim(self) -> None:
+        # The v1 safe-ID grammar permits underscores, so every evidenced
+        # snake_case member is preserved exactly as observed on the wire —
+        # never rewritten to camelCase and never dropped.
         for level in ("edu_pro", "enterprise_cbp_automation"):
             with self.subTest(level=level):
                 payload = _rate_limits(dict(_BOTH_SLOTS), plan_type=level)
                 snap = parse_codex_rate_limits_result(
                     payload, retrieved_at=RETRIEVED_AT
                 )
-                self.assertIsNone(snap.plan)
-                self.assertNotIn(level, _canonical_json(snap))
+                self.assertEqual(snap.plan, level)
+                self.assertIn(f'"plan": "{level}"', _canonical_json(snap))
 
 
 # ══════════════════════════ message classification ═══════════════════════════

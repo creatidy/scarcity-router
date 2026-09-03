@@ -20,13 +20,20 @@ replay a live reading.
   slots. The parser must classify semantics from validated
   `windowDurationMins`, not the slot names, derive
   `remaining = 100 - used`, and preserve the plan label `plus`.
-- `ratelimits-full-shape-ok.json` — the exact evidenced nine-member
-  snapshot shape with optional non-window metadata objects (`credits`,
-  `individualLimit`) present. Metadata must be tolerated, never
+- `ratelimits-full-shape-ok.json` — the exact evidenced
+  `GetAccountRateLimitsResponse` envelope: the nine-member snapshot with
+  optional non-window metadata objects (`credits`, `individualLimit`) and a
+  boolean `spendControlReached: false`, plus null `rateLimitsByLimitId`
+  and `rateLimitResetCredits`. Metadata must be tolerated, never
   interpreted, and never reach the output; the plan label `pro` is a
   validated enum member and is retained. The metadata inner members are
-  illustrative placeholders only — the adapter treats these members as
-  opaque.
+  illustrative placeholders for the evidenced `CreditsSnapshot` /
+  spend-control shapes — the adapter treats these members as opaque.
+- `ratelimits-additional-bucket-exhausted.json` — an additional metered
+  bucket under `rateLimitsByLimitId` with an exhausted window
+  (`usedPercent` 100). A backend-enforced blocker in another bucket must
+  never yield a healthy snapshot: the main windows' percentage pairs are
+  withheld and the snapshot degrades to `unknown`.
 - `ratelimits-slots-swapped.json` — the weekly window sits under `primary`
   and the five-hour window under `secondary`. Classification must follow
   the validated duration, never the slot position.
@@ -54,12 +61,16 @@ replay a live reading.
 ## Assertions expected of the collector
 
 - success yields all present windows; slot names carry no period semantics;
-- optional metadata members (`credits`, `individualLimit`,
-  `spendControlReached`) are tolerated and never surface in output;
+- the full envelope (`rateLimits`, `rateLimitsByLimitId`,
+  `rateLimitResetCredits`) validates conservatively, and optional metadata
+  members (`credits`, `individualLimit`, `rateLimitResetCredits`) are
+  tolerated and never surface in output;
 - missing window coverage, duplicate known periods and a non-`codex`
   `limitId` never yield a healthy snapshot;
-- a non-null backend reached state degrades to `unknown` with percentage
-  pairs withheld; known exhaustion without it stays `ok` as `(100, 0)`;
+- backend blockers — a non-null `rateLimitReachedType`,
+  `spendControlReached: true`, or an exhausted additional bucket — degrade
+  to `unknown` with percentage pairs withheld; known exhaustion without a
+  blocker stays `ok` as `(100, 0)`;
 - unknown / missing values remain unknown, never defaulted to 0 or 100;
 - schema change maps to `schema_changed` and no synthesized windows;
 - no credential- or authorization-shaped string, subprocess output or local
