@@ -14,5 +14,7 @@
       }
     ],
     "planTier": "plus"
-  }
+  },
+  "rateLimitsByLimitId": null,
+  "rateLimitResetCredits": null
 }

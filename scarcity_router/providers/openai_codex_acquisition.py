@@ -101,7 +101,7 @@ _EXTENSION_PREFIX = "openai.chatgpt-"
 _CODEX_PACKAGE_NAME = "codex-package.json"
 _REQUIRED_LAYOUT_VERSION = 1
 _REQUIRED_VARIANT = "codex"
-_MAX_PACKAGE_BYTES = 64 * 1024
+MAX_PACKAGE_BYTES = 64 * 1024
 
 # Evidenced platform directory under the extension's ``bin/``. linux-x86_64
 # is directly evidenced (PoC environment); the other entries are structural
@@ -256,17 +256,22 @@ def _read_validated_package(
 ) -> dict[str, object] | None:
     """Read and validate ``codex-package.json`` beside the binary.
 
-    Bounded read, strict UTF-8, strict JSON with duplicate-key rejection,
-    and the evidenced layout contract: integer ``layoutVersion == 1``,
-    string ``variant == "codex"`` and a non-empty string ``version``. Any
-    failure makes this candidate unusable (``None``).
+    Bounded read; strict UTF-8; strict JSON with duplicate-key rejection,
+    non-finite-number rejection (literal NaN/Infinity constants and
+    non-finite exponent results) and recursion-safe decoding, exactly like
+    the JSONL transport; and the evidenced layout contract: integer
+    ``layoutVersion == 1``, string ``variant == "codex"`` and a non-empty
+    string ``version``. Any failure — including an adversarially nested or
+    malformed document below the byte limit — makes this candidate
+    unusable (``None``), so discovery reports ``unsupported_installation``
+    instead of crashing or trusting an ambiguous layout.
     """
     try:
         with (binary_dir / _CODEX_PACKAGE_NAME).open("rb") as handle:
-            raw = handle.read(_MAX_PACKAGE_BYTES + 1)
+            raw = handle.read(MAX_PACKAGE_BYTES + 1)
     except OSError:
         return None
-    if len(raw) > _MAX_PACKAGE_BYTES:
+    if len(raw) > MAX_PACKAGE_BYTES:
         return None
     try:
         document = _as_object_dict(
@@ -275,10 +280,12 @@ def _read_validated_package(
                 json.loads(
                     raw.decode("utf-8"),
                     object_pairs_hook=_object_without_duplicate_keys,
+                    parse_constant=_reject_json_constant,
+                    parse_float=_finite_float,
                 ),
             )
         )
-    except ValueError:
+    except (ValueError, RecursionError):
         return None
     if document is None:
         return None

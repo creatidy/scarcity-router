@@ -7,10 +7,14 @@ subprocess output and no local paths.
 
 Source of the shape: the successful PoC JSONL interaction recorded in
 `docs/poc-evidence.md` ("OpenAI/Codex subscription capacity") plus the
-2026-09-03 collector reconnaissance recorded in the same document (including
-the serde string-table schema facts). Each file below is the decoded
-JSON-RPC `result` object of one `account/rateLimits/read` response. Values
-are synthetic and chosen to exercise the required parsing paths rather than
+2026-09-03 collector reconnaissance recorded in the same document
+(including the serde string-table/generated-schema facts for tag
+`rust-v0.151.0-alpha.7.2`). Each file below is the decoded JSON-RPC
+`result` object of one `account/rateLimits/read` response — a complete
+`GetAccountRateLimitsResponse` envelope, since the exact tagged schema
+requires `rateLimits`, `rateLimitsByLimitId` and `rateLimitResetCredits`
+to be present (explicit null is a valid absent state). Values are
+synthetic and chosen to exercise the required parsing paths rather than
 replay a live reading.
 
 ## Files
@@ -20,20 +24,24 @@ replay a live reading.
   slots. The parser must classify semantics from validated
   `windowDurationMins`, not the slot names, derive
   `remaining = 100 - used`, and preserve the plan label `plus`.
-- `ratelimits-full-shape-ok.json` — the exact evidenced
-  `GetAccountRateLimitsResponse` envelope: the nine-member snapshot with
-  optional non-window metadata objects (`credits`, `individualLimit`) and a
-  boolean `spendControlReached: false`, plus null `rateLimitsByLimitId`
-  and `rateLimitResetCredits`. Metadata must be tolerated, never
-  interpreted, and never reach the output; the plan label `pro` is a
-  validated enum member and is retained. The metadata inner members are
-  illustrative placeholders for the evidenced `CreditsSnapshot` /
-  spend-control shapes — the adapter treats these members as opaque.
+- `ratelimits-full-shape-ok.json` — the exact evidenced envelope with all
+  three required members (null absent states) and the nine-member snapshot
+  with every typed member present (`credits: null`, `individualLimit:
+  null`, `spendControlReached: false`, `limitName: null`). Healthy.
+- `ratelimits-credits-present.json` — valid typed credit/spend/reset-credit
+  states (`CreditsSnapshot` with decimal-string `balance`,
+  `SpendControlLimitSnapshot` with `limit`/`used`/`remainingPercent`/
+  `resetsAt`, reset-credit summary with `availableCount`). Valid but
+  v1-unrepresentable: degrades to `unknown` with percentage pairs
+  withheld.
+- `ratelimits-spend-control-exhausted.json` — `individualLimit` at
+  `remainingPercent: 0` (also `used >= limit`): a backend blocker, never
+  healthy, pairs withheld.
+- `ratelimits-credits-malformed.json` — `credits.balance` as a JSON number
+  instead of the evidenced string-or-null: `schema_changed`.
 - `ratelimits-additional-bucket-exhausted.json` — an additional metered
-  bucket under `rateLimitsByLimitId` with an exhausted window
-  (`usedPercent` 100). A backend-enforced blocker in another bucket must
-  never yield a healthy snapshot: the main windows' percentage pairs are
-  withheld and the snapshot degrades to `unknown`.
+  bucket under `rateLimitsByLimitId` (key matching its `limitId`) with an
+  exhausted window (`usedPercent` 100): blocker, main pairs withheld.
 - `ratelimits-slots-swapped.json` — the weekly window sits under `primary`
   and the five-hour window under `secondary`. Classification must follow
   the validated duration, never the slot position.
@@ -61,16 +69,17 @@ replay a live reading.
 ## Assertions expected of the collector
 
 - success yields all present windows; slot names carry no period semantics;
-- the full envelope (`rateLimits`, `rateLimitsByLimitId`,
-  `rateLimitResetCredits`) validates conservatively, and optional metadata
-  members (`credits`, `individualLimit`, `rateLimitResetCredits`) are
-  tolerated and never surface in output;
+- the required envelope members must be present (missing is drift, explicit
+  null is a valid absent state) and typed credit/spend/reset members
+  validate strictly, never surfacing values in output;
 - missing window coverage, duplicate known periods and a non-`codex`
   `limitId` never yield a healthy snapshot;
 - backend blockers — a non-null `rateLimitReachedType`,
-  `spendControlReached: true`, or an exhausted additional bucket — degrade
-  to `unknown` with percentage pairs withheld; known exhaustion without a
-  blocker stays `ok` as `(100, 0)`;
+  `spendControlReached: true`, an exhausted `individualLimit`, or a
+  blocked/exhausted additional bucket — degrade to `unknown` with
+  percentage pairs withheld; valid v1-unrepresentable credit/spend/reset
+  states do too; known exhaustion without any blocker stays `ok` as
+  `(100, 0)`;
 - unknown / missing values remain unknown, never defaulted to 0 or 100;
 - schema change maps to `schema_changed` and no synthesized windows;
 - no credential- or authorization-shaped string, subprocess output or local

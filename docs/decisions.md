@@ -293,65 +293,79 @@ direction was chosen. Dates use UTC.
 
 ### U-010 — Codex rate-limit snapshot semantics under v1
 
-- **Status:** Resolved, 2026-09-03 (updated same day after schema review)
+- **Status:** Resolved, 2026-09-03 (updated twice same day after schema
+  review against the exact tagged schema `rust-v0.151.0-alpha.7.2`)
 - **Decision:** The OpenAI adapter validates the complete evidenced
   `GetAccountRateLimitsResponse` envelope and normalizes it under the
   existing v1 contract as follows:
-  - **Envelope.** The result carries the evidenced members `rateLimits`,
-    `rateLimitsByLimitId` and `rateLimitResetCredits`. `rateLimits` is
-    required and must be the nine-member snapshot (`limitId`, `limitName`,
+  - **Envelope.** The exact tagged schema *requires* the members
+    `rateLimits`, `rateLimitsByLimitId` and `rateLimitResetCredits`: a
+    missing member is drift (`schema_changed`), an explicit `null` is a
+    valid absent state for the two optional-valued members. `rateLimits`
+    is required to be the nine-member snapshot (`limitId`, `limitName`,
     `primary`, `secondary`, `credits`, `individualLimit`,
-    `spendControlReached`, `planType`, `rateLimitReachedType`). Additive
-    scalar members are tolerated at both levels; additive *structured*
-    members under unknown keys fail closed to `schema_changed` because they
-    may carry uninterpretable constraining data.
-  - **Membership.** `primary`/`secondary` are the only window slots;
-    `credits` and `individualLimit` are known non-window metadata
-    (absent/null/object tolerated, never interpreted or surfaced —
-    credit-state semantics are a residual, not guessed);
-    `rateLimitResetCredits` (evidenced `ResetCreditStatus`:
-    available/redeeming) is opaque metadata with no v1 representation.
-  - **Identity.** `limitId` must be exactly the evidenced quota identity
-    `"codex"`; anything else is `schema_changed`, never healthy.
-  - **Coverage.** A snapshot missing either expected window kind
-    (five-hour or weekly) degrades to `status: "unknown"` with the
-    validated partial windows preserved (`telemetry_unknown`); two slot
-    windows sharing one known period are `schema_changed`. An absent
-    window is never synthesized and never reported as healthy emptiness.
-  - **Backend blockers.** Three evidenced blocker classes never yield a
-    healthy snapshot: a non-null `rateLimitReachedType` (evidenced enum
-    members `rate_limit_reached`, `workspace_member_credits_depleted`,
-    `workspace_owner_usage_limit_reached`,
-    `workspace_member_usage_limit_reached`, casing unconfirmed, plus any
-    unknown non-null string); the boolean `spendControlReached == true`;
-    and an exhausted additional `rateLimitsByLimitId` bucket (its own
-    reached flag non-null or a window slot at `usedPercent == 100`). Each
-    degrades to `status: "unknown"` with `telemetry_unknown`; reached
-    flags and exhausted buckets additionally withhold the main windows'
-    percentage pairs (`percentage_unknown` per window) because remaining
-    capacity must not be inferred while a backend-enforced block exists.
-    A present-but-not-exhausted additional bucket also degrades to
-    `unknown` (v1 cannot represent capacity metered across buckets) while
-    keeping the main windows' validated pairs. Known exhaustion *without*
-    any blocker stays `ok` with the `(100, 0)` pair.
-  - **Plan labels.** `plan` accepts every validated plan enum member the
-    v1 safe-ID grammar permits as-is (underscores included): `free`, `go`,
-    `plus`, `pro`, `prolite`, `team`, `edu`, `edu_pro`, `enterprise`,
-    `ent26`, `enterprise_cbp_automation`, `enterprise_cbp_usage_based`,
-    `self_serve_business_prolite`, `self_serve_business_usage_based`,
-    `run`. Values are preserved verbatim, never rewritten; everything else
-    is omitted, never leaked.
+    `spendControlReached`, `planType`, `rateLimitReachedType`); snapshot
+    members are option-typed, so missing and null both mean an absent
+    state there. Additive scalar members are tolerated at every level;
+    additive *structured* members under unknown keys fail closed to
+    `schema_changed`.
+  - **Typed states.** `credits` (evidenced `CreditsSnapshot`:
+    boolean `hasCredits`, boolean `unlimited`, `balance` as decimal
+    string-or-null), `individualLimit` (evidenced
+    `SpendControlLimitSnapshot`: `limit`, `used`, `remainingPercent`,
+    `resetsAt`) and `rateLimitResetCredits` (integer `availableCount` plus
+    an opaque `credits` collection) are type-validated: malformed shapes
+    are `schema_changed`. Valid present states have no v1 representation:
+    they degrade to `status: "unknown"` and withhold the percentage pairs
+    (`percentage_unknown` per window); an exhausted individual limit
+    (`remainingPercent == 0` or integer `used >= limit`) is a backend
+    blocker. Amounts are never interpreted or surfaced.
+  - **Identity.** The main `limitId` must be exactly the evidenced quota
+    identity `"codex"`; anything else is `schema_changed`, never healthy.
+  - **Coverage.** The main snapshot missing either expected window kind
+    (five-hour or weekly) degrades to `status: "unknown"` with validated
+    partial windows preserved (`telemetry_unknown`); two slot windows
+    sharing one known period are `schema_changed`. An absent window is
+    never synthesized and never reported as healthy emptiness.
+  - **Backend blockers.** Evidenced blocker classes never yield a healthy
+    snapshot: a non-null `rateLimitReachedType` (evidenced enum members
+    incl. `workspace_owner_credits_depleted`, casing unconfirmed, plus any
+    unknown non-null string); `spendControlReached == true`; an exhausted
+    `individualLimit`; and, in any additional bucket, its own reached
+    flag, spend-control blocker, exhausted individual limit, or a window
+    at `usedPercent == 100`. Each degrades to `status: "unknown"` with
+    `telemetry_unknown` and withholds the main percentage pairs. A
+    present-but-unblocked additional bucket also degrades to `unknown`
+    (v1 cannot represent capacity metered across buckets) while keeping
+    the main windows' validated pairs. Known exhaustion of the main quota
+    *without* any blocker stays `ok` with the `(100, 0)` pair.
+  - **Additional buckets.** Every `rateLimitsByLimitId` entry validates as
+    a full quota snapshot with the same membership, identity (the map key
+    must equal the bucket's `limitId` and must not shadow `"codex"`),
+    window, duplicate-period and nested credit/spend-control rules;
+    bucket window coverage is not enforced (a bucket may legitimately
+    carry one window).
+  - **Plan labels.** `plan` accepts every exact tagged `PlanType` member
+    the v1 safe-ID grammar permits as-is (underscores included): `free`,
+    `go`, `plus`, `pro`, `prolite`, `team`, `business`, `edu`, `edu_plus`,
+    `edu_pro`, `enterprise`, `ent26`, `enterprise_cbp_automation`,
+    `enterprise_cbp_usage_based`, `self_serve_business_prolite`,
+    `self_serve_business_usage_based`, `unknown`. Values are preserved
+    verbatim, never rewritten; everything else is omitted, never leaked.
+    `run` is not a member of the tagged enum and is not retained.
   - **Decoding.** JSONL decoding is ambiguity-safe: duplicate object keys
     at any depth, literal NaN/Infinity constants, non-finite exponent
     results such as `1e10000`, and adversarial deep nesting are all
     rejected as protocol drift (`schema_changed`), without broad exception
-    swallowing.
+    swallowing; hybrid messages carrying `method` together with
+    `result`/`error` are invalid drift, never silently ignored; the
+    installation package file is decoded under the same strict rules.
 - **Evidence:** the 2026-09-01 PoC shape plus the 2026-09-03 reconnaissance
   in `docs/poc-evidence.md`, including read-only serde string-table
-  inspection of the installed codex binary (`GetAccountRateLimitsResponse`,
-  `RateLimitSnapshot`, `CreditsSnapshot`, `RateLimitReachedType`, plan
-  enum); no live capture was possible (the read errored during
-  reconnaissance), so the PoC shape remains the validated success mapping.
+  inspection of the installed codex binary cross-checked against the
+  review-confirmed generated schema for `rust-v0.151.0-alpha.7.2`; no live
+  capture was possible (the read errored during reconnaissance), so the
+  PoC shape remains the validated success mapping.
 - **Boundary:** this is adapter-edge semantics under the frozen v1 contract;
   it adds no v1 fields or diagnostics and does not preempt U-003
   (freshness) or M2 (scarcity/selection).

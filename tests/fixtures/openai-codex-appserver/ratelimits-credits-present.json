@@ -12,12 +12,24 @@
       "windowDurationMins": 10080,
       "resetsAt": 1788748064
     },
-    "credits": null,
-    "individualLimit": null,
+    "credits": {
+      "hasCredits": true,
+      "unlimited": false,
+      "balance": "1000.00"
+    },
+    "individualLimit": {
+      "limit": 100,
+      "used": 40,
+      "remainingPercent": 60,
+      "resetsAt": 1788306212
+    },
     "spendControlReached": false,
     "planType": "pro",
     "rateLimitReachedType": null
   },
   "rateLimitsByLimitId": null,
-  "rateLimitResetCredits": null
+  "rateLimitResetCredits": {
+    "availableCount": 2,
+    "credits": []
+  }
 }

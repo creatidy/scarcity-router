@@ -112,40 +112,46 @@ App-server wire facts (structure-only probes; no model prompt issued):
   `usedPercent`.
 
 Protocol schema facts (read-only serde string-table inspection of the
-installed codex binary; structure only, no message text):
+installed codex binary at tag `rust-v0.151.0-alpha.7.2`, cross-checked
+against the review-confirmed generated schema; structure only, no message
+text):
 
 - the `account/rateLimits/read` result is the protocol's
-  `GetAccountRateLimitsResponse` envelope with the members `rateLimits`,
-  `rateLimitsByLimitId` (additional metered buckets keyed by limit id) and
-  `rateLimitResetCredits` (evidenced `ResetCreditStatus`: available /
-  redeeming);
+  `GetAccountRateLimitsResponse` envelope, and the exact tagged schema
+  **requires** the members `rateLimits`, `rateLimitsByLimitId` (additional
+  metered buckets keyed by limit id) and `rateLimitResetCredits`; the
+  shipped client itself errors when `rateLimitResetCredits` is absent;
 - `rateLimits` is the protocol's `RateLimitSnapshot` with **nine** members:
   `limitId`, `limitName`, `primary`, `secondary`, `credits`,
   `individualLimit`, `spendControlReached`, `planType`,
   `rateLimitReachedType` (matches the extension's view model and the PoC
   subset; `RateLimitWindow` has the three PoC members
   `usedPercent`/`windowDurationMins`/`resetsAt`);
-- `credits` is the evidenced `CreditsSnapshot` (`hasCredits`, `unlimited`,
-  `balance`) and `individualLimit` a spend-control limit object; both are
-  non-window metadata, while `spendControlReached` is a **boolean
-  spend-control blocker**;
-- the plan-type enum members observed in the binary string tables are
-  `free`, `go`, `plus`, `pro`, `prolite`, `team`, `edu`, `edu_pro`,
-  `enterprise`, `ent26`, `enterprise_cbp_automation`,
-  `enterprise_cbp_usage_based`, `self_serve_business_prolite`,
-  `self_serve_business_usage_based`, `run` (snake_case; the PoC observed
-  `plus` on the wire). The v1 safe-ID grammar permits underscores, so every
-  evidenced member is preserved verbatim in the adapter's plan allowlist;
-  only genuinely unknown or unsafe text is omitted;
+- `credits` is the evidenced `CreditsSnapshot`: boolean `hasCredits`,
+  boolean `unlimited` and `balance` as a **decimal string or null** (never
+  a JSON number); `individualLimit` is the evidenced
+  `SpendControlLimitSnapshot` with `limit`, `used`, `remainingPercent` and
+  `resetsAt`; `spendControlReached` is a **boolean spend-control
+  blocker**; `rateLimitResetCredits` is the reset-credit summary with
+  integer `availableCount` and an opaque `credits` collection;
+- the exact tagged `PlanType` enum retains (safe v1 grammar, verbatim):
+  `free`, `go`, `plus`, `pro`, `prolite`, `team`, `business`, `edu`,
+  `edu_plus`, `edu_pro`, `enterprise`, `ent26`,
+  `enterprise_cbp_automation`, `enterprise_cbp_usage_based`,
+  `self_serve_business_prolite`, `self_serve_business_usage_based` and
+  `unknown` (the string tables show the `KnownPlan` variant run plus the
+  `unknown` catch-all; `run` is **not** a plan member — its string
+  occurrence belongs to an unrelated process context);
 - `rateLimitReachedType` members observed: `rate_limit_reached`,
   `workspace_member_credits_depleted`,
+  `workspace_owner_credits_depleted`,
   `workspace_owner_usage_limit_reached`,
   `workspace_member_usage_limit_reached` (snake_case in the string tables;
   the app-server renames *fields* to camelCase, so the value casing is
   unconfirmed and the adapter accepts both);
-- these string tables evidence the *shape*; they are not a live capture,
-  and the adapter still fails closed on any shape outside this validated
-  mapping.
+- these string tables and the review-confirmed generated schema evidence
+  the *shape*; they are not a live capture, and the adapter still fails
+  closed on any shape outside this validated mapping.
 
 ### Z.ai Coding Plan capacity
 

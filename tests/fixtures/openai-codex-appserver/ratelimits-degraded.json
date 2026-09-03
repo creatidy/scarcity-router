@@ -12,5 +12,7 @@
     },
     "planType": "luna",
     "rateLimitReachedType": null
-  }
+  },
+  "rateLimitsByLimitId": null,
+  "rateLimitResetCredits": null
 }

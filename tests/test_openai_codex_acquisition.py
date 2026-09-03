@@ -298,6 +298,9 @@ class SuccessfulSession(_AcquisitionCase):
         for fixture in (
             "ratelimits-ok-plus.json",
             "ratelimits-full-shape-ok.json",
+            "ratelimits-credits-present.json",
+            "ratelimits-spend-control-exhausted.json",
+            "ratelimits-credits-malformed.json",
             "ratelimits-additional-bucket-exhausted.json",
             "ratelimits-slots-swapped.json",
             "ratelimits-unknown-duration.json",
@@ -396,6 +399,21 @@ class ResponseMatching(_AcquisitionCase):
                 INIT_RESPONSE,
                 b'{"id":"2","result":{"rateLimits":{"primary":{"usedPercent":1,"windowDurationMins":300}}}}\n',
             ]
+        )
+        roots = self._make_installation()
+        snapshot = self._collect(discovery_roots=[roots])
+        self.assertEqual(snapshot.status, "schema_changed")
+        self.assertEqual([d.code for d in snapshot.diagnostics], ["schema_changed"])
+
+    def test_hybrid_method_response_message_rejected_as_drift(self) -> None:
+        # A message carrying `method` together with `result` is neither a
+        # well-formed request nor a response: it must fail closed instead
+        # of being silently ignored ahead of the real matching response.
+        hybrid = (
+            b'{"id":2,"method":"account/rateLimits/updated","result":{"x":1}}\n'
+        )
+        _ = self._install_fake(
+            [INIT_RESPONSE, hybrid, _read_response(_fixture_result("ratelimits-ok-plus.json"))]
         )
         roots = self._make_installation()
         snapshot = self._collect(discovery_roots=[roots])
@@ -820,6 +838,52 @@ class Discovery(unittest.TestCase):
             )
         return root
 
+    def test_deeply_nested_package_maps_to_unsupported(self) -> None:
+        # Regression: an adversarially nested codex-package.json below the
+        # byte limit must make the candidate unusable (unsupported), never
+        # crash discovery with an uncaught RecursionError.
+        platform_dir = acq.platform_directory()
+        assert platform_dir is not None
+        root = self.tmp / "extensions"
+        extension = root / "openai.chatgpt-26.825.51511-linux-x64"
+        binary_dir = extension / "bin" / platform_dir
+        _ = binary_dir.mkdir(parents=True, exist_ok=True)
+        binary = binary_dir / "codex"
+        _ = binary.write_bytes(b"#!/bin/sh\nexit 0\n")
+        _ = binary.chmod(0o755)
+        package = (
+            '{"layoutVersion":1,"variant":"codex","version":"0.1","x":'
+            + "[" * 10_000 + "]" * 10_000 + "}"
+        )
+        self.assertLess(len(package), acq.MAX_PACKAGE_BYTES)
+        _ = (binary_dir / "codex-package.json").write_text(package, encoding="utf-8")
+
+        installation, outcome = acq.discover_codex_installation([root])
+        self.assertIsNone(installation)
+        self.assertEqual(outcome, "unsupported_installation")
+
+    def test_non_finite_package_numbers_map_to_unsupported(self) -> None:
+        platform_dir = acq.platform_directory()
+        assert platform_dir is not None
+        root = self.tmp / "extensions"
+        extension = root / "openai.chatgpt-26.825.51511-linux-x64"
+        binary_dir = extension / "bin" / platform_dir
+        _ = binary_dir.mkdir(parents=True, exist_ok=True)
+        binary = binary_dir / "codex"
+        _ = binary.write_bytes(b"#!/bin/sh\nexit 0\n")
+        _ = binary.chmod(0o755)
+        for package in (
+            '{"layoutVersion":1,"variant":"codex","version":"0.1","x":NaN}',
+            '{"layoutVersion":1,"variant":"codex","version":"0.1","x":1e10000}',
+        ):
+            with self.subTest(package=package[-12:]):
+                _ = (binary_dir / "codex-package.json").write_text(
+                    package, encoding="utf-8"
+                )
+                installation, outcome = acq.discover_codex_installation([root])
+                self.assertIsNone(installation)
+                self.assertEqual(outcome, "unsupported_installation")
+
     def test_found_reports_versions(self) -> None:
         root = self._make()
         installation, outcome = acq.discover_codex_installation([root])
@@ -912,6 +976,33 @@ class DiscoveryIntegration(_AcquisitionCase):
         self.assertEqual([d.code for d in snapshot.diagnostics], ["source_unavailable"])
         self.assertEqual(snapshot.windows, ())
         self.assertEqual(self.spawn_calls, [])
+        self._assert_no_output()
+
+    def test_deeply_nested_package_maps_collect_to_unsupported(self) -> None:
+        # The nested package makes the only installation unusable, so the
+        # collector reports unsupported without ever spawning a process.
+        platform_dir = acq.platform_directory()
+        assert platform_dir is not None
+        root = self.tmp / "extensions"
+        extension = root / "openai.chatgpt-26.825.51511-linux-x64"
+        binary_dir = extension / "bin" / platform_dir
+        _ = binary_dir.mkdir(parents=True, exist_ok=True)
+        binary = binary_dir / "codex"
+        _ = binary.write_bytes(b"#!/bin/sh\nexit 0\n")
+        _ = binary.chmod(0o755)
+        package = (
+            '{"layoutVersion":1,"variant":"codex","version":"0.1","x":'
+            + "[" * 10_000 + "]" * 10_000 + "}"
+        )
+        _ = (binary_dir / "codex-package.json").write_text(package, encoding="utf-8")
+
+        _ = self._install_fake(
+            [INIT_RESPONSE, _read_response(_fixture_result("ratelimits-ok-plus.json"))]
+        )
+        snapshot = self._collect(discovery_roots=[root])
+        self.assertEqual(snapshot.status, "unsupported")
+        self.assertEqual([d.code for d in snapshot.diagnostics], ["unsupported_source"])
+        self.assertEqual(self.spawn_calls, [])  # never spawned
         self._assert_no_output()
 
     def test_unsupported_installation_maps_to_unsupported_without_spawn(self) -> None:

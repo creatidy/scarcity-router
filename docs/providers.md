@@ -58,23 +58,27 @@ timeouts, and terminate→(bounded wait)→kill cleanup on every path —
 including a reader startup failure before the session begins, so the child
 never leaks.
 The parser validates the complete evidenced response envelope (U-010):
-the `GetAccountRateLimitsResponse` members `rateLimits` (required
-nine-member snapshot), `rateLimitsByLimitId` (additional metered buckets)
-and `rateLimitResetCredits` (opaque metadata); `primary`/`secondary` are
-the only window slots and are classified by validated `windowDurationMins`,
-never slot position; `credits` and `individualLimit` are tolerated
-non-window metadata; additive scalar members are tolerated while additive
-structured members under unknown keys fail closed; `limitId` must be the
-evidenced `"codex"` identity; a snapshot missing either expected window
-kind degrades to `unknown` with its validated partial windows; duplicate
-known periods fail closed. Three backend blockers never yield a healthy
-snapshot: a non-null `rateLimitReachedType`, `spendControlReached == true`,
-and an exhausted additional `rateLimitsByLimitId` bucket — each degrades to
-`unknown`, and reached/exhausted blockers additionally withhold the
-percentage pairs; a present-but-healthy additional bucket also degrades to
-`unknown` with its validated pairs. Plan labels accept every validated enum
-member the v1 safe-ID grammar permits as-is (underscores included, e.g.
-`edu_pro`, `enterprise_cbp_automation`), verbatim and never rewritten.
+the `GetAccountRateLimitsResponse` members `rateLimits`,
+`rateLimitsByLimitId` and `rateLimitResetCredits` are all *required* — a
+missing member is `schema_changed`, an explicit null is a valid absent
+state. `primary`/`secondary` are the only window slots and are classified
+by validated `windowDurationMins`, never slot position. Typed states are
+validated: `credits` (`CreditsSnapshot` with string-or-null `balance`),
+`individualLimit` (`SpendControlLimitSnapshot`: `limit`, `used`,
+`remainingPercent`, `resetsAt`) and `rateLimitResetCredits`
+(`availableCount` + opaque `credits`); malformed shapes fail closed, and
+valid present states — being v1-unrepresentable — degrade to `unknown`
+with percentage pairs withheld. Additional `rateLimitsByLimitId` buckets
+validate as full quota snapshots (map key must equal the bucket's
+`limitId`, never `"codex"`; same window/duplicate/nested rules). Backend
+blockers — a non-null `rateLimitReachedType`, `spendControlReached ==
+true`, an exhausted `individualLimit`, or a blocked/exhausted additional
+bucket — never yield a healthy snapshot and withhold the percentage pairs;
+a present-but-unblocked bucket degrades to `unknown` with its validated
+pairs. Plan labels accept every exact tagged `PlanType` member the v1
+safe-ID grammar permits as-is (underscores included, e.g. `edu_plus`,
+`enterprise_cbp_automation`, and the `unknown` catch-all), verbatim and
+never rewritten.
 
 Supported discovery (U-001, evidence in `docs/poc-evidence.md`):
 `openai.chatgpt-*` extension directories under `~/.vscode/extensions` or
@@ -95,9 +99,9 @@ are captured as evidence; the selected binary path and versions are
 validated but not surfaced, because v1 has no field for them (future
 `doctor`/`status` work reports them); the reached-enum wire casing is
 unconfirmed (snake_case is evidenced from string tables; camelCase is
-tolerated); credit-state and reset-credit semantics
-(`credits`/`individualLimit`/`rateLimitResetCredits`) are not interpreted
-beyond blocker signals (documented residual); live CLI/status integration
+tolerated); amount values inside credits/spend-control/reset-credit
+members are validated structurally but never interpreted (documented
+residual); live CLI/status integration
 is not implemented, and the automated suite contains no live-account test —
 all transport tests use synthetic JSONL process fakes and fixtures under
 `tests/fixtures/openai-codex-appserver/`.

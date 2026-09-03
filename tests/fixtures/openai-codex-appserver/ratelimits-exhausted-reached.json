@@ -13,5 +13,7 @@
     },
     "planType": "plus",
     "rateLimitReachedType": "rate_limit_reached"
-  }
+  },
+  "rateLimitsByLimitId": null,
+  "rateLimitResetCredits": null
 }
