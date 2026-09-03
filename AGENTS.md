@@ -15,6 +15,33 @@ Read the documentation map in `README.md` and the relevant authoritative
 document before making a change. If documents conflict, stop and resolve the
 conflict explicitly in `docs/decisions.md`; do not choose silently.
 
+## Repository workflow
+
+This project uses one issue → one feature branch → one PR, with `main` as the
+integration branch and human review as the merge gate. The invariants are
+authoritative and non-negotiable for agent work:
+
+- Never make a substantive file modification while checked out on `main`.
+  Establish the issue and create the feature branch before the first
+  task-related edit. `main` is only for integrating merged work.
+- One issue drives one feature branch and one PR. The PR targets `main`.
+- An agent leaves its PR open and unmerged. Do not merge your own PR; a human
+  is the merge gate.
+- Before a later task starts, any uncommitted or unmerged work from an earlier
+  related Scarcity Router task must be resolved through its own issue/branch/PR.
+  Do not bypass an unmet dependency by opening a clean secondary worktree.
+- A clean secondary worktree based on current `origin/main` is acceptable only
+  to preserve genuinely unrelated user work; it must not absorb unrelated
+  changes or sidestep an earlier task's work. Preserve user work untouched.
+- No force-push, no rewriting published history, no merging `main` into the
+  feature branch, and no synchronization merge commits.
+- Before completion verify that `origin/main..HEAD` contains only this task's
+  diff, that there is no unintended merge commit, and that the change touches
+  only the files the issue scopes.
+
+This discipline exists because leaving valuable uncommitted work on `main` that
+a dependent agent then had to reroute is a workflow failure to prevent.
+
 ## Current phase
 
 M0 is complete and M1 is the current milestone. Executable product code may now
@@ -125,6 +152,20 @@ Every change should include the smallest relevant verification. Provider work
 requires contract/fixture tests. Selection work requires deterministic policy
 tests and explanation assertions. Security-sensitive work requires negative
 tests for leakage and unsafe endpoints.
+
+Type-checking gate: Python changes require `basedpyright`; plain `pyright` is
+not an acceptable substitute. The tool is repo-managed and reproducible: it is
+declared as a development-only dependency in `pyproject.toml`, pinned in
+`uv.lock`, and invoked through the uv-managed environment (`uv run
+basedpyright`), never a global executable. Before committing or
+opening/updating a PR, run `make check` (full test suite + typecheck) and
+require exit 0. basedpyright runs its default `recommended` ruleset; any
+finding that makes that gate fail must be resolved by fixing the underlying
+typing or code structure. Do not weaken the gate by downgrading
+`typeCheckingMode`, adding `reportXxx = none` overrides, excluding product or
+test code, or baselining findings; a narrow suppression requires an explicit
+justification reported with the change. `make typecheck` runs the type
+checker alone and `make test` runs the test suite alone.
 
 ## Decision discipline
 

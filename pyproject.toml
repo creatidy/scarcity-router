@@ -1,0 +1,24 @@
+# Tooling-only configuration. There is intentionally no [project] table:
+# package name, release version and publication metadata are an unresolved
+# decision (U-008 in docs/decisions.md) and must not be chosen incidentally by
+# development tooling. basedpyright is the declared development-only gate,
+# resolved and pinned via uv.lock so every run uses the same tool version.
+
+[dependency-groups]
+dev = [
+    "basedpyright>=1.0.0",
+]
+
+[tool.basedpyright]
+# "recommended" is this project's selected mode; it is basedpyright's default.
+# It enables all diagnostic rules and reports less severe findings as
+# warnings, and the CLI's default policy fails on warnings as well, so every
+# reported diagnostic is blocking for this project. Do not replace it with
+# basic/standard/strict, add reportXxx = none overrides, or introduce
+# baselines; fix the underlying typing instead. Any narrow suppression needs
+# explicit justification.
+typeCheckingMode = "recommended"
+# Scope: maintained product and test code. Reconnaissance scripts in tools/
+# are outside this issue's cleanup scope but are not permanently excluded;
+# the gate definition stays future-compatible with including them.
+include = ["scarcity_router", "tests"]
