@@ -68,9 +68,16 @@ combinations must preserve safe metadata and yield unknown semantics rather
 than being guessed. Array position is not semantic.
 
 Status (M1): the response parser is implemented and fixture-tested in
-`scarcity_router/providers/zai.py` (`parse_zai_quota_response`); live
-acquisition (credential discovery and the authenticated request) is not
-implemented.
+`scarcity_router/providers/zai.py` (`parse_zai_quota_response`), and the
+secure production acquisition shell is implemented and unit-tested in
+`scarcity_router/providers/zai_acquisition.py`
+(`collect_zai_capacity`): strict discovery of the `zai-coding-plan` entry
+(`type == "api"`, non-empty string `key`, sent as-is), destination validation
+against the fixed endpoint before Authorization is attached, exactly one
+redirect-free bounded GET, and safe failure mapping to the v1 statuses.
+Live CLI/status integration is still not implemented, and the automated
+suite contains no live credential-dependent integration test; all transport
+tests use mocked fakes and synthetic secrets.
 
 Each observed window carries `nextResetTime`, a 13-digit epoch-**millisecond**
 value, and `percentage` is the **used** percentage (remaining is the complement).
@@ -82,9 +89,11 @@ The adapter needs fixtures for known windows, unknown windows, missing values,
 invalid percentages, authentication failure and schema change.
 
 The currently observed Kilo auth location is `~/.local/share/kilo/auth.json`.
-Discovery must read only the necessary provider entry, must never dump the file,
-and should support an explicit safe path/configuration later without creating a
-second long-lived token store.
+Discovery reads only the bounded auth file and selects only the
+`zai-coding-plan` entry with the evidenced `type == "api"`, non-empty `key`
+shape; it must never dump the file or return other entries. An explicit safe
+path parameter exists for deterministic tests and controlled local
+configuration; no second long-lived token store is created.
 
 ## Local Ollama
 
