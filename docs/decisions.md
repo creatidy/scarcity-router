@@ -151,6 +151,36 @@ direction was chosen. Dates use UTC.
 - Which installation sources and minimum versions are supported in M1?
 - How is the selected binary made visible without exposing unrelated paths?
 - Evidence needed: discovery experiments outside the tested VS Code extension.
+- **Status:** Narrowly resolved for M1 (2026-09-03); residuals below
+- **Decision:** Supported discovery is exactly the VS Code ChatGPT
+  extension layout: `openai.chatgpt-*` directories under
+  `~/.vscode/extensions` or `~/.vscode-server/extensions` (the
+  remote-server layout is the directly evidenced PoC environment), scanned
+  read-only, ordered deterministically by extension version descending. A
+  candidate is usable only when `bin/<platform>/codex` exists, is
+  executable, and a duplicate-key-rejecting `codex-package.json` beside it
+  validates `layoutVersion` 1 and `variant` `codex`. No installation maps
+  to `unavailable`; an unusable installation maps to `unsupported`. There
+  is no PATH search, no browser-profile inspection, no install/upgrade, no
+  user-configuration mutation, and no generic binary-search framework.
+- **Evidence:** 2026-09-03 reconnaissance recorded in
+  `docs/poc-evidence.md` ("2026-09-03 M1 Codex collector reconnaissance"):
+  the observed extension/package layout, `codex-cli 0.151.0-alpha.7.2`
+  matching the PoC, JSONL framing facts, and the absence of a PATH `codex`.
+- **Visibility:** the selected binary path, extension version and codex
+  version are validated in-process but deliberately not surfaced: the v1
+  capacity contract (U-002) has no field for them, and v1 diagnostics are a
+  frozen allowlist. Reporting the selected binary/version safely is
+  deferred to the M1 `doctor`/`status` work under a future decision.
+- **Residuals:** (a) minimum/maximum codex version policy — no version gate
+  is enforced; compatibility is pinned only by the package layout version;
+  (b) other installation sources (npm `@openai/codex`, standalone binaries,
+  other editors' extension roots) are unsupported until separately
+  evidenced; (c) platform directories other than the directly evidenced
+  `linux-x86_64` are structural analogues, not live-validated; (d) OpenAI
+  app-server failure wire shapes (auth required in particular) remain
+  uncaptured, so protocol error responses normalize to `unknown` rather
+  than a more specific status.
 
 ### U-002 — Exact first serialized capacity contract
 

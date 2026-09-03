@@ -63,6 +63,54 @@ Representative redacted response shape observed in the PoC:
 
 The example timestamps and percentages are historical evidence only.
 
+### 2026-09-03 M1 Codex collector reconnaissance
+
+Read-only reconnaissance at 2026-09-03 supporting the OpenAI collector and
+the narrow U-001 discovery decision. No credential value, account telemetry
+value or raw protocol message text is recorded here; probe output was
+filtered to structure (keys/types) before inspection.
+
+Discovery facts (Linux host):
+
+- the PoC binary is the VS Code **ChatGPT extension's** vendored codex:
+  `~/.vscode-server/extensions/openai.chatgpt-<ext-version>-<platform>/bin/<platform-dir>/codex`
+  (observed: extension `26.825.51511`, platform dir `linux-x86_64`,
+  static ELF reporting `codex-cli 0.151.0-alpha.7.2`, identical to the PoC
+  environment);
+- a sibling `codex-package.json` carries `layoutVersion: 1`,
+  `variant: "codex"`, `version: "<codex-cli version>"`, `target` and
+  `entrypoint` — a validated, stable layout discriminator for discovery;
+- `codex --version` is read-only and requires no authentication;
+- no `codex` exists on this host's PATH, so PATH-based discovery is not
+  evidenced.
+
+App-server wire facts (structure-only probes; no model prompt issued):
+
+- requests are accepted with JSON-RPC-style framing
+  (`{jsonrpc, id, method, params}`); **responses omit the `jsonrpc` echo**
+  and carry `id` plus exactly one of `result`/`error`; ids are integers;
+- the `initialize` response arrives as the first stdout line (no banner) and
+  its `result` is an object (`userAgent`, `codexHome`, platform facts —
+  deliberately not consumed by the collector);
+- the server may emit notifications (carrying `method`, optional `params`
+  and `emittedAtMs`) between responses; interleaving has no significance,
+  so responses must be matched by request identity;
+- `initialize` succeeded identically with empty capabilities,
+  `experimentalApi`, and the extension's full capability set; the
+  `notifications/initialized` notification form (and its absence) was
+  tolerated identically;
+- during reconnaissance `account/rateLimits/read` returned a well-formed
+  JSON-RPC **error** response (`code` `-32603`, free-text message not
+  recorded) in every capability variant, consistent with an account/auth
+  condition of the local app-server rather than a protocol defect; no
+  successful live `result` was re-captured, so the 2026-09-01 PoC
+  `rateLimits` shape above remains the validated success mapping, and
+  error-response text must not be classified by the collector (it maps to
+  `unknown` until failure shapes are captured);
+- the extension's own webview derives `remainingPercent = 100 - usedPercent`
+  from these responses, independently corroborating the used orientation of
+  `usedPercent`.
+
 ### Z.ai Coding Plan capacity
 
 PoC environment included Kilo 7.5.6. Kilo reported a `Z.AI Coding Plan`
@@ -222,8 +270,12 @@ fixtures, logs or documentation.
 
 - The OpenAI app-server fields and method will remain compatible with a future
   collector version.
-- A robust Codex binary discovery strategy can support installations beyond the
-  tested VS Code extension layout.
+- A robust Codex binary discovery strategy can support installations beyond
+  the tested VS Code extension layout. Narrowly resolved for M1 (U-001,
+  2026-09-03): `~/.vscode/extensions` and `~/.vscode-server/extensions`
+  `openai.chatgpt-*` installations with `codex-package.json` layout 1 are
+  supported; every other source and any minimum/maximum codex version policy
+  remain unvalidated.
 - Z.ai's `(unit, number)` mapping and endpoint schema will remain compatible.
   The 2026-09-01 reconnaissance confirms the current mapping (`3/5` five-hour,
   `6/1` weekly) and `nextResetTime` (epoch-ms) as currently observed, but it is
@@ -244,19 +296,25 @@ Assumptions must not be described as supported behavior in user-facing output.
 
 ## FUTURE EVIDENCE NEEDED
 
-- Minimal redacted raw fixture for a successful **OpenAI** response (the
-  **Z.ai** success and failure fixtures already exist under
-  `tests/fixtures/zai-coding-plan/`).
+- A minimal redacted raw fixture for a successful **OpenAI** response is now
+  derived from the PoC shape (`tests/fixtures/openai-codex-appserver/`);
+  a re-captured live success confirmation is still desirable because the
+  2026-09-03 probes could not complete a live read (see the reconnaissance
+  section).
 - Failure captures still needed for **OpenAI**: auth required, rate limit
-  reached, malformed JSON, missing windows and app-server protocol mismatch
-  (the **Z.ai** auth-failed, missing-window, unknown-unit and schema-changed
-  shapes already exist as fixtures).
+  reached, malformed JSON, missing windows and app-server protocol mismatch.
+  Fixture-based shapes for these exist (synthetic); live wire captures do
+  not (the **Z.ai** auth-failed, missing-window, unknown-unit and
+  schema-changed shapes already exist as fixtures).
 - A second-snapshot **Z.ai** check that `percentage` moves with consumption,
   fully confirming used-orientation.
 - Z.ai redirect behavior under an authorization-bearing response (the 2026-09-01
   reconnaissance observed no redirect; no cross-host redirect with Authorization
   was exercised).
-- Supported Codex binary discovery and compatibility matrix.
+- Supported Codex binary discovery and compatibility matrix: the VS Code
+  extension layout is now evidenced and implemented; discovery beyond those
+  roots (PATH/npm installs, other editors) and a codex version matrix
+  remain open under U-001.
 - Ollama health/model-inspection PoC, including effective context reporting.
 - Freshness/refresh behavior and latency measurements.
 - Security review of provider terms and any public redistribution implications.

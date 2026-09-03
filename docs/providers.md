@@ -38,8 +38,39 @@ Implementation requirements:
 - never fall back to browser-cookie scraping as an incidental convenience;
 - fail with a clear unsupported/schema status if protocol behavior changes.
 
-The PoC used a binary included with a VS Code ChatGPT extension, but production
-binary discovery order and minimum compatible version are unresolved.
+The PoC used a binary included with a VS Code ChatGPT extension; production
+binary discovery is narrowly resolved for M1 in `docs/decisions.md` (U-001),
+and the minimum compatible version remains unresolved there.
+
+Status (M1): the collector is implemented and fixture-tested in
+`scarcity_router/providers/openai_codex.py` (pure parser
+`parse_codex_rate_limits_result` and the JSONL message classifier) and
+`scarcity_router/providers/openai_codex_acquisition.py`
+(`collect_openai_codex_capacity`): deterministic read-only discovery of a
+supported Codex installation, a bounded supervised `codex app-server`
+subprocess with discarded stderr, the proven
+initialize/initialized/`account/rateLimits/read` exchange with responses
+matched by request identity and message structure (never timing), bounded
+line/total output budgets, and safe failure mapping to the v1 statuses.
+Supported discovery (U-001, evidence in `docs/poc-evidence.md`):
+`openai.chatgpt-*` extension directories under `~/.vscode/extensions` or
+`~/.vscode-server/extensions` (the remote-server layout is the directly
+evidenced PoC environment), highest extension version first, validated by an
+executable `bin/<platform>/codex` and a `codex-package.json` with
+`layoutVersion` 1 and `variant` `codex` (duplicate-key rejecting). No
+installation maps to `unavailable`; an installation whose layout cannot be
+validated maps to `unsupported`.
+
+Known compatibility limits: other installation sources (a `codex` on PATH,
+npm installs, other editors) and a minimum/maximum codex version policy are
+unsupported and unresolved (U-001 residual); error-response text is never
+parsed, so protocol error responses map to `unknown` until failure shapes
+are captured as evidence; the selected binary path and versions are
+validated but not surfaced, because v1 has no field for them (future
+`doctor`/`status` work reports them); live CLI/status integration is not
+implemented, and the automated suite contains no live-account test — all
+transport tests use synthetic JSONL process fakes and fixtures under
+`tests/fixtures/openai-codex-appserver/`.
 
 ## Z.ai Coding Plan
 
