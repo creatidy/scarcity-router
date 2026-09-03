@@ -16,6 +16,15 @@ Security contract (docs/security.md):
   Kilo auth file (default ``~/.local/share/kilo/auth.json``) with the
   evidenced shape ``type == "api"`` and a non-empty string ``key``; the value
   is sent as-is, never stripped, prefixed or reformatted;
+- credential selection never trusts JSON's last-key-wins overwrite behavior:
+  the auth document is parsed with a duplicate-rejecting object hook, so any
+  duplicate object key anywhere in the document (a repeated top-level
+  ``zai-coding-plan`` entry, or repeated ``type``/``key`` fields inside the
+  target entry) makes the whole credential source ambiguous and unusable;
+- a credential is transmitted only if it is safe to place in an HTTP header
+  byte-for-value (conservative printable-ASCII allowlist, see
+  ``_is_safe_authorization_value``); rejected values never reach the
+  transport, where the standard library could format them into an exception;
 - the destination is validated against the fixed endpoint policy (see
   ``is_approved_destination``) before the Authorization header is attached;
   arbitrary endpoint URLs are not exposed;
@@ -28,13 +37,13 @@ Security contract (docs/security.md):
   snapshot, and this module emits no stdout/stderr output.
 
 Expected operational conditions normalize to safe v1 snapshots
-(docs/capacity-model.md): unusable credential source and HTTP 401 map to
-``auth_required``; a received success response whose body cannot satisfy the
-validated contract maps to ``schema_changed``; connection/DNS/timeout failure
-maps to ``unavailable``; redirect rejection and other unevidenced HTTP
-failures map to ``unknown``. Programmer errors (for example an edited
-endpoint constant failing destination policy) raise ``RuntimeError`` instead
-of being disguised as telemetry failures.
+(docs/capacity-model.md): an unusable or ambiguous credential source and
+HTTP 401 map to ``auth_required``; a received success response whose body
+cannot satisfy the validated contract maps to ``schema_changed``;
+connection/DNS/timeout failure maps to ``unavailable``; redirect rejection
+and other unevidenced HTTP failures map to ``unknown``. Programmer errors
+(for example an edited endpoint constant failing destination policy) raise
+``RuntimeError`` instead of being disguised as telemetry failures.
 
 The quota-window semantics remain entirely in the pure parser; this module
 adds zero provider semantics of its own. The reconnaissance helper
@@ -87,8 +96,23 @@ class _DestinationPolicyError(RuntimeError):
     """
 
 
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    """Decline every redirect so no second request can ever be issued."""
+class _AmbiguousAuthDocument(ValueError):
+    """Raised when the auth JSON document contains duplicate object keys.
+
+    A duplicate key means the source credential document is ambiguous, and
+    selection must fail closed instead of trusting last-key-wins overwrite.
+    Raised only from the parsing hook and caught at the credential-source
+    boundary; its message never contains any document value.
+    """
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Redirect policy handler: decline every redirect.
+
+    ``redirect_request`` returning ``None`` makes the standard-library opener
+    surface the redirect status as an ``HTTPError`` instead of issuing a
+    second request, so Authorization can never be forwarded anywhere.
+    """
 
     @override
     def redirect_request(
@@ -137,6 +161,47 @@ def _ensure_approved_destination(url: str) -> None:
         )
 
 
+# Conservative safe HTTP-header-value allowlist: printable ASCII only
+# (space through tilde). This is stricter than the standard-library
+# transport's own checks: it rejects CR/LF/NUL, every other C0 control,
+# DEL, C1 controls and every value the latin-1 header encoding could not
+# represent, so no malformed credential can ever reach
+# ``http.client`` and be formatted into a transport exception. Ordinary
+# leading/trailing spaces are allowed and preserved; accepted values are
+# transmitted exactly as stored, never mutated.
+_PRINTABLE_ASCII_MIN = 0x20
+_PRINTABLE_ASCII_MAX = 0x7E
+
+
+def _is_safe_authorization_value(value: str) -> bool:
+    """Total check for safe byte-for-value HTTP header representation.
+
+    Examines character code points only; it never builds a message from the
+    value, so the check itself cannot leak the secret.
+    """
+    return all(
+        _PRINTABLE_ASCII_MIN <= ord(character) <= _PRINTABLE_ASCII_MAX
+        for character in value
+    )
+
+
+def _object_without_duplicate_keys(
+    pairs: list[tuple[str, object]],
+) -> dict[str, object]:
+    """JSON ``object_pairs_hook`` that refuses duplicate keys anywhere.
+
+    Applied to every object in the auth document, so a repeated top-level
+    provider entry or a repeated ``type``/``key`` field inside the target
+    entry both fail closed instead of depending on last-key-wins parsing.
+    """
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise _AmbiguousAuthDocument()
+        result[key] = value
+    return result
+
+
 def _build_authenticated_request(
     destination: str,
     credential: str,
@@ -151,16 +216,17 @@ def _build_authenticated_request(
     return request
 
 
-def _open_response(
+def open_response(
     request: urllib.request.Request,
     timeout: float,
 ) -> urllib.response.addinfourl:
     """Perform the one network interaction through a no-redirect opener.
 
-    Test seam: tests replace this function with a fake transport; no test
-    contacts the network.
+    The opener is built with the :class:`NoRedirect` handler so no redirect
+    is ever followed. Test seam: tests replace this function with a fake
+    transport; no test contacts the network.
     """
-    opener = urllib.request.build_opener(_NoRedirect())
+    opener = urllib.request.build_opener(NoRedirect())
     return cast(
         "urllib.response.addinfourl", opener.open(request, timeout=timeout)
     )
@@ -177,13 +243,14 @@ def _read_stored_credential(auth_file: Path) -> str | None:
     """Strictly discover the target provider credential, or ``None``.
 
     Reads the Kilo auth file with a hard size bound, decodes strictly as
-    UTF-8 and JSON, and selects only the exact ``zai-coding-plan`` entry. The
+    UTF-8 and JSON (rejecting duplicate object keys anywhere in the
+    document), and selects only the exact ``zai-coding-plan`` entry. The
     ``key`` value is inspected only after that entry is established, and
     unrelated provider entries are never read as candidates. The evidenced
-    shape is ``type == "api"`` with a non-empty string ``key``; any other
-    shape or any I/O/decoding failure fails safely to ``None``. The supported
-    layout is a JSON object keyed by provider ID, so duplicate target entries
-    cannot occur (duplicate JSON keys collapse deterministically); any other
+    shape is ``type == "api"`` with a non-empty string ``key`` that is safe
+    to place in an HTTP header byte-for-value; any other shape, any
+    ambiguity, or any I/O/decoding failure fails safely to ``None``. The
+    supported layout is a JSON object keyed by provider ID; any other
     layout fails closed instead of guessing.
     """
     try:
@@ -195,10 +262,17 @@ def _read_stored_credential(auth_file: Path) -> str | None:
         return None
     try:
         document = _as_object_dict(
-            cast("object", json.loads(raw.decode("utf-8")))
+            cast(
+                "object",
+                json.loads(
+                    raw.decode("utf-8"),
+                    object_pairs_hook=_object_without_duplicate_keys,
+                ),
+            )
         )
     except ValueError:
-        # Covers strict-UTF-8 UnicodeDecodeError and JSONDecodeError.
+        # Covers strict-UTF-8 UnicodeDecodeError, JSONDecodeError and the
+        # duplicate-key ambiguity error.
         return None
     if document is None:
         return None
@@ -209,6 +283,8 @@ def _read_stored_credential(auth_file: Path) -> str | None:
         return None
     key = entry.get(_CREDENTIAL_FIELD)
     if not isinstance(key, str) or not key:
+        return None
+    if not _is_safe_authorization_value(key):
         return None
     return key
 
@@ -242,11 +318,12 @@ def collect_zai_capacity(
     clock or freshness policy (U-003). ``auth_file`` defaults to the
     evidenced Kilo location and exists for deterministic tests and
     controlled local configuration. The credential path and value never
-    enter the returned snapshot; expected operational conditions normalize
-    to safe failure snapshots instead of leaking transport exceptions. An
-    invalid ``retrieved_at`` keeps failing through the typed
-    capacity-contract validation rather than being misreported as provider
-    telemetry.
+    enter the returned snapshot; an unusable or ambiguous credential, like
+    every other expected operational condition, normalizes to a safe
+    failure snapshot (and, for credential problems, to zero transport
+    calls) instead of leaking. An invalid ``retrieved_at`` keeps failing
+    through the typed capacity-contract validation rather than being
+    misreported as provider telemetry.
     """
     path = DEFAULT_KILO_AUTH_FILE if auth_file is None else auth_file
     credential = _read_stored_credential(path)
@@ -255,7 +332,7 @@ def collect_zai_capacity(
 
     request = _build_authenticated_request(ENDPOINT, credential)
     try:
-        response = _open_response(request, TIMEOUT_SECONDS)
+        response = open_response(request, TIMEOUT_SECONDS)
     except urllib.error.HTTPError as exc:
         # Inspected only via ``code``; the error body and message are never
         # read into output. 3xx arrives here because redirects are declined.

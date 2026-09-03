@@ -36,6 +36,36 @@ RETRIEVED_AT = "2026-09-01T22:49:51.000Z"
 SECRET = "TEST_ONLY_ZAI_SECRET_NEVER_REAL"
 SPACED_SECRET = "  TEST_ONLY_ZAI_SECRET_SENT_EXACTLY_AS_STORED  "
 OTHER_SECRET = "TEST_ONLY_UNRELATED_PROVIDER_SECRET_ALSO_FAKE"
+SECRET_A = "TEST_ONLY_ZAI_SECRET_A_FAKE"
+SECRET_B = "TEST_ONLY_ZAI_SECRET_B_FAKE"
+
+# Synthetic credentials that are unsafe as HTTP header values.
+CR_SECRET = "TEST_ONLY_CR\rSECRET"
+LF_SECRET = "TEST_ONLY_LF\nSECRET"
+CRLF_SECRET = "TEST_ONLY_CRLF\r\nSECRET"
+NUL_SECRET = "TEST_ONLY_NUL\x00SECRET"
+CONTROL_SECRET = "TEST_ONLY_CTRL\x1fSECRET"
+HTAB_SECRET = "TEST_ONLY_TAB\tSECRET"
+DEL_SECRET = "TEST_ONLY_DEL\x7fSECRET"
+NON_LATIN1_SECRET = "TEST_ONLY_NON_LATIN1_\u4f60_SECRET"
+
+# Every synthetic secret; the non-leak sweep asserts each is absent from
+# every scenario output.
+ALL_FAKE_SECRETS: tuple[str, ...] = (
+    SECRET,
+    SPACED_SECRET,
+    OTHER_SECRET,
+    SECRET_A,
+    SECRET_B,
+    CR_SECRET,
+    LF_SECRET,
+    CRLF_SECRET,
+    NUL_SECRET,
+    CONTROL_SECRET,
+    HTAB_SECRET,
+    DEL_SECRET,
+    NON_LATIN1_SECRET,
+)
 
 ENDPOINT = "https://api.z.ai/api/monitor/usage/quota/limit"
 FAKE_REDIRECT_TARGET = "https://redirect.example.test/steal"
@@ -146,7 +176,7 @@ class _AcquisitionCase(unittest.TestCase):
     def _install_opener(self, outcome: _FakeResponse | Exception) -> _FakeOpener:
         opener = _FakeOpener(outcome)
         self.opener = opener
-        patcher = mock.patch.object(zai_acquisition, "_open_response", opener)
+        patcher = mock.patch.object(zai_acquisition, "open_response", opener)
         _ = patcher.start()
         self.addCleanup(patcher.stop)
         return opener
@@ -304,23 +334,148 @@ class CredentialDiscovery(_AcquisitionCase):
         )
         self.assertEqual(snapshot.status, "auth_required")
 
-    def test_duplicate_target_keys_cannot_ambiguate_discovery(self) -> None:
-        # The supported layout is an object keyed by provider ID, so JSON's
-        # deterministic last-key-wins parsing makes ambiguity unrepresentable:
-        # exactly one entry survives, exactly one request is made, and the
-        # surviving raw value is sent as-is.
+
+class AmbiguousCredentialDocument(_AcquisitionCase):
+    """Duplicate JSON keys make the credential source ambiguous.
+
+    The parser must fail closed on any duplicate object key instead of
+    trusting last-key-wins overwrite behavior; neither candidate value may
+    reach the transport or any output.
+    """
+
+    def _assert_auth_required_without_request(
+        self, snapshot: CapacitySnapshot, *absent: str
+    ) -> None:
+        self.assertEqual(snapshot.status, "auth_required")
+        self.assertEqual(
+            [d.code for d in snapshot.diagnostics], ["auth_required"]
+        )
+        self.assertEqual(snapshot.windows, ())
+        self._assert_no_request()
+        self._assert_no_output()
+        text = _serialized(snapshot)
+        for secret in absent:
+            self.assertNotIn(secret, text)
+
+    def test_duplicate_top_level_target_fails_closed(self) -> None:
         duplicated = (
             b'{"zai-coding-plan": {"type": "api", "key": "'
-            + OTHER_SECRET.encode()
+            + SECRET_A.encode()
             + b'"}, "zai-coding-plan": {"type": "api", "key": "'
+            + SECRET_B.encode()
+            + b'"}}'
+        )
+        _ = self._install_opener(_FakeResponse(b"{}"))
+        snapshot = self._collect(self._write_auth(duplicated))
+        self._assert_auth_required_without_request(snapshot, SECRET_A, SECRET_B)
+
+    def test_duplicate_key_field_in_target_fails_closed(self) -> None:
+        duplicated = (
+            b'{"zai-coding-plan": {"type": "api", "key": "'
+            + SECRET_A.encode()
+            + b'", "key": "'
+            + SECRET_B.encode()
+            + b'"}}'
+        )
+        _ = self._install_opener(_FakeResponse(b"{}"))
+        snapshot = self._collect(self._write_auth(duplicated))
+        self._assert_auth_required_without_request(snapshot, SECRET_A, SECRET_B)
+
+    def test_duplicate_type_field_in_target_fails_closed(self) -> None:
+        duplicated = (
+            b'{"zai-coding-plan": {"type": "api", "type": "bearer", "key": "'
             + SECRET.encode()
             + b'"}}'
         )
         _ = self._install_opener(_FakeResponse(b"{}"))
-        _ = self._collect(self._write_auth(duplicated))
+        snapshot = self._collect(self._write_auth(duplicated))
+        self._assert_auth_required_without_request(snapshot, SECRET)
 
+    def test_duplicate_unrelated_provider_key_fails_closed(self) -> None:
+        # Documented conservative choice: the duplicate-rejecting hook is
+        # document-wide, so even a duplicate unrelated-provider key rejects
+        # the whole credential source rather than parsing selectively.
+        duplicated = (
+            b'{"openai-codex": {"type": "api", "key": "x"},'
+            + b' "openai-codex": {"type": "api", "key": "y"},'
+            + b' "zai-coding-plan": {"type": "api", "key": "'
+            + SECRET.encode()
+            + b'"}}'
+        )
+        _ = self._install_opener(_FakeResponse(b"{}"))
+        snapshot = self._collect(self._write_auth(duplicated))
+        self._assert_auth_required_without_request(snapshot, SECRET)
+
+    def test_document_without_duplicates_still_selects_target(self) -> None:
+        _ = self._install_opener(_FakeResponse(b"{}"))
+        snapshot = self._collect(self._write_auth(_valid_auth_payload()))
+        self.assertEqual(snapshot.status, "schema_changed")  # b"{}" body
         request, _ = self._single_request()
         self.assertEqual(request.get_header("Authorization"), SECRET)
+
+
+class UnsafeCredentialRejection(_AcquisitionCase):
+    """Credentials unsafe as HTTP header values never reach the transport.
+
+    The standard-library transport can format a malformed header value into
+    an exception; unsafe values are therefore rejected during credential
+    discovery, before any request object or transport exists.
+    """
+
+    def _assert_unsafe(self, secret: str) -> None:
+        _ = self._install_opener(_FakeResponse(b"{}"))
+        snapshot = self._collect(
+            self._write_auth({"zai-coding-plan": {"type": "api", "key": secret}})
+        )
+        self.assertEqual(snapshot.status, "auth_required")
+        self.assertEqual(
+            [d.code for d in snapshot.diagnostics], ["auth_required"]
+        )
+        self.assertEqual(snapshot.windows, ())
+        self._assert_no_request()
+        self._assert_no_output()
+        self.assertNotIn(secret, _serialized(snapshot))
+
+    def test_control_characters_rejected_before_transport(self) -> None:
+        for name, secret in (
+            ("CR", CR_SECRET),
+            ("LF", LF_SECRET),
+            ("CRLF", CRLF_SECRET),
+            ("NUL", NUL_SECRET),
+            ("control-1f", CONTROL_SECRET),
+            ("HTAB", HTAB_SECRET),
+            ("DEL", DEL_SECRET),
+        ):
+            with self.subTest(case=name):
+                self._refresh_capture()
+                self._assert_unsafe(secret)
+
+    def test_non_latin1_value_rejected_before_transport(self) -> None:
+        # The stdlib header transport encodes values as latin-1; a value it
+        # cannot encode must be refused before the transport can raise with
+        # the character embedded in its message.
+        self._assert_unsafe(NON_LATIN1_SECRET)
+
+    def test_printable_symbol_credential_transmitted_exactly(self) -> None:
+        symbol_secret = "TEST_ONLY_ABC-123+/=._~"
+        _ = self._install_opener(_FakeResponse(b"{}"))
+        _ = self._collect(
+            self._write_auth(
+                {"zai-coding-plan": {"type": "api", "key": symbol_secret}}
+            )
+        )
+        request, _ = self._single_request()
+        self.assertEqual(request.get_header("Authorization"), symbol_secret)
+
+    def test_spaced_credential_still_sent_byte_for_value(self) -> None:
+        _ = self._install_opener(_FakeResponse(b"{}"))
+        _ = self._collect(
+            self._write_auth(
+                {"zai-coding-plan": {"type": "api", "key": SPACED_SECRET}}
+            )
+        )
+        request, _ = self._single_request()
+        self.assertEqual(request.get_header("Authorization"), SPACED_SECRET)
 
 
 # ═══════════════════════ endpoint destination policy ═════════════════════════
@@ -538,6 +693,67 @@ class RedirectPolicy(_AcquisitionCase):
         self._assert_redirect(308)
 
 
+class _OpenerRecorder:
+    """Typed fake opener recording exactly one ``open`` call."""
+
+    sentinel: object
+    opened: list[tuple[urllib.request.Request, float]]
+
+    def __init__(self, sentinel: object) -> None:
+        self.sentinel = sentinel
+        self.opened = []
+
+    def open(self, request: urllib.request.Request, timeout: float) -> object:
+        self.opened.append((request, timeout))
+        return self.sentinel
+
+
+class RedirectMechanism(unittest.TestCase):
+    """The production redirect boundary itself, without any network I/O."""
+
+    def test_no_redirect_handler_declines_and_constructs_nothing(self) -> None:
+        handler = zai_acquisition.NoRedirect()
+        original_request = urllib.request.Request(ENDPOINT, method="GET")
+        body = io.BytesIO(b"")
+        headers = HTTPMessage()
+        for code in (301, 302, 303, 307, 308):
+            with (
+                self.subTest(code=code),
+                mock.patch.object(urllib.request, "Request") as request_factory,
+            ):
+                result = handler.redirect_request(
+                    original_request,
+                    body,
+                    code,
+                    "Redirect",
+                    headers,
+                    FAKE_REDIRECT_TARGET,
+                )
+                self.assertIsNone(result)
+                request_factory.assert_not_called()
+
+    def test_open_response_builds_no_redirect_opener_and_single_request(self) -> None:
+        request = urllib.request.Request(ENDPOINT, method="GET")
+        recorder = _OpenerRecorder(sentinel=object())
+
+        with mock.patch.object(
+            urllib.request, "build_opener", return_value=recorder
+        ) as build_opener:
+            returned = zai_acquisition.open_response(
+                request, zai_acquisition.TIMEOUT_SECONDS
+            )
+
+        self.assertIs(returned, recorder.sentinel)
+        build_opener.assert_called_once()
+        handler_argument = cast("object", build_opener.call_args.args[0])
+        self.assertIsInstance(handler_argument, zai_acquisition.NoRedirect)
+        # Exactly one call, with the original authenticated request object.
+        self.assertEqual(
+            recorder.opened, [(request, zai_acquisition.TIMEOUT_SECONDS)]
+        )
+        self.assertIs(recorder.opened[0][0], request)
+
+
 # ═══════════════════════ response handling and mapping ═══════════════════════
 
 
@@ -699,6 +915,34 @@ class SecretNonLeak(_AcquisitionCase):
             {"openai-codex": {"type": "api", "key": OTHER_SECRET}}
         )
         absent = self.tmp / "absent.json"
+
+        def auth_with(key_value: str) -> Path:
+            return self._write_auth(
+                {"zai-coding-plan": {"type": "api", "key": key_value}}
+            )
+
+        def raw_auth(content: bytes) -> Path:
+            return self._write_auth(content)
+
+        duplicate_top_level = (
+            b'{"zai-coding-plan": {"type": "api", "key": "'
+            + SECRET_A.encode()
+            + b'"}, "zai-coding-plan": {"type": "api", "key": "'
+            + SECRET_B.encode()
+            + b'"}}'
+        )
+        duplicate_key_field = (
+            b'{"zai-coding-plan": {"type": "api", "key": "'
+            + SECRET_A.encode()
+            + b'", "key": "'
+            + SECRET_B.encode()
+            + b'"}}'
+        )
+        duplicate_type_field = (
+            b'{"zai-coding-plan": {"type": "api", "type": "bearer", "key": "'
+            + SECRET.encode()
+            + b'"}}'
+        )
         scenarios: dict[str, tuple[Path, _FakeResponse | Exception]] = {
             "valid-200": (
                 auth,
@@ -720,6 +964,29 @@ class SecretNonLeak(_AcquisitionCase):
             "credential-wrong-type": (bearer, _FakeResponse(b"{}")),
             "unrelated-only": (unrelated, _FakeResponse(b"{}")),
             "mixed-file-401": (mixed, _http_error(401)),
+            "credential-CR": (auth_with(CR_SECRET), _FakeResponse(b"{}")),
+            "credential-LF": (auth_with(LF_SECRET), _FakeResponse(b"{}")),
+            "credential-CRLF": (auth_with(CRLF_SECRET), _FakeResponse(b"{}")),
+            "credential-NUL": (auth_with(NUL_SECRET), _FakeResponse(b"{}")),
+            "credential-control": (auth_with(CONTROL_SECRET), _FakeResponse(b"{}")),
+            "credential-HTAB": (auth_with(HTAB_SECRET), _FakeResponse(b"{}")),
+            "credential-DEL": (auth_with(DEL_SECRET), _FakeResponse(b"{}")),
+            "credential-nonlatin1": (
+                auth_with(NON_LATIN1_SECRET),
+                _FakeResponse(b"{}"),
+            ),
+            "duplicate-top-level": (
+                raw_auth(duplicate_top_level),
+                _FakeResponse(b"{}"),
+            ),
+            "duplicate-key-field": (
+                raw_auth(duplicate_key_field),
+                _FakeResponse(b"{}"),
+            ),
+            "duplicate-type-field": (
+                raw_auth(duplicate_type_field),
+                _FakeResponse(b"{}"),
+            ),
         }
         return scenarios[name]
 
@@ -739,6 +1006,17 @@ class SecretNonLeak(_AcquisitionCase):
             "credential-wrong-type",
             "unrelated-only",
             "mixed-file-401",
+            "credential-CR",
+            "credential-LF",
+            "credential-CRLF",
+            "credential-NUL",
+            "credential-control",
+            "credential-HTAB",
+            "credential-DEL",
+            "credential-nonlatin1",
+            "duplicate-top-level",
+            "duplicate-key-field",
+            "duplicate-type-field",
         ]
         for name in names:
             with self.subTest(scenario=name):
@@ -747,12 +1025,12 @@ class SecretNonLeak(_AcquisitionCase):
                 _ = self._install_opener(outcome)
                 snapshot = self._collect(auth_file)
                 text = _serialized(snapshot)
-                self.assertNotIn(SECRET, text)
-                self.assertNotIn(SPACED_SECRET, text)
-                self.assertNotIn(OTHER_SECRET, text)
+                for secret in ALL_FAKE_SECRETS:
+                    self.assertNotIn(secret, text)
                 self.assertNotIn(FAKE_REDIRECT_TARGET, text)
                 for diagnostic in snapshot.diagnostics:
-                    self.assertNotIn(SECRET, repr(diagnostic))
+                    for secret in ALL_FAKE_SECRETS:
+                        self.assertNotIn(secret, repr(diagnostic))
                 self._assert_no_output()
 
     def test_success_path_emits_no_stdout_or_stderr(self) -> None:

@@ -91,9 +91,13 @@ invalid percentages, authentication failure and schema change.
 The currently observed Kilo auth location is `~/.local/share/kilo/auth.json`.
 Discovery reads only the bounded auth file and selects only the
 `zai-coding-plan` entry with the evidenced `type == "api"`, non-empty `key`
-shape; it must never dump the file or return other entries. An explicit safe
-path parameter exists for deterministic tests and controlled local
-configuration; no second long-lived token store is created.
+shape; it must never dump the file or return other entries. A credential
+value that cannot be represented safely as an HTTP header value (anything
+outside printable ASCII) and any duplicate object key in the document
+(ambiguous credential definitions) also fail closed to `auth_required`
+before any request is made. An explicit safe path parameter exists for
+deterministic tests and controlled local configuration; no second
+long-lived token store is created.
 
 ## Local Ollama
 
