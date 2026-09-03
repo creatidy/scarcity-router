@@ -101,6 +101,12 @@ Advanced clients may supply raw capability minima and hard constraints directly.
 Profile definitions must live in one catalog/config source, not duplicated in
 CLI, REST, MCP or selector branches.
 
+In `model-policy.json`, the top-level `task_profiles` array is the formal
+selector-facing vocabulary. A class's `typical_task_profiles` contains only
+those formal profile IDs. Descriptive class use cases that are not formal
+profiles belong in `typical_workflow_roles` and do not participate in
+selection.
+
 ## Model entries
 
 An initial model entry needs:

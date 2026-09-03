@@ -234,7 +234,9 @@
         "independent_review"
       ],
       "typical_task_profiles": [
-        "scientific_review",
+        "scientific_review"
+      ],
+      "typical_workflow_roles": [
         "methodological_review",
         "evidence_adjudication",
         "expert_consultation"
@@ -268,7 +270,9 @@
         "contextual_ambiguity_resolution"
       ],
       "typical_task_profiles": [
-        "translation",
+        "translation"
+      ],
+      "typical_workflow_roles": [
         "translation_review",
         "bilingual_editorial_sync"
       ],

@@ -186,8 +186,8 @@ class ModelPolicyContract(unittest.TestCase):
             shortcuts,
         )
 
-    def test_classes_record_the_requested_typical_profiles(self) -> None:
-        expected = {
+    def test_classes_record_formal_profiles_and_workflow_roles(self) -> None:
+        expected_profiles = {
             "execution_generalist": {
                 "mechanical",
                 "routine_coding",
@@ -199,14 +199,24 @@ class ModelPolicyContract(unittest.TestCase):
                 "general_reasoning",
             },
             "deep_technical_reasoner": {"deep_coding", "general_reasoning"},
+            "scientific_methodological_specialist": {"scientific_review"},
+            "translation_editorial_specialist": {"translation"},
+        }
+        expected_roles = {
+            "execution_generalist": {
+                "evidence_preparation_without_specialist_adjudication"
+            },
+            "orchestration_synthesis": {"complex_synthesis"},
+            "deep_technical_reasoner": {
+                "advanced_architecture",
+                "advanced_debugging",
+            },
             "scientific_methodological_specialist": {
-                "scientific_review",
                 "methodological_review",
                 "evidence_adjudication",
                 "expert_consultation",
             },
             "translation_editorial_specialist": {
-                "translation",
                 "translation_review",
                 "bilingual_editorial_sync",
             },
@@ -217,8 +227,61 @@ class ModelPolicyContract(unittest.TestCase):
             class_id = _required_string(entry, "id")
             self.assertEqual(
                 set(_strings(entry["typical_task_profiles"], "typical_task_profiles")),
-                expected[class_id],
+                expected_profiles[class_id],
             )
+            self.assertEqual(
+                set(_strings(entry["typical_workflow_roles"], "typical_workflow_roles")),
+                expected_roles[class_id],
+            )
+
+    def test_all_cross_section_references_preserve_profile_boundaries(self) -> None:
+        policy = _load_policy()
+        classes = _objects(policy["model_capability_classes"], "model_capability_classes")
+        class_ids = {
+            _required_string(entry, "id")
+            for entry in classes
+        }
+        profiles = _objects(policy["task_profiles"], "task_profiles")
+        profile_ids = {
+            _required_string(entry, "id")
+            for entry in profiles
+        }
+
+        for entry in classes:
+            class_id = _required_string(entry, "id")
+            task_profiles = _strings(
+                entry["typical_task_profiles"], "typical_task_profiles"
+            )
+            self.assertTrue(
+                set(task_profiles).issubset(profile_ids),
+                class_id,
+            )
+            workflow_roles = _strings(
+                entry["typical_workflow_roles"], "typical_workflow_roles"
+            )
+            self.assertTrue(
+                set(workflow_roles).isdisjoint(profile_ids),
+                class_id,
+            )
+
+        for profile in profiles:
+            for affinity in _objects(profile["class_affinities"], "class_affinities"):
+                self.assertIn(_required_string(affinity, "class_id"), class_ids)
+
+        workflow = _mapping(
+            policy["current_workflow_examples"], "current_workflow_examples"
+        )
+        for model in _objects(workflow["models"], "workflow models"):
+            for field in ("primary_archetypes", "secondary_archetypes"):
+                archetypes = _strings(model[field], field)
+                self.assertTrue(set(archetypes).issubset(class_ids))
+
+        relationship = _mapping(
+            policy["task_level_relationship"], "task_level_relationship"
+        )
+        for example in _objects(relationship["examples"], "task level examples"):
+            for guidance in _objects(example["class_guidance"], "class_guidance"):
+                self.assertIn(_required_string(guidance, "class_id"), class_ids)
 
     def test_task_profiles_include_new_profiles_and_non_numeric_expansion(self) -> None:
         policy = _load_policy()
