@@ -310,6 +310,40 @@ class ResetNormalization(unittest.TestCase):
             self.assertIsNone(snap.windows[0].resets_at, msg=repr(bad))
             self.assertIn("reset_unknown", _codes(snap))
 
+    def test_valid_thirteen_digit_epoch_ms_normalizes(self) -> None:
+        payload = _limits_payload([_token_limit(3, 5, 35, 1_788_000_000_000)])
+        snap = parse_zai_quota_response(payload, retrieved_at=RETRIEVED_AT)
+        self.assertEqual(snap.windows[0].resets_at, RESET_1788000000000)
+        self.assertNotIn("reset_unknown", _codes(snap))
+
+    def test_epoch_seconds_value_is_not_misread_as_millis(self) -> None:
+        # A plausible 10-digit epoch-seconds value must never become a 1970
+        # timestamp via a millisecond reading.
+        payload = _limits_payload([_token_limit(3, 5, 35, 1_788_000_000)])
+        snap = parse_zai_quota_response(payload, retrieved_at=RETRIEVED_AT)
+        self.assertIsNone(snap.windows[0].resets_at)
+        self.assertIn("reset_unknown", _codes(snap))
+        self.assertNotIn("1970", _canonical_json(snap))
+
+    def test_zero_and_negative_reset_are_rejected(self) -> None:
+        for bad in (0, -1_500):
+            payload = _limits_payload([_token_limit(3, 5, 35, bad)])
+            snap = parse_zai_quota_response(payload, retrieved_at=RETRIEVED_AT)
+            self.assertIsNone(snap.windows[0].resets_at, msg=repr(bad))
+            self.assertIn("reset_unknown", _codes(snap))
+
+    def test_wrong_digit_counts_are_rejected(self) -> None:
+        for bad in (999_999_999_999, 10_000_000_000_000):
+            payload = _limits_payload([_token_limit(3, 5, 35, bad)])
+            snap = parse_zai_quota_response(payload, retrieved_at=RETRIEVED_AT)
+            self.assertIsNone(snap.windows[0].resets_at, msg=repr(bad))
+            self.assertIn("reset_unknown", _codes(snap))
+
+    def test_thirteen_digit_lower_bound_normalizes(self) -> None:
+        payload = _limits_payload([_token_limit(3, 5, 35, 1_000_000_000_000)])
+        snap = parse_zai_quota_response(payload, retrieved_at=RETRIEVED_AT)
+        self.assertEqual(snap.windows[0].resets_at, "2001-09-09T01:46:40.000Z")
+
     def test_unrepresentable_reset_omits_resets_at(self) -> None:
         payload = _limits_payload([_token_limit(3, 5, 35, 10**30)])
         snap = parse_zai_quota_response(payload, retrieved_at=RETRIEVED_AT)
@@ -348,18 +382,126 @@ class UnknownWindowIdentities(unittest.TestCase):
         self.assertEqual((w.resource, w.kind), ("tokens", "unknown"))
         self.assertEqual(w.window_id, "tokens_limit-x-x")
 
-    def test_unknown_type_is_preserved_without_identity(self) -> None:
-        payload = _limits_payload([{"type": "CREDITS_LIMIT", "percentage": 5}])
+
+class MalformedLimitStructure(unittest.TestCase):
+    """Structural drift inside ``data.limits[]`` fails closed.
+
+    An unknown window is still a provider *window object* with unknown
+    semantics; a scalar, a list, an object without ``type``, or an object
+    with a non-string ``type`` is a structurally incompatible successful
+    response and must produce ``schema_changed`` with no partial windows.
+    """
+
+    def _snap_with_limits(self, limits: object) -> CapacitySnapshot:
+        payload = _limits_payload([])
+        payload["data"] = {"limits": limits, "level": "pro"}
+        return parse_zai_quota_response(payload, retrieved_at=RETRIEVED_AT)
+
+    def test_scalar_entry_fails_closed(self) -> None:
+        snap = self._snap_with_limits([42])
+        self.assertEqual(snap.status, "schema_changed")
+        self.assertEqual(snap.windows, ())
+        self.assertEqual(_codes(snap), {"schema_changed"})
+
+    def test_list_entry_fails_closed(self) -> None:
+        snap = self._snap_with_limits([[1, 2]])
+        self.assertEqual(snap.status, "schema_changed")
+        self.assertEqual(snap.windows, ())
+        self.assertEqual(_codes(snap), {"schema_changed"})
+
+    def test_entry_missing_type_fails_closed(self) -> None:
+        snap = self._snap_with_limits([{"unit": 3, "number": 5}])
+        self.assertEqual(snap.status, "schema_changed")
+        self.assertEqual(snap.windows, ())
+        self.assertEqual(_codes(snap), {"schema_changed"})
+
+    def test_entry_non_string_type_fails_closed(self) -> None:
+        snap = self._snap_with_limits([{"type": 42, "unit": 3, "number": 5}])
+        self.assertEqual(snap.status, "schema_changed")
+        self.assertEqual(snap.windows, ())
+        self.assertEqual(_codes(snap), {"schema_changed"})
+
+    def test_healthy_sibling_does_not_survive_malformed_structure(self) -> None:
+        limits: list[object] = [_token_limit(3, 5, 35), 42, _token_limit(6, 1, 72)]
+        snap = self._snap_with_limits(limits)
+        self.assertEqual(snap.status, "schema_changed")
+        self.assertEqual(snap.windows, ())
+        self.assertEqual(_codes(snap), {"schema_changed"})
+        self.assertIsNone(snap.plan)
+
+    def test_unknown_valid_string_type_is_preserved(self) -> None:
+        for limit_type in ("CREDITS_LIMIT", ""):
+            with self.subTest(limit_type=limit_type):
+                snap = self._snap_with_limits(
+                    [{"type": limit_type, "percentage": 5, "nextResetTime": 1788000000000}]
+                )
+                self.assertEqual(snap.status, "ok")
+                self.assertEqual(len(snap.windows), 1)
+                w = snap.windows[0]
+                # An additive provider window type without evidenced semantics.
+                self.assertEqual((w.resource, w.kind), ("unknown", "unknown"))
+                self.assertIsNone(w.duration_seconds)
+                # Unvalidated percentage/reset semantics are omitted, never
+                # guessed from the evidenced-schema rules.
+                self.assertIsNone(w.used_percent)
+                self.assertIsNone(w.remaining_percent)
+                self.assertIsNone(w.resets_at)
+                # No window_id is invented from arbitrary type text.
+                self.assertIsNone(w.window_id)
+                self.assertEqual(
+                    _codes(snap),
+                    {"window_semantics_unknown", "percentage_unknown", "reset_unknown"},
+                )
+                for d in snap.diagnostics:
+                    self.assertIsNone(d.window_id)
+                # The raw provider type string never reaches the output.
+                self.assertNotIn("CREDITS_LIMIT", _canonical_json(snap))
+                reparsed = CapacitySnapshot.from_dict(snap.to_dict())
+                self.assertEqual(reparsed, snap)
+
+
+class WindowIdentitySafety(unittest.TestCase):
+    """Window-ID generation is total: arbitrary identity magnitudes degrade
+    deterministically instead of raising or escaping the safe-ID grammar."""
+
+    def _window_for(self, unit: object, number: object) -> CapacitySnapshot:
+        payload = _limits_payload([_token_limit(unit, number, 10)])
         snap = parse_zai_quota_response(payload, retrieved_at=RETRIEVED_AT)
         self.assertEqual(snap.status, "ok")
+        reparsed = CapacitySnapshot.from_dict(snap.to_dict())
+        self.assertEqual(reparsed, snap)
+        return snap
+
+    def test_huge_positive_unit_degrades(self) -> None:
+        # Far beyond the int->str conversion limit; must never raise.
+        snap = self._window_for(10**5000, 1)
         w = snap.windows[0]
-        self.assertEqual((w.resource, w.kind), ("unknown", "unknown"))
-        self.assertIsNone(w.duration_seconds)
-        self.assertIsNone(w.window_id)  # no unsafe provider string in the ID
-        scoped = {d.code for d in snap.diagnostics}
-        self.assertIn("window_semantics_unknown", scoped)
-        # The raw provider type string never reaches the output.
-        self.assertNotIn("CREDITS_LIMIT", _canonical_json(snap))
+        self.assertEqual((w.resource, w.kind), ("tokens", "unknown"))
+        self.assertEqual(w.window_id, "tokens_limit-x-1")
+
+    def test_huge_negative_number_degrades(self) -> None:
+        snap = self._window_for(3, -(10**5000))
+        w = snap.windows[0]
+        self.assertEqual(w.window_id, "tokens_limit-3-x")
+
+    def test_oversized_but_strable_integers_degrade(self) -> None:
+        snap = self._window_for(12_345_678_901_234_567_890, -5)
+        w = snap.windows[0]
+        self.assertEqual((w.resource, w.kind), ("tokens", "unknown"))
+        self.assertEqual(w.window_id, "tokens_limit-x-x")
+
+    def test_boundary_identity_values_render(self) -> None:
+        snap = self._window_for(99_999, 0)
+        self.assertEqual(snap.windows[0].window_id, "tokens_limit-99999-0")
+
+    def test_evidenced_ids_are_unchanged(self) -> None:
+        for unit, number, expected in (
+            (3, 5, "tokens_limit-3-5"),
+            (6, 1, "tokens_limit-6-1"),
+        ):
+            snap = self._window_for(unit, number)
+            self.assertEqual(snap.windows[0].kind, "five_hour" if unit == 3 else "weekly")
+            self.assertEqual(snap.windows[0].window_id, expected)
 
 
 class EnvelopeAndStructure(unittest.TestCase):
@@ -412,17 +554,6 @@ class EnvelopeAndStructure(unittest.TestCase):
             self.assertEqual(snap.status, "schema_changed", msg=repr(limits))
             self.assertEqual(snap.windows, ())
 
-    def test_non_object_limit_entry_is_preserved_as_unknown(self) -> None:
-        payload = _limits_payload([42, _token_limit(6, 1, 72)])
-        snap = parse_zai_quota_response(payload, retrieved_at=RETRIEVED_AT)
-        self.assertEqual(snap.status, "ok")
-        self.assertEqual(len(snap.windows), 2)
-        unknown = [w for w in snap.windows if w.resource == "unknown"]
-        self.assertEqual(len(unknown), 1)
-        self.assertIsNone(unknown[0].window_id)
-        # The healthy sibling survives.
-        self.assertEqual(len(_windows(snap, resource="tokens", kind="weekly")), 1)
-
     def test_empty_limits_is_ok_with_no_windows(self) -> None:
         snap = parse_zai_quota_response(
             _limits_payload([]), retrieved_at=RETRIEVED_AT
@@ -447,7 +578,17 @@ class PlanNormalization(unittest.TestCase):
         )
         self.assertEqual(snap.plan, "pro")
 
-    def test_unsafe_or_missing_level_omits_plan(self) -> None:
+    def test_unapproved_but_safe_shaped_levels_are_omitted(self) -> None:
+        # The adapter evidence allowlist is {"pro"}: syntax alone never makes
+        # arbitrary provider text a normalized plan label.
+        for level in ("plus", "user-123", "sk-example", "pro2"):
+            payload = _limits_payload([], level=level)
+            snap = parse_zai_quota_response(payload, retrieved_at=RETRIEVED_AT)
+            self.assertEqual(snap.status, "ok", msg=repr(level))
+            self.assertIsNone(snap.plan, msg=repr(level))
+            self.assertNotIn(level, _canonical_json(snap))
+
+    def test_unsafe_or_null_level_omits_plan(self) -> None:
         for level in ("Pro", "PRO", "pro!", "super plan", "", 5, None, ["pro"]):
             payload = _limits_payload([], level=level)
             snap = parse_zai_quota_response(payload, retrieved_at=RETRIEVED_AT)
@@ -455,6 +596,18 @@ class PlanNormalization(unittest.TestCase):
             # The unsafe value is not smuggled into any output field.
             if isinstance(level, str) and level:
                 self.assertNotIn(level, _canonical_json(snap))
+
+    def test_absent_level_key_is_structural_drift(self) -> None:
+        # A physically removed level key is a disappeared required provider
+        # field, not an unknown optional value: it must fail closed.
+        payload = _limits_payload([_token_limit(3, 5, 35)])
+        data = cast("dict[str, object]", payload["data"])
+        _ = data.pop("level")
+        snap = parse_zai_quota_response(payload, retrieved_at=RETRIEVED_AT)
+        self.assertEqual(snap.status, "schema_changed")
+        self.assertEqual(snap.windows, ())
+        self.assertEqual(_codes(snap), {"schema_changed"})
+        self.assertIsNone(snap.plan)
 
 
 class TimeLimitNormalization(unittest.TestCase):

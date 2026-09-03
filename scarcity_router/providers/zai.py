@@ -13,15 +13,30 @@ docs/poc-evidence.md ("2026-09-01 M1 reconnaissance") and the redacted
 fixtures under tests/fixtures/zai-coding-plan/:
 
 - envelope: ``code`` (int), ``msg`` (str), ``success`` (bool), ``data`` (object);
-- ``data.level`` is the plan tier; ``data.limits`` is a non-semantic array;
+- the evidenced successful schema requires ``data.level`` and
+  ``data.limits``; a missing ``level`` key or a non-list ``limits`` is
+  structural drift and fails closed as ``schema_changed``;
+- every ``limits[]`` entry must be an object carrying a string ``type``;
+  anything else is structural drift, not an unknown window;
 - ``TOKENS_LIMIT`` with ``(unit=3, number=5)`` is the five-hour token window;
   ``(unit=6, number=1)`` is the weekly token window. Any other combination, or
   a missing ``unit``/``number``, is an unknown window, never guessed;
 - ``TIME_LIMIT`` is a distinct non-token limit: ``resource="time"`` with
   unknown period semantics;
-- ``percentage`` is used-oriented: valid integers 0..100 normalize to a
-  ``used_percent``/``remaining_percent`` pair; anything else omits the pair;
-- ``nextResetTime`` is epoch milliseconds, converted to canonical UTC.
+- a limits object with an unevidenced string ``type`` is preserved as an
+  ``unknown`` window without guessing: no raw type text, no derived
+  ``window_id``, and its percentage/reset facts are omitted with explicit
+  diagnostics because their semantics are unvalidated for that type;
+- ``plan`` comes only from the adapter evidence allowlist of observed
+  ``level`` values (currently ``{"pro"}``); any other value omits ``plan``
+  even when it matches the safe-ID grammar;
+- ``percentage`` is used-oriented for the evidenced schema: valid integers
+  0..100 normalize to a ``used_percent``/``remaining_percent`` pair; anything
+  else omits the pair;
+- ``nextResetTime`` is evidenced as a 13-digit epoch-millisecond integer;
+  values outside that representation (epoch seconds, zero, negative, other
+  digit counts) are rejected rather than misinterpreted, and convert to the
+  canonical UTC string only within that validated band.
 
 Structurally incompatible successful responses normalize to
 ``status="schema_changed"`` with no windows and no partial decoding. An HTTP
@@ -31,10 +46,9 @@ Structurally incompatible successful responses normalize to
 
 from __future__ import annotations
 
-import re
 from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
-from typing import cast
+from typing import TypeGuard, cast
 
 from ..capacity import CapacityDiagnostic, CapacitySnapshot, CapacityWindow
 
@@ -47,11 +61,25 @@ _KNOWN_TOKEN_WINDOWS: dict[tuple[int, int], tuple[str, int]] = {
     (6, 1): ("weekly", 604_800),
 }
 
-# Provider type strings validated by evidence; everything else is unknown.
+# Provider type strings validated by evidence; every other string is an
+# unknown, preserved window type.
 _TOKENS_LIMIT = "TOKENS_LIMIT"
 _TIME_LIMIT = "TIME_LIMIT"
 
-_SAFE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._:-]{0,63}$")
+# Adapter evidence allowlist of observed plan labels (docs/poc-evidence.md).
+# A future evidenced tier extends this mapping deliberately; arbitrary
+# provider text never passes on syntax alone.
+_EVIDENCED_PLANS: frozenset[str] = frozenset({"pro"})
+
+# Evidenced ``nextResetTime`` representation: 13-digit epoch milliseconds.
+_RESET_MS_MIN = 1_000_000_000_000
+_RESET_MS_MAX = 9_999_999_999_999
+
+# Window-ID identity components render as decimal digits only when small,
+# non-negative integers; everything else degrades to a fixed placeholder.
+# This bounds the identifier and keeps generation total: the comparison never
+# converts a huge integer to a string, so arbitrary magnitudes cannot raise.
+_IDENTITY_PART_MAX = 99_999
 
 _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
@@ -63,7 +91,7 @@ def _as_mapping(value: object) -> Mapping[str, object] | None:
     return None
 
 
-def _is_int(value: object) -> bool:
+def _is_int(value: object) -> TypeGuard[int]:
     """True for a real JSON integer; booleans are not integers."""
     return isinstance(value, int) and not isinstance(value, bool)
 
@@ -80,40 +108,54 @@ def _envelope_valid(envelope: Mapping[str, object]) -> bool:
 
 
 def _safe_plan(level: object) -> str | None:
-    """Accept a provider plan level only when it is already a safe v1 ID.
+    """Accept only evidence-allowlisted plan labels; omit everything else.
 
-    Arbitrary or unsafe values are omitted, never sanitized into a
-    misleading identifier and never copied into diagnostics.
+    Syntactic safe-ID conformance is not sufficient: arbitrary provider text
+    must not become a normalized plan label, enter diagnostics or leak.
     """
-    if isinstance(level, str) and _SAFE_ID_RE.match(level):
+    if isinstance(level, str) and level in _EVIDENCED_PLANS:
         return level
     return None
+
+
+def _identity_part(value: object) -> str:
+    """Render one validated identity component for a window ID.
+
+    Small non-negative integers render as decimal digits; missing, boolean,
+    negative or oversized components degrade to a placeholder that cannot
+    collide with an integer rendering. The magnitude check happens before any
+    string conversion, so unbounded provider integers are safe.
+    """
+    if _is_int(value) and 0 <= value <= _IDENTITY_PART_MAX:
+        return str(value)
+    return "x"
 
 
 def _window_identity_id(type_token: str, unit: object, number: object) -> str:
     """Deterministic safe window ID from validated identity fields only.
 
-    Missing or non-integer identity parts become a fixed placeholder that
-    cannot collide with an integer rendering. No array index, raw JSON or
+    The fixed ``type_token`` plus two bounded components always satisfies the
+    v1 safe-ID grammar and 64-character limit. No array index, raw JSON or
     provider free-text participates in the ID.
     """
-    def part(value: object) -> str:
-        return str(value) if _is_int(value) else "x"
-
-    return f"{type_token}-{part(unit)}-{part(number)}".lower()
+    return f"{type_token}-{_identity_part(unit)}-{_identity_part(number)}"
 
 
 def _canonical_from_epoch_ms(value: object) -> str | None:
-    """Convert an epoch-millisecond integer to the canonical v1 UTC string.
+    """Convert a 13-digit epoch-millisecond integer to canonical v1 UTC.
 
-    Integer arithmetic only (no float precision loss); UTC only; returns
-    ``None`` for non-integers and unrepresentable instants.
+    Only the evidenced representation is accepted: an integer (not bool),
+    positive, within the 13-digit millisecond band. Values that look like
+    epoch seconds or any other unit are rejected instead of misread. Integer
+    arithmetic only (no float precision loss); UTC only.
     """
     if not _is_int(value):
         return None
-    seconds, millis = divmod(cast(int, value), 1000)
+    if not _RESET_MS_MIN <= value <= _RESET_MS_MAX:
+        return None
+    seconds, remainder = divmod(value, 1000)
     try:
-        moment = _EPOCH + timedelta(seconds=seconds, milliseconds=millis)
+        moment = _EPOCH + timedelta(seconds=seconds, milliseconds=remainder)
     except (OverflowError, ValueError):
         return None
     return (
@@ -127,10 +169,9 @@ def _used_pair(percentage: object) -> tuple[int, int] | None:
     """Validate the used-oriented provider percentage; ``None`` if unusable."""
     if not _is_int(percentage):
         return None
-    used = cast(int, percentage)
-    if not 0 <= used <= 100:
+    if not 0 <= percentage <= 100:
         return None
-    return used, 100 - used
+    return percentage, 100 - percentage
 
 
 def _failure(
@@ -150,17 +191,13 @@ def _failure(
     )
 
 
-def _parse_limit(item: object) -> tuple[CapacityWindow, list[CapacityDiagnostic]]:
-    """Normalize one ``data.limits`` entry into a window plus diagnostics."""
-    entry = _as_mapping(item)
-    if entry is None:
-        # A non-object limit is preserved as a fully unknown window; no raw
-        # provider content is injected into an ID or diagnostic.
-        return (
-            CapacityWindow(resource="unknown", kind="unknown"),
-            [CapacityDiagnostic(code="window_semantics_unknown")],
-        )
+def _parse_limit(
+    entry: Mapping[str, object],
+) -> tuple[CapacityWindow, list[CapacityDiagnostic]]:
+    """Normalize one structurally validated ``data.limits`` object.
 
+    The caller guarantees the entry is a mapping with a string ``type``.
+    """
     limit_type = entry.get("type")
     if limit_type == _TOKENS_LIMIT:
         resource = "tokens"
@@ -169,9 +206,17 @@ def _parse_limit(item: object) -> tuple[CapacityWindow, list[CapacityDiagnostic]
         resource = "time"
         type_token = "time_limit"
     else:
+        # A structurally valid window with an unevidenced type is preserved
+        # without guessing semantics. Its percentage/reset semantics are not
+        # validated for this type, so both facts are omitted with explicit
+        # diagnostics, and no window_id is derived from arbitrary text.
         return (
             CapacityWindow(resource="unknown", kind="unknown"),
-            [CapacityDiagnostic(code="window_semantics_unknown")],
+            [
+                CapacityDiagnostic(code="window_semantics_unknown"),
+                CapacityDiagnostic(code="percentage_unknown"),
+                CapacityDiagnostic(code="reset_unknown"),
+            ],
         )
 
     unit = entry.get("unit")
@@ -182,9 +227,7 @@ def _parse_limit(item: object) -> tuple[CapacityWindow, list[CapacityDiagnostic]
     duration_seconds: int | None = None
     kind = "unknown"
     if resource == "tokens" and _is_int(unit) and _is_int(number):
-        known = _KNOWN_TOKEN_WINDOWS.get(
-            (cast(int, unit), cast(int, number))
-        )
+        known = _KNOWN_TOKEN_WINDOWS.get((unit, number))
         if known is not None:
             kind, duration_seconds = known
     if kind == "unknown":
@@ -249,16 +292,33 @@ def parse_zai_quota_response(
         return _failure("unknown", "telemetry_unknown", retrieved_at)
 
     data = _as_mapping(envelope["data"])
-    limits = data.get("limits") if data is not None else None
+    if data is None:
+        return _failure("schema_changed", "schema_changed", retrieved_at)
+
+    # The evidenced successful schema requires both data.level and
+    # data.limits; their disappearance is structural drift, fail closed.
+    if "level" not in data:
+        return _failure("schema_changed", "schema_changed", retrieved_at)
+    limits = data.get("limits")
     if not isinstance(limits, list):
         return _failure("schema_changed", "schema_changed", retrieved_at)
 
-    plan = _safe_plan(data.get("level")) if data is not None else None
+    # Structural validation of every limits entry: a non-object entry, or an
+    # object without a usable string type, is schema incompatibility rather
+    # than an unknown window. Healthy siblings are not partially preserved.
+    entries: list[Mapping[str, object]] = []
+    for item in cast("list[object]", limits):
+        entry = _as_mapping(item)
+        if entry is None or not isinstance(entry.get("type"), str):
+            return _failure("schema_changed", "schema_changed", retrieved_at)
+        entries.append(entry)
+
+    plan = _safe_plan(data.get("level"))
 
     windows: list[CapacityWindow] = []
     diagnostics: list[CapacityDiagnostic] = []
-    for item in cast("list[object]", limits):
-        window, window_diagnostics = _parse_limit(item)
+    for entry in entries:
+        window, window_diagnostics = _parse_limit(entry)
         windows.append(window)
         diagnostics.extend(window_diagnostics)
 
