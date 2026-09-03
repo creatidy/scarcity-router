@@ -19,7 +19,12 @@ import unittest
 import urllib.error
 import urllib.request
 from collections.abc import Mapping
-from http.client import HTTPException, HTTPMessage
+from http.client import (
+    BadStatusLine,
+    HTTPException,
+    HTTPMessage,
+    LineTooLong,
+)
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import cast, override
@@ -854,6 +859,29 @@ class ResponseHandling(_AcquisitionCase):
         )
         self.assertEqual(snapshot.windows, ())
 
+    def test_http_protocol_failures_map_to_unavailable(self) -> None:
+        for error in (
+            BadStatusLine("TEST_ONLY_MALFORMED_STATUS"),
+            LineTooLong("TEST_ONLY_OVERLONG_LINE"),
+        ):
+            with self.subTest(error=type(error).__name__):
+                self._refresh_capture()
+                _ = self._install_opener(error)
+                snapshot = self._collect(
+                    self._write_auth(_valid_auth_payload())
+                )
+                self.assertEqual(snapshot.status, "unavailable")
+                self.assertEqual(
+                    [d.code for d in snapshot.diagnostics],
+                    ["source_unavailable"],
+                )
+                self.assertEqual(snapshot.windows, ())
+                # Exactly one attempted transport call; no retry.
+                request, _ = self._single_request()
+                self.assertEqual(request.get_header("Authorization"), SECRET)
+                self.assertNotIn(SECRET, _serialized(snapshot))
+                self._assert_no_output()
+
     def test_timeout_maps_to_unavailable(self) -> None:
         _ = self._install_opener(TimeoutError())
         snapshot = self._collect(self._write_auth(_valid_auth_payload()))
@@ -960,6 +988,14 @@ class SecretNonLeak(_AcquisitionCase):
             "redirect-302": (auth, _http_error(302, FAKE_REDIRECT_TARGET)),
             "network": (auth, urllib.error.URLError("unreachable")),
             "timeout": (auth, TimeoutError()),
+            "bad-status-line": (
+                auth,
+                BadStatusLine("TEST_ONLY_MALFORMED_STATUS"),
+            ),
+            "line-too-long": (
+                auth,
+                LineTooLong("TEST_ONLY_OVERLONG_LINE"),
+            ),
             "credential-missing": (absent, _FakeResponse(b"{}")),
             "credential-wrong-type": (bearer, _FakeResponse(b"{}")),
             "unrelated-only": (unrelated, _FakeResponse(b"{}")),
@@ -1002,6 +1038,8 @@ class SecretNonLeak(_AcquisitionCase):
             "redirect-302",
             "network",
             "timeout",
+            "bad-status-line",
+            "line-too-long",
             "credential-missing",
             "credential-wrong-type",
             "unrelated-only",

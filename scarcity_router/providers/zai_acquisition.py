@@ -40,10 +40,11 @@ Expected operational conditions normalize to safe v1 snapshots
 (docs/capacity-model.md): an unusable or ambiguous credential source and
 HTTP 401 map to ``auth_required``; a received success response whose body
 cannot satisfy the validated contract maps to ``schema_changed``;
-connection/DNS/timeout failure maps to ``unavailable``; redirect rejection
-and other unevidenced HTTP failures map to ``unknown``. Programmer errors
-(for example an edited endpoint constant failing destination policy) raise
-``RuntimeError`` instead of being disguised as telemetry failures.
+connection/DNS/timeout or malformed-HTTP-protocol failure maps to
+``unavailable``; redirect rejection and other unevidenced HTTP failures map
+to ``unknown``. Programmer errors (for example an edited endpoint constant
+failing destination policy) raise ``RuntimeError`` instead of being
+disguised as telemetry failures.
 
 The quota-window semantics remain entirely in the pure parser; this module
 adds zero provider semantics of its own. The reconnaissance helper
@@ -339,6 +340,12 @@ def collect_zai_capacity(
         if exc.code == 401:
             return _snapshot("auth_required", "auth_required", retrieved_at)
         return _snapshot("unknown", "telemetry_unknown", retrieved_at)
+    except HTTPException:
+        # Malformed HTTP protocol metadata while establishing the response
+        # (for example BadStatusLine or LineTooLong): no usable provider
+        # response was acquired. The exception message is never inspected
+        # or serialized.
+        return _snapshot("unavailable", "source_unavailable", retrieved_at)
     except OSError:
         # URLError, ConnectionError and TimeoutError (socket.timeout) all
         # derive from OSError: the remote source could not be obtained.
