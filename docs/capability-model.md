@@ -25,21 +25,35 @@ requirements still apply.
 Task level is a convenience signal and must not replace capability dimensions.
 Profiles translate common task names into explicit requirements.
 
-## Initial capability dimensions
+## Current capability dimensions
 
-The narrow initial catalog may assess:
+The current policy vocabulary may assess:
 
 - `reasoning`;
 - `coding`;
 - `scientific_methodological`;
 - `writing_editorial`;
-- `tool_use`.
+- `tool_use`;
+- `translation_multilingual`.
 
 Use an ordinal scale only as a practical routing rubric, not as scientific
 measurement. Additional dimensions such as factual reliability, long-context
-behavior, agentic execution, vision, multilingual ability or translation may
-be added only when they change a real routing decision. Schema evolution must
-permit new dimensions without redesigning model identity or capacity.
+behavior, agentic execution or vision may be added only when they change a real
+routing decision. Schema evolution must permit new dimensions without
+redesigning model identity or capacity.
+
+`translation_multilingual` is a first-class dimension because translation
+quality changes a real routing decision; it must not be inferred solely from
+`writing_editorial`. A dedicated orchestration or long-context quality
+dimension is intentionally deferred. Orchestration is currently represented by
+high reasoning, strong `tool_use`, meaningful `writing_editorial` and adequate
+hard context/output requirements until routing experiments show that a new
+dimension is necessary.
+
+The canonical machine-readable definitions for capability classes, profile
+vocabulary, class/profile relationships and current workflow exemplars live in
+[`model-policy.json`](../model-policy.json). This document keeps the conceptual
+model and selector-facing rules; it does not duplicate that policy artifact.
 
 ## Hard properties and constraints
 
@@ -68,7 +82,9 @@ Profiles are data-driven aliases for requirements. Initial candidates are:
 - `deep_coding`;
 - `scientific_review`;
 - `editorial`;
-- `general_reasoning`.
+- `general_reasoning`;
+- `orchestration`;
+- `translation`.
 
 Conceptually:
 
@@ -84,6 +100,12 @@ This example shows structure, not accepted ratings or final file syntax.
 Advanced clients may supply raw capability minima and hard constraints directly.
 Profile definitions must live in one catalog/config source, not duplicated in
 CLI, REST, MCP or selector branches.
+
+In `model-policy.json`, the top-level `task_profiles` array is the formal
+selector-facing vocabulary. A class's `typical_task_profiles` contains only
+those formal profile IDs. Descriptive class use cases that are not formal
+profiles belong in `typical_workflow_roles` and do not participate in
+selection.
 
 ## Model entries
 
@@ -115,4 +137,3 @@ Do not imply false precision. The first catalog only needs enough resolution to
 make trusted decisions in the owner's workflow. A continuously curated catalog
 may later become a product asset, but building a universal leaderboard is out
 of scope.
-

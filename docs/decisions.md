@@ -127,6 +127,23 @@ direction was chosen. Dates use UTC.
 - **Reason:** The work is modest I/O, schemas and deterministic policy; a large
   framework chain would weaken the intended stable control point.
 
+### D-014 — Portable model policy artifact
+
+- **Status:** Accepted
+- **Date:** 2026-09-03
+- **Decision:** Keep the canonical portable model policy as machine-readable
+  [`model-policy.json`](../model-policy.json) at the repository root. It records
+  non-exclusive descriptive model classes, capability vocabulary, task-profile
+  relationships and dated owner workflow exemplars.
+- **Reason:** Other repositories can consume one stable JSON artifact without
+  parsing Markdown, while the selector still evaluates explicit capability
+  minima, hard constraints, runtime capacity and scarcity/reservation policy
+  independently.
+- **Boundary:** Classes are not rankings and do not participate directly in
+  eligibility. `translation_multilingual` is a first-class capability
+  dimension; a dedicated orchestration/long-context quality dimension remains
+  deferred. Numeric ratings and profile minima remain an M2 calibration task.
+
 ## Unresolved decisions
 
 ### U-001 — Codex binary discovery and compatibility
