@@ -118,22 +118,25 @@ text):
 
 - the `account/rateLimits/read` result is the protocol's
   `GetAccountRateLimitsResponse` envelope, and the exact tagged schema
-  **requires** the members `rateLimits`, `rateLimitsByLimitId` (additional
-  metered buckets keyed by limit id) and `rateLimitResetCredits`; the
-  shipped client itself errors when `rateLimitResetCredits` is absent;
+  **requires** only the `rateLimits` member. `rateLimitsByLimitId` (additional
+  metered buckets keyed by limit id) and `rateLimitResetCredits` are nullable
+  optional members and may be absent or explicitly null;
 - `rateLimits` is the protocol's `RateLimitSnapshot` with **nine** members:
   `limitId`, `limitName`, `primary`, `secondary`, `credits`,
   `individualLimit`, `spendControlReached`, `planType`,
   `rateLimitReachedType` (matches the extension's view model and the PoC
   subset; `RateLimitWindow` has the three PoC members
   `usedPercent`/`windowDurationMins`/`resetsAt`);
-- `credits` is the evidenced `CreditsSnapshot`: boolean `hasCredits`,
-  boolean `unlimited` and `balance` as a **decimal string or null** (never
-  a JSON number); `individualLimit` is the evidenced
-  `SpendControlLimitSnapshot` with `limit`, `used`, `remainingPercent` and
-  `resetsAt`; `spendControlReached` is a **boolean spend-control
-  blocker**; `rateLimitResetCredits` is the reset-credit summary with
-  integer `availableCount` and an opaque `credits` collection;
+- `credits` is the evidenced `CreditsSnapshot`: required boolean `hasCredits`,
+  required boolean `unlimited` and optional `balance` as a **string or null**
+  (never a JSON number); `individualLimit` is the evidenced
+  `SpendControlLimitSnapshot` with four required fields, string `limit`/`used`,
+  integer `remainingPercent` and integer `resetsAt`; `spendControlReached` is
+  a **boolean spend-control blocker**; `rateLimitResetCredits` is the reset-
+  credit summary with integer `availableCount` and optional typed `credits`
+  rows. Each row requires `id`, `resetType`, `status` and `grantedAt`;
+  `expiresAt`, `title` and `description` are optional nullable fields.
+  Exact generated-schema enum values are required;
 - the exact tagged `PlanType` enum retains (safe v1 grammar, verbatim):
   `free`, `go`, `plus`, `pro`, `prolite`, `team`, `business`, `edu`,
   `edu_plus`, `edu_pro`, `enterprise`, `ent26`,
@@ -146,12 +149,15 @@ text):
   `workspace_member_credits_depleted`,
   `workspace_owner_credits_depleted`,
   `workspace_owner_usage_limit_reached`,
-  `workspace_member_usage_limit_reached` (snake_case in the string tables;
-  the app-server renames *fields* to camelCase, so the value casing is
-  unconfirmed and the adapter accepts both);
+  `workspace_member_usage_limit_reached` (the exact snake_case generated
+  values; camelCase and arbitrary strings are not accepted);
 - these string tables and the review-confirmed generated schema evidence
   the *shape*; they are not a live capture, and the adapter still fails
   closed on any shape outside this validated mapping.
+- The generated-schema cross-check used the tagged upstream sources for
+  [`GetAccountRateLimitsResponse`](https://github.com/openai/codex/blob/rust-v0.151.0-alpha.7.2/codex-rs/app-server-protocol/schema/json/v2/GetAccountRateLimitsResponse.json)
+  and its referenced type definitions; this is evidence for the wire shape,
+  not a permission to make live provider calls.
 
 ### Z.ai Coding Plan capacity
 
@@ -360,4 +366,3 @@ Assumptions must not be described as supported behavior in user-facing output.
 - Ollama health/model-inspection PoC, including effective context reporting.
 - Freshness/refresh behavior and latency measurements.
 - Security review of provider terms and any public redistribution implications.
-

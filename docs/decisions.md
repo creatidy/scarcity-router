@@ -298,10 +298,10 @@ direction was chosen. Dates use UTC.
 - **Decision:** The OpenAI adapter validates the complete evidenced
   `GetAccountRateLimitsResponse` envelope and normalizes it under the
   existing v1 contract as follows:
-  - **Envelope.** The exact tagged schema *requires* the members
-    `rateLimits`, `rateLimitsByLimitId` and `rateLimitResetCredits`: a
-    missing member is drift (`schema_changed`), an explicit `null` is a
-    valid absent state for the two optional-valued members. `rateLimits`
+  - **Envelope.** The exact tagged schema *requires* only the
+    `rateLimits` member: missing is drift (`schema_changed`).
+    `rateLimitsByLimitId` and `rateLimitResetCredits` are nullable optional
+    members, so missing and explicit `null` are valid absent states. `rateLimits`
     is required to be the nine-member snapshot (`limitId`, `limitName`,
     `primary`, `secondary`, `credits`, `individualLimit`,
     `spendControlReached`, `planType`, `rateLimitReachedType`); snapshot
@@ -310,11 +310,13 @@ direction was chosen. Dates use UTC.
     additive *structured* members under unknown keys fail closed to
     `schema_changed`.
   - **Typed states.** `credits` (evidenced `CreditsSnapshot`:
-    boolean `hasCredits`, boolean `unlimited`, `balance` as decimal
-    string-or-null), `individualLimit` (evidenced
-    `SpendControlLimitSnapshot`: `limit`, `used`, `remainingPercent`,
-    `resetsAt`) and `rateLimitResetCredits` (integer `availableCount` plus
-    an opaque `credits` collection) are type-validated: malformed shapes
+    required boolean `hasCredits`, required boolean `unlimited`, optional
+    `balance` as string-or-null), `individualLimit` (evidenced
+    `SpendControlLimitSnapshot`: four required fields with string `limit`/
+    `used` and integer `remainingPercent`/`resetsAt`) and
+    `rateLimitResetCredits` (integer `availableCount` plus optional typed
+    `credits` rows requiring `id`, `resetType`, `status` and `grantedAt`, with
+    optional nullable `expiresAt`, `title` and `description`) are type-validated: malformed shapes
     are `schema_changed`. Valid present states have no v1 representation:
     they degrade to `status: "unknown"` and withhold the percentage pairs
     (`percentage_unknown` per window); an exhausted individual limit
@@ -328,9 +330,9 @@ direction was chosen. Dates use UTC.
     sharing one known period are `schema_changed`. An absent window is
     never synthesized and never reported as healthy emptiness.
   - **Backend blockers.** Evidenced blocker classes never yield a healthy
-    snapshot: a non-null `rateLimitReachedType` (evidenced enum members
-    incl. `workspace_owner_credits_depleted`, casing unconfirmed, plus any
-    unknown non-null string); `spendControlReached == true`; an exhausted
+    snapshot: a non-null `rateLimitReachedType` (the exact snake_case enum
+    members, with camelCase and arbitrary strings rejected as drift);
+    `spendControlReached == true`; an exhausted
     `individualLimit`; and, in any additional bucket, its own reached
     flag, spend-control blocker, exhausted individual limit, or a window
     at `usedPercent == 100`. Each degrades to `status: "unknown"` with
@@ -339,12 +341,15 @@ direction was chosen. Dates use UTC.
     (v1 cannot represent capacity metered across buckets) while keeping
     the main windows' validated pairs. Known exhaustion of the main quota
     *without* any blocker stays `ok` with the `(100, 0)` pair.
-  - **Additional buckets.** Every `rateLimitsByLimitId` entry validates as
-    a full quota snapshot with the same membership, identity (the map key
-    must equal the bucket's `limitId` and must not shadow `"codex"`),
-    window, duplicate-period and nested credit/spend-control rules;
-    bucket window coverage is not enforced (a bucket may legitimately
-    carry one window).
+  - **Additional buckets.** The exact success response mirrors the main
+    snapshot under `rateLimitsByLimitId["codex"]`; that entry is accepted only
+    when it validates consistently with top-level `rateLimits`. Every other
+    entry validates as a full quota snapshot with the same membership and
+    identity rules (the map key must equal the bucket's `limitId`, be safe to
+    compose, and must not shadow `"codex"`). Every validated bucket window is
+    emitted with a distinct safe `<limitId>:<slot>` identity; equal periods are
+    not merged or discarded. Bucket window coverage is not enforced (a bucket
+    may legitimately carry one window).
   - **Plan labels.** `plan` accepts every exact tagged `PlanType` member
     the v1 safe-ID grammar permits as-is (underscores included): `free`,
     `go`, `plus`, `pro`, `prolite`, `team`, `business`, `edu`, `edu_plus`,

@@ -74,6 +74,7 @@ import math
 import os
 import platform
 import queue
+import stat
 import subprocess
 import threading
 import time
@@ -209,18 +210,25 @@ def platform_directory() -> str | None:
     return _PLATFORM_DIRS.get((system, machine))
 
 
-def _extension_version_key(name: str) -> tuple[int, ...]:
+def _extension_version_key(name: str) -> tuple[int, ...] | None:
     """Deterministic sort key from the extension directory's version token.
 
     ``openai.chatgpt-26.825.51511-linux-x64`` -> ``(26, 825, 51511)``.
-    Non-numeric segments degrade to 0 so ordering stays total.
+    Only ASCII numeric segments are accepted: Unicode digit-lookalikes
+    (``²`` and friends) make the version malformed, and the candidate is
+    reported as ``None`` so discovery skips or refuses it deterministically
+    instead of raising.
     """
     rest = name[len(_EXTENSION_PREFIX) :]
     first = rest.split("-", 1)[0]
-    return tuple(
-        int(segment) if segment.isdigit() else 0
-        for segment in first.split(".")
-    )
+    if not first:
+        return None
+    parts: list[int] = []
+    for segment in first.split("."):
+        if not (segment.isascii() and segment.isdigit()):
+            return None
+        parts.append(int(segment))
+    return tuple(parts)
 
 
 def _extension_version_string(name: str) -> str:
@@ -228,27 +236,35 @@ def _extension_version_string(name: str) -> str:
     return rest.split("-", 1)[0]
 
 
-def _candidate_directories(roots: Sequence[Path]) -> list[Path]:
-    """All ``openai.chatgpt-*`` extension directories, newest first.
+def _candidate_directories(
+    roots: Sequence[Path],
+) -> tuple[list[Path], int]:
+    """``openai.chatgpt-*`` extension directories, newest first.
 
     Each root is listed once (no recursion); unreadable or absent roots are
-    skipped. Ordering is fully deterministic: version descending, then the
-    directory name as a tie-break.
+    skipped. Returns the versioned candidates ordered deterministically
+    (version descending, then directory name as a tie-break) plus the count
+    of malformed-version directories that were skipped (they make discovery
+    report ``unsupported_installation`` when nothing usable exists, rather
+    than pretending nothing is installed).
     """
-    candidates: list[Path] = []
+    valid: list[tuple[tuple[int, ...], str, Path]] = []
+    malformed = 0
     for root in roots:
         try:
             entries = list(root.iterdir())
         except OSError:
             continue
         for entry in entries:
-            if entry.name.startswith(_EXTENSION_PREFIX) and entry.is_dir():
-                candidates.append(entry)
-    candidates.sort(
-        key=lambda path: (_extension_version_key(path.name), path.name),
-        reverse=True,
-    )
-    return candidates
+            if not entry.name.startswith(_EXTENSION_PREFIX) or not entry.is_dir():
+                continue
+            key = _extension_version_key(entry.name)
+            if key is None:
+                malformed += 1
+                continue
+            valid.append((key, entry.name, entry))
+    valid.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return [path for _key, _name, path in valid], malformed
 
 
 def _read_validated_package(
@@ -256,21 +272,55 @@ def _read_validated_package(
 ) -> dict[str, object] | None:
     """Read and validate ``codex-package.json`` beside the binary.
 
-    Bounded read; strict UTF-8; strict JSON with duplicate-key rejection,
-    non-finite-number rejection (literal NaN/Infinity constants and
-    non-finite exponent results) and recursion-safe decoding, exactly like
-    the JSONL transport; and the evidenced layout contract: integer
-    ``layoutVersion == 1``, string ``variant == "codex"`` and a non-empty
-    string ``version``. Any failure — including an adversarially nested or
-    malformed document below the byte limit — makes this candidate
-    unusable (``None``), so discovery reports ``unsupported_installation``
-    instead of crashing or trusting an ambiguous layout.
+    Descriptor-backed and no-follow: the file is opened read-only without
+    following symlinks, the descriptor is verified to be a regular file
+    (a FIFO or socket can never block discovery), and the read is bounded
+    to ``MAX_PACKAGE_BYTES``. Decoding is strict UTF-8/JSON with
+    duplicate-key rejection, non-finite-number rejection (literal
+    NaN/Infinity constants and non-finite exponent results) and
+    recursion-safe handling, exactly like the JSONL transport. The
+    evidenced layout contract is enforced: integer ``layoutVersion == 1``,
+    string ``variant == "codex"`` and a non-empty string ``version``. Any
+    failure makes this candidate unusable (``None``).
     """
+    package_path = binary_dir / _CODEX_PACKAGE_NAME
     try:
-        with (binary_dir / _CODEX_PACKAGE_NAME).open("rb") as handle:
-            raw = handle.read(MAX_PACKAGE_BYTES + 1)
+        # Check without following links before open. O_NONBLOCK is retained on
+        # the open as a race-safe guard: a package path replaced after this
+        # check with a FIFO or device must still never stall discovery.
+        if not stat.S_ISREG(os.lstat(package_path).st_mode):
+            return None
     except OSError:
         return None
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+    try:
+        fd = os.open(str(package_path), flags)
+    except OSError:
+        return None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        chunks: list[bytes] = []
+        total = 0
+        while total <= MAX_PACKAGE_BYTES:
+            try:
+                chunk = os.read(fd, 8192)
+            except OSError:
+                return None
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+    raw = b"".join(chunks)
     if len(raw) > MAX_PACKAGE_BYTES:
         return None
     try:
@@ -316,8 +366,8 @@ def discover_codex_installation(
     older supported one.
     """
     search_roots = DEFAULT_DISCOVERY_ROOTS if roots is None else roots
-    candidates = _candidate_directories(search_roots)
-    if not candidates:
+    candidates, malformed = _candidate_directories(search_roots)
+    if not candidates and not malformed:
         return None, "not_installed"
     platform_directory_ = platform_directory()
     if platform_directory_ is None:
@@ -672,6 +722,22 @@ def _run_session(
     )
 
 
+def _validated_timeout(value: object, name: str) -> float:
+    """Reject non-finite or non-positive timeouts before any use.
+
+    NaN must never become an unbounded wait and infinity must never reach
+    deadline arithmetic (where it would raise ``OverflowError``); both are
+    caller configuration errors and raise ``ValueError`` immediately, before
+    discovery, spawning or deadline computation, so no child process can be
+    created with unusable bounds.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{name} must be a finite positive number of seconds")
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(f"{name} must be a finite positive number of seconds")
+    return float(value)
+
+
 def collect_openai_codex_capacity(
     *,
     retrieved_at: str,
@@ -685,12 +751,24 @@ def collect_openai_codex_capacity(
     freshness policy (U-003). ``discovery_roots`` defaults to the evidenced
     VS Code extension roots and exists for deterministic tests and
     controlled local configuration. ``startup_timeout``/``session_timeout``
-    default to the module bounds. The discovered path and versions never
-    enter the returned snapshot; every expected operational condition
-    normalizes to a safe failure snapshot instead of leaking. An invalid
-    ``retrieved_at`` keeps failing through the typed capacity-contract
-    validation rather than being misreported as provider telemetry.
+    default to the module bounds and must be finite positive numbers (a
+    ``ValueError`` is raised before any process is spawned otherwise). The
+    discovered path and versions never enter the returned snapshot; every
+    expected operational condition normalizes to a safe failure snapshot
+    instead of leaking. An invalid ``retrieved_at`` keeps failing through
+    the typed capacity-contract validation rather than being misreported as
+    provider telemetry.
     """
+    startup = (
+        STARTUP_TIMEOUT_SECONDS
+        if startup_timeout is None
+        else _validated_timeout(startup_timeout, "startup_timeout")
+    )
+    session = (
+        SESSION_TIMEOUT_SECONDS
+        if session_timeout is None
+        else _validated_timeout(session_timeout, "session_timeout")
+    )
     installation, outcome = discover_codex_installation(discovery_roots)
     if outcome == "not_installed":
         return _snapshot("unavailable", "source_unavailable", retrieved_at)
@@ -722,12 +800,8 @@ def collect_openai_codex_capacity(
             proc,
             reader,
             retrieved_at=retrieved_at,
-            startup_timeout=STARTUP_TIMEOUT_SECONDS
-            if startup_timeout is None
-            else startup_timeout,
-            session_timeout=SESSION_TIMEOUT_SECONDS
-            if session_timeout is None
-            else session_timeout,
+            startup_timeout=startup,
+            session_timeout=session,
         )
     finally:
         _shutdown(proc, reader)

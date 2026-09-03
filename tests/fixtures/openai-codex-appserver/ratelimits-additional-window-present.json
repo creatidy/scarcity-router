@@ -21,9 +21,9 @@
   "rateLimitsByLimitId": {
     "gpt-reserve": {
       "limitId": "gpt-reserve",
-      "limitName": null,
+      "limitName": "GPT Reserve",
       "primary": {
-        "usedPercent": 100,
+        "usedPercent": 30,
         "windowDurationMins": 300,
         "resetsAt": 1788306212
       },

@@ -58,19 +58,23 @@ timeouts, and terminate→(bounded wait)→kill cleanup on every path —
 including a reader startup failure before the session begins, so the child
 never leaks.
 The parser validates the complete evidenced response envelope (U-010):
-the `GetAccountRateLimitsResponse` members `rateLimits`,
-`rateLimitsByLimitId` and `rateLimitResetCredits` are all *required* — a
-missing member is `schema_changed`, an explicit null is a valid absent
-state. `primary`/`secondary` are the only window slots and are classified
-by validated `windowDurationMins`, never slot position. Typed states are
-validated: `credits` (`CreditsSnapshot` with string-or-null `balance`),
-`individualLimit` (`SpendControlLimitSnapshot`: `limit`, `used`,
-`remainingPercent`, `resetsAt`) and `rateLimitResetCredits`
-(`availableCount` + opaque `credits`); malformed shapes fail closed, and
+only the `GetAccountRateLimitsResponse.rateLimits` member is required;
+`rateLimitsByLimitId` and `rateLimitResetCredits` are nullable optional members,
+so missing and explicit null states are accepted. `primary`/`secondary` are the
+only window slots and are classified by validated `windowDurationMins`, never
+slot position. Typed states are validated: `credits` (`CreditsSnapshot` with
+required booleans and optional string-or-null `balance`), `individualLimit`
+(`SpendControlLimitSnapshot` with four required fields, string `limit`/`used`
+and integer `remainingPercent`/`resetsAt`) and `rateLimitResetCredits`
+(`availableCount` plus typed optional reset-credit rows; rows require `id`,
+`resetType`, `status` and `grantedAt`, with nullable optional detail fields);
+malformed shapes fail closed, and
 valid present states — being v1-unrepresentable — degrade to `unknown`
 with percentage pairs withheld. Additional `rateLimitsByLimitId` buckets
 validate as full quota snapshots (map key must equal the bucket's
-`limitId`, never `"codex"`; same window/duplicate/nested rules). Backend
+`limitId`, never `"codex"`; every emitted bucket window gets a distinct safe
+`<limitId>:<slot>` identity with no equal-period merging; same
+window/duplicate/nested rules). Backend
 blockers — a non-null `rateLimitReachedType`, `spendControlReached ==
 true`, an exhausted `individualLimit`, or a blocked/exhausted additional
 bucket — never yield a healthy snapshot and withhold the percentage pairs;
@@ -97,9 +101,9 @@ unsupported and unresolved (U-001 residual); error-response text is never
 parsed, so protocol error responses map to `unknown` until failure shapes
 are captured as evidence; the selected binary path and versions are
 validated but not surfaced, because v1 has no field for them (future
-`doctor`/`status` work reports them); the reached-enum wire casing is
-unconfirmed (snake_case is evidenced from string tables; camelCase is
-tolerated); amount values inside credits/spend-control/reset-credit
+`doctor`/`status` work reports them); the reached enum uses the exact
+snake_case generated-schema values, so camelCase and arbitrary strings are
+rejected as drift; amount values inside credits/spend-control/reset-credit
 members are validated structurally but never interpreted (documented
 residual); live CLI/status integration
 is not implemented, and the automated suite contains no live-account test —

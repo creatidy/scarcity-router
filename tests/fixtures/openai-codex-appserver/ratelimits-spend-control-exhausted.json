@@ -14,8 +14,8 @@
     },
     "credits": null,
     "individualLimit": {
-      "limit": 100,
-      "used": 100,
+      "limit": "100.00",
+      "used": "100.00",
       "remainingPercent": 0,
       "resetsAt": 1788306212
     },

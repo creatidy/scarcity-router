@@ -301,6 +301,7 @@ class SuccessfulSession(_AcquisitionCase):
             "ratelimits-credits-present.json",
             "ratelimits-spend-control-exhausted.json",
             "ratelimits-credits-malformed.json",
+            "ratelimits-additional-window-present.json",
             "ratelimits-additional-bucket-exhausted.json",
             "ratelimits-slots-swapped.json",
             "ratelimits-unknown-duration.json",
@@ -406,19 +407,41 @@ class ResponseMatching(_AcquisitionCase):
         self.assertEqual([d.code for d in snapshot.diagnostics], ["schema_changed"])
 
     def test_hybrid_method_response_message_rejected_as_drift(self) -> None:
-        # A message carrying `method` together with `result` is neither a
-        # well-formed request nor a response: it must fail closed instead
-        # of being silently ignored ahead of the real matching response.
-        hybrid = (
-            b'{"id":2,"method":"account/rateLimits/updated","result":{"x":1}}\n'
-        )
-        _ = self._install_fake(
-            [INIT_RESPONSE, hybrid, _read_response(_fixture_result("ratelimits-ok-plus.json"))]
-        )
-        roots = self._make_installation()
-        snapshot = self._collect(discovery_roots=[roots])
-        self.assertEqual(snapshot.status, "schema_changed")
-        self.assertEqual([d.code for d in snapshot.diagnostics], ["schema_changed"])
+        # A message carrying a `method` key — whatever its value type —
+        # together with `result`/`error` is neither a well-formed request
+        # nor a response: it must fail closed instead of being silently
+        # ignored ahead of the real matching response.
+        for hybrid in (
+            b'{"id":2,"method":"account/rateLimits/updated","result":{"x":1}}\n',
+            b'{"id":2,"method":null,"result":{"x":1}}\n',
+            b'{"id":2,"method":42,"result":{"x":1}}\n',
+            b'{"id":2,"method":true,"error":{"code":-1}}\n',
+            b'{"method":"x","result":{"x":1}}\n',
+        ):
+            with self.subTest(hybrid=hybrid[:40]):
+                _ = self._install_fake(
+                    [INIT_RESPONSE, hybrid, _read_response(_fixture_result("ratelimits-ok-plus.json"))]
+                )
+                roots = self._make_installation()
+                snapshot = self._collect(discovery_roots=[roots])
+                self.assertEqual(snapshot.status, "schema_changed")
+                self.assertEqual(
+                    [d.code for d in snapshot.diagnostics], ["schema_changed"]
+                )
+
+    def test_notification_with_malformed_id_rejected_as_drift(self) -> None:
+        for bad in (
+            b'{"method":"account/rateLimits/updated","id":"7","params":{}}\n',
+            b'{"method":"x","id":true,"params":{}}\n',
+            b'{"method":"x","id":null,"params":{}}\n',
+        ):
+            with self.subTest(bad=bad[:40]):
+                _ = self._install_fake(
+                    [INIT_RESPONSE, bad, _read_response(_fixture_result("ratelimits-ok-plus.json"))]
+                )
+                roots = self._make_installation()
+                snapshot = self._collect(discovery_roots=[roots])
+                self.assertEqual(snapshot.status, "schema_changed")
 
     def test_read_error_response_maps_to_unknown(self) -> None:
         error_line = json.dumps(
@@ -884,6 +907,63 @@ class Discovery(unittest.TestCase):
                 self.assertIsNone(installation)
                 self.assertEqual(outcome, "unsupported_installation")
 
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "platform lacks FIFOs")
+    def test_fifo_package_maps_to_unsupported_without_blocking(self) -> None:
+        # Regression: a FIFO (or socket) at the package path must never
+        # block discovery — the file is opened no-follow and the descriptor
+        # is verified to be a regular file before reading.
+        platform_dir = acq.platform_directory()
+        assert platform_dir is not None
+        root = self.tmp / "extensions"
+        extension = root / "openai.chatgpt-26.825.51511-linux-x64"
+        binary_dir = extension / "bin" / platform_dir
+        _ = binary_dir.mkdir(parents=True, exist_ok=True)
+        binary = binary_dir / "codex"
+        _ = binary.write_bytes(b"#!/bin/sh\nexit 0\n")
+        _ = binary.chmod(0o755)
+        os.mkfifo(str(binary_dir / "codex-package.json"))
+
+        installation, outcome = acq.discover_codex_installation([root])
+        self.assertIsNone(installation)
+        self.assertEqual(outcome, "unsupported_installation")
+
+    def test_unicode_version_directory_is_skipped_deterministically(self) -> None:
+        # Regression: Unicode digit-lookalikes (superscript two) must not
+        # raise ValueError in version parsing; the malformed candidate is
+        # skipped and, when nothing usable remains, reported unsupported.
+        platform_dir = acq.platform_directory()
+        assert platform_dir is not None
+        root = self.tmp / "extensions"
+
+        def make(name: str) -> None:
+            extension = root / name
+            binary_dir = extension / "bin" / platform_dir
+            _ = binary_dir.mkdir(parents=True, exist_ok=True)
+            binary = binary_dir / "codex"
+            _ = binary.write_bytes(b"#!/bin/sh\nexit 0\n")
+            _ = binary.chmod(0o755)
+            _ = (binary_dir / "codex-package.json").write_text(
+                json.dumps(
+                    {
+                        "layoutVersion": 1,
+                        "variant": "codex",
+                        "version": "0.151.0-alpha.7.2",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+        make("openai.chatgpt-26.825.51511\u00b2-linux-x64")
+        installation, outcome = acq.discover_codex_installation([root])
+        self.assertIsNone(installation)
+        self.assertEqual(outcome, "unsupported_installation")
+
+        make("openai.chatgpt-26.825.51511-linux-x64")
+        installation, outcome = acq.discover_codex_installation([root])
+        self.assertEqual(outcome, "found")
+        assert installation is not None
+        self.assertEqual(installation.extension_version, "26.825.51511")
+
     def test_found_reports_versions(self) -> None:
         root = self._make()
         installation, outcome = acq.discover_codex_installation([root])
@@ -1061,6 +1141,53 @@ class DiscoveryIntegration(_AcquisitionCase):
 
 
 # ═════════════════════════ subprocess surface ════════════════════════════════
+
+
+class InvalidTimeouts(_AcquisitionCase):
+    """Non-finite or non-positive timeouts are rejected before any spawn."""
+
+    def test_invalid_timeouts_raise_before_spawning(self) -> None:
+        for bad in (float("nan"), float("inf"), float("-inf"), 0.0, -1.0, True):
+            for parameter in ("startup_timeout", "session_timeout"):
+                with self.subTest(bad=bad, parameter=parameter):
+                    fake = self._install_fake(
+                        [
+                            INIT_RESPONSE,
+                            _read_response(
+                                _fixture_result("ratelimits-ok-plus.json")
+                            ),
+                        ],
+                        block=True,
+                    )
+                    roots = self._make_installation()
+                    with self.assertRaises(ValueError):
+                        if parameter == "startup_timeout":
+                            _ = self._collect(
+                                discovery_roots=[roots],
+                                startup_timeout=cast(float, bad),
+                            )
+                        else:
+                            _ = self._collect(
+                                discovery_roots=[roots],
+                                session_timeout=cast(float, bad),
+                            )
+                    # Nothing was ever spawned, so no child can leak and no
+                    # deadline arithmetic ran with an unusable bound.
+                    self.assertEqual(self.spawn_calls, [])
+                    self.assertEqual(fake.events, [])
+
+    def test_valid_timeouts_still_work(self) -> None:
+        _ = self._install_fake(
+            [
+                INIT_RESPONSE,
+                _read_response(_fixture_result("ratelimits-ok-plus.json")),
+            ]
+        )
+        roots = self._make_installation()
+        snapshot = self._collect(
+            discovery_roots=[roots], startup_timeout=5.0, session_timeout=5.0
+        )
+        self.assertEqual(snapshot.status, "ok")
 
 
 class SubprocessSurface(unittest.TestCase):

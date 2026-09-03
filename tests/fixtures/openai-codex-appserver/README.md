@@ -11,9 +11,9 @@ Source of the shape: the successful PoC JSONL interaction recorded in
 (including the serde string-table/generated-schema facts for tag
 `rust-v0.151.0-alpha.7.2`). Each file below is the decoded JSON-RPC
 `result` object of one `account/rateLimits/read` response — a complete
-`GetAccountRateLimitsResponse` envelope, since the exact tagged schema
-requires `rateLimits`, `rateLimitsByLimitId` and `rateLimitResetCredits`
-to be present (explicit null is a valid absent state). Values are
+`GetAccountRateLimitsResponse` envelope. The exact tagged schema requires
+`rateLimits`; the nullable `rateLimitsByLimitId` and
+`rateLimitResetCredits` members may be absent or explicitly null. Values are
 synthetic and chosen to exercise the required parsing paths rather than
 replay a live reading.
 
@@ -29,9 +29,10 @@ replay a live reading.
   with every typed member present (`credits: null`, `individualLimit:
   null`, `spendControlReached: false`, `limitName: null`). Healthy.
 - `ratelimits-credits-present.json` — valid typed credit/spend/reset-credit
-  states (`CreditsSnapshot` with decimal-string `balance`,
-  `SpendControlLimitSnapshot` with `limit`/`used`/`remainingPercent`/
-  `resetsAt`, reset-credit summary with `availableCount`). Valid but
+  states (`CreditsSnapshot` with required boolean fields and optional
+  string-or-null `balance`, `SpendControlLimitSnapshot` with four required fields and string
+  `limit`/`used`, reset-credit summary with `availableCount` and fully typed
+  rows). Valid but
   v1-unrepresentable: degrades to `unknown` with percentage pairs
   withheld.
 - `ratelimits-spend-control-exhausted.json` — `individualLimit` at
@@ -39,6 +40,10 @@ replay a live reading.
   healthy, pairs withheld.
 - `ratelimits-credits-malformed.json` — `credits.balance` as a JSON number
   instead of the evidenced string-or-null: `schema_changed`.
+- `ratelimits-additional-window-present.json` — an additional metered bucket
+  window is emitted with a distinct safe identity rather than merged with a
+  main window; the snapshot is `unknown` because v1 cannot represent the
+  cross-bucket metering.
 - `ratelimits-additional-bucket-exhausted.json` — an additional metered
   bucket under `rateLimitsByLimitId` (key matching its `limitId`) with an
   exhausted window (`usedPercent` 100): blocker, main pairs withheld.
@@ -69,8 +74,8 @@ replay a live reading.
 ## Assertions expected of the collector
 
 - success yields all present windows; slot names carry no period semantics;
-- the required envelope members must be present (missing is drift, explicit
-  null is a valid absent state) and typed credit/spend/reset members
+- only `rateLimits` must be present (the map/reset members may be absent or
+  null), and typed credit/spend/reset members
   validate strictly, never surfacing values in output;
 - missing window coverage, duplicate known periods and a non-`codex`
   `limitId` never yield a healthy snapshot;

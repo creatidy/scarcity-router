@@ -18,8 +18,8 @@
       "balance": "1000.00"
     },
     "individualLimit": {
-      "limit": 100,
-      "used": 40,
+      "limit": "100.00",
+      "used": "40.00",
       "remainingPercent": 60,
       "resetsAt": 1788306212
     },
@@ -30,6 +30,16 @@
   "rateLimitsByLimitId": null,
   "rateLimitResetCredits": {
     "availableCount": 2,
-    "credits": []
+    "credits": [
+      {
+        "id": "synthetic-reset-credit-1",
+        "resetType": "codexRateLimits",
+        "status": "available",
+        "grantedAt": 1788000000,
+        "expiresAt": null,
+        "title": null,
+        "description": null
+      }
+    ]
   }
 }

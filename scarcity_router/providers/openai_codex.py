@@ -16,67 +16,74 @@ docs/poc-evidence.md ("OpenAI/Codex subscription capacity" and the
 ``tests/fixtures/openai-codex-appserver/``:
 
 - the successful result is the protocol's ``GetAccountRateLimitsResponse``
-  envelope, and the exact tagged schema *requires* the three members
-  ``rateLimits``, ``rateLimitsByLimitId`` and ``rateLimitResetCredits``. A
-  missing member is drift and fails closed as ``schema_changed``; an
-  explicit ``null`` is a valid absent state for the two optional-valued
-  members. Additive envelope members are tolerated when scalar and fail
-  closed when structured (they may carry uninterpretable constraining
+  envelope. Per the exact tagged generated JSON schema, only ``rateLimits``
+  is required; ``rateLimitsByLimitId`` and ``rateLimitResetCredits`` are
+  nullable optional members (missing and explicit null are both valid
+  absent states). Additive envelope members are tolerated when scalar and
+  fail closed when structured (they may carry uninterpretable constraining
   data);
-- ``rateLimitResetCredits`` is the reset-credit summary (``availableCount``
-  plus an opaque ``credits`` collection). A valid present summary has no
-  v1 representation: it degrades the snapshot to ``status="unknown"`` and
-  withholds the percentage pairs (U-010);
 - ``rateLimits`` is the protocol's ``RateLimitSnapshot`` with the evidenced
   nine members: ``limitId``, ``limitName``, ``primary``, ``secondary``,
   ``credits``, ``individualLimit``, ``spendControlReached``, ``planType``
-  and ``rateLimitReachedType``. Snapshot members are option-typed: missing
-  and ``null`` both mean an absent state; present values are type-validated
-  and malformed shapes fail closed:
+  and ``rateLimitReachedType`` (option-typed: missing and null both mean an
+  absent state). Present values validate strictly:
   - ``limitId`` must be exactly the evidenced quota identity ``"codex"``;
-  - ``primary``/``secondary`` are the only window slots, validated as
-    windows (positive integer ``windowDurationMins``) or explicit null.
-    Slot names carry no period semantics: classification uses only the
-    validated duration (300 minutes -> five-hour, 10080 -> weekly);
-  - ``credits`` is the evidenced ``CreditsSnapshot``
-    (``hasCredits``/``unlimited`` booleans, ``balance`` string-or-null): a
-    present valid snapshot is a v1-unrepresentable credit state (unknown +
-    withheld pairs), never interpreted;
-  - ``individualLimit`` is the evidenced ``SpendControlLimitSnapshot``
-    (``limit``, ``used``, ``remainingPercent``, ``resetsAt``): a present
-    valid snapshot is a v1-unrepresentable spend state, and an exhausted
-    one (``remainingPercent == 0`` or integer ``used >= limit``) is a
-    backend blocker;
+  - ``primary``/``secondary`` are the only window slots. A valid window has
+    ``windowDurationMins`` as a positive integer (300 minutes -> five-hour,
+    10080 -> weekly, other validated values -> unknown with the duration
+    preserved) or as an explicit null (a valid unknown-duration window with
+    no duration asserted). Slot names carry no period semantics;
+  - ``credits`` is the evidenced ``CreditsSnapshot``: ``hasCredits`` and
+    ``unlimited`` are required booleans, while optional ``balance`` is a
+    decimal string or null. A present valid snapshot is a
+    v1-unrepresentable credit state (unknown + withheld pairs), never
+    interpreted;
+  - ``individualLimit`` is the evidenced ``SpendControlLimitSnapshot``:
+    ``limit`` and ``used`` are required strings, while
+    ``remainingPercent`` and ``resetsAt`` are required integers. A present
+    valid snapshot is a
+    v1-unrepresentable spend state, and ``remainingPercent == 0`` is a
+    backend blocker. Amounts are never interpreted or compared;
   - ``spendControlReached`` is the boolean spend-control blocker: absent,
     null or ``false`` means clear, ``true`` blocks, any other shape is
     drift;
-  - ``rateLimitReachedType`` is the backend exhaustion flag with the
-    evidenced enum members (``rate_limit_reached``,
-    ``workspace_member_credits_depleted``,
+  - ``rateLimitReachedType`` accepts exactly the evidenced snake_case enum
+    members (``rate_limit_reached``, ``workspace_member_credits_depleted``,
     ``workspace_owner_credits_depleted``,
     ``workspace_owner_usage_limit_reached``,
-    ``workspace_member_usage_limit_reached``, casing-tolerant). Any
-    non-null value blocks;
-- quota coverage is validated on the main snapshot: lacking either known
+    ``workspace_member_usage_limit_reached``); camelCase or arbitrary
+    strings are drift, not degraded facts;
+- ``rateLimitsByLimitId`` carries additional metered buckets keyed by limit
+  id. The exact tagged success response mirrors the main snapshot under
+  the ``"codex"`` key: that entry is accepted, fully validated, and checked
+  for consistency with the top-level ``rateLimits`` (a diverging mirror is
+  drift). Every other bucket validates as a full quota snapshot with the
+  same membership, identity (the map key must equal the bucket's
+  ``limitId``), window and nested credit/spend-control rules, and its
+  validated windows are emitted with a safe distinct identity
+  (``"<limitId>:<slot>"``) without merging equal periods across buckets.
+  Buckets are ordered deterministically: main slots first, then buckets by
+  key, each primary then secondary;
+  - ``rateLimitResetCredits`` is the reset-credit summary: a valid present
+    summary requires the integer ``availableCount``; its optional ``credits``
+    rows are typed objects requiring ``id``, ``resetType``, ``status``,
+    ``grantedAt``, ``expiresAt``, ``title`` and ``description`` with the
+    generated-schema types and exact enum values. Empty arrays are valid, but
+    empty or malformed rows are drift. A present valid
+  summary is v1-unrepresentable (unknown + withheld pairs);
+- backend blockers and v1-unrepresentable states never yield a healthy
+  snapshot: ``status="unknown"`` with ``telemetry_unknown``, all validated
+  windows (main and additional) preserved with identity/duration/reset
+  facts, and every percentage pair withheld (``percentage_unknown`` per
+  window). A present additional bucket without blockers also degrades to
+  ``unknown`` (v1 cannot represent capacity metered across buckets) but
+  keeps validated pairs. Known exhaustion of the main quota *without* any
+  blocker stays ``ok`` with the ``(100, 0)`` pair;
+- main quota coverage is validated: a main snapshot lacking either known
   window kind (five-hour or weekly) never reports ``ok``; it degrades to
-  ``status="unknown"`` with validated partial windows preserved. Two slot
+  ``unknown`` with the validated partial windows preserved. Two slot
   windows sharing one known period duplicate the evidenced
   primary/secondary semantics and fail closed as ``schema_changed``;
-- ``rateLimitsByLimitId`` carries additional metered buckets, each
-  validated as a full quota snapshot with the same schema, identity (the
-  map key must equal the bucket's ``limitId`` and must not be the main
-  ``"codex"`` identity), window, duplicate-period and nested
-  credit/spend-control rules. Any present bucket is additional metering v1
-  cannot represent (``unknown``); a bucket-level blocker (reached flag,
-  spend control, exhausted individual limit, or a window at
-  ``usedPercent == 100``) withholds the main percentage pairs exactly like
-  a main-snapshot blocker;
-- blocked or v1-unrepresentable states never yield a healthy snapshot:
-  ``status="unknown"`` with ``telemetry_unknown``, windows preserved with
-  identity/duration/reset facts and percentage pairs withheld
-  (``percentage_unknown`` per affected window). Known exhaustion *without*
-  any blocker or unrepresentable state stays ``ok`` with the ``(100, 0)``
-  pair;
 - ``usedPercent`` is used-oriented for the evidenced schema (the PoC
   reading and the Codex extension's own ``remaining = 100 - used``
   derivation agree): valid integers 0..100 normalize to a
@@ -102,9 +109,10 @@ relevant response by request identity instead of timing. Observed framing
 (2026-09-03 reconnaissance): requests carry ``jsonrpc``/``id``/``method``;
 responses carry ``id`` with exactly one of ``result``/``error`` and omit the
 ``jsonrpc`` echo; notifications carry ``method`` without ``id``. A hybrid
-message carrying ``method`` together with ``result``/``error`` is invalid:
-it is neither a well-formed request nor a well-formed response and is
-treated as protocol drift, never silently ignored.
+message carrying a ``method`` key — whatever its value type — together with
+``result``/``error`` is invalid drift, and so is a notification whose
+``id`` key is present but malformed (not an integer): neither is silently
+ignored.
 
 Raw provider text, subprocess output, local paths, credentials and account
 data never enter any output this module produces.
@@ -112,6 +120,7 @@ data never enter any output this module produces.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -151,14 +160,15 @@ _KNOWN_SNAPSHOT_MEMBERS: frozenset[str] = frozenset(
     }
 )
 
-# Evidenced members of the GetAccountRateLimitsResponse envelope; the exact
-# tagged schema requires all three to be present (null is valid for the two
-# optional-valued members; missing is drift).
+# Evidenced members of the GetAccountRateLimitsResponse envelope. Only
+# `rateLimits` is required by the exact tagged generated schema; the other
+# two are nullable optional members.
 _KNOWN_ENVELOPE_MEMBERS: frozenset[str] = frozenset(
     {"rateLimits", "rateLimitsByLimitId", "rateLimitResetCredits"}
 )
 
-# The evidenced quota identity for this read result.
+# The evidenced quota identity for this read result, and the bucket key
+# under which the exact tagged success response mirrors the main snapshot.
 _LIMIT_ID = "codex"
 
 # Adapter evidence allowlist of validated PlanType enum members (see
@@ -187,24 +197,24 @@ _EVIDENCED_PLANS: frozenset[str] = frozenset(
     }
 )
 
-# Evidenced RateLimitReachedType enum members, in both observed casings
-# (the binary string tables carry snake_case; the app-server protocol
-# renames fields to camelCase, and the value casing is unconfirmed). Public
-# so tests build schema-backed reached fixtures from the evidence set.
+# The exact evidenced RateLimitReachedType enum members. Snake_case only:
+# camelCase or arbitrary strings are drift, not degraded facts.
 REACHED_TYPES: frozenset[str] = frozenset(
     {
         "rate_limit_reached",
-        "rateLimitReached",
         "workspace_member_credits_depleted",
-        "workspaceMemberCreditsDepleted",
         "workspace_owner_credits_depleted",
-        "workspaceOwnerCreditsDepleted",
         "workspace_owner_usage_limit_reached",
-        "workspaceOwnerUsageLimitReached",
         "workspace_member_usage_limit_reached",
-        "workspaceMemberUsageLimitReached",
     }
 )
+
+# The evidenced reset-credit row status enum.
+_RESET_CREDIT_STATUSES: frozenset[str] = frozenset(
+    {"available", "redeeming", "redeemed", "unknown"}
+)
+
+_RESET_CREDIT_TYPES: frozenset[str] = frozenset({"codexRateLimits", "unknown"})
 
 # Evidenced ``resetsAt`` representation: 10-digit epoch seconds.
 _RESET_S_MIN = 1_000_000_000
@@ -212,10 +222,17 @@ _RESET_S_MAX = 9_999_999_999
 
 _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
+# v1 safe identifier grammar (docs/capacity-model.md); used to compose
+# additional-bucket window identities without inventing unsafe text.
+_SAFE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._:-]{0,63}$")
+
 
 def _as_mapping(value: object) -> Mapping[str, object] | None:
     """Narrow a boundary value to a ``str``-keyed mapping, or ``None``."""
     if isinstance(value, Mapping):
+        mapping = cast(Mapping[object, object], value)
+        if not all(isinstance(key, str) for key in mapping):
+            return None
         return cast(Mapping[str, object], value)
     return None
 
@@ -225,20 +242,15 @@ def _is_int(value: object) -> TypeGuard[int]:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
-def _is_structured(value: object) -> bool:
-    """True for container values (objects/arrays) as opposed to scalars."""
-    return isinstance(value, (Mapping, list))
-
-
 def _membership_valid(
     container: Mapping[str, object],
     known: frozenset[str],
 ) -> bool:
     """Additive scalars tolerated; additive structured members are drift."""
-    for key, value in container.items():
-        if key in known:
+    for _key, value in container.items():
+        if _key in known:
             continue
-        if _is_structured(value):
+        if isinstance(value, (Mapping, list)):
             return False
     return True
 
@@ -264,31 +276,32 @@ def classify_app_server_message(message: object) -> MessageKind:
 
     Deliberate, evidence-based classification (never timing or ordering):
 
-    - ``"notification"``: object with a string ``method`` and no integer
-      ``id`` (observed notifications also carry ``params``/``emittedAtMs``,
-      which are not part of the classification);
+    - ``"notification"``: object with a string ``method`` and no ``id`` key;
     - ``"request"``: object with a string ``method`` and an integer ``id``
       and no response fields (a server-initiated request; the collector
       never answers these);
-    - ``"response"``: object without ``method`` that carries an integer
-      ``id`` and exactly one of ``result``/``error``;
-    - ``"invalid"``: anything else, including non-objects, string ids,
-      messages carrying both ``result`` and ``error``, and hybrids carrying
-      ``method`` together with ``result``/``error`` (neither a well-formed
-      request nor a well-formed response: protocol drift, never silently
-      ignored).
+    - ``"response"``: object without a ``method`` key that carries an
+      integer ``id`` and exactly one of ``result``/``error``;
+    - ``"invalid"``: anything else. This includes non-objects, string or
+      boolean ids, messages carrying both ``result`` and ``error``, any
+      hybrid carrying a ``method`` key — string, null, number or boolean —
+      together with ``result``/``error`` (neither a well-formed request nor
+      a well-formed response), and notifications whose ``id`` key is
+      present but malformed (not an integer). Invalid messages are
+      protocol drift, never silently ignored.
     """
     envelope = _as_mapping(message)
     if envelope is None:
         return "invalid"
-    has_method = isinstance(envelope.get("method"), str)
-    has_response_fields = "result" in envelope or "error" in envelope
-    if has_method and has_response_fields:
-        return "invalid"
-    has_int_id = _is_int(envelope.get("id"))
-    if has_method:
-        return "request" if has_int_id else "notification"
-    if has_int_id:
+    if "method" in envelope:
+        if "result" in envelope or "error" in envelope:
+            return "invalid"
+        if not isinstance(envelope["method"], str):
+            return "invalid"
+        if "id" in envelope:
+            return "request" if _is_int(envelope["id"]) else "invalid"
+        return "notification"
+    if _is_int(envelope.get("id")):
         has_result = "result" in envelope
         has_error = "error" in envelope
         if has_result != has_error:
@@ -339,6 +352,20 @@ def _safe_plan(plan_type: object) -> str | None:
     return None
 
 
+def _bucket_window_id(limit_id: object, slot: str) -> str | None:
+    """Compose a safe additional-window identity from validated parts only.
+
+    ``"<limitId>:<slot>"`` when both halves already satisfy the v1 safe-ID
+    grammar unchanged; otherwise the window is emitted without an identity
+    rather than with sanitized or invented text.
+    """
+    if isinstance(limit_id, str) and _SAFE_ID_RE.match(limit_id):
+        composed = f"{limit_id}:{slot}"
+        if _SAFE_ID_RE.match(composed):
+            return composed
+    return None
+
+
 def _failure(
     status: str,
     diagnostic_code: str,
@@ -359,26 +386,43 @@ def _failure(
 def _parse_window(
     slot: str,
     entry: Mapping[str, object],
+    *,
+    window_id: str | None,
 ) -> _WindowFacts | None:
     """Normalize one window object from a known window slot.
 
-    Returns the window facts, or ``None`` for structural drift (a slot
-    object without a validated positive integer ``windowDurationMins``):
-    the caller fails the whole response closed instead of partially
-    decoding it.
+    Returns the window facts, or ``None`` for structural drift. A validated
+    positive integer ``windowDurationMins`` classifies the period; an
+    explicit null (or absent) duration is the evidenced unknown-duration
+    window with no duration asserted. The entry must carry at least one
+    known member to be a window at all. ``window_id`` is the already
+    decided identity (main slot name, composed bucket identity, or ``None``
+    for unsafe bucket keys — never a fallback that could collide).
     """
-    mins = entry.get("windowDurationMins")
-    if not _is_int(mins) or mins <= 0:
+    if not any(
+        key in entry for key in ("usedPercent", "windowDurationMins", "resetsAt")
+    ):
+        return None
+    if not _membership_valid(
+        entry, frozenset({"usedPercent", "windowDurationMins", "resetsAt"})
+    ):
         return None
 
-    kind, duration_seconds = _KNOWN_DURATIONS_MINS.get(
-        mins, ("unknown", mins * 60)
-    )
+    mins = entry.get("windowDurationMins")
+    if mins is None:
+        kind = "unknown"
+        duration_seconds: int | None = None
+    elif _is_int(mins) and mins > 0:
+        kind, duration_seconds = _KNOWN_DURATIONS_MINS.get(
+            mins, ("unknown", mins * 60)
+        )
+    else:
+        return None
 
     diagnostics: list[CapacityDiagnostic] = []
     if kind == "unknown":
         diagnostics.append(
-            CapacityDiagnostic(code="window_semantics_unknown", window_id=slot)
+            CapacityDiagnostic(code="window_semantics_unknown", window_id=window_id)
         )
 
     used = _used_pair(entry.get("usedPercent"))
@@ -386,7 +430,7 @@ def _parse_window(
     remaining_percent: int | None = None
     if used is None:
         diagnostics.append(
-            CapacityDiagnostic(code="percentage_unknown", window_id=slot)
+            CapacityDiagnostic(code="percentage_unknown", window_id=window_id)
         )
     else:
         used_percent, remaining_percent = used
@@ -394,7 +438,7 @@ def _parse_window(
     resets_at = _canonical_from_epoch_s(entry.get("resetsAt"))
     if resets_at is None:
         diagnostics.append(
-            CapacityDiagnostic(code="reset_unknown", window_id=slot)
+            CapacityDiagnostic(code="reset_unknown", window_id=window_id)
         )
 
     window = CapacityWindow(
@@ -404,8 +448,9 @@ def _parse_window(
         used_percent=used_percent,
         remaining_percent=remaining_percent,
         resets_at=resets_at,
-        window_id=slot,
+        window_id=window_id,
     )
+    _ = slot  # slot names carry no normalized semantics
     return _WindowFacts(
         window=window, diagnostics=tuple(diagnostics), kind=kind
     )
@@ -431,32 +476,38 @@ def _without_percentages(
         resets_at=window.resets_at,
         window_id=window.window_id,
     )
+    diagnostic_window_id = window.window_id
     return stripped, CapacityDiagnostic(
-        code="percentage_unknown", window_id=window.window_id
+        code="percentage_unknown", window_id=diagnostic_window_id
     )
 
 
 def _credits_state(value: object) -> bool | None:
     """Validate the typed ``CreditsSnapshot``; ``None`` means drift.
 
-    Returns ``True`` when a valid credit state is present (v1-unrepresentable),
-    ``False`` when absent (null or missing), ``None`` for malformed shapes.
-    ``hasCredits``/``unlimited`` are booleans and ``balance`` is a decimal
-    string or null in the evidenced schema; the balance value itself is
-    never interpreted or surfaced.
+    Returns ``True`` when a valid credit state is present
+    (v1-unrepresentable), ``False`` when absent (null or missing). The
+    exact tagged schema requires the booleans ``hasCredits`` and
+    ``unlimited``; an optional ``balance`` must be a string or null. The
+    balance is never interpreted or surfaced.
     """
     if value is None:
         return False
     snapshot = _as_mapping(value)
     if snapshot is None:
         return None
-    if not _membership_valid(snapshot, frozenset({"hasCredits", "unlimited", "balance"})):
+    if not _membership_valid(
+        snapshot, frozenset({"hasCredits", "unlimited", "balance"})
+    ):
         return None
-    has_credits = snapshot.get("hasCredits")
-    if has_credits is not None and not isinstance(has_credits, bool):
+    if (
+        "hasCredits" not in snapshot
+        or "unlimited" not in snapshot
+    ):
         return None
-    unlimited = snapshot.get("unlimited")
-    if unlimited is not None and not isinstance(unlimited, bool):
+    if not isinstance(snapshot["hasCredits"], bool):
+        return None
+    if not isinstance(snapshot["unlimited"], bool):
         return None
     balance = snapshot.get("balance")
     if balance is not None and not isinstance(balance, str):
@@ -467,12 +518,11 @@ def _credits_state(value: object) -> bool | None:
 def _individual_limit_state(value: object) -> tuple[bool, bool] | None:
     """Validate the typed ``SpendControlLimitSnapshot``.
 
-    Returns ``(present, exhausted)``; ``None`` means drift. The evidenced
-    members are ``limit``, ``used``, ``remainingPercent`` and ``resetsAt``.
-    A present valid snapshot is a v1-unrepresentable spend state; an
-    exhausted one (integer ``remainingPercent == 0`` or integer
-    ``used >= limit``) is a backend blocker. Amounts may be integers or
-    decimal strings in the schema; string amounts are never interpreted.
+    Returns ``(present, exhausted)``; ``None`` means drift. The exact
+    tagged schema requires all four members: ``limit`` and ``used`` as
+    strings, ``remainingPercent`` as an integer and ``resetsAt`` as an
+    integer. Amount strings are never interpreted or compared;
+    ``remainingPercent == 0`` is the evidenced exhausted state.
     """
     if value is None:
         return False, False
@@ -483,22 +533,20 @@ def _individual_limit_state(value: object) -> tuple[bool, bool] | None:
         snapshot, frozenset({"limit", "used", "remainingPercent", "resetsAt"})
     ):
         return None
-    limit = snapshot.get("limit")
-    if limit is not None and not _is_int(limit) and not isinstance(limit, str):
+    for required in ("limit", "used", "remainingPercent", "resetsAt"):
+        if required not in snapshot:
+            return None
+    if not isinstance(snapshot["limit"], str):
         return None
-    used = snapshot.get("used")
-    if used is not None and not _is_int(used) and not isinstance(used, str):
+    if not isinstance(snapshot["used"], str):
         return None
-    remaining = snapshot.get("remainingPercent")
-    if remaining is not None and not _is_int(remaining):
+    remaining = snapshot["remainingPercent"]
+    if not _is_int(remaining):
         return None
-    resets = snapshot.get("resetsAt")
-    if resets is not None and not _is_int(resets):
+    resets = snapshot["resetsAt"]
+    if not _is_int(resets):
         return None
-    exhausted = remaining == 0
-    if _is_int(limit) and _is_int(used) and not exhausted:
-        exhausted = used >= limit
-    return True, exhausted
+    return True, remaining == 0
 
 
 def _reset_credits_state(value: object) -> bool | None:
@@ -506,8 +554,12 @@ def _reset_credits_state(value: object) -> bool | None:
 
     Returns ``True`` when a valid summary is present
     (v1-unrepresentable), ``False`` when absent (null or missing). The
-    evidenced members are the integer ``availableCount`` and the opaque
-    ``credits`` collection; their values are never interpreted or surfaced.
+    exact tagged schema requires the integer ``availableCount``; each
+    optional ``credits`` row is a typed object requiring ``id``, ``resetType``,
+    ``status`` and ``grantedAt``. ``expiresAt``, ``title`` and ``description``
+    are optional and nullable. Empty arrays are valid, but empty or malformed
+    rows are drift.
+    Values are never interpreted or surfaced.
     """
     if value is None:
         return False
@@ -516,9 +568,41 @@ def _reset_credits_state(value: object) -> bool | None:
         return None
     if not _membership_valid(summary, frozenset({"availableCount", "credits"})):
         return None
-    available = summary.get("availableCount")
-    if available is not None and not _is_int(available):
+    if "availableCount" not in summary or not _is_int(summary["availableCount"]):
         return None
+    rows = summary.get("credits")
+    if rows is None:
+        return True
+    if not isinstance(rows, list):
+        return None
+    for row in cast(list[object], rows):
+        row_map = _as_mapping(row)
+        if row_map is None:
+            return None
+        required = ("id", "resetType", "status", "grantedAt")
+        if any(field not in row_map for field in required):
+            return None
+        if not isinstance(row_map["id"], str):
+            return None
+        reset_type = row_map["resetType"]
+        if not isinstance(reset_type, str) or reset_type not in _RESET_CREDIT_TYPES:
+            return None
+        status = row_map["status"]
+        if not isinstance(status, str) or status not in _RESET_CREDIT_STATUSES:
+            return None
+        if not _is_int(row_map["grantedAt"]):
+            return None
+        for field in ("expiresAt", "title", "description"):
+            if field not in row_map:
+                continue
+            value = row_map[field]
+            if field == "expiresAt":
+                if value is not None and not _is_int(value):
+                    return None
+            elif value is not None and not isinstance(value, str):
+                return None
+        if not _membership_valid(row_map, frozenset(required)):
+            return None
     return True
 
 
@@ -527,6 +611,7 @@ def _quota_snapshot_state(
     *,
     expected_limit_id: str,
     full_window_blocks: bool,
+    window_id_prefix: object = None,
 ) -> _SnapshotState | None:
     """Validate one full quota snapshot (main or additional bucket).
 
@@ -537,7 +622,8 @@ def _quota_snapshot_state(
     may legitimately carry a single window. For buckets, a window reporting
     ``usedPercent == 100`` is treated as an enforced block on use; for the
     main snapshot, 100% used without any blocker flag stays a validated
-    ``(100, 0)`` fact (U-010).
+    ``(100, 0)`` fact (U-010). ``window_id_prefix`` (the bucket's limit
+    id) composes additional-window identities.
     """
     if not _membership_valid(snapshot, _KNOWN_SNAPSHOT_MEMBERS):
         return None
@@ -555,9 +641,11 @@ def _quota_snapshot_state(
         return None
 
     reached_raw = snapshot.get("rateLimitReachedType")
-    if reached_raw is not None and not isinstance(reached_raw, str):
-        return None
-    blocked = reached_raw is not None
+    blocked = False
+    if reached_raw is not None:
+        if not isinstance(reached_raw, str) or reached_raw not in REACHED_TYPES:
+            return None
+        blocked = True
 
     spend_control = snapshot.get("spendControlReached")
     if spend_control is None or spend_control is False:
@@ -586,9 +674,12 @@ def _quota_snapshot_state(
         entry = _as_mapping(value)
         if entry is None:
             return None
-        if not _membership_valid(entry, frozenset({"usedPercent", "windowDurationMins", "resetsAt"})):
-            return None
-        facts = _parse_window(slot, entry)
+        window_id = (
+            _bucket_window_id(window_id_prefix, slot)
+            if window_id_prefix is not None
+            else slot
+        )
+        facts = _parse_window(slot, entry, window_id=window_id)
         if facts is None:
             return None
         windows.append(facts)
@@ -627,11 +718,6 @@ def parse_codex_rate_limits_result(
         return _failure("schema_changed", "schema_changed", retrieved_at)
     if not _membership_valid(envelope, _KNOWN_ENVELOPE_MEMBERS):
         return _failure("schema_changed", "schema_changed", retrieved_at)
-    # The exact tagged schema requires all three envelope members present;
-    # a missing member is drift, an explicit null is a valid absent state.
-    for member in ("rateLimits", "rateLimitsByLimitId", "rateLimitResetCredits"):
-        if member not in envelope:
-            return _failure("schema_changed", "schema_changed", retrieved_at)
 
     reset_credits_present = _reset_credits_state(
         envelope.get("rateLimitResetCredits")
@@ -642,23 +728,43 @@ def parse_codex_rate_limits_result(
     additional_present = False
     additional_blocked = False
     additional_unrepresentable = False
+    bucket_states: list[tuple[str, _SnapshotState]] = []
     buckets = envelope.get("rateLimitsByLimitId")
+    buckets_map: Mapping[str, object] | None = None
     if buckets is not None:
         buckets_map = _as_mapping(buckets)
         if buckets_map is None:
             return _failure("schema_changed", "schema_changed", retrieved_at)
-        for key, value in buckets_map.items():
+
+    rate_limits = _as_mapping(envelope.get("rateLimits"))
+    if rate_limits is None:
+        return _failure("schema_changed", "schema_changed", retrieved_at)
+
+    if buckets_map is not None:
+        for key in sorted(buckets_map):
+            value = buckets_map[key]
             bucket_snapshot = _as_mapping(value)
             if bucket_snapshot is None:
                 return _failure("schema_changed", "schema_changed", retrieved_at)
-            # The map key must equal the bucket's own quota identity and
-            # must not shadow the main codex identity.
             if key == _LIMIT_ID:
+                # The exact tagged success response mirrors the main codex
+                # snapshot here: accept the entry only when it is fully
+                # valid and consistent with the top-level snapshot.
+                if bucket_snapshot != rate_limits:
+                    return _failure(
+                        "schema_changed", "schema_changed", retrieved_at
+                    )
+                continue
+            # Every emitted additional window needs a distinct v1-safe
+            # identity. Do not emit an anonymous or truncated identity when
+            # an upstream bucket key cannot compose safely.
+            if _bucket_window_id(key, "primary") is None:
                 return _failure("schema_changed", "schema_changed", retrieved_at)
             state = _quota_snapshot_state(
                 bucket_snapshot,
                 expected_limit_id=key,
                 full_window_blocks=True,
+                window_id_prefix=key,
             )
             if state is None:
                 return _failure("schema_changed", "schema_changed", retrieved_at)
@@ -667,25 +773,28 @@ def parse_codex_rate_limits_result(
             additional_unrepresentable = (
                 additional_unrepresentable or state.unrepresentable
             )
+            bucket_states.append((key, state))
 
-    rate_limits = _as_mapping(envelope.get("rateLimits"))
-    if rate_limits is None:
-        return _failure("schema_changed", "schema_changed", retrieved_at)
     main_state = _quota_snapshot_state(
         rate_limits, expected_limit_id=_LIMIT_ID, full_window_blocks=False
     )
     if main_state is None:
         return _failure("schema_changed", "schema_changed", retrieved_at)
 
-    if not main_state.windows:
-        # No window slots at all: the response cannot evidence any quota
-        # coverage; that is insufficient evidence, not healthy emptiness.
-        return _failure("unknown", "telemetry_unknown", retrieved_at)
-
     plan = _safe_plan(rate_limits.get("planType"))
     main_kinds = [
         facts.kind for facts in main_state.windows if facts.kind != "unknown"
     ]
+
+    # Deterministic emission: main slots, then additional buckets by key.
+    emitted: list[CapacityWindow] = [f.window for f in main_state.windows]
+    diagnostics: list[CapacityDiagnostic] = []
+    for facts in main_state.windows:
+        diagnostics.extend(facts.diagnostics)
+    for _key, state in bucket_states:
+        for facts in state.windows:
+            emitted.append(facts.window)
+            diagnostics.extend(facts.diagnostics)
 
     blocked = (
         main_state.blocked
@@ -694,18 +803,19 @@ def parse_codex_rate_limits_result(
         or additional_unrepresentable
         or reset_credits_present
     )
-    windows: list[CapacityWindow] = [facts.window for facts in main_state.windows]
-    diagnostics: list[CapacityDiagnostic] = []
-    for facts in main_state.windows:
-        diagnostics.extend(facts.diagnostics)
+
+    if not emitted:
+        # No window slots anywhere: the response cannot evidence any quota
+        # coverage; that is insufficient evidence, not healthy emptiness.
+        return _failure("unknown", "telemetry_unknown", retrieved_at)
 
     if blocked:
         # A backend-enforced block or a v1-unrepresentable metering state
-        # exists (main or additional): remaining capacity must not be
-        # inferred from percentages. Withhold validated pairs with explicit
+        # exists: remaining capacity must not be inferred from percentages.
+        # Withhold every validated pair (main and additional) with explicit
         # percentage_unknown diagnostics and degrade to unknown (U-010).
         degraded: list[CapacityWindow] = []
-        for window in windows:
+        for window in emitted:
             if window.used_percent is None:
                 degraded.append(window)
                 continue
@@ -730,8 +840,9 @@ def parse_codex_rate_limits_result(
         or "weekly" not in main_kinds
     ):
         # Additional metered buckets beyond the main quota are present, or
-        # an expected window constraint is missing: never healthy, keep the
-        # validated facts and degrade the overall status to unknown.
+        # an expected main window constraint is missing: never healthy,
+        # keep the validated facts and degrade the overall status to
+        # unknown.
         diagnostics.append(CapacityDiagnostic(code="telemetry_unknown"))
         return CapacitySnapshot(
             schema_version=1,
@@ -739,7 +850,7 @@ def parse_codex_rate_limits_result(
             source=SOURCE,
             retrieved_at=retrieved_at,
             status="unknown",
-            windows=tuple(windows),
+            windows=tuple(emitted),
             diagnostics=tuple(diagnostics),
             plan=plan,
         )
@@ -750,7 +861,7 @@ def parse_codex_rate_limits_result(
         source=SOURCE,
         retrieved_at=retrieved_at,
         status="ok",
-        windows=tuple(windows),
+        windows=tuple(emitted),
         diagnostics=tuple(diagnostics),
         plan=plan,
     )

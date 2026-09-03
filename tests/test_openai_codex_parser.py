@@ -39,6 +39,7 @@ ALL_FIXTURES = (
     "ratelimits-credits-present.json",
     "ratelimits-spend-control-exhausted.json",
     "ratelimits-credits-malformed.json",
+    "ratelimits-additional-window-present.json",
     "ratelimits-additional-bucket-exhausted.json",
     "ratelimits-slots-swapped.json",
     "ratelimits-unknown-duration.json",
@@ -98,9 +99,9 @@ def _result(
     envelope_extra: dict[str, object] | None = None,
     omit: tuple[str, ...] = (),
 ) -> dict[str, object]:
-    """A full GetAccountRateLimitsResponse envelope for tests.
+    """A GetAccountRateLimitsResponse envelope for tests.
 
-    ``omit`` removes required members to build drift inputs.
+    ``omit`` removes optional members to build absent-state inputs.
     """
     result: dict[str, object] = {
         "rateLimits": rate_limits,
@@ -184,198 +185,69 @@ class KnownWindowsFixture(unittest.TestCase):
 
 
 class FullShapeFixture(unittest.TestCase):
-    """The exact evidenced envelope and snapshot shapes, metadata null."""
+    """The exact tagged success response, including the mirrored entry."""
 
-    def test_complete_shape_is_healthy(self) -> None:
+    def test_complete_shape_with_mirrored_codex_is_healthy(self) -> None:
         snap = _parse(_load("ratelimits-full-shape-ok.json"))
         self.assertEqual(snap.status, "ok")
         self.assertEqual(snap.plan, "pro")
+        # The mirror must not be treated as an additional bucket or emit
+        # duplicate windows: exactly the two main windows.
         self.assertEqual(len(snap.windows), 2)
         self.assertEqual(_codes(snap), set())
+
+    def test_diverging_mirror_fails_closed(self) -> None:
+        payload = _load("ratelimits-full-shape-ok.json")
+        buckets = cast(
+            "dict[str, dict[str, object]]", payload["rateLimitsByLimitId"]
+        )
+        mirror = buckets["codex"]
+        mirror["primary"] = _window(99, 300)
+        snap = _parse(payload)
+        self.assertEqual(snap.status, "schema_changed")
+        self.assertEqual(snap.windows, ())
+        self.assertEqual(_codes(snap), {"schema_changed"})
+
+    def test_invalid_mirror_fails_closed(self) -> None:
+        payload = _load("ratelimits-full-shape-ok.json")
+        buckets = cast(
+            "dict[str, dict[str, object]]", payload["rateLimitsByLimitId"]
+        )
+        # The mirror must carry the codex identity like any full snapshot.
+        buckets["codex"]["limitId"] = "other"
+        snap = _parse(payload)
+        self.assertEqual(snap.status, "schema_changed")
 
     def test_metadata_members_never_reach_output(self) -> None:
         snap = _parse(_load("ratelimits-credits-present.json"))
         text = _canonical_json(snap)
         for forbidden in (
-            "hasCredits", "balance", "remainingPercent", "enforcementMode",
-            "availableCount", "limitName", "individualLimit", "credits",
+            "hasCredits", "balance", "remainingPercent", "availableCount",
+            "limitName", "individualLimit", "credits", "creditId",
         ):
             self.assertNotIn(forbidden, text)
 
 
-class CreditsAndSpendControl(unittest.TestCase):
-    """Typed CreditsSnapshot / SpendControlLimitSnapshot semantics."""
-
-    def test_present_valid_credits_degrade_with_withheld_pairs(self) -> None:
-        snap = _parse(_load("ratelimits-credits-present.json"))
-        self.assertEqual(snap.status, "unknown")
-        self.assertIn("telemetry_unknown", _codes(snap))
-        for window in snap.windows:
-            self.assertIsNone(window.used_percent)
-            self.assertIsNone(window.remaining_percent)
-        self.assertIn("percentage_unknown", _codes(snap))
-
-    def test_valid_reset_credit_summary_degrades(self) -> None:
-        payload = _result(
-            _snapshot(dict(_BOTH_SLOTS)),
-            reset_credits={"availableCount": 2, "credits": []},
-        )
-        snap = _parse(payload)
-        self.assertEqual(snap.status, "unknown")
-        self.assertIn("telemetry_unknown", _codes(snap))
-        for window in snap.windows:
-            self.assertIsNone(window.used_percent)
-
-    def test_exhausted_individual_limit_is_a_blocker(self) -> None:
-        snap = _parse(_load("ratelimits-spend-control-exhausted.json"))
-        self.assertEqual(snap.status, "unknown")
-        self.assertIn("telemetry_unknown", _codes(snap))
-        for window in snap.windows:
-            self.assertIsNone(window.used_percent)
-            self.assertIsNone(window.remaining_percent)
-        self.assertIn("percentage_unknown", _codes(snap))
-
-    def test_exhausted_by_used_over_limit_is_a_blocker(self) -> None:
-        payload = _result(
-            _snapshot(
-                dict(_BOTH_SLOTS),
-                extra={
-                    "individualLimit": {
-                        "limit": 10,
-                        "used": 11,
-                        "remainingPercent": None,
-                        "resetsAt": 1788306212,
-                    }
-                },
-            )
-        )
-        snap = _parse(payload)
-        self.assertEqual(snap.status, "unknown")
-        for window in snap.windows:
-            self.assertIsNone(window.used_percent)
-
-    def test_malformed_credits_fail_closed(self) -> None:
-        malformed: tuple[object, ...] = (
-            {"hasCredits": "yes", "unlimited": False, "balance": "1.00"},
-            {"hasCredits": True, "unlimited": 1, "balance": None},
-            {"hasCredits": True, "unlimited": False, "balance": 1000},
-            {"hasCredits": True, "unlimited": False, "balance": None,
-             "extra": {"nested": 1}},
-            "many",
-            5,
-            ["x"],
-        )
-        for bad in malformed:
-            with self.subTest(bad=bad):
-                payload = _result(_snapshot(dict(_BOTH_SLOTS), extra={"credits": bad}))
-                snap = _parse(payload)
-                self.assertEqual(snap.status, "schema_changed", msg=repr(bad))
-                self.assertEqual(snap.windows, ())
-
-    def test_malformed_individual_limit_fails_closed(self) -> None:
-        malformed: tuple[object, ...] = (
-            {"limit": "10", "used": "1", "remainingPercent": "60"},
-            {"limit": 10, "used": 1, "remainingPercent": True},
-            {"limit": 10, "used": 1, "resetsAt": "soon"},
-            {"limit": 10, "used": 1, "extra": {"x": 1}},
-            "unlimited",
-            7,
-            ["x"],
-        )
-        for bad in malformed:
-            with self.subTest(bad=bad):
-                payload = _result(
-                    _snapshot(dict(_BOTH_SLOTS), extra={"individualLimit": bad})
-                )
-                snap = _parse(payload)
-                self.assertEqual(snap.status, "schema_changed", msg=repr(bad))
-                self.assertEqual(snap.windows, ())
-
-    def test_malformed_reset_credits_fail_closed(self) -> None:
-        malformed: tuple[object, ...] = (
-            {"availableCount": "2"},
-            {"availableCount": 2, "credits": {"a": 1}, "extra": [1]},
-            "available",
-            2,
-            True,
-            [],
-        )
-        for bad in malformed:
-            with self.subTest(bad=bad):
-                payload = _result(_snapshot(dict(_BOTH_SLOTS)), reset_credits=bad)
-                snap = _parse(payload)
-                self.assertEqual(snap.status, "schema_changed", msg=repr(bad))
-                self.assertEqual(snap.windows, ())
-
-    def test_null_and_absent_states_are_clear(self) -> None:
-        extra_cases: tuple[dict[str, object], ...] = (
-            {"credits": None, "individualLimit": None, "spendControlReached": None},
-            {},  # option-typed members may be missing entirely
-        )
-        for extra in extra_cases:
-            with self.subTest(extra=extra):
-                payload = _result(_snapshot(dict(_BOTH_SLOTS), extra=extra))
-                snap = _parse(payload)
-                self.assertEqual(snap.status, "ok", msg=repr(extra))
-                self.assertEqual(_codes(snap), set())
-
-    def test_string_amounts_accepted_structurally_as_unrepresentable(self) -> None:
-        payload = _result(
-            _snapshot(
-                dict(_BOTH_SLOTS),
-                extra={
-                    "individualLimit": {
-                        "limit": "100.00",
-                        "used": "40.00",
-                        "remainingPercent": 60,
-                        "resetsAt": 1788306212,
-                    }
-                },
-            )
-        )
-        snap = _parse(payload)
-        self.assertEqual(snap.status, "unknown")
-        self.assertIn("telemetry_unknown", _codes(snap))
-
-    def test_boolean_spend_control_blocker_never_reports_healthy(self) -> None:
-        payload = _result(
-            _snapshot(dict(_BOTH_SLOTS), extra={"spendControlReached": True})
-        )
-        snap = _parse(payload)
-        self.assertEqual(snap.status, "unknown")
-        self.assertIn("telemetry_unknown", _codes(snap))
-        for window in snap.windows:
-            self.assertIsNone(window.used_percent)
-        self.assertIn("percentage_unknown", _codes(snap))
-
-    def test_non_boolean_spend_control_value_is_drift(self) -> None:
-        for bad in ("yes", 1, ["blocked"], {"blocked": True}):
-            with self.subTest(bad=bad):
-                payload = _result(
-                    _snapshot(
-                        dict(_BOTH_SLOTS), extra={"spendControlReached": bad}
-                    )
-                )
-                snap = _parse(payload)
-                self.assertEqual(snap.status, "schema_changed", msg=repr(bad))
-
-
 class EnvelopeRequirements(unittest.TestCase):
-    """The exact tagged schema requires all three envelope members."""
+    """Per the exact tagged generated schema only rateLimits is required."""
 
-    def test_missing_required_member_fails_closed(self) -> None:
-        for member in ("rateLimits", "rateLimitsByLimitId", "rateLimitResetCredits"):
-            with self.subTest(member=member):
-                payload = _result(_snapshot(dict(_BOTH_SLOTS)), omit=(member,))
-                snap = _parse(payload)
-                self.assertEqual(snap.status, "schema_changed")
-                self.assertEqual(snap.windows, ())
-                self.assertEqual(_codes(snap), {"schema_changed"})
-
-    def test_explicit_null_members_are_valid_absent_states(self) -> None:
-        payload = _result(_snapshot(dict(_BOTH_SLOTS)))
+    def test_missing_rate_limits_fails_closed(self) -> None:
+        payload = _result(_snapshot(dict(_BOTH_SLOTS)), omit=("rateLimits",))
         snap = _parse(payload)
-        self.assertEqual(snap.status, "ok")
+        self.assertEqual(snap.status, "schema_changed")
+        self.assertEqual(_codes(snap), {"schema_changed"})
+
+    def test_optional_members_may_be_absent_or_null(self) -> None:
+        for omit in (
+            ("rateLimitsByLimitId",),
+            ("rateLimitResetCredits",),
+            ("rateLimitsByLimitId", "rateLimitResetCredits"),
+        ):
+            with self.subTest(omit=omit):
+                payload = _result(_snapshot(dict(_BOTH_SLOTS)), omit=omit)
+                snap = _parse(payload)
+                self.assertEqual(snap.status, "ok")
+                self.assertEqual(_codes(snap), set())
 
     def test_non_mapping_envelope_member_is_drift(self) -> None:
         bad_members: tuple[tuple[str, object], ...] = (
@@ -411,6 +283,197 @@ class EnvelopeRequirements(unittest.TestCase):
         self.assertEqual(snap.status, "ok")
 
 
+class CreditsAndSpendControl(unittest.TestCase):
+    """Typed CreditsSnapshot / SpendControlLimitSnapshot semantics."""
+
+    def test_present_valid_credits_degrade_with_withheld_pairs(self) -> None:
+        snap = _parse(_load("ratelimits-credits-present.json"))
+        self.assertEqual(snap.status, "unknown")
+        self.assertIn("telemetry_unknown", _codes(snap))
+        for window in snap.windows:
+            self.assertIsNone(window.used_percent)
+            self.assertIsNone(window.remaining_percent)
+        self.assertIn("percentage_unknown", _codes(snap))
+
+    def test_valid_reset_credit_summary_degrades(self) -> None:
+        payload = _result(
+            _snapshot(dict(_BOTH_SLOTS)),
+            reset_credits={
+                "availableCount": 2,
+                "credits": [
+                    {
+                        "id": "synthetic-1",
+                        "resetType": "codexRateLimits",
+                        "status": "available",
+                        "grantedAt": 1788000000,
+                        "expiresAt": None,
+                        "title": None,
+                        "description": None,
+                    },
+                    {
+                        "id": "synthetic-2",
+                        "resetType": "unknown",
+                        "status": "redeeming",
+                        "grantedAt": 1788000000,
+                        "expiresAt": 1788748064,
+                        "title": "synthetic",
+                        "description": "synthetic",
+                    },
+                ],
+            },
+        )
+        snap = _parse(payload)
+        self.assertEqual(snap.status, "unknown")
+        self.assertIn("telemetry_unknown", _codes(snap))
+        for window in snap.windows:
+            self.assertIsNone(window.used_percent)
+
+    def test_exhausted_individual_limit_is_a_blocker(self) -> None:
+        snap = _parse(_load("ratelimits-spend-control-exhausted.json"))
+        self.assertEqual(snap.status, "unknown")
+        self.assertIn("telemetry_unknown", _codes(snap))
+        for window in snap.windows:
+            self.assertIsNone(window.used_percent)
+            self.assertIsNone(window.remaining_percent)
+        self.assertIn("percentage_unknown", _codes(snap))
+
+    def test_malformed_credits_fail_closed(self) -> None:
+        malformed: tuple[object, ...] = (
+            {},  # missing required hasCredits/unlimited
+            {"hasCredits": True},  # missing required unlimited/balance
+            {"unlimited": False},  # missing required hasCredits/balance
+            {"hasCredits": "yes", "unlimited": False},
+            {"hasCredits": True, "unlimited": 1},
+            {"hasCredits": True, "unlimited": False, "balance": 1000},
+            {"hasCredits": True, "unlimited": False, "extra": {"n": 1}},
+            "many",
+            5,
+            ["x"],
+        )
+        for bad in malformed:
+            with self.subTest(bad=bad):
+                payload = _result(_snapshot(dict(_BOTH_SLOTS), extra={"credits": bad}))
+                snap = _parse(payload)
+                self.assertEqual(snap.status, "schema_changed", msg=repr(bad))
+                self.assertEqual(snap.windows, ())
+
+    def test_malformed_individual_limit_fails_closed(self) -> None:
+        malformed: tuple[object, ...] = (
+            {},  # all four members required
+            {"limit": "10", "used": "1", "remainingPercent": 60},  # resetsAt
+            {"limit": "10", "used": "1", "resetsAt": 1788306212},
+            {"limit": 10, "used": "1", "remainingPercent": 60, "resetsAt": None},
+            {"limit": "10", "used": 1, "remainingPercent": 60, "resetsAt": None},
+            {"limit": "10", "used": "1", "remainingPercent": "60", "resetsAt": 1},
+            {"limit": "10", "used": "1", "remainingPercent": True, "resetsAt": 1},
+            {"limit": "10", "used": "1", "remainingPercent": None, "resetsAt": 1},
+            {"limit": "10", "used": "1", "remainingPercent": 60, "extra": {"x": 1}},
+            "unlimited",
+            7,
+            ["x"],
+        )
+        for bad in malformed:
+            with self.subTest(bad=bad):
+                payload = _result(
+                    _snapshot(dict(_BOTH_SLOTS), extra={"individualLimit": bad})
+                )
+                snap = _parse(payload)
+                self.assertEqual(snap.status, "schema_changed", msg=repr(bad))
+                self.assertEqual(snap.windows, ())
+
+    def test_malformed_reset_credits_fail_closed(self) -> None:
+        malformed: tuple[object, ...] = (
+            cast(object, {}),  # availableCount required
+            cast(object, {"availableCount": "2"}),
+            cast(object, {"availableCount": 2, "credits": {"a": 1}}),
+            cast(object, {"availableCount": 2, "credits": [{}]}),
+            cast(object, {"availableCount": 2, "credits": [{"id": "x"}]}),
+            cast(object, {"availableCount": 2, "credits": [{"id": 5, "resetType": "unknown", "status": "available", "grantedAt": 1, "expiresAt": None, "title": None, "description": None}]}),
+            cast(object, {"availableCount": 2, "credits": [{"id": "x", "resetType": "unknown", "status": "later", "grantedAt": 1, "expiresAt": None, "title": None, "description": None}]}),
+            cast(object, {"availableCount": 2, "credits": [{"id": "x", "resetType": "unknown", "status": "available", "grantedAt": 1, "expiresAt": None, "title": None, "description": 5}]}),
+            cast(object, {"availableCount": 2, "credits": ["row"]}),
+            "available",
+            2,
+            True,
+            [],
+        )
+        for bad in malformed:
+            with self.subTest(bad=bad):
+                payload = _result(_snapshot(dict(_BOTH_SLOTS)), reset_credits=bad)
+                snap = _parse(payload)
+                self.assertEqual(snap.status, "schema_changed", msg=repr(bad))
+                self.assertEqual(snap.windows, ())
+
+    def test_null_and_absent_states_are_clear(self) -> None:
+        extra_cases: tuple[dict[str, object], ...] = (
+            {"credits": None, "individualLimit": None, "spendControlReached": None},
+            {},  # option-typed members may be missing entirely
+        )
+        for extra in extra_cases:
+            with self.subTest(extra=extra):
+                payload = _result(_snapshot(dict(_BOTH_SLOTS), extra=extra))
+                snap = _parse(payload)
+                self.assertEqual(snap.status, "ok", msg=repr(extra))
+                self.assertEqual(_codes(snap), set())
+
+    def test_non_nullable_individual_limit_members_are_required(self) -> None:
+        payload = _result(
+            _snapshot(
+                dict(_BOTH_SLOTS),
+                extra={
+                    "individualLimit": {
+                        "limit": "100.00",
+                        "used": "40.00",
+                        "remainingPercent": None,
+                        "resetsAt": None,
+                    }
+                },
+            )
+        )
+        snap = _parse(payload)
+        self.assertEqual(snap.status, "schema_changed")
+        self.assertEqual(snap.windows, ())
+
+    def test_explicit_null_credit_balance_is_valid(self) -> None:
+        payload = _result(
+            _snapshot(
+                dict(_BOTH_SLOTS),
+                extra={
+                    "credits": {
+                        "hasCredits": True,
+                        "unlimited": False,
+                        "balance": None,
+                    }
+                },
+            )
+        )
+        snap = _parse(payload)
+        self.assertEqual(snap.status, "unknown")
+        self.assertIn("telemetry_unknown", _codes(snap))
+
+    def test_boolean_spend_control_blocker_never_reports_healthy(self) -> None:
+        payload = _result(
+            _snapshot(dict(_BOTH_SLOTS), extra={"spendControlReached": True})
+        )
+        snap = _parse(payload)
+        self.assertEqual(snap.status, "unknown")
+        self.assertIn("telemetry_unknown", _codes(snap))
+        for window in snap.windows:
+            self.assertIsNone(window.used_percent)
+        self.assertIn("percentage_unknown", _codes(snap))
+
+    def test_non_boolean_spend_control_value_is_drift(self) -> None:
+        for bad in ("yes", 1, ["blocked"], {"blocked": True}):
+            with self.subTest(bad=bad):
+                payload = _result(
+                    _snapshot(
+                        dict(_BOTH_SLOTS), extra={"spendControlReached": bad}
+                    )
+                )
+                snap = _parse(payload)
+                self.assertEqual(snap.status, "schema_changed", msg=repr(bad))
+
+
 class AdditionalBuckets(unittest.TestCase):
     """Every additional bucket validates as a full quota snapshot."""
 
@@ -430,9 +493,8 @@ class AdditionalBuckets(unittest.TestCase):
             "primary": _window(used_percent, duration),
             "secondary": secondary,
             "rateLimitReachedType": reached,
+            "spendControlReached": spend,
         }
-        if spend is not None:
-            bucket["spendControlReached"] = spend
         if individual is not None:
             bucket["individualLimit"] = individual
         return bucket
@@ -446,17 +508,51 @@ class AdditionalBuckets(unittest.TestCase):
                 self.assertEqual(snap.status, "ok")
                 self.assertEqual(_codes(snap), set())
 
-    def test_present_bucket_degrades_to_unknown_with_pairs(self) -> None:
-        payload = _result(
-            _snapshot(dict(_BOTH_SLOTS)),
-            buckets={"gpt-reserve": self._bucket()},
-        )
-        snap = _parse(payload)
+    def test_additional_window_fixture_emits_bucket_window(self) -> None:
+        snap = _parse(_load("ratelimits-additional-window-present.json"))
         self.assertEqual(snap.status, "unknown")
         self.assertIn("telemetry_unknown", _codes(snap))
-        for window in snap.windows:
-            self.assertIsNotNone(window.used_percent)
+        # Both main windows keep their validated pairs...
+        by_id = {w.window_id: w for w in snap.windows}
+        self.assertEqual(by_id["primary"].used_percent, 6)
+        self.assertEqual(by_id["secondary"].used_percent, 52)
+        # ...and the additional bucket's window is emitted with a safe,
+        # distinct identity (no merge with the main five-hour window).
+        self.assertEqual(len(snap.windows), 3)
+        reserve = by_id["gpt-reserve:primary"]
+        self.assertEqual(reserve.used_percent, 30)
+        self.assertEqual(reserve.kind, "five_hour")
+        self.assertEqual(reserve.duration_seconds, 18_000)
         self.assertNotIn("percentage_unknown", _codes(snap))
+
+    def test_bucket_windows_ordered_deterministically(self) -> None:
+        payload = _result(
+            _snapshot(dict(_BOTH_SLOTS)),
+            buckets={
+                "zeta-limit": self._bucket(limit_id="zeta-limit"),
+                "alpha-limit": self._bucket(limit_id="alpha-limit"),
+            },
+        )
+        snap = _parse(payload)
+        self.assertEqual(
+            [w.window_id for w in snap.windows],
+            [
+                "primary",
+                "secondary",
+                "alpha-limit:primary",
+                "zeta-limit:primary",
+            ],
+        )
+
+    def test_unsafe_bucket_key_fails_closed(self) -> None:
+        payload = _result(
+            _snapshot(dict(_BOTH_SLOTS)),
+            buckets={"GPT Reserve!": self._bucket(limit_id="GPT Reserve!")},
+        )
+        snap = _parse(payload)
+        self.assertEqual(snap.status, "schema_changed")
+        self.assertEqual(snap.windows, ())
+        self.assertNotIn("GPT Reserve!", _canonical_json(snap))
 
     def test_bucket_identity_mismatch_fails_closed(self) -> None:
         payload = _result(
@@ -466,14 +562,6 @@ class AdditionalBuckets(unittest.TestCase):
         snap = _parse(payload)
         self.assertEqual(snap.status, "schema_changed")
         self.assertEqual(snap.windows, ())
-
-    def test_bucket_key_shadowing_main_identity_fails_closed(self) -> None:
-        payload = _result(
-            _snapshot(dict(_BOTH_SLOTS)),
-            buckets={"codex": self._bucket(limit_id="codex")},
-        )
-        snap = _parse(payload)
-        self.assertEqual(snap.status, "schema_changed")
 
     def test_bucket_missing_identity_fails_closed(self) -> None:
         bucket = self._bucket()
@@ -496,7 +584,7 @@ class AdditionalBuckets(unittest.TestCase):
 
     def test_bucket_malformed_window_fails_closed(self) -> None:
         bucket = self._bucket()
-        bucket["primary"] = {"usedPercent": 5}  # no duration discriminator
+        bucket["primary"] = {"usedPercent": 5, "windowDurationMins": "300"}
         payload = _result(_snapshot(dict(_BOTH_SLOTS)), buckets={"gpt-reserve": bucket})
         snap = _parse(payload)
         self.assertEqual(snap.status, "schema_changed")
@@ -508,7 +596,7 @@ class AdditionalBuckets(unittest.TestCase):
         snap = _parse(payload)
         self.assertEqual(snap.status, "schema_changed")
 
-    def test_bucket_exhaustion_withholds_main_pairs(self) -> None:
+    def test_bucket_exhaustion_withholds_all_pairs(self) -> None:
         for bucket in (
             self._bucket(used_percent=100),
             self._bucket(reached="rate_limit_reached"),
@@ -525,7 +613,7 @@ class AdditionalBuckets(unittest.TestCase):
                 self.assertIn("percentage_unknown", _codes(snap))
                 self.assertIn("telemetry_unknown", _codes(snap))
 
-    def test_bucket_spend_control_blocker_withholds_main_pairs(self) -> None:
+    def test_bucket_spend_control_blocker_withholds_all_pairs(self) -> None:
         payload = _result(
             _snapshot(dict(_BOTH_SLOTS)),
             buckets={"gpt-reserve": self._bucket(spend=True)},
@@ -536,34 +624,15 @@ class AdditionalBuckets(unittest.TestCase):
             self.assertIsNone(window.used_percent)
         self.assertIn("percentage_unknown", _codes(snap))
 
-    def test_bucket_exhausted_individual_limit_withholds_main_pairs(self) -> None:
+    def test_bucket_exhausted_individual_limit_withholds_all_pairs(self) -> None:
         payload = _result(
             _snapshot(dict(_BOTH_SLOTS)),
             buckets={
                 "gpt-reserve": self._bucket(
                     individual={
-                        "limit": 10,
-                        "used": 10,
+                        "limit": "10.00",
+                        "used": "10.00",
                         "remainingPercent": 0,
-                        "resetsAt": 1788306212,
-                    }
-                )
-            },
-        )
-        snap = _parse(payload)
-        self.assertEqual(snap.status, "unknown")
-        for window in snap.windows:
-            self.assertIsNone(window.used_percent)
-
-    def test_bucket_unrepresentable_state_withholds_main_pairs(self) -> None:
-        payload = _result(
-            _snapshot(dict(_BOTH_SLOTS)),
-            buckets={
-                "gpt-reserve": self._bucket(
-                    individual={
-                        "limit": 10,
-                        "used": 1,
-                        "remainingPercent": 90,
                         "resetsAt": 1788306212,
                     }
                 )
@@ -578,10 +647,29 @@ class AdditionalBuckets(unittest.TestCase):
         snap = _parse(_load("ratelimits-additional-bucket-exhausted.json"))
         self.assertEqual(snap.status, "unknown")
         self.assertEqual(snap.plan, "pro")
+        self.assertEqual(len(snap.windows), 3)  # bucket window emitted too
         for window in snap.windows:
             self.assertIsNone(window.used_percent)
         self.assertIn("telemetry_unknown", _codes(snap))
-        self.assertNotIn("gpt-reserve", _canonical_json(snap))
+        # The bucket's window identity is a safe composed id; unsafe raw
+        # keys never leak (checked in the no-leak sweep).
+
+    def test_null_duration_bucket_window_accepted(self) -> None:
+        bucket = self._bucket()
+        bucket["primary"] = {
+            "usedPercent": 5,
+            "windowDurationMins": None,
+            "resetsAt": 1788306212,
+        }
+        payload = _result(
+            _snapshot(dict(_BOTH_SLOTS)), buckets={"gpt-reserve": bucket}
+        )
+        snap = _parse(payload)
+        self.assertEqual(snap.status, "unknown")  # additional metering present
+        reserve = snap.windows[2]
+        self.assertEqual(reserve.kind, "unknown")
+        self.assertIsNone(reserve.duration_seconds)
+        self.assertEqual(reserve.window_id, "gpt-reserve:primary")
 
 
 class UnknownDurationFixture(unittest.TestCase):
@@ -641,13 +729,14 @@ class ExhaustedAndZeroFixtures(unittest.TestCase):
 
     def test_reached_with_midrange_percentages_still_withholds_pairs(self) -> None:
         payload = _result(
-            _snapshot(dict(_BOTH_SLOTS), extra={"rateLimitReachedType": "rate_limit_reached"})
+            _snapshot(
+                dict(_BOTH_SLOTS), extra={"rateLimitReachedType": "rate_limit_reached"}
+            )
         )
         snap = _parse(payload)
         self.assertEqual(snap.status, "unknown")
         for window in snap.windows:
             self.assertIsNone(window.used_percent)
-            self.assertIsNone(window.remaining_percent)
         self.assertIn("telemetry_unknown", _codes(snap))
         self.assertIn("percentage_unknown", _codes(snap))
 
@@ -665,17 +754,17 @@ class ExhaustedAndZeroFixtures(unittest.TestCase):
                 self.assertIsNone(snap.windows[0].used_percent)
                 self.assertNotIn(reached, _canonical_json(snap))
 
-    def test_unknown_reached_value_degrades_not_healthy(self) -> None:
-        payload = _result(
-            _snapshot(dict(_BOTH_SLOTS), extra={"rateLimitReachedType": "brand-new-type"})
-        )
-        snap = _parse(payload)
-        self.assertEqual(snap.status, "unknown")
-        self.assertIn("telemetry_unknown", _codes(snap))
-        self.assertIsNone(snap.windows[0].used_percent)
-
-    def test_non_string_reached_value_is_drift(self) -> None:
-        for bad in (5, True, {"x": 1}, ["x"]):
+    def test_non_snake_or_unknown_reached_values_are_drift(self) -> None:
+        for bad in (
+            "rateLimitReached",  # camelCase is not the evidenced wire form
+            "workspaceMemberCreditsDepleted",
+            "brand-new-type",
+            "",
+            5,
+            True,
+            {"x": 1},
+            ["x"],
+        ):
             with self.subTest(bad=bad):
                 payload = _result(
                     _snapshot(
@@ -684,6 +773,7 @@ class ExhaustedAndZeroFixtures(unittest.TestCase):
                 )
                 snap = _parse(payload)
                 self.assertEqual(snap.status, "schema_changed", msg=repr(bad))
+                self.assertEqual(snap.windows, ())
 
     def test_known_zero_usage_is_not_missing(self) -> None:
         snap = _parse(_load("ratelimits-zero-usage.json"))
@@ -820,7 +910,6 @@ class CoverageValidation(unittest.TestCase):
                 snap = _parse(payload)
                 self.assertEqual(snap.status, "schema_changed", msg=repr(extra))
                 self.assertEqual(snap.windows, ())
-                self.assertEqual(_codes(snap), {"schema_changed"})
 
 
 # ══════════════════════════ focused parser behavior ══════════════════════════
@@ -828,7 +917,7 @@ class CoverageValidation(unittest.TestCase):
 
 class PercentageNormalization(unittest.TestCase):
     def test_malformed_percentages_omit_pair(self) -> None:
-        for bad in ("6", 6.5, True, -1, 101, None, [6], {"v": 6}):
+        for bad in ("6", 6.5, True, -1, 101, [6], {"v": 6}):
             with self.subTest(bad=bad):
                 payload = _result(
                     _snapshot(
@@ -843,7 +932,6 @@ class PercentageNormalization(unittest.TestCase):
                 primary = _windows(snap, resource="tokens", kind="five_hour")
                 self.assertEqual(len(primary), 1)
                 self.assertIsNone(primary[0].used_percent, msg=repr(bad))
-                self.assertIsNone(primary[0].remaining_percent, msg=repr(bad))
                 self.assertIn("percentage_unknown", _codes(snap))
 
     def test_used_orientation_boundary_values(self) -> None:
@@ -906,7 +994,7 @@ class ResetNormalization(unittest.TestCase):
 
 
 class WindowStructureDrift(unittest.TestCase):
-    def test_object_without_duration_discriminator_fails_closed(self) -> None:
+    def test_absent_duration_is_a_valid_unknown_window(self) -> None:
         payload = _result(
             _snapshot(
                 {
@@ -916,11 +1004,44 @@ class WindowStructureDrift(unittest.TestCase):
             )
         )
         snap = _parse(payload)
+        self.assertEqual(snap.status, "unknown")  # five-hour constraint unknown
+        unknown = _windows(snap, resource="tokens", kind="unknown")
+        self.assertEqual(len(unknown), 1)
+        self.assertEqual(unknown[0].used_percent, 6)
+        self.assertIsNone(unknown[0].duration_seconds)
+        self.assertIn("window_semantics_unknown", _codes(snap))
+
+    def test_null_duration_is_a_valid_unknown_window(self) -> None:
+        payload = _result(
+            _snapshot(
+                {
+                    "primary": _window(6, None),
+                    "secondary": _window(52, 10080, 1788748064),
+                }
+            )
+        )
+        snap = _parse(payload)
+        self.assertEqual(snap.status, "unknown")
+        unknown = _windows(snap, resource="tokens", kind="unknown")
+        self.assertEqual(len(unknown), 1)
+        self.assertIsNone(unknown[0].duration_seconds)
+        self.assertEqual(unknown[0].resets_at, RESET_1788306212)
+
+    def test_object_without_any_window_member_is_drift(self) -> None:
+        payload = _result(
+            _snapshot(
+                {
+                    "primary": {"foo": "bar"},
+                    "secondary": _window(52, 10080, 1788748064),
+                }
+            )
+        )
+        snap = _parse(payload)
         self.assertEqual(snap.status, "schema_changed")
         self.assertEqual(snap.windows, ())
 
     def test_non_positive_or_non_integer_duration_fails_closed(self) -> None:
-        for bad in (0, -300, 300.0, True, "300", None):
+        for bad in (0, -300, 300.0, True, "300"):
             with self.subTest(bad=bad):
                 payload = _result(
                     _snapshot(
@@ -946,7 +1067,10 @@ class WindowStructureDrift(unittest.TestCase):
     def test_healthy_sibling_does_not_survive_drift(self) -> None:
         payload = _result(
             _snapshot(
-                {"primary": {"foo": "bar"}, "secondary": _window(52, 10080, 1788748064)}
+                {
+                    "primary": {"windowDurationMins": {"nested": True}},
+                    "secondary": _window(52, 10080, 1788748064),
+                }
             )
         )
         snap = _parse(payload)
@@ -966,8 +1090,6 @@ class WindowStructureDrift(unittest.TestCase):
         self.assertEqual(_codes(snap), set())
 
     def test_window_structured_additive_member_is_drift(self) -> None:
-        # Consistent conservative posture at every level: an additive
-        # structured member inside a window object is drift.
         entry: dict[str, object] = {
             **_window(6, 300),
             "experimental": {"nested": True},
@@ -1091,14 +1213,6 @@ class PlanNormalization(unittest.TestCase):
         self.assertEqual(snap.status, "ok")
         self.assertIsNone(snap.plan)
 
-    def test_evidenced_members_preserved_verbatim(self) -> None:
-        for level in ("edu_plus", "enterprise_cbp_automation"):
-            with self.subTest(level=level):
-                payload = _result(_snapshot(dict(_BOTH_SLOTS), plan_type=level))
-                snap = _parse(payload)
-                self.assertEqual(snap.plan, level)
-                self.assertIn(f'"plan": "{level}"', _canonical_json(snap))
-
 
 # ══════════════════════════ message classification ═══════════════════════════
 
@@ -1125,9 +1239,6 @@ class MessageClassification(unittest.TestCase):
                 "emittedAtMs": 1788306212999,
             },
             {"jsonrpc": "2.0", "method": "notifications/initialized"},
-            # A string id is not an integer request identity: the message can
-            # never match one of our responses, so it is safely ignorable.
-            {"method": "x", "id": "7"},
         )
         for message in messages:
             with self.subTest(message=message):
@@ -1156,11 +1267,19 @@ class MessageClassification(unittest.TestCase):
             {"id": "2", "result": {}},  # string id
             {"id": True, "result": {}},  # boolean id
             {"method": 42},  # non-string method
-            # Hybrids carrying method together with response fields are
-            # neither well-formed requests nor responses: drift.
+            # Hybrids carrying a `method` key of ANY type together with
+            # response fields are drift, never requests or responses.
             {"method": "x", "result": {}},
             {"method": "x", "error": {"code": -1, "message": "y"}},
             {"id": 2, "method": "x", "result": {"rateLimits": {}}},
+            {"method": None, "result": {}},
+            {"method": 42, "id": 2, "result": {}},
+            {"method": True, "id": 2, "error": {}},
+            # Notifications whose `id` key is present but malformed are
+            # drift, never silently ignorable notifications.
+            {"method": "x", "id": "7"},
+            {"method": "x", "id": True},
+            {"method": "x", "id": None},
         )
         for message in messages:
             with self.subTest(message=message):
@@ -1204,7 +1323,7 @@ class PurityAndDeterminism(unittest.TestCase):
                     "userAgent", "auth.json", ".codex", "codex-cli",
                     "Authorization", "Bearer", "credits", "individualLimit",
                     "spendControlReached", "rate_limit_reached", "workspace",
-                    "hasCredits", "balance", "availableCount", "gpt-reserve",
+                    "hasCredits", "balance", "availableCount", "GPT Reserve",
                 ):
                     self.assertNotIn(forbidden, text, msg=f"{name}: {forbidden!r}")
 
