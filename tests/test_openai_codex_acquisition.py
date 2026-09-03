@@ -297,6 +297,7 @@ class SuccessfulSession(_AcquisitionCase):
     def test_fixture_matches_pure_parser_exactly(self) -> None:
         for fixture in (
             "ratelimits-ok-plus.json",
+            "ratelimits-full-shape-ok.json",
             "ratelimits-slots-swapped.json",
             "ratelimits-unknown-duration.json",
             "ratelimits-exhausted-reached.json",
@@ -508,6 +509,49 @@ class MalformedAndBoundedOutput(_AcquisitionCase):
                 roots = self._make_installation()
                 snapshot = self._collect(discovery_roots=[roots])
                 self.assertEqual(snapshot.status, "schema_changed")
+
+    def test_duplicate_object_keys_rejected_at_every_depth(self) -> None:
+        # One deliberate interpretation per message: duplicate keys in the
+        # message identity, the result envelope, or a nested window object
+        # all fail closed as protocol drift.
+        bad_lines: tuple[bytes, ...] = (
+            b'{"id":1,"id":2,"result":{}}\n',
+            b'{"id":2,"result":{"rateLimits":{}},"result":{}}\n',
+            b'{"id":2,"result":{"rateLimits":{"primary":{"usedPercent":1,'
+            + b'"usedPercent":2,"windowDurationMins":300},"secondary":{'
+            + b'"usedPercent":3,"windowDurationMins":10080}}}}\n',
+        )
+        for bad in bad_lines:
+            with self.subTest(bad=bad[:40]):
+                _ = self._install_fake([INIT_RESPONSE, bad])
+                roots = self._make_installation()
+                snapshot = self._collect(discovery_roots=[roots])
+                self.assertEqual(snapshot.status, "schema_changed")
+                self.assertEqual(
+                    [d.code for d in snapshot.diagnostics], ["schema_changed"]
+                )
+
+    def test_non_standard_json_constants_rejected(self) -> None:
+        bad_lines: tuple[bytes, ...] = (
+            b'{"id":2,"result":{"rateLimits":{"primary":{"usedPercent":NaN,'
+            + b'"windowDurationMins":300},"secondary":{"usedPercent":3,'
+            + b'"windowDurationMins":10080}}}}\n',
+            b'{"id":2,"result":{"rateLimits":{"primary":{"usedPercent":6,'
+            + b'"windowDurationMins":Infinity},"secondary":{"usedPercent":3,'
+            + b'"windowDurationMins":10080}}}}\n',
+            b'{"id":2,"result":{"rateLimits":{"primary":{"usedPercent":-Infinity,'
+            + b'"windowDurationMins":300},"secondary":{"usedPercent":3,'
+            + b'"windowDurationMins":10080}}}}\n',
+        )
+        for bad in bad_lines:
+            with self.subTest(bad=bad[:40]):
+                _ = self._install_fake([INIT_RESPONSE, bad])
+                roots = self._make_installation()
+                snapshot = self._collect(discovery_roots=[roots])
+                self.assertEqual(snapshot.status, "schema_changed")
+                self.assertEqual(
+                    [d.code for d in snapshot.diagnostics], ["schema_changed"]
+                )
 
     def test_oversized_line_maps_to_schema_changed(self) -> None:
         _ = self._install_fake(

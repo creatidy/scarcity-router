@@ -19,6 +19,7 @@ from typing import cast
 
 from scarcity_router import CapacityError, CapacitySnapshot, CapacityWindow
 from scarcity_router.providers.openai_codex import (
+    REACHED_TYPES,
     classify_app_server_message,
     parse_codex_rate_limits_result,
 )
@@ -32,6 +33,17 @@ RESET_1788306212 = "2026-09-01T23:43:32.000Z"
 RESET_1788748064 = "2026-09-07T02:27:44.000Z"
 RESET_1788000000 = "2026-08-29T10:40:00.000Z"
 
+ALL_FIXTURES = (
+    "ratelimits-ok-plus.json",
+    "ratelimits-full-shape-ok.json",
+    "ratelimits-slots-swapped.json",
+    "ratelimits-unknown-duration.json",
+    "ratelimits-exhausted-reached.json",
+    "ratelimits-zero-usage.json",
+    "ratelimits-degraded.json",
+    "ratelimits-schema-changed.json",
+)
+
 
 def _load(name: str) -> dict[str, object]:
     with (FIXTURES / name).open(encoding="utf-8") as handle:
@@ -42,9 +54,10 @@ def _rate_limits(
     slots: dict[str, object],
     *,
     plan_type: object = "plus",
+    limit_id: object = "codex",
     extra: dict[str, object] | None = None,
 ) -> dict[str, object]:
-    rate_limits: dict[str, object] = {"limitId": "codex", **slots}
+    rate_limits: dict[str, object] = {"limitId": limit_id, **slots}
     if plan_type is not None:
         rate_limits["planType"] = plan_type
     if extra is not None:
@@ -65,6 +78,12 @@ def _window(
     if resets_at is not None:
         window["resetsAt"] = resets_at
     return window
+
+
+_BOTH_SLOTS: dict[str, object] = {
+    "primary": _window(6, 300),
+    "secondary": _window(52, 10080, 1788748064),
+}
 
 
 def _windows(
@@ -136,12 +155,77 @@ class KnownWindowsFixture(unittest.TestCase):
         self.assertEqual(five_hour[0].used_percent, 10)
 
 
+class FullShapeFixture(unittest.TestCase):
+    """The exact evidenced nine-member snapshot shape, metadata included."""
+
+    def test_optional_metadata_objects_do_not_break_parsing(self) -> None:
+        snap = parse_codex_rate_limits_result(
+            _load("ratelimits-full-shape-ok.json"), retrieved_at=RETRIEVED_AT
+        )
+        self.assertEqual(snap.status, "ok")
+        self.assertEqual(snap.plan, "pro")
+        self.assertEqual(len(snap.windows), 2)
+        self.assertEqual(_codes(snap), set())
+
+    def test_metadata_members_never_reach_output(self) -> None:
+        snap = parse_codex_rate_limits_result(
+            _load("ratelimits-full-shape-ok.json"), retrieved_at=RETRIEVED_AT
+        )
+        text = _canonical_json(snap)
+        for forbidden in (
+            "credits", "individualLimit", "spendControlReached",
+            "hasCredits", "balance", "HARD_CAP", "enforcementMode",
+            "limitName",
+        ):
+            self.assertNotIn(forbidden, text)
+
+    def test_metadata_member_shape_drift_fails_closed(self) -> None:
+        bad_cases: tuple[dict[str, object], ...] = (
+            {"credits": "many"},
+            {"credits": 5},
+            {"individualLimit": ["x"]},
+            {"spendControlReached": "yes"},
+        )
+        for bad in bad_cases:
+            with self.subTest(bad=bad):
+                payload = _rate_limits(dict(_BOTH_SLOTS), extra=bad)
+                snap = parse_codex_rate_limits_result(
+                    payload, retrieved_at=RETRIEVED_AT
+                )
+                self.assertEqual(snap.status, "schema_changed", msg=repr(bad))
+                self.assertEqual(snap.windows, ())
+
+    def test_null_metadata_members_tolerated(self) -> None:
+        payload = _rate_limits(
+            dict(_BOTH_SLOTS),
+            extra={
+                "credits": None,
+                "individualLimit": None,
+                "spendControlReached": None,
+                "limitName": None,
+            },
+        )
+        snap = parse_codex_rate_limits_result(payload, retrieved_at=RETRIEVED_AT)
+        self.assertEqual(snap.status, "ok")
+        self.assertEqual(_codes(snap), set())
+
+    def test_boolean_spend_control_metadata_tolerated(self) -> None:
+        payload = _rate_limits(
+            dict(_BOTH_SLOTS), extra={"spendControlReached": True}
+        )
+        snap = parse_codex_rate_limits_result(payload, retrieved_at=RETRIEVED_AT)
+        self.assertEqual(snap.status, "ok")
+
+
 class UnknownDurationFixture(unittest.TestCase):
     def test_unknown_window_preserved_without_guessing(self) -> None:
         snap = parse_codex_rate_limits_result(
             _load("ratelimits-unknown-duration.json"), retrieved_at=RETRIEVED_AT
         )
-        self.assertEqual(snap.status, "ok")
+        # The weekly sibling is validated, but the five-hour constraint is
+        # missing, so the snapshot must not appear healthy.
+        self.assertEqual(snap.status, "unknown")
+        self.assertIn("telemetry_unknown", _codes(snap))
         unknown = _windows(snap, resource="tokens", kind="unknown")
         self.assertEqual(len(unknown), 1)
         uw = unknown[0]
@@ -157,7 +241,7 @@ class UnknownDurationFixture(unittest.TestCase):
         }
         self.assertEqual(scoped, {"primary"})
 
-    def test_known_sibling_survives(self) -> None:
+    def test_known_sibling_survives_with_its_pair(self) -> None:
         snap = parse_codex_rate_limits_result(
             _load("ratelimits-unknown-duration.json"), retrieved_at=RETRIEVED_AT
         )
@@ -168,16 +252,84 @@ class UnknownDurationFixture(unittest.TestCase):
 
 
 class ExhaustedAndZeroFixtures(unittest.TestCase):
-    def test_known_exhaustion_is_not_a_failure(self) -> None:
+    def test_backend_reached_degrades_to_unknown_without_pairs(self) -> None:
         snap = parse_codex_rate_limits_result(
             _load("ratelimits-exhausted-reached.json"), retrieved_at=RETRIEVED_AT
         )
-        self.assertEqual(snap.status, "ok")
+        self.assertEqual(snap.status, "unknown")
+        self.assertIn("telemetry_unknown", _codes(snap))
         self.assertEqual(len(snap.windows), 2)
+        for window in snap.windows:
+            # Backend exhaustion forbids inferring remaining capacity from
+            # percentages, even though both windows reported 100% used.
+            self.assertIsNone(window.used_percent)
+            self.assertIsNone(window.remaining_percent)
+            self.assertIsNotNone(window.kind)
+            self.assertIsNotNone(window.resets_at)
+        scoped = {
+            (d.code, d.window_id) for d in snap.diagnostics
+        }
+        self.assertIn(("percentage_unknown", "primary"), scoped)
+        self.assertIn(("percentage_unknown", "secondary"), scoped)
+
+    def test_known_exhaustion_without_reached_flag_is_ok(self) -> None:
+        payload = _rate_limits(
+            {
+                "primary": _window(100, 300),
+                "secondary": _window(100, 10080, 1788748064),
+            }
+        )
+        snap = parse_codex_rate_limits_result(payload, retrieved_at=RETRIEVED_AT)
+        self.assertEqual(snap.status, "ok")
         for window in snap.windows:
             self.assertEqual(
                 (window.used_percent, window.remaining_percent), (100, 0)
             )
+
+    def test_reached_with_midrange_percentages_still_withholds_pairs(self) -> None:
+        # The backend says the limit is reached while percentages suggest
+        # remaining capacity: capacity must not be inferred from them.
+        payload = _rate_limits(dict(_BOTH_SLOTS), extra={"rateLimitReachedType": "rate_limit_reached"})
+        snap = parse_codex_rate_limits_result(payload, retrieved_at=RETRIEVED_AT)
+        self.assertEqual(snap.status, "unknown")
+        for window in snap.windows:
+            self.assertIsNone(window.used_percent)
+            self.assertIsNone(window.remaining_percent)
+        self.assertIn("telemetry_unknown", _codes(snap))
+        self.assertIn("percentage_unknown", _codes(snap))
+
+    def test_every_evidenced_reached_enum_member_degrades(self) -> None:
+        for reached in sorted(REACHED_TYPES):
+            with self.subTest(reached=reached):
+                payload = _rate_limits(
+                    dict(_BOTH_SLOTS), extra={"rateLimitReachedType": reached}
+                )
+                snap = parse_codex_rate_limits_result(
+                    payload, retrieved_at=RETRIEVED_AT
+                )
+                self.assertEqual(snap.status, "unknown")
+                self.assertIsNone(snap.windows[0].used_percent)
+                self.assertNotIn(reached, _canonical_json(snap))
+
+    def test_unknown_reached_value_degrades_not_healthy(self) -> None:
+        payload = _rate_limits(
+            dict(_BOTH_SLOTS), extra={"rateLimitReachedType": "brand-new-type"}
+        )
+        snap = parse_codex_rate_limits_result(payload, retrieved_at=RETRIEVED_AT)
+        self.assertEqual(snap.status, "unknown")
+        self.assertIn("telemetry_unknown", _codes(snap))
+        self.assertIsNone(snap.windows[0].used_percent)
+
+    def test_non_string_reached_value_is_drift(self) -> None:
+        for bad in (5, True, {"x": 1}, ["x"]):
+            with self.subTest(bad=bad):
+                payload = _rate_limits(
+                    dict(_BOTH_SLOTS), extra={"rateLimitReachedType": bad}
+                )
+                snap = parse_codex_rate_limits_result(
+                    payload, retrieved_at=RETRIEVED_AT
+                )
+                self.assertEqual(snap.status, "schema_changed", msg=repr(bad))
 
     def test_known_zero_usage_is_not_missing(self) -> None:
         snap = parse_codex_rate_limits_result(
@@ -251,6 +403,96 @@ class SchemaChangedFixture(unittest.TestCase):
             self.assertNotIn(forbidden, text)
 
 
+# ═════════════════════ coverage and identity validation ══════════════════════
+
+
+class CoverageValidation(unittest.TestCase):
+    """A response missing an expected window constraint never looks healthy."""
+
+    def test_missing_weekly_degrades_to_unknown(self) -> None:
+        for slots in (
+            {"primary": _window(6, 300), "secondary": None},
+            {"primary": _window(6, 300)},  # key absent entirely
+        ):
+            with self.subTest(slots=sorted(slots)):
+                payload = _rate_limits(dict(slots))
+                snap = parse_codex_rate_limits_result(
+                    payload, retrieved_at=RETRIEVED_AT
+                )
+                self.assertEqual(snap.status, "unknown")
+                self.assertEqual([d.code for d in snap.diagnostics if d.code == "telemetry_unknown"], ["telemetry_unknown"])
+                self.assertEqual(len(snap.windows), 1)
+                five_hour = snap.windows[0]
+                self.assertEqual(five_hour.kind, "five_hour")
+                self.assertEqual(five_hour.used_percent, 6)  # validated fact kept
+
+    def test_missing_five_hour_degrades_to_unknown(self) -> None:
+        payload = _rate_limits({"secondary": _window(52, 10080, 1788748064)})
+        snap = parse_codex_rate_limits_result(payload, retrieved_at=RETRIEVED_AT)
+        self.assertEqual(snap.status, "unknown")
+        self.assertEqual(len(snap.windows), 1)
+        self.assertEqual(snap.windows[0].kind, "weekly")
+
+    def test_no_windows_at_all_is_unknown_never_ok(self) -> None:
+        payload = _rate_limits({})
+        snap = parse_codex_rate_limits_result(payload, retrieved_at=RETRIEVED_AT)
+        self.assertEqual(snap.status, "unknown")
+        self.assertEqual(snap.windows, ())
+        self.assertEqual(_codes(snap), {"telemetry_unknown"})
+
+    def test_duplicate_known_period_fails_closed(self) -> None:
+        for mins in (300, 10080):
+            with self.subTest(mins=mins):
+                payload = _rate_limits(
+                    {
+                        "primary": _window(6, mins),
+                        "secondary": _window(52, mins, 1788748064),
+                    }
+                )
+                snap = parse_codex_rate_limits_result(
+                    payload, retrieved_at=RETRIEVED_AT
+                )
+                self.assertEqual(snap.status, "schema_changed")
+                self.assertEqual(snap.windows, ())
+                self.assertEqual(_codes(snap), {"schema_changed"})
+
+    def test_wrong_quota_identity_fails_closed(self) -> None:
+        for limit_id in ("gpt_reserve", "codex-xl", None, 5, "CODEX"):
+            with self.subTest(limit_id=limit_id):
+                payload = _rate_limits(dict(_BOTH_SLOTS), limit_id=limit_id)
+                snap = parse_codex_rate_limits_result(
+                    payload, retrieved_at=RETRIEVED_AT
+                )
+                self.assertEqual(snap.status, "schema_changed", msg=repr(limit_id))
+                self.assertEqual(snap.windows, ())
+                self.assertEqual(_codes(snap), {"schema_changed"})
+
+    def test_missing_limit_id_fails_closed(self) -> None:
+        payload: dict[str, object] = {
+            "rateLimits": {"primary": _window(6, 300), "secondary": _window(52, 10080, 1788748064)}
+        }
+        snap = parse_codex_rate_limits_result(payload, retrieved_at=RETRIEVED_AT)
+        self.assertEqual(snap.status, "schema_changed")
+
+    def test_additive_structured_member_fails_closed(self) -> None:
+        # An unknown structured member may carry an uninterpretable
+        # constraining window; it must not silently hide behind healthy
+        # primary/secondary slots.
+        extra_cases: tuple[dict[str, object], ...] = (
+            {"tertiary": {"usedPercent": 5, "windowDurationMins": 30}},
+            {"extraWindows": [{"kind": "five_hour"}]},
+        )
+        for extra in extra_cases:
+            with self.subTest(extra=extra):
+                payload = _rate_limits(dict(_BOTH_SLOTS), extra=extra)
+                snap = parse_codex_rate_limits_result(
+                    payload, retrieved_at=RETRIEVED_AT
+                )
+                self.assertEqual(snap.status, "schema_changed", msg=repr(extra))
+                self.assertEqual(snap.windows, ())
+                self.assertEqual(_codes(snap), {"schema_changed"})
+
+
 # ══════════════════════════ focused parser behavior ══════════════════════════
 
 
@@ -259,7 +501,10 @@ class PercentageNormalization(unittest.TestCase):
         for bad in ("6", 6.5, True, -1, 101, None, [6], {"v": 6}):
             with self.subTest(bad=bad):
                 payload = _rate_limits(
-                    {"primary": _window(bad, 300), "secondary": _window(10, 10080)}
+                    {
+                        "primary": _window(bad, 300),
+                        "secondary": _window(10, 10080, 1788748064),
+                    }
                 )
                 snap = parse_codex_rate_limits_result(
                     payload, retrieved_at=RETRIEVED_AT
@@ -274,11 +519,16 @@ class PercentageNormalization(unittest.TestCase):
     def test_used_orientation_boundary_values(self) -> None:
         for used, remaining in ((0, 100), (50, 50), (100, 0)):
             with self.subTest(used=used):
-                payload = _rate_limits({"primary": _window(used, 300)})
+                payload = _rate_limits(
+                    {
+                        "primary": _window(used, 300),
+                        "secondary": _window(10, 10080, 1788748064),
+                    }
+                )
                 snap = parse_codex_rate_limits_result(
                     payload, retrieved_at=RETRIEVED_AT
                 )
-                window = snap.windows[0]
+                window = _windows(snap, resource="tokens", kind="five_hour")[0]
                 self.assertEqual(
                     (window.used_percent, window.remaining_percent),
                     (used, remaining),
@@ -286,9 +536,17 @@ class PercentageNormalization(unittest.TestCase):
 
 
 class ResetNormalization(unittest.TestCase):
+    def _snap_with(self, resets_at: object) -> CapacitySnapshot:
+        payload = _rate_limits(
+            {
+                "primary": _window(10, 300, resets_at),
+                "secondary": _window(10, 10080, 1788748064),
+            }
+        )
+        return parse_codex_rate_limits_result(payload, retrieved_at=RETRIEVED_AT)
+
     def test_valid_epoch_seconds_preserved(self) -> None:
-        payload = _rate_limits({"primary": _window(10, 300, 1788306212)})
-        snap = parse_codex_rate_limits_result(payload, retrieved_at=RETRIEVED_AT)
+        snap = self._snap_with(1788306212)
         self.assertEqual(snap.windows[0].resets_at, RESET_1788306212)
         self.assertNotIn("reset_unknown", _codes(snap))
 
@@ -306,28 +564,26 @@ class ResetNormalization(unittest.TestCase):
             10**30,
         ):
             with self.subTest(bad=bad):
-                payload = _rate_limits({"primary": _window(10, 300, bad)})
-                snap = parse_codex_rate_limits_result(
-                    payload, retrieved_at=RETRIEVED_AT
-                )
+                snap = self._snap_with(bad)
                 self.assertIsNone(snap.windows[0].resets_at, msg=repr(bad))
                 self.assertIn("reset_unknown", _codes(snap))
 
     def test_epoch_milliseconds_never_become_1970(self) -> None:
-        payload = _rate_limits({"primary": _window(10, 300, 1788306212000)})
-        snap = parse_codex_rate_limits_result(payload, retrieved_at=RETRIEVED_AT)
+        snap = self._snap_with(1788306212000)
         self.assertNotIn("1970", _canonical_json(snap))
 
     def test_missing_reset_key_omits_resets_at(self) -> None:
-        payload = _rate_limits({"primary": _window(10, 300, None)})
-        snap = parse_codex_rate_limits_result(payload, retrieved_at=RETRIEVED_AT)
+        snap = self._snap_with(None)
         self.assertIsNone(snap.windows[0].resets_at)
 
 
 class WindowStructureDrift(unittest.TestCase):
     def test_object_without_duration_discriminator_fails_closed(self) -> None:
         payload = _rate_limits(
-            {"primary": {"usedPercent": 6, "resetsAt": 1788306212}}
+            {
+                "primary": {"usedPercent": 6, "resetsAt": 1788306212},
+                "secondary": _window(52, 10080, 1788748064),
+            }
         )
         snap = parse_codex_rate_limits_result(payload, retrieved_at=RETRIEVED_AT)
         self.assertEqual(snap.status, "schema_changed")
@@ -338,7 +594,10 @@ class WindowStructureDrift(unittest.TestCase):
         for bad in (0, -300, 300.0, True, "300", None):
             with self.subTest(bad=bad):
                 payload = _rate_limits(
-                    {"primary": _window(6, bad), "secondary": _window(52, 10080)}
+                    {
+                        "primary": _window(6, bad),
+                        "secondary": _window(52, 10080, 1788748064),
+                    }
                 )
                 snap = parse_codex_rate_limits_result(
                     payload, retrieved_at=RETRIEVED_AT
@@ -346,9 +605,17 @@ class WindowStructureDrift(unittest.TestCase):
                 self.assertEqual(snap.status, "schema_changed", msg=repr(bad))
                 self.assertEqual(snap.windows, ())
 
+    def test_scalar_window_slot_fails_closed(self) -> None:
+        payload = _rate_limits(
+            {"primary": "unlimited", "secondary": _window(52, 10080, 1788748064)}
+        )
+        snap = parse_codex_rate_limits_result(payload, retrieved_at=RETRIEVED_AT)
+        self.assertEqual(snap.status, "schema_changed")
+        self.assertEqual(snap.windows, ())
+
     def test_healthy_sibling_does_not_survive_drift(self) -> None:
         payload = _rate_limits(
-            {"primary": {"foo": "bar"}, "secondary": _window(52, 10080)}
+            {"primary": {"foo": "bar"}, "secondary": _window(52, 10080, 1788748064)}
         )
         snap = parse_codex_rate_limits_result(payload, retrieved_at=RETRIEVED_AT)
         self.assertEqual(snap.status, "schema_changed")
@@ -357,12 +624,11 @@ class WindowStructureDrift(unittest.TestCase):
 
     def test_additive_scalar_fields_are_tolerated(self) -> None:
         payload = _rate_limits(
-            {"primary": _window(6, 300)},
-            extra={"newScalarField": 7, "another": "text"},
+            dict(_BOTH_SLOTS), extra={"newScalarField": 7, "another": "text"}
         )
         snap = parse_codex_rate_limits_result(payload, retrieved_at=RETRIEVED_AT)
         self.assertEqual(snap.status, "ok")
-        self.assertEqual(len(snap.windows), 1)
+        self.assertEqual(len(snap.windows), 2)
         self.assertEqual(_codes(snap), set())
 
     def test_window_with_extra_object_fields_is_tolerated(self) -> None:
@@ -370,46 +636,38 @@ class WindowStructureDrift(unittest.TestCase):
             **_window(6, 300),
             "experimental": {"nested": True},
         }
-        payload = _rate_limits({"primary": entry})
-        snap = parse_codex_rate_limits_result(payload, retrieved_at=RETRIEVED_AT)
-        self.assertEqual(snap.status, "ok")
-        self.assertEqual(len(snap.windows), 1)
-
-    def test_windows_under_arbitrary_safe_keys_are_position_independent(self) -> None:
         payload = _rate_limits(
-            {"a": _window(10, 300), "zz-9": _window(20, 10080)}
+            {"primary": entry, "secondary": _window(52, 10080, 1788748064)}
         )
         snap = parse_codex_rate_limits_result(payload, retrieved_at=RETRIEVED_AT)
         self.assertEqual(snap.status, "ok")
-        five_hour = _windows(snap, resource="tokens", kind="five_hour")
-        weekly = _windows(snap, resource="tokens", kind="weekly")
-        self.assertEqual(five_hour[0].window_id, "a")
-        self.assertEqual(weekly[0].window_id, "zz-9")
+        self.assertEqual(len(snap.windows), 2)
 
-    def test_unsafe_slot_key_omits_window_id(self) -> None:
-        payload = _rate_limits({"Primary Window!": _window(10, 300)})
-        snap = parse_codex_rate_limits_result(payload, retrieved_at=RETRIEVED_AT)
-        self.assertEqual(snap.status, "ok")
-        window = snap.windows[0]
-        self.assertEqual(window.kind, "five_hour")
-        self.assertIsNone(window.window_id)
-        self.assertNotIn("Primary Window!", _canonical_json(snap))
-
-    def test_duplicate_durations_are_not_merged(self) -> None:
+    def test_unknown_durations_on_both_slots_stay_unknown(self) -> None:
         payload = _rate_limits(
-            {"primary": _window(10, 300), "secondary": _window(90, 300)}
+            {
+                "primary": _window(10, 60, 1788000000),
+                "secondary": _window(20, 90, 1788748064),
+            }
         )
         snap = parse_codex_rate_limits_result(payload, retrieved_at=RETRIEVED_AT)
-        self.assertEqual(snap.status, "ok")
-        five_hour = _windows(snap, resource="tokens", kind="five_hour")
-        self.assertEqual(len(five_hour), 2)
+        self.assertEqual(snap.status, "unknown")
+        self.assertEqual(len(snap.windows), 2)
+        for window in snap.windows:
+            self.assertEqual(window.kind, "unknown")
+            self.assertIsNotNone(window.duration_seconds)
+        self.assertIn("window_semantics_unknown", _codes(snap))
 
     def test_huge_duration_degrades_to_unknown_without_raising(self) -> None:
-        payload = _rate_limits({"primary": _window(10, 10**60)})
+        payload = _rate_limits(
+            {
+                "primary": _window(10, 10**60),
+                "secondary": _window(20, 10080, 1788748064),
+            }
+        )
         snap = parse_codex_rate_limits_result(payload, retrieved_at=RETRIEVED_AT)
-        self.assertEqual(snap.status, "ok")
-        window = snap.windows[0]
-        self.assertEqual((window.resource, window.kind), ("tokens", "unknown"))
+        self.assertEqual(snap.status, "unknown")
+        window = _windows(snap, resource="tokens", kind="unknown")[0]
         self.assertEqual(window.duration_seconds, 10**60 * 60)
 
 
@@ -438,26 +696,38 @@ class EnvelopeAndStructure(unittest.TestCase):
         snap = parse_codex_rate_limits_result({}, retrieved_at=RETRIEVED_AT)
         self.assertEqual(snap.status, "schema_changed")
 
-    def test_windowless_rate_limits_fails_closed(self) -> None:
-        payload = _rate_limits({})
+    def test_non_string_limit_name_is_drift(self) -> None:
+        payload = _rate_limits(dict(_BOTH_SLOTS), extra={"limitName": 5})
         snap = parse_codex_rate_limits_result(payload, retrieved_at=RETRIEVED_AT)
         self.assertEqual(snap.status, "schema_changed")
-        self.assertEqual(snap.windows, ())
-        self.assertEqual(_codes(snap), {"schema_changed"})
+
+    def test_non_string_plan_type_is_drift(self) -> None:
+        payload = _rate_limits(dict(_BOTH_SLOTS), plan_type=5)
+        snap = parse_codex_rate_limits_result(payload, retrieved_at=RETRIEVED_AT)
+        self.assertEqual(snap.status, "schema_changed")
 
 
 class PlanNormalization(unittest.TestCase):
-    def test_safe_evidenced_plan_preserved(self) -> None:
-        payload = _rate_limits({"primary": _window(6, 300)}, plan_type="plus")
-        snap = parse_codex_rate_limits_result(payload, retrieved_at=RETRIEVED_AT)
-        self.assertEqual(snap.plan, "plus")
+    def test_evidenced_plan_labels_are_retained(self) -> None:
+        for plan in (
+            "free", "go", "plus", "pro", "prolite",
+            "team", "edu", "enterprise", "ent26", "run",
+        ):
+            with self.subTest(plan=plan):
+                payload = _rate_limits(dict(_BOTH_SLOTS), plan_type=plan)
+                snap = parse_codex_rate_limits_result(
+                    payload, retrieved_at=RETRIEVED_AT
+                )
+                self.assertEqual(snap.status, "ok")
+                self.assertEqual(snap.plan, plan)
 
     def test_unevidenced_or_unsafe_labels_are_omitted(self) -> None:
-        for level in ("pro", "free", "Plus", "plus!", "", 5, None, ["plus"]):
+        for level in (
+            "luna", "edu_pro", "selfServeBusinessProlite", "Plus", "plus!",
+            "", None,
+        ):
             with self.subTest(level=level):
-                payload = _rate_limits(
-                    {"primary": _window(6, 300)}, plan_type=level
-                )
+                payload = _rate_limits(dict(_BOTH_SLOTS), plan_type=level)
                 snap = parse_codex_rate_limits_result(
                     payload, retrieved_at=RETRIEVED_AT
                 )
@@ -466,31 +736,23 @@ class PlanNormalization(unittest.TestCase):
                 self.assertNotIn('"plan"', _canonical_json(snap))
 
     def test_absent_plan_type_is_tolerated(self) -> None:
-        payload = _rate_limits({"primary": _window(6, 300)}, plan_type=None)
+        payload = _rate_limits(dict(_BOTH_SLOTS), plan_type=None)
         snap = parse_codex_rate_limits_result(payload, retrieved_at=RETRIEVED_AT)
         self.assertEqual(snap.status, "ok")
         self.assertIsNone(snap.plan)
 
-    def test_reached_flag_is_dropped_without_guessing(self) -> None:
-        for reached in ("primary", "secondary", 5):
-            with self.subTest(reached=reached):
-                payload = _rate_limits(
-                    {"a": _window(6, 300)},
-                    extra={"rateLimitReachedType": reached},
-                )
+    def test_multi_word_snake_members_fail_the_safe_id_grammar(self) -> None:
+        # The evidenced multi-word plan members are snake_case on the wire;
+        # the v1 safe-ID grammar cannot represent them, so they are omitted
+        # rather than rewritten (documented residual in U-001/U-010).
+        for level in ("edu_pro", "enterprise_cbp_automation"):
+            with self.subTest(level=level):
+                payload = _rate_limits(dict(_BOTH_SLOTS), plan_type=level)
                 snap = parse_codex_rate_limits_result(
                     payload, retrieved_at=RETRIEVED_AT
                 )
-                self.assertEqual(snap.status, "ok", msg=repr(reached))
-                self.assertEqual(len(snap.windows), 1)
-        # An unrecognized reached value must not leak into any output.
-        payload = _rate_limits(
-            {"a": _window(6, 300)},
-            extra={"rateLimitReachedType": "weird-new-type"},
-        )
-        snap = parse_codex_rate_limits_result(payload, retrieved_at=RETRIEVED_AT)
-        self.assertEqual(snap.status, "ok")
-        self.assertNotIn("weird-new-type", _canonical_json(snap))
+                self.assertIsNone(snap.plan)
+                self.assertNotIn(level, _canonical_json(snap))
 
 
 # ══════════════════════════ message classification ═══════════════════════════
@@ -567,22 +829,14 @@ class PurityAndDeterminism(unittest.TestCase):
         self.assertEqual(_canonical_json(a), _canonical_json(b))
 
     def test_invalid_retrieved_at_raises_typed_error(self) -> None:
-        payload = _rate_limits({"primary": _window(6, 300)})
+        payload = _rate_limits(dict(_BOTH_SLOTS))
         with self.assertRaises(CapacityError):
             _ = parse_codex_rate_limits_result(
                 payload, retrieved_at="2026-09-03T20:00:00Z"
             )
 
     def test_all_fixtures_round_trip_through_v1(self) -> None:
-        for name in (
-            "ratelimits-ok-plus.json",
-            "ratelimits-slots-swapped.json",
-            "ratelimits-unknown-duration.json",
-            "ratelimits-exhausted-reached.json",
-            "ratelimits-zero-usage.json",
-            "ratelimits-degraded.json",
-            "ratelimits-schema-changed.json",
-        ):
+        for name in ALL_FIXTURES:
             with self.subTest(name=name):
                 snap = parse_codex_rate_limits_result(
                     _load(name), retrieved_at=RETRIEVED_AT
@@ -591,15 +845,7 @@ class PurityAndDeterminism(unittest.TestCase):
                 self.assertEqual(reparsed, snap)
 
     def test_serialized_output_carries_no_provider_material(self) -> None:
-        for name in (
-            "ratelimits-ok-plus.json",
-            "ratelimits-slots-swapped.json",
-            "ratelimits-unknown-duration.json",
-            "ratelimits-exhausted-reached.json",
-            "ratelimits-zero-usage.json",
-            "ratelimits-degraded.json",
-            "ratelimits-schema-changed.json",
-        ):
+        for name in ALL_FIXTURES:
             with self.subTest(name=name):
                 snap = parse_codex_rate_limits_result(
                     _load(name), retrieved_at=RETRIEVED_AT
@@ -610,6 +856,8 @@ class PurityAndDeterminism(unittest.TestCase):
                     "planType", "rateLimitReachedType", "limitId",
                     "rateLimits", "codexHome", "userAgent", "auth.json",
                     ".codex", "codex-cli", "Authorization", "Bearer",
+                    "credits", "individualLimit", "spendControlReached",
+                    "rate_limit_reached", "workspace",
                 ):
                     self.assertNotIn(forbidden, text, msg=f"{name}: {forbidden!r}")
 

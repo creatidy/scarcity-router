@@ -12,6 +12,6 @@
       "resetsAt": 1788748064
     },
     "planType": "plus",
-    "rateLimitReachedType": "primary"
+    "rateLimitReachedType": "rate_limit_reached"
   }
 }

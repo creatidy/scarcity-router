@@ -173,14 +173,19 @@ direction was chosen. Dates use UTC.
   frozen allowlist. Reporting the selected binary/version safely is
   deferred to the M1 `doctor`/`status` work under a future decision.
 - **Residuals:** (a) minimum/maximum codex version policy — no version gate
-  is enforced; compatibility is pinned only by the package layout version;
-  (b) other installation sources (npm `@openai/codex`, standalone binaries,
-  other editors' extension roots) are unsupported until separately
-  evidenced; (c) platform directories other than the directly evidenced
-  `linux-x86_64` are structural analogues, not live-validated; (d) OpenAI
-  app-server failure wire shapes (auth required in particular) remain
-  uncaptured, so protocol error responses normalize to `unknown` rather
-  than a more specific status.
+  is enforced. The package `layoutVersion` validates only the installation
+  *filesystem layout* during discovery; it is **not** a protocol
+  compatibility pin. The real protocol compatibility boundary is runtime
+  validation: strict JSONL framing plus the deliberately validated
+  `RateLimitSnapshot` shape (U-010), which fails closed to
+  `schema_changed`/`unknown` on any drift; (b) other installation sources
+  (npm `@openai/codex`, standalone binaries, other editors' extension
+  roots) are unsupported until separately evidenced; (c) platform
+  directories other than the directly evidenced `linux-x86_64` are
+  structural analogues, not live-validated; (d) OpenAI app-server failure
+  wire shapes (auth required in particular) remain uncaptured, so protocol
+  error responses normalize to `unknown` rather than a more specific
+  status.
 
 ### U-002 — Exact first serialized capacity contract
 
@@ -285,6 +290,60 @@ direction was chosen. Dates use UTC.
 
 - Confirm that public distribution of each collector is compatible with current
   provider terms and maintenance expectations before release.
+
+### U-010 — Codex rate-limit snapshot semantics under v1
+
+- **Status:** Resolved, 2026-09-03
+- **Decision:** The OpenAI adapter validates the complete evidenced
+  `RateLimitSnapshot` shape and normalizes it under the existing v1 contract
+  as follows:
+  - **Membership.** The snapshot has the nine evidenced members
+    (`limitId`, `limitName`, `primary`, `secondary`, `credits`,
+    `individualLimit`, `spendControlReached`, `planType`,
+    `rateLimitReachedType`). `primary`/`secondary` are the only window
+    slots; `credits`, `individualLimit` and `spendControlReached` are
+    known non-window metadata (absent/null/boolean/object tolerated,
+    never interpreted or surfaced); additive scalar members are tolerated;
+    an additive *structured* member under an unknown key fails closed to
+    `schema_changed` because it may carry an uninterpretable constraining
+    window.
+  - **Identity.** `limitId` must be exactly the evidenced quota identity
+    `"codex"`; anything else is `schema_changed`, never healthy.
+  - **Coverage.** A snapshot missing either expected window kind
+    (five-hour or weekly) degrades to `status: "unknown"` with the
+    validated partial windows preserved (`telemetry_unknown`); two slot
+    windows sharing one known period are `schema_changed`. An absent
+    window is never synthesized and never reported as healthy emptiness.
+  - **Reached state.** A non-null `rateLimitReachedType` (evidenced enum
+    members `rate_limit_reached`, `workspace_member_credits_depleted`,
+    `workspace_owner_usage_limit_reached`,
+    `workspace_member_usage_limit_reached`, casing unconfirmed, plus any
+    unknown non-null string) asserts backend exhaustion. v1 has no reached
+    field, so the honest representation is: `status: "unknown"` with
+    `telemetry_unknown`, windows preserved with identity/duration/reset
+    facts, and the percentage pairs withheld with per-window
+    `percentage_unknown` diagnostics — remaining capacity is never inferred
+    from percentages when the backend says the limit is reached. Known
+    exhaustion *without* a reached flag stays `ok` with the `(100, 0)`
+    pair.
+  - **Plan labels.** `plan` accepts only validated plan enum members that
+    satisfy the v1 safe-ID grammar as-is: `free`, `go`, `plus`, `pro`,
+    `prolite`, `team`, `edu`, `enterprise`, `ent26`, `run`. Multi-word
+    members (evidenced snake_case, e.g. `edu_pro`) are omitted because the
+    grammar cannot represent the evidenced wire form and the camelCase
+    form is unconfirmed; everything else is omitted, never leaked.
+  - **Decoding.** JSONL decoding is ambiguity-safe: duplicate object keys
+    at any depth and non-standard constants (NaN/Infinity) are rejected as
+    protocol drift (`schema_changed`).
+- **Evidence:** the 2026-09-01 PoC shape plus the 2026-09-03 reconnaissance
+  in `docs/poc-evidence.md`, including read-only serde string-table
+  inspection of the installed codex binary (`RateLimitSnapshot` with nine
+  members, plan-type and reached-type enum members); no live capture was
+  possible (the read errored during reconnaissance), so the PoC shape
+  remains the validated success mapping.
+- **Boundary:** this is adapter-edge semantics under the frozen v1 contract;
+  it adds no v1 fields or diagnostics and does not preempt U-003
+  (freshness) or M2 (scarcity/selection).
 
 ## Superseding a decision
 

@@ -21,8 +21,11 @@ Security contract (docs/security.md):
   never read into the process, so no upstream tool output can leak through
   exceptions, diagnostics or snapshots;
 - stdout is read only through a bounded reader: per-line and total byte
-  budgets, strict UTF-8 and strict JSON decoding; budget violations surface
-  as safe statuses, never as raw content in exceptions;
+  budgets, strict UTF-8 and strict JSON decoding that rejects duplicate
+  object keys at every nesting depth and non-standard constants such as
+  NaN/Infinity, so each protocol message has exactly one interpretation;
+  budget and decoding violations surface as safe statuses, never as raw
+  content in exceptions;
 - requests are exactly three bounded writes (initialize, initialized
   notification, rate-limits read); there is no retry, no prompt and no other
   method call, so collection can never issue a model request;
@@ -132,13 +135,37 @@ _RATE_LIMITS_METHOD = "account/rateLimits/read"
 _INITIALIZED_NOTIFICATION_METHOD = "notifications/initialized"
 
 
-class _AmbiguousPackageDocument(ValueError):
-    """Raised when the package JSON contains duplicate object keys.
+class _AmbiguousJson(ValueError):
+    """Raised for non-standard JSON constants (NaN/Infinity/-Infinity).
 
-    A duplicate key makes the installation layout ambiguous, and discovery
-    must fail closed for that candidate instead of trusting last-key-wins
-    parsing. The message never contains any document value.
+    Standard JSON has no such values; a stream containing them is not the
+    validated protocol and must fail closed. The message never carries any
+    decoded content.
     """
+
+
+def _reject_json_constant(_name: str) -> object:
+    """``json.loads`` ``parse_constant`` hook: reject NaN/Infinity."""
+    raise _AmbiguousJson()
+
+
+def _object_without_duplicate_keys(
+    pairs: list[tuple[str, object]],
+) -> dict[str, object]:
+    """JSON ``object_pairs_hook`` that refuses duplicate keys anywhere.
+
+    Applied at every nesting depth of every decoded document (protocol
+    messages and the installation package file alike): a duplicate key
+    makes the message layout ambiguous, and decoding must fail closed
+    instead of trusting last-key-wins parsing. The message never contains
+    any document value.
+    """
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise _AmbiguousJson()
+        result[key] = value
+    return result
 
 
 def _is_int(value: object) -> bool:
@@ -151,18 +178,6 @@ def _as_object_dict(value: object) -> dict[str, object] | None:
     if isinstance(value, dict):
         return cast("dict[str, object]", value)
     return None
-
-
-def _object_without_duplicate_keys(
-    pairs: list[tuple[str, object]],
-) -> dict[str, object]:
-    """JSON ``object_pairs_hook`` that refuses duplicate keys anywhere."""
-    result: dict[str, object] = {}
-    for key, value in pairs:
-        if key in result:
-            raise _AmbiguousPackageDocument()
-        result[key] = value
-    return result
 
 
 def platform_directory() -> str | None:
@@ -484,7 +499,10 @@ def _next_message(
     Returns one of ``("message", decoded)``, ``("timeout", None)``,
     ``("eof", None)``, ``("failed", None)``, ``("oversized", None)`` or
     ``("malformed", None)``. Blank separator lines are tolerated and
-    skipped; every other line must decode as strict UTF-8 JSON.
+    skipped; every other line must decode as strict UTF-8 JSON with no
+    duplicate object keys at any nesting depth and no non-standard
+    constants (NaN/Infinity), so one deliberate interpretation exists per
+    message.
     """
     while True:
         remaining = deadline - clock()
@@ -504,8 +522,13 @@ def _next_message(
         except UnicodeDecodeError:
             return "malformed", None
         try:
-            return "message", json.loads(text)
+            return "message", json.loads(
+                text,
+                object_pairs_hook=_object_without_duplicate_keys,
+                parse_constant=_reject_json_constant,
+            )
         except ValueError:
+            # Covers JSONDecodeError, duplicate keys and NaN/Infinity.
             return "malformed", None
 
 

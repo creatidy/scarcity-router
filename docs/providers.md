@@ -51,13 +51,28 @@ supported Codex installation, a bounded supervised `codex app-server`
 subprocess with discarded stderr, the proven
 initialize/initialized/`account/rateLimits/read` exchange with responses
 matched by request identity and message structure (never timing), bounded
-line/total output budgets, and safe failure mapping to the v1 statuses.
+line/total output budgets, ambiguity-safe JSONL decoding (duplicate keys
+and NaN/Infinity rejected), and safe failure mapping to the v1 statuses.
+The parser validates the complete evidenced snapshot shape (U-010):
+`primary`/`secondary` are the only window slots and are classified by
+validated `windowDurationMins`, never slot position; `credits`,
+`individualLimit` and `spendControlReached` are tolerated non-window
+metadata; additive scalar members are tolerated while additive structured
+members under unknown keys fail closed; `limitId` must be the evidenced
+`"codex"` identity; a snapshot missing either expected window kind
+degrades to `unknown` with its validated partial windows; duplicate known
+periods fail closed; a non-null `rateLimitReachedType` (backend exhaustion)
+degrades to `unknown` with percentage pairs withheld; plan labels accept
+only validated enum members that satisfy the v1 safe-ID grammar.
+
 Supported discovery (U-001, evidence in `docs/poc-evidence.md`):
 `openai.chatgpt-*` extension directories under `~/.vscode/extensions` or
 `~/.vscode-server/extensions` (the remote-server layout is the directly
 evidenced PoC environment), highest extension version first, validated by an
 executable `bin/<platform>/codex` and a `codex-package.json` with
-`layoutVersion` 1 and `variant` `codex` (duplicate-key rejecting). No
+`layoutVersion` 1 and `variant` `codex` (duplicate-key rejecting; this pins
+the installation filesystem layout, not protocol compatibility — protocol
+drift is caught at runtime by strict shape validation failing closed). No
 installation maps to `unavailable`; an installation whose layout cannot be
 validated maps to `unsupported`.
 
@@ -67,9 +82,11 @@ unsupported and unresolved (U-001 residual); error-response text is never
 parsed, so protocol error responses map to `unknown` until failure shapes
 are captured as evidence; the selected binary path and versions are
 validated but not surfaced, because v1 has no field for them (future
-`doctor`/`status` work reports them); live CLI/status integration is not
-implemented, and the automated suite contains no live-account test — all
-transport tests use synthetic JSONL process fakes and fixtures under
+`doctor`/`status` work reports them); the reached-enum and multi-word plan
+value wire casing is unconfirmed (snake_case is evidenced; camelCase is
+tolerated for reached, omitted for plans); live CLI/status integration is
+not implemented, and the automated suite contains no live-account test —
+all transport tests use synthetic JSONL process fakes and fixtures under
 `tests/fixtures/openai-codex-appserver/`.
 
 ## Z.ai Coding Plan

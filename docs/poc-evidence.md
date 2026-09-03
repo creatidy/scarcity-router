@@ -111,6 +111,36 @@ App-server wire facts (structure-only probes; no model prompt issued):
   from these responses, independently corroborating the used orientation of
   `usedPercent`.
 
+Protocol schema facts (read-only serde string-table inspection of the
+installed codex binary; structure only, no message text):
+
+- the rate-limit result is the protocol's `RateLimitSnapshot` with **nine**
+  members: `limitId`, `limitName`, `primary`, `secondary`, `credits`,
+  `individualLimit`, `spendControlReached`, `planType`,
+  `rateLimitReachedType` (matches the extension's view model and the PoC
+  subset; `RateLimitWindow` has the three PoC members
+  `usedPercent`/`windowDurationMins`/`resetsAt`);
+- `credits`, `individualLimit` and `spendControlReached` are optional
+  non-window metadata members — object- or null-valued — distinct from the
+  two window slots;
+- the plan-type enum members observed in the binary string tables are
+  `free`, `go`, `plus`, `pro`, `prolite`, `team`, `edu`, `edu_pro`,
+  `enterprise`, `ent26`, `enterprise_cbp_automation`,
+  `enterprise_cbp_usage_based`, `self_serve_business_prolite`,
+  `self_serve_business_usage_based`, `run` (snake_case; the PoC observed
+  `plus` on the wire). Multi-word members are omitted from the adapter's
+  plan allowlist because the v1 safe-ID grammar cannot represent the
+  evidenced snake_case form and a camelCase wire form is unconfirmed;
+- `rateLimitReachedType` members observed: `rate_limit_reached`,
+  `workspace_member_credits_depleted`,
+  `workspace_owner_usage_limit_reached`,
+  `workspace_member_usage_limit_reached` (snake_case in the string tables;
+  the app-server renames *fields* to camelCase, so the value casing is
+  unconfirmed and the adapter accepts both);
+- these string tables evidence the *shape*; they are not a live capture,
+  and the adapter still fails closed on any shape outside this validated
+  mapping.
+
 ### Z.ai Coding Plan capacity
 
 PoC environment included Kilo 7.5.6. Kilo reported a `Z.AI Coding Plan`
