@@ -385,8 +385,8 @@ direction was chosen. Dates use UTC.
     Request IDs accept strings or signed i64 integers structurally; this
     collector matches only its own numeric IDs `1` and `2`.
     A matching initialize response requires string `userAgent`, `codexHome`,
-    `platformFamily` and `platformOs`; response errors require integer `code`
-    and string `message`, without retaining error text.
+    `platformFamily` and `platformOs`; response errors require signed i64
+    integer `code` and string `message`, without retaining error text.
 - **Evidence:** the 2026-09-01 PoC shape plus the 2026-09-03 reconnaissance
   in `docs/poc-evidence.md`, including read-only serde string-table
   inspection of the installed codex binary cross-checked against the

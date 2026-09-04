@@ -94,7 +94,8 @@ App-server wire facts (structure-only probes; no model prompt issued):
   its `result` is an object requiring string `userAgent`, `codexHome`,
   `platformFamily` and `platformOs` (validated but deliberately not consumed
   by the collector);
-- matching error responses require an integer `code` and string `message`;
+- matching error responses require a signed i64 integer `code` and string
+  `message`;
   `error: null` or another malformed error value is protocol drift, and error
   text is never retained or surfaced;
 - the server may emit notifications (carrying `method`, optional `params`

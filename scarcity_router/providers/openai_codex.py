@@ -273,8 +273,13 @@ def _fits_i32(value: object) -> bool:
     return _is_int(value) and _I32_MIN <= value <= _I32_MAX
 
 
-def _fits_i64(value: object) -> bool:
+def is_signed_i64(value: object) -> bool:
+    """Validate the tagged protocol's signed i64 integer representation."""
     return _is_int(value) and _I64_MIN <= value <= _I64_MAX
+
+
+def _fits_i64(value: object) -> bool:
+    return is_signed_i64(value)
 
 
 def _is_request_id(value: object) -> bool:
@@ -812,7 +817,7 @@ def parse_codex_rate_limits_result(
                 # The exact tagged success response mirrors the main codex
                 # snapshot here: accept the entry only when it is fully
                 # valid and consistent with the top-level snapshot.
-                if bucket_snapshot != rate_limits:
+                if not _strict_equal(bucket_snapshot, rate_limits):
                     return _failure(
                         "schema_changed", "schema_changed", retrieved_at
                     )

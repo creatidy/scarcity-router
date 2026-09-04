@@ -722,6 +722,58 @@ class ResponseMatching(_AcquisitionCase):
         self.assertEqual(snapshot.status, "schema_changed")
         self.assertEqual(snapshot.windows, ())
 
+    def test_error_code_signed_i64_boundaries_are_valid(self) -> None:
+        values: tuple[int, ...] = (-2**63, 2**63 - 1)
+        for code in values:
+            with self.subTest(code=code):
+                error = json.dumps(
+                    {"id": 1, "error": {"code": code, "message": "synthetic"}}
+                ).encode() + b"\n"
+                _ = self._install_fake([error])
+                roots = self._make_installation()
+                snapshot = self._collect(discovery_roots=[roots])
+                self.assertEqual(snapshot.status, "unknown")
+                self.assertEqual(snapshot.windows, ())
+
+    def test_error_code_outside_signed_i64_is_schema_drift(self) -> None:
+        values: tuple[int, ...] = (-(2**63) - 1, 2**63)
+        for code in values:
+            with self.subTest(code=code):
+                error = json.dumps(
+                    {"id": 1, "error": {"code": code, "message": "synthetic"}}
+                ).encode() + b"\n"
+                _ = self._install_fake([error])
+                roots = self._make_installation()
+                snapshot = self._collect(discovery_roots=[roots])
+                self.assertEqual(snapshot.status, "schema_changed")
+                self.assertEqual(snapshot.windows, ())
+
+    def test_read_error_code_signed_i64_boundaries_are_valid(self) -> None:
+        values: tuple[int, ...] = (-2**63, 2**63 - 1)
+        for code in values:
+            with self.subTest(code=code):
+                error = json.dumps(
+                    {"id": 2, "error": {"code": code, "message": "synthetic"}}
+                ).encode() + b"\n"
+                _ = self._install_fake([INIT_RESPONSE, error])
+                roots = self._make_installation()
+                snapshot = self._collect(discovery_roots=[roots])
+                self.assertEqual(snapshot.status, "unknown")
+                self.assertEqual(snapshot.windows, ())
+
+    def test_read_error_code_outside_signed_i64_is_schema_drift(self) -> None:
+        values: tuple[int, ...] = (-(2**63) - 1, 2**63)
+        for code in values:
+            with self.subTest(code=code):
+                error = json.dumps(
+                    {"id": 2, "error": {"code": code, "message": "synthetic"}}
+                ).encode() + b"\n"
+                _ = self._install_fake([INIT_RESPONSE, error])
+                roots = self._make_installation()
+                snapshot = self._collect(discovery_roots=[roots])
+                self.assertEqual(snapshot.status, "schema_changed")
+                self.assertEqual(snapshot.windows, ())
+
     def test_initialize_result_non_object_maps_to_schema_changed(self) -> None:
         _ = self._install_fake([b'{"id":1,"result":"ok"}\n'])
         roots = self._make_installation()

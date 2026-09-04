@@ -91,6 +91,7 @@ from .openai_codex import (
     PROVIDER,
     SOURCE,
     classify_app_server_message,
+    is_signed_i64,
     parse_codex_rate_limits_result,
 )
 
@@ -291,10 +292,6 @@ def _object_without_duplicate_keys(
             raise _AmbiguousJson()
         result[key] = value
     return result
-
-
-def _is_protocol_int(value: object) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool)
 
 
 def _is_int(value: object) -> bool:
@@ -966,7 +963,7 @@ def _valid_protocol_error(value: object) -> bool:
     if not isinstance(value, Mapping):
         return False
     error = cast(Mapping[str, object], value)
-    return _is_protocol_int(error.get("code")) and isinstance(
+    return is_signed_i64(error.get("code")) and isinstance(
         error.get("message"), str
     )
 
