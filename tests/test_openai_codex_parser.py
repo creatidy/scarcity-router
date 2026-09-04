@@ -105,7 +105,11 @@ def _result(
     """
     result: dict[str, object] = {
         "rateLimits": rate_limits,
-        "rateLimitsByLimitId": buckets,
+        "rateLimitsByLimitId": (
+            {**cast(dict[str, object], buckets), "codex": rate_limits}
+            if isinstance(buckets, dict) and buckets
+            else buckets
+        ),
         "rateLimitResetCredits": reset_credits,
     }
     for member in omit:
@@ -555,14 +559,22 @@ class AdditionalBuckets(unittest.TestCase):
             bucket["individualLimit"] = individual
         return bucket
 
-    def test_null_and_empty_bucket_maps_are_healthy(self) -> None:
-        bucket_maps: tuple[object, ...] = (None, {})
-        for buckets in bucket_maps:
-            with self.subTest(buckets=buckets):
-                payload = _result(_snapshot(dict(_BOTH_SLOTS)), buckets=buckets)
-                snap = _parse(payload)
-                self.assertEqual(snap.status, "ok")
-                self.assertEqual(_codes(snap), set())
+    def test_null_bucket_map_is_healthy(self) -> None:
+        payload = _result(_snapshot(dict(_BOTH_SLOTS)), buckets=None)
+        snap = _parse(payload)
+        self.assertEqual(snap.status, "ok")
+        self.assertEqual(_codes(snap), set())
+
+    def test_present_bucket_map_without_codex_mirror_fails_closed(self) -> None:
+        payload = _result(
+            _snapshot(dict(_BOTH_SLOTS)),
+            buckets={"gpt-reserve": self._bucket()},
+        )
+        buckets = cast(dict[str, object], payload["rateLimitsByLimitId"])
+        _ = buckets.pop("codex")
+        snap = _parse(payload)
+        self.assertEqual(snap.status, "schema_changed")
+        self.assertEqual(snap.windows, ())
 
     def test_additional_window_fixture_emits_bucket_window(self) -> None:
         snap = _parse(_load("ratelimits-additional-window-present.json"))

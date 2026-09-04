@@ -19,6 +19,25 @@
     "rateLimitReachedType": null
   },
   "rateLimitsByLimitId": {
+    "codex": {
+      "limitId": "codex",
+      "limitName": null,
+      "primary": {
+        "usedPercent": 6,
+        "windowDurationMins": 300,
+        "resetsAt": 1788306212
+      },
+      "secondary": {
+        "usedPercent": 52,
+        "windowDurationMins": 10080,
+        "resetsAt": 1788748064
+      },
+      "credits": null,
+      "individualLimit": null,
+      "spendControlReached": false,
+      "planType": "pro",
+      "rateLimitReachedType": null
+    },
     "gpt-reserve": {
       "limitId": "gpt-reserve",
       "limitName": "GPT Reserve",

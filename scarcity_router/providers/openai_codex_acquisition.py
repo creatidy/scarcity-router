@@ -75,6 +75,7 @@ import math
 import os
 import platform
 import queue
+import select
 import stat
 import subprocess
 import threading
@@ -131,11 +132,40 @@ class CodexInstallation:
 def _is_regular_executable(path: Path) -> bool:
     """Require a non-symlink regular executable without following links."""
     try:
-        if not stat.S_ISREG(os.lstat(path).st_mode):
+        flags = (
+            getattr(os, "O_PATH", os.O_RDONLY)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        fd = os.open(str(path), flags)
+        try:
+            mode = os.fstat(fd).st_mode
+        finally:
+            os.close(fd)
+        if not stat.S_ISREG(mode):
             return False
-        return os.access(path, os.X_OK, follow_symlinks=False)
+        return bool(mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH))
     except OSError:
         return False
+
+
+def _is_regular_directory(path: Path) -> bool:
+    """Open and verify a directory without following a symlink."""
+    flags = (
+        getattr(os, "O_PATH", os.O_RDONLY)
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    try:
+        fd = os.open(str(path), flags)
+    except OSError:
+        return False
+    try:
+        return stat.S_ISDIR(os.fstat(fd).st_mode)
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
 
 
 # ── Process/session bounds ────────────────────────────────────────────────────
@@ -263,12 +293,17 @@ def _candidate_directories(
     valid: list[tuple[tuple[int, ...], str, Path]] = []
     malformed = 0
     for root in roots:
+        if not _is_regular_directory(root):
+            continue
         try:
             entries = list(root.iterdir())
         except OSError:
             continue
         for entry in entries:
-            if not entry.name.startswith(_EXTENSION_PREFIX) or not entry.is_dir():
+            if not entry.name.startswith(_EXTENSION_PREFIX):
+                continue
+            if not _is_regular_directory(entry):
+                malformed += 1
                 continue
             key = _extension_version_key(entry.name)
             if key is None:
@@ -385,7 +420,14 @@ def discover_codex_installation(
     if platform_directory_ is None:
         return None, "unsupported_installation"
     for candidate in candidates:
+        if not _is_regular_directory(candidate):
+            continue
+        bin_directory = candidate / "bin"
         binary_dir = candidate / "bin" / platform_directory_
+        if not _is_regular_directory(bin_directory) or not _is_regular_directory(
+            binary_dir
+        ):
+            continue
         binary = binary_dir / "codex"
         if not _is_regular_executable(binary):
             continue
@@ -418,7 +460,9 @@ class BoundedLineReader:
     _max_line_bytes: int
     _max_total_bytes: int
     _queue: "queue.Queue[tuple[str, bytes | None]]"
+    _fd: int | None
     _thread: threading.Thread
+    _stop: threading.Event
     _started: bool
 
     def __init__(
@@ -431,7 +475,12 @@ class BoundedLineReader:
         self._stream = stream
         self._max_line_bytes = max_line_bytes
         self._max_total_bytes = max_total_bytes
+        try:
+            self._fd = stream.fileno()
+        except (AttributeError, OSError, ValueError):
+            self._fd = None
         self._queue = queue.Queue()
+        self._stop = threading.Event()
         self._thread = threading.Thread(
             target=self._loop, daemon=True, name="codex-app-server-stdout"
         )
@@ -453,16 +502,100 @@ class BoundedLineReader:
         if self._started:
             self._thread.join(timeout=timeout)
 
+    def close(self) -> None:
+        """Stop and close the stream so a retained pipe writer cannot block it."""
+        self._stop.set()
+        if not self._started:
+            self._close_stream()
+
+    def stopped(self) -> bool:
+        """Whether the reader thread has stopped, including if never started."""
+        return not self._started or not self._thread.is_alive()
+
+    def _close_stream(self) -> None:
+        try:
+            self._stream.close()
+        except (OSError, ValueError):
+            pass
+
     def _put(self, kind: str, chunk: bytes | None) -> None:
         self._queue.put((kind, chunk))
 
     def _loop(self) -> None:
+        try:
+            if self._fd is not None:
+                self._loop_fd(self._fd)
+            else:
+                self._loop_stream()
+        finally:
+            self._close_stream()
+
+    def _loop_fd(self, fd: int) -> None:
+        """Read a real pipe without blocking on a partial line."""
+        try:
+            os.set_blocking(fd, False)
+        except OSError:
+            self._put("failed", None)
+            return
+        buffer = bytearray()
         total = 0
-        while True:
+        while not self._stop.is_set():
+            try:
+                ready, _, _ = select.select([fd], [], [], 0.1)
+            except OSError:
+                if not self._stop.is_set():
+                    self._put("failed", None)
+                return
+            if not ready:
+                continue
+            try:
+                chunk = os.read(fd, 8192)
+            except BlockingIOError:
+                continue
+            except OSError:
+                if not self._stop.is_set():
+                    self._put("failed", None)
+                return
+            if not chunk:
+                if buffer:
+                    if len(buffer) > self._max_line_bytes:
+                        self._put("oversized", None)
+                        return
+                    total += len(buffer)
+                    if total > self._max_total_bytes:
+                        self._put("oversized", None)
+                        return
+                    self._put("line", bytes(buffer))
+                self._put("eof", None)
+                return
+            buffer.extend(chunk)
+            while True:
+                newline = buffer.find(b"\n")
+                if newline < 0:
+                    if len(buffer) > self._max_line_bytes:
+                        self._put("oversized", None)
+                        return
+                    break
+                line = bytes(buffer[: newline + 1])
+                del buffer[: newline + 1]
+                if len(line) > self._max_line_bytes:
+                    self._put("oversized", None)
+                    return
+                total += len(line)
+                if total > self._max_total_bytes:
+                    self._put("oversized", None)
+                    return
+                self._put("line", line)
+
+    def _loop_stream(self) -> None:
+        """Fallback for non-file test streams with a stoppable read loop."""
+        total = 0
+        while not self._stop.is_set():
             try:
                 chunk = self._stream.readline(self._max_line_bytes + 1)
-            except OSError:
-                self._put("failed", None)
+            except (OSError, ValueError):
+                if not self._stop.is_set():
+                    self._put("failed", None)
                 return
             if not chunk:
                 self._put("eof", None)
@@ -509,6 +642,10 @@ def _shutdown(
     safely when this returns ``False``.
     """
     reaped = False
+    # Release the parent's stdout descriptor before waiting for the child.
+    # The child can exit while another process still holds a duplicate write
+    # end, so process reaping alone must not leave the reader blocked.
+    reader.close()
     try:
         stdin = proc.stdin
         if stdin is not None:
@@ -545,7 +682,7 @@ def _shutdown(
         except (subprocess.TimeoutExpired, OSError):
             pass
     reader.join(timeout=1.0)
-    return reaped
+    return reaped and reader.stopped()
 
 
 # ── JSONL session ─────────────────────────────────────────────────────────────

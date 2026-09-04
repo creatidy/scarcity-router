@@ -153,12 +153,14 @@ direction was chosen. Dates use UTC.
 - Evidence needed: discovery experiments outside the tested VS Code extension.
 - **Status:** Narrowly resolved for M1 (2026-09-03); residuals below
 - **Decision:** Supported discovery is exactly the VS Code ChatGPT
-  extension layout: `openai.chatgpt-*` directories under
+  extension layout: non-symlink `openai.chatgpt-*` directories under
   `~/.vscode/extensions` or `~/.vscode-server/extensions` (the
   remote-server layout is the directly evidenced PoC environment), scanned
   read-only, ordered deterministically by extension version descending. A
-  candidate is usable only when `bin/<platform>/codex` exists, is
-  executable, and a duplicate-key-rejecting `codex-package.json` beside it
+  candidate is usable only when its intermediate `bin/<platform>`
+  directories and package/executable paths are non-symlink validated beneath
+  the selected root, its `codex` file is regular and executable, and a
+  duplicate-key-rejecting `codex-package.json` beside it
   validates `layoutVersion` 1 and `variant` `codex`. No installation maps
   to `unavailable`; an unusable installation maps to `unsupported`. There
   is no PATH search, no browser-profile inspection, no install/upgrade, no
@@ -301,7 +303,10 @@ direction was chosen. Dates use UTC.
   - **Envelope.** The exact tagged schema *requires* only the
     `rateLimits` member: missing is drift (`schema_changed`).
     `rateLimitsByLimitId` and `rateLimitResetCredits` are nullable optional
-    members, so missing and explicit `null` are valid absent states. `rateLimits`
+    members, so missing and explicit `null` are valid absent states. When
+    `rateLimitsByLimitId` is a present object, its exact tagged `codex` mirror
+    is required and must equal top-level `rateLimits`; a map without that
+    mirror is drift. `rateLimits`
     is required to be the nine-member snapshot (`limitId`, `limitName`,
     `primary`, `secondary`, `credits`, `individualLimit`,
     `spendControlReached`, `planType`, `rateLimitReachedType`); snapshot

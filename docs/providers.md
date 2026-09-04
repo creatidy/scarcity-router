@@ -57,8 +57,9 @@ adversarial deep nesting all rejected as drift), bounded finite-positive
 wait-supported startup/session
 timeouts, and terminate→(bounded wait)→kill cleanup on every path —
 including a reader startup failure before the session begins. Cleanup reports
-`unavailable` whenever a bounded wait cannot prove that the child was reaped;
-it never claims successful collection on an unproven reap.
+`unavailable` whenever a bounded wait cannot prove that the child was reaped
+or the reader thread was stopped; it never claims successful collection on
+unproven cleanup.
 The parser validates the complete evidenced response envelope (U-010):
 only the `GetAccountRateLimitsResponse.rateLimits` member is required;
 `rateLimitsByLimitId` and `rateLimitResetCredits` are nullable optional members,
@@ -74,8 +75,9 @@ and integer `remainingPercent`/`resetsAt`) and `rateLimitResetCredits`
 malformed shapes fail closed, and
 valid present states — being v1-unrepresentable — degrade to `unknown`
 with percentage pairs withheld. Additional `rateLimitsByLimitId` buckets
-validate as full quota snapshots (map key must equal the bucket's
-`limitId`, never `"codex"`; every emitted bucket window gets a distinct safe
+validate as full quota snapshots; a present map must contain an exact
+`"codex"` mirror of top-level `rateLimits`, and non-mirror keys must equal
+their bucket `limitId` and never be `"codex"`; every emitted bucket window gets a distinct safe
 `<limitId>:<slot>` identity with no equal-period merging; same
 window/duplicate/nested rules). Backend
 blockers — a non-null `rateLimitReachedType`, `spendControlReached ==
@@ -91,7 +93,8 @@ Supported discovery (U-001, evidence in `docs/poc-evidence.md`):
 `openai.chatgpt-*` extension directories under `~/.vscode/extensions` or
 `~/.vscode-server/extensions` (the remote-server layout is the directly
 evidenced PoC environment), highest extension version first, validated by a
-regular non-symlink executable `bin/<platform>/codex` and a
+non-symlink candidate plus `bin/<platform>` directory, a regular non-symlink
+executable `bin/<platform>/codex` and a
 `codex-package.json` with
 `layoutVersion` 1 and `variant` `codex` (duplicate-key rejecting; this pins
 the installation filesystem layout, not protocol compatibility — protocol

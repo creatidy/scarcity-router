@@ -97,6 +97,7 @@ class _FakeAppServer:
     _exit_code: int
     _write_fd: int
     _read_fd: int
+    _retained_write_fd: int | None
     _write_closed: bool
     _stop: threading.Event
     _feeder: threading.Thread
@@ -109,6 +110,7 @@ class _FakeAppServer:
         block: bool = False,
         stubborn: bool = False,
         exit_code: int = 0,
+        retain_write_fd: bool = False,
     ) -> None:
         self.stdin = _FakeStdin()
         self.events = []
@@ -117,6 +119,9 @@ class _FakeAppServer:
         self._stubborn = stubborn
         self._exit_code = exit_code
         self._read_fd, self._write_fd = os.pipe()
+        self._retained_write_fd = (
+            os.dup(self._write_fd) if retain_write_fd else None
+        )
         self._write_closed = False
         self._stop = threading.Event()
         self._lock = threading.Lock()
@@ -163,8 +168,14 @@ class _FakeAppServer:
         self._close_write()
         try:
             self.stdout.close()
-        except OSError:
+        except (OSError, ValueError):
             pass
+        if self._retained_write_fd is not None:
+            try:
+                os.close(self._retained_write_fd)
+            except OSError:
+                pass
+            self._retained_write_fd = None
 
     def written_messages(self) -> "list[dict[str, object]]":
         decoded: list[dict[str, object]] = []
@@ -218,8 +229,14 @@ class _AcquisitionCase(unittest.TestCase):
         block: bool = False,
         stubborn: bool = False,
         error: Exception | None = None,
+        retain_write_fd: bool = False,
     ) -> _FakeAppServer:
-        fake = _FakeAppServer(lines, block=block, stubborn=stubborn)
+        fake = _FakeAppServer(
+            lines,
+            block=block,
+            stubborn=stubborn,
+            retain_write_fd=retain_write_fd,
+        )
         self.addCleanup(fake.finalize)
         self.fake = fake
 
@@ -366,6 +383,31 @@ class SuccessfulSession(_AcquisitionCase):
         roots = self._make_installation()
         snapshot = self._collect(discovery_roots=[roots])
         self.assertEqual(snapshot.status, "schema_changed")
+        self.assertEqual(snapshot.windows, ())
+
+    def test_inherited_stdout_writer_does_not_leak_reader(self) -> None:
+        _ = self._install_fake(
+            [INIT_RESPONSE, _read_response(_fixture_result("ratelimits-ok-plus.json"))],
+            retain_write_fd=True,
+        )
+        roots = self._make_installation()
+        snapshot = self._collect(discovery_roots=[roots])
+        self.assertEqual(snapshot.status, "ok")
+        self.assertFalse(
+            any(
+                thread.name == "codex-app-server-stdout"
+                for thread in threading.enumerate()
+            )
+        )
+
+    def test_unproven_reader_cleanup_degrades_collection(self) -> None:
+        _ = self._install_fake(
+            [INIT_RESPONSE, _read_response(_fixture_result("ratelimits-ok-plus.json"))]
+        )
+        roots = self._make_installation()
+        with mock.patch.object(acq.BoundedLineReader, "stopped", return_value=False):
+            snapshot = self._collect(discovery_roots=[roots])
+        self.assertEqual(snapshot.status, "unavailable")
         self.assertEqual(snapshot.windows, ())
 
 
@@ -967,6 +1009,33 @@ class Discovery(unittest.TestCase):
                 }
             ),
             encoding="utf-8",
+        )
+
+        installation, outcome = acq.discover_codex_installation([root])
+        self.assertIsNone(installation)
+        self.assertEqual(outcome, "unsupported_installation")
+
+    def test_symlinked_candidate_directory_cannot_escape_root(self) -> None:
+        outside = self._make(suffix="outside")
+        root = self.tmp / "configured-extensions"
+        _ = root.mkdir()
+        outside_candidate = outside / "openai.chatgpt-26.825.51511-linux-x64"
+        (root / outside_candidate.name).symlink_to(
+            outside_candidate, target_is_directory=True
+        )
+
+        installation, outcome = acq.discover_codex_installation([root])
+        self.assertIsNone(installation)
+        self.assertEqual(outcome, "unsupported_installation")
+
+    def test_symlinked_intermediate_directory_cannot_escape_root(self) -> None:
+        outside = self._make(suffix="outside")
+        root = self.tmp / "configured-extensions"
+        extension = root / "openai.chatgpt-26.825.51511-linux-x64"
+        _ = extension.mkdir(parents=True)
+        outside_candidate = outside / "openai.chatgpt-26.825.51511-linux-x64"
+        (extension / "bin").symlink_to(
+            outside_candidate / "bin", target_is_directory=True
         )
 
         installation, outcome = acq.discover_codex_installation([root])

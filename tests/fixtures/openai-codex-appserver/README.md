@@ -40,9 +40,9 @@ replay a live reading.
 - `ratelimits-credits-malformed.json` — `credits.balance` as a JSON number
   instead of the evidenced string-or-null: `schema_changed`.
 - `ratelimits-additional-window-present.json` — an additional metered bucket
-  window is emitted with a distinct safe identity rather than merged with a
-  main window; the snapshot is `unknown` because v1 cannot represent the
-  cross-bucket metering.
+  plus the required matching `codex` mirror. Its window is emitted with a
+  distinct safe identity rather than merged with a main window; the snapshot
+  is `unknown` because v1 cannot represent the cross-bucket metering.
 - `ratelimits-additional-bucket-exhausted.json` — an additional metered
   bucket under `rateLimitsByLimitId` (key matching its `limitId`) with an
   exhausted window (`usedPercent` 100): blocker, main pairs withheld.
@@ -74,7 +74,8 @@ replay a live reading.
 
 - success yields all present windows; slot names carry no period semantics;
 - only `rateLimits` must be present (the map/reset members may be absent or
-  null), and typed credit/spend/reset members
+  null); when `rateLimitsByLimitId` is a present object it must include the
+  matching `codex` mirror, and typed credit/spend/reset members
   validate strictly, never surfacing values in output;
 - missing window coverage, duplicate known periods and a non-`codex`
   `limitId` never yield a healthy snapshot;

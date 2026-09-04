@@ -55,23 +55,22 @@ docs/poc-evidence.md ("OpenAI/Codex subscription capacity" and the
     ``workspace_member_usage_limit_reached``); camelCase or arbitrary
     strings are drift, not degraded facts;
 - ``rateLimitsByLimitId`` carries additional metered buckets keyed by limit
-  id. The exact tagged success response mirrors the main snapshot under
-  the ``"codex"`` key: that entry is accepted, fully validated, and checked
-  for consistency with the top-level ``rateLimits`` (a diverging mirror is
-  drift). Every other bucket validates as a full quota snapshot with the
-  same membership, identity (the map key must equal the bucket's
-  ``limitId``), window and nested credit/spend-control rules, and its
-  validated windows are emitted with a safe distinct identity
-  (``"<limitId>:<slot>"``) without merging equal periods across buckets.
-  Buckets are ordered deterministically: main slots first, then buckets by
-  key, each primary then secondary;
-  - ``rateLimitResetCredits`` is the reset-credit summary: a valid present
-    summary requires the integer ``availableCount``; its optional ``credits``
-    rows are typed objects requiring ``id``, ``resetType``, ``status``,
-    ``grantedAt``, ``expiresAt``, ``title`` and ``description`` with the
-    generated-schema types and exact enum values. Empty arrays are valid, but
-    empty or malformed rows are drift. A present valid
-  summary is v1-unrepresentable (unknown + withheld pairs);
+   id. If the map is present, it must contain the exact tagged success mirror
+   under the ``"codex"`` key: that entry is accepted, fully validated, and
+   checked for consistency with the top-level ``rateLimits`` (a missing or
+   diverging mirror is drift). Every other bucket validates as a full quota
+   snapshot with the same membership, identity (the map key must equal the
+   bucket's ``limitId``), window and nested credit/spend-control rules, and its
+   validated windows are emitted with a safe distinct identity
+   (``"<limitId>:<slot>"``) without merging equal periods across buckets.
+   Buckets are ordered deterministically: main slots first, then buckets by
+   key, each primary then secondary;
+- ``rateLimitResetCredits`` is the reset-credit summary: a valid present
+   summary requires the integer ``availableCount``; its optional ``credits``
+   rows are typed objects requiring ``id``, ``resetType``, ``status`` and
+   ``grantedAt``; nullable ``expiresAt``, ``title`` and ``description`` are
+   optional. Empty arrays are valid, but empty or malformed rows are drift. A
+   present valid summary is v1-unrepresentable (unknown + withheld pairs);
 - backend blockers and v1-unrepresentable states never yield a healthy
   snapshot: ``status="unknown"`` with ``telemetry_unknown``, all validated
   windows (main and additional) preserved with identity/duration/reset
@@ -765,6 +764,9 @@ def parse_codex_rate_limits_result(
         return _failure("schema_changed", "schema_changed", retrieved_at)
 
     if buckets_map is not None:
+        mirror = _as_mapping(buckets_map.get(_LIMIT_ID))
+        if mirror is None or mirror != rate_limits:
+            return _failure("schema_changed", "schema_changed", retrieved_at)
         for key in sorted(buckets_map):
             value = buckets_map[key]
             bucket_snapshot = _as_mapping(value)
