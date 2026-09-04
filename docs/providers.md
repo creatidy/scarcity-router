@@ -77,8 +77,10 @@ and integer `remainingPercent`/`resetsAt`) and `rateLimitResetCredits`
 (`availableCount` plus typed optional reset-credit rows; rows require `id`,
 `resetType`, `status` and `grantedAt`, with nullable optional detail fields);
 malformed shapes fail closed, and
-valid present states — being v1-unrepresentable — degrade to `unknown`
-with percentage pairs withheld. Additional `rateLimitsByLimitId` buckets
+valid credit or spend-control states — being v1-unrepresentable — degrade to
+`unknown` with percentage pairs withheld. A valid reset-credit summary is
+supplemental telemetry: its presence or `availableCount` does not block or
+withhold current quota pairs. Additional `rateLimitsByLimitId` buckets
 validate as full quota snapshots; a present map must contain an exact
 `"codex"` mirror of top-level `rateLimits`, and non-mirror keys must equal
 their bucket `limitId` and never be `"codex"`; every emitted bucket window gets a distinct safe

@@ -65,12 +65,13 @@ docs/poc-evidence.md ("OpenAI/Codex subscription capacity" and the
    (``"<limitId>:<slot>"``) without merging equal periods across buckets.
    Buckets are ordered deterministically: main slots first, then buckets by
    key, each primary then secondary;
-- ``rateLimitResetCredits`` is the reset-credit summary: a valid present
+ - ``rateLimitResetCredits`` is the reset-credit summary: a valid present
    summary requires the integer ``availableCount``; its optional ``credits``
    rows are typed objects requiring ``id``, ``resetType``, ``status`` and
    ``grantedAt``; nullable ``expiresAt``, ``title`` and ``description`` are
    optional. Empty arrays are valid, but empty or malformed rows are drift. A
-   present valid summary is v1-unrepresentable (unknown + withheld pairs);
+   valid summary is supplemental telemetry: its presence and
+   ``availableCount`` do not block or withhold current quota pairs;
 - backend blockers and v1-unrepresentable states never yield a healthy
   snapshot: ``status="unknown"`` with ``telemetry_unknown``, all validated
   windows (main and additional) preserved with identity/duration/reset
@@ -790,10 +791,7 @@ def parse_codex_rate_limits_result(
     if not _membership_valid(envelope, _KNOWN_ENVELOPE_MEMBERS):
         return _failure("schema_changed", "schema_changed", retrieved_at)
 
-    reset_credits_present = _reset_credits_state(
-        envelope.get("rateLimitResetCredits")
-    )
-    if reset_credits_present is None:
+    if _reset_credits_state(envelope.get("rateLimitResetCredits")) is None:
         return _failure("schema_changed", "schema_changed", retrieved_at)
 
     additional_present = False
@@ -880,7 +878,6 @@ def parse_codex_rate_limits_result(
         or additional_blocked
         or main_state.unrepresentable
         or additional_unrepresentable
-        or reset_credits_present
     )
 
     if not emitted:

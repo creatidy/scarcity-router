@@ -26,17 +26,19 @@ parsing paths rather than replay a live reading.
   slots. The parser must classify semantics from validated
   `windowDurationMins`, not the slot names, derive
   `remaining = 100 - used`, and preserve the plan label `plus`.
-- `ratelimits-full-shape-ok.json` — the exact evidenced envelope with all
-  three required members (null absent states) and the nine-member snapshot
+- `ratelimits-full-shape-ok.json` — the exact evidenced envelope with the
+  nine-member snapshot
   with every typed member present (`credits: null`, `individualLimit:
   null`, `spendControlReached: false`, `limitName: null`). Healthy.
 - `ratelimits-credits-present.json` — valid typed credit/spend/reset-credit
   states (`CreditsSnapshot` with required boolean fields and optional
   string-or-null `balance`, `SpendControlLimitSnapshot` with four required fields and string
   `limit`/`used`, reset-credit summary with `availableCount` and fully typed
-  rows). Valid but
-  v1-unrepresentable: degrades to `unknown` with percentage pairs
-  withheld.
+  rows). The credit and spend states are valid but v1-unrepresentable and
+  degrade to `unknown` with percentage pairs withheld.
+- Valid reset-credit summaries, including `{availableCount: 0, credits: []}`,
+  are supplemental telemetry and do not block or withhold current quota
+  percentages.
 - `ratelimits-spend-control-exhausted.json` — `individualLimit` at
   `remainingPercent: 0`: a backend blocker, never healthy, pairs withheld.
 - `ratelimits-credits-malformed.json` — `credits.balance` as a JSON number
@@ -75,8 +77,8 @@ parsing paths rather than replay a live reading.
 ## Assertions expected of the collector
 
 - success yields all present windows; slot names carry no period semantics;
-- only `rateLimits` must be present (the map/reset members may be absent or
-  null); when `rateLimitsByLimitId` is a present object it must include the
+- only `rateLimits` must be present for input deserialization (the map/reset
+  members may be absent or null); when `rateLimitsByLimitId` is a present object it must include the
   matching `codex` mirror, and typed credit/spend/reset members
   validate strictly, never surfacing values in output;
 - missing window coverage, duplicate known periods and a non-`codex`
@@ -84,8 +86,9 @@ parsing paths rather than replay a live reading.
 - backend blockers — a non-null `rateLimitReachedType`,
   `spendControlReached: true`, an exhausted `individualLimit`, or a
   blocked/exhausted additional bucket — degrade to `unknown` with
-  percentage pairs withheld; valid v1-unrepresentable credit/spend/reset
-  states do too; known exhaustion without any blocker stays `ok` as
+  percentage pairs withheld; valid v1-unrepresentable credit/spend states do
+  too; reset-credit summaries are supplemental and do not block; known
+  exhaustion without any blocker stays `ok` as
   `(100, 0)`;
 - unknown / missing values remain unknown, never defaulted to 0 or 100;
 - schema change maps to `schema_changed` and no synthesized windows;

@@ -332,12 +332,13 @@ direction was chosen. Dates use UTC.
     `rateLimitResetCredits` (integer `availableCount` plus optional typed
     `credits` rows requiring `id`, `resetType`, `status` and `grantedAt`, with
     optional nullable `expiresAt`, `title` and `description`) are type-validated: malformed shapes
-    are `schema_changed`. Valid present states have no v1 representation:
-    they degrade to `status: "unknown"` and withhold the percentage pairs
-    (`percentage_unknown` per window); an individual limit with
-     `remainingPercent == 0` is a backend blocker. Missing/null
-     `spendControlReached` is unavailable and conservatively withholds pairs;
-     the `limit` and `used`
+    are `schema_changed`. Valid credits or individual-limit states have no v1
+    representation: they degrade to `status: "unknown"` and withhold the
+    percentage pairs (`percentage_unknown` per window); an individual limit
+    with `remainingPercent == 0` is a backend blocker. A valid reset-credit
+    summary is supplemental telemetry and does not block or withhold current
+    quota pairs. Missing/null `spendControlReached` is unavailable and
+    conservatively withholds pairs; the `limit` and `used`
     values are strings and are validated structurally only; they are never
     parsed or compared.
   - **Identity.** The main `limitId` must be exactly the evidenced quota

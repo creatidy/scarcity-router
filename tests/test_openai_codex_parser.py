@@ -316,7 +316,7 @@ class CreditsAndSpendControl(unittest.TestCase):
             self.assertIsNone(window.remaining_percent)
         self.assertIn("percentage_unknown", _codes(snap))
 
-    def test_valid_reset_credit_summary_degrades(self) -> None:
+    def test_valid_reset_credit_summary_does_not_block(self) -> None:
         payload = _result(
             _snapshot(dict(_BOTH_SLOTS)),
             reset_credits={
@@ -344,10 +344,22 @@ class CreditsAndSpendControl(unittest.TestCase):
             },
         )
         snap = _parse(payload)
-        self.assertEqual(snap.status, "unknown")
-        self.assertIn("telemetry_unknown", _codes(snap))
+        self.assertEqual(snap.status, "ok")
+        self.assertEqual(_codes(snap), set())
         for window in snap.windows:
-            self.assertIsNone(window.used_percent)
+            self.assertIsNotNone(window.used_percent)
+
+    def test_zero_reset_credit_summary_does_not_block(self) -> None:
+        payload = _result(
+            _snapshot(dict(_BOTH_SLOTS)),
+            reset_credits={"availableCount": 0, "credits": []},
+        )
+        snap = _parse(payload)
+        self.assertEqual(snap.status, "ok")
+        self.assertEqual(
+            [(window.used_percent, window.remaining_percent) for window in snap.windows],
+            [(6, 94), (52, 48)],
+        )
 
     def test_exhausted_individual_limit_is_a_blocker(self) -> None:
         snap = _parse(_load("ratelimits-spend-control-exhausted.json"))

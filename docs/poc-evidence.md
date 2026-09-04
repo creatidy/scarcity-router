@@ -146,7 +146,10 @@ text):
   credit summary with integer `availableCount` and optional typed `credits`
   rows. Each row requires `id`, `resetType`, `status` and `grantedAt`;
   `expiresAt`, `title` and `description` are optional nullable fields.
-  Exact generated-schema enum values are required;
+  Exact generated-schema enum values are required. A valid reset-credit summary
+  is supplemental telemetry; its presence or count does not represent current
+  quota exhaustion or withhold current quota percentages. Missing or null
+  `spendControlReached` is unavailable and is handled conservatively;
 - the exact tagged `PlanType` enum retains (safe v1 grammar, verbatim):
   `free`, `go`, `plus`, `pro`, `prolite`, `team`, `business`, `edu`,
   `edu_plus`, `edu_pro`, `enterprise`, `ent26`,
