@@ -404,6 +404,62 @@ class CreditsAndSpendControl(unittest.TestCase):
                 self.assertEqual(snap.status, "schema_changed", msg=repr(bad))
                 self.assertEqual(snap.windows, ())
 
+    def test_out_of_width_integer_fields_fail_closed(self) -> None:
+        valid_individual = {
+            "limit": "100.00",
+            "used": "40.00",
+            "remainingPercent": 40,
+            "resetsAt": 1788306212,
+        }
+        reset_row = {
+            "id": "synthetic-1",
+            "resetType": "codexRateLimits",
+            "status": "available",
+            "grantedAt": 1788000000,
+        }
+        cases: tuple[object, ...] = (
+            {"individualLimit": {**valid_individual, "remainingPercent": 2**31}},
+            {"individualLimit": {**valid_individual, "resetsAt": 2**63}},
+            {
+                "reset_credits": {
+                    "availableCount": 2**63,
+                    "credits": [],
+                }
+            },
+            {
+                "reset_credits": {
+                    "availableCount": 1,
+                    "credits": [{**reset_row, "grantedAt": 2**63}],
+                }
+            },
+            {
+                "reset_credits": {
+                    "availableCount": 1,
+                    "credits": [{**reset_row, "expiresAt": 2**63}],
+                }
+            },
+        )
+        for case in cases:
+            with self.subTest(case=case):
+                extra = cast(dict[str, object], case)
+                individual = extra.get("individualLimit")
+                if individual is not None:
+                    individual = cast(dict[str, object], individual)
+                else:
+                    individual = None
+                snapshot_extra: dict[str, object] | None = (
+                    {"individualLimit": individual}
+                    if individual is not None
+                    else None
+                )
+                payload = _result(
+                    _snapshot(dict(_BOTH_SLOTS), extra=snapshot_extra),
+                    reset_credits=extra.get("reset_credits"),
+                )
+                snap = _parse(payload)
+                self.assertEqual(snap.status, "schema_changed")
+                self.assertEqual(snap.windows, ())
+
     def test_null_and_absent_states_are_clear(self) -> None:
         extra_cases: tuple[dict[str, object], ...] = (
             {"credits": None, "individualLimit": None, "spendControlReached": None},
@@ -543,6 +599,21 @@ class AdditionalBuckets(unittest.TestCase):
                 "zeta-limit:primary",
             ],
         )
+
+    def test_every_present_bucket_slot_requires_a_safe_identity(self) -> None:
+        limit_id = "a" * 55
+        payload = _result(
+            _snapshot(dict(_BOTH_SLOTS)),
+            buckets={
+                limit_id: self._bucket(
+                    limit_id=limit_id,
+                    secondary=_window(10, 10080, 1788748064),
+                )
+            },
+        )
+        snap = _parse(payload)
+        self.assertEqual(snap.status, "schema_changed")
+        self.assertEqual(snap.windows, ())
 
     def test_unsafe_bucket_key_fails_closed(self) -> None:
         payload = _result(
@@ -786,13 +857,12 @@ class ExhaustedAndZeroFixtures(unittest.TestCase):
 
 
 class DegradedFixture(unittest.TestCase):
-    def test_string_percentage_omits_pair(self) -> None:
+    def test_valid_percentage_survives_other_degraded_facts(self) -> None:
         snap = _parse(_load("ratelimits-degraded.json"))
         five_hour = _windows(snap, resource="tokens", kind="five_hour")
         self.assertEqual(len(five_hour), 1)
-        self.assertIsNone(five_hour[0].used_percent)
-        self.assertIsNone(five_hour[0].remaining_percent)
-        self.assertIn("percentage_unknown", _codes(snap))
+        self.assertEqual(five_hour[0].used_percent, 6)
+        self.assertEqual(five_hour[0].remaining_percent, 94)
 
     def test_missing_reset_omits_resets_at(self) -> None:
         snap = _parse(_load("ratelimits-degraded.json"))
@@ -917,7 +987,7 @@ class CoverageValidation(unittest.TestCase):
 
 class PercentageNormalization(unittest.TestCase):
     def test_malformed_percentages_omit_pair(self) -> None:
-        for bad in ("6", 6.5, True, -1, 101, [6], {"v": 6}):
+        for bad in (-1, 101):
             with self.subTest(bad=bad):
                 payload = _result(
                     _snapshot(
@@ -933,6 +1003,26 @@ class PercentageNormalization(unittest.TestCase):
                 self.assertEqual(len(primary), 1)
                 self.assertIsNone(primary[0].used_percent, msg=repr(bad))
                 self.assertIn("percentage_unknown", _codes(snap))
+
+    def test_non_i32_percentage_is_schema_drift(self) -> None:
+        for bad in ("6", 6.5, True, None, [6], {"v": 6}, 2**31, -(2**31) - 1):
+            with self.subTest(bad=bad):
+                primary = {
+                    "usedPercent": bad,
+                    "windowDurationMins": 300,
+                    "resetsAt": 1788306212,
+                }
+                payload = _result(
+                    _snapshot(
+                        {
+                            "primary": primary,
+                            "secondary": _window(10, 10080, 1788748064),
+                        }
+                    )
+                )
+                snap = _parse(payload)
+                self.assertEqual(snap.status, "schema_changed", msg=repr(bad))
+                self.assertEqual(snap.windows, ())
 
     def test_used_orientation_boundary_values(self) -> None:
         for used, remaining in ((0, 100), (50, 50), (100, 0)):
@@ -971,7 +1061,7 @@ class ResetNormalization(unittest.TestCase):
         self.assertNotIn("reset_unknown", _codes(snap))
 
     def test_malformed_reset_values_omit_resets_at(self) -> None:
-        for bad in (
+        bad_values: tuple[object, ...] = (
             None,
             0,
             -5,
@@ -981,12 +1071,20 @@ class ResetNormalization(unittest.TestCase):
             1788306212000,  # epoch milliseconds must not be misread
             999_999_999,
             10_000_000_000,
-            10**30,
-        ):
+        )
+        for bad in bad_values:
             with self.subTest(bad=bad):
                 snap = self._snap_with(bad)
                 self.assertIsNone(snap.windows[0].resets_at, msg=repr(bad))
                 self.assertIn("reset_unknown", _codes(snap))
+
+    def test_out_of_width_reset_value_is_schema_drift(self) -> None:
+        bad_values: tuple[object, ...] = (2**63, -(2**63) - 1, 10**30)
+        for bad in bad_values:
+            with self.subTest(bad=bad):
+                snap = self._snap_with(bad)
+                self.assertEqual(snap.status, "schema_changed")
+                self.assertEqual(snap.windows, ())
 
     def test_epoch_milliseconds_never_become_1970(self) -> None:
         snap = self._snap_with(1788306212000)
@@ -994,6 +1092,25 @@ class ResetNormalization(unittest.TestCase):
 
 
 class WindowStructureDrift(unittest.TestCase):
+    def test_used_percent_is_required_and_i32(self) -> None:
+        for primary in (
+            {"windowDurationMins": 300, "resetsAt": 1788306212},
+            {"usedPercent": None, "windowDurationMins": 300, "resetsAt": 1788306212},
+            {"usedPercent": 2**31, "windowDurationMins": 300, "resetsAt": 1788306212},
+        ):
+            with self.subTest(primary=primary):
+                payload = _result(
+                    _snapshot(
+                        {
+                            "primary": primary,
+                            "secondary": _window(52, 10080, 1788748064),
+                        }
+                    )
+                )
+                snap = _parse(payload)
+                self.assertEqual(snap.status, "schema_changed")
+                self.assertEqual(snap.windows, ())
+
     def test_absent_duration_is_a_valid_unknown_window(self) -> None:
         payload = _result(
             _snapshot(
@@ -1015,7 +1132,11 @@ class WindowStructureDrift(unittest.TestCase):
         payload = _result(
             _snapshot(
                 {
-                    "primary": _window(6, None),
+                    "primary": {
+                        "usedPercent": 6,
+                        "windowDurationMins": None,
+                        "resetsAt": 1788306212,
+                    },
                     "secondary": _window(52, 10080, 1788748064),
                 }
             )
@@ -1131,19 +1252,18 @@ class WindowStructureDrift(unittest.TestCase):
             self.assertIsNotNone(window.duration_seconds)
         self.assertIn("window_semantics_unknown", _codes(snap))
 
-    def test_huge_duration_degrades_to_unknown_without_raising(self) -> None:
+    def test_out_of_width_duration_is_schema_drift(self) -> None:
         payload = _result(
             _snapshot(
                 {
-                    "primary": _window(10, 10**60),
+                    "primary": _window(10, 2**63),
                     "secondary": _window(20, 10080, 1788748064),
                 }
             )
         )
         snap = _parse(payload)
-        self.assertEqual(snap.status, "unknown")
-        window = _windows(snap, resource="tokens", kind="unknown")[0]
-        self.assertEqual(window.duration_seconds, 10**60 * 60)
+        self.assertEqual(snap.status, "schema_changed")
+        self.assertEqual(snap.windows, ())
 
 
 class EnvelopeAndStructure(unittest.TestCase):

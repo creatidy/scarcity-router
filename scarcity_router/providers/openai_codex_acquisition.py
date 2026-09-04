@@ -31,10 +31,11 @@ Security contract (docs/security.md):
 - requests are exactly three bounded writes (initialize, initialized
   notification, rate-limits read); there is no retry, no prompt and no other
   method call, so collection can never issue a model request;
-- every failure path terminates and reaps the child — including a reader
-  startup failure before the session begins: stdin is closed, the process
-  is terminated (then killed if it refuses to exit) and the reader is
-  joined;
+- every failure path attempts bounded termination and reap — including a
+  reader startup failure before the session begins: stdin is closed, the
+  process is terminated (then killed if it refuses to exit) and the reader
+  is joined. Collection degrades to ``unavailable`` if a wait cannot prove
+  that the child was reaped;
 - binary discovery is read-only and bounded: it lists only the two evidenced
   VS Code extension roots, considers only ``openai.chatgpt-*`` directories,
   and validates the installation layout through the extension's own
@@ -127,11 +128,22 @@ class CodexInstallation:
     codex_version: str
 
 
+def _is_regular_executable(path: Path) -> bool:
+    """Require a non-symlink regular executable without following links."""
+    try:
+        if not stat.S_ISREG(os.lstat(path).st_mode):
+            return False
+        return os.access(path, os.X_OK, follow_symlinks=False)
+    except OSError:
+        return False
+
+
 # ── Process/session bounds ────────────────────────────────────────────────────
 
 STARTUP_TIMEOUT_SECONDS = 10.0
 SESSION_TIMEOUT_SECONDS = 20.0
 TERMINATE_TIMEOUT_SECONDS = 2.0
+MAX_TIMEOUT_SECONDS = threading.TIMEOUT_MAX
 MAX_LINE_BYTES = 64 * 1024
 MAX_TOTAL_BYTES = 1024 * 1024
 
@@ -375,7 +387,7 @@ def discover_codex_installation(
     for candidate in candidates:
         binary_dir = candidate / "bin" / platform_directory_
         binary = binary_dir / "codex"
-        if not (binary.is_file() and os.access(binary, os.X_OK)):
+        if not _is_regular_executable(binary):
             continue
         package = _read_validated_package(binary_dir)
         if package is None:
@@ -487,13 +499,16 @@ def spawn_app_server(argv: Sequence[str]) -> "subprocess.Popen[bytes]":
 def _shutdown(
     proc: "subprocess.Popen[bytes]",
     reader: BoundedLineReader,
-) -> None:
-    """Terminate and reap the child on every path; never raises.
+) -> bool:
+    """Terminate the child and report whether a bounded wait proved reaping.
 
     Order: close stdin (EOF), terminate (SIGTERM-equivalent), wait bounded,
     kill if the child refuses to exit, then join the reader briefly. The
-    child's death closes the pipe, which releases the reader thread.
+    child's death closes the pipe, which releases the reader thread. A wait
+    failure is never treated as proof of reaping; the caller must degrade
+    safely when this returns ``False``.
     """
+    reaped = False
     try:
         stdin = proc.stdin
         if stdin is not None:
@@ -506,6 +521,7 @@ def _shutdown(
         pass
     try:
         _ = proc.wait(timeout=TERMINATE_TIMEOUT_SECONDS)
+        reaped = True
     except subprocess.TimeoutExpired:
         try:
             proc.kill()
@@ -513,11 +529,23 @@ def _shutdown(
             pass
         try:
             _ = proc.wait(timeout=TERMINATE_TIMEOUT_SECONDS)
+            reaped = True
         except (subprocess.TimeoutExpired, OSError):
             pass
     except OSError:
-        pass
+        # The process may already have exited, but an unsuccessful wait does
+        # not prove that it was reaped. Try the kill/final-wait path once.
+        try:
+            proc.kill()
+        except OSError:
+            pass
+        try:
+            _ = proc.wait(timeout=TERMINATE_TIMEOUT_SECONDS)
+            reaped = True
+        except (subprocess.TimeoutExpired, OSError):
+            pass
     reader.join(timeout=1.0)
+    return reaped
 
 
 # ── JSONL session ─────────────────────────────────────────────────────────────
@@ -725,17 +753,25 @@ def _run_session(
 def _validated_timeout(value: object, name: str) -> float:
     """Reject non-finite or non-positive timeouts before any use.
 
-    NaN must never become an unbounded wait and infinity must never reach
-    deadline arithmetic (where it would raise ``OverflowError``); both are
-    caller configuration errors and raise ``ValueError`` immediately, before
+    NaN, infinity and values beyond the wait primitive's bound must never
+    reach deadline arithmetic or queue/process waits. They are caller
+    configuration errors and raise ``ValueError`` immediately, before
     discovery, spawning or deadline computation, so no child process can be
     created with unusable bounds.
     """
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError(f"{name} must be a finite positive number of seconds")
-    if not math.isfinite(value) or value <= 0:
+    try:
+        numeric = float(value)
+    except OverflowError:
         raise ValueError(f"{name} must be a finite positive number of seconds")
-    return float(value)
+    if (
+        not math.isfinite(numeric)
+        or numeric <= 0
+        or numeric > MAX_TIMEOUT_SECONDS
+    ):
+        raise ValueError(f"{name} must be a finite positive number of seconds")
+    return numeric
 
 
 def collect_openai_codex_capacity(
@@ -791,12 +827,14 @@ def collect_openai_codex_capacity(
     except RuntimeError:
         # Reader startup failed (for example the thread could not be
         # started): an operational transport failure, not telemetry. The
-        # child is still terminated and reaped by the explicit shutdown —
-        # it must never leak because the session never began.
-        _shutdown(proc, reader)
+        # explicit shutdown still attempts termination and reports an
+        # unproven reap conservatively; the session never began.
+        _ = _shutdown(proc, reader)
         return _snapshot("unavailable", "source_unavailable", retrieved_at)
+    snapshot: CapacitySnapshot | None = None
+    reaped = False
     try:
-        return _run_session(
+        snapshot = _run_session(
             proc,
             reader,
             retrieved_at=retrieved_at,
@@ -804,4 +842,8 @@ def collect_openai_codex_capacity(
             session_timeout=session,
         )
     finally:
-        _shutdown(proc, reader)
+        reaped = _shutdown(proc, reader)
+    if not reaped:
+        return _snapshot("unavailable", "source_unavailable", retrieved_at)
+    assert snapshot is not None
+    return snapshot

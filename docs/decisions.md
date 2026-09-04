@@ -309,6 +309,10 @@ direction was chosen. Dates use UTC.
     state there. Additive scalar members are tolerated at every level;
     additive *structured* members under unknown keys fail closed to
     `schema_changed`.
+    Tagged integer fields are width-checked: window `usedPercent` and
+    spend-control `remainingPercent` are i32, while window durations/resets,
+    reset-credit counts and reset-credit timestamps are i64; out-of-width
+    values are schema drift.
   - **Typed states.** `credits` (evidenced `CreditsSnapshot`:
     required boolean `hasCredits`, required boolean `unlimited`, optional
     `balance` as string-or-null), `individualLimit` (evidenced
@@ -319,9 +323,10 @@ direction was chosen. Dates use UTC.
     optional nullable `expiresAt`, `title` and `description`) are type-validated: malformed shapes
     are `schema_changed`. Valid present states have no v1 representation:
     they degrade to `status: "unknown"` and withhold the percentage pairs
-    (`percentage_unknown` per window); an exhausted individual limit
-    (`remainingPercent == 0` or integer `used >= limit`) is a backend
-    blocker. Amounts are never interpreted or surfaced.
+    (`percentage_unknown` per window); an individual limit with
+    `remainingPercent == 0` is a backend blocker. The `limit` and `used`
+    values are strings and are validated structurally only; they are never
+    parsed or compared.
   - **Identity.** The main `limitId` must be exactly the evidenced quota
     identity `"codex"`; anything else is `schema_changed`, never healthy.
   - **Coverage.** The main snapshot missing either expected window kind

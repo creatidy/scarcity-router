@@ -357,6 +357,17 @@ class SuccessfulSession(_AcquisitionCase):
         self.assertEqual(snapshot.status, "ok")
         self.assertEqual(len(snapshot.windows), 2)
 
+    def test_missing_required_used_percent_maps_to_schema_changed(self) -> None:
+        payload = cast("dict[str, object]", _fixture_result("ratelimits-ok-plus.json"))
+        rate_limits = cast("dict[str, object]", payload["rateLimits"])
+        primary = cast("dict[str, object]", rate_limits["primary"])
+        _ = primary.pop("usedPercent")
+        _ = self._install_fake([INIT_RESPONSE, _read_response(payload)])
+        roots = self._make_installation()
+        snapshot = self._collect(discovery_roots=[roots])
+        self.assertEqual(snapshot.status, "schema_changed")
+        self.assertEqual(snapshot.windows, ())
+
 
 # ═════════════════════════ response matching ═════════════════════════════════
 
@@ -741,8 +752,8 @@ class SafeTermination(_AcquisitionCase):
 
     def test_reader_startup_failure_terminates_child(self) -> None:
         # Regression: a reader-start failure before the session begins must
-        # still terminate and reap the child and return a safe snapshot —
-        # never leak the process and never raise.
+        # still attempt termination and return a safe snapshot — never claim
+        # a successful collection when reaping cannot be proven.
         fake = self._install_fake(
             [
                 INIT_RESPONSE,
@@ -808,7 +819,15 @@ class SafeTermination(_AcquisitionCase):
             return cast("subprocess.Popen[bytes]", cast("object", fake))
 
         with mock.patch.object(acq, "spawn_app_server", fake_spawn):
-            snapshot = self._collect(discovery_roots=[roots])
+            with mock.patch.object(
+                acq,
+                "_run_session",
+                return_value=parse_codex_rate_limits_result(
+                    _fixture_result("ratelimits-ok-plus.json"),
+                    retrieved_at=RETRIEVED_AT,
+                ),
+            ):
+                snapshot = self._collect(discovery_roots=[roots])
         self.assertEqual(snapshot.status, "unavailable")
 
 
@@ -922,6 +941,33 @@ class Discovery(unittest.TestCase):
         _ = binary.write_bytes(b"#!/bin/sh\nexit 0\n")
         _ = binary.chmod(0o755)
         os.mkfifo(str(binary_dir / "codex-package.json"))
+
+        installation, outcome = acq.discover_codex_installation([root])
+        self.assertIsNone(installation)
+        self.assertEqual(outcome, "unsupported_installation")
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "platform lacks symlinks")
+    def test_symlinked_binary_maps_to_unsupported(self) -> None:
+        platform_dir = acq.platform_directory()
+        assert platform_dir is not None
+        root = self.tmp / "extensions"
+        extension = root / "openai.chatgpt-26.825.51511-linux-x64"
+        binary_dir = extension / "bin" / platform_dir
+        _ = binary_dir.mkdir(parents=True, exist_ok=True)
+        target = self.tmp / "real-codex"
+        _ = target.write_bytes(b"#!/bin/sh\nexit 0\n")
+        _ = target.chmod(0o755)
+        (binary_dir / "codex").symlink_to(target)
+        _ = (binary_dir / "codex-package.json").write_text(
+            json.dumps(
+                {
+                    "layoutVersion": 1,
+                    "variant": "codex",
+                    "version": "0.151.0-alpha.7.2",
+                }
+            ),
+            encoding="utf-8",
+        )
 
         installation, outcome = acq.discover_codex_installation([root])
         self.assertIsNone(installation)
@@ -1147,7 +1193,16 @@ class InvalidTimeouts(_AcquisitionCase):
     """Non-finite or non-positive timeouts are rejected before any spawn."""
 
     def test_invalid_timeouts_raise_before_spawning(self) -> None:
-        for bad in (float("nan"), float("inf"), float("-inf"), 0.0, -1.0, True):
+        for bad in (
+            float("nan"),
+            float("inf"),
+            float("-inf"),
+            1e308,
+            10**1000,
+            0.0,
+            -1.0,
+            True,
+        ):
             for parameter in ("startup_timeout", "session_timeout"):
                 with self.subTest(bad=bad, parameter=parameter):
                     fake = self._install_fake(

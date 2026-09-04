@@ -28,11 +28,12 @@ docs/poc-evidence.md ("OpenAI/Codex subscription capacity" and the
   and ``rateLimitReachedType`` (option-typed: missing and null both mean an
   absent state). Present values validate strictly:
   - ``limitId`` must be exactly the evidenced quota identity ``"codex"``;
-  - ``primary``/``secondary`` are the only window slots. A valid window has
-    ``windowDurationMins`` as a positive integer (300 minutes -> five-hour,
-    10080 -> weekly, other validated values -> unknown with the duration
-    preserved) or as an explicit null (a valid unknown-duration window with
-    no duration asserted). Slot names carry no period semantics;
+  - ``primary``/``secondary`` are the only window slots. A valid window
+    requires i32 ``usedPercent``. ``windowDurationMins`` is an optional i64:
+    positive values classify the period (300 minutes -> five-hour, 10080 ->
+    weekly, other validated values -> unknown with duration preserved), while
+    null or absence gives an unknown-duration window. ``resetsAt`` is an
+    optional i64. Slot names carry no period semantics;
   - ``credits`` is the evidenced ``CreditsSnapshot``: ``hasCredits`` and
     ``unlimited`` are required booleans, while optional ``balance`` is a
     decimal string or null. A present valid snapshot is a
@@ -84,11 +85,12 @@ docs/poc-evidence.md ("OpenAI/Codex subscription capacity" and the
   ``unknown`` with the validated partial windows preserved. Two slot
   windows sharing one known period duplicate the evidenced
   primary/secondary semantics and fail closed as ``schema_changed``;
-- ``usedPercent`` is used-oriented for the evidenced schema (the PoC
-  reading and the Codex extension's own ``remaining = 100 - used``
-  derivation agree): valid integers 0..100 normalize to a
-  ``used_percent``/``remaining_percent`` pair; anything else omits the
-  pair;
+ - ``usedPercent`` is a required i32 and is used-oriented for the evidenced
+   schema (the PoC reading and the Codex extension's own
+   ``remaining = 100 - used`` derivation agree): valid values 0..100
+   normalize to a ``used_percent``/``remaining_percent`` pair; other values
+   within i32 omit the pair, while missing, null, non-integers or out-of-width
+   values are schema drift;
 - ``resetsAt`` is evidenced as a 10-digit epoch-**second** integer; values
   outside that representation (epoch milliseconds, zero, negative, floats,
   strings) are rejected rather than misinterpreted;
@@ -219,6 +221,10 @@ _RESET_CREDIT_TYPES: frozenset[str] = frozenset({"codexRateLimits", "unknown"})
 # Evidenced ``resetsAt`` representation: 10-digit epoch seconds.
 _RESET_S_MIN = 1_000_000_000
 _RESET_S_MAX = 9_999_999_999
+_I32_MIN = -(2**31)
+_I32_MAX = 2**31 - 1
+_I64_MIN = -(2**63)
+_I64_MAX = 2**63 - 1
 
 _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
@@ -240,6 +246,14 @@ def _as_mapping(value: object) -> Mapping[str, object] | None:
 def _is_int(value: object) -> TypeGuard[int]:
     """True for a real JSON integer; booleans are not integers."""
     return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _fits_i32(value: object) -> bool:
+    return _is_int(value) and _I32_MIN <= value <= _I32_MAX
+
+
+def _fits_i64(value: object) -> bool:
+    return _is_int(value) and _I64_MIN <= value <= _I64_MAX
 
 
 def _membership_valid(
@@ -355,9 +369,9 @@ def _safe_plan(plan_type: object) -> str | None:
 def _bucket_window_id(limit_id: object, slot: str) -> str | None:
     """Compose a safe additional-window identity from validated parts only.
 
-    ``"<limitId>:<slot>"`` when both halves already satisfy the v1 safe-ID
-    grammar unchanged; otherwise the window is emitted without an identity
-    rather than with sanitized or invented text.
+    ``"<limitId>:<slot>"`` when both halves satisfy the v1 safe-ID grammar.
+    An unsafe or overlong composition returns ``None`` so the caller can fail
+    closed rather than emit a colliding or invented identity.
     """
     if isinstance(limit_id, str) and _SAFE_ID_RE.match(limit_id):
         composed = f"{limit_id}:{slot}"
@@ -394,18 +408,26 @@ def _parse_window(
     Returns the window facts, or ``None`` for structural drift. A validated
     positive integer ``windowDurationMins`` classifies the period; an
     explicit null (or absent) duration is the evidenced unknown-duration
-    window with no duration asserted. The entry must carry at least one
-    known member to be a window at all. ``window_id`` is the already
+    window with no duration asserted. The exact schema requires
+    ``usedPercent`` as an i32. ``window_id`` is the already
     decided identity (main slot name, composed bucket identity, or ``None``
-    for unsafe bucket keys — never a fallback that could collide).
+    for additional buckets, the identity must be safe and distinct).
     """
-    if not any(
-        key in entry for key in ("usedPercent", "windowDurationMins", "resetsAt")
-    ):
+    if "usedPercent" not in entry:
         return None
     if not _membership_valid(
         entry, frozenset({"usedPercent", "windowDurationMins", "resetsAt"})
     ):
+        return None
+
+    used_raw = entry["usedPercent"]
+    if not _fits_i32(used_raw):
+        return None
+    duration_raw = entry.get("windowDurationMins")
+    if duration_raw is not None and not _fits_i64(duration_raw):
+        return None
+    reset_raw = entry.get("resetsAt")
+    if _is_int(reset_raw) and not _fits_i64(reset_raw):
         return None
 
     mins = entry.get("windowDurationMins")
@@ -425,7 +447,7 @@ def _parse_window(
             CapacityDiagnostic(code="window_semantics_unknown", window_id=window_id)
         )
 
-    used = _used_pair(entry.get("usedPercent"))
+    used = _used_pair(used_raw)
     used_percent: int | None = None
     remaining_percent: int | None = None
     if used is None:
@@ -541,10 +563,10 @@ def _individual_limit_state(value: object) -> tuple[bool, bool] | None:
     if not isinstance(snapshot["used"], str):
         return None
     remaining = snapshot["remainingPercent"]
-    if not _is_int(remaining):
+    if not _fits_i32(remaining):
         return None
     resets = snapshot["resetsAt"]
-    if not _is_int(resets):
+    if not _fits_i64(resets):
         return None
     return True, remaining == 0
 
@@ -568,7 +590,7 @@ def _reset_credits_state(value: object) -> bool | None:
         return None
     if not _membership_valid(summary, frozenset({"availableCount", "credits"})):
         return None
-    if "availableCount" not in summary or not _is_int(summary["availableCount"]):
+    if "availableCount" not in summary or not _fits_i64(summary["availableCount"]):
         return None
     rows = summary.get("credits")
     if rows is None:
@@ -590,14 +612,14 @@ def _reset_credits_state(value: object) -> bool | None:
         status = row_map["status"]
         if not isinstance(status, str) or status not in _RESET_CREDIT_STATUSES:
             return None
-        if not _is_int(row_map["grantedAt"]):
+        if not _fits_i64(row_map["grantedAt"]):
             return None
         for field in ("expiresAt", "title", "description"):
             if field not in row_map:
                 continue
             value = row_map[field]
             if field == "expiresAt":
-                if value is not None and not _is_int(value):
+                if value is not None and not _fits_i64(value):
                     return None
             elif value is not None and not isinstance(value, str):
                 return None
@@ -679,6 +701,8 @@ def _quota_snapshot_state(
             if window_id_prefix is not None
             else slot
         )
+        if window_id is None:
+            return None
         facts = _parse_window(slot, entry, window_id=window_id)
         if facts is None:
             return None
@@ -755,11 +779,6 @@ def parse_codex_rate_limits_result(
                         "schema_changed", "schema_changed", retrieved_at
                     )
                 continue
-            # Every emitted additional window needs a distinct v1-safe
-            # identity. Do not emit an anonymous or truncated identity when
-            # an upstream bucket key cannot compose safely.
-            if _bucket_window_id(key, "primary") is None:
-                return _failure("schema_changed", "schema_changed", retrieved_at)
             state = _quota_snapshot_state(
                 bucket_snapshot,
                 expected_limit_id=key,

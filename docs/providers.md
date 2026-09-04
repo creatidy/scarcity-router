@@ -53,16 +53,19 @@ initialize/initialized/`account/rateLimits/read` exchange with responses
 matched by request identity and message structure (never timing), bounded
 line/total output budgets, ambiguity-safe JSONL decoding (duplicate keys,
 NaN/Infinity constants, non-finite exponents such as `1e10000` and
-adversarial deep nesting all rejected as drift), bounded startup/session
+adversarial deep nesting all rejected as drift), bounded finite-positive
+wait-supported startup/session
 timeouts, and terminate→(bounded wait)→kill cleanup on every path —
-including a reader startup failure before the session begins, so the child
-never leaks.
+including a reader startup failure before the session begins. Cleanup reports
+`unavailable` whenever a bounded wait cannot prove that the child was reaped;
+it never claims successful collection on an unproven reap.
 The parser validates the complete evidenced response envelope (U-010):
 only the `GetAccountRateLimitsResponse.rateLimits` member is required;
 `rateLimitsByLimitId` and `rateLimitResetCredits` are nullable optional members,
 so missing and explicit null states are accepted. `primary`/`secondary` are the
-only window slots and are classified by validated `windowDurationMins`, never
-slot position. Typed states are validated: `credits` (`CreditsSnapshot` with
+only window slots; a present window requires i32 `usedPercent`, while nullable
+i64 `windowDurationMins` and `resetsAt` are validated and duration drives
+classification, never slot position. Typed states are validated: `credits` (`CreditsSnapshot` with
 required booleans and optional string-or-null `balance`), `individualLimit`
 (`SpendControlLimitSnapshot` with four required fields, string `limit`/`used`
 and integer `remainingPercent`/`resetsAt`) and `rateLimitResetCredits`
@@ -87,8 +90,9 @@ never rewritten.
 Supported discovery (U-001, evidence in `docs/poc-evidence.md`):
 `openai.chatgpt-*` extension directories under `~/.vscode/extensions` or
 `~/.vscode-server/extensions` (the remote-server layout is the directly
-evidenced PoC environment), highest extension version first, validated by an
-executable `bin/<platform>/codex` and a `codex-package.json` with
+evidenced PoC environment), highest extension version first, validated by a
+regular non-symlink executable `bin/<platform>/codex` and a
+`codex-package.json` with
 `layoutVersion` 1 and `variant` `codex` (duplicate-key rejecting; this pins
 the installation filesystem layout, not protocol compatibility — protocol
 drift is caught at runtime by strict shape validation failing closed). No

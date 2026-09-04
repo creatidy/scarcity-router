@@ -125,8 +125,8 @@ text):
   `limitId`, `limitName`, `primary`, `secondary`, `credits`,
   `individualLimit`, `spendControlReached`, `planType`,
   `rateLimitReachedType` (matches the extension's view model and the PoC
-  subset; `RateLimitWindow` has the three PoC members
-  `usedPercent`/`windowDurationMins`/`resetsAt`);
+  subset; `RateLimitWindow` has required i32 `usedPercent` plus nullable i64
+  `windowDurationMins`/`resetsAt`);
 - `credits` is the evidenced `CreditsSnapshot`: required boolean `hasCredits`,
   required boolean `unlimited` and optional `balance` as a **string or null**
   (never a JSON number); `individualLimit` is the evidenced

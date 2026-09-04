@@ -36,8 +36,7 @@ replay a live reading.
   v1-unrepresentable: degrades to `unknown` with percentage pairs
   withheld.
 - `ratelimits-spend-control-exhausted.json` — `individualLimit` at
-  `remainingPercent: 0` (also `used >= limit`): a backend blocker, never
-  healthy, pairs withheld.
+  `remainingPercent: 0`: a backend blocker, never healthy, pairs withheld.
 - `ratelimits-credits-malformed.json` — `credits.balance` as a JSON number
   instead of the evidenced string-or-null: `schema_changed`.
 - `ratelimits-additional-window-present.json` — an additional metered bucket
@@ -62,10 +61,10 @@ replay a live reading.
   percentage pairs withheld.
 - `ratelimits-zero-usage.json` — both windows report 0% used. Known zero
   usage normalizes to `(0, 100)`, distinct from an unknown pair.
-- `ratelimits-degraded.json` — one `usedPercent` is a string (unusable), one
-  window omits `resetsAt`, and `planType` is an unevidenced label (`luna`).
-  The parser must omit the affected values with explicit diagnostics and omit
-  the plan rather than leaking arbitrary provider text.
+- `ratelimits-degraded.json` — one window omits `resetsAt` and `planType` is
+  an unevidenced label (`luna`). The parser must omit the affected reset value
+  with an explicit diagnostic and omit the plan rather than leaking arbitrary
+  provider text. A missing or non-i32 `usedPercent` is schema drift.
 - `ratelimits-schema-changed.json` — a plausibly evolved envelope
   (`rateLimits.windows[].{kind, consumedPercent, resetTimeUtc}`) that is not
   the observed shape. The parser must fail closed to `schema_changed` with no
