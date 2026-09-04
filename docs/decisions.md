@@ -275,6 +275,35 @@ direction was chosen. Dates use UTC.
 - Select the supported local calls for health, model presence and effective
   configuration; distinguish configured from effective context.
 - Evidence needed: a local PoC against the actual Qwen configuration.
+- **Status:** Narrowly resolved for M1 (2026-09-04); residuals below
+- **Decision:** The local collector uses exactly three read-only GETs
+  against one explicitly configured local endpoint (plain `http` on exactly
+  `127.0.0.1`, `::1` or `localhost`; no proxy routing, no redirects, at
+  most one attempt each): `GET /api/version` (validated envelope = the
+  reachability fact), `GET /api/tags` (exact `name`-identity model
+  presence) and `GET /api/ps` (effective context). `model_presence` is
+  `missing` only when a reachable runtime's validated listing lacks the
+  configured name, `unknown` on every failure. `configured_context_tokens`
+  comes only from the explicit configuration boundary;
+  `effective_context_tokens` comes only from a validated positive integer
+  `context_length` on the configured model's loaded `/api/ps` entry, never
+  from the configured value and never from the `/api/tags`
+  `details.context_length` model-file metadata. Duplicate listed names and
+  any malformed/drifted body fail closed; a healthy local runtime reports
+  `windows: []` with no quota semantics. There is no generation, no model
+  loading for inspection, no pull/delete and no runtime/config mutation.
+- **Evidence:** 2026-09-04 reconnaissance in `docs/poc-evidence.md`
+  ("2026-09-04 M1 Ollama local runtime reconnaissance"): live envelope
+  shapes for all three reads against Ollama `0.33.1` plus the installed
+  binary's serialization table for the `context_length` field name.
+- **Residuals:** (a) a live **populated** effective-context value has not
+  been observed (nothing was loaded during reconnaissance; loading solely
+  for inspection is side-effectful and was not performed) — the populated
+  path is synthetic-fixture-tested only; (b) `context_length` stability
+  across Ollama releases is unevidenced and the parser fails closed on its
+  absence; (c) the reconnaissance runtime was the installed `0.33.1`
+  service, not the owner's loaded Qwen configuration, so load-state
+  behavior of the real workflow remains to be observed in use.
 
 ### U-006 — Initial capability ratings and profile thresholds
 

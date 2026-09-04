@@ -172,6 +172,55 @@ text):
   and its referenced type definitions; this is evidence for the wire shape,
   not a permission to make live provider calls.
 
+### 2026-09-04 M1 Ollama local runtime reconnaissance
+
+Bounded read-only reconnaissance against the local Ollama runtime and its
+installed binary, supporting the local runtime collector (issue #14) and a
+narrow resolution of U-005. No generation, no model loading, no pull/delete
+and no configuration change was performed; output was filtered to structure
+(keys/types) before inspection, and no model inventory values are recorded
+here beyond synthetic placeholders.
+
+Runtime facts (Linux host, Ollama `0.33.1` listening on the documented
+default local endpoint `http://127.0.0.1:11434`):
+
+- `GET /api/version` returns `{"version": "<string>"}` (observed:
+  `"0.33.1"`). Read-only, no authentication, no side effects. A validated
+  exchange of this envelope is the collector's reachability fact.
+- `GET /api/tags` returns `{"models": [...]}`; entries carry lowercase
+  `name` (string, includes tag), `model`, `modified_at`, `size` (int),
+  `digest`, `details` (object) and `capabilities` (list). `details`
+  contains an integer `context_length` — this is **model-file architecture
+  metadata** (the GGUF training/context size), not the runtime's effective
+  context and not user configuration. The collector deliberately never
+  reads it as a context fact, so configured and effective context stay
+  independent.
+- `GET /api/ps` returned `{"models": []}` at reconnaissance time (nothing
+  loaded). This is the loaded-model listing and the only observed candidate
+  for **effective** context evidence.
+- The installed binary's serialization table (read-only string-table
+  inspection, structure only) carries the `json:"context_length"` tag
+  alongside `name`/`model`/`digest`/`size_vram`/`expires_at` for the
+  loaded-model entry struct of this version: the field name is evidenced
+  for 0.33.1, but a **populated** effective-context value for a loaded
+  model could not be observed live (loading a model solely for inspection
+  is side-effectful and was not performed). The collector therefore accepts
+  effective context only from a validated positive integer
+  `context_length` on the configured model's loaded `/api/ps` entry, and
+  treats a loaded entry without that field as schema drift rather than
+  guessing.
+- No duplicate model names were observed in the live listing; the collector
+  nevertheless fails closed on duplicate `name` entries (ambiguous
+  identity).
+- All three reads are plain HTTP on the loopback default endpoint with no
+  authentication and no redirects observed; the collector's endpoint policy
+  accepts only explicit `http` on `127.0.0.1`, `::1` or `localhost`.
+
+Recorded limitation: the effective-context evidence is validated in shape
+(envelope live, field name via the binary's serialization table) but the
+populated-value path is exercised only by synthetic fixtures until a
+naturally loaded model is observed in the owner's workflow.
+
 ### Z.ai Coding Plan capacity
 
 PoC environment included Kilo 7.5.6. Kilo reported a `Z.AI Coding Plan`
@@ -348,8 +397,12 @@ fixtures, logs or documentation.
 - The `TIME_LIMIT` counter triple (`usage`/`currentValue`/`remaining`) is
   stable and its used/remaining reading is correct; only the used-orientation
   reading is relied on.
-- Local Ollama can expose the needed model presence and effective configuration
-  through a stable, safe local interface.
+- Local Ollama exposes model presence and the effective context through a
+  stable, safe local interface. Narrowly evidenced for M1 (2026-09-04):
+  `GET /api/version`, `GET /api/tags` and `GET /api/ps` are read-only and
+  safe, and the loaded-entry `context_length` field name is evidenced for
+  the installed version; a live populated effective-context value and the
+  field's stability across Ollama releases remain unvalidated.
 - Provider terms permit this continued read-only personal use; this should be
   checked before public release and maintained as providers evolve.
 
@@ -376,6 +429,9 @@ Assumptions must not be described as supported behavior in user-facing output.
   extension layout is now evidenced and implemented; discovery beyond those
   roots (PATH/npm installs, other editors) and a codex version matrix
   remain open under U-001.
-- Ollama health/model-inspection PoC, including effective context reporting.
+- Ollama health/model-inspection PoC: the read contract is now evidenced
+  (2026-09-04); still needed are a live observation of a **populated**
+  effective-context value on a naturally loaded model and a cross-version
+  stability check of the `/api/ps` `context_length` field.
 - Freshness/refresh behavior and latency measurements.
 - Security review of provider terms and any public redistribution implications.

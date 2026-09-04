@@ -203,6 +203,32 @@ context without validating what the runtime exposes. The exact health and model
 inspection calls must be selected from supported Ollama behavior during M1 and
 recorded in PoC evidence before being treated as confirmed.
 
+Status (M1): the collector is implemented and fixture-tested in
+`scarcity_router/providers/ollama.py` (pure parsers for the version probe,
+the model listing and the loaded-model listing) and
+`scarcity_router/providers/ollama_acquisition.py`
+(`collect_ollama_capacity`): strict pre-I/O validation of the explicit local
+endpoint (plain `http` on exactly `127.0.0.1`, `::1` or `localhost` only;
+no LAN scanning, no internet access, no proxy routing, no redirects), a
+required explicit target model identity matching the v1 safe-ID grammar
+(never a hard-coded default), and at most three fixed read-only GETs
+against the single validated endpoint: `/api/version` (the reachability
+probe), `/api/tags` (exact-name model presence) and `/api/ps` (effective
+context, only from a validated positive integer `context_length` on the
+configured model's loaded entry). Healthy local runtimes report
+`windows: []` with no quota semantics. The configured context is accepted
+only as an explicit configuration parameter and is never inferred; the
+effective context is never inferred from the configured value or from the
+listing's model-file metadata. Duplicate model names, non-object listing
+entries, malformed bodies and drifted envelopes fail closed
+(`schema_changed`/`unknown`/`unavailable` per the failure mapping in the
+module), `model_presence` stays `unknown` on every failure, and a runtime
+that explicitly lists its models without the configured target reports
+`missing`. Evidence and limitations: `docs/poc-evidence.md`
+("2026-09-04 M1 Ollama local runtime reconnaissance") — the populated
+effective-context path is synthetic-fixture-tested only until a naturally
+loaded model is observed; live CLI/status integration is not implemented.
+
 ## Later providers
 
 Claude subscription is the highest-priority later collector because it would

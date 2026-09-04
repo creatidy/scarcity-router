@@ -1,0 +1,150 @@
+"""Local Ollama runtime response parsers.
+
+Pure, deterministic provider-edge parsing: already decoded JSON-compatible
+payloads from the local Ollama HTTP interface are validated against the
+evidenced contract and reduced to the facts the collector needs. This module
+performs zero I/O: it never reads the clock, filesystem, environment or
+network, never touches credentials and never contacts a runtime itself. Live
+acquisition is a separate concern (``ollama_acquisition``).
+
+Provider semantics implemented here come only from the validated evidence in
+docs/poc-evidence.md ("2026-09-04 M1 Ollama local runtime reconnaissance"):
+the live local runtime (Ollama 0.33.1) and the installed binary's
+serialization table. Every parser validates the shape deliberately and fails
+closed: a response that does not satisfy the evidenced contract returns a
+drift result (``None``) instead of partial facts.
+
+Evidenced shapes (structure only; see poc-evidence.md):
+
+- ``GET /api/version`` -> ``{"version": "<string>"}``; additive keys are
+  tolerated, a missing or non-string ``version`` is drift;
+- ``GET /api/tags`` -> ``{"models": [...]}``; every entry must be an object
+  with a string ``name``; a non-object entry, a non-string/missing ``name``
+  or a **duplicate** ``name`` is drift, because duplicate identities make
+  the presence answer ambiguous rather than merely redundant;
+- ``GET /api/ps`` -> ``{"models": [...]}``; every listed (loaded) entry must
+  be an object with a string ``name`` and a positive integer
+  ``context_length`` (the runtime's effective context for that loaded
+  model). A listed entry without a usable ``context_length`` is drift:
+  effective context is reported only from validated evidence, never
+  inferred. A model that is simply not loaded is absent from the list and
+  is not drift.
+
+The ``details.context_length`` value that ``/api/tags`` exposes is
+model-file architecture metadata, not the runtime's effective context and
+not user configuration; this parser deliberately never reads it, so the
+configured and effective context facts stay independent.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from typing import TypeGuard, cast
+
+PROVIDER = "ollama"
+SOURCE = "ollama_local"
+
+__all__ = [
+    "PROVIDER",
+    "SOURCE",
+    "parse_ollama_ps_response",
+    "parse_ollama_tags_response",
+    "parse_ollama_version_response",
+]
+
+
+def _as_mapping(value: object) -> Mapping[str, object] | None:
+    """Narrow a boundary value to a ``str``-keyed mapping, or ``None``."""
+    if isinstance(value, Mapping):
+        return cast(Mapping[str, object], value)
+    return None
+
+
+def _is_int(value: object) -> TypeGuard[int]:
+    """True for a real JSON integer; booleans are not integers."""
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def parse_ollama_version_response(payload: object) -> bool:
+    """Validate one decoded ``/api/version`` response.
+
+    True only when the payload is an object carrying a string ``version``;
+    additive keys are tolerated. Anything else is drift (False): the
+    endpoint answered but not with the evidenced Ollama version contract.
+    """
+    envelope = _as_mapping(payload)
+    if envelope is None:
+        return False
+    return isinstance(envelope.get("version"), str)
+
+
+def _listed_names_with(
+    payload: object,
+    *,
+    required_value: str | None,
+) -> dict[str, Mapping[str, object]] | None:
+    """Shared strict listing validation for ``/api/tags`` and ``/api/ps``.
+
+    Validates the ``{"models": [...]}`` envelope and every entry's string
+    ``name``, rejecting duplicates. When ``required_value`` is set, that key
+    must additionally hold a positive integer in every entry (used for the
+    ps ``context_length`` requirement). Returns ``name -> entry`` on
+    success, ``None`` on any drift.
+    """
+    envelope = _as_mapping(payload)
+    if envelope is None:
+        return None
+    models = envelope.get("models")
+    if not isinstance(models, list):
+        return None
+    listed: dict[str, Mapping[str, object]] = {}
+    for item in cast("list[object]", models):
+        entry = _as_mapping(item)
+        if entry is None:
+            return None
+        name = entry.get("name")
+        if not isinstance(name, str) or not name:
+            return None
+        if name in listed:
+            return None
+        if required_value is not None:
+            context_length = entry.get(required_value)
+            if not _is_int(context_length) or context_length < 1:
+                return None
+        listed[name] = entry
+    return listed
+
+
+def parse_ollama_tags_response(payload: object) -> tuple[str, ...] | None:
+    """Normalize one decoded ``/api/tags`` model listing.
+
+    Returns the tuple of listed model names in listing order, or ``None``
+    when the payload is not the evidenced listing shape. A duplicate
+    ``name`` is drift (ambiguous identity), not a redundant entry: the
+    presence answer must never depend on which duplicate a reader happens
+    to inspect.
+    """
+    listed = _listed_names_with(payload, required_value=None)
+    if listed is None:
+        return None
+    return tuple(listed.keys())
+
+
+def parse_ollama_ps_response(payload: object) -> dict[str, int] | None:
+    """Normalize one decoded ``/api/ps`` loaded-model listing.
+
+    Returns ``name -> context_length`` for every loaded entry, or ``None``
+    on drift. Every listed entry must carry a positive integer
+    ``context_length``: the effective context is accepted only as validated
+    runtime evidence. Absence of a model from the list (not loaded) is a
+    normal state and is represented by the model's absence from the result,
+    never by a guessed value.
+    """
+    listed = _listed_names_with(payload, required_value="context_length")
+    if listed is None:
+        return None
+    return {
+        name: context_length
+        for name, entry in listed.items()
+        if _is_int(context_length := entry.get("context_length"))
+    }
