@@ -10,6 +10,7 @@
       "usedPercent": 52,
       "windowDurationMins": 10080
     },
+    "spendControlReached": false,
     "planType": "unknown",
     "rateLimitReachedType": null
   },

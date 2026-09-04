@@ -11,6 +11,7 @@
       "windowDurationMins": 10080,
       "resetsAt": 1788748064
     },
+    "spendControlReached": false,
     "planType": "plus",
     "rateLimitReachedType": null
   },

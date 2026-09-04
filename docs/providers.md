@@ -62,9 +62,12 @@ including a reader startup failure before the session begins. Cleanup reports
 or the reader thread was stopped; it never claims successful collection on
 unproven cleanup.
 The parser validates the complete evidenced response envelope (U-010):
-only the `GetAccountRateLimitsResponse.rateLimits` member is required;
-`rateLimitsByLimitId` and `rateLimitResetCredits` are nullable optional members,
-so missing and explicit null states are accepted. `primary`/`secondary` are the
+only the `GetAccountRateLimitsResponse.rateLimits` member is required for input
+deserialization; `rateLimitsByLimitId` and `rateLimitResetCredits` are nullable
+optional members, so missing and explicit null states are accepted. Rust's
+tagged serializer does not skip these `Option` fields and the TypeScript shape
+requires both keys, so this input tolerance is not a claim about emitted wire
+success shape. `primary`/`secondary` are the
 only window slots; a present window requires i32 `usedPercent`, while nullable
 i64 `windowDurationMins` and `resetsAt` are validated and duration drives
 classification, never slot position. Typed states are validated: `credits` (`CreditsSnapshot` with
@@ -81,8 +84,8 @@ validate as full quota snapshots; a present map must contain an exact
 their bucket `limitId` and never be `"codex"`; every emitted bucket window gets a distinct safe
 `<limitId>:<slot>` identity with no equal-period merging; same
 window/duplicate/nested rules). Backend
-blockers — a non-null `rateLimitReachedType`, `spendControlReached ==
-true`, an exhausted `individualLimit`, or a blocked/exhausted additional
+blockers — a non-null `rateLimitReachedType`, an unavailable or true
+`spendControlReached`, an exhausted `individualLimit`, or a blocked/exhausted additional
 bucket — never yield a healthy snapshot and withhold the percentage pairs;
 a present-but-unblocked bucket degrades to `unknown` with its validated
 pairs. Plan labels accept every exact tagged `PlanType` member the v1

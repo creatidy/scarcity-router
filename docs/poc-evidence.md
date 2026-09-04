@@ -123,10 +123,14 @@ against the review-confirmed generated schema; structure only, no message
 text):
 
 - the `account/rateLimits/read` result is the protocol's
-  `GetAccountRateLimitsResponse` envelope, and the exact tagged schema
-  **requires** only the `rateLimits` member. `rateLimitsByLimitId` (additional
-  metered buckets keyed by limit id) and `rateLimitResetCredits` are nullable
-  optional members and may be absent or explicitly null;
+  `GetAccountRateLimitsResponse` envelope. For adapter input deserialization,
+  its JSON Schema **requires** only the `rateLimits` member;
+  `rateLimitsByLimitId` (additional metered buckets keyed by limit id) and
+  `rateLimitResetCredits` are nullable optional members and may be absent or
+  explicitly null. The tagged Rust serializer does not skip these `Option`
+  fields and the TypeScript shape requires both keys, so this is deserializer
+  tolerance rather than a claim about the exact emitted success object; the
+  normal tagged success processor emits the map;
 - `rateLimits` is the protocol's `RateLimitSnapshot` with **nine** members:
   `limitId`, `limitName`, `primary`, `secondary`, `credits`,
   `individualLimit`, `spendControlReached`, `planType`,

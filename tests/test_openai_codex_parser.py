@@ -83,7 +83,11 @@ def _snapshot(
     limit_id: object = "codex",
     extra: dict[str, object] | None = None,
 ) -> dict[str, object]:
-    rate_limits: dict[str, object] = {"limitId": limit_id, **slots}
+    rate_limits: dict[str, object] = {
+        "limitId": limit_id,
+        "spendControlReached": False,
+        **slots,
+    }
     if plan_type is not None:
         rate_limits["planType"] = plan_type
     if extra is not None:
@@ -478,16 +482,34 @@ class CreditsAndSpendControl(unittest.TestCase):
                 self.assertEqual(snap.windows, ())
 
     def test_null_and_absent_states_are_clear(self) -> None:
-        extra_cases: tuple[dict[str, object], ...] = (
-            {"credits": None, "individualLimit": None, "spendControlReached": None},
-            {},  # option-typed members may be missing entirely
+        payload = _result(
+            _snapshot(
+                dict(_BOTH_SLOTS),
+                extra={"credits": None, "individualLimit": None},
+            )
         )
-        for extra in extra_cases:
+        snap = _parse(payload)
+        self.assertEqual(snap.status, "ok")
+        self.assertEqual(_codes(snap), set())
+
+    def test_missing_or_null_spend_control_is_unknown_and_conservative(self) -> None:
+        extras: tuple[dict[str, object] | None, ...] = (
+            {"spendControlReached": None},
+            None,
+        )
+        for extra in extras:
             with self.subTest(extra=extra):
                 payload = _result(_snapshot(dict(_BOTH_SLOTS), extra=extra))
+                if extra is None:
+                    rate_limits = cast(dict[str, object], payload["rateLimits"])
+                    _ = rate_limits.pop("spendControlReached")
                 snap = _parse(payload)
-                self.assertEqual(snap.status, "ok", msg=repr(extra))
-                self.assertEqual(_codes(snap), set())
+                self.assertEqual(snap.status, "unknown")
+                self.assertIn("telemetry_unknown", _codes(snap))
+                self.assertEqual(
+                    [(w.used_percent, w.remaining_percent) for w in snap.windows],
+                    [(None, None), (None, None)],
+                )
 
     def test_non_nullable_individual_limit_members_are_required(self) -> None:
         payload = _result(
@@ -558,7 +580,7 @@ class AdditionalBuckets(unittest.TestCase):
         duration: object = 300,
         secondary: object = None,
         reached: object = None,
-        spend: object = None,
+        spend: object = False,
         individual: object = None,
     ) -> dict[str, object]:
         bucket: dict[str, object] = {
@@ -745,6 +767,23 @@ class AdditionalBuckets(unittest.TestCase):
         for window in snap.windows:
             self.assertIsNone(window.used_percent)
         self.assertIn("percentage_unknown", _codes(snap))
+
+    def test_bucket_missing_or_null_spend_control_is_conservative(self) -> None:
+        for missing in (False, True):
+            with self.subTest(missing=missing):
+                bucket = self._bucket(spend=None)
+                if missing:
+                    _ = bucket.pop("spendControlReached")
+                payload = _result(
+                    _snapshot(dict(_BOTH_SLOTS)),
+                    buckets={"gpt-reserve": bucket},
+                )
+                snap = _parse(payload)
+                self.assertEqual(snap.status, "unknown")
+                self.assertEqual(
+                    [(w.used_percent, w.remaining_percent) for w in snap.windows],
+                    [(None, None), (None, None), (None, None)],
+                )
 
     def test_bucket_exhausted_individual_limit_withholds_all_pairs(self) -> None:
         payload = _result(

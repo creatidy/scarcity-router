@@ -304,13 +304,15 @@ direction was chosen. Dates use UTC.
 - **Decision:** The OpenAI adapter validates the complete evidenced
   `GetAccountRateLimitsResponse` envelope and normalizes it under the
   existing v1 contract as follows:
-  - **Envelope.** The exact tagged schema *requires* only the
-    `rateLimits` member: missing is drift (`schema_changed`).
-    `rateLimitsByLimitId` and `rateLimitResetCredits` are nullable optional
-    members, so missing and explicit `null` are valid absent states. When
-    `rateLimitsByLimitId` is a present object, its exact tagged `codex` mirror
-    is required and must equal top-level `rateLimits`; a map without that
-    mirror is drift. `rateLimits`
+  - **Envelope.** For input deserialization, the JSON Schema requires only the
+     `rateLimits` member: missing is drift (`schema_changed`).
+     `rateLimitsByLimitId` and `rateLimitResetCredits` are nullable optional
+     members, so missing and explicit `null` are accepted input states. The
+     tagged Rust serializer does not skip these `Option` fields and the
+     TypeScript shape requires both keys; the normal tagged success processor
+     emits the map. When the map is present, its exact `codex` mirror is
+     required and must equal top-level `rateLimits`; a map without that mirror
+     is drift. `rateLimits`
     is required to be the nine-member snapshot (`limitId`, `limitName`,
     `primary`, `secondary`, `credits`, `individualLimit`,
     `spendControlReached`, `planType`, `rateLimitReachedType`); snapshot
@@ -333,7 +335,9 @@ direction was chosen. Dates use UTC.
     are `schema_changed`. Valid present states have no v1 representation:
     they degrade to `status: "unknown"` and withhold the percentage pairs
     (`percentage_unknown` per window); an individual limit with
-    `remainingPercent == 0` is a backend blocker. The `limit` and `used`
+     `remainingPercent == 0` is a backend blocker. Missing/null
+     `spendControlReached` is unavailable and conservatively withholds pairs;
+     the `limit` and `used`
     values are strings and are validated structurally only; they are never
     parsed or compared.
   - **Identity.** The main `limitId` must be exactly the evidenced quota

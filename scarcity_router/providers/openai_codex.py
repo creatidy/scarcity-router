@@ -313,6 +313,7 @@ class _SnapshotState:
     windows: tuple[_WindowFacts, ...]
     blocked: bool
     unrepresentable: bool
+    unavailable: bool
 
 
 def classify_app_server_message(message: object) -> MessageKind:
@@ -712,7 +713,10 @@ def _quota_snapshot_state(
         blocked = True
 
     spend_control = snapshot.get("spendControlReached")
-    if spend_control is None or spend_control is False:
+    spend_control_unavailable = (
+        "spendControlReached" not in snapshot or spend_control is None
+    )
+    if spend_control_unavailable or spend_control is False:
         pass
     elif spend_control is True:
         blocked = True
@@ -760,6 +764,7 @@ def _quota_snapshot_state(
         windows=tuple(windows),
         blocked=blocked,
         unrepresentable=credits_present or individual_present,
+        unavailable=spend_control_unavailable,
     )
 
 
@@ -840,7 +845,9 @@ def parse_codex_rate_limits_result(
             if state is None:
                 return _failure("schema_changed", "schema_changed", retrieved_at)
             additional_present = True
-            additional_blocked = additional_blocked or state.blocked
+            additional_blocked = (
+                additional_blocked or state.blocked or state.unavailable
+            )
             additional_unrepresentable = (
                 additional_unrepresentable or state.unrepresentable
             )
@@ -869,6 +876,7 @@ def parse_codex_rate_limits_result(
 
     blocked = (
         main_state.blocked
+        or main_state.unavailable
         or additional_blocked
         or main_state.unrepresentable
         or additional_unrepresentable
