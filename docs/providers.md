@@ -24,7 +24,8 @@ when another source is `auth_required`, `schema_changed` or `unknown`.
 The proven mechanism launches a locally available `codex app-server`, speaks
 JSONL, sends `initialize`, sends the `initialized` notification, and calls
 `account/rateLimits/read`. It obtains subscription rate limits without a model
-prompt.
+prompt. The generated tag's notification method is exactly `initialized`, and
+the read request omits `params` because its generated option is empty.
 
 Implementation requirements:
 
@@ -38,8 +39,92 @@ Implementation requirements:
 - never fall back to browser-cookie scraping as an incidental convenience;
 - fail with a clear unsupported/schema status if protocol behavior changes.
 
-The PoC used a binary included with a VS Code ChatGPT extension, but production
-binary discovery order and minimum compatible version are unresolved.
+The PoC used a binary included with a VS Code ChatGPT extension; production
+binary discovery is narrowly resolved for M1 in `docs/decisions.md` (U-001),
+and the minimum compatible version remains unresolved there.
+
+Status (M1): the collector is implemented and fixture-tested in
+`scarcity_router/providers/openai_codex.py` (pure parser
+`parse_codex_rate_limits_result` and the JSONL message classifier) and
+`scarcity_router/providers/openai_codex_acquisition.py`
+(`collect_openai_codex_capacity`): deterministic read-only discovery of a
+supported Codex installation, a bounded supervised `codex app-server`
+subprocess with discarded stderr, the proven
+initialize/initialized/`account/rateLimits/read` exchange with responses
+matched by request identity and message structure (never timing), bounded
+line/total output budgets, ambiguity-safe JSONL decoding (duplicate keys,
+NaN/Infinity constants, non-finite exponents such as `1e10000` and
+adversarial deep nesting all rejected as drift), bounded finite-positive
+wait-supported startup/session
+timeouts, and terminate→(bounded wait)→kill cleanup on every path —
+including a reader startup failure before the session begins. Cleanup reports
+`unavailable` whenever a bounded wait cannot prove that the child was reaped
+or the reader thread was stopped; it never claims successful collection on
+unproven cleanup.
+The parser validates the complete evidenced response envelope (U-010):
+only the `GetAccountRateLimitsResponse.rateLimits` member is required for input
+deserialization; `rateLimitsByLimitId` and `rateLimitResetCredits` are nullable
+optional members, so missing and explicit null states are accepted. Rust's
+tagged serializer does not skip these `Option` fields and the TypeScript shape
+requires both keys, so this input tolerance is not a claim about emitted wire
+success shape. `primary`/`secondary` are the
+only window slots; a present window requires i32 `usedPercent`, while nullable
+i64 `windowDurationMins` and `resetsAt` are validated and duration drives
+classification, never slot position. Typed states are validated: `credits` (`CreditsSnapshot` with
+required booleans and optional string-or-null `balance`), `individualLimit`
+(`SpendControlLimitSnapshot` with four required fields, string `limit`/`used`
+and integer `remainingPercent`/`resetsAt`) and `rateLimitResetCredits`
+(`availableCount` plus typed optional reset-credit rows; rows require `id`,
+`resetType`, `status` and `grantedAt`, with nullable optional detail fields);
+malformed shapes fail closed, and
+valid credit or spend-control states — being v1-unrepresentable — degrade to
+`unknown` with percentage pairs withheld. A valid reset-credit summary is
+supplemental telemetry: its presence or `availableCount` does not block or
+withhold current quota pairs. Additional `rateLimitsByLimitId` buckets
+validate as full quota snapshots; a present map must contain an exact
+`"codex"` mirror of top-level `rateLimits`, and non-mirror keys must equal
+their bucket `limitId` and never be `"codex"`; every emitted bucket window gets a distinct safe
+`<limitId>:<slot>` identity with no equal-period merging; same
+window/duplicate/nested rules). Backend
+blockers — a non-null `rateLimitReachedType`, an unavailable or true
+`spendControlReached`, an exhausted `individualLimit`, or a blocked/exhausted additional
+bucket — never yield a healthy snapshot and withhold the percentage pairs;
+a present-but-unblocked bucket degrades to `unknown` with its validated
+pairs. Plan labels accept every exact tagged `PlanType` member the v1
+safe-ID grammar permits as-is (underscores included, e.g. `edu_plus`,
+`enterprise_cbp_automation`, and the `unknown` catch-all), verbatim and
+never rewritten; a present nonmember is `schema_changed`, never silently
+omitted.
+
+Supported discovery (U-001, evidence in `docs/poc-evidence.md`):
+`openai.chatgpt-*` extension directories under `~/.vscode/extensions` or
+`~/.vscode-server/extensions` (the remote-server layout is the directly
+evidenced PoC environment), on currently supported Linux x86-64 hosts, highest
+extension version first, validated by a
+non-symlink candidate plus `bin/<platform>` directory, a regular non-symlink
+executable `bin/<platform>/codex` and a
+`codex-package.json` with
+`layoutVersion` 1 and `variant` `codex` (duplicate-key rejecting; this pins
+the installation filesystem layout, not protocol compatibility — protocol
+drift is caught at runtime by strict shape validation failing closed). No
+installation maps to `unavailable`; an installation whose layout cannot be
+validated maps to `unsupported`.
+
+Known compatibility limits: other installation sources (a `codex` on PATH,
+npm installs, other editors) and a minimum/maximum codex version policy are
+unsupported and unresolved (U-001 residual; Darwin is intentionally
+unsupported until descriptor execution is evidenced); error-response text is never
+parsed, so protocol error responses map to `unknown` until failure shapes
+are captured as evidence; the selected binary path and versions are
+validated but not surfaced, because v1 has no field for them (future
+`doctor`/`status` work reports them); the reached enum uses the exact
+snake_case generated-schema values, so camelCase and arbitrary strings are
+rejected as drift; amount values inside credits/spend-control/reset-credit
+members are validated structurally but never interpreted (documented
+residual); live CLI/status integration
+is not implemented, and the automated suite contains no live-account test —
+all transport tests use synthetic JSONL process fakes and fixtures under
+`tests/fixtures/openai-codex-appserver/`.
 
 ## Z.ai Coding Plan
 

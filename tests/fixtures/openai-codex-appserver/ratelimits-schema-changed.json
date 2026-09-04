@@ -1,0 +1,20 @@
+{
+  "rateLimits": {
+    "limitId": "codex",
+    "windows": [
+      {
+        "kind": "five_hour",
+        "consumedPercent": 6,
+        "resetTimeUtc": "2026-09-01T23:43:32Z"
+      },
+      {
+        "kind": "weekly",
+        "consumedPercent": 52,
+        "resetTimeUtc": "2026-09-07T02:27:44Z"
+      }
+    ],
+    "planTier": "plus"
+  },
+  "rateLimitsByLimitId": null,
+  "rateLimitResetCredits": null
+}

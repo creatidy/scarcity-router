@@ -151,6 +151,47 @@ direction was chosen. Dates use UTC.
 - Which installation sources and minimum versions are supported in M1?
 - How is the selected binary made visible without exposing unrelated paths?
 - Evidence needed: discovery experiments outside the tested VS Code extension.
+- **Status:** Narrowly resolved for M1 (2026-09-03); residuals below
+- **Decision:** Supported discovery is exactly the VS Code ChatGPT
+  extension layout: non-symlink `openai.chatgpt-*` directories under
+  `~/.vscode/extensions` or `~/.vscode-server/extensions` (the
+  remote-server layout is the directly evidenced PoC environment), scanned
+    read-only, ordered deterministically by extension version descending on
+    Linux x86-64; Linux ARM64 and Darwin are unsupported until a working
+    descriptor-bound execution
+   strategy is evidenced. A
+  candidate is usable only when its intermediate `bin/<platform>`
+  directories and package/executable paths are non-symlink validated beneath
+  the selected root, its `codex` file is regular and executable, and a
+  duplicate-key-rejecting `codex-package.json` beside it
+  validates `layoutVersion` 1 and `variant` `codex`. No installation maps
+  to `unavailable`; an unusable installation maps to `unsupported`. There
+  is no PATH search, no browser-profile inspection, no install/upgrade, no
+  user-configuration mutation, and no generic binary-search framework.
+- **Evidence:** 2026-09-03 reconnaissance recorded in
+  `docs/poc-evidence.md` ("2026-09-03 M1 Codex collector reconnaissance"):
+  the observed extension/package layout, `codex-cli 0.151.0-alpha.7.2`
+  matching the PoC, JSONL framing facts, and the absence of a PATH `codex`.
+- **Visibility:** the selected binary path, extension version and codex
+  version are validated in-process but deliberately not surfaced: the v1
+  capacity contract (U-002) has no field for them, and v1 diagnostics are a
+  frozen allowlist. Reporting the selected binary/version safely is
+  deferred to the M1 `doctor`/`status` work under a future decision.
+- **Residuals:** (a) minimum/maximum codex version policy — no version gate
+  is enforced. The package `layoutVersion` validates only the installation
+  *filesystem layout* during discovery; it is **not** a protocol
+  compatibility pin. The real protocol compatibility boundary is runtime
+  validation: strict JSONL framing plus the deliberately validated
+  `RateLimitSnapshot` shape (U-010), which fails closed to
+  `schema_changed`/`unknown` on any drift; (b) other installation sources
+  (npm `@openai/codex`, standalone binaries, other editors' extension
+  roots) are unsupported until separately evidenced; (c) platform
+   directories other than the directly evidenced Linux x86-64 directory are
+   unsupported until descriptor-bound execution is evidenced; (d) OpenAI
+   app-server failure
+  wire shapes (auth required in particular) remain uncaptured, so protocol
+  error responses normalize to `unknown` rather than a more specific
+  status.
 
 ### U-002 — Exact first serialized capacity contract
 
@@ -255,6 +296,112 @@ direction was chosen. Dates use UTC.
 
 - Confirm that public distribution of each collector is compatible with current
   provider terms and maintenance expectations before release.
+
+### U-010 — Codex rate-limit snapshot semantics under v1
+
+- **Status:** Resolved, 2026-09-03 (updated twice same day after schema
+  review against the exact tagged schema `rust-v0.151.0-alpha.7.2`)
+- **Decision:** The OpenAI adapter validates the complete evidenced
+  `GetAccountRateLimitsResponse` envelope and normalizes it under the
+  existing v1 contract as follows:
+  - **Envelope.** For input deserialization, the JSON Schema requires only the
+     `rateLimits` member: missing is drift (`schema_changed`).
+     `rateLimitsByLimitId` and `rateLimitResetCredits` are nullable optional
+     members, so missing and explicit `null` are accepted input states. The
+     tagged Rust serializer does not skip these `Option` fields and the
+     TypeScript shape requires both keys; the normal tagged success processor
+     emits the map. When the map is present, its exact `codex` mirror is
+     required and must equal top-level `rateLimits`; a map without that mirror
+     is drift. `rateLimits`
+    is required to be the nine-member snapshot (`limitId`, `limitName`,
+    `primary`, `secondary`, `credits`, `individualLimit`,
+    `spendControlReached`, `planType`, `rateLimitReachedType`); snapshot
+    members are option-typed, so missing and null both mean an absent
+    state there. Additive scalar members are tolerated at every level;
+    additive *structured* members under unknown keys fail closed to
+    `schema_changed`.
+    Tagged integer fields are width-checked: window `usedPercent` and
+    spend-control `remainingPercent` are i32, while window durations/resets,
+    reset-credit counts and reset-credit timestamps are i64; out-of-width
+    values are schema drift.
+  - **Typed states.** `credits` (evidenced `CreditsSnapshot`:
+    required boolean `hasCredits`, required boolean `unlimited`, optional
+    `balance` as string-or-null), `individualLimit` (evidenced
+    `SpendControlLimitSnapshot`: four required fields with string `limit`/
+    `used` and integer `remainingPercent`/`resetsAt`) and
+    `rateLimitResetCredits` (integer `availableCount` plus optional typed
+    `credits` rows requiring `id`, `resetType`, `status` and `grantedAt`, with
+    optional nullable `expiresAt`, `title` and `description`) are type-validated: malformed shapes
+    are `schema_changed`. Valid credits or individual-limit states have no v1
+    representation: they degrade to `status: "unknown"` and withhold the
+    percentage pairs (`percentage_unknown` per window); an individual limit
+    with `remainingPercent == 0` is a backend blocker. A valid reset-credit
+    summary is supplemental telemetry and does not block or withhold current
+    quota pairs. Missing/null `spendControlReached` is unavailable and
+    conservatively withholds pairs; the `limit` and `used`
+    values are strings and are validated structurally only; they are never
+    parsed or compared.
+  - **Identity.** The main `limitId` must be exactly the evidenced quota
+    identity `"codex"`; anything else is `schema_changed`, never healthy.
+  - **Coverage.** The main snapshot missing either expected window kind
+    (five-hour or weekly) degrades to `status: "unknown"` with validated
+    partial windows preserved (`telemetry_unknown`); two slot windows
+    sharing one known period are `schema_changed`. An absent window is
+    never synthesized and never reported as healthy emptiness.
+  - **Backend blockers.** Evidenced blocker classes never yield a healthy
+    snapshot: a non-null `rateLimitReachedType` (the exact snake_case enum
+    members, with camelCase and arbitrary strings rejected as drift);
+    `spendControlReached == true`; an exhausted
+    `individualLimit`; and, in any additional bucket, its own reached
+    flag, spend-control blocker, exhausted individual limit, or a window
+    at `usedPercent == 100`. Each degrades to `status: "unknown"` with
+    `telemetry_unknown` and withholds the main percentage pairs. A
+    present-but-unblocked additional bucket also degrades to `unknown`
+    (v1 cannot represent capacity metered across buckets) while keeping
+    the main windows' validated pairs. Known exhaustion of the main quota
+    *without* any blocker stays `ok` with the `(100, 0)` pair.
+  - **Additional buckets.** The exact success response mirrors the main
+    snapshot under `rateLimitsByLimitId["codex"]`; that entry is accepted only
+    when it validates consistently with top-level `rateLimits`. Every other
+    entry validates as a full quota snapshot with the same membership and
+    identity rules (the map key must equal the bucket's `limitId`, be safe to
+    compose, and must not shadow `"codex"`). Every validated bucket window is
+    emitted with a distinct safe `<limitId>:<slot>` identity; equal periods are
+    not merged or discarded. Bucket window coverage is not enforced (a bucket
+    may legitimately carry one window).
+  - **Plan labels.** `plan` accepts every exact tagged `PlanType` member
+    the v1 safe-ID grammar permits as-is (underscores included): `free`,
+    `go`, `plus`, `pro`, `prolite`, `team`, `business`, `edu`, `edu_plus`,
+    `edu_pro`, `enterprise`, `ent26`, `enterprise_cbp_automation`,
+    `enterprise_cbp_usage_based`, `self_serve_business_prolite`,
+    `self_serve_business_usage_based`, `unknown`. Values are preserved
+    verbatim, never rewritten; a present nonmember is `schema_changed`, never
+    silently omitted or leaked.
+    `run` is not a member of the tagged enum and is not retained.
+  - **Decoding.** JSONL decoding is ambiguity-safe: duplicate object keys
+    at any depth, literal NaN/Infinity constants, non-finite exponent
+    results such as `1e10000`, and adversarial deep nesting are all
+   rejected as protocol drift (`schema_changed`), without broad exception
+   swallowing; hybrid messages carrying `method` together with
+   `result`/`error` are invalid drift, never silently ignored; the
+   installation package file is decoded under the same strict rules.
+  - **Request framing.** The generated client notification uses method
+    `initialized`, omits `jsonrpc`, and the `account/rateLimits/read` request
+    omits `params` because its generated `Option<()>` parameter is empty.
+    Request IDs accept strings or signed i64 integers structurally; this
+    collector matches only its own numeric IDs `1` and `2`.
+    A matching initialize response requires string `userAgent`, `codexHome`,
+    `platformFamily` and `platformOs`; response errors require signed i64
+    integer `code` and string `message`, without retaining error text.
+- **Evidence:** the 2026-09-01 PoC shape plus the 2026-09-03 reconnaissance
+  in `docs/poc-evidence.md`, including read-only serde string-table
+  inspection of the installed codex binary cross-checked against the
+  review-confirmed generated schema for `rust-v0.151.0-alpha.7.2`; no live
+  capture was possible (the read errored during reconnaissance), so the
+  PoC shape remains the validated success mapping.
+- **Boundary:** this is adapter-edge semantics under the frozen v1 contract;
+  it adds no v1 fields or diagnostics and does not preempt U-003
+  (freshness) or M2 (scarcity/selection).
 
 ## Superseding a decision
 
