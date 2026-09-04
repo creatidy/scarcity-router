@@ -1,13 +1,19 @@
 """Security, integration and contract tests for the Ollama acquisition layer.
 
-The transport seam (``open_response``) is replaced with a fake local runtime
-dispatching per URL path; no test in this module contacts a runtime, a
-network or the filesystem beyond the synthetic fixtures. Every failure class
-asserts that conspicuous synthetic markers (fake secrets, fake paths, the
-endpoint URL, digests) appear in no serialized snapshot, repr, diagnostic or
-captured stdout/stderr output, and that adversarial bodies (duplicate keys,
-non-finite values, deep nesting, huge integers, trickling reads) are handled
-by the strict decode/deadline boundaries.
+The transport seam (``open_connection``) is replaced with fake connection
+factories dispatching per request path; no test in this module contacts a
+runtime, a network or the filesystem beyond the synthetic fixtures. The
+fakes honor the transport contract the real ``HTTPConnection`` provides:
+``close()`` unblocks in-flight operations, which is what makes the bounded
+worker genuinely reclaimable at the deadline.
+
+Every failure class asserts that conspicuous synthetic markers (fake
+secrets, fake paths, the endpoint URL, digests, provider-controlled
+exception text) appear in no serialized snapshot, repr, diagnostic or
+captured stdout/stderr output, and that adversarial conditions
+(permanent blocks, delayed EOF, invalid response objects, non-bytes
+chunks, duplicate keys, non-finite values, deep nesting, huge integers)
+are reclaimed or fail closed.
 
 Contract tests assert the normalized snapshot/local-runtime shape, context
 independence and deterministic normalization per docs/capacity-model.md.
@@ -16,15 +22,14 @@ independence and deterministic normalization per docs/capacity-model.md.
 from __future__ import annotations
 
 import contextlib
+import http.client
 import io
 import json
 import threading
 import time
 import unittest
-import urllib.error
-import urllib.request
 from collections.abc import Callable
-from http.client import HTTPException, HTTPMessage
+from http.client import HTTPConnection, HTTPException
 from pathlib import Path
 from typing import cast, override
 from unittest import mock
@@ -41,15 +46,14 @@ ENDPOINT = ollama_acquisition.DEFAULT_ENDPOINT
 BASE = ENDPOINT.rstrip("/")
 DIGEST_ZERO = "sha256:" + "0" * 64
 DIGEST_ONE = "sha256:" + "1" * 64
-DIGEST_OTHER = "sha256:" + "f" * 64
-HUGE_INT = 10**500
-HUGE_DIGITS = str(HUGE_INT).encode()
+HUGE_DIGITS = str(10**500).encode()
 
 # Conspicuous synthetic-only markers; never realistic production shapes.
 FAKE_SECRET = "TEST_ONLY_FAKE_OLLAMA_SECRET_NEVER_REAL"
 FAKE_PATH = "/home/test/.fake-models/TEST_ONLY_PATH"
 FAKE_RAW_FRAGMENT = "TEST_ONLY_RAW_RESPONSE_FRAGMENT"
 FAKE_REDIRECT_TARGET = "TEST_ONLY_REDIRECT_TARGET"
+FAKE_TRANSPORT_SECRET = "TEST_ONLY_SECRET_FROM_RESPONSE"
 
 
 def _fixture(name: str) -> bytes:
@@ -60,49 +64,69 @@ def _serialized(snapshot: CapacitySnapshot) -> str:
     return json.dumps(snapshot.to_dict(), sort_keys=True) + repr(snapshot)
 
 
-class _FakeResponse:
-    """Minimal successful-response fake for the transport seam.
+class _FakeHTTPResponse:
+    """Fake HTTP response: integer status + chunked bounded body.
 
-    ``read(size)`` honors the requested bound and ends with an empty chunk
-    at EOF, like a real streamed body, so the collector's chunked
-    deadline-bounded read loop is exercised faithfully.
+    Honors ``read`` bounds and returns ``b""`` at EOF, like the real
+    ``HTTPResponse``. Optional fault injection: a read error, a first-read
+    ``str`` chunk (contract violation), a read guard that records any read
+    of a body that must never be read, and a trickling mode.
     """
 
-    _body: bytes
+    status: int
+    _data: bytes
     _offset: int
     _read_error: Exception | None
+    _str_chunk_once: bool
+    _chunk_delay: float | None
+    _guard_read: bool
+    guard_tripped: bool
     closed: bool
 
-    def __init__(self, body: bytes, read_error: Exception | None = None) -> None:
-        self._body = body
+    def __init__(
+        self,
+        status: int = 200,
+        data: bytes = b"",
+        read_error: Exception | None = None,
+        str_chunk_once: bool = False,
+        chunk_delay: float | None = None,
+        guard_read: bool = False,
+    ) -> None:
+        self.status = status
+        self._data = data
         self._offset = 0
         self._read_error = read_error
+        self._str_chunk_once = str_chunk_once
+        self._chunk_delay = chunk_delay
+        self.guard_tripped = False
+        self._guard_read = guard_read
         self.closed = False
 
-    def read(self, size: int = -1) -> bytes:
+    def read(self, size: int = -1) -> object:
+        if self._guard_read:
+            self.guard_tripped = True
+            raise AssertionError("response body must never be read")
         if self._read_error is not None:
             raise self._read_error
+        if self._str_chunk_once:
+            self._str_chunk_once = False
+            return "TEST_ONLY_NON_BYTES_CHUNK"
+        if self._chunk_delay is not None:
+            time.sleep(self._chunk_delay)
         if size < 0:
-            chunk = self._body[self._offset :]
-            self._offset = len(self._body)
-            return chunk
-        chunk = self._body[self._offset : self._offset + size]
+            size = self._data.__len__() - self._offset
+        chunk = self._data[self._offset : self._offset + size]
         self._offset += len(chunk)
         return chunk
 
     def close(self) -> None:
         self.closed = True
 
-    def __enter__(self) -> "_FakeResponse":
-        return self
 
-    def __exit__(self, *args: object) -> None:
-        self.closed = True
+class _TricklingBody:
+    """A 200 response whose body trickles small chunks forever."""
 
-
-class _TricklingResponse:
-    """A response that trickles bytes forever, one small chunk per read."""
-
+    status: int = 200
     _delay: float
     closed: bool
 
@@ -110,7 +134,7 @@ class _TricklingResponse:
         self._delay = delay
         self.closed = False
 
-    def read(self, size: int = -1) -> bytes:
+    def read(self, size: int = -1) -> object:
         _ = size
         time.sleep(self._delay)
         return b"x" * 256
@@ -118,77 +142,79 @@ class _TricklingResponse:
     def close(self) -> None:
         self.closed = True
 
-    def __enter__(self) -> "_TricklingResponse":
-        return self
 
-    def __exit__(self, *args: object) -> None:
-        self.closed = True
+class _FakeConnection:
+    """Fake ``HTTPConnection``: one fixed response outcome per path."""
 
-
-def _http_error(code: int) -> urllib.error.HTTPError:
-    return urllib.error.HTTPError(
-        ENDPOINT, code, "synthetic", HTTPMessage(), io.BytesIO(b"")
-    )
-
-
-class _TrackingBytesIO(io.BytesIO):
-    """BytesIO that records its read position when closed, never after."""
-
+    _runtime: "_FakeRuntime"
+    requests: list[tuple[str, str, object]]
+    closed: bool
     close_count: int
-    position_at_close: int
 
-    def __init__(self, body: bytes) -> None:
-        super().__init__(body)
+    def __init__(self, runtime: "_FakeRuntime") -> None:
+        self._runtime = runtime
+        self.requests = []
+        self.closed = False
         self.close_count = 0
-        self.position_at_close = -1
 
-    @override
+    def request(
+        self, method: str, path: str, /, *, headers: object = None
+    ) -> None:
+        self.requests.append((method, path, headers))
+
+    def getresponse(self) -> object:
+        path = self.requests[-1][1]
+        outcome = self._runtime.outcome_for(path)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
     def close(self) -> None:
+        self.closed = True
         self.close_count += 1
-        self.position_at_close = self.tell()
-        super().close()
-
-
-def _http_error_with_fp(code: int, fp: io.BytesIO) -> urllib.error.HTTPError:
-    return urllib.error.HTTPError(ENDPOINT, code, "synthetic", HTTPMessage(), fp)
 
 
 class _FakeRuntime:
-    """Fake local runtime: dispatches one fixed outcome per URL path."""
+    """Fake connection factory: one fixed outcome per request path."""
 
-    _outcomes: dict[str, bytes | Exception | _FakeResponse | _TricklingResponse]
+    _outcomes: dict[str, object]
+    connections: list[_FakeConnection]
+    opened: list[tuple[str, int, float]]
 
-    def __init__(
-        self,
-        outcomes: dict[str, bytes | Exception | _FakeResponse | _TricklingResponse],
-    ) -> None:
+    def __init__(self, outcomes: dict[str, object]) -> None:
         self._outcomes = outcomes
-        self.calls: list[tuple[str, float]] = []
+        self.connections = []
+        self.opened = []
 
-    def __call__(
-        self, request: urllib.request.Request, timeout: float
-    ) -> _FakeResponse | _TricklingResponse:
-        url = request.full_url
-        self.calls.append((url, timeout))
-        path = url.removeprefix(BASE)
-        outcome = self._outcomes.get(path)
-        if outcome is None:
+    def __call__(self, host: str, port: int, timeout: float) -> _FakeConnection:
+        self.opened.append((host, port, timeout))
+        connection = _FakeConnection(self)
+        self.connections.append(connection)
+        return connection
+
+    def outcome_for(self, path: str) -> object:
+        if path not in self._outcomes:
             raise AssertionError(f"unexpected request path: {path!r}")
-        if isinstance(outcome, Exception):
-            raise outcome
-        if isinstance(outcome, (bytes, bytearray)):
-            return _FakeResponse(bytes(outcome))
+        outcome = self._outcomes[path]
+        if isinstance(outcome, bytes):
+            return _FakeHTTPResponse(200, outcome)
+        if isinstance(outcome, int):
+            return _FakeHTTPResponse(outcome)
         return outcome
 
     def requested_paths(self) -> list[str]:
-        return [url.removeprefix(BASE) for url, _timeout in self.calls]
+        return [
+            path
+            for connection in self.connections
+            for _method, path, _headers in connection.requests
+        ]
 
 
 def _healthy_runtime(
     *,
-    tags: bytes | Exception | _FakeResponse | _TricklingResponse | None = None,
-    ps: bytes | Exception | _FakeResponse | _TricklingResponse | None = None,
-    version: bytes | Exception | _FakeResponse | _TricklingResponse | None = None,
+    tags: object = None,
+    ps: object = None,
+    version: object = None,
 ) -> _FakeRuntime:
     return _FakeRuntime(
         {
@@ -201,43 +227,24 @@ def _healthy_runtime(
     )
 
 
-def _sequenced_transport(
-    outcomes: dict[str, object],
-) -> Callable[[urllib.request.Request, float], object]:
-    """Transport dispatching one fixed raw outcome per URL path."""
-
-    def transport(request: urllib.request.Request, timeout: float) -> object:
-        _ = timeout
-        path = request.full_url.removeprefix(BASE)
-        outcome = outcomes[path]
-        if isinstance(outcome, Exception):
-            raise outcome
-        if isinstance(outcome, (bytes, bytearray)):
-            return _FakeResponse(bytes(outcome))
-        return outcome
-
-    return transport
-
-
 class _AcquisitionCase(unittest.TestCase):
     """Shared harness: a patched transport seam and captured output."""
 
     runtime: _FakeRuntime | None = None
     stdout: io.StringIO = io.StringIO()
     stderr: io.StringIO = io.StringIO()
+    _baseline_threads: int = 0
 
     @override
     def setUp(self) -> None:
         self.runtime = None
         self.stdout = io.StringIO()
         self.stderr = io.StringIO()
+        self._baseline_threads = threading.active_count()
 
-    def _install(
-        self,
-        runtime: _FakeRuntime,
-    ) -> _FakeRuntime:
+    def _install(self, runtime: _FakeRuntime) -> _FakeRuntime:
         self.runtime = runtime
-        patcher = mock.patch.object(ollama_acquisition, "open_response", runtime)
+        patcher = mock.patch.object(ollama_acquisition, "open_connection", runtime)
         _ = patcher.start()
         self.addCleanup(patcher.stop)
         return runtime
@@ -270,6 +277,7 @@ class _AcquisitionCase(unittest.TestCase):
             FAKE_SECRET,
             FAKE_PATH,
             FAKE_RAW_FRAGMENT,
+            FAKE_TRANSPORT_SECRET,
             ENDPOINT,
             "http://",
             "Authorization",
@@ -405,19 +413,23 @@ class ConfigurationBoundary(_AcquisitionCase):
             _ = self._collect(endpoint=f"http://{host_marker.lower()}:11434")
         self.assertNotIn(host_marker, str(ctx.exception))
         self.assertNotIn("http://", str(ctx.exception))
-        self.assertEqual(runtime.calls, [])
+        self.assertEqual(runtime.opened, [])
         self._assert_no_output()
 
     def test_omitted_port_contacts_canonical_default(self) -> None:
         runtime = self._install(_healthy_runtime())
         _ = self._collect(endpoint="http://127.0.0.1")
         self.assertEqual(
-            [url for url, _timeout in runtime.calls],
+            runtime.opened,
             [
-                "http://127.0.0.1:11434/api/version",
-                "http://127.0.0.1:11434/api/tags",
-                "http://127.0.0.1:11434/api/ps",
+                ("127.0.0.1", 11434, ollama_acquisition.TIMEOUT_SECONDS),
+                ("127.0.0.1", 11434, ollama_acquisition.TIMEOUT_SECONDS),
+                ("127.0.0.1", 11434, ollama_acquisition.TIMEOUT_SECONDS),
             ],
+        )
+        self.assertEqual(
+            runtime.requested_paths(),
+            ["/api/version", "/api/tags", "/api/ps"],
         )
 
     def test_unsafe_model_names_raise_before_any_io(self) -> None:
@@ -435,7 +447,7 @@ class ConfigurationBoundary(_AcquisitionCase):
             with self.subTest(bad=bad):
                 with self.assertRaises(ValueError):
                     _ = self._collect(model_name=cast(str, bad))
-                self.assertEqual(runtime.calls, [])
+                self.assertEqual(runtime.opened, [])
         self._assert_no_output()
 
     def test_trailing_newline_model_name_rejected(self) -> None:
@@ -447,7 +459,7 @@ class ConfigurationBoundary(_AcquisitionCase):
                 with self.assertRaises(ValueError) as ctx:
                     _ = self._collect(model_name=bad)
                 self.assertNotIn("test-model", str(ctx.exception))
-                self.assertEqual(runtime.calls, [])
+                self.assertEqual(runtime.opened, [])
 
     def test_control_characters_in_model_name_rejected(self) -> None:
         runtime = self._install(_healthy_runtime())
@@ -455,7 +467,7 @@ class ConfigurationBoundary(_AcquisitionCase):
             with self.subTest(bad=repr(bad)):
                 with self.assertRaises(ValueError):
                     _ = self._collect(model_name=bad)
-                self.assertEqual(runtime.calls, [])
+                self.assertEqual(runtime.opened, [])
 
     def test_model_name_length_boundary(self) -> None:
         # A 64-character identifier is a valid v1 identity (the model is
@@ -470,7 +482,7 @@ class ConfigurationBoundary(_AcquisitionCase):
         self.assertEqual(local.model_presence, "missing")
         with self.assertRaises(ValueError):
             _ = self._collect(model_name="a" * 65)
-        self.assertEqual(len(runtime.calls), 2)
+        self.assertEqual(len(runtime.opened), 2)
 
     def test_invalid_configured_context_raises_before_any_io(self) -> None:
         runtime = self._install(_healthy_runtime())
@@ -478,7 +490,7 @@ class ConfigurationBoundary(_AcquisitionCase):
             with self.subTest(bad=bad):
                 with self.assertRaises(ValueError):
                     _ = self._collect(configured_context_tokens=cast(int, bad))
-                self.assertEqual(runtime.calls, [])
+                self.assertEqual(runtime.opened, [])
         self._assert_no_output()
 
     def test_error_messages_never_echo_configuration_values(self) -> None:
@@ -504,7 +516,7 @@ class StrictJsonDecoding(_AcquisitionCase):
     """Ambiguous/adversarial bodies never decode or leak; they fail closed."""
 
     def _assert_probe_drift(self, body: bytes) -> None:
-        runtime = _healthy_runtime(version=_FakeResponse(body))
+        runtime = _healthy_runtime(version=_FakeHTTPResponse(200, body))
         _ = self._install(runtime)
         snapshot = self._collect()
         self.assertEqual(snapshot.status, "schema_changed")
@@ -525,7 +537,7 @@ class StrictJsonDecoding(_AcquisitionCase):
         self._assert_safe_serialization(snapshot)
 
     def _assert_tags_drift(self, body: bytes) -> None:
-        runtime = _healthy_runtime(tags=_FakeResponse(body))
+        runtime = _healthy_runtime(tags=_FakeHTTPResponse(200, body))
         _ = self._install(runtime)
         snapshot = self._collect()
         self.assertEqual(snapshot.status, "schema_changed")
@@ -545,7 +557,7 @@ class StrictJsonDecoding(_AcquisitionCase):
         self._assert_safe_serialization(snapshot)
 
     def _assert_ps_drift(self, body: bytes) -> None:
-        runtime = _healthy_runtime(ps=_FakeResponse(body))
+        runtime = _healthy_runtime(ps=_FakeHTTPResponse(200, body))
         _ = self._install(runtime)
         snapshot = self._collect()
         self.assertEqual(snapshot.status, "schema_changed")
@@ -562,7 +574,7 @@ class StrictJsonDecoding(_AcquisitionCase):
                 "effective_context_unknown",
             ],
         )
-        self.assertEqual(len(runtime.calls), 3)
+        self.assertEqual(len(runtime.opened), 3)
         self._assert_safe_serialization(snapshot)
 
     def _drift(self, endpoint: str, body: bytes) -> None:
@@ -714,6 +726,11 @@ class HealthyRuntime(_AcquisitionCase):
             runtime.requested_paths(),
             ["/api/version", "/api/tags", "/api/ps"],
         )
+        # One fresh connection per read, each closed exactly once.
+        self.assertEqual(len(runtime.connections), 3)
+        for connection in runtime.connections:
+            self.assertEqual(connection.close_count, 1)
+            self.assertTrue(connection.closed)
 
     def test_windows_empty_and_no_quota_semantics(self) -> None:
         _ = self._install(_healthy_runtime())
@@ -805,8 +822,8 @@ class HealthyRuntime(_AcquisitionCase):
         for outcome in (
             ConnectionRefusedError(),
             TimeoutError(),
-            _http_error(500),
-            _FakeResponse(b"A" * (ollama_acquisition.MAX_BODY_BYTES + 1)),
+            500,
+            _FakeHTTPResponse(200, b"A" * (ollama_acquisition.MAX_BODY_BYTES + 1)),
             HTTPException("truncated"),
         ):
             with self.subTest(outcome=type(outcome).__name__):
@@ -896,7 +913,7 @@ class UnreachableRuntime(_AcquisitionCase):
             ConnectionRefusedError(),
             ConnectionResetError(),
             TimeoutError(),
-            urllib.error.URLError("name resolution failed"),
+            OSError("name resolution failed"),
         ):
             with self.subTest(outcome=type(outcome).__name__):
                 runtime = self._install(_healthy_runtime(version=outcome))
@@ -946,9 +963,10 @@ class ProbeDrift(_AcquisitionCase):
     def test_http_errors_map_to_unknown(self) -> None:
         for code in (301, 302, 403, 404, 500, 503):
             with self.subTest(code=code):
-                runtime = self._install(
-                    _healthy_runtime(version=_http_error(code))
+                response = _FakeHTTPResponse(
+                    code, b"TEST_ONLY_ERROR_BODY", guard_read=True
                 )
+                runtime = self._install(_healthy_runtime(version=response))
                 snapshot = self._collect()
                 self.assertEqual(snapshot.status, "unknown")
                 local = snapshot.local_runtime
@@ -966,12 +984,17 @@ class ProbeDrift(_AcquisitionCase):
                 )
                 # Redirects are never followed: exactly one attempt.
                 self.assertEqual(runtime.requested_paths(), ["/api/version"])
+                # The non-200 body was never read; response and connection
+                # were both closed deterministically.
+                self.assertFalse(response.guard_tripped)
+                self.assertTrue(response.closed)
+                self.assertTrue(runtime.connections[0].closed)
 
     def test_oversized_probe_maps_to_unknown(self) -> None:
         _ = self._install(
             _healthy_runtime(
-                version=_FakeResponse(
-                    b"A" * (ollama_acquisition.MAX_BODY_BYTES + 1)
+                version=_FakeHTTPResponse(
+                    200, b"A" * (ollama_acquisition.MAX_BODY_BYTES + 1)
                 )
             )
         )
@@ -995,7 +1018,7 @@ class ProbeDrift(_AcquisitionCase):
             b"",
         ):
             with self.subTest(body=body[:20]):
-                runtime = self._install(_healthy_runtime(version=body))
+                runtime = self._install(_healthy_runtime(version=_FakeHTTPResponse(200, body)))
                 snapshot = self._collect()
                 self.assertEqual(snapshot.status, "schema_changed")
                 local = snapshot.local_runtime
@@ -1042,7 +1065,7 @@ class TagsDrift(_AcquisitionCase):
                 )
 
     def test_http_errors_map_to_unknown_keeping_reachability(self) -> None:
-        _ = self._install(_healthy_runtime(tags=_http_error(503)))
+        _ = self._install(_healthy_runtime(tags=503))
         snapshot = self._collect()
         self.assertEqual(snapshot.status, "unknown")
         local = snapshot.local_runtime
@@ -1093,16 +1116,118 @@ class TagsDrift(_AcquisitionCase):
 # ═══════════════════ collection deadline ═════════════════════════════════════
 
 
+class _BlockingGetResponseConnection:
+    """Connection whose ``getresponse`` blocks until ``close`` cancels it."""
+
+    requests: list[tuple[str, str, object]]
+    _release: threading.Event
+    closed: bool
+    close_count: int
+
+    def __init__(self) -> None:
+        self.requests = []
+        self.closed = False
+        self.close_count = 0
+        self._release = threading.Event()
+
+    def request(
+        self, method: str, path: str, /, *, headers: object = None
+    ) -> None:
+        self.requests.append((method, path, headers))
+
+    def getresponse(self) -> object:
+        # Models a permanently blocked read; only cancellation unblocks it.
+        _ = self._release.wait(30.0)
+        raise OSError("connection closed by collector")
+
+    def close(self) -> None:
+        self.closed = True
+        self.close_count += 1
+        _ = self._release.set()
+
+
+class _BlockedReaderResponse:
+    """200 response whose single ``read`` blocks until cancellation."""
+
+    status: int = 200
+    _release: threading.Event
+    closed: bool
+
+    def __init__(self) -> None:
+        self.closed = False
+        self._release = threading.Event()
+
+    def read(self, size: int = -1) -> object:
+        _ = size
+        _ = self._release.wait(30.0)
+        raise OSError("connection closed by collector")
+
+    def cancel(self) -> None:
+        self.closed = True
+        _ = self._release.set()
+
+    def close(self) -> None:
+        self.cancel()
+
+
+class _BlockingReadConnection:
+    """Connection serving a body that blocks until ``close`` cancels it."""
+
+    requests: list[tuple[str, str, object]]
+    response: _BlockedReaderResponse
+    closed: bool
+    close_count: int
+
+    def __init__(self) -> None:
+        self.requests = []
+        self.response = _BlockedReaderResponse()
+        self.closed = False
+        self.close_count = 0
+
+    def request(
+        self, method: str, path: str, /, *, headers: object = None
+    ) -> None:
+        self.requests.append((method, path, headers))
+
+    def getresponse(self) -> object:
+        return self.response
+
+    def close(self) -> None:
+        self.closed = True
+        self.close_count += 1
+        self.response.cancel()
+
+
+class _Factory:
+    """open_connection seam returning a fresh blocking connection per call."""
+
+    _make: Callable[[], object]
+    connections: list[object]
+
+    def __init__(self, make: Callable[[], object]) -> None:
+        self._make = make
+        self.connections = []
+
+    def __call__(self, host: str, port: int, timeout: float) -> object:
+        _ = host, port, timeout
+        connection = self._make()
+        self.connections.append(connection)
+        return connection
+
+
 class CollectionDeadline(_AcquisitionCase):
     def test_trickling_probe_aborts_at_deadline(self) -> None:
         # A peer that trickles bytes forever cannot extend the collection:
-        # the monotonic deadline aborts the read and normalizes the outcome.
-        trickling = _TricklingResponse()
+        # the monotonic deadline cancels the read and normalizes the outcome.
+        trickling = _TricklingBody()
         runtime = self._install(_healthy_runtime(version=trickling))
+        started = time.monotonic()
         with mock.patch.object(
             ollama_acquisition, "COLLECTION_DEADLINE_SECONDS", 0.3
         ):
             snapshot = self._collect()
+        elapsed = time.monotonic() - started
+        self.assertLess(elapsed, 0.45)
         self.assertEqual(snapshot.status, "unavailable")
         local = snapshot.local_runtime
         assert local is not None
@@ -1128,7 +1253,7 @@ class CollectionDeadline(_AcquisitionCase):
         self._assert_safe_serialization(snapshot)
 
     def test_trickling_tags_read_preserves_reachability(self) -> None:
-        trickling = _TricklingResponse()
+        trickling = _TricklingBody()
         _ = self._install(_healthy_runtime(tags=trickling))
         with mock.patch.object(
             ollama_acquisition, "COLLECTION_DEADLINE_SECONDS", 0.3
@@ -1149,62 +1274,8 @@ class CollectionDeadline(_AcquisitionCase):
         with mock.patch.object(ollama_acquisition, "COLLECTION_DEADLINE_SECONDS", 0.0):
             snapshot = self._collect()
         self.assertEqual(snapshot.status, "unavailable")
-        self.assertEqual(runtime.calls, [])
+        self.assertEqual(runtime.opened, [])
         self._assert_no_output()
-
-    def test_http_error_response_closed_without_reading_body(self) -> None:
-        # The error body carries a sentinel; the position recorded at the
-        # deterministic close proves it was never read, and exactly one
-        # close happened.
-        fp = _TrackingBytesIO(b"TEST_ONLY_ERROR_BODY_MUST_NOT_BE_READ")
-        _ = self._install(
-            _healthy_runtime(version=_http_error_with_fp(500, fp))
-        )
-        snapshot = self._collect()
-        self.assertEqual(snapshot.status, "unknown")
-        self.assertEqual(fp.close_count, 1)
-        self.assertEqual(fp.position_at_close, 0)
-        self._assert_no_output()
-
-
-class _BlockingOpener:
-    """Transport seam whose single ``open`` call blocks past any budget."""
-
-    _delay: float
-    _body: bytes
-    response: _FakeResponse | None
-
-    def __init__(self, delay: float, body: bytes) -> None:
-        self._delay = delay
-        self._body = body
-        self.response = None
-
-    def __call__(
-        self, request: urllib.request.Request, timeout: float
-    ) -> _FakeResponse:
-        _ = timeout
-        time.sleep(self._delay)
-        self.response = _FakeResponse(self._body)
-        return self.response
-
-
-class _BlockingReadResponse:
-    """Response whose single ``read`` call blocks past any budget."""
-
-    _delay: float
-    closed: bool
-
-    def __init__(self, delay: float) -> None:
-        self._delay = delay
-        self.closed = False
-
-    def read(self, size: int = -1) -> bytes:
-        _ = size
-        time.sleep(self._delay)
-        return b""  # one blocking call, then EOF
-
-    def close(self) -> None:
-        self.closed = True
 
 
 class BoundedWorkerDeadline(_AcquisitionCase):
@@ -1215,11 +1286,12 @@ class BoundedWorkerDeadline(_AcquisitionCase):
     ELAPSED_LIMIT: float = 0.12
     GRACE: float = 0.3
 
-    def _assert_bounded(self, transport: Callable[[urllib.request.Request, float], object]) -> None:
-        patcher = mock.patch.object(ollama_acquisition, "open_response", transport)
+    def _collect_bounded(
+        self, transport: Callable[[str, int, float], object]
+    ) -> None:
+        patcher = mock.patch.object(ollama_acquisition, "open_connection", transport)
         _ = patcher.start()
         self.addCleanup(patcher.stop)
-        baseline_threads = threading.active_count()
         started = time.monotonic()
         with mock.patch.object(
             ollama_acquisition, "COLLECTION_DEADLINE_SECONDS", self.BUDGET
@@ -1245,35 +1317,145 @@ class BoundedWorkerDeadline(_AcquisitionCase):
                 "configured_context_unknown",
             ],
         )
-        # The abandoned worker unblocks soon after, aborts against the same
-        # deadline, closes its response deterministically and terminates:
-        # no leaked threads or fds.
-        time.sleep(self.GRACE)
-        self.assertLessEqual(threading.active_count(), baseline_threads)
         self._assert_no_output()
 
-    def test_single_blocking_open_cannot_exceed_budget(self) -> None:
-        opener = _BlockingOpener(self.BLOCK, _fixture("version-ok.json"))
-        self._assert_bounded(opener)
-        assert opener.response is not None
-        self.assertTrue(opener.response.closed)
+    def test_permanently_blocking_getresponse_is_cancelled(self) -> None:
+        # The collector must return by the deadline even when one transport
+        # call blocks forever: cancellation closes the connection, which
+        # unblocks the worker, which is then reclaimed (no daemon left).
+        factory = _Factory(_BlockingGetResponseConnection)
+        self._collect_bounded(factory)
+        connection = cast("_BlockingGetResponseConnection", factory.connections[0])
+        self.assertTrue(connection.closed)
+        self.assertGreaterEqual(connection.close_count, 1)
+        # The worker was reclaimed, not abandoned.
+        time.sleep(self.GRACE)
+        self.assertEqual(threading.active_count(), self._baseline_threads)
 
-    def test_single_blocking_read_cannot_exceed_budget(self) -> None:
-        response = _BlockingReadResponse(self.BLOCK)
-        self._assert_bounded(lambda request, timeout: response)
-        self.assertTrue(response.closed)
+    def test_permanently_blocking_read_is_cancelled(self) -> None:
+        factory = _Factory(_BlockingReadConnection)
+        self._collect_bounded(factory)
+        connection = cast("_BlockingReadConnection", factory.connections[0])
+        self.assertTrue(connection.closed)
+        self.assertTrue(connection.response.closed)
+        time.sleep(self.GRACE)
+        self.assertEqual(threading.active_count(), self._baseline_threads)
+
+    def test_repeated_permanent_blocks_keep_threads_and_fds_stable(self) -> None:
+        proc_fd = Path("/proc/self/fd")
+        baseline_fds = (
+            len(list(proc_fd.iterdir())) if proc_fd.is_dir() else None
+        )
+        factory = _Factory(_BlockingGetResponseConnection)
+        for round_number in range(3):
+            with self.subTest(round=round_number):
+                self._collect_bounded(factory)
+                connection = cast(
+                    "_BlockingGetResponseConnection", factory.connections[-1]
+                )
+                self.assertTrue(connection.closed)
+                time.sleep(self.GRACE)
+                self.assertEqual(
+                    threading.active_count(), self._baseline_threads
+                )
+        if baseline_fds is not None:
+            self.assertLessEqual(len(list(proc_fd.iterdir())), baseline_fds + 2)
+
+    def test_delayed_eof_after_deadline_fails_closed(self) -> None:
+        # A fully valid body whose EOF only arrives after the deadline must
+        # never be reported ok: the worker re-checks the deadline after EOF
+        # and the collector before consuming any result. The read models a
+        # real socket: cancellation through close() unblocks it with an
+        # error instead of delivering late data.
+        release = threading.Event()
+        block = self.BLOCK
+
+        class _DelayedEofConnection:
+            requests: list[tuple[str, str, object]]
+            _first: bool
+            closed: bool
+
+            def __init__(self) -> None:
+                self.requests = []
+                self.closed = False
+                self._first = True
+
+            def request(
+                self, method: str, path: str, /, *, headers: object = None
+            ) -> None:
+                self.requests.append((method, path, headers))
+
+            def getresponse(self) -> object:
+                return self
+
+            # The connection doubles as the response object.
+            status: int = 200
+
+            def read(self, size: int = -1) -> object:
+                _ = size
+                if self._first:
+                    self._first = False
+                    if release.wait(block):
+                        raise OSError("connection closed by collector")
+                    return _fixture("version-ok.json")
+                if release.is_set():
+                    raise OSError("connection closed by collector")
+                return b""
+
+            def close(self) -> None:
+                self.closed = True
+                release.set()
+
+        factory = _Factory(_DelayedEofConnection)
+        self._collect_bounded(factory)
+        time.sleep(self.GRACE)
+        self.assertEqual(threading.active_count(), self._baseline_threads)
+
+
+# ═══════════════════════ malformed transport results ═════════════════════════
 
 
 class MalformedTransportResult(_AcquisitionCase):
-    def _install_transport(
-        self, transport: Callable[[urllib.request.Request, float], object]
-    ) -> None:
-        patcher = mock.patch.object(ollama_acquisition, "open_response", transport)
-        _ = patcher.start()
-        self.addCleanup(patcher.stop)
+    def _install_single(self, outcome_for_version: object) -> _FakeRuntime:
+        runtime = _healthy_runtime(version=outcome_for_version)
+        _ = self._install(runtime)
+        return runtime
+
+    def test_response_object_without_read_maps_to_unknown(self) -> None:
+        # A closable-but-unreadable response object is closed deterministically
+        # and normalized, never a TypeError.
+        class _CloseOnlyResponse:
+            closed: bool
+
+            def __init__(self) -> None:
+                self.closed = False
+
+            def close(self) -> None:
+                self.closed = True
+
+        response = _CloseOnlyResponse()
+        runtime = self._install_single(response)
+        snapshot = self._collect()
+        self.assertEqual(snapshot.status, "unknown")
+        local = snapshot.local_runtime
+        assert local is not None
+        self.assertFalse(local.reachable)
+        self.assertEqual(local.model_presence, "unknown")
+        self._assert_codes(
+            snapshot,
+            [
+                "telemetry_unknown",
+                "runtime_unreachable",
+                "model_presence_unknown",
+                "configured_context_unknown",
+            ],
+        )
+        self.assertTrue(response.closed)
+        self.assertTrue(runtime.connections[0].closed)
+        self._assert_no_output()
 
     def test_invalid_response_object_on_probe_maps_to_unknown(self) -> None:
-        self._install_transport(lambda request, timeout: object())
+        _ = self._install_single(object())
         snapshot = self._collect()
         self.assertEqual(snapshot.status, "unknown")
         local = snapshot.local_runtime
@@ -1292,15 +1474,14 @@ class MalformedTransportResult(_AcquisitionCase):
         self._assert_no_output()
 
     def test_invalid_response_object_on_ps_keeps_validated_presence(self) -> None:
-        self._install_transport(
-            _sequenced_transport(
-                {
-                    "/api/version": _fixture("version-ok.json"),
-                    "/api/tags": _fixture("tags-present.json"),
-                    "/api/ps": object(),
-                }
-            )
+        runtime = _FakeRuntime(
+            {
+                "/api/version": _fixture("version-ok.json"),
+                "/api/tags": _fixture("tags-present.json"),
+                "/api/ps": object(),
+            }
         )
+        _ = self._install(runtime)
         snapshot = self._collect(configured_context_tokens=8192)
         self.assertEqual(snapshot.status, "ok")
         local = snapshot.local_runtime
@@ -1311,114 +1492,113 @@ class MalformedTransportResult(_AcquisitionCase):
         self._assert_codes(snapshot, ["effective_context_unknown"])
         self._assert_safe_serialization(snapshot)
 
+    def test_non_bytes_chunk_maps_to_invalid_response(self) -> None:
+        _ = self._install_single(
+            _FakeHTTPResponse(200, b'{"version": "x"}', str_chunk_once=True)
+        )
+        snapshot = self._collect()
+        self.assertEqual(snapshot.status, "unknown")
+        local = snapshot.local_runtime
+        assert local is not None
+        self.assertFalse(local.reachable)
+        self._assert_codes(
+            snapshot,
+            [
+                "telemetry_unknown",
+                "runtime_unreachable",
+                "model_presence_unknown",
+                "configured_context_unknown",
+            ],
+        )
+        self._assert_no_output()
+
+    def test_secret_bearing_read_exception_is_never_propagated(self) -> None:
+        _ = self._install_single(
+            _FakeHTTPResponse(
+                200,
+                b"",
+                read_error=RuntimeError(FAKE_TRANSPORT_SECRET),
+            )
+        )
+        snapshot = self._collect()
+        self.assertEqual(snapshot.status, "unavailable")
+        local = snapshot.local_runtime
+        assert local is not None
+        self.assertFalse(local.reachable)
+        self.assertEqual(local.model_presence, "unknown")
+        self._assert_codes(
+            snapshot,
+            [
+                "source_unavailable",
+                "runtime_unreachable",
+                "model_presence_unknown",
+                "configured_context_unknown",
+            ],
+        )
+        # The provider-controlled exception text never surfaces anywhere.
+        text = _serialized(snapshot)
+        self.assertNotIn(FAKE_TRANSPORT_SECRET, text)
+        self._assert_no_output()
+        # The worker was not killed by the unexpected exception: it is
+        # reclaimed deterministically.
+        time.sleep(0.2)
+        self.assertEqual(threading.active_count(), self._baseline_threads)
+
+    def test_error_response_closed_without_reading_body(self) -> None:
+        # The error body carries a read guard; the deterministic close must
+        # happen without ever reading it.
+        guarded = _FakeHTTPResponse(500, b"TEST_ONLY_ERROR_BODY", guard_read=True)
+        runtime = _healthy_runtime(version=guarded)
+        _ = self._install(runtime)
+        snapshot = self._collect()
+        self.assertEqual(snapshot.status, "unknown")
+        self.assertFalse(guarded.guard_tripped)
+        self.assertTrue(guarded.closed)
+        self.assertTrue(runtime.connections[0].closed)
+        self._assert_no_output()
+
 
 # ═══════════════════════ transport mechanism ═════════════════════════════════
 
 
-class _OpenerRecorder:
-    """Typed fake opener recording exactly one ``open`` call."""
-
-    sentinel: object
-    opened: list[tuple[urllib.request.Request, float]]
-
-    def __init__(self, sentinel: object) -> None:
-        self.sentinel = sentinel
-        self.opened = []
-
-    def open(self, request: urllib.request.Request, timeout: float) -> object:
-        self.opened.append((request, timeout))
-        return self.sentinel
-
-
 class TransportMechanism(unittest.TestCase):
-    def test_open_response_disables_proxies_and_redirects(self) -> None:
-        request = urllib.request.Request(ENDPOINT + "/api/version")
-        recorder = _OpenerRecorder(sentinel=object())
+    def test_default_connection_is_direct_http_client(self) -> None:
+        # Construction only: HTTPConnection connects lazily, so this stays
+        # off the network. Direct-by-construction: no proxy parameter
+        # exists, and redirects are surfaced as statuses (tested elsewhere).
+        connection = ollama_acquisition.open_connection("127.0.0.1", 11434, 1.5)
+        self.assertIsInstance(connection, HTTPConnection)
+        real = cast("http.client.HTTPConnection", connection)
+        self.assertEqual(real.host, "127.0.0.1")
+        self.assertEqual(real.port, 11434)
+        self.assertEqual(real.timeout, 1.5)
+        real.close()
 
-        with mock.patch.object(
-            urllib.request, "build_opener", return_value=recorder
-        ) as build_opener:
-            returned = ollama_acquisition.open_response(
-                request, ollama_acquisition.TIMEOUT_SECONDS
-            )
 
-        self.assertIs(returned, recorder.sentinel)
-        build_opener.assert_called_once()
-        handlers = cast("tuple[object, ...]", build_opener.call_args.args)
-        kinds = [type(handler).__name__ for handler in handlers]
-        self.assertIn("NoRedirect", kinds)
-        self.assertIn("ProxyHandler", kinds)
-        proxy_handler = next(
-            handler
-            for handler in handlers
-            if type(handler).__name__ == "ProxyHandler"
-        )
-        # typeshed exposes no annotated ``proxies`` member; assert through
-        # a bounded getattr instead of skipping the security-relevant check.
-        proxies = cast("dict[str, object]", getattr(proxy_handler, "proxies"))
-        self.assertEqual(proxies, {})
-        # Exactly one call, with the original request object.
-        self.assertEqual(
-            recorder.opened, [(request, ollama_acquisition.TIMEOUT_SECONDS)]
-        )
-        self.assertIs(recorder.opened[0][0], request)
-
-    def test_no_redirect_declines_and_constructs_nothing(self) -> None:
-        handler = ollama_acquisition.NoRedirect()
-        original = urllib.request.Request(ENDPOINT + "/api/version")
-        headers = HTTPMessage()
-        for code in (301, 302, 303, 307, 308):
-            with self.subTest(code=code):
-                self.assertIsNone(
-                    handler.redirect_request(
-                        original,
-                        io.BytesIO(b""),
-                        code,
-                        "Redirect",
-                        headers,
-                        "http://TEST_ONLY_REDIRECT_TARGET/x",
-                    )
-                )
 
 
 class RequestShape(_AcquisitionCase):
-    def test_requests_target_canonical_paths_with_bounded_timeout(self) -> None:
+    def test_requests_are_get_with_accept_on_canonical_paths(self) -> None:
         runtime = self._install(_healthy_runtime())
         _ = self._collect(configured_context_tokens=8192)
 
-        self.assertEqual(len(runtime.calls), 3)
-        for url, timeout in runtime.calls:
-            self.assertIn(
-                url,
-                (
-                    BASE + "/api/version",
-                    BASE + "/api/tags",
-                    BASE + "/api/ps",
-                ),
-            )
-            self.assertEqual(timeout, ollama_acquisition.TIMEOUT_SECONDS)
-            self.assertGreater(timeout, 0)
+        self.assertEqual(len(runtime.connections), 3)
+        self.assertEqual(
+            runtime.requested_paths(),
+            ["/api/version", "/api/tags", "/api/ps"],
+        )
+        for connection in runtime.connections:
+            self.assertEqual(len(connection.requests), 1)
+            method, _path, headers = connection.requests[0]
+            self.assertEqual(method, "GET")
+            self.assertEqual(headers, {"Accept": "application/json"})
 
-    def test_headers_carried_by_requests(self) -> None:
-        recorded: list[urllib.request.Request] = []
-
-        def spy(
-            request: urllib.request.Request, timeout: float
-        ) -> _FakeResponse:
-            _ = timeout
-            recorded.append(request)
-            return _FakeResponse(b"{}")
-
-        patcher = mock.patch.object(ollama_acquisition, "open_response", spy)
-        _ = patcher.start()
-        self.addCleanup(patcher.stop)
+    def test_timeouts_forwarded_within_bounds(self) -> None:
+        runtime = self._install(_healthy_runtime())
         _ = self._collect()
-
-        self.assertEqual(len(recorded), 1)
-        request = recorded[0]
-        self.assertEqual(request.get_method(), "GET")
-        self.assertEqual(request.get_header("Accept"), "application/json")
-        self.assertIsNone(request.get_header("Authorization"))
+        for _host, _port, timeout in runtime.opened:
+            self.assertLessEqual(timeout, ollama_acquisition.TIMEOUT_SECONDS)
+            self.assertGreater(timeout, 0)
 
 
 # ═══════════════════════ determinism and contract ════════════════════════════
@@ -1564,13 +1744,13 @@ class MarkerNonLeak(_AcquisitionCase):
             "healthy": _healthy_runtime(),
             "unreachable": _healthy_runtime(version=ConnectionRefusedError()),
             "timeout": _healthy_runtime(version=TimeoutError()),
-            "probe-http-error": _healthy_runtime(version=_http_error(500)),
+            "probe-http-error": _healthy_runtime(version=500),
             "probe-oversized": _healthy_runtime(
-                version=_FakeResponse(
-                    b"A" * (ollama_acquisition.MAX_BODY_BYTES + 1)
+                version=_FakeHTTPResponse(
+                    200, b"A" * (ollama_acquisition.MAX_BODY_BYTES + 1)
                 )
             ),
-            "probe-malformed": _healthy_runtime(version=b"not json"),
+            "probe-malformed": _healthy_runtime(version=_FakeHTTPResponse(200, b"not json")),
             "tags-drift": _healthy_runtime(tags=_fixture("tags-schema-changed.json")),
             "tags-duplicates": _healthy_runtime(
                 tags=_fixture("tags-duplicate-names.json")
@@ -1579,6 +1759,11 @@ class MarkerNonLeak(_AcquisitionCase):
             "ps-drift": _healthy_runtime(ps=_fixture("ps-schema-changed.json")),
             "ps-digest-mismatch": _healthy_runtime(
                 ps=_fixture("ps-digest-mismatch.json")
+            ),
+            "secret-read-error": _healthy_runtime(
+                version=_FakeHTTPResponse(
+                    200, b"", read_error=RuntimeError(FAKE_TRANSPORT_SECRET)
+                )
             ),
             "poisoned-responses": self._poisoned_runtime(),
         }
@@ -1593,6 +1778,7 @@ class MarkerNonLeak(_AcquisitionCase):
                     FAKE_SECRET,
                     FAKE_PATH,
                     FAKE_RAW_FRAGMENT,
+                    FAKE_TRANSPORT_SECRET,
                     FAKE_REDIRECT_TARGET,
                     ENDPOINT,
                     "http://",

@@ -309,15 +309,21 @@ direction was chosen. Dates use UTC.
   non-finite floats such as `1e10000`, integers outside the validated
   signed 64-bit band, and recursion-limit nesting all normalize to
   `schema_changed`), every transport result is narrowly
-  protocol-validated before use (a malformed response object degrades
-  safely instead of raising), and one monotonic collection deadline is
-  enforced end to end: each read runs inside a bounded worker the
-  collector abandons at the deadline, so control returns on time even
-  when a single blocking call would run longer; the abandoned worker
-  aborts against the same deadline and closes its response
-  deterministically, and an unexpected internal worker error is re-raised
-  rather than swallowed. Error responses are closed without reading their
-  content. Duplicate listed names and any malformed/drifted body fail
+  protocol-validated before use (integer HTTP status plus callable
+  `read`; body chunks must be `bytes`; a malformed response object or
+  contract-violating chunk degrades safely instead of raising), and one
+  monotonic collection deadline is enforced end to end and cancellably:
+  each read runs inside a bounded worker the collector abandons at the
+  deadline, cancelling it by closing its connection (close unblocks every
+  in-flight operation on a socket) and reclaiming the worker with a
+  bounded join, so control returns on time even when a single blocking
+  call would run forever and no thread, socket or file descriptor is left
+  behind. Response-operation failures of any kind — including
+  provider-controlled exception text — normalize to safe outcomes and are
+  never propagated or logged; an unexpected internal worker error is
+  re-raised rather than swallowed. Error responses are closed without
+  reading their content. Duplicate listed names and any malformed/drifted
+  body fail
   closed; a healthy local runtime reports `windows: []` with no quota
   semantics. There is no generation, no model loading for inspection, no
   pull/delete and no runtime/config mutation.

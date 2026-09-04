@@ -22,29 +22,39 @@ Security contract (docs/security.md):
   base path must be empty or root, and empty-but-present query/fragment
   delimiters, leading/trailing whitespace and control characters are
   rejected. Collection contacts exactly one canonical endpoint; there is
-  no LAN scanning, no host discovery, no proxy routing (proxies are
-  disabled for the connection) and no redirect following;
+  no LAN scanning, no host discovery, no proxy routing (the transport is
+  one direct ``http.client`` connection — proxies are not consulted by
+  construction) and no redirect following (a 3xx is surfaced as a status,
+  never followed);
 - one monotonic collection deadline (``COLLECTION_DEADLINE_SECONDS``)
-  spans connect, headers and body reads **end to end**: each read executes
-  inside a single bounded daemon worker and the collector waits at most the
-  remaining time on it, so control returns by the deadline even when one
-  underlying blocking call would run longer. The worker checks the
-  deadline between all blocking phases, budgets each phase the remaining
-  time (so real transports finish promptly even when abandoned), closes
-  its response deterministically on every path, and an abandoned worker
-  that eventually unblocks still aborts itself and cleans up — it never
-  feeds results back after abandonment. A genuinely unexpected worker
-  error is re-raised in the collector thread instead of being swallowed.
-  Bounded worker count (at most one per read, at most three sequential
-  workers per collection); no thread, file-descriptor or response leak by
-  construction;
-- transport results are narrowly protocol-validated before use (callable
-  ``read`` and ``close``): a malformed response object normalizes to the
-  documented degraded statuses instead of an uncaught ``TypeError``, and
-  no payload or path detail ever leaks;
-- every response body is read under a hard size bound; error responses
-  (``HTTPError``) are closed deterministically without reading their
-  content; oversized bodies are never parsed;
+  spans connect, headers and body reads **end to end and cancellably**:
+  each read executes inside a single bounded worker and the collector
+  waits at most the remaining time on it. On deadline the collector
+  closes the worker's connection — the cancellation primitive that
+  unblocks every in-flight operation (a closed socket makes a blocked
+  connect/read fail immediately) — and reclaims the worker with a bounded
+  join, so no timeout path returns while a worker can remain blocked and
+  no thread, socket or file descriptor is left behind. The worker
+  re-checks the deadline between all blocking phases and again after EOF
+  before the body is consumed; the collector re-checks it before any
+  worker result is consumed, so a completion landing at or past the
+  deadline fails closed. Each blocking phase is additionally budgeted the
+  remaining time. An abandoned worker never feeds results back; a
+  genuinely unexpected worker error is re-raised in the collector thread
+  instead of being swallowed. Bounded worker count (at most one per read,
+  at most three sequential workers per collection);
+- transport results are narrowly protocol-validated before use (an
+  integer status in the HTTP range plus a callable ``read``; body chunks
+  must be ``bytes``): a malformed response object or non-bytes chunk
+  normalizes to the documented degraded statuses instead of an uncaught
+  ``TypeError``, anything closable is still closed, and no payload or
+  path detail ever leaks;
+- every response body is read under a hard size bound; non-200 responses
+  (including declined redirects and error statuses) are closed
+  deterministically without reading their content; oversized bodies are
+  never parsed; response-operation failures of any kind — including
+  provider-controlled exception text — normalize to safe outcomes and
+  are never propagated, logged or retained;
 - response bodies decode under a strict JSON contract: duplicate object
   keys at any depth, the NaN/Infinity constants, any non-finite float
   result (e.g. ``1e10000``) and any integer outside the validated signed
@@ -113,12 +123,10 @@ import math
 import re
 import threading
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
-import urllib.response
-from http.client import HTTPException, HTTPMessage
-from typing import IO, Literal, Protocol, cast, override
+from collections.abc import Mapping
+from http.client import HTTPConnection, HTTPException
+from typing import Literal, Protocol, cast
 
 from ..capacity import (
     CapacityDiagnostic,
@@ -146,6 +154,11 @@ TIMEOUT_SECONDS = 5.0
 COLLECTION_DEADLINE_SECONDS = 15.0
 MAX_BODY_BYTES = 1024 * 1024
 READ_CHUNK_BYTES = 64 * 1024
+
+# After deadline cancellation (connection close), the abandoned worker
+# unblocks deterministically — real sockets raise immediately on close.
+# This bounded join reclaims the thread before the collection returns.
+_CANCEL_JOIN_SECONDS = 2.0
 
 # The v1 safe-identifier grammar (docs/capacity-model.md). The capacity
 # module remains the single source of truth for the rule; this boundary
@@ -260,40 +273,6 @@ def _decode_strict(body: bytes) -> object:
     )
 
 
-class _ResponseProtocol(Protocol):
-    """The narrow transport-response contract the collector relies on."""
-
-    def read(self, size: int = -1, /) -> bytes: ...
-
-    def close(self) -> None: ...
-
-
-def _response_protocol_ok(response: object) -> bool:
-    """Narrow transport-response protocol validation.
-
-    The collector only ever needs ``read`` and ``close``; a transport
-    result without both callables is a malformed response object, not
-    telemetry, and is handled as a safe degraded outcome instead of an
-    uncaught ``TypeError``. Programming/configuration errors elsewhere are
-    never swallowed through this check.
-    """
-    read = getattr(response, "read", None)
-    close = getattr(response, "close", None)
-    return callable(read) and callable(close)
-
-
-def _close_response(response: _ResponseProtocol) -> None:
-    """Close a protocol-validated response; never raises.
-
-    Closing is best-effort by design: a close failure must never mask the
-    normalized outcome or escape as a transport-layer exception.
-    """
-    try:
-        response.close()
-    except Exception:  # deliberate best-effort close; see docstring
-        pass
-
-
 def canonical_local_endpoint(url: object) -> str:
     """Canonicalize and validate the explicit local endpoint policy.
 
@@ -404,140 +383,209 @@ def _require_config(
     return base
 
 
-class NoRedirect(urllib.request.HTTPRedirectHandler):
-    """Redirect policy handler: decline every redirect.
+class _ConnectionProtocol(Protocol):
+    """The narrow connection contract the collector relies on.
 
-    A local metadata read has no reason to follow a redirect; returning
-    ``None`` makes the standard-library opener surface the redirect status
-    as an ``HTTPError`` instead of issuing a second request.
+    ``close()`` is the cancellation primitive: it must unblock any
+    in-flight operation on the connection (the real ``HTTPConnection``
+    does this by closing the socket). This is what makes the bounded
+    worker genuinely reclaimable instead of abandonable.
     """
 
-    @override
-    def redirect_request(
-        self,
-        req: urllib.request.Request,
-        fp: IO[bytes],
-        code: int,
-        msg: str,
-        headers: HTTPMessage,
-        newurl: str,
-    ) -> urllib.request.Request | None:
-        return None
+    def request(
+        self, method: str, path: str, /, *, headers: Mapping[str, str]
+    ) -> None: ...
+
+    def getresponse(self) -> object: ...
+
+    def close(self) -> None: ...
 
 
-def _build_request(url: str) -> urllib.request.Request:
-    return urllib.request.Request(url, method="GET", headers={"Accept": "application/json"})
+class _ResponseProtocol(Protocol):
+    """The narrow validated-response contract (status + body reads).
 
-
-def open_response(
-    request: urllib.request.Request,
-    timeout: float,
-) -> urllib.response.addinfourl:
-    """Perform one local read through a no-proxy, no-redirect opener.
-
-    ``ProxyHandler({})`` disables every environment proxy so an explicit
-    loopback endpoint is contacted directly. ``timeout`` bounds the single
-    transport phase (connect/read inactivity); the collection deadline is
-    enforced around it. Test seam: tests replace this function with a fake
-    transport; no test contacts a runtime or network.
+    ``read`` is declared to return ``object`` deliberately: the runtime
+    object behind this protocol is untrusted, and body chunks are required
+    to be real ``bytes`` at the boundary before use.
     """
-    opener = urllib.request.build_opener(NoRedirect(), urllib.request.ProxyHandler({}))
-    return cast(
-        "urllib.response.addinfourl", opener.open(request, timeout=timeout)
+
+    status: int
+
+    def read(self, size: int = -1, /) -> object: ...
+
+
+def open_connection(host: str, port: int, timeout: float) -> _ConnectionProtocol:
+    """Create one direct HTTP connection for a single fixed GET.
+
+    Direct by construction: ``http.client`` never consults environment
+    proxies and never follows redirects — a 3xx is surfaced as a status,
+    not followed. ``timeout`` bounds each transport phase; the collection
+    deadline is enforced around it by the bounded worker, and closing the
+    connection is the cancellation path. Test seam: tests replace this
+    function with fake connection factories; no test contacts a runtime
+    or network.
+    """
+    return HTTPConnection(host, port, timeout=timeout)
+
+
+def _response_protocol_ok(response: object) -> bool:
+    """Narrow transport-response protocol validation.
+
+    The collector only ever needs an integer status in the HTTP range and
+    a callable ``read``; a transport result without both is a malformed
+    response object, not telemetry, and is handled as a safe degraded
+    outcome (with a best-effort close of anything closable) instead of an
+    uncaught ``TypeError``. Programming/configuration errors elsewhere
+    are never swallowed through this check.
+    """
+    status = getattr(response, "status", None)
+    read = getattr(response, "read", None)
+    return (
+        isinstance(status, int)
+        and not isinstance(status, bool)
+        and 100 <= status <= 599
+        and callable(read)
     )
 
 
+def _close_discardable(response: object) -> None:
+    """Best-effort close of a response object being discarded.
+
+    Used for protocol-invalid responses that may still carry a callable
+    ``close``; a close failure never masks the normalized outcome.
+    """
+    close = getattr(response, "close", None)
+    if callable(close):
+        try:
+            _ = close()
+        except Exception:  # deliberate best-effort close; see docstring
+            pass
+
+
 def _execute_read(
-    request: urllib.request.Request, deadline: float
+    connection: _ConnectionProtocol, path: str, deadline: float
 ) -> tuple[_CallOutcome, object]:
     """Run one full transport-plus-read phase against the deadline.
 
-    Executed only inside the bounded worker thread. Each blocking phase is
-    budgeted the remaining time (capped at ``TIMEOUT_SECONDS``), the body
-    is consumed in bounded chunks re-checked against the deadline, the
-    transport result is protocol-validated before use, and the response is
-    closed deterministically on every exit path. Outcome classes: ``ok``
-    (strictly decoded JSON body), ``transport_fail`` (connection problem
-    or deadline exceeded), ``http_error`` (non-2xx including declined
-    redirects), ``unreadable`` (oversized body), ``malformed`` (body
-    rejected by the strict JSON contract) and ``invalid_response``
-    (transport result without the narrow read/close protocol).
+    Executed only inside the bounded worker thread; ``connection.close()``
+    (the collector's cancellation primitive) unblocks any of its blocking
+    operations. Each blocking phase is budgeted the remaining time (capped
+    at ``TIMEOUT_SECONDS``), the deadline is re-checked after every
+    blocking operation and again after EOF before the body is consumed,
+    chunks must be ``bytes``, and the connection is closed deterministically
+    on every exit path. ``ok`` payloads are raw body bytes, strictly
+    decoded by the caller. Outcome classes: ``transport_fail``
+    (connection problem, deadline exceeded, or response-operation
+    boundary anomaly — exception text is never inspected, retained or
+    propagated), ``http_error`` (non-200 status, including declined
+    redirects), ``unreadable`` (oversized body), ``invalid_response``
+    (malformed response object or non-bytes chunk) and ``ok``.
     """
-    remaining = deadline - time.monotonic()
+    response: object | None = None
     try:
-        response = open_response(request, min(TIMEOUT_SECONDS, max(remaining, 0.0)))
-    except urllib.error.HTTPError as exc:
-        # Closed deterministically; the error body is never read and only
-        # the exception class is inspected. 3xx arrives here because
-        # redirects are declined.
-        _close_response(exc)
-        return "http_error", None
-    except (HTTPException, OSError):
-        # URLError, ConnectionError and TimeoutError (socket.timeout) all
-        # derive from OSError; BadStatusLine & co. derive from HTTPException.
-        return "transport_fail", None
+        if deadline - time.monotonic() <= 0:
+            return "transport_fail", None
+        connection.request(
+            "GET", path, headers={"Accept": "application/json"}
+        )
+        response = connection.getresponse()
+        if not _response_protocol_ok(response):
+            # A malformed transport result is a degraded outcome, never an
+            # uncaught TypeError; anything closable is still closed.
+            _close_discardable(response)
+            return "invalid_response", None
+        typed_response = cast("_ResponseProtocol", response)
+        if typed_response.status != 200:
+            # Non-200 (including declined 3xx): the body is never read.
+            return "http_error", None
 
-    if not _response_protocol_ok(response):
-        # A malformed transport result is a degraded outcome, never an
-        # uncaught TypeError; there is nothing to close (no close callable).
-        return "invalid_response", None
-    typed_response = cast("_ResponseProtocol", response)
-
-    body = bytearray()
-    try:
+        body = bytearray()
         while True:
             if deadline - time.monotonic() <= 0:
                 return "transport_fail", None
             chunk = typed_response.read(
                 min(READ_CHUNK_BYTES, MAX_BODY_BYTES + 1 - len(body))
             )
+            if not isinstance(chunk, bytes):
+                # Non-bytes chunk: the transport violated the response
+                # contract (e.g. a ``str``); degrade safely, never decode.
+                return "invalid_response", None
             if not chunk:
                 break
             body.extend(chunk)
             if len(body) > MAX_BODY_BYTES:
                 return "unreadable", None
-    except (OSError, HTTPException):
-        # The connection failed mid-body; partial content is discarded.
+        if deadline - time.monotonic() <= 0:
+            # Delayed EOF must never smuggle a late body past the deadline.
+            return "transport_fail", None
+        return "ok", bytes(body)
+    except (HTTPException, OSError):
+        # BadStatusLine & co. derive from HTTPException; ConnectionError,
+        # TimeoutError (socket.timeout) and cancellation-by-close derive
+        # from OSError. Partial content is discarded.
+        return "transport_fail", None
+    except Exception:
+        # Response-operation/transport boundary anomaly (broken or hostile
+        # transport, including provider-controlled exception text): mapped
+        # to a safe normalized outcome, never propagated or logged.
         return "transport_fail", None
     finally:
-        # Deterministic close on every exit path, including abandonment.
-        _close_response(typed_response)
+        # Deterministic cleanup on every exit path, including abandonment:
+        # the response (if one was produced) and the connection itself.
+        # Both closes are idempotent and best-effort by design.
+        _close_discardable(response)
+        try:
+            connection.close()
+        except Exception:  # deliberate best-effort close; see docstring
+            pass
 
-    try:
-        return "ok", _decode_strict(bytes(body))
-    except (ValueError, RecursionError):
-        # Duplicate keys, NaN/Infinity constants, non-finite floats,
-        # overlarge integers, invalid UTF-8 and recursion-limit nesting
-        # are all strict-contract rejections: nothing about the shape is
-        # trusted or retained.
-        return "malformed", None
-
-
-def _read_call(url: str, deadline: float) -> tuple[_CallOutcome, object]:
+def _read_call(
+    host: str, port: int, path: str, deadline: float
+) -> tuple[_CallOutcome, object]:
     """Perform one deadline-bounded local read and classify the outcome.
 
-    The whole read runs inside a single daemon worker and the collector
-    waits at most the remaining time on it, so control returns by the
-    deadline even when one underlying blocking call would run longer
-    (socket timeouts budget real transports; a misbehaving fake cannot
-    extend the collection). The worker never feeds results back after
-    abandonment; it aborts against the deadline and closes its response on
-    every path. Exception text is deliberately not inspected or retained.
-    Expected operational conditions normalize to the documented outcome
-    classes; a genuinely unexpected worker error is re-raised in this
-    thread so programming errors are never swallowed or misreported as
-    telemetry.
+    The whole read runs inside a single bounded worker and the collector
+    waits at most the remaining time on it. On deadline the collector
+    closes the worker's connection — the cancellation primitive that
+    unblocks the worker — and joins it with a bounded grace, so no timeout
+    path returns while the worker can remain blocked and no connection or
+    thread is left behind (real sockets unblock deterministically on
+    close; the seam contract requires the same of fakes). The deadline is
+    re-checked before any worker result is consumed, so a completion that
+    lands at or past the deadline fails closed. Exception text is
+    deliberately never inspected, retained or propagated; a genuinely
+    unexpected internal worker error is re-raised in this thread so
+    programming errors are never swallowed or misreported as telemetry.
     """
     if deadline - time.monotonic() <= 0:
         return "transport_fail", None
-    request = _build_request(url)
 
     results: list[tuple[_CallOutcome, object]] = []
     unexpected: list[Exception] = []
+    registered: list[_ConnectionProtocol] = []
 
     def _work() -> None:
         try:
-            results.append(_execute_read(request, deadline))
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                results.append(("transport_fail", None))
+                return
+            connection = open_connection(
+                host, port, min(TIMEOUT_SECONDS, remaining)
+            )
+            registered.append(connection)
+            outcome, payload = _execute_read(connection, path, deadline)
+            if outcome == "ok":
+                try:
+                    payload = _decode_strict(cast("bytes", payload))
+                except (ValueError, RecursionError):
+                    # Duplicate keys, NaN/Infinity constants, non-finite
+                    # floats, overlarge integers, invalid UTF-8 and
+                    # recursion-limit nesting are all strict-contract
+                    # rejections: nothing about the shape is trusted or
+                    # retained.
+                    outcome, payload = "malformed", None
+            results.append((outcome, payload))
         except Exception as exc:  # re-raised by the caller, never swallowed
             unexpected.append(exc)
 
@@ -547,9 +595,18 @@ def _read_call(url: str, deadline: float) -> tuple[_CallOutcome, object]:
     worker.start()
     worker.join(max(0.0, deadline - time.monotonic()))
     if worker.is_alive():
-        # Deadline exceeded: abandon the worker. It aborts against the
-        # same deadline when it next unblocks and closes its response; its
-        # result, if any, is discarded and never observed.
+        # Deadline exceeded: cancel through the connection (close unblocks
+        # every in-flight operation) and reclaim the worker with a bounded
+        # join. Its result, if any, is discarded and never observed.
+        for connection in registered:
+            try:
+                connection.close()
+            except Exception:  # best-effort cancel; see docstring
+                pass
+        worker.join(_CANCEL_JOIN_SECONDS)
+        return "transport_fail", None
+    if deadline - time.monotonic() <= 0:
+        # A completion that lands at or past the deadline fails closed.
         return "transport_fail", None
     if unexpected:
         raise unexpected[0]
@@ -651,12 +708,15 @@ def collect_ollama_capacity(
     the snapshot, diagnostics or error messages.
     """
     base = _require_config(endpoint, model_name, configured_context_tokens)
+    parts = urllib.parse.urlsplit(base)
+    host = cast("str", parts.hostname)  # canonical: numeric loopback host
+    port = cast("int", parts.port)  # canonical: port is always explicit
     deadline = time.monotonic() + COLLECTION_DEADLINE_SECONDS
 
     # 1. Reachability probe: a validated version exchange is the defensible
     # reachability fact; an HTTP 200 alone proves only that a server
     # answered, not that the local Ollama interface did.
-    probe_outcome, probe_payload = _read_call(f"{base}/api/version", deadline)
+    probe_outcome, probe_payload = _read_call(host, port, "/api/version", deadline)
     if probe_outcome != "ok":
         status = _map_call_outcome(probe_outcome)
         return _snapshot(
@@ -681,7 +741,7 @@ def collect_ollama_capacity(
 
     # 2. Model listing: presence from exact listed-name identity, with the
     # listing's digest as the identity evidence for the effective context.
-    tags_outcome, tags_payload = _read_call(f"{base}/api/tags", deadline)
+    tags_outcome, tags_payload = _read_call(host, port, "/api/tags", deadline)
     if tags_outcome != "ok":
         status = _map_call_outcome(tags_outcome)
         return _snapshot(
@@ -728,7 +788,7 @@ def collect_ollama_capacity(
     # listing's digest cannot prove which image the context belongs to:
     # the effective context is withheld and the telemetry degrades to
     # ``unknown`` while the validated presence facts are preserved.
-    ps_outcome, ps_payload = _read_call(f"{base}/api/ps", deadline)
+    ps_outcome, ps_payload = _read_call(host, port, "/api/ps", deadline)
     effective_context_tokens: int | None = None
     status = "ok"
     if ps_outcome == "ok":
