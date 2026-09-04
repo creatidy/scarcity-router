@@ -99,21 +99,20 @@ docs/poc-evidence.md ("OpenAI/Codex subscription capacity" and the
   ``team``, ``business``, ``edu``, ``edu_plus``, ``edu_pro``,
   ``enterprise``, ``ent26``, ``enterprise_cbp_automation``,
   ``enterprise_cbp_usage_based``, ``self_serve_business_prolite``,
-  ``self_serve_business_usage_based`` and ``unknown``. Values are preserved
-  verbatim, never rewritten; any other value omits ``plan`` and never
-  leaks.
+   ``self_serve_business_usage_based`` and ``unknown``. Values are preserved
+   verbatim, never rewritten; any other present value is schema drift and is
+   never leaked.
 
 This module also provides ``classify_app_server_message``, the deliberate
 structural classifier for decoded JSONL app-server messages (response /
 notification / request / invalid) used by the acquisition layer to match the
 relevant response by request identity instead of timing. Observed framing
-(2026-09-03 reconnaissance): requests carry ``jsonrpc``/``id``/``method``;
-responses carry ``id`` with exactly one of ``result``/``error`` and omit the
-``jsonrpc`` echo; notifications carry ``method`` without ``id``. A hybrid
+(2026-09-03 reconnaissance): requests carry ``id``/``method`` and optional
+``params``; responses carry ``id`` with exactly one of ``result``/``error`` and
+omit ``jsonrpc``; notifications carry ``method`` without ``id``. A hybrid
 message carrying a ``method`` key — whatever its value type — together with
-``result``/``error`` is invalid drift, and so is a notification whose
-``id`` key is present but malformed (not an integer): neither is silently
-ignored.
+``result``/``error`` is invalid drift, and so is a message whose ID is neither
+a string nor a bounded integer: neither is silently ignored.
 
 Raw provider text, subprocess output, local paths, credentials and account
 data never enter any output this module produces.
@@ -240,6 +239,29 @@ def _as_mapping(value: object) -> Mapping[str, object] | None:
             return None
         return cast(Mapping[str, object], value)
     return None
+
+
+def _strict_equal(left: object, right: object) -> bool:
+    """Compare decoded JSON without Python bool/int or int/float coercion."""
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, Mapping) and isinstance(right, Mapping):
+        left_mapping = cast(Mapping[object, object], left)
+        right_mapping = cast(Mapping[object, object], right)
+        if set(left_mapping) != set(right_mapping):
+            return False
+        return all(
+            _strict_equal(left_mapping[key], right_mapping[key])
+            for key in left_mapping
+        )
+    if isinstance(left, list) and isinstance(right, list):
+        left_list = cast(list[object], left)
+        right_list = cast(list[object], right)
+        return len(left_list) == len(right_list) and all(
+            _strict_equal(left_item, right_item)
+            for left_item, right_item in zip(left_list, right_list)
+        )
+    return left == right
 
 
 def _is_int(value: object) -> TypeGuard[int]:
@@ -665,7 +687,9 @@ def _quota_snapshot_state(
         return None
 
     plan_type = snapshot.get("planType")
-    if plan_type is not None and not isinstance(plan_type, str):
+    if plan_type is not None and (
+        not isinstance(plan_type, str) or plan_type not in _EVIDENCED_PLANS
+    ):
         return None
 
     reached_raw = snapshot.get("rateLimitReachedType")
@@ -772,7 +796,12 @@ def parse_codex_rate_limits_result(
 
     if buckets_map is not None:
         mirror = _as_mapping(buckets_map.get(_LIMIT_ID))
-        if mirror is None or mirror != rate_limits:
+        if mirror is None:
+            return _failure("schema_changed", "schema_changed", retrieved_at)
+        mirror_state = _quota_snapshot_state(
+            mirror, expected_limit_id=_LIMIT_ID, full_window_blocks=False
+        )
+        if mirror_state is None or not _strict_equal(mirror, rate_limits):
             return _failure("schema_changed", "schema_changed", retrieved_at)
         for key in sorted(buckets_map):
             value = buckets_map[key]

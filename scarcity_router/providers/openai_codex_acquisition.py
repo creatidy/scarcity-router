@@ -108,14 +108,11 @@ _REQUIRED_VARIANT = "codex"
 MAX_PACKAGE_BYTES = 64 * 1024
 
 # Evidenced platform directory under the extension's ``bin/``. linux-x86_64
-# is directly evidenced (PoC environment); the other entries are structural
-# analogues of the same layout, validated per installation by the package
-# file, and unlisted platforms are unsupported rather than guessed.
+# is directly evidenced (PoC environment); descriptor-bound execution is
+# intentionally supported only on Linux until another platform is evidenced.
 _PLATFORM_DIRS: dict[tuple[str, str], str] = {
     ("linux", "x86_64"): "linux-x86_64",
     ("linux", "aarch64"): "linux-arm64",
-    ("darwin", "x86_64"): "darwin-x86_64",
-    ("darwin", "arm64"): "darwin-arm64",
 }
 
 DiscoveryOutcome = Literal["found", "not_installed", "unsupported_installation"]
@@ -142,23 +139,33 @@ class CodexInstallation:
         self.close()
 
 
-def _open_regular_executable(path: Path) -> int | None:
-    """Open one non-symlink regular executable for identity-bound execution."""
+@dataclass
+class _DiscoveryCandidate:
+    """A candidate held open beneath its configured extension root."""
+
+    root_fd: int
+    candidate_fd: int
+    path: Path
+
+
+def _directory_flags(*, listing: bool = False) -> int:
+    return (
+        (os.O_RDONLY if listing else getattr(os, "O_PATH", os.O_RDONLY))
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+
+
+def _open_directory_at(parent_fd: int, name: str) -> int | None:
+    """Open and verify one directory component relative to a held directory."""
     try:
-        flags = (
-            getattr(os, "O_PATH", os.O_RDONLY)
-            | getattr(os, "O_NOFOLLOW", 0)
-        )
-        fd = os.open(str(path), flags)
+        fd = os.open(name, _directory_flags(), dir_fd=parent_fd)
         try:
             mode = os.fstat(fd).st_mode
         except OSError:
             os.close(fd)
             return None
-        if not stat.S_ISREG(mode):
-            os.close(fd)
-            return None
-        if not mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH):
+        if not stat.S_ISDIR(mode):
             os.close(fd)
             return None
         return fd
@@ -166,24 +173,57 @@ def _open_regular_executable(path: Path) -> int | None:
         return None
 
 
-def _is_regular_directory(path: Path) -> bool:
-    """Open and verify a directory without following a symlink."""
-    flags = (
-        getattr(os, "O_PATH", os.O_RDONLY)
-        | getattr(os, "O_DIRECTORY", 0)
-        | getattr(os, "O_NOFOLLOW", 0)
-    )
+def _open_directory(path: Path) -> int | None:
+    """Open and verify a configured root without following a symlink."""
     try:
-        fd = os.open(str(path), flags)
+        fd = os.open(str(path), _directory_flags(listing=True))
     except OSError:
-        return False
+        return None
     try:
-        return stat.S_ISDIR(os.fstat(fd).st_mode)
-    finally:
-        try:
-            os.close(fd)
-        except OSError:
-            pass
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            return fd
+    except OSError:
+        pass
+    try:
+        os.close(fd)
+    except OSError:
+        pass
+    return None
+
+
+def _open_regular_executable_at(parent_fd: int, name: str) -> int | None:
+    """Open one executable relative to a held directory without symlinks."""
+    flags = getattr(os, "O_PATH", os.O_RDONLY) | getattr(os, "O_NOFOLLOW", 0)
+    fd = -1
+    try:
+        fd = os.open(name, flags, dir_fd=parent_fd)
+        mode = os.fstat(fd).st_mode
+        if stat.S_ISREG(mode) and mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH):
+            return fd
+    except OSError:
+        pass
+    try:
+        os.close(fd)
+    except OSError:
+        pass
+    return None
+
+
+def _open_package_at(parent_fd: int) -> int | None:
+    """Open the package file relative to the held platform directory."""
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    fd = -1
+    try:
+        fd = os.open(_CODEX_PACKAGE_NAME, flags, dir_fd=parent_fd)
+        if stat.S_ISREG(os.fstat(fd).st_mode):
+            return fd
+    except OSError:
+        pass
+    try:
+        os.close(fd)
+    except OSError:
+        pass
+    return None
 
 
 # ── Process/session bounds ────────────────────────────────────────────────────
@@ -199,6 +239,12 @@ _INITIALIZE_ID = 1
 _READ_RATE_LIMITS_ID = 2
 _RATE_LIMITS_METHOD = "account/rateLimits/read"
 _INITIALIZED_NOTIFICATION_METHOD = "initialized"
+_INITIALIZE_RESPONSE_FIELDS = (
+    "userAgent",
+    "codexHome",
+    "platformFamily",
+    "platformOs",
+)
 
 
 class _AmbiguousJson(ValueError):
@@ -245,6 +291,10 @@ def _object_without_duplicate_keys(
             raise _AmbiguousJson()
         result[key] = value
     return result
+
+
+def _is_protocol_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
 
 
 def _is_int(value: object) -> bool:
@@ -298,7 +348,7 @@ def _extension_version_string(name: str) -> str:
 
 def _candidate_directories(
     roots: Sequence[Path],
-) -> tuple[list[Path], int]:
+) -> tuple[list[_DiscoveryCandidate], int]:
     """``openai.chatgpt-*`` extension directories, newest first.
 
     Each root is listed once (no recursion); unreadable or absent roots are
@@ -308,39 +358,56 @@ def _candidate_directories(
     report ``unsupported_installation`` when nothing usable exists, rather
     than pretending nothing is installed).
     """
-    valid: list[tuple[tuple[int, ...], str, Path]] = []
+    valid: list[tuple[tuple[int, ...], str, _DiscoveryCandidate]] = []
     malformed = 0
     for root in roots:
-        if not _is_regular_directory(root):
+        root_fd = _open_directory(root)
+        if root_fd is None:
             continue
         try:
-            entries = list(root.iterdir())
+            entries = os.listdir(root_fd)
         except OSError:
+            os.close(root_fd)
             continue
-        for entry in entries:
-            if not entry.name.startswith(_EXTENSION_PREFIX):
+        found = False
+        for name in entries:
+            if not name.startswith(_EXTENSION_PREFIX):
                 continue
-            if not _is_regular_directory(entry):
+            candidate_fd = _open_directory_at(root_fd, name)
+            if candidate_fd is None:
                 malformed += 1
                 continue
-            key = _extension_version_key(entry.name)
+            key = _extension_version_key(name)
             if key is None:
                 malformed += 1
+                os.close(candidate_fd)
                 continue
-            valid.append((key, entry.name, entry))
+            valid.append(
+                (
+                    key,
+                    name,
+                    _DiscoveryCandidate(root_fd, candidate_fd, root / name),
+                )
+            )
+            found = True
+        if not found:
+            try:
+                os.close(root_fd)
+            except OSError:
+                pass
     valid.sort(key=lambda item: (item[0], item[1]), reverse=True)
-    return [path for _key, _name, path in valid], malformed
+    return [candidate for _key, _name, candidate in valid], malformed
 
 
 def _read_validated_package(
-    binary_dir: Path,
+    package_fd: int,
 ) -> dict[str, object] | None:
-    """Read and validate ``codex-package.json`` beside the binary.
+    """Read and validate an already-open ``codex-package.json`` descriptor.
 
-    Descriptor-backed and no-follow: the file is opened read-only without
-    following symlinks, the descriptor is verified to be a regular file
-    (a FIFO or socket can never block discovery), and the read is bounded
-    to ``MAX_PACKAGE_BYTES``. Decoding is strict UTF-8/JSON with
+    The descriptor was opened relative to a held platform directory without
+    following symlinks and verified to be a regular file (a FIFO or socket can
+    never block discovery). The read is bounded to ``MAX_PACKAGE_BYTES``.
+    Decoding is strict UTF-8/JSON with
     duplicate-key rejection, non-finite-number rejection (literal
     NaN/Infinity constants and non-finite exponent results) and
     recursion-safe handling, exactly like the JSONL transport. The
@@ -348,24 +415,7 @@ def _read_validated_package(
     string ``variant == "codex"`` and a non-empty string ``version``. Any
     failure makes this candidate unusable (``None``).
     """
-    package_path = binary_dir / _CODEX_PACKAGE_NAME
-    try:
-        # Check without following links before open. O_NONBLOCK is retained on
-        # the open as a race-safe guard: a package path replaced after this
-        # check with a FIFO or device must still never stall discovery.
-        if not stat.S_ISREG(os.lstat(package_path).st_mode):
-            return None
-    except OSError:
-        return None
-    flags = (
-        os.O_RDONLY
-        | getattr(os, "O_NOFOLLOW", 0)
-        | getattr(os, "O_NONBLOCK", 0)
-    )
-    try:
-        fd = os.open(str(package_path), flags)
-    except OSError:
-        return None
+    fd = package_fd
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             return None
@@ -416,6 +466,21 @@ def _read_validated_package(
     return document
 
 
+def _close_discovery_candidates(candidates: Sequence[_DiscoveryCandidate]) -> None:
+    closed_roots: set[int] = set()
+    for candidate in candidates:
+        try:
+            os.close(candidate.candidate_fd)
+        except OSError:
+            pass
+        if candidate.root_fd not in closed_roots:
+            closed_roots.add(candidate.root_fd)
+            try:
+                os.close(candidate.root_fd)
+            except OSError:
+                pass
+
+
 def discover_codex_installation(
     roots: Sequence[Path] | None = None,
 ) -> tuple[CodexInstallation | None, DiscoveryOutcome]:
@@ -436,32 +501,44 @@ def discover_codex_installation(
         return None, "not_installed"
     platform_directory_ = platform_directory()
     if platform_directory_ is None:
+        _close_discovery_candidates(candidates)
         return None, "unsupported_installation"
-    for candidate in candidates:
-        if not _is_regular_directory(candidate):
-            continue
-        bin_directory = candidate / "bin"
-        binary_dir = candidate / "bin" / platform_directory_
-        if not _is_regular_directory(bin_directory) or not _is_regular_directory(
-            binary_dir
-        ):
-            continue
-        binary = binary_dir / "codex"
-        binary_fd = _open_regular_executable(binary)
-        if binary_fd is None:
-            continue
-        package = _read_validated_package(binary_dir)
-        if package is None:
-            os.close(binary_fd)
-            continue
-        installation = CodexInstallation(
-            binary=binary,
-            binary_fd=binary_fd,
-            extension_version=_extension_version_string(candidate.name),
-            codex_version=cast("str", package["version"]),
-        )
-        return installation, "found"
-    return None, "unsupported_installation"
+    try:
+        for candidate in candidates:
+            bin_fd = _open_directory_at(candidate.candidate_fd, "bin")
+            if bin_fd is None:
+                continue
+            platform_fd = _open_directory_at(bin_fd, platform_directory_)
+            if platform_fd is None:
+                os.close(bin_fd)
+                continue
+            binary_fd = _open_regular_executable_at(platform_fd, "codex")
+            if binary_fd is None:
+                os.close(platform_fd)
+                os.close(bin_fd)
+                continue
+            package_fd = _open_package_at(platform_fd)
+            if package_fd is None:
+                os.close(binary_fd)
+                os.close(platform_fd)
+                os.close(bin_fd)
+                continue
+            package = _read_validated_package(package_fd)
+            os.close(platform_fd)
+            os.close(bin_fd)
+            if package is None:
+                os.close(binary_fd)
+                continue
+            installation = CodexInstallation(
+                binary=candidate.path / "bin" / platform_directory_ / "codex",
+                binary_fd=binary_fd,
+                extension_version=_extension_version_string(candidate.path.name),
+                codex_version=cast("str", package["version"]),
+            )
+            return installation, "found"
+        return None, "unsupported_installation"
+    finally:
+        _close_discovery_candidates(candidates)
 
 
 # ── Bounded subprocess stdout reader ──────────────────────────────────────────
@@ -659,8 +736,6 @@ class BoundedLineReader:
 def _fd_execution_path(fd: int) -> str | None:
     if sys.platform.startswith("linux"):
         return f"/proc/self/fd/{fd}"
-    if sys.platform == "darwin":
-        return f"/dev/fd/{fd}"
     return None
 
 
@@ -754,7 +829,6 @@ def _shutdown(
 
 def _initialize_request() -> dict[str, object]:
     return {
-        "jsonrpc": "2.0",
         "id": _INITIALIZE_ID,
         "method": "initialize",
         "params": {
@@ -770,14 +844,12 @@ def _initialize_request() -> dict[str, object]:
 
 def _initialized_notification() -> dict[str, object]:
     return {
-        "jsonrpc": "2.0",
         "method": _INITIALIZED_NOTIFICATION_METHOD,
     }
 
 
 def _read_rate_limits_request() -> dict[str, object]:
     return {
-        "jsonrpc": "2.0",
         "id": _READ_RATE_LIMITS_ID,
         "method": _RATE_LIMITS_METHOD,
     }
@@ -881,6 +953,24 @@ def _await_response(
             return "response", envelope
 
 
+def _valid_initialize_result(value: object) -> bool:
+    """Validate required InitializeResponse strings without retaining them."""
+    if not isinstance(value, Mapping):
+        return False
+    result = cast(Mapping[str, object], value)
+    return all(isinstance(result.get(field), str) for field in _INITIALIZE_RESPONSE_FIELDS)
+
+
+def _valid_protocol_error(value: object) -> bool:
+    """Validate JSON-RPC error shape without reading or returning its text."""
+    if not isinstance(value, Mapping):
+        return False
+    error = cast(Mapping[str, object], value)
+    return _is_protocol_int(error.get("code")) and isinstance(
+        error.get("message"), str
+    )
+
+
 def _snapshot(
     status: str,
     diagnostic_code: str,
@@ -922,14 +1012,15 @@ def _run_session(
         return _snapshot("schema_changed", "schema_changed", retrieved_at)
     response = cast("Mapping[str, object]", message)
     if "error" in response:
+        if not _valid_protocol_error(response["error"]):
+            return _snapshot("schema_changed", "schema_changed", retrieved_at)
         # The mechanism answered with a protocol error whose free-text body
         # is never inspected or surfaced (no validated failure evidence).
         return _snapshot("unknown", "telemetry_unknown", retrieved_at)
-    if not isinstance(response.get("result"), Mapping):
+    if not _valid_initialize_result(response.get("result")):
         return _snapshot("schema_changed", "schema_changed", retrieved_at)
-    # The initialize result (userAgent, codexHome, platform facts) is
-    # deliberately not inspected: it includes local paths, has no v1 field,
-    # and the handshake only needs a successful result object.
+    # The validated initialize fields are deliberately not retained: codexHome
+    # can be a local path and v1 has no field for handshake metadata.
 
     if not _send_message(proc, _initialized_notification()):
         return _snapshot("unavailable", "source_unavailable", retrieved_at)
@@ -944,6 +1035,8 @@ def _run_session(
         return _snapshot("schema_changed", "schema_changed", retrieved_at)
     response = cast("Mapping[str, object]", message)
     if "error" in response:
+        if not _valid_protocol_error(response["error"]):
+            return _snapshot("schema_changed", "schema_changed", retrieved_at)
         return _snapshot("unknown", "telemetry_unknown", retrieved_at)
     return parse_codex_rate_limits_result(
         response.get("result"), retrieved_at=retrieved_at

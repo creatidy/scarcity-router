@@ -88,12 +88,14 @@ a present-but-unblocked bucket degrades to `unknown` with its validated
 pairs. Plan labels accept every exact tagged `PlanType` member the v1
 safe-ID grammar permits as-is (underscores included, e.g. `edu_plus`,
 `enterprise_cbp_automation`, and the `unknown` catch-all), verbatim and
-never rewritten.
+never rewritten; a present nonmember is `schema_changed`, never silently
+omitted.
 
 Supported discovery (U-001, evidence in `docs/poc-evidence.md`):
 `openai.chatgpt-*` extension directories under `~/.vscode/extensions` or
 `~/.vscode-server/extensions` (the remote-server layout is the directly
-evidenced PoC environment), highest extension version first, validated by a
+evidenced PoC environment), on currently supported Linux hosts, highest
+extension version first, validated by a
 non-symlink candidate plus `bin/<platform>` directory, a regular non-symlink
 executable `bin/<platform>/codex` and a
 `codex-package.json` with
@@ -105,7 +107,8 @@ validated maps to `unsupported`.
 
 Known compatibility limits: other installation sources (a `codex` on PATH,
 npm installs, other editors) and a minimum/maximum codex version policy are
-unsupported and unresolved (U-001 residual); error-response text is never
+unsupported and unresolved (U-001 residual; Darwin is intentionally
+unsupported until descriptor execution is evidenced); error-response text is never
 parsed, so protocol error responses map to `unknown` until failure shapes
 are captured as evidence; the selected binary path and versions are
 validated but not surfaced, because v1 has no field for them (future

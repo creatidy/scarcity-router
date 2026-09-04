@@ -10,7 +10,7 @@
       "usedPercent": 52,
       "windowDurationMins": 10080
     },
-    "planType": "luna",
+    "planType": "unknown",
     "rateLimitReachedType": null
   },
   "rateLimitsByLimitId": null,

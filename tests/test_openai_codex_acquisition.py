@@ -17,15 +17,16 @@ import contextlib
 import io
 import json
 import os
+import platform
 import subprocess
 import sys
 import threading
 import time
 import unittest
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Callable, cast, override
+from typing import cast, override
 from unittest import mock
 
 from scarcity_router import CapacitySnapshot, CapacityValidationError
@@ -43,7 +44,7 @@ INVALID_RETRIEVED_AT = "2026-09-03T20:00:00Z"  # missing milliseconds
 SECRET = "TEST_ONLY_OPENAI_SECRET_NEVER_REAL"
 ALL_FAKE_SECRETS: tuple[str, ...] = (SECRET,)
 
-INIT_RESPONSE = b'{"id":1,"result":{"userAgent":"x","platformOs":"linux"}}\n'
+INIT_RESPONSE = b'{"id":1,"result":{"userAgent":"x","codexHome":"synthetic-home","platformFamily":"unix","platformOs":"linux"}}\n'
 
 
 def _fixture_result(name: str) -> object:
@@ -236,7 +237,6 @@ class _ReactiveAppServer(_FakeAppServer):
             return
         expected: tuple[dict[str, object], ...] = (
             {
-                "jsonrpc": "2.0",
                 "id": 1,
                 "method": "initialize",
                 "params": {
@@ -248,8 +248,8 @@ class _ReactiveAppServer(_FakeAppServer):
                     "capabilities": {},
                 },
             },
-            {"jsonrpc": "2.0", "method": "initialized"},
-            {"jsonrpc": "2.0", "id": 2, "method": "account/rateLimits/read"},
+            {"method": "initialized"},
+            {"id": 2, "method": "account/rateLimits/read"},
         )
         if (
             self._request_index >= len(expected)
@@ -688,6 +688,38 @@ class ResponseMatching(_AcquisitionCase):
         snapshot = self._collect(discovery_roots=[roots])
         self.assertEqual(snapshot.status, "unknown")
         self.assertEqual([d.code for d in snapshot.diagnostics], ["telemetry_unknown"])
+        self.assertEqual(snapshot.windows, ())
+
+    def test_initialize_response_requires_tagged_fields(self) -> None:
+        for result in (
+            {},
+            {
+                "userAgent": "x",
+                "codexHome": "synthetic-home",
+                "platformFamily": "unix",
+            },
+            {
+                "userAgent": "x",
+                "codexHome": "synthetic-home",
+                "platformFamily": "unix",
+                "platformOs": 7,
+            },
+        ):
+            with self.subTest(result=result):
+                init = json.dumps({"id": 1, "result": result}).encode() + b"\n"
+                _ = self._install_fake([init])
+                roots = self._make_installation()
+                snapshot = self._collect(discovery_roots=[roots])
+                self.assertEqual(snapshot.status, "schema_changed")
+                self.assertEqual(snapshot.windows, ())
+
+    def test_null_error_field_is_malformed_protocol(self) -> None:
+        _ = self._install_fake(
+            [INIT_RESPONSE, b'{"id":2,"error":null}\n']
+        )
+        roots = self._make_installation()
+        snapshot = self._collect(discovery_roots=[roots])
+        self.assertEqual(snapshot.status, "schema_changed")
         self.assertEqual(snapshot.windows, ())
 
     def test_initialize_result_non_object_maps_to_schema_changed(self) -> None:
@@ -1194,7 +1226,7 @@ class Discovery(unittest.TestCase):
         installation, outcome = acq.discover_codex_installation([root])
         self.assertEqual(outcome, "found")
         assert installation is not None
-        if not (sys.platform.startswith("linux") or sys.platform == "darwin"):
+        if not sys.platform.startswith("linux"):
             installation.close()
             self.skipTest("platform lacks descriptor execution path")
         escaped = self.tmp / "escaped-codex"
@@ -1228,6 +1260,55 @@ class Discovery(unittest.TestCase):
         self.assertIsNone(installation)
         self.assertEqual(outcome, "unsupported_installation")
 
+    def test_candidate_replacement_between_listing_and_open_is_rejected(self) -> None:
+        root = self._make(suffix="candidate-race")
+        outside = self._make(suffix="candidate-race-outside")
+        name = "openai.chatgpt-26.825.51511-linux-x64"
+        candidate = root / name
+        outside_candidate = outside / name
+        backup = self.tmp / "candidate-race-backup"
+        real_open = cast(
+            Callable[[int, str], int | None], getattr(acq, "_open_directory_at")
+        )
+
+        def replace_before_open(parent_fd: int, entry_name: str) -> int | None:
+            if entry_name == name and candidate.exists():
+                _ = candidate.rename(backup)
+                candidate.symlink_to(outside_candidate, target_is_directory=True)
+            return real_open(parent_fd, entry_name)
+
+        with mock.patch.object(
+            acq, "_open_directory_at", side_effect=replace_before_open
+        ):
+            installation, outcome = acq.discover_codex_installation([root])
+        self.assertIsNone(installation)
+        self.assertEqual(outcome, "unsupported_installation")
+
+    def test_bin_replacement_after_candidate_open_is_rejected(self) -> None:
+        root = self._make(suffix="bin-race")
+        outside = self._make(suffix="bin-race-outside")
+        name = "openai.chatgpt-26.825.51511-linux-x64"
+        candidate = root / name
+        outside_candidate = outside / name
+        bin_path = candidate / "bin"
+        backup = self.tmp / "bin-race-backup"
+        real_open = cast(
+            Callable[[int, str], int | None], getattr(acq, "_open_directory_at")
+        )
+
+        def replace_bin(parent_fd: int, entry_name: str) -> int | None:
+            if entry_name == "bin" and bin_path.exists():
+                _ = bin_path.rename(backup)
+                bin_path.symlink_to(
+                    outside_candidate / "bin", target_is_directory=True
+                )
+            return real_open(parent_fd, entry_name)
+
+        with mock.patch.object(acq, "_open_directory_at", side_effect=replace_bin):
+            installation, outcome = acq.discover_codex_installation([root])
+        self.assertIsNone(installation)
+        self.assertEqual(outcome, "unsupported_installation")
+
     def test_symlinked_intermediate_directory_cannot_escape_root(self) -> None:
         outside = self._make(suffix="outside")
         root = self.tmp / "configured-extensions"
@@ -1239,6 +1320,14 @@ class Discovery(unittest.TestCase):
         )
 
         installation, outcome = acq.discover_codex_installation([root])
+        self.assertIsNone(installation)
+        self.assertEqual(outcome, "unsupported_installation")
+
+    def test_darwin_descriptor_execution_is_unsupported(self) -> None:
+        root = self._make(suffix="darwin")
+        with mock.patch.object(platform, "system", return_value="Darwin"):
+            with mock.patch.object(platform, "machine", return_value="arm64"):
+                installation, outcome = acq.discover_codex_installation([root])
         self.assertIsNone(installation)
         self.assertEqual(outcome, "unsupported_installation")
 

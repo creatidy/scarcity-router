@@ -156,7 +156,9 @@ direction was chosen. Dates use UTC.
   extension layout: non-symlink `openai.chatgpt-*` directories under
   `~/.vscode/extensions` or `~/.vscode-server/extensions` (the
   remote-server layout is the directly evidenced PoC environment), scanned
-  read-only, ordered deterministically by extension version descending. A
+   read-only, ordered deterministically by extension version descending on
+   Linux; Darwin is unsupported until a working descriptor-bound execution
+   strategy is evidenced. A
   candidate is usable only when its intermediate `bin/<platform>`
   directories and package/executable paths are non-symlink validated beneath
   the selected root, its `codex` file is regular and executable, and a
@@ -183,8 +185,9 @@ direction was chosen. Dates use UTC.
   `schema_changed`/`unknown` on any drift; (b) other installation sources
   (npm `@openai/codex`, standalone binaries, other editors' extension
   roots) are unsupported until separately evidenced; (c) platform
-  directories other than the directly evidenced `linux-x86_64` are
-  structural analogues, not live-validated; (d) OpenAI app-server failure
+   directories other than the directly evidenced Linux directories are
+   unsupported until descriptor-bound execution is evidenced; (d) OpenAI
+   app-server failure
   wire shapes (auth required in particular) remain uncaptured, so protocol
   error responses normalize to `unknown` rather than a more specific
   status.
@@ -366,7 +369,8 @@ direction was chosen. Dates use UTC.
     `edu_pro`, `enterprise`, `ent26`, `enterprise_cbp_automation`,
     `enterprise_cbp_usage_based`, `self_serve_business_prolite`,
     `self_serve_business_usage_based`, `unknown`. Values are preserved
-    verbatim, never rewritten; everything else is omitted, never leaked.
+    verbatim, never rewritten; a present nonmember is `schema_changed`, never
+    silently omitted or leaked.
     `run` is not a member of the tagged enum and is not retained.
   - **Decoding.** JSONL decoding is ambiguity-safe: duplicate object keys
     at any depth, literal NaN/Infinity constants, non-finite exponent
@@ -376,10 +380,13 @@ direction was chosen. Dates use UTC.
    `result`/`error` are invalid drift, never silently ignored; the
    installation package file is decoded under the same strict rules.
   - **Request framing.** The generated client notification uses method
-    `initialized`, and the `account/rateLimits/read` request omits `params`
-    because its generated `Option<()>` parameter is empty. Request IDs accept
-    strings or signed i64 integers structurally; this collector matches only
-    its own numeric IDs `1` and `2`.
+    `initialized`, omits `jsonrpc`, and the `account/rateLimits/read` request
+    omits `params` because its generated `Option<()>` parameter is empty.
+    Request IDs accept strings or signed i64 integers structurally; this
+    collector matches only its own numeric IDs `1` and `2`.
+    A matching initialize response requires string `userAgent`, `codexHome`,
+    `platformFamily` and `platformOs`; response errors require integer `code`
+    and string `message`, without retaining error text.
 - **Evidence:** the 2026-09-01 PoC shape plus the 2026-09-03 reconnaissance
   in `docs/poc-evidence.md`, including read-only serde string-table
   inspection of the installed codex binary cross-checked against the

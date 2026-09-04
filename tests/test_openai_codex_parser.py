@@ -222,6 +222,19 @@ class FullShapeFixture(unittest.TestCase):
         snap = _parse(payload)
         self.assertEqual(snap.status, "schema_changed")
 
+    def test_mirror_comparison_is_type_sensitive(self) -> None:
+        for field, value in (("usedPercent", True), ("windowDurationMins", 300.0)):
+            with self.subTest(field=field):
+                payload = _load("ratelimits-full-shape-ok.json")
+                buckets = cast(
+                    "dict[str, dict[str, object]]", payload["rateLimitsByLimitId"]
+                )
+                primary = cast("dict[str, object]", buckets["codex"]["primary"])
+                primary[field] = value
+                snap = _parse(payload)
+                self.assertEqual(snap.status, "schema_changed")
+                self.assertEqual(snap.windows, ())
+
     def test_metadata_members_never_reach_output(self) -> None:
         snap = _parse(_load("ratelimits-credits-present.json"))
         text = _canonical_json(snap)
@@ -883,11 +896,10 @@ class DegradedFixture(unittest.TestCase):
         self.assertIsNone(weekly[0].resets_at)
         self.assertIn("reset_unknown", _codes(snap))
 
-    def test_unevidenced_plan_label_is_omitted(self) -> None:
+    def test_unknown_plan_label_is_retained(self) -> None:
         snap = _parse(_load("ratelimits-degraded.json"))
         self.assertEqual(snap.status, "ok")
-        self.assertIsNone(snap.plan)
-        self.assertNotIn('"plan"', _canonical_json(snap))
+        self.assertEqual(snap.plan, "unknown")
 
     def test_degraded_snapshot_validates_through_v1(self) -> None:
         snap = _parse(_load("ratelimits-degraded.json"))
@@ -1327,17 +1339,21 @@ class PlanNormalization(unittest.TestCase):
                 self.assertEqual(snap.status, "ok")
                 self.assertEqual(snap.plan, plan)
 
-    def test_unevidenced_or_unsafe_labels_are_omitted(self) -> None:
+    def test_unevidenced_or_unsafe_labels_fail_closed(self) -> None:
         for level in (
             "luna", "edu-pro", "selfServeBusinessProlite", "Plus", "plus!",
-            "run", "", None,
+            "run", "",
         ):
             with self.subTest(level=level):
                 payload = _result(_snapshot(dict(_BOTH_SLOTS), plan_type=level))
                 snap = _parse(payload)
-                self.assertEqual(snap.status, "ok", msg=repr(level))
-                self.assertIsNone(snap.plan, msg=repr(level))
-                self.assertNotIn('"plan"', _canonical_json(snap))
+                self.assertEqual(snap.status, "schema_changed", msg=repr(level))
+                self.assertEqual(snap.windows, (), msg=repr(level))
+
+    def test_missing_plan_is_still_valid(self) -> None:
+        snap = _parse(_result(_snapshot(dict(_BOTH_SLOTS), plan_type=None)))
+        self.assertEqual(snap.status, "ok")
+        self.assertIsNone(snap.plan)
 
     def test_absent_plan_type_is_tolerated(self) -> None:
         payload = _result(_snapshot(dict(_BOTH_SLOTS), plan_type=None))

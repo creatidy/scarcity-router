@@ -61,10 +61,10 @@ replay a live reading.
   percentage pairs withheld.
 - `ratelimits-zero-usage.json` — both windows report 0% used. Known zero
   usage normalizes to `(0, 100)`, distinct from an unknown pair.
-- `ratelimits-degraded.json` — one window omits `resetsAt` and `planType` is
-  an unevidenced label (`luna`). The parser must omit the affected reset value
-  with an explicit diagnostic and omit the plan rather than leaking arbitrary
-  provider text. A missing or non-i32 `usedPercent` is schema drift.
+- `ratelimits-degraded.json` — one window omits `resetsAt` and uses the exact
+  `unknown` plan member. The parser must omit the affected reset value with an
+  explicit diagnostic while preserving the safe plan. A missing, null or
+  non-i32 `usedPercent` is schema drift.
 - `ratelimits-schema-changed.json` — a plausibly evolved envelope
   (`rateLimits.windows[].{kind, consumedPercent, resetTimeUtc}`) that is not
   the observed shape. The parser must fail closed to `schema_changed` with no
