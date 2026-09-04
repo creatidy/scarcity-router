@@ -484,8 +484,9 @@ def discover_codex_installation(
     """Discover one supported Codex app-server installation, read-only.
 
     Returns ``(installation, outcome)``. ``not_installed`` means no
-    ``openai.chatgpt-*`` extension directory exists in any root (or the
-    current platform has no evidenced platform directory at all);
+    ``openai.chatgpt-*`` extension directory exists in any root on a supported
+    platform; unsupported platforms return ``unsupported_installation`` even
+    when no candidate exists;
     ``unsupported_installation`` means installations exist but none carries
     a validated layout (executable ``codex`` binary in the platform
     directory plus a layout-version-1 ``codex`` package file). Candidates
@@ -493,13 +494,12 @@ def discover_codex_installation(
     older supported one.
     """
     search_roots = DEFAULT_DISCOVERY_ROOTS if roots is None else roots
+    platform_directory_ = platform_directory()
+    if platform_directory_ is None:
+        return None, "unsupported_installation"
     candidates, malformed = _candidate_directories(search_roots)
     if not candidates and not malformed:
         return None, "not_installed"
-    platform_directory_ = platform_directory()
-    if platform_directory_ is None:
-        _close_discovery_candidates(candidates)
-        return None, "unsupported_installation"
     try:
         for candidate in candidates:
             bin_fd = _open_directory_at(candidate.candidate_fd, "bin")

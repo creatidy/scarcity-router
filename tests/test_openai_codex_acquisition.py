@@ -1412,6 +1412,17 @@ class Discovery(unittest.TestCase):
         self.assertIsNone(installation)
         self.assertEqual(outcome, "unsupported_installation")
 
+    def test_unsupported_platform_with_empty_root_is_unsupported(self) -> None:
+        root = self.tmp / "empty-extensions"
+        _ = root.mkdir()
+        for system, machine in (("Darwin", "arm64"), ("Linux", "aarch64")):
+            with self.subTest(system=system, machine=machine):
+                with mock.patch.object(platform, "system", return_value=system):
+                    with mock.patch.object(platform, "machine", return_value=machine):
+                        installation, outcome = acq.discover_codex_installation([root])
+                self.assertIsNone(installation)
+                self.assertEqual(outcome, "unsupported_installation")
+
     def test_unicode_version_directory_is_skipped_deterministically(self) -> None:
         # Regression: Unicode digit-lookalikes (superscript two) must not
         # raise ValueError in version parsing; the malformed candidate is
