@@ -467,6 +467,7 @@ class SuccessfulSession(_AcquisitionCase):
         roots = self._make_installation()
         snapshot = self._collect(discovery_roots=[roots])
         self.assertEqual(snapshot.status, "ok")
+        self.assertEqual(len(snapshot.windows), 2)
         self.assertEqual(fake.request_count, 3)
         self.assertIsNone(fake.protocol_error)
         self.assertEqual(len(fake.responses), 2)
@@ -589,7 +590,27 @@ class ResponseMatching(_AcquisitionCase):
         roots = self._make_installation()
         snapshot = self._collect(discovery_roots=[roots])
         self.assertEqual(snapshot.status, "ok")
-        self.assertEqual(len(snapshot.windows), 2)
+
+    def test_unrelated_malformed_errors_fail_before_later_matching_response(self) -> None:
+        malformed_errors = (
+            b'{"id":99,"error":null}\n',
+            b'{"id":99,"error":{}}\n',
+            b'{"id":99,"error":{"code":9223372036854775808,"message":"synthetic"}}\n',
+            b'{"id":99,"error":{"code":-1,"message":7}}\n',
+        )
+        for error in malformed_errors:
+            with self.subTest(error=error):
+                _ = self._install_fake(
+                    [
+                        INIT_RESPONSE,
+                        error,
+                        _read_response(_fixture_result("ratelimits-ok-plus.json")),
+                    ]
+                )
+                roots = self._make_installation()
+                snapshot = self._collect(discovery_roots=[roots])
+                self.assertEqual(snapshot.status, "schema_changed")
+                self.assertEqual(snapshot.windows, ())
 
     def test_string_id_response_is_valid_but_never_matches_numeric_request(self) -> None:
         _ = self._install_fake(

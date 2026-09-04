@@ -945,6 +945,8 @@ def _await_response(
             return "malformed", None
         if message_kind != "response":
             continue
+        if "error" in envelope and not _valid_protocol_error(envelope["error"]):
+            return "malformed", None
         message_id = envelope.get("id")
         if _is_int(message_id) and message_id == expected_id:
             return "response", envelope

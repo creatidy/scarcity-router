@@ -11,11 +11,13 @@ Source of the shape: the successful PoC JSONL interaction recorded in
 (including the serde string-table/generated-schema facts for tag
 `rust-v0.151.0-alpha.7.2`). Each file below is the decoded JSON-RPC
 `result` object of one `account/rateLimits/read` response — a complete
-`GetAccountRateLimitsResponse` envelope. The exact tagged schema requires
-`rateLimits`; the nullable `rateLimitsByLimitId` and
-`rateLimitResetCredits` members may be absent or explicitly null. Values are
-synthetic and chosen to exercise the required parsing paths rather than
-replay a live reading.
+`GetAccountRateLimitsResponse` envelope. For deserialization input, the JSON
+Schema requires `rateLimits`; the nullable `rateLimitsByLimitId` and
+`rateLimitResetCredits` members may be absent or explicitly null. The tagged
+Rust serializer does not skip these `Option` fields and the TypeScript shape
+requires both keys, so this input tolerance is not a claim about exact server
+serialization. Values are synthetic and chosen to exercise the required
+parsing paths rather than replay a live reading.
 
 ## Files
 

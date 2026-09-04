@@ -45,9 +45,9 @@ docs/poc-evidence.md ("OpenAI/Codex subscription capacity" and the
     valid snapshot is a
     v1-unrepresentable spend state, and ``remainingPercent == 0`` is a
     backend blocker. Amounts are never interpreted or compared;
-  - ``spendControlReached`` is the boolean spend-control blocker: absent,
-    null or ``false`` means clear, ``true`` blocks, any other shape is
-    drift;
+  - ``spendControlReached`` is the boolean spend-control blocker: ``false``
+    means clear and ``true`` blocks. Missing or null is unavailable and
+    conservatively withholds percentage pairs; any other shape is drift;
   - ``rateLimitReachedType`` accepts exactly the evidenced snake_case enum
     members (``rate_limit_reached``, ``workspace_member_credits_depleted``,
     ``workspace_owner_credits_depleted``,
