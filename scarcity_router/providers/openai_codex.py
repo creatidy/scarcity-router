@@ -255,6 +255,10 @@ def _fits_i64(value: object) -> bool:
     return _is_int(value) and _I64_MIN <= value <= _I64_MAX
 
 
+def _is_request_id(value: object) -> bool:
+    return isinstance(value, str) or _fits_i64(value)
+
+
 def _membership_valid(
     container: Mapping[str, object],
     known: frozenset[str],
@@ -312,9 +316,12 @@ def classify_app_server_message(message: object) -> MessageKind:
         if not isinstance(envelope["method"], str):
             return "invalid"
         if "id" in envelope:
-            return "request" if _is_int(envelope["id"]) else "invalid"
+            return "request" if _is_request_id(envelope["id"]) else "invalid"
         return "notification"
-    if _is_int(envelope.get("id")):
+    message_id = envelope.get("id")
+    if _is_int(message_id) and not _fits_i64(message_id):
+        return "invalid"
+    if _is_request_id(message_id):
         has_result = "result" in envelope
         has_error = "error" in envelope
         if has_result != has_error:

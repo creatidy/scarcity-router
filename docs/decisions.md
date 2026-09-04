@@ -371,10 +371,15 @@ direction was chosen. Dates use UTC.
   - **Decoding.** JSONL decoding is ambiguity-safe: duplicate object keys
     at any depth, literal NaN/Infinity constants, non-finite exponent
     results such as `1e10000`, and adversarial deep nesting are all
-    rejected as protocol drift (`schema_changed`), without broad exception
-    swallowing; hybrid messages carrying `method` together with
-    `result`/`error` are invalid drift, never silently ignored; the
-    installation package file is decoded under the same strict rules.
+   rejected as protocol drift (`schema_changed`), without broad exception
+   swallowing; hybrid messages carrying `method` together with
+   `result`/`error` are invalid drift, never silently ignored; the
+   installation package file is decoded under the same strict rules.
+  - **Request framing.** The generated client notification uses method
+    `initialized`, and the `account/rateLimits/read` request omits `params`
+    because its generated `Option<()>` parameter is empty. Request IDs accept
+    strings or signed i64 integers structurally; this collector matches only
+    its own numeric IDs `1` and `2`.
 - **Evidence:** the 2026-09-01 PoC shape plus the 2026-09-03 reconnaissance
   in `docs/poc-evidence.md`, including read-only serde string-table
   inspection of the installed codex binary cross-checked against the

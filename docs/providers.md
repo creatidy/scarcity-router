@@ -24,7 +24,8 @@ when another source is `auth_required`, `schema_changed` or `unknown`.
 The proven mechanism launches a locally available `codex app-server`, speaks
 JSONL, sends `initialize`, sends the `initialized` notification, and calls
 `account/rateLimits/read`. It obtains subscription rate limits without a model
-prompt.
+prompt. The generated tag's notification method is exactly `initialized`, and
+the read request omits `params` because its generated option is empty.
 
 Implementation requirements:
 

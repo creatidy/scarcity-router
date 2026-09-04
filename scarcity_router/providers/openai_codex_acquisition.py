@@ -78,12 +78,13 @@ import queue
 import select
 import stat
 import subprocess
+import sys
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO, Literal, cast
+from typing import IO, Literal, Protocol, cast
 
 from ..capacity import CapacityDiagnostic, CapacitySnapshot
 from .openai_codex import (
@@ -120,17 +121,29 @@ _PLATFORM_DIRS: dict[tuple[str, str], str] = {
 DiscoveryOutcome = Literal["found", "not_installed", "unsupported_installation"]
 
 
-@dataclass(frozen=True)
+@dataclass
 class CodexInstallation:
     """One validated, supported Codex app-server installation."""
 
     binary: Path
+    binary_fd: int
     extension_version: str
     codex_version: str
 
+    def close(self) -> None:
+        if self.binary_fd >= 0:
+            try:
+                os.close(self.binary_fd)
+            except OSError:
+                pass
+            self.binary_fd = -1
 
-def _is_regular_executable(path: Path) -> bool:
-    """Require a non-symlink regular executable without following links."""
+    def __del__(self) -> None:
+        self.close()
+
+
+def _open_regular_executable(path: Path) -> int | None:
+    """Open one non-symlink regular executable for identity-bound execution."""
     try:
         flags = (
             getattr(os, "O_PATH", os.O_RDONLY)
@@ -139,13 +152,18 @@ def _is_regular_executable(path: Path) -> bool:
         fd = os.open(str(path), flags)
         try:
             mode = os.fstat(fd).st_mode
-        finally:
+        except OSError:
             os.close(fd)
+            return None
         if not stat.S_ISREG(mode):
-            return False
-        return bool(mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH))
+            os.close(fd)
+            return None
+        if not mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH):
+            os.close(fd)
+            return None
+        return fd
     except OSError:
-        return False
+        return None
 
 
 def _is_regular_directory(path: Path) -> bool:
@@ -180,7 +198,7 @@ MAX_TOTAL_BYTES = 1024 * 1024
 _INITIALIZE_ID = 1
 _READ_RATE_LIMITS_ID = 2
 _RATE_LIMITS_METHOD = "account/rateLimits/read"
-_INITIALIZED_NOTIFICATION_METHOD = "notifications/initialized"
+_INITIALIZED_NOTIFICATION_METHOD = "initialized"
 
 
 class _AmbiguousJson(ValueError):
@@ -429,13 +447,16 @@ def discover_codex_installation(
         ):
             continue
         binary = binary_dir / "codex"
-        if not _is_regular_executable(binary):
+        binary_fd = _open_regular_executable(binary)
+        if binary_fd is None:
             continue
         package = _read_validated_package(binary_dir)
         if package is None:
+            os.close(binary_fd)
             continue
         installation = CodexInstallation(
             binary=binary,
+            binary_fd=binary_fd,
             extension_version=_extension_version_string(candidate.name),
             codex_version=cast("str", package["version"]),
         )
@@ -444,6 +465,28 @@ def discover_codex_installation(
 
 
 # ── Bounded subprocess stdout reader ──────────────────────────────────────────
+
+
+class _Poller(Protocol):
+    def register(self, fd: int, eventmask: int) -> None: ...
+
+    def poll(self, timeout: int) -> list[tuple[int, int]]: ...
+
+
+def _fd_readable(fd: int) -> bool:
+    """Wait briefly for a descriptor without ``select``'s FD_SETSIZE limit."""
+    poll_factory = cast(
+        "Callable[[], _Poller] | None", getattr(select, "poll", None)
+    )
+    if poll_factory is not None:
+        poller = poll_factory()
+        poller.register(
+            fd,
+            select.POLLIN | select.POLLHUP | select.POLLERR,
+        )
+        return bool(poller.poll(100))
+    ready, _, _ = select.select([fd], [], [], 0.1)
+    return bool(ready)
 
 
 class BoundedLineReader:
@@ -541,8 +584,8 @@ class BoundedLineReader:
         total = 0
         while not self._stop.is_set():
             try:
-                ready, _, _ = select.select([fd], [], [], 0.1)
-            except OSError:
+                ready = _fd_readable(fd)
+            except (OSError, ValueError):
                 if not self._stop.is_set():
                     self._put("failed", None)
                 return
@@ -613,7 +656,19 @@ class BoundedLineReader:
 # ── Subprocess seam ───────────────────────────────────────────────────────────
 
 
-def spawn_app_server(argv: Sequence[str]) -> "subprocess.Popen[bytes]":
+def _fd_execution_path(fd: int) -> str | None:
+    if sys.platform.startswith("linux"):
+        return f"/proc/self/fd/{fd}"
+    if sys.platform == "darwin":
+        return f"/dev/fd/{fd}"
+    return None
+
+
+def spawn_app_server(
+    argv: Sequence[str],
+    *,
+    executable_fd: int | None = None,
+) -> "subprocess.Popen[bytes]":
     """Launch the Codex app-server subprocess.
 
     Exactly one process, never a shell; stdout is captured for the JSONL
@@ -621,11 +676,20 @@ def spawn_app_server(argv: Sequence[str]) -> "subprocess.Popen[bytes]":
     upstream tool output can never be read back or leak). Test seam: tests
     replace this function with fakes; no test executes a real binary.
     """
+    command = list(argv)
+    pass_fds: tuple[int, ...] = ()
+    if executable_fd is not None:
+        execution_path = _fd_execution_path(executable_fd)
+        if execution_path is None:
+            raise OSError("platform cannot execute an identity-bound descriptor")
+        command[0] = execution_path
+        pass_fds = (executable_fd,)
     return subprocess.Popen(
-        list(argv),
+        command,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
+        pass_fds=pass_fds,
     )
 
 
@@ -716,7 +780,6 @@ def _read_rate_limits_request() -> dict[str, object]:
         "jsonrpc": "2.0",
         "id": _READ_RATE_LIMITS_ID,
         "method": _RATE_LIMITS_METHOD,
-        "params": {},
     }
 
 
@@ -950,9 +1013,11 @@ def collect_openai_codex_capacity(
 
     argv: list[str] = [str(installation.binary), "app-server"]
     try:
-        proc = spawn_app_server(argv)
+        proc = spawn_app_server(argv, executable_fd=installation.binary_fd)
     except OSError:
         return _snapshot("unavailable", "source_unavailable", retrieved_at)
+    finally:
+        installation.close()
 
     reader = BoundedLineReader(
         cast("IO[bytes]", proc.stdout),

@@ -18,18 +18,22 @@ import io
 import json
 import os
 import subprocess
+import sys
 import threading
 import time
 import unittest
 from collections.abc import Sequence
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import cast, override
+from typing import Callable, cast, override
 from unittest import mock
 
 from scarcity_router import CapacitySnapshot, CapacityValidationError
 from scarcity_router.providers import openai_codex_acquisition as acq
-from scarcity_router.providers.openai_codex import parse_codex_rate_limits_result
+from scarcity_router.providers.openai_codex import (
+    classify_app_server_message,
+    parse_codex_rate_limits_result,
+)
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "openai-codex-appserver"
 RETRIEVED_AT = "2026-09-03T20:00:00.000Z"
@@ -56,15 +60,19 @@ class _FakeStdin:
 
     writes: list[bytes]
     closed: bool
+    on_write: Callable[[bytes], None] | None
 
-    def __init__(self) -> None:
+    def __init__(self, on_write: Callable[[bytes], None] | None = None) -> None:
         self.writes = []
         self.closed = False
+        self.on_write = on_write
 
     def write(self, data: bytes) -> int:
         if self.closed:
             raise ValueError("write to closed file")
         self.writes.append(bytes(data))
+        if self.on_write is not None:
+            self.on_write(bytes(data))
         return len(data)
 
     def flush(self) -> None:
@@ -203,6 +211,73 @@ class _FakeAppServer:
         return None
 
 
+class _ReactiveAppServer(_FakeAppServer):
+    """Synthetic server that validates each client frame before responding."""
+
+    _request_index: int
+    protocol_error: str | None
+    responses: list[bytes]
+    _result: object
+    stdin: _FakeStdin
+
+    def __init__(self, result: object) -> None:
+        super().__init__(block=True)
+        self._request_index = 0
+        self.protocol_error = None
+        self.responses = []
+        self._result = result
+        self.stdin = _FakeStdin(self._on_write)
+
+    def _on_write(self, data: bytes) -> None:
+        try:
+            message = cast("dict[str, object]", json.loads(data.decode()))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            self.protocol_error = "invalid_json"
+            return
+        expected: tuple[dict[str, object], ...] = (
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "clientInfo": {
+                        "name": "scarcity-router",
+                        "title": "Scarcity Router",
+                        "version": "0.0.0",
+                    },
+                    "capabilities": {},
+                },
+            },
+            {"jsonrpc": "2.0", "method": "initialized"},
+            {"jsonrpc": "2.0", "id": 2, "method": "account/rateLimits/read"},
+        )
+        if (
+            self._request_index >= len(expected)
+            or message != expected[self._request_index]
+        ):
+            self.protocol_error = "invalid_frame"
+            return
+        self._request_index += 1
+        if self._request_index == 1:
+            self._send(INIT_RESPONSE)
+        elif self._request_index == 3:
+            self._send(_read_response(self._result))
+
+    @property
+    def request_count(self) -> int:
+        return self._request_index
+
+    def receive(self, data: bytes) -> None:
+        self._on_write(data)
+
+    def _send(self, data: bytes) -> None:
+        self.responses.append(data)
+        try:
+            _ = os.write(self._write_fd, data)
+        except OSError:
+            self.protocol_error = "response_write_failed"
+
+
 class _AcquisitionCase(unittest.TestCase):
     """Shared harness: fake spawn seam plus output capture."""
 
@@ -240,10 +315,30 @@ class _AcquisitionCase(unittest.TestCase):
         self.addCleanup(fake.finalize)
         self.fake = fake
 
-        def fake_spawn(argv: Sequence[str]) -> "subprocess.Popen[bytes]":
+        def fake_spawn(
+            argv: Sequence[str], *, executable_fd: int | None = None
+        ) -> "subprocess.Popen[bytes]":
             self.spawn_calls.append(list(argv))
+            _ = executable_fd
             if error is not None:
                 raise error
+            return cast("subprocess.Popen[bytes]", cast("object", fake))
+
+        patcher = mock.patch.object(acq, "spawn_app_server", fake_spawn)
+        _ = patcher.start()
+        self.addCleanup(patcher.stop)
+        return fake
+
+    def _install_reactive(self, result: object) -> _ReactiveAppServer:
+        fake = _ReactiveAppServer(result)
+        self.addCleanup(fake.finalize)
+        self.fake = fake
+
+        def fake_spawn(
+            argv: Sequence[str], *, executable_fd: int | None = None
+        ) -> "subprocess.Popen[bytes]":
+            self.spawn_calls.append(list(argv))
+            _ = executable_fd
             return cast("subprocess.Popen[bytes]", cast("object", fake))
 
         patcher = mock.patch.object(acq, "spawn_app_server", fake_spawn)
@@ -359,11 +454,31 @@ class SuccessfulSession(_AcquisitionCase):
         client_info = cast("dict[str, object]", initialize["params"])
         self.assertIn("clientInfo", client_info)
         initialized = messages[1]
-        self.assertEqual(initialized["method"], "notifications/initialized")
+        self.assertEqual(initialized["method"], "initialized")
         self.assertNotIn("id", initialized)
+        self.assertNotIn("params", initialized)
         read = messages[2]
         self.assertEqual(read["method"], "account/rateLimits/read")
         self.assertEqual(read["id"], 2)
+        self.assertNotIn("params", read)
+
+    def test_reactive_server_validates_exact_generated_frames(self) -> None:
+        fake = self._install_reactive(_fixture_result("ratelimits-ok-plus.json"))
+        roots = self._make_installation()
+        snapshot = self._collect(discovery_roots=[roots])
+        self.assertEqual(snapshot.status, "ok")
+        self.assertEqual(fake.request_count, 3)
+        self.assertIsNone(fake.protocol_error)
+        self.assertEqual(len(fake.responses), 2)
+
+    def test_reactive_server_rejects_old_frame_before_responding(self) -> None:
+        fake = _ReactiveAppServer(_fixture_result("ratelimits-ok-plus.json"))
+        self.addCleanup(fake.finalize)
+        fake.receive(
+            b'{"jsonrpc":"2.0","method":"notifications/initialized"}\n'
+        )
+        self.assertEqual(fake.protocol_error, "invalid_frame")
+        self.assertEqual(fake.responses, [])
 
     def test_blank_separator_lines_tolerated(self) -> None:
         _ = self._install_fake(
@@ -410,6 +525,38 @@ class SuccessfulSession(_AcquisitionCase):
         self.assertEqual(snapshot.status, "unavailable")
         self.assertEqual(snapshot.windows, ())
 
+    def test_high_fd_reader_uses_safe_polling(self) -> None:
+        read_fd, write_fd = os.pipe()
+        held = [read_fd]
+        while held[-1] < 1024:
+            held.append(os.dup(read_fd))
+        high_fd = held[-1]
+        stream = os.fdopen(high_fd, "rb", closefd=True)
+        try:
+            _ = os.write(write_fd, b"{}\n")
+            os.close(write_fd)
+            reader = acq.BoundedLineReader(
+                stream,
+                max_line_bytes=acq.MAX_LINE_BYTES,
+                max_total_bytes=acq.MAX_TOTAL_BYTES,
+            )
+            reader.start()
+            kind, chunk = reader.get(1.0)
+            self.assertEqual((kind, chunk), ("line", b"{}\n"))
+            reader.close()
+            reader.join(1.0)
+            self.assertTrue(reader.stopped())
+        finally:
+            try:
+                os.close(write_fd)
+            except OSError:
+                pass
+            for fd in held[:-1]:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+
 
 # ═════════════════════════ response matching ═════════════════════════════════
 
@@ -444,20 +591,45 @@ class ResponseMatching(_AcquisitionCase):
         self.assertEqual(snapshot.status, "ok")
         self.assertEqual(len(snapshot.windows), 2)
 
-    def test_string_id_response_fails_closed_as_drift(self) -> None:
-        # A response-shaped message with a string id is structurally invalid
-        # under the observed protocol (integer ids only); it must fail closed
-        # rather than be treated as our answer or silently skipped.
+    def test_string_id_response_is_valid_but_never_matches_numeric_request(self) -> None:
         _ = self._install_fake(
             [
                 INIT_RESPONSE,
-                b'{"id":"2","result":{"rateLimits":{"primary":{"usedPercent":1,"windowDurationMins":300}}}}\n',
+                b'{"id":"other","result":{"ignored":true}}\n',
+                _read_response(_fixture_result("ratelimits-ok-plus.json")),
             ]
         )
         roots = self._make_installation()
         snapshot = self._collect(discovery_roots=[roots])
-        self.assertEqual(snapshot.status, "schema_changed")
-        self.assertEqual([d.code for d in snapshot.diagnostics], ["schema_changed"])
+        self.assertEqual(snapshot.status, "ok")
+
+    def test_string_and_signed_i64_request_ids_are_structurally_valid(self) -> None:
+        self.assertEqual(
+            classify_app_server_message({"id": "string-id", "result": {}}),
+            "response",
+        )
+        self.assertEqual(
+            classify_app_server_message(
+                {"id": "string-id", "method": "server/request", "params": {}}
+            ),
+            "request",
+        )
+        values: tuple[int, ...] = (-2**63, 2**63 - 1)
+        for value in values:
+            with self.subTest(value=value):
+                self.assertEqual(
+                    classify_app_server_message({"id": value, "result": {}}),
+                    "response",
+                )
+
+    def test_integer_request_ids_outside_i64_are_invalid(self) -> None:
+        values: tuple[int, ...] = (-(2**63) - 1, 2**63)
+        for value in values:
+            with self.subTest(value=value):
+                self.assertEqual(
+                    classify_app_server_message({"id": value, "result": {}}),
+                    "invalid",
+                )
 
     def test_hybrid_method_response_message_rejected_as_drift(self) -> None:
         # A message carrying a `method` key — whatever its value type —
@@ -484,7 +656,6 @@ class ResponseMatching(_AcquisitionCase):
 
     def test_notification_with_malformed_id_rejected_as_drift(self) -> None:
         for bad in (
-            b'{"method":"account/rateLimits/updated","id":"7","params":{}}\n',
             b'{"method":"x","id":true,"params":{}}\n',
             b'{"method":"x","id":null,"params":{}}\n',
         ):
@@ -856,8 +1027,11 @@ class SafeTermination(_AcquisitionCase):
         fake = _Rude()
         roots = self._make_installation()
 
-        def fake_spawn(argv: Sequence[str]) -> "subprocess.Popen[bytes]":
+        def fake_spawn(
+            argv: Sequence[str], *, executable_fd: int | None = None
+        ) -> "subprocess.Popen[bytes]":
             _ = argv
+            _ = executable_fd
             return cast("subprocess.Popen[bytes]", cast("object", fake))
 
         with mock.patch.object(acq, "spawn_app_server", fake_spawn):
@@ -1014,6 +1188,32 @@ class Discovery(unittest.TestCase):
         installation, outcome = acq.discover_codex_installation([root])
         self.assertIsNone(installation)
         self.assertEqual(outcome, "unsupported_installation")
+
+    def test_execution_remains_bound_to_validated_binary_inode(self) -> None:
+        root = self._make(suffix="validated")
+        installation, outcome = acq.discover_codex_installation([root])
+        self.assertEqual(outcome, "found")
+        assert installation is not None
+        if not (sys.platform.startswith("linux") or sys.platform == "darwin"):
+            installation.close()
+            self.skipTest("platform lacks descriptor execution path")
+        escaped = self.tmp / "escaped-codex"
+        _ = escaped.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+        _ = escaped.chmod(0o755)
+        installation.binary.unlink()
+        installation.binary.symlink_to(escaped)
+        proc = acq.spawn_app_server(
+            [str(installation.binary), "app-server"],
+            executable_fd=installation.binary_fd,
+        )
+        installation.close()
+        try:
+            self.assertEqual(proc.wait(timeout=2.0), 0)
+        finally:
+            if proc.stdin is not None:
+                proc.stdin.close()
+            if proc.stdout is not None:
+                proc.stdout.close()
 
     def test_symlinked_candidate_directory_cannot_escape_root(self) -> None:
         outside = self._make(suffix="outside")

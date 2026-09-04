@@ -24,7 +24,7 @@ The successful JSONL interaction was:
 
 ```text
 initialize
-initialized notification
+initialized notification (`method: "initialized"`)
 account/rateLimits/read
 ```
 
@@ -88,7 +88,8 @@ App-server wire facts (structure-only probes; no model prompt issued):
 
 - requests are accepted with JSON-RPC-style framing
   (`{jsonrpc, id, method, params}`); **responses omit the `jsonrpc` echo**
-  and carry `id` plus exactly one of `result`/`error`; ids are integers;
+  and carry `id` plus exactly one of `result`/`error`; tagged request IDs are
+  strings or signed i64 integers;
 - the `initialize` response arrives as the first stdout line (no banner) and
   its `result` is an object (`userAgent`, `codexHome`, platform facts —
   deliberately not consumed by the collector);
@@ -97,7 +98,7 @@ App-server wire facts (structure-only probes; no model prompt issued):
   so responses must be matched by request identity;
 - `initialize` succeeded identically with empty capabilities,
   `experimentalApi`, and the extension's full capability set; the
-  `notifications/initialized` notification form (and its absence) was
+  `initialized` notification form (and its absence) was
   tolerated identically;
 - during reconnaissance `account/rateLimits/read` returned a well-formed
   JSON-RPC **error** response (`code` `-32603`, free-text message not

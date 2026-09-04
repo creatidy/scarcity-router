@@ -1396,7 +1396,6 @@ class MessageClassification(unittest.TestCase):
             {},
             {"id": 2},  # neither result nor error
             {"id": 2, "result": {}, "error": {}},  # both
-            {"id": "2", "result": {}},  # string id
             {"id": True, "result": {}},  # boolean id
             {"method": 42},  # non-string method
             # Hybrids carrying a `method` key of ANY type together with
@@ -1407,11 +1406,11 @@ class MessageClassification(unittest.TestCase):
             {"method": None, "result": {}},
             {"method": 42, "id": 2, "result": {}},
             {"method": True, "id": 2, "error": {}},
-            # Notifications whose `id` key is present but malformed are
-            # drift, never silently ignorable notifications.
-            {"method": "x", "id": "7"},
+            # Notifications/requests whose `id` key is malformed are drift,
+            # never silently ignorable messages.
             {"method": "x", "id": True},
             {"method": "x", "id": None},
+            {"method": "x", "id": 2**63},
         )
         for message in messages:
             with self.subTest(message=message):
