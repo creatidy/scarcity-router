@@ -192,10 +192,29 @@ class PsListing(unittest.TestCase):
             with self.subTest(bad=bad):
                 payload = {
                     "models": [
-                        {"name": TARGET, "digest": DIGEST_ZERO, "context_length": bad}
+                        {"name": TARGET, "context_length": bad}
                     ]
                 }
                 self.assertIsNone(parse_ollama_ps_response(payload))
+
+    def test_context_length_above_i64_band_is_drift(self) -> None:
+        # Defense in depth for direct parser calls: the acquisition layer's
+        # strict decoder already rejects out-of-band integers.
+        out_of_band: tuple[int, ...] = (2**63, -(2**63) - 1, 10**500)
+        for bad in out_of_band:
+            with self.subTest(bad=bad):
+                payload = {"models": [{"name": TARGET, "context_length": bad}]}
+                self.assertIsNone(parse_ollama_ps_response(payload))
+
+    def test_context_length_at_i64_band_edge_is_valid(self) -> None:
+        payload = {
+            "models": [
+                {"name": TARGET, "digest": DIGEST_ZERO, "context_length": 2**63 - 1}
+            ]
+        }
+        self.assertEqual(
+            parse_ollama_ps_response(payload), {TARGET: (DIGEST_ZERO, 2**63 - 1)}
+        )
 
     def test_duplicate_loaded_names_are_drift(self) -> None:
         entry: dict[str, object] = {

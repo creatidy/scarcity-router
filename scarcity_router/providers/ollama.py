@@ -24,11 +24,11 @@ Evidenced shapes (structure only; see poc-evidence.md):
   the presence answer ambiguous rather than merely redundant;
 - ``GET /api/ps`` -> ``{"models": [...]}``; every listed (loaded) entry must
   be an object with a string ``name`` and a positive integer
-  ``context_length`` (the runtime's effective context for that loaded
-  model). A listed entry without a usable ``context_length`` is drift:
-  effective context is reported only from validated evidence, never
-  inferred. A model that is simply not loaded is absent from the list and
-  is not drift.
+  ``context_length`` within the validated signed 64-bit band (the
+  runtime's effective context for that loaded model). A listed entry
+  without a usable ``context_length`` is drift: effective context is
+  reported only from validated evidence, never inferred. A model that is
+  simply not loaded is absent from the list and is not drift.
 
 Digest identity: both listings carry a non-secret content ``digest``. The
 validated shape is ``sha256:`` followed by 64 lowercase hex digits
@@ -57,6 +57,14 @@ SOURCE = "ollama_local"
 # Anything else degrades that entry's identity evidence (``None``), rather
 # than drifting the whole listing or accepting an unverifiable image.
 _SAFE_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+
+# Validated integer band for JSON-decoded values: signed 64-bit. The
+# acquisition layer's strict decoder rejects out-of-band integers before
+# any parser runs; this bound is defense in depth for direct parser calls
+# so an arbitrary-precision Python integer can never become context
+# evidence.
+_MAX_I64 = 2**63 - 1
+_MIN_I64 = -(2**63)
 
 __all__ = [
     "PROVIDER",
@@ -172,7 +180,12 @@ def parse_ollama_ps_response(
     loaded: dict[str, tuple[str | None, int]] = {}
     for name, entry in listed.items():
         context_length = entry.get("context_length")
-        if not _is_int(context_length) or context_length < 1:
+        if (
+            not _is_int(context_length)
+            or context_length < 1
+            or context_length > _MAX_I64
+            or context_length < _MIN_I64
+        ):
             return None
         loaded[name] = (safe_digest(entry.get("digest")), context_length)
     return loaded

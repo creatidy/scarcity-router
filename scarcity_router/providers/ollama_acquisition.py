@@ -25,18 +25,32 @@ Security contract (docs/security.md):
   no LAN scanning, no host discovery, no proxy routing (proxies are
   disabled for the connection) and no redirect following;
 - one monotonic collection deadline (``COLLECTION_DEADLINE_SECONDS``)
-  spans connect, headers and body reads. Each read is budgeted the
-  remaining time, bodies are consumed in bounded chunks re-checked against
-  the deadline, and an exceeded deadline aborts the collection — a peer
-  cannot hold the collector open by trickling bytes;
+  spans connect, headers and body reads **end to end**: each read executes
+  inside a single bounded daemon worker and the collector waits at most the
+  remaining time on it, so control returns by the deadline even when one
+  underlying blocking call would run longer. The worker checks the
+  deadline between all blocking phases, budgets each phase the remaining
+  time (so real transports finish promptly even when abandoned), closes
+  its response deterministically on every path, and an abandoned worker
+  that eventually unblocks still aborts itself and cleans up — it never
+  feeds results back after abandonment. A genuinely unexpected worker
+  error is re-raised in the collector thread instead of being swallowed.
+  Bounded worker count (at most one per read, at most three sequential
+  workers per collection); no thread, file-descriptor or response leak by
+  construction;
+- transport results are narrowly protocol-validated before use (callable
+  ``read`` and ``close``): a malformed response object normalizes to the
+  documented degraded statuses instead of an uncaught ``TypeError``, and
+  no payload or path detail ever leaks;
 - every response body is read under a hard size bound; error responses
   (``HTTPError``) are closed deterministically without reading their
   content; oversized bodies are never parsed;
 - response bodies decode under a strict JSON contract: duplicate object
-  keys at any depth, the NaN/Infinity constants and any non-finite float
-  result (e.g. ``1e10000``) are rejected, as is input so deeply nested
-  that the decoder recurses out — all normalize to ``schema_changed``,
-  never to an uncaught exception or partial decoding;
+  keys at any depth, the NaN/Infinity constants, any non-finite float
+  result (e.g. ``1e10000``) and any integer outside the validated signed
+  64-bit band are rejected, as is input so deeply nested that the decoder
+  recurses out — all normalize to ``schema_changed``, never to an uncaught
+  exception or partial decoding;
 - no credential exists or is attached: Ollama's local interface is
   credential-free and no Authorization material is ever constructed. Raw
   response fragments, endpoint URLs, local paths, digests and exception
@@ -68,12 +82,13 @@ Failure mapping (deterministic per outcome class):
 - reachability-probe transport/deadline failure (connection refused,
   timeout, DNS, broken HTTP, deadline exceeded) ->
   ``unavailable``/``source_unavailable`` with ``runtime_unreachable``;
-- probe HTTP error or unreadable body -> ``unknown``/``telemetry_unknown``;
+- probe HTTP error, unreadable body or malformed transport-response
+  object -> ``unknown``/``telemetry_unknown``;
 - probe body not matching the evidenced shape (including strict-decode
-  rejection) -> ``schema_changed``;
-- mid-collection transport/HTTP/unreadable/deadline failures keep facts
-  already validated by earlier reads and report the corresponding degraded
-  status;
+  rejection, overlarge integers included) -> ``schema_changed``;
+- mid-collection transport/HTTP/unreadable/deadline/response-object
+  failures keep facts already validated by earlier reads and report the
+  corresponding degraded status;
 - a malformed model listing or malformed ps body is ``schema_changed``;
 - a reachable runtime whose validated listing lacks the configured model
   reports ``unavailable``/``source_unavailable`` plus ``model_missing``
@@ -84,9 +99,11 @@ Failure mapping (deterministic per outcome class):
   telemetry without discarding the validated presence facts.
 
 Program/configuration errors (unapproved endpoint, unsafe model identity,
-invalid configured context) raise ``ValueError`` before any I/O; their
-messages never echo the offending value. An invalid ``retrieved_at`` keeps
-failing through the typed capacity-contract validation.
+invalid configured context) raise ``ValueError`` before any I/O; genuinely
+unexpected internal worker errors are re-raised in the collector thread,
+never swallowed or misreported as telemetry. Their messages never echo the
+offending value. An invalid ``retrieved_at`` keeps failing through the
+typed capacity-contract validation.
 """
 
 from __future__ import annotations
@@ -94,13 +111,14 @@ from __future__ import annotations
 import json
 import math
 import re
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 import urllib.response
 from http.client import HTTPException, HTTPMessage
-from typing import IO, Literal, cast, override
+from typing import IO, Literal, Protocol, cast, override
 
 from ..capacity import (
     CapacityDiagnostic,
@@ -140,17 +158,47 @@ _SAFE_ID_RE = re.compile(r"[a-z0-9][a-z0-9._:-]{0,63}")
 # DNS, the hosts file, a proxy nor a LAN address can be reached.
 _LOCAL_HOSTS = frozenset({"127.0.0.1", "::1"})
 
-_CallOutcome = Literal["ok", "transport_fail", "http_error", "unreadable", "malformed"]
+_CallOutcome = Literal[
+    "ok",
+    "transport_fail",
+    "http_error",
+    "unreadable",
+    "malformed",
+    "invalid_response",
+]
 
 
 class _AmbiguousJson(ValueError):
     """Raised by the strict-decode hooks for ambiguous JSON input.
 
-    Duplicate keys at any depth, the NaN/Infinity constants and non-finite
-    float results make a body ambiguous or non-validating; decoding must
-    fail closed instead of trusting last-key-wins parsing or infinities.
-    Its message never contains any document value.
+    Duplicate keys at any depth, the NaN/Infinity constants, non-finite
+    float results and overlarge integers make a body ambiguous or
+    non-validating; decoding must fail closed instead of trusting
+    last-key-wins parsing or infinities. Its message never contains any
+    document value.
     """
+
+
+# Validated integer band for decoded JSON values: signed 64-bit, matching
+# the width-checked Codex precedent. Any integer outside the band is a
+# strict-contract rejection (``schema_changed``), never truncated, never
+# emitted.
+_MAX_JSON_INT = 2**63 - 1
+_MIN_JSON_INT = -(2**63)
+
+
+def _bounded_int(text: str) -> int:
+    """``json.loads`` ``parse_int`` hook: reject overlarge integers.
+
+    Python integers are unbounded, so a hostile body could otherwise carry
+    an arbitrarily large number into otherwise-tolerated additive fields or
+    the effective-context slot. Values outside the validated signed 64-bit
+    band fail closed exactly like the other strict-decode rejections.
+    """
+    value = int(text)
+    if value > _MAX_JSON_INT or value < _MIN_JSON_INT:
+        raise _AmbiguousJson()
+    return value
 
 
 def _reject_json_constant(_name: str) -> object:
@@ -193,11 +241,12 @@ def _decode_strict(body: bytes) -> object:
     """Strictly decode one bounded response body.
 
     Rejects invalid UTF-8, duplicate object keys at all depths, the
-    NaN/Infinity constants, non-finite float results and input nested
-    beyond the decoder's recursion limit — every rejection raises a
-    ``ValueError`` (or ``RecursionError`` for adversarial nesting), which
-    the caller normalizes to ``schema_changed``. The raw bytes are never
-    copied into any exception message or output.
+    NaN/Infinity constants, non-finite float results, integers outside the
+    validated signed 64-bit band, and input nested beyond the decoder's
+    recursion limit — every rejection raises a ``ValueError`` (or
+    ``RecursionError`` for adversarial nesting), which the caller
+    normalizes to ``schema_changed``. The raw bytes are never copied into
+    any exception message or output.
     """
     return cast(
         "object",
@@ -206,8 +255,43 @@ def _decode_strict(body: bytes) -> object:
             object_pairs_hook=_object_without_duplicate_keys,
             parse_constant=_reject_json_constant,
             parse_float=_finite_float,
+            parse_int=_bounded_int,
         ),
     )
+
+
+class _ResponseProtocol(Protocol):
+    """The narrow transport-response contract the collector relies on."""
+
+    def read(self, size: int = -1, /) -> bytes: ...
+
+    def close(self) -> None: ...
+
+
+def _response_protocol_ok(response: object) -> bool:
+    """Narrow transport-response protocol validation.
+
+    The collector only ever needs ``read`` and ``close``; a transport
+    result without both callables is a malformed response object, not
+    telemetry, and is handled as a safe degraded outcome instead of an
+    uncaught ``TypeError``. Programming/configuration errors elsewhere are
+    never swallowed through this check.
+    """
+    read = getattr(response, "read", None)
+    close = getattr(response, "close", None)
+    return callable(read) and callable(close)
+
+
+def _close_response(response: _ResponseProtocol) -> None:
+    """Close a protocol-validated response; never raises.
+
+    Closing is best-effort by design: a close failure must never mask the
+    normalized outcome or escape as a transport-layer exception.
+    """
+    try:
+        response.close()
+    except Exception:  # deliberate best-effort close; see docstring
+        pass
 
 
 def canonical_local_endpoint(url: object) -> str:
@@ -363,67 +447,115 @@ def open_response(
     )
 
 
-def _read_call(url: str, deadline: float) -> tuple[_CallOutcome, object]:
-    """Perform one bounded local read and classify the outcome.
+def _execute_read(
+    request: urllib.request.Request, deadline: float
+) -> tuple[_CallOutcome, object]:
+    """Run one full transport-plus-read phase against the deadline.
 
-    Never raises for expected operational conditions; exception text is
-    deliberately not inspected or retained. The whole read is budgeted by
-    the caller's monotonic ``deadline``: the transport phase gets the
-    remaining time (capped at ``TIMEOUT_SECONDS``), and the body is
-    consumed in bounded chunks each re-checked against the deadline, so a
-    trickling peer cannot extend the collection. Error responses are
-    closed without reading their content. Outcome classes: ``ok``
+    Executed only inside the bounded worker thread. Each blocking phase is
+    budgeted the remaining time (capped at ``TIMEOUT_SECONDS``), the body
+    is consumed in bounded chunks re-checked against the deadline, the
+    transport result is protocol-validated before use, and the response is
+    closed deterministically on every exit path. Outcome classes: ``ok``
     (strictly decoded JSON body), ``transport_fail`` (connection problem
     or deadline exceeded), ``http_error`` (non-2xx including declined
-    redirects), ``unreadable`` (oversized body) and ``malformed`` (body
-    received but rejected by the strict JSON contract).
+    redirects), ``unreadable`` (oversized body), ``malformed`` (body
+    rejected by the strict JSON contract) and ``invalid_response``
+    (transport result without the narrow read/close protocol).
     """
-    if deadline - time.monotonic() <= 0:
-        return "transport_fail", None
-    request = _build_request(url)
     remaining = deadline - time.monotonic()
     try:
-        response = open_response(request, min(TIMEOUT_SECONDS, remaining))
+        response = open_response(request, min(TIMEOUT_SECONDS, max(remaining, 0.0)))
     except urllib.error.HTTPError as exc:
         # Closed deterministically; the error body is never read and only
         # the exception class is inspected. 3xx arrives here because
-        # redirects are declined. Closing is best-effort: a close failure
-        # must never mask the normalized outcome or leak as an exception.
-        try:
-            exc.close()
-        except Exception:  # deliberate best-effort close; see comment above
-            pass
+        # redirects are declined.
+        _close_response(exc)
         return "http_error", None
     except (HTTPException, OSError):
         # URLError, ConnectionError and TimeoutError (socket.timeout) all
         # derive from OSError; BadStatusLine & co. derive from HTTPException.
         return "transport_fail", None
 
+    if not _response_protocol_ok(response):
+        # A malformed transport result is a degraded outcome, never an
+        # uncaught TypeError; there is nothing to close (no close callable).
+        return "invalid_response", None
+    typed_response = cast("_ResponseProtocol", response)
+
     body = bytearray()
     try:
-        with response:
-            while True:
-                if deadline - time.monotonic() <= 0:
-                    return "transport_fail", None
-                chunk = response.read(
-                    min(READ_CHUNK_BYTES, MAX_BODY_BYTES + 1 - len(body))
-                )
-                if not chunk:
-                    break
-                body.extend(chunk)
-                if len(body) > MAX_BODY_BYTES:
-                    return "unreadable", None
+        while True:
+            if deadline - time.monotonic() <= 0:
+                return "transport_fail", None
+            chunk = typed_response.read(
+                min(READ_CHUNK_BYTES, MAX_BODY_BYTES + 1 - len(body))
+            )
+            if not chunk:
+                break
+            body.extend(chunk)
+            if len(body) > MAX_BODY_BYTES:
+                return "unreadable", None
     except (OSError, HTTPException):
         # The connection failed mid-body; partial content is discarded.
         return "transport_fail", None
+    finally:
+        # Deterministic close on every exit path, including abandonment.
+        _close_response(typed_response)
 
     try:
         return "ok", _decode_strict(bytes(body))
     except (ValueError, RecursionError):
         # Duplicate keys, NaN/Infinity constants, non-finite floats,
-        # invalid UTF-8 and recursion-limit nesting are all strict-contract
-        # rejections: nothing about the shape is trusted or retained.
+        # overlarge integers, invalid UTF-8 and recursion-limit nesting
+        # are all strict-contract rejections: nothing about the shape is
+        # trusted or retained.
         return "malformed", None
+
+
+def _read_call(url: str, deadline: float) -> tuple[_CallOutcome, object]:
+    """Perform one deadline-bounded local read and classify the outcome.
+
+    The whole read runs inside a single daemon worker and the collector
+    waits at most the remaining time on it, so control returns by the
+    deadline even when one underlying blocking call would run longer
+    (socket timeouts budget real transports; a misbehaving fake cannot
+    extend the collection). The worker never feeds results back after
+    abandonment; it aborts against the deadline and closes its response on
+    every path. Exception text is deliberately not inspected or retained.
+    Expected operational conditions normalize to the documented outcome
+    classes; a genuinely unexpected worker error is re-raised in this
+    thread so programming errors are never swallowed or misreported as
+    telemetry.
+    """
+    if deadline - time.monotonic() <= 0:
+        return "transport_fail", None
+    request = _build_request(url)
+
+    results: list[tuple[_CallOutcome, object]] = []
+    unexpected: list[Exception] = []
+
+    def _work() -> None:
+        try:
+            results.append(_execute_read(request, deadline))
+        except Exception as exc:  # re-raised by the caller, never swallowed
+            unexpected.append(exc)
+
+    worker = threading.Thread(
+        target=_work, name="scarcity-router-ollama-read", daemon=True
+    )
+    worker.start()
+    worker.join(max(0.0, deadline - time.monotonic()))
+    if worker.is_alive():
+        # Deadline exceeded: abandon the worker. It aborts against the
+        # same deadline when it next unblocks and closes its response; its
+        # result, if any, is discarded and never observed.
+        return "transport_fail", None
+    if unexpected:
+        raise unexpected[0]
+    if results:
+        return results[0]
+    return "transport_fail", None
 
 
 def _snapshot(
@@ -492,7 +624,7 @@ def _map_call_outcome(outcome: _CallOutcome) -> str:
     """Map a primary-read (probe/tags) outcome class to a snapshot status."""
     if outcome == "transport_fail":
         return "unavailable"
-    if outcome in ("http_error", "unreadable"):
+    if outcome in ("http_error", "unreadable", "invalid_response"):
         return "unknown"
     return "schema_changed"
 
@@ -615,7 +747,6 @@ def collect_ollama_capacity(
                 status = "unknown"
     elif ps_outcome == "malformed":
         status = "schema_changed"
-
     return _snapshot(
         retrieved_at=retrieved_at,
         status=status,

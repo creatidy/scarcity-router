@@ -306,10 +306,17 @@ direction was chosen. Dates use UTC.
   value and never from the `/api/tags` `details.context_length` model-file
   metadata. Every response body decodes under a strict JSON contract
   (duplicate object keys at any depth, NaN/Infinity constants and
-  non-finite floats such as `1e10000`, and recursion-limit nesting all
-  normalize to `schema_changed`), and one monotonic collection deadline
-  spans connect, headers and bounded body reads so a trickling peer cannot
-  extend the collection; error responses are closed without reading their
+  non-finite floats such as `1e10000`, integers outside the validated
+  signed 64-bit band, and recursion-limit nesting all normalize to
+  `schema_changed`), every transport result is narrowly
+  protocol-validated before use (a malformed response object degrades
+  safely instead of raising), and one monotonic collection deadline is
+  enforced end to end: each read runs inside a bounded worker the
+  collector abandons at the deadline, so control returns on time even
+  when a single blocking call would run longer; the abandoned worker
+  aborts against the same deadline and closes its response
+  deterministically, and an unexpected internal worker error is re-raised
+  rather than swallowed. Error responses are closed without reading their
   content. Duplicate listed names and any malformed/drifted body fail
   closed; a healthy local runtime reports `windows: []` with no quota
   semantics. There is no generation, no model loading for inspection, no

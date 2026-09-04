@@ -18,10 +18,12 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import threading
 import time
 import unittest
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from http.client import HTTPException, HTTPMessage
 from pathlib import Path
 from typing import cast, override
@@ -197,6 +199,24 @@ def _healthy_runtime(
             "/api/ps": _fixture("ps-loaded.json") if ps is None else ps,
         }
     )
+
+
+def _sequenced_transport(
+    outcomes: dict[str, object],
+) -> Callable[[urllib.request.Request, float], object]:
+    """Transport dispatching one fixed raw outcome per URL path."""
+
+    def transport(request: urllib.request.Request, timeout: float) -> object:
+        _ = timeout
+        path = request.full_url.removeprefix(BASE)
+        outcome = outcomes[path]
+        if isinstance(outcome, Exception):
+            raise outcome
+        if isinstance(outcome, (bytes, bytearray)):
+            return _FakeResponse(bytes(outcome))
+        return outcome
+
+    return transport
 
 
 class _AcquisitionCase(unittest.TestCase):
@@ -613,14 +633,12 @@ class StrictJsonDecoding(_AcquisitionCase):
                         endpoint, b'{"models": ' + _deep_nesting(10_000) + b"}"
                     )
 
-    def test_very_large_integers_never_crash_or_leak(self) -> None:
-        # Tolerated additive fields carrying huge integers parse fine
-        # (Python ints are unbounded) and must never leak into output.
+    def test_overlarge_integers_rejected_on_all_endpoints(self) -> None:
+        # Integers outside the validated signed 64-bit band are a strict
+        # decode rejection on every endpoint: never truncated, never
+        # emitted, never healthy output. HUGE_DIGITS has 501 digits.
         huge_version = b'{"version": "x", "big": ' + HUGE_DIGITS + b"}"
-        _ = self._install(_healthy_runtime(version=huge_version))
-        snapshot = self._collect()
-        self.assertEqual(snapshot.status, "ok")
-        self.assertNotIn(HUGE_DIGITS[:32].decode(), _serialized(snapshot))
+        self._assert_probe_drift(huge_version)
 
         huge_tags = (
             b'{"models": [{"name": "test-model:latest", "digest": "'
@@ -629,14 +647,8 @@ class StrictJsonDecoding(_AcquisitionCase):
             + HUGE_DIGITS
             + b"}]}"
         )
-        _ = self._install(_healthy_runtime(tags=huge_tags))
-        snapshot = self._collect()
-        self.assertEqual(snapshot.status, "ok")  # model present by name
-        self.assertNotIn(HUGE_DIGITS[:32].decode(), _serialized(snapshot))
+        self._assert_tags_drift(huge_tags)
 
-        # On ps the huge integer occupies the validated context_length
-        # slot: it is a positive integer, so it is deterministic evidence
-        # (the value itself is the normalized fact, not a leak).
         huge_ps = (
             b'{"models": [{"name": "test-model:latest", "digest": "'
             + DIGEST_ZERO.encode()
@@ -644,12 +656,31 @@ class StrictJsonDecoding(_AcquisitionCase):
             + HUGE_DIGITS
             + b"}]}"
         )
-        _ = self._install(_healthy_runtime(ps=huge_ps))
+        self._assert_ps_drift(huge_ps)
+
+        # No raw payload fragment (the huge digits) may leak anywhere.
+        _ = self._install(_healthy_runtime(version=huge_version))
+        snapshot = self._collect()
+        self.assertNotIn(HUGE_DIGITS[:32].decode(), _serialized(snapshot))
+
+    def test_i64_band_boundary_values(self) -> None:
+        # The band edge itself stays valid evidence; one past it drifts.
+        at_band = (
+            b'{"models": [{"name": "test-model:latest", "digest": "'
+            + DIGEST_ZERO.encode()
+            + b'", "context_length": '
+            + str(2**63 - 1).encode()
+            + b"}]}"
+        )
+        _ = self._install(_healthy_runtime(ps=at_band))
         snapshot = self._collect(configured_context_tokens=8192)
         self.assertEqual(snapshot.status, "ok")
         local = snapshot.local_runtime
         assert local is not None
-        self.assertEqual(local.effective_context_tokens, HUGE_INT)
+        self.assertEqual(local.effective_context_tokens, 2**63 - 1)
+
+        past_band = at_band.replace(str(2**63 - 1).encode(), str(2**63).encode())
+        self._assert_ps_drift(past_band)
 
 
 # ═══════════════════════ healthy collection paths ════════════════════════════
@@ -1087,6 +1118,12 @@ class CollectionDeadline(_AcquisitionCase):
             ],
         )
         self.assertEqual(runtime.requested_paths(), ["/api/version"])
+        # The abandoned worker closes the response as soon as its current
+        # chunk returns and it re-checks the same deadline (bounded by one
+        # chunk interval).
+        wait_until = time.monotonic() + 1.0
+        while not trickling.closed and time.monotonic() < wait_until:
+            time.sleep(0.01)
         self.assertTrue(trickling.closed)
         self._assert_safe_serialization(snapshot)
 
@@ -1102,6 +1139,9 @@ class CollectionDeadline(_AcquisitionCase):
         assert local is not None
         self.assertTrue(local.reachable)  # validated by the probe
         self.assertEqual(local.model_presence, "unknown")
+        wait_until = time.monotonic() + 1.0
+        while not trickling.closed and time.monotonic() < wait_until:
+            time.sleep(0.01)
         self.assertTrue(trickling.closed)
 
     def test_expired_deadline_makes_no_transport_calls(self) -> None:
@@ -1125,6 +1165,151 @@ class CollectionDeadline(_AcquisitionCase):
         self.assertEqual(fp.close_count, 1)
         self.assertEqual(fp.position_at_close, 0)
         self._assert_no_output()
+
+
+class _BlockingOpener:
+    """Transport seam whose single ``open`` call blocks past any budget."""
+
+    _delay: float
+    _body: bytes
+    response: _FakeResponse | None
+
+    def __init__(self, delay: float, body: bytes) -> None:
+        self._delay = delay
+        self._body = body
+        self.response = None
+
+    def __call__(
+        self, request: urllib.request.Request, timeout: float
+    ) -> _FakeResponse:
+        _ = timeout
+        time.sleep(self._delay)
+        self.response = _FakeResponse(self._body)
+        return self.response
+
+
+class _BlockingReadResponse:
+    """Response whose single ``read`` call blocks past any budget."""
+
+    _delay: float
+    closed: bool
+
+    def __init__(self, delay: float) -> None:
+        self._delay = delay
+        self.closed = False
+
+    def read(self, size: int = -1) -> bytes:
+        _ = size
+        time.sleep(self._delay)
+        return b""  # one blocking call, then EOF
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class BoundedWorkerDeadline(_AcquisitionCase):
+    """One blocking call can never push the collection past the deadline."""
+
+    BUDGET: float = 0.04
+    BLOCK: float = 0.15
+    ELAPSED_LIMIT: float = 0.12
+    GRACE: float = 0.3
+
+    def _assert_bounded(self, transport: Callable[[urllib.request.Request, float], object]) -> None:
+        patcher = mock.patch.object(ollama_acquisition, "open_response", transport)
+        _ = patcher.start()
+        self.addCleanup(patcher.stop)
+        baseline_threads = threading.active_count()
+        started = time.monotonic()
+        with mock.patch.object(
+            ollama_acquisition, "COLLECTION_DEADLINE_SECONDS", self.BUDGET
+        ), contextlib.redirect_stdout(
+            self.stdout
+        ), contextlib.redirect_stderr(self.stderr):
+            snapshot = ollama_acquisition.collect_ollama_capacity(
+                retrieved_at=RETRIEVED_AT, model_name=MODEL
+            )
+        elapsed = time.monotonic() - started
+        self.assertLess(elapsed, self.ELAPSED_LIMIT)
+        self.assertEqual(snapshot.status, "unavailable")
+        local = snapshot.local_runtime
+        assert local is not None
+        self.assertFalse(local.reachable)
+        self.assertEqual(local.model_presence, "unknown")
+        self._assert_codes(
+            snapshot,
+            [
+                "source_unavailable",
+                "runtime_unreachable",
+                "model_presence_unknown",
+                "configured_context_unknown",
+            ],
+        )
+        # The abandoned worker unblocks soon after, aborts against the same
+        # deadline, closes its response deterministically and terminates:
+        # no leaked threads or fds.
+        time.sleep(self.GRACE)
+        self.assertLessEqual(threading.active_count(), baseline_threads)
+        self._assert_no_output()
+
+    def test_single_blocking_open_cannot_exceed_budget(self) -> None:
+        opener = _BlockingOpener(self.BLOCK, _fixture("version-ok.json"))
+        self._assert_bounded(opener)
+        assert opener.response is not None
+        self.assertTrue(opener.response.closed)
+
+    def test_single_blocking_read_cannot_exceed_budget(self) -> None:
+        response = _BlockingReadResponse(self.BLOCK)
+        self._assert_bounded(lambda request, timeout: response)
+        self.assertTrue(response.closed)
+
+
+class MalformedTransportResult(_AcquisitionCase):
+    def _install_transport(
+        self, transport: Callable[[urllib.request.Request, float], object]
+    ) -> None:
+        patcher = mock.patch.object(ollama_acquisition, "open_response", transport)
+        _ = patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_invalid_response_object_on_probe_maps_to_unknown(self) -> None:
+        self._install_transport(lambda request, timeout: object())
+        snapshot = self._collect()
+        self.assertEqual(snapshot.status, "unknown")
+        local = snapshot.local_runtime
+        assert local is not None
+        self.assertFalse(local.reachable)
+        self.assertEqual(local.model_presence, "unknown")
+        self._assert_codes(
+            snapshot,
+            [
+                "telemetry_unknown",
+                "runtime_unreachable",
+                "model_presence_unknown",
+                "configured_context_unknown",
+            ],
+        )
+        self._assert_no_output()
+
+    def test_invalid_response_object_on_ps_keeps_validated_presence(self) -> None:
+        self._install_transport(
+            _sequenced_transport(
+                {
+                    "/api/version": _fixture("version-ok.json"),
+                    "/api/tags": _fixture("tags-present.json"),
+                    "/api/ps": object(),
+                }
+            )
+        )
+        snapshot = self._collect(configured_context_tokens=8192)
+        self.assertEqual(snapshot.status, "ok")
+        local = snapshot.local_runtime
+        assert local is not None
+        self.assertTrue(local.reachable)
+        self.assertEqual(local.model_presence, "present")
+        self.assertIsNone(local.effective_context_tokens)
+        self._assert_codes(snapshot, ["effective_context_unknown"])
+        self._assert_safe_serialization(snapshot)
 
 
 # ═══════════════════════ transport mechanism ═════════════════════════════════
