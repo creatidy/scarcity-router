@@ -156,8 +156,9 @@ direction was chosen. Dates use UTC.
   extension layout: non-symlink `openai.chatgpt-*` directories under
   `~/.vscode/extensions` or `~/.vscode-server/extensions` (the
   remote-server layout is the directly evidenced PoC environment), scanned
-   read-only, ordered deterministically by extension version descending on
-   Linux; Darwin is unsupported until a working descriptor-bound execution
+    read-only, ordered deterministically by extension version descending on
+    Linux x86-64; Linux ARM64 and Darwin are unsupported until a working
+    descriptor-bound execution
    strategy is evidenced. A
   candidate is usable only when its intermediate `bin/<platform>`
   directories and package/executable paths are non-symlink validated beneath
@@ -185,7 +186,7 @@ direction was chosen. Dates use UTC.
   `schema_changed`/`unknown` on any drift; (b) other installation sources
   (npm `@openai/codex`, standalone binaries, other editors' extension
   roots) are unsupported until separately evidenced; (c) platform
-   directories other than the directly evidenced Linux directories are
+   directories other than the directly evidenced Linux x86-64 directory are
    unsupported until descriptor-bound execution is evidenced; (d) OpenAI
    app-server failure
   wire shapes (auth required in particular) remain uncaptured, so protocol

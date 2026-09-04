@@ -110,10 +110,10 @@ MAX_PACKAGE_BYTES = 64 * 1024
 
 # Evidenced platform directory under the extension's ``bin/``. linux-x86_64
 # is directly evidenced (PoC environment); descriptor-bound execution is
-# intentionally supported only on Linux until another platform is evidenced.
+# intentionally supported only on Linux x86-64 until another platform is
+# evidenced.
 _PLATFORM_DIRS: dict[tuple[str, str], str] = {
     ("linux", "x86_64"): "linux-x86_64",
-    ("linux", "aarch64"): "linux-arm64",
 }
 
 DiscoveryOutcome = Literal["found", "not_installed", "unsupported_installation"]

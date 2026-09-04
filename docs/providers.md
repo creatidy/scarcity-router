@@ -94,7 +94,7 @@ omitted.
 Supported discovery (U-001, evidence in `docs/poc-evidence.md`):
 `openai.chatgpt-*` extension directories under `~/.vscode/extensions` or
 `~/.vscode-server/extensions` (the remote-server layout is the directly
-evidenced PoC environment), on currently supported Linux hosts, highest
+evidenced PoC environment), on currently supported Linux x86-64 hosts, highest
 extension version first, validated by a
 non-symlink candidate plus `bin/<platform>` directory, a regular non-symlink
 executable `bin/<platform>/codex` and a

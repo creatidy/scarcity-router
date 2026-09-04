@@ -413,10 +413,17 @@ def _bucket_window_id(limit_id: object, slot: str) -> str | None:
     return None
 
 
+def _valid_bucket_identity(limit_id: str) -> bool:
+    """Require a bucket key that can compose both possible slot identities."""
+    return all(_bucket_window_id(limit_id, slot) is not None for slot in _WINDOW_SLOTS)
+
+
 def _failure(
     status: str,
     diagnostic_code: str,
     retrieved_at: str,
+    *,
+    plan: str | None = None,
 ) -> CapacitySnapshot:
     return CapacitySnapshot(
         schema_version=1,
@@ -426,7 +433,7 @@ def _failure(
         status=status,
         windows=(),
         diagnostics=(CapacityDiagnostic(code=diagnostic_code),),
-        plan=None,
+        plan=plan,
     )
 
 
@@ -822,6 +829,8 @@ def parse_codex_rate_limits_result(
                         "schema_changed", "schema_changed", retrieved_at
                     )
                 continue
+            if not _valid_bucket_identity(key):
+                return _failure("schema_changed", "schema_changed", retrieved_at)
             state = _quota_snapshot_state(
                 bucket_snapshot,
                 expected_limit_id=key,
@@ -869,7 +878,7 @@ def parse_codex_rate_limits_result(
     if not emitted:
         # No window slots anywhere: the response cannot evidence any quota
         # coverage; that is insufficient evidence, not healthy emptiness.
-        return _failure("unknown", "telemetry_unknown", retrieved_at)
+        return _failure("unknown", "telemetry_unknown", retrieved_at, plan=plan)
 
     if blocked:
         # A backend-enforced block or a v1-unrepresentable metering state

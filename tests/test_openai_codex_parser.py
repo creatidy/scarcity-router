@@ -650,6 +650,32 @@ class AdditionalBuckets(unittest.TestCase):
         self.assertEqual(snap.windows, ())
         self.assertNotIn("GPT Reserve!", _canonical_json(snap))
 
+    def test_unsafe_bucket_key_fails_without_windows(self) -> None:
+        for windows in (
+            {"primary": None, "secondary": None},
+            {},
+        ):
+            with self.subTest(windows=windows):
+                bucket = self._bucket(limit_id="UNSAFE SECRET ID")
+                bucket.update(windows)
+                payload = _result(
+                    _snapshot(dict(_BOTH_SLOTS)),
+                    buckets={"UNSAFE SECRET ID": bucket},
+                )
+                snap = _parse(payload)
+                self.assertEqual(snap.status, "schema_changed")
+                self.assertEqual(snap.windows, ())
+                self.assertNotIn("UNSAFE SECRET ID", _canonical_json(snap))
+
+    def test_zero_window_degradation_preserves_safe_plan(self) -> None:
+        payload = _result(
+            _snapshot({"primary": None, "secondary": None}, plan_type="plus")
+        )
+        snap = _parse(payload)
+        self.assertEqual(snap.status, "unknown")
+        self.assertEqual(snap.plan, "plus")
+        self.assertEqual(snap.windows, ())
+
     def test_bucket_identity_mismatch_fails_closed(self) -> None:
         payload = _result(
             _snapshot(dict(_BOTH_SLOTS)),
