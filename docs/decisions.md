@@ -275,23 +275,45 @@ direction was chosen. Dates use UTC.
 - Select the supported local calls for health, model presence and effective
   configuration; distinguish configured from effective context.
 - Evidence needed: a local PoC against the actual Qwen configuration.
-- **Status:** Narrowly resolved for M1 (2026-09-04); residuals below
-- **Decision:** The local collector uses exactly three read-only GETs
-  against one explicitly configured local endpoint (plain `http` on exactly
-  `127.0.0.1`, `::1` or `localhost`; no proxy routing, no redirects, at
-  most one attempt each): `GET /api/version` (validated envelope = the
-  reachability fact), `GET /api/tags` (exact `name`-identity model
-  presence) and `GET /api/ps` (effective context). `model_presence` is
-  `missing` only when a reachable runtime's validated listing lacks the
-  configured name, `unknown` on every failure. `configured_context_tokens`
-  comes only from the explicit configuration boundary;
-  `effective_context_tokens` comes only from a validated positive integer
-  `context_length` on the configured model's loaded `/api/ps` entry, never
-  from the configured value and never from the `/api/tags`
-  `details.context_length` model-file metadata. Duplicate listed names and
-  any malformed/drifted body fail closed; a healthy local runtime reports
-  `windows: []` with no quota semantics. There is no generation, no model
-  loading for inspection, no pull/delete and no runtime/config mutation.
+- **Status:** Narrowly resolved for M1 (2026-09-04, hardened same day
+  after review); residuals below
+- **Decision:** The local collector makes at most three read-only GETs
+  against one explicitly configured local endpoint — two when the validated
+  listing proves the configured model absent. The endpoint is
+  canonicalized before any I/O: plain `http` on exactly the numeric
+  loopback hosts `127.0.0.1` or `::1` (`localhost` and every other name
+  are rejected outright, so no DNS/hosts-file/proxy escape path exists);
+  the omitted port canonically defaults to the documented Ollama port
+  11434, never an implicit socket default; empty query/fragment
+  delimiters, whitespace/control characters and non-root paths are
+  rejected; proxies are disabled for the connection and redirects are
+  never followed; at most one attempt per read. The reads are
+  `GET /api/version` (validated envelope = the reachability fact),
+  `GET /api/tags` (exact `name`-identity model presence) and
+  `GET /api/ps` (effective context). `model_presence` is `missing` only
+  when a reachable runtime's validated listing lacks the configured name,
+  and `unknown` on runtime/listing failures; `/api/ps` supplemental
+  failures preserve the tags-derived presence while omitting the optional
+  effective context. `configured_context_tokens` comes only from the
+  explicit configuration boundary; `effective_context_tokens` comes only
+  from a validated positive integer `context_length` on the configured
+  model's loaded `/api/ps` entry whose validated `sha256:<64 lowercase
+  hex>` digest agrees with the listing's validated digest — a missing,
+  invalid or mismatched digest preserves reachability/presence but
+  degrades the telemetry to `unknown` and withholds the effective context
+  rather than attributing it to an unverifiable model image; the digest is
+  never emitted. The effective context is never taken from the configured
+  value and never from the `/api/tags` `details.context_length` model-file
+  metadata. Every response body decodes under a strict JSON contract
+  (duplicate object keys at any depth, NaN/Infinity constants and
+  non-finite floats such as `1e10000`, and recursion-limit nesting all
+  normalize to `schema_changed`), and one monotonic collection deadline
+  spans connect, headers and bounded body reads so a trickling peer cannot
+  extend the collection; error responses are closed without reading their
+  content. Duplicate listed names and any malformed/drifted body fail
+  closed; a healthy local runtime reports `windows: []` with no quota
+  semantics. There is no generation, no model loading for inspection, no
+  pull/delete and no runtime/config mutation.
 - **Evidence:** 2026-09-04 reconnaissance in `docs/poc-evidence.md`
   ("2026-09-04 M1 Ollama local runtime reconnaissance"): live envelope
   shapes for all three reads against Ollama `0.33.1` plus the installed
@@ -300,8 +322,9 @@ direction was chosen. Dates use UTC.
   been observed (nothing was loaded during reconnaissance; loading solely
   for inspection is side-effectful and was not performed) — the populated
   path is synthetic-fixture-tested only; (b) `context_length` stability
-  across Ollama releases is unevidenced and the parser fails closed on its
-  absence; (c) the reconnaissance runtime was the installed `0.33.1`
+  across Ollama releases is unevidenced — the local interface must not be
+  described as stable — and the parser fails closed on its absence;
+  (c) the reconnaissance runtime was the installed `0.33.1`
   service, not the owner's loaded Qwen configuration, so load-state
   behavior of the real workflow remains to be observed in use.
 

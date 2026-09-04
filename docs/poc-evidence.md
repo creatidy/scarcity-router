@@ -212,9 +212,18 @@ default local endpoint `http://127.0.0.1:11434`):
 - No duplicate model names were observed in the live listing; the collector
   nevertheless fails closed on duplicate `name` entries (ambiguous
   identity).
+- Listing entries carry a `digest` string (Ollama's content identity). The
+  collector validates the conservative `sha256:<64 lowercase hex>` form and
+  requires name+digest agreement between the listing and the loaded-model
+  entry before accepting a `context_length` as effective-context evidence;
+  a missing/invalid/mismatched digest degrades the telemetry instead of
+  attributing the context to an unverifiable image.
 - All three reads are plain HTTP on the loopback default endpoint with no
-  authentication and no redirects observed; the collector's endpoint policy
-  accepts only explicit `http` on `127.0.0.1`, `::1` or `localhost`.
+  authentication and no redirects observed. The collector's endpoint policy
+  accepts only explicit `http` on the numeric loopback hosts `127.0.0.1`
+  and `::1` — `localhost` and all other names are rejected so no name
+  resolution ever occurs — and canonicalizes an omitted port to the
+  documented default 11434.
 
 Recorded limitation: the effective-context evidence is validated in shape
 (envelope live, field name via the binary's serialization table) but the
@@ -398,11 +407,13 @@ fixtures, logs or documentation.
   stable and its used/remaining reading is correct; only the used-orientation
   reading is relied on.
 - Local Ollama exposes model presence and the effective context through a
-  stable, safe local interface. Narrowly evidenced for M1 (2026-09-04):
+  safe, read-only local interface. Narrowly evidenced for M1 (2026-09-04):
   `GET /api/version`, `GET /api/tags` and `GET /api/ps` are read-only and
   safe, and the loaded-entry `context_length` field name is evidenced for
-  the installed version; a live populated effective-context value and the
-  field's stability across Ollama releases remain unvalidated.
+  the installed version. The interface must not be described as stable: a
+  live populated effective-context value and the field's behavior across
+  Ollama releases remain explicitly unvalidated, and the collector fails
+  closed on their absence.
 - Provider terms permit this continued read-only personal use; this should be
   checked before public release and maintained as providers evolve.
 

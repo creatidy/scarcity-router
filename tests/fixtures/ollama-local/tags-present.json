@@ -5,25 +5,30 @@
       "model": "test-model:latest",
       "modified_at": "2026-09-01T12:00:00.000000000Z",
       "size": 1000000000,
-      "digest": "0000000000000000000000000000000000000000000000000000000000000000",
+      "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
       "details": {
         "parent_model": "",
         "format": "gguf",
         "family": "synthetic",
-        "families": ["synthetic"],
+        "families": [
+          "synthetic"
+        ],
         "parameter_size": "1B",
         "quantization_level": "Q4_K_M",
         "context_length": 8192,
         "embedding_length": 4096
       },
-      "capabilities": ["completion", "tools"]
+      "capabilities": [
+        "completion",
+        "tools"
+      ]
     },
     {
       "name": "other-model:1b",
       "model": "other-model:1b",
       "modified_at": "2026-08-01T09:00:00.000000000Z",
       "size": 2000000000,
-      "digest": "1111111111111111111111111111111111111111111111111111111111111111",
+      "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
       "details": {
         "parent_model": "",
         "format": "gguf",
@@ -34,7 +39,9 @@
         "context_length": 32768,
         "embedding_length": 2048
       },
-      "capabilities": ["completion"]
+      "capabilities": [
+        "completion"
+      ]
     }
   ]
 }

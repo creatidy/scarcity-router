@@ -30,6 +30,14 @@ Evidenced shapes (structure only; see poc-evidence.md):
   inferred. A model that is simply not loaded is absent from the list and
   is not drift.
 
+Digest identity: both listings carry a non-secret content ``digest``. The
+validated shape is ``sha256:`` followed by 64 lowercase hex digits
+(Ollama's manifest digest form); a missing or nonconforming digest is not
+structural drift — it degrades that entry's identity evidence to ``None``
+so the collector can withhold the effective context instead of attributing
+it to an unverifiable model image. Digests are evidence for name+digest
+agreement only and never enter normalized output.
+
 The ``details.context_length`` value that ``/api/tags`` exposes is
 model-file architecture metadata, not the runtime's effective context and
 not user configuration; this parser deliberately never reads it, so the
@@ -38,11 +46,17 @@ configured and effective context facts stay independent.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from typing import TypeGuard, cast
 
 PROVIDER = "ollama"
 SOURCE = "ollama_local"
+
+# Validated non-secret content digest: Ollama's manifest digest form.
+# Anything else degrades that entry's identity evidence (``None``), rather
+# than drifting the whole listing or accepting an unverifiable image.
+_SAFE_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 __all__ = [
     "PROVIDER",
@@ -50,6 +64,7 @@ __all__ = [
     "parse_ollama_ps_response",
     "parse_ollama_tags_response",
     "parse_ollama_version_response",
+    "safe_digest",
 ]
 
 
@@ -65,6 +80,18 @@ def _is_int(value: object) -> TypeGuard[int]:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
+def safe_digest(value: object) -> str | None:
+    """Return the validated digest string, or ``None`` when unusable.
+
+    ``None`` means the digest is absent or does not match the validated
+    ``sha256:<64 lowercase hex>`` form; it is a degraded-identity signal,
+    never a guessable value and never emitted.
+    """
+    if isinstance(value, str) and _SAFE_DIGEST_RE.fullmatch(value):
+        return value
+    return None
+
+
 def parse_ollama_version_response(payload: object) -> bool:
     """Validate one decoded ``/api/version`` response.
 
@@ -78,18 +105,14 @@ def parse_ollama_version_response(payload: object) -> bool:
     return isinstance(envelope.get("version"), str)
 
 
-def _listed_names_with(
+def _listed_entries(
     payload: object,
-    *,
-    required_value: str | None,
 ) -> dict[str, Mapping[str, object]] | None:
     """Shared strict listing validation for ``/api/tags`` and ``/api/ps``.
 
     Validates the ``{"models": [...]}`` envelope and every entry's string
-    ``name``, rejecting duplicates. When ``required_value`` is set, that key
-    must additionally hold a positive integer in every entry (used for the
-    ps ``context_length`` requirement). Returns ``name -> entry`` on
-    success, ``None`` on any drift.
+    ``name``, rejecting duplicates. Returns ``name -> entry`` on success,
+    ``None`` on any structural drift.
     """
     envelope = _as_mapping(payload)
     if envelope is None:
@@ -107,44 +130,49 @@ def _listed_names_with(
             return None
         if name in listed:
             return None
-        if required_value is not None:
-            context_length = entry.get(required_value)
-            if not _is_int(context_length) or context_length < 1:
-                return None
         listed[name] = entry
     return listed
 
 
-def parse_ollama_tags_response(payload: object) -> tuple[str, ...] | None:
+def parse_ollama_tags_response(payload: object) -> dict[str, str | None] | None:
     """Normalize one decoded ``/api/tags`` model listing.
 
-    Returns the tuple of listed model names in listing order, or ``None``
-    when the payload is not the evidenced listing shape. A duplicate
-    ``name`` is drift (ambiguous identity), not a redundant entry: the
-    presence answer must never depend on which duplicate a reader happens
-    to inspect.
+    Returns ``name -> validated digest (or None)`` in listing order, or
+    ``None`` when the payload is not the evidenced listing shape. A
+    duplicate ``name`` is drift (ambiguous identity), not a redundant
+    entry: the presence answer must never depend on which duplicate a
+    reader happens to inspect. A missing or nonconforming digest yields a
+    ``None`` digest for that entry (degraded identity evidence), never a
+    guessed value.
     """
-    listed = _listed_names_with(payload, required_value=None)
+    listed = _listed_entries(payload)
     if listed is None:
         return None
-    return tuple(listed.keys())
+    return {name: safe_digest(entry.get("digest")) for name, entry in listed.items()}
 
 
-def parse_ollama_ps_response(payload: object) -> dict[str, int] | None:
+def parse_ollama_ps_response(
+    payload: object,
+) -> dict[str, tuple[str | None, int]] | None:
     """Normalize one decoded ``/api/ps`` loaded-model listing.
 
-    Returns ``name -> context_length`` for every loaded entry, or ``None``
-    on drift. Every listed entry must carry a positive integer
-    ``context_length``: the effective context is accepted only as validated
-    runtime evidence. Absence of a model from the list (not loaded) is a
-    normal state and is represented by the model's absence from the result,
-    never by a guessed value.
+    Returns ``name -> (validated digest or None, context_length)`` for
+    every loaded entry, or ``None`` on structural drift. Every listed entry
+    must carry a positive integer ``context_length``: the effective context
+    is accepted only as validated runtime evidence. A missing or
+    nonconforming digest yields a ``None`` digest (degraded identity
+    evidence) so the collector can withhold the effective context instead
+    of attributing it to an unverifiable image. Absence of a model from the
+    list (not loaded) is a normal state and is represented by the model's
+    absence from the result, never by a guessed value.
     """
-    listed = _listed_names_with(payload, required_value="context_length")
+    listed = _listed_entries(payload)
     if listed is None:
         return None
-    return {
-        name: context_length
-        for name, entry in listed.items()
-        if _is_int(context_length := entry.get("context_length"))
-    }
+    loaded: dict[str, tuple[str | None, int]] = {}
+    for name, entry in listed.items():
+        context_length = entry.get("context_length")
+        if not _is_int(context_length) or context_length < 1:
+            return None
+        loaded[name] = (safe_digest(entry.get("digest")), context_length)
+    return loaded

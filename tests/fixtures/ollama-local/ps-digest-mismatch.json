@@ -5,14 +5,12 @@
       "model": "test-model:latest",
       "size": 1000000000,
       "size_vram": 900000000,
-      "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
       "details": {
         "parent_model": "",
         "format": "gguf",
         "family": "synthetic",
-        "families": [
-          "synthetic"
-        ],
+        "families": ["synthetic"],
         "parameter_size": "1B",
         "quantization_level": "Q4_K_M"
       },

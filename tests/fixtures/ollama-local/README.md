@@ -4,8 +4,14 @@ These fixtures are **structurally representative, synthetic** inputs for the
 Ollama local runtime collector's parser and contract tests. They carry no
 credentials, no Authorization material, no real model inventory and no
 filesystem paths. Model names (`test-model:latest`, `other-model:1b`),
-digests and sizes are synthetic; numeric values are chosen to exercise the
-required parsing paths rather than replay a live reading.
+digests (synthetic `sha256:<64 hex>` strings) and sizes are synthetic;
+numeric values are chosen to exercise the required parsing paths rather than
+replay a live reading. The collector validates the digest form
+(`sha256:` + 64 lowercase hex) and requires listing/loaded digest agreement
+before accepting effective context; `tags-invalid-digest.json`,
+`ps-digest-mismatch.json` and `ps-digest-missing.json` exercise the
+degraded-identity paths, and no digest value may appear in any normalized
+output.
 
 Source of the shapes: bounded read-only reconnaissance of the local Ollama
 HTTP interface (`/api/version`, `/api/tags`, `/api/ps`) against the live

@@ -4,8 +4,10 @@ The transport seam (``open_response``) is replaced with a fake local runtime
 dispatching per URL path; no test in this module contacts a runtime, a
 network or the filesystem beyond the synthetic fixtures. Every failure class
 asserts that conspicuous synthetic markers (fake secrets, fake paths, the
-endpoint URL) appear in no serialized snapshot, repr, diagnostic or captured
-stdout/stderr output.
+endpoint URL, digests) appear in no serialized snapshot, repr, diagnostic or
+captured stdout/stderr output, and that adversarial bodies (duplicate keys,
+non-finite values, deep nesting, huge integers, trickling reads) are handled
+by the strict decode/deadline boundaries.
 
 Contract tests assert the normalized snapshot/local-runtime shape, context
 independence and deterministic normalization per docs/capacity-model.md.
@@ -16,6 +18,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -34,6 +37,11 @@ MODEL = "test-model:latest"
 OTHER_MODEL = "other-model:1b"
 ENDPOINT = ollama_acquisition.DEFAULT_ENDPOINT
 BASE = ENDPOINT.rstrip("/")
+DIGEST_ZERO = "sha256:" + "0" * 64
+DIGEST_ONE = "sha256:" + "1" * 64
+DIGEST_OTHER = "sha256:" + "f" * 64
+HUGE_INT = 10**500
+HUGE_DIGITS = str(HUGE_INT).encode()
 
 # Conspicuous synthetic-only markers; never realistic production shapes.
 FAKE_SECRET = "TEST_ONLY_FAKE_OLLAMA_SECRET_NEVER_REAL"
@@ -42,12 +50,8 @@ FAKE_RAW_FRAGMENT = "TEST_ONLY_RAW_RESPONSE_FRAGMENT"
 FAKE_REDIRECT_TARGET = "TEST_ONLY_REDIRECT_TARGET"
 
 
-def _fixture_bytes(name: str) -> bytes:
-    return (FIXTURES / name).read_bytes()
-
-
 def _fixture(name: str) -> bytes:
-    return _fixture_bytes(name)
+    return (FIXTURES / name).read_bytes()
 
 
 def _serialized(snapshot: CapacitySnapshot) -> str:
@@ -55,27 +59,64 @@ def _serialized(snapshot: CapacitySnapshot) -> str:
 
 
 class _FakeResponse:
-    """Minimal successful-response fake for the transport seam."""
+    """Minimal successful-response fake for the transport seam.
+
+    ``read(size)`` honors the requested bound and ends with an empty chunk
+    at EOF, like a real streamed body, so the collector's chunked
+    deadline-bounded read loop is exercised faithfully.
+    """
 
     _body: bytes
+    _offset: int
     _read_error: Exception | None
     closed: bool
 
     def __init__(self, body: bytes, read_error: Exception | None = None) -> None:
         self._body = body
+        self._offset = 0
         self._read_error = read_error
         self.closed = False
 
     def read(self, size: int = -1) -> bytes:
-        _ = size
         if self._read_error is not None:
             raise self._read_error
-        return self._body
+        if size < 0:
+            chunk = self._body[self._offset :]
+            self._offset = len(self._body)
+            return chunk
+        chunk = self._body[self._offset : self._offset + size]
+        self._offset += len(chunk)
+        return chunk
 
     def close(self) -> None:
         self.closed = True
 
     def __enter__(self) -> "_FakeResponse":
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self.closed = True
+
+
+class _TricklingResponse:
+    """A response that trickles bytes forever, one small chunk per read."""
+
+    _delay: float
+    closed: bool
+
+    def __init__(self, delay: float = 0.02) -> None:
+        self._delay = delay
+        self.closed = False
+
+    def read(self, size: int = -1) -> bytes:
+        _ = size
+        time.sleep(self._delay)
+        return b"x" * 256
+
+    def close(self) -> None:
+        self.closed = True
+
+    def __enter__(self) -> "_TricklingResponse":
         return self
 
     def __exit__(self, *args: object) -> None:
@@ -88,20 +129,43 @@ def _http_error(code: int) -> urllib.error.HTTPError:
     )
 
 
+class _TrackingBytesIO(io.BytesIO):
+    """BytesIO that records its read position when closed, never after."""
+
+    close_count: int
+    position_at_close: int
+
+    def __init__(self, body: bytes) -> None:
+        super().__init__(body)
+        self.close_count = 0
+        self.position_at_close = -1
+
+    @override
+    def close(self) -> None:
+        self.close_count += 1
+        self.position_at_close = self.tell()
+        super().close()
+
+
+def _http_error_with_fp(code: int, fp: io.BytesIO) -> urllib.error.HTTPError:
+    return urllib.error.HTTPError(ENDPOINT, code, "synthetic", HTTPMessage(), fp)
+
+
 class _FakeRuntime:
     """Fake local runtime: dispatches one fixed outcome per URL path."""
 
-    _outcomes: dict[str, bytes | Exception | _FakeResponse]
+    _outcomes: dict[str, bytes | Exception | _FakeResponse | _TricklingResponse]
 
     def __init__(
-        self, outcomes: dict[str, bytes | Exception | _FakeResponse]
+        self,
+        outcomes: dict[str, bytes | Exception | _FakeResponse | _TricklingResponse],
     ) -> None:
         self._outcomes = outcomes
         self.calls: list[tuple[str, float]] = []
 
     def __call__(
         self, request: urllib.request.Request, timeout: float
-    ) -> _FakeResponse:
+    ) -> _FakeResponse | _TricklingResponse:
         url = request.full_url
         self.calls.append((url, timeout))
         path = url.removeprefix(BASE)
@@ -110,9 +174,9 @@ class _FakeRuntime:
             raise AssertionError(f"unexpected request path: {path!r}")
         if isinstance(outcome, Exception):
             raise outcome
-        if isinstance(outcome, _FakeResponse):
-            return outcome
-        return _FakeResponse(outcome)
+        if isinstance(outcome, (bytes, bytearray)):
+            return _FakeResponse(bytes(outcome))
+        return outcome
 
     def requested_paths(self) -> list[str]:
         return [url.removeprefix(BASE) for url, _timeout in self.calls]
@@ -120,9 +184,9 @@ class _FakeRuntime:
 
 def _healthy_runtime(
     *,
-    tags: bytes | Exception | _FakeResponse | None = None,
-    ps: bytes | Exception | _FakeResponse | None = None,
-    version: bytes | Exception | _FakeResponse | None = None,
+    tags: bytes | Exception | _FakeResponse | _TricklingResponse | None = None,
+    ps: bytes | Exception | _FakeResponse | _TricklingResponse | None = None,
+    version: bytes | Exception | _FakeResponse | _TricklingResponse | None = None,
 ) -> _FakeRuntime:
     return _FakeRuntime(
         {
@@ -148,7 +212,10 @@ class _AcquisitionCase(unittest.TestCase):
         self.stdout = io.StringIO()
         self.stderr = io.StringIO()
 
-    def _install(self, runtime: _FakeRuntime) -> _FakeRuntime:
+    def _install(
+        self,
+        runtime: _FakeRuntime,
+    ) -> _FakeRuntime:
         self.runtime = runtime
         patcher = mock.patch.object(ollama_acquisition, "open_response", runtime)
         _ = patcher.start()
@@ -186,6 +253,7 @@ class _AcquisitionCase(unittest.TestCase):
             ENDPOINT,
             "http://",
             "Authorization",
+            "sha256:",
         ):
             self.assertNotIn(marker, text)
         self._assert_no_output()
@@ -202,44 +270,46 @@ class _AcquisitionCase(unittest.TestCase):
 
 
 class EndpointPolicy(unittest.TestCase):
-    def test_default_and_explicit_loopback_endpoints_accepted(self) -> None:
-        for url in (
-            "http://127.0.0.1:11434",
-            "http://127.0.0.1",
-            "http://127.0.0.1:8080",
-            "http://localhost:11434",
-            "http://localhost",
-            "http://[::1]:11434",
-            "http://[::1]",
+    def test_canonicalization_pins_default_and_explicit_ports(self) -> None:
+        for url, canonical in (
+            ("http://127.0.0.1", "http://127.0.0.1:11434"),
+            ("http://127.0.0.1:11434", "http://127.0.0.1:11434"),
+            ("http://127.0.0.1:8080", "http://127.0.0.1:8080"),
+            ("http://127.0.0.1/", "http://127.0.0.1:11434"),
+            ("http://[::1]", "http://[::1]:11434"),
+            ("http://[::1]:9100", "http://[::1]:9100"),
         ):
+            with self.subTest(url=url):
+                self.assertEqual(
+                    ollama_acquisition.canonical_local_endpoint(url), canonical
+                )
+
+    def test_loopback_endpoints_are_approved(self) -> None:
+        for url in ("http://127.0.0.1:11434", "http://[::1]:11434"):
             with self.subTest(url=url):
                 self.assertTrue(ollama_acquisition.is_approved_local_endpoint(url))
 
-    def test_arbitrary_external_hosts_rejected(self) -> None:
+    def test_localhost_and_names_are_rejected(self) -> None:
+        # Name-based endpoints are rejected outright: the collector never
+        # resolves names, so DNS/hosts-file/proxy escape paths do not exist.
         for url in (
+            "http://localhost:11434",
+            "http://localhost",
+            "http://ollama.internal:11434",
             "http://example.com:11434",
-            "http://ollama.example.org",
-            "https://api.z.ai",
-            "http://ollama.local.example.com",
         ):
             with self.subTest(url=url):
                 self.assertFalse(ollama_acquisition.is_approved_local_endpoint(url))
 
-    def test_lan_and_non_loopback_addresses_rejected(self) -> None:
+    def test_arbitrary_external_and_lan_hosts_rejected(self) -> None:
         for url in (
+            "http://ollama.example.org",
+            "https://api.z.ai",
             "http://192.168.1.10:11434",
             "http://10.0.0.5:11434",
             "http://172.16.0.9:11434",
             "http://0.0.0.0:11434",
             "http://169.254.1.1:11434",
-            "http://224.0.0.1:11434",
-            "http://255.255.255.255:11434",
-        ):
-            with self.subTest(url=url):
-                self.assertFalse(ollama_acquisition.is_approved_local_endpoint(url))
-
-    def test_loopback_suffix_tricks_rejected(self) -> None:
-        for url in (
             "http://127.0.0.1.evil.test:11434",
             "http://localhost.example.com:11434",
             "http://127.0.0.10:11434",  # different host, not 127.0.0.1
@@ -257,20 +327,43 @@ class EndpointPolicy(unittest.TestCase):
             with self.subTest(url=url):
                 self.assertFalse(ollama_acquisition.is_approved_local_endpoint(url))
 
-    def test_userinfo_query_fragment_paths_rejected(self) -> None:
+    def test_query_fragment_and_empty_delimiters_rejected(self) -> None:
+        for url in (
+            "http://127.0.0.1:11434?",
+            "http://127.0.0.1:11434#",
+            "http://127.0.0.1:11434?#",
+            "http://127.0.0.1:11434?debug=1",
+            "http://127.0.0.1:11434#x",
+        ):
+            with self.subTest(url=url):
+                self.assertFalse(ollama_acquisition.is_approved_local_endpoint(url))
+
+    def test_whitespace_control_and_leading_characters_rejected(self) -> None:
+        for url in (
+            " http://127.0.0.1:11434",
+            "http://127.0.0.1:11434 ",
+            "\thttp://127.0.0.1:11434",
+            "http://127.0.0.1:11434\n",
+            "http://127.0.0.1\x00:11434",
+            "http://127.0.0.1:11434/api/ver sion",
+        ):
+            with self.subTest(url=url):
+                self.assertFalse(ollama_acquisition.is_approved_local_endpoint(url))
+
+    def test_userinfo_and_non_root_paths_rejected(self) -> None:
         for url in (
             "http://user@127.0.0.1:11434",
             "http://user:pass@127.0.0.1:11434",
-            "http://127.0.0.1:11434?debug=1",
-            "http://127.0.0.1:11434#x",
             "http://127.0.0.1:11434/api/base/other",
         ):
             with self.subTest(url=url):
                 self.assertFalse(ollama_acquisition.is_approved_local_endpoint(url))
 
-    def test_malformed_urls_fail_closed(self) -> None:
+    def test_malformed_urls_and_ports_fail_closed(self) -> None:
         for url in (
             "http://127.0.0.1:not-a-port",
+            "http://127.0.0.1:0",
+            "http://127.0.0.1:65536",
             "http://[::1:11434",
             "not a url at all",
             "",
@@ -295,6 +388,18 @@ class ConfigurationBoundary(_AcquisitionCase):
         self.assertEqual(runtime.calls, [])
         self._assert_no_output()
 
+    def test_omitted_port_contacts_canonical_default(self) -> None:
+        runtime = self._install(_healthy_runtime())
+        _ = self._collect(endpoint="http://127.0.0.1")
+        self.assertEqual(
+            [url for url, _timeout in runtime.calls],
+            [
+                "http://127.0.0.1:11434/api/version",
+                "http://127.0.0.1:11434/api/tags",
+                "http://127.0.0.1:11434/api/ps",
+            ],
+        )
+
     def test_unsafe_model_names_raise_before_any_io(self) -> None:
         runtime = self._install(_healthy_runtime())
         for bad in (
@@ -312,6 +417,40 @@ class ConfigurationBoundary(_AcquisitionCase):
                     _ = self._collect(model_name=cast(str, bad))
                 self.assertEqual(runtime.calls, [])
         self._assert_no_output()
+
+    def test_trailing_newline_model_name_rejected(self) -> None:
+        # re.match with ``$`` would accept a final newline; validation is
+        # full-string, so this configuration must be refused before any I/O.
+        runtime = self._install(_healthy_runtime())
+        for bad in ("test-model:latest\n", "test-model:latest\r\n"):
+            with self.subTest(bad=repr(bad)):
+                with self.assertRaises(ValueError) as ctx:
+                    _ = self._collect(model_name=bad)
+                self.assertNotIn("test-model", str(ctx.exception))
+                self.assertEqual(runtime.calls, [])
+
+    def test_control_characters_in_model_name_rejected(self) -> None:
+        runtime = self._install(_healthy_runtime())
+        for bad in ("\x01test-model:latest", "test-model:latest\x7f", "a\tb"):
+            with self.subTest(bad=repr(bad)):
+                with self.assertRaises(ValueError):
+                    _ = self._collect(model_name=bad)
+                self.assertEqual(runtime.calls, [])
+
+    def test_model_name_length_boundary(self) -> None:
+        # A 64-character identifier is a valid v1 identity (the model is
+        # then simply missing from the listing); 65 characters are refused
+        # before any I/O.
+        runtime = self._install(_healthy_runtime())
+        snapshot = self._collect(model_name="a" * 64)
+        self.assertEqual(runtime.requested_paths(), ["/api/version", "/api/tags"])
+        local = snapshot.local_runtime
+        assert local is not None
+        self.assertEqual(local.model_name, "a" * 64)
+        self.assertEqual(local.model_presence, "missing")
+        with self.assertRaises(ValueError):
+            _ = self._collect(model_name="a" * 65)
+        self.assertEqual(len(runtime.calls), 2)
 
     def test_invalid_configured_context_raises_before_any_io(self) -> None:
         runtime = self._install(_healthy_runtime())
@@ -332,6 +471,185 @@ class ConfigurationBoundary(_AcquisitionCase):
         combined = str(endpoint_error.exception) + str(model_error.exception)
         self.assertNotIn(marker_model, combined)
         self.assertNotIn(marker_host, combined)
+
+
+# ═══════════════════════ strict JSON decoding ════════════════════════════════
+
+
+def _deep_nesting(depth: int) -> bytes:
+    return b"[" * depth + b"]" * depth
+
+
+class StrictJsonDecoding(_AcquisitionCase):
+    """Ambiguous/adversarial bodies never decode or leak; they fail closed."""
+
+    def _assert_probe_drift(self, body: bytes) -> None:
+        runtime = _healthy_runtime(version=_FakeResponse(body))
+        _ = self._install(runtime)
+        snapshot = self._collect()
+        self.assertEqual(snapshot.status, "schema_changed")
+        local = snapshot.local_runtime
+        assert local is not None
+        self.assertFalse(local.reachable)
+        self.assertEqual(local.model_presence, "unknown")
+        self._assert_codes(
+            snapshot,
+            [
+                "schema_changed",
+                "runtime_unreachable",
+                "model_presence_unknown",
+                "configured_context_unknown",
+            ],
+        )
+        self.assertEqual(runtime.requested_paths(), ["/api/version"])
+        self._assert_safe_serialization(snapshot)
+
+    def _assert_tags_drift(self, body: bytes) -> None:
+        runtime = _healthy_runtime(tags=_FakeResponse(body))
+        _ = self._install(runtime)
+        snapshot = self._collect()
+        self.assertEqual(snapshot.status, "schema_changed")
+        local = snapshot.local_runtime
+        assert local is not None
+        self.assertTrue(local.reachable)
+        self.assertEqual(local.model_presence, "unknown")
+        self._assert_codes(
+            snapshot,
+            [
+                "schema_changed",
+                "model_presence_unknown",
+                "configured_context_unknown",
+            ],
+        )
+        self.assertEqual(runtime.requested_paths(), ["/api/version", "/api/tags"])
+        self._assert_safe_serialization(snapshot)
+
+    def _assert_ps_drift(self, body: bytes) -> None:
+        runtime = _healthy_runtime(ps=_FakeResponse(body))
+        _ = self._install(runtime)
+        snapshot = self._collect()
+        self.assertEqual(snapshot.status, "schema_changed")
+        local = snapshot.local_runtime
+        assert local is not None
+        self.assertTrue(local.reachable)
+        self.assertEqual(local.model_presence, "present")
+        self.assertIsNone(local.effective_context_tokens)
+        self._assert_codes(
+            snapshot,
+            [
+                "schema_changed",
+                "configured_context_unknown",
+                "effective_context_unknown",
+            ],
+        )
+        self.assertEqual(len(runtime.calls), 3)
+        self._assert_safe_serialization(snapshot)
+
+    def _drift(self, endpoint: str, body: bytes) -> None:
+        if endpoint == "version":
+            self._assert_probe_drift(body)
+        elif endpoint == "tags":
+            self._assert_tags_drift(body)
+        else:
+            self._assert_ps_drift(body)
+
+    def test_duplicate_top_level_keys_rejected(self) -> None:
+        cases = {
+            "version": b'{"version": "x", "version": "y"}',
+            "tags": b'{"models": [{"name": "test-model:latest"}], "models": []}',
+            "ps": b'{"models": [], "models": [{"name": "test-model:latest"}]}',
+        }
+        for endpoint, body in cases.items():
+            with self.subTest(endpoint=endpoint):
+                self._drift(endpoint, body)
+
+    def test_duplicate_nested_keys_rejected(self) -> None:
+        cases = {
+            "version": b'{"version": "x", "extra": {"a": 1, "a": 2}}',
+            "tags": (
+                b'{"models": [{"name": "test-model:latest",'
+                b' "details": {"family": "s", "family": "t"}}]}'
+            ),
+            "ps": (
+                b'{"models": [{"name": "test-model:latest",'
+                b' "details": {"family": "s", "family": "t"}}]}'
+            ),
+        }
+        for endpoint, body in cases.items():
+            with self.subTest(endpoint=endpoint):
+                self._drift(endpoint, body)
+
+    def test_nonfinite_constants_and_floats_rejected(self) -> None:
+        for token in (b"NaN", b"Infinity", b"-Infinity", b"1e10000", b"-1e10000"):
+            for endpoint in ("version", "tags", "ps"):
+                with self.subTest(endpoint=endpoint, token=token):
+                    if endpoint == "version":
+                        self._drift(
+                            endpoint, b'{"version": "x", "extra": ' + token + b"}"
+                        )
+                    elif endpoint == "tags":
+                        self._drift(
+                            endpoint,
+                            b'{"models": [{"name": "test-model:latest",'
+                            + b' "size": ' + token + b"}]}",
+                        )
+                    else:
+                        self._drift(
+                            endpoint,
+                            b'{"models": [{"name": "test-model:latest",'
+                            + b' "size_vram": ' + token + b"}]}",
+                        )
+
+    def test_ten_thousand_level_nesting_rejected(self) -> None:
+        for endpoint in ("version", "tags", "ps"):
+            with self.subTest(endpoint=endpoint):
+                if endpoint == "version":
+                    self._drift(
+                        endpoint,
+                        b'{"version": "x", "extra": ' + _deep_nesting(10_000) + b"}",
+                    )
+                else:
+                    self._drift(
+                        endpoint, b'{"models": ' + _deep_nesting(10_000) + b"}"
+                    )
+
+    def test_very_large_integers_never_crash_or_leak(self) -> None:
+        # Tolerated additive fields carrying huge integers parse fine
+        # (Python ints are unbounded) and must never leak into output.
+        huge_version = b'{"version": "x", "big": ' + HUGE_DIGITS + b"}"
+        _ = self._install(_healthy_runtime(version=huge_version))
+        snapshot = self._collect()
+        self.assertEqual(snapshot.status, "ok")
+        self.assertNotIn(HUGE_DIGITS[:32].decode(), _serialized(snapshot))
+
+        huge_tags = (
+            b'{"models": [{"name": "test-model:latest", "digest": "'
+            + DIGEST_ZERO.encode()
+            + b'", "future_size": '
+            + HUGE_DIGITS
+            + b"}]}"
+        )
+        _ = self._install(_healthy_runtime(tags=huge_tags))
+        snapshot = self._collect()
+        self.assertEqual(snapshot.status, "ok")  # model present by name
+        self.assertNotIn(HUGE_DIGITS[:32].decode(), _serialized(snapshot))
+
+        # On ps the huge integer occupies the validated context_length
+        # slot: it is a positive integer, so it is deterministic evidence
+        # (the value itself is the normalized fact, not a leak).
+        huge_ps = (
+            b'{"models": [{"name": "test-model:latest", "digest": "'
+            + DIGEST_ZERO.encode()
+            + b'", "context_length": '
+            + HUGE_DIGITS
+            + b"}]}"
+        )
+        _ = self._install(_healthy_runtime(ps=huge_ps))
+        snapshot = self._collect(configured_context_tokens=8192)
+        self.assertEqual(snapshot.status, "ok")
+        local = snapshot.local_runtime
+        assert local is not None
+        self.assertEqual(local.effective_context_tokens, HUGE_INT)
 
 
 # ═══════════════════════ healthy collection paths ════════════════════════════
@@ -436,6 +754,8 @@ class HealthyRuntime(_AcquisitionCase):
         self.assertTrue(local.reachable)
         self.assertEqual(local.model_presence, "present")
         self.assertIsNone(local.effective_context_tokens)
+        # Configured context is supplied here, so only the effective
+        # context is unknown.
         self._assert_codes(snapshot, ["schema_changed", "effective_context_unknown"])
 
     def test_ps_schema_changed_fixture_fails_closed(self) -> None:
@@ -445,7 +765,10 @@ class HealthyRuntime(_AcquisitionCase):
         local = snapshot.local_runtime
         assert local is not None
         self.assertEqual(local.model_presence, "present")
-        self._assert_codes(snapshot, ["schema_changed", "configured_context_unknown", "effective_context_unknown"])
+        self._assert_codes(
+            snapshot,
+            ["schema_changed", "configured_context_unknown", "effective_context_unknown"],
+        )
 
     def test_ps_transport_failures_keep_validated_facts(self) -> None:
         for outcome in (
@@ -463,7 +786,10 @@ class HealthyRuntime(_AcquisitionCase):
                 self.assertEqual(snapshot.status, "ok")
                 self.assertEqual(local.model_presence, "present")
                 self.assertIsNone(local.effective_context_tokens)
-                self._assert_codes(snapshot, ["configured_context_unknown", "effective_context_unknown"])
+                self._assert_codes(
+                    snapshot,
+                    ["configured_context_unknown", "effective_context_unknown"],
+                )
 
     def test_missing_model_is_explicit_not_unknown(self) -> None:
         _ = self._install(_healthy_runtime(tags=_fixture("tags-missing.json")))
@@ -479,10 +805,55 @@ class HealthyRuntime(_AcquisitionCase):
         self._assert_safe_serialization(snapshot)
 
     def test_missing_model_never_queries_ps(self) -> None:
+        # Two reads total when the listing proves the model absent.
         runtime = _healthy_runtime(tags=_fixture("tags-missing.json"))
         _ = self._install(runtime)
         _ = self._collect()
         self.assertEqual(runtime.requested_paths(), ["/api/version", "/api/tags"])
+
+
+# ═══════════════════════ digest identity pinning ═════════════════════════════
+
+
+class DigestIdentityAgreement(_AcquisitionCase):
+    def _assert_degraded(
+        self, snapshot: CapacitySnapshot, *, with_configured: bool
+    ) -> None:
+        self.assertEqual(snapshot.status, "unknown")
+        local = snapshot.local_runtime
+        assert local is not None
+        self.assertTrue(local.reachable)
+        self.assertEqual(local.model_presence, "present")
+        self.assertIsNone(local.effective_context_tokens)
+        expected = ["telemetry_unknown"]
+        if not with_configured:
+            expected.append("configured_context_unknown")
+        expected.append("effective_context_unknown")
+        self._assert_codes(snapshot, expected)
+        # Digests are identity evidence only and never enter output.
+        self._assert_safe_serialization(snapshot)
+
+    def test_mismatched_ps_digest_degrades_without_discarding_presence(self) -> None:
+        _ = self._install(_healthy_runtime(ps=_fixture("ps-digest-mismatch.json")))
+        snapshot = self._collect(configured_context_tokens=8192)
+        self._assert_degraded(snapshot, with_configured=True)
+
+    def test_missing_ps_digest_degrades(self) -> None:
+        _ = self._install(_healthy_runtime(ps=_fixture("ps-digest-missing.json")))
+        snapshot = self._collect()
+        self._assert_degraded(snapshot, with_configured=False)
+
+    def test_invalid_tags_digest_degrades_even_with_valid_ps_digest(self) -> None:
+        # Without a trustworthy listing digest there is nothing to agree
+        # with, so the effective context is withheld.
+        _ = self._install(
+            _healthy_runtime(
+                tags=_fixture("tags-invalid-digest.json"),
+                ps=_fixture("ps-loaded.json"),
+            )
+        )
+        snapshot = self._collect()
+        self._assert_degraded(snapshot, with_configured=False)
 
 
 # ═══════════════════════ failure and drift paths ═════════════════════════════
@@ -688,6 +1059,74 @@ class TagsDrift(_AcquisitionCase):
         self.assertEqual(local.model_presence, "unknown")
 
 
+# ═══════════════════ collection deadline ═════════════════════════════════════
+
+
+class CollectionDeadline(_AcquisitionCase):
+    def test_trickling_probe_aborts_at_deadline(self) -> None:
+        # A peer that trickles bytes forever cannot extend the collection:
+        # the monotonic deadline aborts the read and normalizes the outcome.
+        trickling = _TricklingResponse()
+        runtime = self._install(_healthy_runtime(version=trickling))
+        with mock.patch.object(
+            ollama_acquisition, "COLLECTION_DEADLINE_SECONDS", 0.3
+        ):
+            snapshot = self._collect()
+        self.assertEqual(snapshot.status, "unavailable")
+        local = snapshot.local_runtime
+        assert local is not None
+        self.assertFalse(local.reachable)
+        self.assertEqual(local.model_presence, "unknown")
+        self._assert_codes(
+            snapshot,
+            [
+                "source_unavailable",
+                "runtime_unreachable",
+                "model_presence_unknown",
+                "configured_context_unknown",
+            ],
+        )
+        self.assertEqual(runtime.requested_paths(), ["/api/version"])
+        self.assertTrue(trickling.closed)
+        self._assert_safe_serialization(snapshot)
+
+    def test_trickling_tags_read_preserves_reachability(self) -> None:
+        trickling = _TricklingResponse()
+        _ = self._install(_healthy_runtime(tags=trickling))
+        with mock.patch.object(
+            ollama_acquisition, "COLLECTION_DEADLINE_SECONDS", 0.3
+        ):
+            snapshot = self._collect()
+        self.assertEqual(snapshot.status, "unavailable")
+        local = snapshot.local_runtime
+        assert local is not None
+        self.assertTrue(local.reachable)  # validated by the probe
+        self.assertEqual(local.model_presence, "unknown")
+        self.assertTrue(trickling.closed)
+
+    def test_expired_deadline_makes_no_transport_calls(self) -> None:
+        runtime = self._install(_healthy_runtime())
+        with mock.patch.object(ollama_acquisition, "COLLECTION_DEADLINE_SECONDS", 0.0):
+            snapshot = self._collect()
+        self.assertEqual(snapshot.status, "unavailable")
+        self.assertEqual(runtime.calls, [])
+        self._assert_no_output()
+
+    def test_http_error_response_closed_without_reading_body(self) -> None:
+        # The error body carries a sentinel; the position recorded at the
+        # deterministic close proves it was never read, and exactly one
+        # close happened.
+        fp = _TrackingBytesIO(b"TEST_ONLY_ERROR_BODY_MUST_NOT_BE_READ")
+        _ = self._install(
+            _healthy_runtime(version=_http_error_with_fp(500, fp))
+        )
+        snapshot = self._collect()
+        self.assertEqual(snapshot.status, "unknown")
+        self.assertEqual(fp.close_count, 1)
+        self.assertEqual(fp.position_at_close, 0)
+        self._assert_no_output()
+
+
 # ═══════════════════════ transport mechanism ═════════════════════════════════
 
 
@@ -758,17 +1197,20 @@ class TransportMechanism(unittest.TestCase):
 
 
 class RequestShape(_AcquisitionCase):
-    def test_requests_are_get_with_accept_and_no_authorization(self) -> None:
+    def test_requests_target_canonical_paths_with_bounded_timeout(self) -> None:
         runtime = self._install(_healthy_runtime())
         _ = self._collect(configured_context_tokens=8192)
 
         self.assertEqual(len(runtime.calls), 3)
         for url, timeout in runtime.calls:
-            self.assertIn(url, (
-                BASE + "/api/version",
-                BASE + "/api/tags",
-                BASE + "/api/ps",
-            ))
+            self.assertIn(
+                url,
+                (
+                    BASE + "/api/version",
+                    BASE + "/api/tags",
+                    BASE + "/api/ps",
+                ),
+            )
             self.assertEqual(timeout, ollama_acquisition.TIMEOUT_SECONDS)
             self.assertGreater(timeout, 0)
 
@@ -782,7 +1224,6 @@ class RequestShape(_AcquisitionCase):
             recorded.append(request)
             return _FakeResponse(b"{}")
 
-        _ = self._install(_healthy_runtime(version=_http_error(418)))
         patcher = mock.patch.object(ollama_acquisition, "open_response", spy)
         _ = patcher.start()
         self.addCleanup(patcher.stop)
@@ -951,6 +1392,9 @@ class MarkerNonLeak(_AcquisitionCase):
             ),
             "model-missing": _healthy_runtime(tags=_fixture("tags-missing.json")),
             "ps-drift": _healthy_runtime(ps=_fixture("ps-schema-changed.json")),
+            "ps-digest-mismatch": _healthy_runtime(
+                ps=_fixture("ps-digest-mismatch.json")
+            ),
             "poisoned-responses": self._poisoned_runtime(),
         }
 
@@ -968,6 +1412,7 @@ class MarkerNonLeak(_AcquisitionCase):
                     ENDPOINT,
                     "http://",
                     "Authorization",
+                    "sha256:",
                 ):
                     self.assertNotIn(marker, text)
                 for diagnostic in snapshot.diagnostics:
