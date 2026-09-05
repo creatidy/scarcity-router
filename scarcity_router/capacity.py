@@ -1,13 +1,23 @@
-"""V2 capacity model for Scarcity Router.
+"""V3 capacity model for Scarcity Router.
 
 Pure, provider-independent, standard-library only.
 
-Implements the frozen v2 normalized capacity contract from docs/capacity-model.md:
+Implements the frozen v3 normalized capacity contract from docs/capacity-model.md:
 - snapshot, status, windows and diagnostics
-- validation of all v2 invariants
+- validation of all v3 invariants
 - deterministic JSON-compatible serialization
 
-The v2 invariants are enforced at *construction* so an invalid object can never
+V3 is the v2 contract plus exactly one normalized field:
+``CapacityWindow.scope_id`` — an optional semantic capacity-scope identifier
+(D-020, D-023). ``(snapshot.provider, window.scope_id)`` identifies one
+semantic capacity scope; ``scope_id = None`` (omitted when serialized) means
+scope applicability is unknown, never a default scope. ``scope_id`` is opaque
+exact-match identity: consumers may compare it for equality but must never
+parse it. ``provider_metadata.window_id`` remains the diagnostic-only window
+identity. There is no compatibility reader: serialized v2 snapshots (and any
+other wrong ``schema_version``) are rejected.
+
+The v3 invariants are enforced at *construction* so an invalid object can never
 exist as a public, serializable value whether it is produced by ``from_dict()``
 or by a direct public constructor. The private ``_v_*`` validators are the single
 source of truth for the rules; ``from_dict`` uses them to check the serialized
@@ -27,7 +37,7 @@ from .errors import CapacityValidationError
 
 # ── Frozen value sets ─────────────────────────────────────────────────────────
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _STATUS_VALUES: frozenset[str] = frozenset({
     "ok",
@@ -79,7 +89,7 @@ _KIND_DURATION: dict[str, int] = {
     "weekly": 604_800,
 }
 
-# ── Validators (single source of truth for the v2 rules) ─────────────────────
+# ── Validators (single source of truth for the v3 rules) ─────────────────────
 
 _CANONICAL_TS_RE = re.compile(
     r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$"
@@ -282,10 +292,18 @@ class CapacityDiagnostic:
 
 @dataclass(frozen=True)
 class CapacityWindow:
-    """One normalized quota/limit window."""
+    """One normalized quota/limit window.
+
+    ``scope_id`` is the optional semantic capacity-scope identifier (v3):
+    provider-local, safe, opaque and compared only for exact equality.
+    ``None`` means scope applicability is unknown — there is no default or
+    fallback scope string. It is normalized data, never provider metadata,
+    and is serialized top-level only when known.
+    """
 
     resource: str
     kind: str
+    scope_id: str | None = None
     duration_seconds: int | None = None
     used_percent: int | None = None
     remaining_percent: int | None = None
@@ -294,6 +312,7 @@ class CapacityWindow:
 
     _REQUIRED: ClassVar[tuple[str, ...]] = ("resource", "kind")
     _OPTIONAL: ClassVar[tuple[str, ...]] = (
+        "scope_id",
         "duration_seconds",
         "used_percent",
         "remaining_percent",
@@ -304,6 +323,8 @@ class CapacityWindow:
     def __post_init__(self) -> None:
         _ = _v_enum(self.resource, _RESOURCE_VALUES, "window.resource")
         kind = _v_enum(self.kind, _KIND_VALUES, "window.kind")
+
+        _ = _v_opt_safe_id(self.scope_id, "window.scope_id")
 
         duration = self.duration_seconds
         if duration is not None:
@@ -325,7 +346,8 @@ class CapacityWindow:
     @classmethod
     def from_dict(cls, d: object) -> "CapacityWindow":
         dd = _v_exact_shape(d, cls._REQUIRED, cls._OPTIONAL, "window")
-        # provider_metadata has a fixed v2 shape: exactly the key "window_id".
+        # provider_metadata has a fixed diagnostic shape: exactly the key
+        # "window_id" (semantic scope is the top-level v3 "scope_id" field).
         window_id: str | None = None
         pm = dd.get("provider_metadata")
         if pm is not None:
@@ -341,6 +363,7 @@ class CapacityWindow:
         return cls(
             resource=_v_enum(dd["resource"], _RESOURCE_VALUES, "window.resource"),
             kind=_v_enum(dd["kind"], _KIND_VALUES, "window.kind"),
+            scope_id=_v_opt_safe_id(dd.get("scope_id"), "window.scope_id"),
             duration_seconds=_v_opt_int(dd.get("duration_seconds"), "window.duration_seconds", lo=1),
             used_percent=_v_opt_int(dd.get("used_percent"), "window.used_percent", lo=0, hi=100),
             remaining_percent=_v_opt_int(dd.get("remaining_percent"), "window.remaining_percent", lo=0, hi=100),
@@ -353,6 +376,8 @@ class CapacityWindow:
             "resource": self.resource,
             "kind": self.kind,
         }
+        if self.scope_id is not None:
+            out["scope_id"] = self.scope_id
         if self.duration_seconds is not None:
             out["duration_seconds"] = self.duration_seconds
         if self.used_percent is not None:
@@ -368,7 +393,7 @@ class CapacityWindow:
 
 @dataclass(frozen=True)
 class CapacitySnapshot:
-    """One normalized capacity observation (v2)."""
+    """One normalized capacity observation (v3)."""
 
     schema_version: int
     provider: str

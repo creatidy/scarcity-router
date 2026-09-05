@@ -52,7 +52,7 @@ def _snapshot(
     plan: str | None = None,
 ) -> CapacitySnapshot:
     return CapacitySnapshot(
-        schema_version=2,
+        schema_version=3,
         provider=provider,
         source={
             "openai": "codex_app_server",
@@ -170,7 +170,7 @@ class StatusRenderingTests(unittest.TestCase):
             ["openai", "zai"],
         )
         self.assertEqual([entry["provider"] for entry in parsed], ["openai", "zai"])
-        self.assertEqual({entry["schema_version"] for entry in parsed}, {2})
+        self.assertEqual({entry["schema_version"] for entry in parsed}, {3})
         self.assertNotIn("ollama", text.lower())
         self.assertNotIn("local", text.lower())
         self.assertNotIn("ollama", encoded.lower())
@@ -259,6 +259,26 @@ class StatusRenderingTests(unittest.TestCase):
             plan="pro",
         )
         self.assertEqual(render_json((first,)), render_json((second,)))
+
+    def test_known_scope_is_displayed_and_unknown_scope_is_omitted(self) -> None:
+        with_scope = CapacityWindow(
+            resource="tokens",
+            kind="five_hour",
+            scope_id="codex",
+            duration_seconds=18_000,
+            used_percent=35,
+            remaining_percent=65,
+            resets_at="2026-09-05T12:00:00.000Z",
+            window_id="primary",
+        )
+        unscoped = _window("weekly", used=None, remaining=None, reset=None)
+        snapshot = _snapshot("openai", windows=(with_scope, unscoped))
+        text = render_human((snapshot,))
+        self.assertIn("scope=codex", text)
+        self.assertLess(text.index("scope=codex"), text.index("id=primary"))
+        # Unknown scope stays absent — there is no placeholder scope string.
+        self.assertIn("kind=weekly resource=tokens used=unknown", text)
+        self.assertNotIn("scope=None", text)
 
     def test_degraded_provider_exit_code_is_zero(self) -> None:
         snapshots = (

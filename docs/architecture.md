@@ -38,7 +38,7 @@ status such as `schema_changed` while the rest of the service remains healthy.
 
 ### Capacity store/view
 
-Holds the most recent v2 normalized snapshots and their retrieval timestamps.
+Holds the most recent v3 normalized snapshots and their retrieval timestamps.
 Freshness evaluation, refresh behavior and durable history are separate concerns;
 the initial implementation may be in-memory and refreshed on demand. Secrets and
 raw Authorization values never enter the normalized state.
@@ -95,16 +95,19 @@ not on the selector.
 
 ## Domain contracts
 
-M1 freezes `docs/capacity-model.md` as the v2 serialized capacity contract:
+The current normalized capacity contract is v3, frozen in
+`docs/capacity-model.md` (M2a, D-023):
 
 - `CapacitySnapshot`: schema version, provider/source identifiers, optional safe
   plan, retrieval time, status, windows and safe diagnostics. Account identifiers
-  and freshness fields are not in v2.
-- `CapacityWindow`: validated resource and period kind, optional duration,
-  complementary used/remaining percentage pair, optional reset time and an
-  allowlisted opaque provider window identifier. That identifier is diagnostic
-  only; semantic capacity scopes are the planned M2a extension recorded in
-  `docs/capacity-model.md` (D-020).
+  and freshness fields are not in the contract.
+- `CapacityWindow`: validated resource and period kind, optional semantic
+  capacity-scope identity (`scope_id`; `(provider, scope_id)` identifies one
+  scope, `None`/omitted means unknown applicability, opaque exact-match only),
+  optional duration, complementary used/remaining percentage pair, optional
+  reset time and an allowlisted opaque provider window identifier. Both
+  `scope_id` and `window_id` are never parsed by consumers; `window_id` is
+  diagnostic only (D-020, D-023).
 - `ModelProfile`: stable model identity, variants, provider, hard properties,
   capability assessments and provenance. M2 planning (D-020) adds explicit
   capacity bindings to one or more capacity scopes and freezes the
@@ -119,7 +122,9 @@ M2 planning additionally freezes these not-yet-implemented conceptual
 contracts:
 
 - `CapacityScope`: `(provider, scope_id)` identity for one normalized capacity
-  scope; the M2a schema prerequisite recorded in `docs/capacity-model.md`.
+  scope. The identity now exists in the contract via
+  `CapacityWindow.scope_id` (D-023); a distinct core type and model bindings
+  remain future M2 slices.
 - `ReplenishmentState`: minimal safe reset-credit facts — replenishment
   opportunities, never current capacity (D-021).
 - `ExecutionBudget`: the finite bounded envelope that must accompany any

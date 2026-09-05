@@ -15,7 +15,9 @@ retry the read once. It must:
 - preserve all relevant quota windows and reset times;
 - return explicit health/failure status and safe diagnostics;
 - carry retrieval time, safe plan metadata when known and source mechanism;
-  account identifiers are not part of the v2 snapshot;
+  account identifiers are not part of the capacity snapshot;
+- emit the semantic capacity scope (`scope_id`) of every validated window
+  from adapter evidence, and keep the diagnostic `window_id` separate;
 - have redacted fixtures, parser tests and contract tests;
 - treat new fields tolerantly and changed required semantics conservatively;
 - never print, return or persist credentials.
@@ -46,7 +48,8 @@ Implementation requirements:
   explicit permission;
 - recognize `accountId`, `rateLimitUpsell` and `normalModelSlug` at the
   provider boundary without exposing them; a non-null upsell remains an
-  upstream recovery blocker, but its presentation content is not part of v2;
+  upstream recovery blocker, but its presentation content is not part of
+  normalized output;
 - never fall back to browser-cookie scraping as an incidental convenience;
 - fail with a clear unsupported/schema status if protocol behavior changes.
 
@@ -62,16 +65,23 @@ provider-managed auth refresh and one retry of D-018. The parser validates the
 complete evidenced response envelope across both supported schema generations,
 typed credit and spend states, reset-credit summaries, additional metered
 buckets and backend blockers. Unrepresentable states degrade to `unknown`
-without inventing quota.
+without inventing quota. Every emitted window carries the capacity contract
+v3 semantic scope: the validated `limitId` (`"codex"` for the main snapshot,
+the validated bucket key for each additional bucket), independently of period
+semantics; `limitName` and `normalModelSlug` never become scope identity and
+the diagnostic `<limitId>:<slot>` `window_id` stays separate
+(`docs/decisions.md` D-023).
 
 The current upstream app-server schema also defines `ordinaryUsageAllowed`,
 `accountId`, `rateLimitUpsell` and `normalModelSlug`; these fields are
-explicitly handled at the adapter edge without expanding v2 or weakening the
+explicitly handled at the adapter edge without expanding the normalized
+contract or weakening the
 unknown-structured-field rule. Current upstream semantics, the
 two-generation compatibility rule and the supplemental-telemetry principle
 are recorded in `docs/decisions.md` (U-011, D-019). Live OpenAI collection
 returns healthy normalized windows with usable percentage pairs;
-supplemental provider state that v2 does not expose (credits, additional
+supplemental provider state that the normalized contract does not expose
+(credits, additional
 buckets, unavailable optional blocker signals) never invalidates the
 independently validated quota facts, while explicit provider blockers
 degrade honestly.
@@ -120,7 +130,12 @@ Status (M1): the response parser is implemented and fixture-tested in
 production acquisition shell is implemented and unit-tested in
 `scarcity_router/providers/zai_acquisition.py` (`collect_zai_capacity`). It
 performs strict credential discovery, fixed HTTPS destination validation, one
-redirect-free bounded GET and safe failure mapping to the v2 statuses.
+redirect-free bounded GET and safe failure mapping to the normalized statuses.
+Every window of an evidenced known limit type carries the capacity contract
+v3 semantic scope `coding_plan` — including a known type with an unrecognized
+`(unit, number)` period — while an unevidenced provider type keeps the scope
+unknown and its raw type text never becomes a scope (`docs/decisions.md`
+D-023).
 
 Each observed window carries `nextResetTime`, a 13-digit epoch-millisecond value,
 and `percentage` is the used percentage. Both are provider evidence, not a
@@ -153,6 +168,9 @@ For each adapter, freeze minimal redacted provider-shaped fixtures and assert:
 - all active windows survive normalization;
 - window semantics are classified only from validated evidence;
 - missing/unknown semantics remain unknown;
+- every validated window carries its evidenced semantic `scope_id`, the
+  diagnostic `window_id` stays separate, and no output consumer parses
+  either identifier;
 - used/remaining validation and reset preservation;
 - error/status mapping;
 - no credential-shaped value appears in output, diagnostics or snapshots;

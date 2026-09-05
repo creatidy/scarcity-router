@@ -3,7 +3,7 @@
 Pure, deterministic provider-edge parsing for the Codex app-server
 ``account/rateLimits/read`` JSON-RPC result: an already decoded
 JSON-compatible value plus a caller-supplied retrieval timestamp normalize
-into the v2 ``CapacitySnapshot`` contract (docs/capacity-model.md).
+into the v3 ``CapacitySnapshot`` contract (docs/capacity-model.md).
 
 This parser performs zero I/O. It never reads the clock, filesystem,
 environment, network or subprocesses, and never touches credentials. Live
@@ -30,7 +30,7 @@ docs/poc-evidence.md ("OpenAI/Codex subscription capacity" and the
   ``secondary``, ``credits``, ``individualLimit``, ``spendControlReached``,
   ``planType`` and ``rateLimitReachedType`` (option-typed: missing and null
   both mean an absent state). ``normalModelSlug`` is validated as an optional
-  string and is not part of v2 output. Present values validate strictly:
+  string and is not part of normalized output. Present values validate strictly:
   - ``limitId`` must be exactly the evidenced quota identity ``"codex"``;
   - ``primary``/``secondary`` are the only window slots. A valid window
     requires i32 ``usedPercent``. ``windowDurationMins`` is an optional i64:
@@ -73,6 +73,14 @@ docs/poc-evidence.md ("OpenAI/Codex subscription capacity" and the
    (``"<limitId>:<slot>"``) without merging equal periods across buckets.
    Buckets are ordered deterministically: main slots first, then buckets by
    key, each primary then secondary;
+- semantic scope identity (capacity contract v3; D-020, D-023): every
+   validated window carries ``scope_id`` equal to the snapshot's validated
+   ``limitId`` — ``"codex"`` for the main snapshot and the codex mirror,
+   the validated map key for an additional bucket. Scope identity is
+   independent of period semantics (an unknown-duration window still
+   carries its known scope), is never derived from the diagnostic
+   ``window_id``, and ``limitName`` and ``normalModelSlug`` never become
+   scope identity;
  - ``rateLimitResetCredits`` is the reset-credit summary: a valid present
    summary requires the integer ``availableCount``; its optional ``credits``
    rows are typed objects requiring ``id``, ``resetType``, ``status`` and
@@ -133,7 +141,7 @@ docs/poc-evidence.md ("OpenAI/Codex subscription capacity" and the
   outside that representation (epoch milliseconds, zero, negative, floats,
   strings) are rejected rather than misinterpreted;
 - ``plan`` comes only from the adapter evidence allowlist of validated
-    ``PlanType`` enum members that the v2 safe-ID grammar permits as-is
+    ``PlanType`` enum members that the safe-ID grammar permits as-is
   (underscores included): ``free``, ``go``, ``plus``, ``pro``, ``prolite``,
   ``team``, ``business``, ``edu``, ``edu_plus``, ``edu_pro``,
   ``enterprise``, ``ent26``, ``enterprise_cbp_automation``,
@@ -165,7 +173,12 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Literal, TypeGuard, cast
 
-from ..capacity import CapacityDiagnostic, CapacitySnapshot, CapacityWindow
+from ..capacity import (
+    SCHEMA_VERSION,
+    CapacityDiagnostic,
+    CapacitySnapshot,
+    CapacityWindow,
+)
 
 PROVIDER = "openai"
 SOURCE = "codex_app_server"
@@ -173,7 +186,7 @@ SOURCE = "codex_app_server"
 MessageKind = Literal["request", "notification", "response", "invalid"]
 
 # Validated windowDurationMins -> (kind, fixed duration_seconds) mapping
-# (adapter-owned evidence; PoC 2026-09-01 and capacity-model v2 durations).
+# (adapter-owned evidence; PoC 2026-09-01 and capacity-model durations).
 _KNOWN_DURATIONS_MINS: dict[int, tuple[str, int]] = {
     300: ("five_hour", 18_000),
     10_080: ("weekly", 604_800),
@@ -203,7 +216,7 @@ _KNOWN_SNAPSHOT_MEMBERS: frozenset[str] = frozenset(
 # Current evidenced members of the GetAccountRateLimitsResponse envelope.
 # Only `rateLimits` is required by the generated schema. The other members are
 # optional or nullable; `rateLimitUpsell` is intentionally opaque presentation
-# data and has no v2 representation.
+# data and has no normalized representation.
 _KNOWN_ENVELOPE_MEMBERS: frozenset[str] = frozenset(
     {
         "rateLimits",
@@ -220,7 +233,7 @@ _KNOWN_ENVELOPE_MEMBERS: frozenset[str] = frozenset(
 _LIMIT_ID = "codex"
 
 # Adapter evidence allowlist of validated PlanType enum members (see
-# docs/poc-evidence.md, 2026-09-03 reconnaissance). The v2 safe-ID grammar
+# docs/poc-evidence.md, 2026-09-03 reconnaissance). The safe-ID grammar
 # permits underscores, so every retained member is preserved verbatim.
 # Extending or shrinking this set requires new schema evidence.
 _EVIDENCED_PLANS: frozenset[str] = frozenset(
@@ -274,8 +287,8 @@ _I64_MAX = 2**63 - 1
 
 _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
-# v2 safe identifier grammar (docs/capacity-model.md); used to compose
-# additional-bucket window identities without inventing unsafe text.
+# Capacity-contract safe identifier grammar (docs/capacity-model.md); used to
+# compose additional-bucket window identities without inventing unsafe text.
 _SAFE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._:-]{0,63}$")
 
 
@@ -412,7 +425,7 @@ def classify_app_server_message(message: object) -> MessageKind:
 
 
 def _canonical_from_epoch_s(value: object) -> str | None:
-    """Convert a 10-digit epoch-second integer to canonical v2 UTC.
+    """Convert a 10-digit epoch-second integer to canonical UTC.
 
     Only the evidenced representation is accepted: an integer (not bool)
     within the 10-digit epoch-second band. Values that look like epoch
@@ -457,7 +470,7 @@ def _safe_plan(plan_type: object) -> str | None:
 def _bucket_window_id(limit_id: object, slot: str) -> str | None:
     """Compose a safe additional-window identity from validated parts only.
 
-    ``"<limitId>:<slot>"`` when both halves satisfy the v2 safe-ID grammar.
+    ``"<limitId>:<slot>"`` when both halves satisfy the safe-ID grammar.
     An unsafe or overlong composition returns ``None`` so the caller can fail
     closed rather than emit a colliding or invented identity.
     """
@@ -481,7 +494,7 @@ def _failure(
     plan: str | None = None,
 ) -> CapacitySnapshot:
     return CapacitySnapshot(
-        schema_version=2,
+        schema_version=SCHEMA_VERSION,
         provider=PROVIDER,
         source=SOURCE,
         retrieved_at=retrieved_at,
@@ -497,6 +510,7 @@ def _parse_window(
     entry: Mapping[str, object],
     *,
     window_id: str | None,
+    scope_id: str | None,
 ) -> _WindowFacts | None:
     """Normalize one window object from a known window slot.
 
@@ -507,6 +521,9 @@ def _parse_window(
     ``usedPercent`` as an i32. ``window_id`` is the already
     decided identity (main slot name, composed bucket identity, or ``None``
     for additional buckets, the identity must be safe and distinct).
+    ``scope_id`` is the already validated semantic capacity-scope identity
+    (the snapshot's validated ``limitId``), passed separately from the
+    diagnostic identity and never derived from it.
     """
     if "usedPercent" not in entry:
         return None
@@ -561,6 +578,7 @@ def _parse_window(
     window = CapacityWindow(
         resource="tokens",
         kind=kind,
+        scope_id=scope_id,
         duration_seconds=duration_seconds,
         used_percent=used_percent,
         remaining_percent=remaining_percent,
@@ -579,7 +597,7 @@ def _without_percentages(
     """Drop the percentage pair from a validated window (backend blocker).
 
     Used when the backend enforces a block on use or a metering state has
-    no v2 representation: remaining capacity must not be inferred from
+    no normalized representation: remaining capacity must not be inferred from
     percentages then, so the pair is withheld and reported as
     ``percentage_unknown``. Window identity, duration and reset facts
     remain validated and preserved.
@@ -587,6 +605,7 @@ def _without_percentages(
     stripped = CapacityWindow(
         resource=window.resource,
         kind=window.kind,
+        scope_id=window.scope_id,
         duration_seconds=window.duration_seconds,
         used_percent=None,
         remaining_percent=None,
@@ -734,6 +753,7 @@ def _quota_snapshot_state(
     *,
     expected_limit_id: str,
     full_window_blocks: bool,
+    scope_id: str,
     window_id_prefix: object = None,
 ) -> _SnapshotState | None:
     """Validate one full quota snapshot (main or additional bucket).
@@ -746,7 +766,10 @@ def _quota_snapshot_state(
     ``usedPercent == 100`` is treated as an enforced block on use; for the
     main snapshot, 100% used without any blocker flag stays a validated
     ``(100, 0)`` fact (U-010). ``window_id_prefix`` (the bucket's limit
-    id) composes additional-window identities.
+    id) composes additional-window diagnostic identities. ``scope_id`` is
+    the validated semantic capacity-scope identity (the snapshot's
+    validated ``limitId``) attached to every emitted window, independent of
+    the diagnostic ``window_id`` and never derived from it.
     """
     if not _membership_valid(snapshot, _KNOWN_SNAPSHOT_MEMBERS):
         return None
@@ -815,7 +838,7 @@ def _quota_snapshot_state(
         )
         if window_id is None:
             return None
-        facts = _parse_window(slot, entry, window_id=window_id)
+        facts = _parse_window(slot, entry, window_id=window_id, scope_id=scope_id)
         if facts is None:
             return None
         windows.append(facts)
@@ -834,11 +857,11 @@ def parse_codex_rate_limits_result(
     *,
     retrieved_at: str,
 ) -> CapacitySnapshot:
-    """Normalize one decoded ``account/rateLimits/read`` result into v2.
+    """Normalize one decoded ``account/rateLimits/read`` result into v3.
 
     ``result`` must already be decoded from the JSONL response by the
     acquisition layer; this function performs no I/O and does not call the
-    clock. ``retrieved_at`` must be the canonical v2 UTC string and is
+    clock. ``retrieved_at`` must be the canonical UTC string and is
     validated by the snapshot constructor.
 
     Expected provider-shape failures degrade safely to documented statuses
@@ -894,7 +917,10 @@ def parse_codex_rate_limits_result(
         if mirror is None:
             return _failure("schema_changed", "schema_changed", retrieved_at)
         mirror_state = _quota_snapshot_state(
-            mirror, expected_limit_id=_LIMIT_ID, full_window_blocks=False
+            mirror,
+            expected_limit_id=_LIMIT_ID,
+            full_window_blocks=False,
+            scope_id=_LIMIT_ID,
         )
         if mirror_state is None or not _strict_equal(mirror, rate_limits):
             return _failure("schema_changed", "schema_changed", retrieved_at)
@@ -918,6 +944,7 @@ def parse_codex_rate_limits_result(
                 bucket_snapshot,
                 expected_limit_id=key,
                 full_window_blocks=True,
+                scope_id=key,
                 window_id_prefix=key,
             )
             if state is None:
@@ -929,7 +956,10 @@ def parse_codex_rate_limits_result(
             bucket_states.append((key, state))
 
     main_state = _quota_snapshot_state(
-        rate_limits, expected_limit_id=_LIMIT_ID, full_window_blocks=False
+        rate_limits,
+        expected_limit_id=_LIMIT_ID,
+        full_window_blocks=False,
+        scope_id=_LIMIT_ID,
     )
     if main_state is None:
         return _failure("schema_changed", "schema_changed", retrieved_at)
@@ -965,7 +995,7 @@ def parse_codex_rate_limits_result(
         return _failure("unknown", "telemetry_unknown", retrieved_at, plan=plan)
 
     if blocked:
-        # A backend-enforced block or a v2-unrepresentable metering state
+        # A backend-enforced block or a contract-unrepresentable metering state
         # exists: remaining capacity must not be inferred from percentages.
         # Withhold every validated pair (main and additional) with explicit
         # percentage_unknown diagnostics and degrade to unknown (U-010).
@@ -979,7 +1009,7 @@ def parse_codex_rate_limits_result(
             diagnostics.append(diagnostic)
         diagnostics.append(CapacityDiagnostic(code="telemetry_unknown"))
         return CapacitySnapshot(
-            schema_version=2,
+            schema_version=SCHEMA_VERSION,
             provider=PROVIDER,
             source=SOURCE,
             retrieved_at=retrieved_at,
@@ -995,7 +1025,7 @@ def parse_codex_rate_limits_result(
         # unknown (D-019).
         diagnostics.append(CapacityDiagnostic(code="telemetry_unknown"))
         return CapacitySnapshot(
-            schema_version=2,
+            schema_version=SCHEMA_VERSION,
             provider=PROVIDER,
             source=SOURCE,
             retrieved_at=retrieved_at,
@@ -1006,7 +1036,7 @@ def parse_codex_rate_limits_result(
         )
 
     return CapacitySnapshot(
-        schema_version=2,
+        schema_version=SCHEMA_VERSION,
         provider=PROVIDER,
         source=SOURCE,
         retrieved_at=retrieved_at,

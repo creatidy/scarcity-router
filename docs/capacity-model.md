@@ -1,4 +1,4 @@
-# Normalized Capacity Contract v2
+# Normalized Capacity Contract v3
 
 ## Purpose And Boundary
 
@@ -7,7 +7,7 @@ not describe model capability, task requirements, user policy or scarcity.
 Provider adapters own wire-format parsing and emit this provider-independent
 record; consumers must not parse provider responses.
 
-This is the internal serialized contract between the M1 provider adapters and
+This is the internal serialized contract between the provider adapters and
 the core. It is not a public REST, MCP or CLI contract. Those interfaces, including
 their versioning, are later decisions. The record is an observation at one point
 in time, not a promise that the source remains available.
@@ -15,20 +15,24 @@ in time, not a promise that the source remains available.
 ## Versioning
 
 Every snapshot has the required top-level field `schema_version` with the integer
-value `2`. This version covers field names, types, enum values, timestamp format,
+value `3`. This version covers field names, types, enum values, timestamp format,
 omission rules and field semantics. It is a capacity-contract version, not a
 provider API, adapter implementation or interface version.
 
-Schema v2 removes the optional v1 `local_runtime` field and the diagnostics that
-only described local runtime state. The removal is intentional and is recorded in
-decision D-017. No compatibility reader is provided for the unreleased internal
-v1 contract.
+Schema v2 removed the optional v1 `local_runtime` field and the diagnostics that
+only described local runtime state (decision D-017). Schema v3 — the M2a slice,
+decision D-023 — adds exactly one normalized field: the semantic capacity-scope
+identifier `CapacityWindow.scope_id`. All other v2 field shapes, semantics and
+invariants are unchanged. No compatibility reader is provided for the unreleased
+internal v1 contract, and serialized v2 snapshots are not silently upgraded: the
+production model accepts and constructs only `schema_version = 3` and rejects any
+other version, including `2`.
 
-The v2 top-level fields are exactly:
+The v3 top-level fields are exactly:
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "provider": "openai",
   "source": "codex_app_server",
   "plan": "plus",
@@ -42,7 +46,8 @@ The v2 top-level fields are exactly:
 `plan` is optional. All other fields are required. Optional values are omitted,
 never represented as `null`; empty `windows` and `diagnostics` arrays are valid.
 
-The safe identifier fields `provider`, `source`, `plan` and `window_id` are
+The safe identifier fields `provider`, `source`, `plan`, `window_id` and
+`scope_id` are
 non-empty ASCII strings of at most 64 characters matching
 `[a-z0-9][a-z0-9._:-]*` after adapter normalization. If a value cannot be
 safely normalized to that form, the adapter omits the optional value or uses an
@@ -53,14 +58,14 @@ change to an existing enum or allowlist value or meaning; addition of a value to
 a closed enum or allowlist; change to timestamp, percentage or omission
 semantics; or change that makes a previously optional field required. Such a
 change requires the next integer schema version and an explicit decision. An
-implementation change that preserves v2 semantics does not change the version.
+implementation change that preserves v3 semantics does not change the version.
 No public-interface compatibility promise is made by this internal contract.
 
 ## Snapshot Fields
 
-| Field | Required | v2 semantics |
+| Field | Required | v3 semantics |
 | --- | --- | --- |
-| `schema_version` | Yes | Integer `2`. |
+| `schema_version` | Yes | Integer `3`. |
 | `provider` | Yes | Stable, short ASCII provider identifier. Current identifiers are `openai` and `zai`; later providers require separate scope. |
 | `source` | Yes | Stable, short ASCII collection-mechanism identifier, such as `codex_app_server` or `zai_usage_endpoint`. It is not a URL, filesystem path, version string or raw provider field. |
 | `plan` | No | A short, safe plan label normalized by the adapter, such as `plus` or `pro`. It is informational and must not contain account identity or raw response data. |
@@ -110,9 +115,9 @@ millisecond precision preserves those milliseconds. An invalid, ambiguous or
 missing reset is represented by omitting `resets_at`, not by a sentinel or a
 guessed value.
 
-`retrieved_at` is the only freshness-related field in v2. Age calculation,
+`retrieved_at` is the only freshness-related field in v3. Age calculation,
 staleness thresholds, caching, refresh cadence and timeout policy remain U-003;
-v2 does not claim that a snapshot is fresh merely because it has a timestamp.
+v3 does not claim that a snapshot is fresh merely because it has a timestamp.
 
 ## Quota Windows
 
@@ -124,10 +129,11 @@ is not a zero-valued window and must not be synthesized.
 
 Each entry has the following exact fields:
 
-| Field | Required | v2 semantics |
+| Field | Required | v3 semantics |
 | --- | --- | --- |
 | `resource` | Yes | Validated limited resource: `tokens`, `time` or `unknown`. `time` is distinct from a token resource. |
 | `kind` | Yes | Validated period kind: `five_hour`, `weekly` or `unknown`. `unknown` is required when the period cannot be established from evidence. |
+| `scope_id` | No | Semantic capacity-scope identifier, as defined in [Semantic Capacity Scope](#semantic-capacity-scope). Present only when scope applicability is evidenced; omitted when unknown. |
 | `duration_seconds` | No | Positive integer duration of the limiting interval, not time remaining until reset. Required for `five_hour` (`18000`) and `weekly` (`604800`); optional for `unknown`. |
 | `used_percent` | No | Integer from `0` through `100`, present only as part of a validated percentage pair. |
 | `remaining_percent` | No | Integer from `0` through `100`, present only with `used_percent`; it is exactly `100 - used_percent`. |
@@ -139,6 +145,58 @@ Each entry has the following exact fields:
 have fixed durations: `five_hour` requires `18000`, and `weekly` requires
 `604800`. An adapter must not select a known kind from array position or an
 unvalidated provider label.
+
+### Semantic Capacity Scope
+
+`scope_id` is the normalized semantic identity of the capacity scope a window
+belongs to (D-020, D-023). A complete semantic scope identity is the pair:
+
+```text
+(snapshot.provider, window.scope_id)
+```
+
+For example, conceptually `("openai", "provider_scope")` or
+`("zai", "coding_plan")`. The `scope_id` itself is provider-local; it is never
+prefixed with the provider redundantly. Scope identity and period identity are
+separate concepts: one scope may contain several windows of different periods,
+and equal periods may coexist in different scopes (for OpenAI's multi-bucket
+view). Multiple windows may share one scope, and a later model may be subject
+to one or more scopes; model-to-scope bindings are a later M2 slice (M2b),
+never capacity telemetry.
+
+Semantics of the field:
+
+- `scope_id` is present only when scope applicability is evidenced by the
+  adapter. When scope semantics are unknown, `scope_id` is `None` and the
+  serialized field is omitted; absence is the unknown state. No magic sentinel
+  string such as `unknown` or `default` exists.
+- `scope_id` is opaque exact-match identity. Consumers may compare it for
+  equality and must never split it, parse prefixes, or infer model identity,
+  provider identity or window kind from its spelling. Its delimiters and
+  internal structure carry no contract semantics and are not a
+  model-routing language. Model applicability uses exact
+  configured/catalog capacity bindings.
+- `scope_id` is normalized top-level window data, never provider metadata and
+  never part of `provider_metadata`.
+
+> Consumers must never parse either `scope_id` or `window_id` for hidden
+> semantics. Model applicability uses exact configured/catalog capacity
+> bindings.
+
+Current provider mappings (adapter evidence, not universal constants):
+
+- **OpenAI** (`codex_app_server`): the validated `limitId` is the semantic
+  scope. Every window of the main `rateLimits` snapshot carries
+  `scope_id = "codex"`; every window of a validated additional
+  `rateLimitsByLimitId` bucket carries the bucket's validated map key.
+  The `"codex"` mirror entry emits no duplicate windows. `limitName` and
+  `normalModelSlug` are quota-alias metadata, never scope identity.
+- **Z.ai** (`zai_usage_endpoint`): evidenced known limit types
+  (`TOKENS_LIMIT`, `TIME_LIMIT`) carry the adapter-owned scope
+  `coding_plan`, including a known type whose `(unit, number)` period is
+  unrecognized (scope applicability and period semantics are independent).
+  A structurally valid but unevidenced provider `type` keeps `scope_id`
+  unknown (`None`) and its raw type text never becomes a scope.
 
 ### Percentage Invariant
 
@@ -167,14 +225,18 @@ When a safe provider window identifier exists, `provider_metadata` contains only
 }
 ```
 
-`window_id` is diagnostic data only. It must not contain credentials, headers,
+`window_id` is diagnostic data only — the identity of one provider window for
+diagnostics and explanation. It must not contain credentials, headers,
 raw response fragments, URLs, filesystem paths, arbitrary error text or other
 sensitive data. If no safe identifier exists, omit `provider_metadata`.
 
 Its string format — including any delimiters — carries no contract meaning.
 Consumers must not parse it or infer semantics, model applicability or scope
 membership from it; which capacity scopes apply to a model is explicit
-normalized data, never derived from `window_id` (D-020).
+normalized data (`scope_id`, D-020/D-023), never derived from `window_id`.
+`window_id` and `scope_id` are separate concepts: provider adapters may
+construct both independently from the same validated provider evidence, and
+consumer/core code may never derive one from the other.
 
 An unknown window remains in `windows` with `resource` and/or `kind` set to
 `unknown`, even when no safe `window_id` exists. Unknown semantics are not
@@ -183,7 +245,7 @@ silently discarded because known windows look healthy.
 ## Diagnostics And Metadata
 
 `diagnostics` is an array of records with exactly one required key, `code`, and
-one optional key, `window_id`. `code` must come from this v2 allowlist:
+one optional key, `window_id`. `code` must come from this v3 allowlist:
 
 | Code | Use |
 | --- | --- |
@@ -206,7 +268,7 @@ around arbitrary data. They must never contain credentials, Authorization
 material, raw provider responses, arbitrary stderr, sensitive paths, account
 identifiers or endpoint URLs.
 
-## Explicitly Outside V2
+## Explicitly Outside V3
 
 This contract does not define freshness thresholds, caching, refresh behavior,
 timeouts, effective headroom, scarcity formulas or labels, reservations,
@@ -216,7 +278,7 @@ staleness policy. M2 decisions remain responsible for scarcity and selection.
 
 ## Scenario Validation
 
-| Scenario | v2 representation and invariant |
+| Scenario | v3 representation and invariant |
 | --- | --- |
 | A - OpenAI healthy | `status: "ok"` with two unordered windows whose validated periods are `five_hour` and `weekly`, durations `18000` and `604800`, canonical reset strings and complementary percentage pairs. |
 | B - Z.ai healthy | Known five-hour and weekly token windows plus every additional observed window. Unknown periods remain `kind: "unknown"`; non-token limits remain `resource: "time"`. |
@@ -227,44 +289,18 @@ staleness policy. M2 decisions remain responsible for scarcity and selection.
 These cases are contract checks for provider adapter tests. They do not define
 selection or scarcity outcomes.
 
-## Planned M2a extension: semantic capacity scopes
+## Migration v2 → v3 (M2a, D-023)
 
-This section records a frozen planning decision (`docs/decisions.md` D-020).
-It is **not** part of v2: v2 remains frozen exactly as documented above, and
-no schema v3 is implemented by the planning change.
+The only change from v2 to v3 is the addition of the normalized semantic scope
+identity `CapacityWindow.scope_id`; all other capacity semantics remain
+unchanged except schema-version references. The v2 contract's remaining
+semantics — percentage-pair complementarity, canonical UTC timestamps, fixed
+known durations, allowlisted statuses and diagnostics, strict provider
+metadata, fail-closed shapes and deterministic serialization — are preserved
+verbatim in v3.
 
-M1 proved that one provider may expose multiple independent or shared capacity
-buckets (for OpenAI, `rateLimitsByLimitId`). A model may therefore be
-constrained by one or more capacity scopes simultaneously, and M2 must know
-which scopes apply to which candidate without guessing from diagnostic
-identifiers. The diagnostic `window_id` cannot legally serve as a semantic
-scope identifier, so the **first M2 implementation prerequisite** (slice M2a)
-is a new normalized capacity-contract version that adds an explicit semantic
-capacity-scope identifier. The expected conceptual direction is minimal:
-
-```text
-CapacityWindow.scope_id: safe string | absent/unknown
-```
-
-or an equivalently minimal explicit normalized scope construct, finalized in
-the M2a implementation PR. The planned semantics:
-
-- `(provider, scope_id)` identifies one normalized capacity scope.
-- Scope identity is provider-local, safe, non-secret and semantically
-  meaningful — unlike diagnostic `window_id`.
-- Multiple windows may belong to one scope; multiple models may share one
-  scope; one model may be subject to multiple scopes.
-- Where evidence exists, provider adapters construct scope information at the
-  provider edge from validated provider quota identity: for OpenAI, the
-  validated multi-bucket view (`rateLimitsByLimitId`) with `limitId`,
-  `limitName` and `normalModelSlug` (the normal model whose
-  presentation/reasoning options correspond to that quota alias); for Z.ai,
-  the known subscription windows share one provider-default scope unless
-  future evidence establishes otherwise.
-- Unknown model-to-scope applicability is never guessed: when applicability is
-  unknown, selection policy returns an explicit degraded or no-selection
-  result rather than choosing an optimistic quota (D-020, D-021).
-
-Documentation examples must use placeholder scope identifiers, never real
-provider or personal bucket IDs. Selector implementation must not begin
-before this semantic capacity-applicability contract exists.
+There is no compatibility shim: v3 code does not accept v2 objects. A
+serialized v2 snapshot is rejected exactly like any other wrong
+`schema_version`. This is an internal/provisional contract, so the migration
+is an explicit one-step reversion-free upgrade rather than a versioned public
+API migration.

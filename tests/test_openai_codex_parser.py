@@ -154,7 +154,7 @@ class KnownWindowsFixture(unittest.TestCase):
     def test_full_normalization(self) -> None:
         snap = _parse(_load("ratelimits-ok-plus.json"))
         self.assertEqual(snap.status, "ok")
-        self.assertEqual(snap.schema_version, 2)
+        self.assertEqual(snap.schema_version, 3)
         self.assertEqual(snap.provider, "openai")
         self.assertEqual(snap.source, "codex_app_server")
         self.assertEqual(snap.plan, "plus")
@@ -423,7 +423,7 @@ class LegacyGenerationCompatibility(unittest.TestCase):
     def test_legacy_fixture_without_permission_member_is_healthy(self) -> None:
         snap = _parse(_load("ratelimits-legacy-generation-ok.json"))
         self.assertEqual(snap.status, "ok")
-        self.assertEqual(snap.schema_version, 2)
+        self.assertEqual(snap.schema_version, 3)
         self.assertEqual(snap.plan, "pro")
         self.assertEqual(
             [(w.kind, w.used_percent, w.remaining_percent) for w in snap.windows],
@@ -1130,6 +1130,121 @@ class AdditionalBuckets(unittest.TestCase):
         self.assertEqual(reserve.window_id, "gpt-reserve:primary")
 
 
+class SemanticScopes(unittest.TestCase):
+    """V3 semantic capacity-scope emission (D-020, D-023).
+
+    The validated ``limitId`` is the semantic scope of every window it
+    governs — independently of period semantics — while the diagnostic
+    ``window_id`` (``<limitId>:<slot>``) never becomes scope identity. The
+    two concepts stay visibly distinct in normalized output.
+    """
+
+    def test_main_windows_carry_codex_scope(self) -> None:
+        snap = _parse(_load("ratelimits-ok-plus.json"))
+        self.assertEqual(
+            [(w.kind, w.scope_id) for w in snap.windows],
+            [("five_hour", "codex"), ("weekly", "codex")],
+        )
+
+    def test_main_windows_share_one_scope(self) -> None:
+        snap = _parse(_load("ratelimits-ok-plus.json"))
+        self.assertEqual({w.scope_id for w in snap.windows}, {"codex"})
+
+    def test_slot_positions_carry_no_scope_semantics(self) -> None:
+        # Scope follows the validated limitId, never the window slot or the
+        # diagnostic window_id.
+        snap = _parse(_load("ratelimits-slots-swapped.json"))
+        self.assertEqual({w.scope_id for w in snap.windows}, {"codex"})
+
+    def test_additional_bucket_scope_equals_its_limit_id(self) -> None:
+        snap = _parse(_load("ratelimits-additional-window-present.json"))
+        by_id = {w.window_id: w for w in snap.windows}
+        reserve = by_id["gpt-reserve:primary"]
+        self.assertEqual(reserve.scope_id, "gpt-reserve")
+        # scope_id and window_id are different concepts and different values;
+        # the scope is never derived by parsing the diagnostic identity.
+        self.assertNotEqual(reserve.scope_id, reserve.window_id)
+        self.assertEqual(reserve.window_id, "gpt-reserve:primary")
+        # Main windows keep the codex scope next to the distinct bucket scope.
+        self.assertEqual(by_id["primary"].scope_id, "codex")
+        self.assertEqual(by_id["secondary"].scope_id, "codex")
+        text = _canonical_json(snap)
+        self.assertIn('"scope_id": "codex"', text)
+        self.assertIn('"scope_id": "gpt-reserve"', text)
+
+    def test_equal_periods_across_scopes_coexist(self) -> None:
+        # A main weekly window and an additional weekly window are distinct
+        # capacity facts of distinct scopes: never merged or deduplicated.
+        payload = _result(
+            _snapshot(dict(_BOTH_SLOTS)),
+            buckets={
+                "gpt-reserve": {
+                    "limitId": "gpt-reserve",
+                    "primary": _window(30, 10080, 1788748064),
+                    "secondary": None,
+                    "spendControlReached": False,
+                }
+            },
+        )
+        snap = _parse(payload)
+        weeklies = [w for w in snap.windows if w.kind == "weekly"]
+        self.assertEqual(len(weeklies), 2)
+        self.assertEqual({w.scope_id for w in weeklies}, {"codex", "gpt-reserve"})
+        self.assertEqual(snap.status, "ok")
+
+    def test_mirror_does_not_duplicate_windows_or_scopes(self) -> None:
+        snap = _parse(_load("ratelimits-full-shape-ok.json"))
+        self.assertEqual(len(snap.windows), 2)
+        self.assertEqual({w.scope_id for w in snap.windows}, {"codex"})
+
+    def test_unknown_period_still_carries_known_bucket_scope(self) -> None:
+        # Scope identity and period identity are separate: an unknown
+        # duration still belongs to its known bucket scope.
+        payload = _result(
+            _snapshot(dict(_BOTH_SLOTS)),
+            buckets={
+                "gpt-reserve": {
+                    "limitId": "gpt-reserve",
+                    "primary": {
+                        "usedPercent": 5,
+                        "windowDurationMins": None,
+                        "resetsAt": 1788306212,
+                    },
+                    "secondary": None,
+                    "spendControlReached": False,
+                }
+            },
+        )
+        snap = _parse(payload)
+        unknown = [w for w in snap.windows if w.kind == "unknown"]
+        self.assertEqual(len(unknown), 1)
+        self.assertEqual(unknown[0].scope_id, "gpt-reserve")
+
+    def test_blocker_degradation_preserves_scopes(self) -> None:
+        snap = _parse(_load("ratelimits-additional-bucket-exhausted.json"))
+        self.assertEqual(snap.status, "unknown")
+        self.assertEqual(len(snap.windows), 3)
+        self.assertEqual(
+            {w.scope_id for w in snap.windows}, {"codex", "gpt-reserve"}
+        )
+
+    def test_limit_name_and_normal_model_slug_never_become_scope(self) -> None:
+        payload = _result(
+            _snapshot(
+                dict(_BOTH_SLOTS),
+                extra={
+                    "limitName": "synthetic-limit-name",
+                    "normalModelSlug": "synthetic-model",
+                },
+            )
+        )
+        snap = _parse(payload)
+        self.assertEqual({w.scope_id for w in snap.windows}, {"codex"})
+        text = _canonical_json(snap)
+        self.assertNotIn("synthetic-limit-name", text)
+        self.assertNotIn("synthetic-model", text)
+
+
 class UnknownDurationFixture(unittest.TestCase):
     def test_unknown_window_preserved_without_guessing(self) -> None:
         snap = _parse(_load("ratelimits-unknown-duration.json"))
@@ -1266,7 +1381,7 @@ class DegradedFixture(unittest.TestCase):
         self.assertEqual(snap.status, "ok")
         self.assertEqual(snap.plan, "unknown")
 
-    def test_degraded_snapshot_validates_through_v2(self) -> None:
+    def test_degraded_snapshot_validates_through_v3(self) -> None:
         snap = _parse(_load("ratelimits-degraded.json"))
         reparsed = CapacitySnapshot.from_dict(snap.to_dict())
         self.assertEqual(reparsed, snap)
@@ -1847,7 +1962,7 @@ class PurityAndDeterminism(unittest.TestCase):
                 payload, retrieved_at="2026-09-03T20:00:00Z"
             )
 
-    def test_all_fixtures_round_trip_through_v2(self) -> None:
+    def test_all_fixtures_round_trip_through_v3(self) -> None:
         for name in ALL_FIXTURES:
             with self.subTest(name=name):
                 snap = _parse(_load(name))

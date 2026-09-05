@@ -1,9 +1,10 @@
-"""Contract tests for the pure v2 normalized capacity model.
+"""Contract tests for the pure v3 normalized capacity model.
 
-These tests construct normalized v2 objects directly (the contract in
+These tests construct normalized v3 objects directly (the contract in
 ``docs/capacity-model.md``) and assert the invariants the implementation must
-enforce. They do NOT parse provider fixtures; the Z.ai fixtures under
-``tests/fixtures/zai-coding-plan`` are evidence inputs for the later adapter task.
+enforce, including the v3 semantic ``scope_id`` field. They do NOT parse
+provider fixtures; the Z.ai fixtures under ``tests/fixtures/zai-coding-plan``
+are evidence inputs for the provider adapter tests.
 
 Run with either:
 
@@ -18,8 +19,10 @@ from __future__ import annotations
 
 import json
 import unittest
-from typing import cast
+from pathlib import Path
+from typing import ClassVar, cast
 
+import scarcity_router
 from scarcity_router import (
     CapacityDiagnostic,
     CapacityError,
@@ -27,6 +30,7 @@ from scarcity_router import (
     CapacityValidationError,
     CapacityWindow,
 )
+from scarcity_router.capacity import SCHEMA_VERSION
 
 
 def _clone(payload: dict[str, object]) -> dict[str, object]:
@@ -54,8 +58,11 @@ def _window(
     remaining: int | None = 94,
     resets_at: str | None = "2026-09-02T04:00:00.000Z",
     window_id: str | None = None,
+    scope_id: str | None = None,
 ) -> dict[str, object]:
     d: dict[str, object] = {"resource": resource, "kind": kind}
+    if scope_id is not None:
+        d["scope_id"] = scope_id
     if duration_seconds is not None:
         d["duration_seconds"] = duration_seconds
     if used is not None:
@@ -71,15 +78,27 @@ def _window(
 
 def openai_healthy() -> dict[str, object]:
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "provider": "openai",
         "source": "codex_app_server",
         "plan": "plus",
         "retrieved_at": "2026-09-01T22:49:51.000Z",
         "status": "ok",
         "windows": [
-            _window(kind="five_hour", duration_seconds=18_000, used=6, remaining=94),
-            _window(kind="weekly", duration_seconds=604_800, used=52, remaining=48),
+            _window(
+                kind="five_hour",
+                duration_seconds=18_000,
+                used=6,
+                remaining=94,
+                scope_id="codex",
+            ),
+            _window(
+                kind="weekly",
+                duration_seconds=604_800,
+                used=52,
+                remaining=48,
+                scope_id="codex",
+            ),
         ],
         "diagnostics": [],
     }
@@ -87,15 +106,27 @@ def openai_healthy() -> dict[str, object]:
 
 def zai_healthy() -> dict[str, object]:
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "provider": "zai",
         "source": "zai_usage_endpoint",
         "plan": "pro",
         "retrieved_at": "2026-09-01T22:49:51.000Z",
         "status": "ok",
         "windows": [
-            _window(kind="five_hour", duration_seconds=18_000, used=2, remaining=98),
-            _window(kind="weekly", duration_seconds=604_800, used=98, remaining=2),
+            _window(
+                kind="five_hour",
+                duration_seconds=18_000,
+                used=2,
+                remaining=98,
+                scope_id="coding_plan",
+            ),
+            _window(
+                kind="weekly",
+                duration_seconds=604_800,
+                used=98,
+                remaining=2,
+                scope_id="coding_plan",
+            ),
             _window(
                 resource="tokens",
                 kind="unknown",
@@ -322,7 +353,7 @@ class SerializationShape(unittest.TestCase):
 
     def test_diagnostics_shape(self) -> None:
         payload: dict[str, object] = {
-            "schema_version": 2,
+            "schema_version": 3,
             "provider": "zai",
             "source": "zai_usage_endpoint",
             "retrieved_at": "2026-09-01T22:49:51.000Z",
@@ -365,6 +396,8 @@ class CredentialSafety(unittest.TestCase):
             p["source"] = bad_value
         elif where == "window_id":
             _windows(p)[0]["provider_metadata"] = {"window_id": bad_value}
+        elif where == "scope_id":
+            _windows(p)[0]["scope_id"] = bad_value
         elif where == "diag_wid":
             p["status"] = "ok"
             p["diagnostics"] = [{"code": "window_semantics_unknown", "window_id": bad_value}]
@@ -377,6 +410,7 @@ class CredentialSafety(unittest.TestCase):
         ("space",              "sk fake"),
         ("forward_slash",      "sk/abc"),
         ("backslash",          "sk\\abc"),
+        ("leading_punctuation", "-sk-fake"),
         ("over_length",        "a" * 65),
         ("non_ascii",          "sk-abc-中文"),
         ("dollar",             "sk-abc$1"),
@@ -387,12 +421,13 @@ class CredentialSafety(unittest.TestCase):
 
     def test_unsafe_identifier_rejected_all_fields(self) -> None:
         for label, bad in self.UNSAFE_VALUES:
-            for where in ("plan", "source", "window_id", "diag_wid"):
-                with self.assertRaises(
-                    CapacityValidationError,
-                    msg=f"{label} in {where} ({bad!r})",
-                ):
-                    _ = CapacitySnapshot.from_dict(self._unsafe(where, bad))
+            for where in ("plan", "source", "window_id", "scope_id", "diag_wid"):
+                with self.subTest(label=label, where=where):
+                    with self.assertRaises(
+                        CapacityValidationError,
+                        msg=f"{label} in {where} ({bad!r})",
+                    ):
+                        _ = CapacitySnapshot.from_dict(self._unsafe(where, bad))
 
     def test_safe_shaped_id_is_accepted(self) -> None:
         # A safe-shaped identifier (matches [a-z0-9][a-z0-9._:-]{0,63}) is
@@ -436,6 +471,12 @@ class InvalidSnapshots(unittest.TestCase):
     def test_02b_schema_version_bool_rejected(self) -> None:
         p = openai_healthy()
         p["schema_version"] = True  # bool is technically int in Python; reject
+        self.assert_rejected(p)
+
+    def test_02d_serialized_v2_snapshot_is_rejected(self) -> None:
+        # v3 accepts only schema_version 3; there is no v2 compatibility shim.
+        p = openai_healthy()
+        p["schema_version"] = 2
         self.assert_rejected(p)
 
     def test_02c_removed_local_runtime_field_is_rejected(self) -> None:
@@ -714,7 +755,7 @@ class ConstructorInvariants(unittest.TestCase):
         # status "unavailable" requires the "quota_unavailable" diagnostic.
         with self.assertRaises(CapacityValidationError):
             _ = CapacitySnapshot(
-                schema_version=2,
+                schema_version=3,
                 provider="openai",
                 source="codex_app_server",
                 retrieved_at="2026-09-02T04:00:00.000Z",
@@ -739,6 +780,186 @@ class FromDictMissingKeyGuard(unittest.TestCase):
     def test_diagnostic_missing_code(self) -> None:
         with self.assertRaises(CapacityValidationError):
             _ = CapacityDiagnostic.from_dict({})
+
+
+# ══════════════════════ V3 SEMANTIC CAPACITY SCOPES ══════════════════════════
+
+
+class SchemaVersionContract(unittest.TestCase):
+    """Capacity contract v3 is the only accepted version (D-020, D-023)."""
+
+    def test_schema_version_is_three(self) -> None:
+        self.assertEqual(SCHEMA_VERSION, 3)
+
+    def test_direct_v2_snapshot_construction_is_rejected(self) -> None:
+        with self.assertRaises(CapacityValidationError):
+            _ = CapacitySnapshot(
+                schema_version=2,
+                provider="openai",
+                source="codex_app_server",
+                retrieved_at="2026-09-01T22:49:51.000Z",
+                status="ok",
+                windows=(),
+                diagnostics=(),
+            )
+
+
+class SemanticScopeContract(unittest.TestCase):
+    """The v3 ``CapacityWindow.scope_id`` semantic capacity-scope field.
+
+    ``(snapshot.provider, window.scope_id)`` identifies one semantic
+    capacity scope; ``None`` means unknown applicability; the field is
+    opaque exact-match identity serialized top-level; ``provider_metadata``
+    keeps its old diagnostic-only shape (D-020, D-023).
+    """
+
+    def test_valid_direct_construction(self) -> None:
+        w = CapacityWindow(resource="tokens", kind="weekly", scope_id="example_scope")
+        self.assertEqual(w.scope_id, "example_scope")
+
+    def test_safe_scope_serializes_top_level(self) -> None:
+        w = CapacityWindow(resource="tokens", kind="weekly", scope_id="example_scope")
+        d = w.to_dict()
+        self.assertEqual(d["scope_id"], "example_scope")
+        # Normalized top-level window data, never provider metadata.
+        self.assertNotIn("provider_metadata", d)
+
+    def test_unknown_scope_is_omitted_from_serialization(self) -> None:
+        w = CapacityWindow(resource="tokens", kind="unknown")
+        self.assertIsNone(w.scope_id)
+        self.assertNotIn("scope_id", w.to_dict())
+
+    def test_unknown_scope_keeps_window_representable(self) -> None:
+        # Unknown applicability is a valid, first-class representable state.
+        w = CapacityWindow.from_dict({"resource": "unknown", "kind": "unknown"})
+        self.assertIsNone(w.scope_id)
+        _ = CapacityWindow.from_dict(
+            {"resource": "tokens", "kind": "unknown", "scope_id": None}
+        )
+
+    def test_from_dict_round_trips_scope_exactly(self) -> None:
+        w = CapacityWindow.from_dict(
+            {"resource": "tokens", "kind": "weekly", "scope_id": "example_scope"}
+        )
+        self.assertEqual(w.scope_id, "example_scope")
+        reparsed = CapacityWindow.from_dict(w.to_dict())
+        self.assertEqual(reparsed, w)
+        self.assertEqual(reparsed.scope_id, "example_scope")
+
+    def test_multiple_windows_may_share_one_scope(self) -> None:
+        # One scope -> five-hour window -> weekly window.
+        snap = CapacitySnapshot.from_dict(_clone(openai_healthy()))
+        self.assertEqual(len(snap.windows), 2)
+        self.assertEqual(
+            [(w.kind, w.scope_id) for w in snap.windows],
+            [("five_hour", "codex"), ("weekly", "codex")],
+        )
+
+    def test_different_scopes_may_share_one_period_kind(self) -> None:
+        # Required for multi-bucket OpenAI: equal periods in distinct scopes
+        # coexist and must not be merged or deduplicated.
+        payload = openai_healthy()
+        _windows(payload)[0] = _window(
+            kind="weekly", duration_seconds=604_800, used=10, remaining=90,
+            scope_id="codex",
+        )
+        _windows(payload)[1] = _window(
+            kind="weekly", duration_seconds=604_800, used=40, remaining=60,
+            scope_id="gpt-reserve",
+        )
+        snap = CapacitySnapshot.from_dict(_clone(payload))
+        self.assertEqual(
+            [(w.kind, w.scope_id) for w in snap.windows],
+            [("weekly", "codex"), ("weekly", "gpt-reserve")],
+        )
+
+    def test_scope_and_period_are_independent(self) -> None:
+        # A known scope with an unknown period is representable; so is an
+        # unknown scope with a known period.
+        known_scope_unknown_period = CapacityWindow(
+            resource="tokens", kind="unknown", scope_id="coding_plan"
+        )
+        self.assertEqual(known_scope_unknown_period.scope_id, "coding_plan")
+        unknown_scope_known_period = CapacityWindow(
+            resource="tokens", kind="five_hour", duration_seconds=18_000
+        )
+        self.assertIsNone(unknown_scope_known_period.scope_id)
+
+    def test_provider_metadata_keeps_diagnostic_only_shape(self) -> None:
+        # scope_id must never migrate into provider_metadata: the diagnostic
+        # structure stays exactly {"window_id": ...}.
+        p = openai_healthy()
+        _windows(p)[0]["provider_metadata"] = {
+            "window_id": "primary",
+            "scope_id": "codex",
+        }
+        with self.assertRaises(CapacityValidationError):
+            _ = CapacitySnapshot.from_dict(_clone(p))
+
+    def test_unsafe_scope_ids_fail_direct_construction(self) -> None:
+        for bad in ("Codex", "my scope", "-scope", "a" * 65, "sk/abc"):
+            with self.subTest(bad=bad):
+                with self.assertRaises(CapacityValidationError):
+                    _ = CapacityWindow(
+                        resource="tokens", kind="unknown", scope_id=bad
+                    )
+
+    def test_non_string_scope_fails_through_serialized_boundary(self) -> None:
+        for bad in (5, True, ["a"], {"a": 1}, 3.5):
+            with self.subTest(bad=bad):
+                with self.assertRaises(CapacityValidationError):
+                    _ = CapacityWindow.from_dict(
+                        {"resource": "tokens", "kind": "unknown", "scope_id": bad}
+                    )
+
+    def test_v3_snapshot_with_scopes_round_trips_deterministically(self) -> None:
+        payload = zai_healthy()
+        snap = CapacitySnapshot.from_dict(_clone(payload))
+        serialized = snap.to_dict()
+        self.assertEqual(
+            json.dumps(serialized, sort_keys=True),
+            json.dumps(snap.to_dict(), sort_keys=True),
+        )
+        reparsed = CapacitySnapshot.from_dict(_clone(serialized))
+        self.assertEqual(reparsed, snap)
+        self.assertEqual(reparsed.to_dict(), serialized)
+        scoped = [
+            w for w in reparsed.windows
+            if w.kind in ("five_hour", "weekly")
+        ]
+        self.assertEqual({w.scope_id for w in scoped}, {"coding_plan"})
+
+
+class NoScopeInferenceInCore(unittest.TestCase):
+    """Consumer/core code must never derive semantic scope by parsing the
+    opaque ``scope_id`` or the diagnostic ``window_id`` (D-020, D-023);
+    applicability is explicit normalized data. This source-level assertion
+    pins the rule without building a static-analysis framework."""
+
+    CORE_MODULES: ClassVar[tuple[str, ...]] = (
+        "capacity.py",
+        "status.py",
+        "errors.py",
+        "__init__.py",
+    )
+
+    def test_core_modules_never_parse_window_or_scope_identifiers(self) -> None:
+        package_root = Path(scarcity_router.__file__).resolve().parent
+        for name in self.CORE_MODULES:
+            source = (package_root / name).read_text(encoding="utf-8")
+            for pattern in (
+                "window_id.split",
+                "window_id.startswith",
+                "window_id.endswith",
+                "scope_id.split",
+                "scope_id.startswith",
+                "scope_id.endswith",
+            ):
+                self.assertNotIn(
+                    pattern,
+                    source,
+                    msg=f"{name} must not parse identifiers: {pattern!r}",
+                )
 
 if __name__ == "__main__":
     _ = unittest.main(verbosity=2)

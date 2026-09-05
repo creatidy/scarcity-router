@@ -10,13 +10,14 @@ The core rule is simple:
 
 > **Choose the least scarce model that is capable enough for the task.**
 
-The project completed **M0: documentation and contract design** on 2026-09-01
-and **M1: capacity collectors and normalized status** on 2026-09-05. The two
-subscription collectors and a provisional unified status command are
-implemented. M2 — capability catalog and selector — is current and begins
-with a documentation-only planning gate that freezes the selector contracts
-before any selector implementation. There is not yet an installable package,
-final executable name, selector, REST service or MCP server.
+The project completed **M0: documentation and contract design** on 2026-09-01,
+**M1: capacity collectors and normalized status** on 2026-09-05 and the
+**M2a: semantic capacity scopes** slice (capacity contract v3) on 2026-09-06.
+The two subscription collectors and a provisional unified status command are
+implemented. M2 — capability catalog and selector — is current; its planning
+gate froze the selector contracts, and the next implementation slice is M2b:
+TaskRequirement and ModelCatalog core types. There is not yet an installable
+package, final executable name, selector, REST service or MCP server.
 
 ## Why It Exists
 
@@ -121,8 +122,8 @@ representative safe output is:
 ```text
 Observed at 2026-09-05T09:00:00.123Z
 Provider openai status=ok plan=plus
-  window kind=five_hour resource=tokens used=35% remaining=65% reset=2026-09-05T12:00:00.000Z id=primary
-  window kind=weekly resource=tokens used=52% remaining=48% reset=2026-09-12T09:00:00.000Z id=secondary
+  window kind=five_hour resource=tokens used=35% remaining=65% reset=2026-09-05T12:00:00.000Z scope=codex id=primary
+  window kind=weekly resource=tokens used=52% remaining=48% reset=2026-09-12T09:00:00.000Z scope=codex id=secondary
 Provider zai status=auth_required
   windows=none
   diagnostics=auth_required
@@ -148,8 +149,8 @@ uv run python -m scarcity_router status --json
 ```
 
 The result is a JSON array containing exactly the OpenAI and Z.ai normalized
-`CapacitySnapshot.to_dict()` values. The internal capacity contract is schema v2;
-this is not a competing provider-specific schema.
+`CapacitySnapshot.to_dict()` values. The internal capacity contract is schema
+v3; this is not a competing provider-specific schema.
 
 Operational provider states such as `unavailable`, `auth_required`,
 `unsupported`, `schema_changed`, `unknown` and an exhausted window produce
