@@ -250,8 +250,8 @@ non-blocking operations on the exact built-in raw socket and then joins the
 worker; the socket timeout bounds production operations and the join proves
 termination. Foreign handles are rejected during registration rather than
 inspected or invoked. The collector never explicitly invokes response or
-connection `close`, although CPython's `HTTPResponse` may close its buffered
-file during a read or finalization. The raw socket remains the resource
+connection `close`, although CPython response/file finalization may close its
+buffered file as the response is released. The raw socket remains the resource
 cleanup guarantee. A deadline expiring during the listing or loaded-model
 read degrades the snapshot to `unknown` — never a false `ok` — while
 preserving the already-validated reachability/presence facts. Cleanup is

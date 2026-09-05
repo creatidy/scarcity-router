@@ -32,12 +32,10 @@ Security contract (docs/security.md):
   spans connect, headers and body reads **end to end**:
   each read executes inside a single bounded worker and the collector
   waits at most the remaining time on it. On deadline the collector
-  requests cancellation through the registered raw-socket handle using
-  non-blocking ``shutdown``/``close`` and then proves the worker reclaimed
-  with a bounded join. A worker registered after cancellation is cancelled
-  immediately; if the worker still cannot be proven terminated, collection
-  raises an internal error rather than returning with an unjoined worker.
-  The worker
+  requests cancellation through the registered exact raw-socket handle using
+  non-blocking built-in ``shutdown``/``close`` and then unconditionally joins
+  the worker. A worker registered after cancellation is cancelled immediately;
+  no return or raise path precedes proof of worker termination. The worker
   re-checks the deadline between all blocking phases and again after EOF
   before the body is consumed; the collector re-checks it before any
   worker result is consumed, so a completion landing at or past the
@@ -57,8 +55,8 @@ Security contract (docs/security.md):
   chunked body is never accepted; non-200 responses
   (including declined redirects and error statuses) are never read, and
   the collector never explicitly invokes response/connection ``close`` —
-  CPython's ``HTTPResponse`` may close its buffered file during read or
-  finalization — while socket and file-descriptor cleanup is performed through
+  CPython's response/file finalization may close its buffered file as the
+  response is released — while socket and file-descriptor cleanup is performed through
   the registered raw socket handles; oversized bodies are never parsed; expected
   response-operation failures — including provider-controlled exception text
   — normalize to safe outcomes and are never propagated, logged or retained;
@@ -436,6 +434,16 @@ class _ResponseProtocol(Protocol):
     def getheader(self, name: str, default: object = None, /) -> object: ...
 
 
+class _NonClosingHTTPResponse(HTTPResponse):
+    """Keep the buffered file inspectable until framing checks finish."""
+
+    def _close_conn(self) -> None:
+        # Prevent HTTPResponse.read() from discarding bytes before the
+        # collector's nonblocking trailing-data probe. Raw socket cleanup
+        # remains the collector's ownership boundary.
+        pass
+
+
 _MAX_VERSION_LENGTH = 128
 
 
@@ -505,6 +513,7 @@ def open_connection(
     sock.connect(_numeric_sockaddr(host, port))
     connection = HTTPConnection(host, port)
     connection.sock = sock
+    connection.response_class = _NonClosingHTTPResponse
     return connection
 
 
@@ -565,7 +574,9 @@ def _response_body_framing(
 
     ``http.client`` enforces a declared content length for its own reads, but
     it does not make a short close-delimited body distinguishable from EOF to
-    this loop. Conflicting ``Content-Length``/``Transfer-Encoding`` headers,
+    this loop. The collector's non-closing response subclass keeps the buffer
+    available for a nonblocking trailing-data probe. Conflicting
+    ``Content-Length``/``Transfer-Encoding`` headers,
     repeated lengths with different values and unsupported transfer codings
     are ambiguous and therefore fail closed. A response seam without
     ``getheader`` remains the synthetic EOF-framed contract used by the unit
@@ -680,8 +691,9 @@ def _execute_read(
     framing) and ``ok``.
 
     The collector never explicitly invokes ``response.close()`` or
-    ``connection.close()``. CPython's ``HTTPResponse`` may nevertheless close
-    its buffered file during a read or finalization; socket/file-descriptor
+    ``connection.close()``. CPython's response/file finalization may
+    nevertheless close its buffered file as the response is released;
+    socket/file-descriptor
     cleanup is performed through the registered raw-socket handles by the
     collector's non-blocking shutdown/close; see :func:`_cancel_sockets`.
     """
@@ -718,15 +730,8 @@ def _execute_read(
             return "unreadable", None
 
         real_response: HTTPResponse | None = None
-        if frame_kind == "content_length" and type(cast(object, typed_response)) is HTTPResponse:
+        if isinstance(cast(object, typed_response), HTTPResponse):
             real_response = cast("HTTPResponse", cast(object, typed_response))
-            response_file: object | None = cast("object", real_response.fp)
-            if response_file is None:
-                return "malformed", None
-            file_read_object: object = getattr(response_file, "read", None)
-            if not callable(file_read_object):
-                return "malformed", None
-            body_reader = cast("Callable[[int], object]", file_read_object)
 
         body = bytearray()
         while True:
@@ -764,6 +769,15 @@ def _execute_read(
             if len(body) + len(chunk) > MAX_BODY_BYTES:
                 return "unreadable", None
             body.extend(chunk)
+            if (
+                frame_kind == "chunked"
+                and real_response is not None
+                and real_response.chunk_left is None
+            ):
+                # The terminal chunk was consumed by this read. With the
+                # non-closing response subclass, do not ask HTTPResponse to
+                # parse a nonexistent next chunk.
+                break
         if expected_length is not None and len(body) != expected_length:
             return "malformed", None
         if real_response is not None:

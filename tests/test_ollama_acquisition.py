@@ -2562,6 +2562,32 @@ class RealTransportCancellation(_AcquisitionCase):
         self.assertEqual(rejected.status, "schema_changed")
         self._assert_reclaimed(0.0)
 
+    def test_trailing_bytes_after_chunked_terminal_fail_closed_on_each_endpoint(
+        self,
+    ) -> None:
+        bodies = [
+            b'{"version": "0.0.0"}',
+            _fixture("tags-present.json"),
+            _fixture("ps-loaded.json"),
+        ]
+        paths = ["version", "tags", "ps"]
+        for failing_index, path in enumerate(paths):
+            with self.subTest(path=path):
+                responses: list[bytes | None] = [
+                    _http_response(body, chunked=True)
+                    for body in bodies[:failing_index]
+                ]
+                responses.append(
+                    _http_response(bodies[failing_index], chunked=True) + b"EXTRA"
+                )
+                port = self._start_scripted_listener(
+                    responses, close_after_send=True
+                )
+                snapshot = self._collect(endpoint=f"http://127.0.0.1:{port}")
+                self.assertEqual(snapshot.status, "schema_changed")
+                self.assertNotIn(b"EXTRA".decode(), _serialized(snapshot))
+                self._assert_reclaimed(0.0)
+
     def test_trailing_bytes_after_content_length_fail_closed(self) -> None:
         version_body = b'{"version": "0.0.0"}'
         version_with_trailing = _http_response(version_body) + b"EXTRA"
