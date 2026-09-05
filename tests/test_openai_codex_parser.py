@@ -100,6 +100,7 @@ def _result(
     *,
     buckets: object = None,
     reset_credits: object = None,
+    ordinary_usage_allowed: object = True,
     envelope_extra: dict[str, object] | None = None,
     omit: tuple[str, ...] = (),
 ) -> dict[str, object]:
@@ -115,6 +116,7 @@ def _result(
             else buckets
         ),
         "rateLimitResetCredits": reset_credits,
+        "ordinaryUsageAllowed": ordinary_usage_allowed,
     }
     for member in omit:
         _ = result.pop(member, None)
@@ -302,6 +304,114 @@ class EnvelopeRequirements(unittest.TestCase):
         )
         snap = _parse(payload)
         self.assertEqual(snap.status, "ok")
+
+
+class CurrentSchemaCompatibility(unittest.TestCase):
+    """Current Codex envelope metadata is validated without entering v2."""
+
+    def test_explicit_ordinary_usage_permission_allows_current_windows(self) -> None:
+        payload = _result(
+            _snapshot(dict(_BOTH_SLOTS)), ordinary_usage_allowed=True
+        )
+        snap = _parse(payload)
+        self.assertEqual(snap.status, "ok")
+        self.assertEqual(
+            [(w.kind, w.used_percent, w.remaining_percent) for w in snap.windows],
+            [("five_hour", 6, 94), ("weekly", 52, 48)],
+        )
+
+    def test_false_ordinary_usage_permission_withholds_pairs(self) -> None:
+        snap = _parse(
+            _result(_snapshot(dict(_BOTH_SLOTS)), ordinary_usage_allowed=False)
+        )
+        self.assertEqual(snap.status, "unknown")
+        self.assertIn("telemetry_unknown", _codes(snap))
+        self.assertIn("percentage_unknown", _codes(snap))
+        self.assertEqual(
+            [(w.used_percent, w.remaining_percent) for w in snap.windows],
+            [(None, None), (None, None)],
+        )
+
+    def test_null_or_missing_ordinary_usage_permission_is_conservative(self) -> None:
+        for omit in ((), ("ordinaryUsageAllowed",)):
+            with self.subTest(omit=omit):
+                snap = _parse(
+                    _result(
+                        _snapshot(dict(_BOTH_SLOTS)),
+                        ordinary_usage_allowed=None,
+                        omit=omit,
+                    )
+                )
+                self.assertEqual(snap.status, "unknown")
+                self.assertEqual(
+                    [(w.used_percent, w.remaining_percent) for w in snap.windows],
+                    [(None, None), (None, None)],
+                )
+
+    def test_malformed_ordinary_usage_permission_fails_closed(self) -> None:
+        malformed: tuple[object, ...] = ("true", 1, [], {})
+        for bad in malformed:
+            with self.subTest(bad=bad):
+                snap = _parse(
+                    _result(
+                        _snapshot(dict(_BOTH_SLOTS)),
+                        ordinary_usage_allowed=bad,
+                    )
+                )
+                self.assertEqual(snap.status, "schema_changed")
+                self.assertEqual(snap.windows, ())
+
+    def test_upsell_object_is_known_blocker_not_schema_drift(self) -> None:
+        payload = _result(
+            _snapshot(dict(_BOTH_SLOTS)),
+            envelope_extra={
+                "rateLimitUpsell": {
+                    "bannerType": "synthetic-banner",
+                    "presentation": {"cta": "synthetic-action"},
+                }
+            },
+        )
+        snap = _parse(payload)
+        self.assertEqual(snap.status, "unknown")
+        self.assertNotIn("schema_changed", _codes(snap))
+        self.assertIn("telemetry_unknown", _codes(snap))
+        self.assertTrue(all(w.used_percent is None for w in snap.windows))
+        text = _canonical_json(snap)
+        self.assertNotIn("rateLimitUpsell", text)
+        self.assertNotIn("synthetic-banner", text)
+
+    def test_account_id_is_validated_but_not_emitted(self) -> None:
+        snap = _parse(
+            _result(
+                _snapshot(dict(_BOTH_SLOTS)),
+                envelope_extra={"accountId": "redacted-account-id"},
+            )
+        )
+        self.assertEqual(snap.status, "ok")
+        text = _canonical_json(snap)
+        self.assertNotIn("accountId", text)
+        self.assertNotIn("redacted-account-id", text)
+
+    def test_normal_model_slug_is_validated_but_not_emitted(self) -> None:
+        snap = _parse(
+            _result(
+                _snapshot(
+                    dict(_BOTH_SLOTS),
+                    extra={"normalModelSlug": "synthetic-model"},
+                )
+            )
+        )
+        self.assertEqual(snap.status, "ok")
+        self.assertNotIn("normalModelSlug", _canonical_json(snap))
+
+    def test_malformed_normal_model_slug_fails_closed(self) -> None:
+        snap = _parse(
+            _result(
+                _snapshot(dict(_BOTH_SLOTS), extra={"normalModelSlug": {"x": 1}})
+            )
+        )
+        self.assertEqual(snap.status, "schema_changed")
+        self.assertEqual(snap.windows, ())
 
 
 class CreditsAndSpendControl(unittest.TestCase):
@@ -504,7 +614,7 @@ class CreditsAndSpendControl(unittest.TestCase):
         self.assertEqual(snap.status, "ok")
         self.assertEqual(_codes(snap), set())
 
-    def test_missing_or_null_spend_control_is_unknown_and_conservative(self) -> None:
+    def test_missing_or_null_spend_control_is_unknown_without_permission(self) -> None:
         extras: tuple[dict[str, object] | None, ...] = (
             {"spendControlReached": None},
             None,
@@ -515,12 +625,28 @@ class CreditsAndSpendControl(unittest.TestCase):
                 if extra is None:
                     rate_limits = cast(dict[str, object], payload["rateLimits"])
                     _ = rate_limits.pop("spendControlReached")
+                payload["ordinaryUsageAllowed"] = None
                 snap = _parse(payload)
                 self.assertEqual(snap.status, "unknown")
                 self.assertIn("telemetry_unknown", _codes(snap))
                 self.assertEqual(
                     [(w.used_percent, w.remaining_percent) for w in snap.windows],
                     [(None, None), (None, None)],
+                )
+
+    def test_explicit_permission_allows_missing_or_null_spend_control(self) -> None:
+        for missing in (False, True):
+            with self.subTest(missing=missing):
+                rate_limits = _snapshot(
+                    dict(_BOTH_SLOTS), extra={"spendControlReached": None}
+                )
+                if missing:
+                    _ = rate_limits.pop("spendControlReached")
+                snap = _parse(_result(rate_limits, ordinary_usage_allowed=True))
+                self.assertEqual(snap.status, "ok")
+                self.assertEqual(
+                    [(w.used_percent, w.remaining_percent) for w in snap.windows],
+                    [(6, 94), (52, 48)],
                 )
 
     def test_non_nullable_individual_limit_members_are_required(self) -> None:

@@ -12,21 +12,25 @@ separate ``openai_codex_acquisition`` module.
 
 Provider semantics implemented here come only from validated evidence in
 docs/poc-evidence.md ("OpenAI/Codex subscription capacity" and the
-2026-09-03 collector reconnaissance) and the redacted fixtures under
+2026-09-03/2026-09-05 collector evidence) and the redacted fixtures under
 ``tests/fixtures/openai-codex-appserver/``:
 
 - the successful result is the protocol's ``GetAccountRateLimitsResponse``
-  envelope. Per the exact tagged generated JSON schema, only ``rateLimits``
-  is required; ``rateLimitsByLimitId`` and ``rateLimitResetCredits`` are
-  nullable optional members (missing and explicit null are both valid
-  absent states). Additive envelope members are tolerated when scalar and
-  fail closed when structured (they may carry uninterpretable constraining
-  data);
-- ``rateLimits`` is the protocol's ``RateLimitSnapshot`` with the evidenced
-  nine members: ``limitId``, ``limitName``, ``primary``, ``secondary``,
-  ``credits``, ``individualLimit``, ``spendControlReached``, ``planType``
-  and ``rateLimitReachedType`` (option-typed: missing and null both mean an
-  absent state). Present values validate strictly:
+  envelope. The current generated schema requires ``rateLimits`` and also
+  defines ``ordinaryUsageAllowed`` (boolean or null), ``accountId`` (string or
+  null) and ``rateLimitUpsell`` (opaque JSON presentation data), alongside
+  the older nullable ``rateLimitsByLimitId`` and ``rateLimitResetCredits``
+  members. The three metadata fields are recognized explicitly: ordinary
+  permission is used conservatively, account identity is validated but never
+  retained, and upsell content is never inspected or emitted. Additive
+  envelope members are tolerated when scalar and fail closed when structured
+  (they may carry uninterpretable constraining data);
+- ``rateLimits`` is the protocol's ``RateLimitSnapshot`` with the current ten
+  members: ``limitId``, ``limitName``, ``normalModelSlug``, ``primary``,
+  ``secondary``, ``credits``, ``individualLimit``, ``spendControlReached``,
+  ``planType`` and ``rateLimitReachedType`` (option-typed: missing and null
+  both mean an absent state). ``normalModelSlug`` is validated as an optional
+  string and is not part of v2 output. Present values validate strictly:
   - ``limitId`` must be exactly the evidenced quota identity ``"codex"``;
   - ``primary``/``secondary`` are the only window slots. A valid window
     requires i32 ``usedPercent``. ``windowDurationMins`` is an optional i64:
@@ -46,8 +50,11 @@ docs/poc-evidence.md ("OpenAI/Codex subscription capacity" and the
    v2-unrepresentable spend state, and ``remainingPercent == 0`` is a
     backend blocker. Amounts are never interpreted or compared;
   - ``spendControlReached`` is the boolean spend-control blocker: ``false``
-    means clear and ``true`` blocks. Missing or null is unavailable and
-    conservatively withholds percentage pairs; any other shape is drift;
+    means clear and ``true`` blocks. Missing or null is unavailable; current
+    upstream permits a full read with that state when
+    ``ordinaryUsageAllowed`` is explicitly true, while the envelope
+    permission still blocks missing/null/false permission. Any other shape is
+    drift;
   - ``rateLimitReachedType`` accepts exactly the evidenced snake_case enum
     members (``rate_limit_reached``, ``workspace_member_credits_depleted``,
     ``workspace_owner_credits_depleted``,
@@ -72,6 +79,11 @@ docs/poc-evidence.md ("OpenAI/Codex subscription capacity" and the
    optional. Empty arrays are valid, but empty or malformed rows are drift. A
    valid summary is supplemental telemetry: its presence and
    ``availableCount`` do not block or withhold current quota pairs;
+- ``ordinaryUsageAllowed == true`` is the only envelope permission state that
+  establishes ordinary included usage. ``false``, null or absence is an
+  insufficient/blocked state and never becomes usable from percentages alone.
+  A non-null ``rateLimitUpsell`` is also treated as a current upstream
+  recovery blocker, while its opaque presentation contents are discarded;
 - backend blockers and v2-unrepresentable states never yield a healthy
   snapshot: ``status="unknown"`` with ``telemetry_unknown``, all validated
   windows (main and additional) preserved with identity/duration/reset
@@ -146,12 +158,13 @@ _KNOWN_DURATIONS_MINS: dict[int, tuple[str, int]] = {
 # always come from the validated windowDurationMins.
 _WINDOW_SLOTS: tuple[str, str] = ("primary", "secondary")
 
-# The complete evidenced member set of RateLimitSnapshot (option-typed
-# members: missing and null both mean an absent state).
+# The current evidenced member set of RateLimitSnapshot (option-typed members:
+# missing and null both mean an absent state).
 _KNOWN_SNAPSHOT_MEMBERS: frozenset[str] = frozenset(
     {
         "limitId",
         "limitName",
+        "normalModelSlug",
         "planType",
         "rateLimitReachedType",
         "spendControlReached",
@@ -161,11 +174,19 @@ _KNOWN_SNAPSHOT_MEMBERS: frozenset[str] = frozenset(
     }
 )
 
-# Evidenced members of the GetAccountRateLimitsResponse envelope. Only
-# `rateLimits` is required by the exact tagged generated schema; the other
-# two are nullable optional members.
+# Current evidenced members of the GetAccountRateLimitsResponse envelope.
+# Only `rateLimits` is required by the generated schema. The other members are
+# optional or nullable; `rateLimitUpsell` is intentionally opaque presentation
+# data and has no v2 representation.
 _KNOWN_ENVELOPE_MEMBERS: frozenset[str] = frozenset(
-    {"rateLimits", "rateLimitsByLimitId", "rateLimitResetCredits"}
+    {
+        "rateLimits",
+        "rateLimitsByLimitId",
+        "rateLimitResetCredits",
+        "ordinaryUsageAllowed",
+        "accountId",
+        "rateLimitUpsell",
+    }
 )
 
 # The evidenced quota identity for this read result, and the bucket key
@@ -700,6 +721,10 @@ def _quota_snapshot_state(
     if limit_name is not None and not isinstance(limit_name, str):
         return None
 
+    normal_model_slug = snapshot.get("normalModelSlug")
+    if normal_model_slug is not None and not isinstance(normal_model_slug, str):
+        return None
+
     plan_type = snapshot.get("planType")
     if plan_type is not None and (
         not isinstance(plan_type, str) or plan_type not in _EVIDENCED_PLANS
@@ -791,6 +816,23 @@ def parse_codex_rate_limits_result(
     if not _membership_valid(envelope, _KNOWN_ENVELOPE_MEMBERS):
         return _failure("schema_changed", "schema_changed", retrieved_at)
 
+    ordinary_usage_allowed = envelope.get("ordinaryUsageAllowed")
+    if ordinary_usage_allowed is not None and not isinstance(
+        ordinary_usage_allowed, bool
+    ):
+        return _failure("schema_changed", "schema_changed", retrieved_at)
+
+    account_id = envelope.get("accountId")
+    if account_id is not None and not isinstance(account_id, str):
+        return _failure("schema_changed", "schema_changed", retrieved_at)
+
+    # The current schema types this field as opaque JsonValue | null. Its
+    # contents are backend-owned presentation data, so the adapter recognizes
+    # its presence for blocker semantics but never traverses or copies it.
+    rate_limit_upsell_present = (
+        "rateLimitUpsell" in envelope and envelope["rateLimitUpsell"] is not None
+    )
+
     if _reset_credits_state(envelope.get("rateLimitResetCredits")) is None:
         return _failure("schema_changed", "schema_changed", retrieved_at)
 
@@ -873,8 +915,9 @@ def parse_codex_rate_limits_result(
             diagnostics.extend(facts.diagnostics)
 
     blocked = (
-        main_state.blocked
-        or main_state.unavailable
+        ordinary_usage_allowed is not True
+        or rate_limit_upsell_present
+        or main_state.blocked
         or additional_blocked
         or main_state.unrepresentable
         or additional_unrepresentable

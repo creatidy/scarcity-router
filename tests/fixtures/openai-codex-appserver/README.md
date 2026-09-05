@@ -7,9 +7,10 @@ subprocess output and no local paths.
 
 Source of the shape: the successful PoC JSONL interaction recorded in
 `docs/poc-evidence.md` ("OpenAI/Codex subscription capacity") plus the
-2026-09-03 collector reconnaissance recorded in the same document
-(including the serde string-table/generated-schema facts for tag
-`rust-v0.151.0-alpha.7.2`). Each file below is the decoded JSON-RPC
+2026-09-03 collector reconnaissance and the 2026-09-05 current-schema
+compatibility evidence recorded in the same document (including the installed
+generated schema for `codex-cli 0.151.0-alpha.7.2` and current upstream commit
+`a7a4321593c77933c18f84ba9bd28eba095759d8`). Each file below is the decoded JSON-RPC
 `result` object of one `account/rateLimits/read` response — a complete
 `GetAccountRateLimitsResponse` envelope. For deserialization input, the JSON
 Schema requires `rateLimits`; the nullable `rateLimitsByLimitId` and
@@ -26,10 +27,11 @@ parsing paths rather than replay a live reading.
   slots. The parser must classify semantics from validated
   `windowDurationMins`, not the slot names, derive
   `remaining = 100 - used`, and preserve the plan label `plus`.
-- `ratelimits-full-shape-ok.json` — the exact evidenced envelope with the
-  nine-member snapshot
+- `ratelimits-full-shape-ok.json` — a current-compatible envelope with the
+  ten-member snapshot
   with every typed member present (`credits: null`, `individualLimit:
-  null`, `spendControlReached: false`, `limitName: null`). Healthy.
+  null`, `spendControlReached: false`, `normalModelSlug: null`,
+  `limitName: null`). `ordinaryUsageAllowed` is explicitly true. Healthy.
 - `ratelimits-credits-present.json` — valid typed credit/spend/reset-credit
   states (`CreditsSnapshot` with required boolean fields and optional
   string-or-null `balance`, `SpendControlLimitSnapshot` with four required fields and string
@@ -81,6 +83,14 @@ parsing paths rather than replay a live reading.
   members may be absent or null); when `rateLimitsByLimitId` is a present object it must include the
   matching `codex` mirror, and typed credit/spend/reset members
   validate strictly, never surfacing values in output;
+- current envelope metadata is explicit: `ordinaryUsageAllowed` must be a
+  boolean or null when present, `accountId` is validated as string-or-null but
+  never emitted, and `rateLimitUpsell` is recognized as opaque presentation
+  data. A true ordinary-usage permission is required for usable pairs; false,
+  null or absence remains unknown. A non-null upsell is a current upstream
+  recovery blocker, but its content is never inspected or emitted. The
+  `normalModelSlug` snapshot member is validated as string-or-null and omitted
+  from v2 output;
 - missing window coverage, duplicate known periods and a non-`codex`
   `limitId` never yield a healthy snapshot;
 - backend blockers — a non-null `rateLimitReachedType`,

@@ -441,6 +441,52 @@ direction was chosen. Dates use UTC.
   it adds no v2 fields or diagnostics and does not preempt U-003
   (freshness) or M2 (scarcity/selection).
 
+### U-011 — Current Codex rate-limit response compatibility
+
+- **Status:** Unresolved for live acceptance; parser semantics resolved,
+  2026-09-05
+- **Supersedes:** U-010's previous-schema member set and its rule that a
+  missing/null `spendControlReached` is always unusable. U-010's historical
+  tagged-schema evidence remains intact above.
+- **Previous evidence:** the installed supported binary is
+  `codex-cli 0.151.0-alpha.7.2`; its generated v2 schema was inspected in
+  temporary storage and contains the earlier nine-member snapshot without
+  `ordinaryUsageAllowed`, `accountId`, `rateLimitUpsell` or `normalModelSlug`.
+- **Current evidence:** upstream `openai/codex` commit
+  `a7a4321593c77933c18f84ba9bd28eba095759d8`, including the current v2 JSON and
+  TypeScript schemas, backend rate-limit client/types, app-server account
+  processor, and TUI rate-limit recovery tests/handling.
+- **Decision:**
+  - recognize and validate `ordinaryUsageAllowed` as boolean-or-null;
+    explicit `true` is required before ordinary quota percentages are usable;
+    `false`, null and absence are blocked/insufficient evidence and withhold
+    all percentage pairs;
+  - when ordinary permission is explicitly true, missing/null
+    `spendControlReached` is not itself a blocker, matching current upstream
+    recovery handling. Explicit `true`, any non-null validated
+    `rateLimitReachedType`, an exhausted `individualLimit`, valid but
+    v2-unrepresentable credits, and additional-bucket blockers retain their
+    existing conservative behavior;
+  - recognize `rateLimitUpsell` as opaque backend presentation data. Its
+    internal structure is not parsed, serialized, logged or exposed. Its
+    non-null presence is treated as a blocker because current upstream recovery
+    requires no upsell; this does not turn known data into generic schema drift;
+  - recognize and validate `accountId` as string-or-null solely for protocol
+    compatibility, never retaining or emitting its value. Recognize and
+    validate `normalModelSlug` as string-or-null, but do not add it to v2;
+  - keep additive unknown structured members fail-closed while retaining the
+    existing safe tolerance for unknown scalar members. No v2 schema change is
+    introduced.
+- **Live result:** one safe live shape read and one post-fix acceptance retry
+  both reached the installed app-server but received a protocol error before a
+  quota result. The normalized OpenAI state remains
+  `unknown`/`telemetry_unknown` with no windows. This decision records parser
+  compatibility only; it does not claim live OpenAI acceptance or M1 completion.
+- **Evidence record:** the current schema distinction and sanitized live result
+  are recorded in `docs/poc-evidence.md`; synthetic current-shape coverage is
+  in `tests/fixtures/openai-codex-appserver/` and
+  `tests/test_openai_codex_parser.py`.
+
 ## Superseding a decision
 
 Add a new numbered entry with its status, date, evidence and `Supersedes: D-nnn`.

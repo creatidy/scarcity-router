@@ -1,4 +1,5 @@
 {
+  "ordinaryUsageAllowed": true,
   "rateLimits": {
     "limitId": "codex",
     "limitName": null,

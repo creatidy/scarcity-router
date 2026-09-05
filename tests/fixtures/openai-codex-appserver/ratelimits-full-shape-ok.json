@@ -1,7 +1,11 @@
 {
+  "accountId": null,
+  "ordinaryUsageAllowed": true,
+  "rateLimitUpsell": null,
   "rateLimits": {
     "limitId": "codex",
     "limitName": null,
+    "normalModelSlug": null,
     "primary": {
       "usedPercent": 6,
       "windowDurationMins": 300,
@@ -22,6 +26,7 @@
     "codex": {
       "limitId": "codex",
       "limitName": null,
+      "normalModelSlug": null,
       "primary": {
         "usedPercent": 6,
         "windowDurationMins": 300,
