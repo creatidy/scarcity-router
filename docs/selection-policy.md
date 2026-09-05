@@ -292,17 +292,47 @@ max_retries_per_leg
 max_wall_clock_minutes
 ```
 
-All values are finite, positive, bounded integers where applicable; there is
-no unlimited sentinel. A compound recommendation without a complete valid
-execution budget is invalid.
+The frozen numeric domain is explicit per field:
 
-The initial workflow archetypes and their maximum structural expectations
-are:
+```text
+max_total_model_calls    integer >= 1
+max_legs                 integer >= 1
+max_review_rounds        integer >= 0
+max_remediation_rounds   integer >= 0
+max_retries_per_leg      integer >= 0
+max_wall_clock_minutes   integer >= 1
+```
 
-- `single`: one solver leg;
-- `cascade`: a first solver and at most one escalation leg;
+Every value is finite and subject to an implementation-defined, documented
+upper bound. There is no unlimited sentinel, no infinity, no
+`null = unlimited` and no omitted field = unlimited; a compound
+recommendation without a complete valid execution budget is invalid.
+
+Budget maxima are permissions — hard upper bounds — not requirements.
+Zero is a legal value meaning “this operation is not permitted by this
+recommendation”; it is not unknown, missing, unlimited or invalid, and a
+prohibited phase must never be encoded by inventing an artificial budget of
+`1`. For example, `max_review_rounds = 1` permits a review round up to once;
+it must not be exercised merely because zero were unrepresentable.
+
+The initial workflow archetypes and their maximum structural expectations,
+with illustrative budgets, are:
+
+- `single`: one solver leg. When represented with an `ExecutionBudget`:
+  `max_total_model_calls = 1`, `max_legs = 1`, `max_review_rounds = 0`,
+  `max_remediation_rounds = 0`, `max_retries_per_leg = 0` and
+  `max_wall_clock_minutes >= 1`. A plain single-model recommendation does
+  not invent review, remediation or retry capacity.
+- `cascade`: a first solver and at most one escalation leg. A bounded
+  two-leg cascade may use `max_total_model_calls = 2`, `max_legs = 2`,
+  `max_review_rounds = 0`, `max_remediation_rounds = 0` and
+  `max_retries_per_leg = 0` or another explicitly allowed bounded value.
+  The escalation leg is a leg, not a review round.
 - `critique`: one solver, one independent critic, at most one remediation and
-  at most one narrow final verification when explicitly recommended.
+  at most one narrow final verification when explicitly recommended. Review
+  and remediation maxima may be positive, for example
+  `max_review_rounds = 1` and `max_remediation_rounds = 1`, but zero remains
+  legal wherever the recommended plan omits that phase.
 
 These are archetypes, not a requirement to copy any specific runtime. A
 compound recommendation must never recommend “review and fix until clean”.

@@ -405,24 +405,42 @@ direction was chosen. Dates use UTC.
 
 ### D-022 — Bounded compound recommendation contract
 
-- **Status:** Accepted
+- **Status:** Accepted; amended 2026-09-06 by the post-review remediation
+  below
 - **Date:** 2026-09-05
 - **Decision:** If M2 later recommends more than one model call, the
-  recommendation must carry a conceptual `ExecutionBudget` with at least
-  `max_total_model_calls`, `max_legs`, `max_review_rounds`,
-  `max_remediation_rounds`, `max_retries_per_leg` and `max_wall_clock_minutes`;
-  every value is a finite positive bounded integer where applicable and there
-  is no unlimited sentinel. A compound recommendation without a complete
-  valid execution budget is invalid. Initial structural expectations:
-  `single` is one solver leg; `cascade` is a first solver plus at most one
-  escalation leg; `critique` is one solver, one independent critic, at most
-  one remediation and at most one narrow final verification when explicitly
-  recommended. “Review/fix until clean” is never recommended. Expected
-  consumption is aggregated over every planned leg; when exact token cost is
-  unknown it is not invented — call counts and applicable capacity-scope
-  accounting remain explicit. Scarcity Router recommends this envelope;
-  execution and enforcement remain the external orchestrator's
-  responsibility.
+  recommendation must carry a conceptual `ExecutionBudget` whose numeric
+  domain is frozen per field:
+  - `max_total_model_calls`: integer `>= 1`;
+  - `max_legs`: integer `>= 1`;
+  - `max_review_rounds`: integer `>= 0`;
+  - `max_remediation_rounds`: integer `>= 0`;
+  - `max_retries_per_leg`: integer `>= 0`;
+  - `max_wall_clock_minutes`: integer `>= 1`.
+
+  Every value is finite and subject to an implementation-defined, documented
+  upper bound; there is no unlimited sentinel, no infinity, no
+  `null = unlimited` and no omitted field = unlimited. A compound
+  recommendation without a complete valid execution budget is invalid.
+  Budget maxima are permissions — hard upper bounds — not requirements:
+  zero is a legal value meaning the operation is not permitted by this
+  recommendation, never unknown, missing, unlimited or invalid, and a
+  prohibited phase is never encoded by an artificial budget of `1`
+  (`max_review_rounds = 1` permits a review round up to once; it is not a
+  workaround for an unrepresentable zero). Initial structural expectations
+  with illustrative budgets: `single` is one solver leg — one call, one leg,
+  zero review/remediation/retry maxima, wall clock `>= 1`; `cascade` is a
+  first solver plus at most one escalation leg, where the escalation leg is
+  a leg, not a review round (two calls, two legs, zero review/remediation
+  maxima); `critique` is one solver, one independent critic, at most one
+  remediation and at most one narrow final verification when explicitly
+  recommended, with positive review/remediation maxima permitted and zero
+  legal wherever the plan omits a phase. “Review/fix until clean” is never
+  recommended. Expected consumption is aggregated over every planned leg;
+  when exact token cost is unknown it is not invented — call counts and
+  applicable capacity-scope accounting remain explicit. Scarcity Router
+  recommends this envelope; execution and enforcement remain the external
+  orchestrator's responsibility.
 - **Reason:** This mirrors repository multi-agent governance (D-015) at the
   product boundary, informed by HydraFusion's Copilot CLI Research Preview
   patterns (bounded workflows, independent critique, complete resource
@@ -432,6 +450,15 @@ direction was chosen. Dates use UTC.
 - **Boundary:** Contract freeze only. No archetype or budget implementation
   belongs to the planning change, and compound recommendations remain an
   optional later M2 addition, not a blocker for single-model selection.
+- **Amendment (2026-09-06, single post-review remediation):** the original
+  wording required every budget value to be a “finite positive bounded
+  integer where applicable”, which contradicted the same contract's need to
+  express zero reviews, zero remediation rounds and zero retries. Zero is a
+  meaningful hard upper bound — the operation is not permitted by this
+  recommendation — not unknown, missing, unlimited or invalid. The numeric
+  domain is now frozen per field as above: the review, remediation and
+  retry maxima have minimum `0`; the call, leg and wall-clock maxima have
+  minimum `1`. No other D-022 term changed.
 
 ## Unresolved decisions
 
