@@ -203,6 +203,39 @@ context without validating what the runtime exposes. The exact health and model
 inspection calls must be selected from supported Ollama behavior during M1 and
 recorded in PoC evidence before being treated as confirmed.
 
+Status (M1): the collector is implemented and fixture-tested in
+`scarcity_router/providers/ollama.py` (pure parsers for the version probe,
+model listing and loaded-model listing) and
+`scarcity_router/providers/ollama_acquisition.py`
+(`collect_ollama_capacity`). It validates the explicit endpoint before I/O:
+plain `http` on exactly numeric loopback `127.0.0.1` or `::1` only,
+canonicalizing an omitted port to 11434 and rejecting names, unsafe ports,
+userinfo, query/fragment delimiters, whitespace, controls and non-root paths.
+It performs at most three fixed read-only GETs, or two when the validated
+listing proves the target absent: `/api/version`, `/api/tags` and conditional
+`/api/ps`. The transport is a synchronous standard-library
+`http.client.HTTPConnection` with a finite socket timeout, one bounded body
+read and `finally` cleanup. It does not use proxies or follow redirects; a
+non-200 response is normalized without reading its body. HTTP parsing and
+connection lifecycle are intentionally delegated to the standard library under
+the frozen local M1 threat model rather than reimplemented by the collector.
+
+Bodies use strict UTF-8/JSON decoding: duplicate keys, non-finite numbers,
+out-of-band integers, malformed JSON and decoder resource failures become
+`schema_changed`; oversized bodies and transport/response failures become safe
+degraded statuses. The pure parsers validate provider identities and digest
+shape. Effective context is accepted only from a positive `context_length` in
+`/api/ps` whose digest agrees with the validated `/api/tags` entry. Configured
+context comes only from explicit input, and tags model-file metadata is never
+used as effective context. Healthy local runtimes report `windows: []`; there
+are no quota, percentage, load, generation, pull, delete or runtime mutation
+semantics. Missing is reported only from a validated reachable listing, while
+supplemental `/api/ps` failures preserve validated presence and omit effective
+context. Safe snapshots and diagnostics never contain response bodies, headers,
+endpoint values, digests, paths or exception text. The populated effective-
+context path remains synthetic-fixture-tested, and live CLI/status integration
+is not implemented.
+
 ## Later providers
 
 Claude subscription is the highest-priority later collector because it would

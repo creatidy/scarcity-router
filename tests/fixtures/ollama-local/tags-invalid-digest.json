@@ -1,0 +1,22 @@
+{
+  "models": [
+    {
+      "name": "test-model:latest",
+      "model": "test-model:latest",
+      "modified_at": "2026-09-01T12:00:00.000000000Z",
+      "size": 1000000000,
+      "digest": "not-a-valid-digest",
+      "details": {
+        "parent_model": "",
+        "format": "gguf",
+        "family": "synthetic",
+        "families": ["synthetic"],
+        "parameter_size": "1B",
+        "quantization_level": "Q4_K_M",
+        "context_length": 8192,
+        "embedding_length": 4096
+      },
+      "capabilities": ["completion"]
+    }
+  ]
+}

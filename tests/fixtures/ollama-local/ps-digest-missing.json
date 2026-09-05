@@ -1,0 +1,20 @@
+{
+  "models": [
+    {
+      "name": "test-model:latest",
+      "model": "test-model:latest",
+      "size": 1000000000,
+      "size_vram": 900000000,
+      "details": {
+        "parent_model": "",
+        "format": "gguf",
+        "family": "synthetic",
+        "families": ["synthetic"],
+        "parameter_size": "1B",
+        "quantization_level": "Q4_K_M"
+      },
+      "expires_at": "2026-09-04T12:00:00.000000000Z",
+      "context_length": 16384
+    }
+  ]
+}

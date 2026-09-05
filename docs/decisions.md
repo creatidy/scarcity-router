@@ -275,6 +275,87 @@ direction was chosen. Dates use UTC.
 - Select the supported local calls for health, model presence and effective
   configuration; distinguish configured from effective context.
 - Evidence needed: a local PoC against the actual Qwen configuration.
+- **Status:** Superseded for transport implementation by U-005a; inspection
+  semantics remain narrowly resolved for M1 (2026-09-04); residuals below
+- **Decision:** The local collector makes at most three read-only GETs
+  against one explicitly configured local endpoint — two when the validated
+  listing proves the configured model absent. The endpoint is
+  canonicalized before any I/O: plain `http` on exactly the numeric
+  loopback hosts `127.0.0.1` or `::1` (`localhost` and every other name
+  are rejected outright, so no DNS/hosts-file/proxy escape path exists);
+  the omitted port canonically defaults to the documented Ollama port
+  11434; explicitly empty port syntax, query/fragment delimiters,
+  whitespace/control characters and non-root paths are rejected. The reads are
+  `GET /api/version` (validated envelope with a usable, bounded,
+  printable version string — control, format and padding code points
+  rejected — = the reachability fact),
+  `GET /api/tags` (exact `name`-identity model presence; every provider-supplied
+  `name`/`model` is a printable safe-v1 identity) and
+  `GET /api/ps` (effective context). `model_presence` is `missing` only
+  when a reachable runtime's validated listing lacks the configured name,
+  and `unknown` on runtime/listing failures; `/api/ps` supplemental
+  failures preserve the tags-derived presence while omitting the optional
+  effective context. `configured_context_tokens` comes only from the
+  explicit configuration boundary; `effective_context_tokens` comes only
+  from a validated positive integer `context_length` on the configured
+  model's loaded `/api/ps` entry whose validated `sha256:<64 lowercase
+  hex>` digest agrees with the listing's validated digest — a missing,
+  invalid or mismatched digest preserves reachability/presence but
+  degrades the telemetry to `unknown` and withholds the effective context
+  rather than attributing it to an unverifiable model image; the digest is
+  never emitted. The effective context is never taken from the configured
+  value and never from the `/api/tags` `details.context_length` model-file
+  metadata. Responses are handled by synchronous standard-library
+  `http.client.HTTPConnection` with a finite socket timeout and one bounded
+  body read; non-200 responses are not read, redirects are not followed and
+  each connection is closed in `finally`. Bodies then use strict JSON
+  decoding: duplicate object keys, NaN/Infinity, non-finite floats such as
+  `1e10000`, integers outside the validated signed 64-bit band, recursion-limit
+  nesting and decoder resource failures normalize to `schema_changed`.
+  Transport and response-shape failures normalize safely without retaining
+  exception text. The collector does not implement raw sockets, custom HTTP
+  framing, worker threads, cancellation or private response ownership rules;
+  those mechanisms are unnecessary for the frozen local M1 threat model.
+  Duplicate listed names and any malformed/drifted body fail
+  closed; a healthy local runtime reports `windows: []` with no quota
+  semantics. There is no generation, no model loading for inspection, no
+  pull/delete and no runtime/config mutation.
+- **Evidence:** 2026-09-04 reconnaissance in `docs/poc-evidence.md`
+  ("2026-09-04 M1 Ollama local runtime reconnaissance"): live envelope
+  shapes for all three reads against Ollama `0.33.1` plus the installed
+  binary's serialization table for the `context_length` field name.
+- **Residuals:** (a) a live **populated** effective-context value has not
+  been observed (nothing was loaded during reconnaissance; loading solely
+  for inspection is side-effectful and was not performed) — the populated
+  path is synthetic-fixture-tested only; (b) `context_length` stability
+  across Ollama releases is unevidenced — the local interface must not be
+  described as stable — and the parser fails closed on its absence;
+  (c) the reconnaissance runtime was the installed `0.33.1`
+  service, not the owner's loaded Qwen configuration, so load-state
+  behavior of the real workflow remains to be observed in use.
+
+### U-005a — Bounded standard-library Ollama transport
+
+- **Status:** Accepted, 2026-09-05
+- **Supersedes:** U-005 transport details only; the endpoint, fixed-read and
+  normalized inspection semantics above remain authoritative.
+- **Decision:** Use synchronous `http.client.HTTPConnection` directly with the
+  validated numeric loopback host/port, a finite socket timeout, the fixed GET
+  paths, a simple maximum response-body bound, strict UTF-8/JSON decoding,
+  safe status/transport normalization and ordinary `finally` cleanup. Keep the
+  fake-connection contract tests and pure provider parsers; do not add a
+  generic transport abstraction.
+- **Reason:** M1 makes only local, read-only requests to one canonical numeric
+  loopback endpoint. The standard library already supplies HTTP request,
+  response parsing, timeout and connection lifecycle behavior. Reimplementing
+  socket connection readiness, HTTP framing, cancellation and worker
+  reclamation added complexity without improving the frozen M1 contract.
+- **Deferred risks:** A future requirement for a hard end-to-end collection
+  deadline, unusual peer framing policy, cancellation independent of socket
+  timeouts, or richer transport telemetry may require a new reviewed decision.
+  Slow or hostile local peers remain bounded per socket operation, not by a
+  custom collection-wide deadline. No live provider call is required to
+  validate this implementation choice.
 
 ### U-006 — Initial capability ratings and profile thresholds
 
