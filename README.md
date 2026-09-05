@@ -11,10 +11,12 @@ The core rule is simple:
 > **Choose the least scarce model that is capable enough for the task.**
 
 The project completed **M0: documentation and contract design** on 2026-09-01
-and is now in **M1: capacity collectors and normalized status**. The two
+and **M1: capacity collectors and normalized status** on 2026-09-05. The two
 subscription collectors and a provisional unified status command are
-implemented. There is not yet an installable package, final executable name,
-selector, REST service or MCP server.
+implemented. M2 — capability catalog and selector — is current and begins
+with a documentation-only planning gate that freezes the selector contracts
+before any selector implementation. There is not yet an installable package,
+final executable name, selector, REST service or MCP server.
 
 ## Why It Exists
 
@@ -194,9 +196,10 @@ Each topic has one primary source of truth:
 - Likely implementation stack: Python 3.12+, `uv`, `pytest`, typed schemas, a
   small CLI, a small HTTP layer and the official MCP SDK. This is not binding.
 
-See the [roadmap](docs/roadmap.md) before starting implementation. M0 was
-documentation-only and is complete. M1 remains current and stops at normalized
-status, not routing.
+See the [roadmap](docs/roadmap.md) before starting implementation. M0 and M1
+are complete. The M2 planning gate has frozen the selector contracts; M2
+implementation proceeds in the recorded M2a–M2e slices and stops short of
+routing until those slices land.
 
 The portable descriptive model policy is available at
 [`model-policy.json`](model-policy.json). External consumers needing

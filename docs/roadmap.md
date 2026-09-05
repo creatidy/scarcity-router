@@ -7,17 +7,26 @@ earlier outcome is useful in the owner's workflow.
 ## Current status
 
 **M0 PASS (2026-09-01).** The M0 exit criteria have been audited and passed.
-**M1 PASS (2026-09-05).** The OpenAI/Codex and Z.ai read-only subscription
-collectors and the unified status surface are implemented, and live
-collection in the owner's supported environment returns healthy normalized
-quota windows for both providers: bounded provider-managed auth recovery
-(D-018) restored live OpenAI reads, and the D-019 remediation guarantees that
-supplemental provider state never invalidates validated quota facts. A fresh
-synchronous collection with one shared observation timestamp backs every
-`status` call; no cache or stale threshold has been chosen. A separate
-`doctor` command was not an M1 blocker because status exposes normalized
-diagnostics; defer it unless normal use demonstrates a concrete gap. Do not
-start M2 selection implementation before its planning gates are met.
+**M1 PASS (2026-09-05).** The OpenAI/Codex and Z.ai subscription collectors
+and the unified status surface are implemented — collection is read-only
+except for the single bounded provider-managed auth-recovery exception of
+D-018 — and live collection in the owner's supported environment returns
+healthy normalized quota windows for both providers: bounded provider-managed
+auth recovery (D-018) restored live OpenAI reads, and the D-019 remediation
+guarantees that supplemental provider state never invalidates validated quota
+facts. A fresh synchronous collection with one shared observation timestamp
+backs every `status` call; no cache or stale threshold has been chosen. A
+separate `doctor` command was not an M1 blocker because status exposes
+normalized diagnostics; defer it unless normal use demonstrates a concrete
+gap. Do not start M2 selection implementation before its planning gates are
+met.
+
+**M2 planning gate (2026-09-05).** The selector input contracts, semantic
+capacity applicability, evidence/policy precedence, replenishment semantics,
+the Artificial Analysis boundary, the bounded compound-recommendation
+contract and the staged implementation sequence below are frozen in
+documentation (D-020, D-021, D-022). Selector implementation must not begin
+before the M2a capacity-applicability slice exists.
 
 ## M0 — Repository foundation
 
@@ -185,27 +194,55 @@ Exit criteria:
 - rating provenance and human overrides are reviewable;
 - the owner trusts and uses recommendations.
 
-### M2 research/positioning gates
+### M2 research/positioning gate resolutions (2026-09-05)
 
-Before freezing selector thresholds and public positioning:
+The M2 planning gate resolved the contract questions; remaining calibration
+belongs to the implementation slices.
 
-- reassess GitHub Project HydraFusion as current prior art. Its runtime
-  `single`/cascade/critique orchestration, complete accounting, bounded
-  execution, isolated review and validated routing are useful patterns, but the
-  project boundary remains different: Scarcity Router is an external decision
-  service centered on subscription scarcity, provider availability and user policy,
-  not a prompt-executing Copilot runtime;
-- validate the supported OpenAI app-server representation of banked reset
-  credits, including count and expiry/details when exposed, without using
-  private backend endpoints;
-- validate the smallest useful Artificial Analysis integration. Use stable
-  model/creator identifiers, server-side credentials and periodic cached
-  refresh; do not call the data API once per selection;
-- define precedence between direct runtime/account evidence, advisory provider
-  status and user blackout policy;
-- define a service-level execution-budget schema for compound workflow
-  recommendations so the repository anti-loop rule is reflected in the
-  product contract as well as agent governance.
+- HydraFusion reassessed as current prior art (now a GitHub Copilot CLI
+  Research Preview): bounded workflows, independent critique, complete
+  accounting, explicit escalation and no open-ended review/fix cycle are
+  useful patterns, but the product boundary remains different
+  (`docs/competitive-landscape.md`).
+- The evidenced OpenAI app-server reset-credit representation
+  (`availableCount` plus optional capped detail rows) is frozen as the
+  replenishment contract: replenishment opportunities, never current capacity
+  (D-021).
+- The Artificial Analysis integration boundary is frozen — offline/periodic
+  catalog evidence, never called during `select()` — while any actual cached
+  integration remains an optional later addition (D-021).
+- Precedence between direct runtime/account evidence, provider-native
+  failure, advisory public status and user blackout policy is frozen (D-021).
+- The service-level execution-budget contract for compound workflow
+  recommendations is frozen (D-022).
+- Threshold calibration — scarcity formula, labels, reservation boundaries
+  and profile minima — remains open (U-006, U-007) and belongs to M2c/M2d.
+
+### M2 implementation sequence
+
+Implementation proceeds in small, deterministic slices:
+
+- **M2a — normalized capacity applicability.** Implement the semantic
+  capacity-scope contract/version from D-020 (`CapacityWindow.scope_id` or an
+  equivalently minimal explicit normalized scope construct). No selector.
+- **M2b — TaskRequirement and ModelCatalog core types.** Capability scale,
+  task-requirement validation, hard constraints, profile-expansion contract,
+  model-catalog schema/provenance and capacity-binding fields. Still no
+  scarcity selector.
+- **M2c — curated initial ratings and profile calibration.** Populate only
+  Luna, Sol, GLM-5.3 and GLM-5.3-Flash with explicit provenance; freeze
+  profile minima through scenario tests (resolves U-006).
+- **M2d — scarcity and policy primitives.** Candidate capacity applicability,
+  scarcity aggregation, reservations, unknown policy, the Z.ai blackout and
+  reset/replenishment visibility. No broad external integrations required.
+- **M2e — deterministic selector, explanation and simulation.** `select`,
+  `--explain` and simulation over the same core, only after the prior slices
+  are accepted.
+
+Later optional M2 additions — official health advisory, cached Artificial
+Analysis evidence and compound-workflow recommendations — are not blockers
+for the first useful single-model selection unless the M2 exit criteria
+require them.
 
 ## M3 — REST and MCP
 

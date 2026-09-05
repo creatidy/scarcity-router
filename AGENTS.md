@@ -102,9 +102,15 @@ the merge gate.
 
 ## Current phase
 
-M0 is complete and M1 is the current milestone. Executable product code may now
-be added only for explicitly scoped M1 work. M1 begins with read-only collector
-reconnaissance and normalized status collectors, not routing. Documentation
+M0 and M1 are complete. M2 is the current milestone and starts with its
+planning gate: selector input contracts, semantic capacity applicability,
+evidence/policy precedence, replenishment semantics and the implementation
+order are frozen in documentation (`docs/decisions.md` D-020, D-021, D-022)
+before any selector implementation. Executable product code may now be added
+only for explicitly scoped M2 slices, in the recorded order: M2a (semantic
+capacity applicability) is the first implementation prerequisite, M2b–M2d
+build the selector inputs and policy primitives, and selector implementation
+(M2e) must not begin before the prior slices are accepted. Documentation
 utilities or repository metadata must not masquerade as a working broker.
 
 ## Product boundary
@@ -188,8 +194,9 @@ Selection must:
 1. enforce hard constraints before scoring;
 2. reject capability-deficient candidates;
 3. apply reservations without declaring a capable model intrinsically weak;
-4. consider every relevant quota window and never choose the most optimistic
-   one;
+4. consider every relevant quota window of every capacity scope the candidate
+   is bound to, and never choose the most optimistic one; unknown
+   model-to-scope applicability is explicit and never guessed;
 5. prefer the least scarce sufficient candidate under the active policy;
 6. return ranked alternatives, including useful exclusion/reservation reasons;
 7. return a structured explanation and degraded-confidence state when inputs

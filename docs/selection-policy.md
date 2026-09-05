@@ -15,12 +15,14 @@ for the selector decision sequence and scarcity behavior.
 - A task profile or explicit capability minima.
 - Task level L0–L5.
 - Hard constraints.
-- Model catalog and its version/provenance.
+- Model catalog and its version/provenance, including the capacity scopes
+  each model is bound to (its capacity applicability).
 - Current normalized capacity snapshots and freshness.
 - User policy mode, reservations and explicit overrides.
 - Optional explicit provider/model availability schedules or blackout windows.
 - Optional advisory provider/service health evidence.
-- Optional replenishment metadata such as banked quota reset opportunities.
+- Optional replenishment metadata (`ReplenishmentState`) such as banked quota
+  reset opportunities.
 - Optional external benchmark/performance evidence used to curate the model
   catalog, never as live capacity.
 
@@ -36,8 +38,10 @@ for the selector decision sequence and scarcity behavior.
    dimension. Record each failed dimension; do not average a critical deficit
    away with strength elsewhere.
 4. **Apply capacity eligibility.** Exclude explicitly unavailable or exhausted
-   candidates. Handle unknown/stale capacity under the active policy and mark
-   degraded confidence. Advisory provider health can degrade or exclude a
+   candidates. Evaluate only the capacity scopes the candidate is bound to;
+   unknown model-to-scope applicability is explicit and policy-controlled,
+   never guessed. Handle unknown/stale capacity under the active policy and
+   mark degraded confidence. Advisory provider health can degrade or exclude a
    candidate only under an explicit policy; it does not rewrite capability or
    quota.
 5. **Apply reservations and replenishment policy.** Below a configured capacity
@@ -56,20 +60,31 @@ The “smallest adequate capability margin” tie-breaker avoids consuming front
 capability when two options are equally scarce and both suffice. It must never
 override a capability minimum.
 
-## Scarcity aggregation
+## Scarcity aggregation boundary
 
-Subscription scarcity uses the normalized continuous function and all relevant
-windows defined in `capacity-model.md`. The maximum per-window penalty governs,
-so a healthy five-hour window cannot hide an exhausted weekly window.
+Subscription scarcity is computed only over a candidate's applicable capacity
+scopes and their windows, as defined in `capacity-model.md`. The planning
+freeze fixes these invariants:
+
+1. Only capacity scopes applicable to a candidate participate. An unrelated
+   model-specific bucket must not penalize a candidate that does not consume
+   it.
+2. Within an applicable scope, all relevant windows participate.
+3. Across all applicable windows and scopes, the most restrictive scarcity
+   result governs under `balanced`. A healthy short window must never hide a
+   critical weekly window.
+4. Unknown applicability is explicit and policy-controlled; it is never
+   resolved by choosing the most optimistic scope or window.
 
 The initial candidate set contains supported subscription-backed models only.
 Every candidate is evaluated against the relevant provider capacity windows;
 there is no alternate API-cost or abundance score standing in for subscription
 scarcity.
 
-The exact penalty and label thresholds are accepted only after scenario tests
-at M2. They are documented now to prevent an undocumented scoring function from
-appearing in code.
+The exact penalty function and NORMAL/SCARCE/CRITICAL-style label thresholds
+are deliberately not frozen here. They require scenario calibration in a
+later PR (U-007); they are documented as open now to prevent an undocumented
+scoring function from appearing in code.
 
 ## Reservations
 
@@ -124,6 +139,31 @@ Replenishment options are distinct from the currently active quota windows.
 Examples include banked OpenAI Codex reset credits that can refresh usage limits
 when deliberately redeemed.
 
+The frozen M2 semantics are:
+
+> Reset credits are replenishment opportunities, not current capacity.
+
+They never enter current quota percentages, never pretend quota has been
+restored and are never consumed by the broker.
+
+The selector input is a separate concept, `ReplenishmentState`, carrying only
+the minimum safe facts needed for selection:
+
+- `provider`;
+- `kind`;
+- `available_count`;
+- `details_known`;
+- `earliest_expiry`, only when safely derivable and needed;
+- `retrieved_at`.
+
+The evidenced Codex shape (`availableCount` plus an optional `credits` list
+whose detail rows may carry `id`, `resetType`, `status`, `grantedAt`,
+`expiresAt`, `title` and `description`) stays at the provider edge. The
+detail list may be absent or capped even when `availableCount` is larger, so
+`details_known` is honest about coverage. Provider free-text titles and
+descriptions are never exposed, and opaque credit IDs are not required for
+selection unless a later use case proves they are needed.
+
 The selector must not silently pretend a banked reset has already been applied.
 Instead, policy may choose among explicit behaviors such as:
 
@@ -139,22 +179,35 @@ redemption is an external/user action. When the supported Codex app-server
 exposes reset count and expiry/details, preserve that provenance and freshness
 without using private backend endpoints.
 
+## Evidence and policy precedence
+
+Selection inputs differ in authority. The frozen precedence is:
+
+1. **Hard user policy.** An explicit configured user blackout is a hard policy
+   exclusion. It wins for eligibility even when provider quota is healthy. It
+   does not rewrite provider telemetry. The explanation reports
+   `policy_blocked`, never `unavailable`.
+2. **Direct capacity evidence.** A successful direct normalized account
+   observation is authoritative for current quota. A public status page
+   cannot rewrite its percentages.
+3. **Provider-native runtime failure evidence.** A provider-native
+   failure/high-traffic state tied to the actual supported access path may
+   degrade or exclude a candidate according to explicit policy. It never
+   changes model capability.
+4. **Official public status.** Official service health is advisory. A green
+   global page never fabricates quota, and a red global page does not
+   automatically overwrite a successful direct account observation. At most
+   it contributes advisory degraded confidence unless a later explicit policy
+   says otherwise.
+5. **External performance evidence.** Artificial Analysis and similar sources
+   influence curated capability catalog assessment only. They never determine
+   live quota, bypass blackout policy, override direct account telemetry or
+   act as a live routing oracle.
+
 ## Advisory service health
 
-Provider/service health is independent from model capability and account quota.
-The selector should prefer direct evidence in this order unless a later decision
-supersedes it:
-
-1. direct current account observation relevant to the candidate;
-2. explicit provider-native failure/high-traffic signal from the supported
-   access path;
-3. official public status metadata relevant to that product/component;
-4. optional third-party monitoring only when explicitly configured.
-
-An aggregate public status page must not override a successful direct provider
-account observation, and a green status page must not fabricate available
-quota. Conversely, a direct provider high-traffic/error signal may justify a
-short-lived degraded state even when published status is green.
+Provider/service health is independent from model capability and account
+quota; its authority is fixed by the precedence above.
 
 Current planning notes:
 
@@ -172,6 +225,23 @@ Artificial Analysis may be used as one provenance-bearing input when curating
 the model catalog. Its useful data includes stable model/creator identifiers,
 benchmark indices, pricing and observed performance metrics such as throughput
 and latency.
+
+The frozen M2 boundary:
+
+```text
+AA is offline/periodic catalog evidence
+NOT runtime capacity
+NOT automatic truth
+NOT called during select()
+```
+
+A future cached AA snapshot must carry, at minimum: stable model ID, stable
+creator ID, source/API version, retrieval time, metric identity/version,
+snapshot provenance, attribution and the human-curated mapping into internal
+capability evidence. API responses are not stored merely because they are
+available; only fields used by an explicit catalog assessment are retained.
+The API key remains server-side and outside repository files, fixtures,
+output and agent prompts.
 
 It must not become a hidden dynamic scoring oracle:
 
@@ -210,19 +280,67 @@ calls. If a later selector recommends a compound workflow rather than one model,
 the workflow itself becomes part of the resource decision and must be bounded by
 construction.
 
-Useful archetypes include:
+A compound recommendation carries a conceptual `ExecutionBudget` with at
+least:
 
-- `single`: one model solves the task;
-- `cascade`: an efficient model attempts first and a bounded gate may escalate
-  once to a stronger model;
-- `critique`: one solver, one independent read-only critic and at most one
-  bounded remediation/verification cycle.
+```text
+max_total_model_calls
+max_legs
+max_review_rounds
+max_remediation_rounds
+max_retries_per_leg
+max_wall_clock_minutes
+```
 
-These are archetypes, not a requirement to copy any specific runtime. Every
-compound recommendation must carry an explicit execution envelope covering at
-least maximum legs/reviews/remediation/retries/wall-clock budget and expected
-aggregate scarcity/capacity consumption. It must never recommend “review and fix
-until clean”.
+The frozen numeric domain is explicit per field:
+
+```text
+max_total_model_calls    integer >= 1
+max_legs                 integer >= 1
+max_review_rounds        integer >= 0
+max_remediation_rounds   integer >= 0
+max_retries_per_leg      integer >= 0
+max_wall_clock_minutes   integer >= 1
+```
+
+Every value is finite and subject to an implementation-defined, documented
+upper bound. There is no unlimited sentinel, no infinity, no
+`null = unlimited` and no omitted field = unlimited; a compound
+recommendation without a complete valid execution budget is invalid.
+
+Budget maxima are permissions — hard upper bounds — not requirements.
+Zero is a legal value meaning “this operation is not permitted by this
+recommendation”; it is not unknown, missing, unlimited or invalid, and a
+prohibited phase must never be encoded by inventing an artificial budget of
+`1`. For example, `max_review_rounds = 1` permits a review round up to once;
+it must not be exercised merely because zero were unrepresentable.
+
+The initial workflow archetypes and their maximum structural expectations,
+with illustrative budgets, are:
+
+- `single`: one solver leg. When represented with an `ExecutionBudget`:
+  `max_total_model_calls = 1`, `max_legs = 1`, `max_review_rounds = 0`,
+  `max_remediation_rounds = 0`, `max_retries_per_leg = 0` and
+  `max_wall_clock_minutes >= 1`. A plain single-model recommendation does
+  not invent review, remediation or retry capacity.
+- `cascade`: a first solver and at most one escalation leg. A bounded
+  two-leg cascade may use `max_total_model_calls = 2`, `max_legs = 2`,
+  `max_review_rounds = 0`, `max_remediation_rounds = 0` and
+  `max_retries_per_leg = 0` or another explicitly allowed bounded value.
+  The escalation leg is a leg, not a review round.
+- `critique`: one solver, one independent critic, at most one remediation and
+  at most one narrow final verification when explicitly recommended. Review
+  and remediation maxima may be positive, for example
+  `max_review_rounds = 1` and `max_remediation_rounds = 1`, but zero remains
+  legal wherever the recommended plan omits that phase.
+
+These are archetypes, not a requirement to copy any specific runtime. A
+compound recommendation must never recommend “review and fix until clean”.
+
+Expected model/resource consumption is aggregated over every planned leg.
+When exact token consumption is unavailable, it is not invented: call counts
+and applicable capacity-scope accounting remain explicit even when exact
+token cost is unknown.
 
 This mirrors repository multi-agent governance at the product boundary: the
 service may recommend a bounded plan to an external orchestrator, while the

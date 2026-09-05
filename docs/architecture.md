@@ -102,13 +102,28 @@ M1 freezes `docs/capacity-model.md` as the v2 serialized capacity contract:
   and freshness fields are not in v2.
 - `CapacityWindow`: validated resource and period kind, optional duration,
   complementary used/remaining percentage pair, optional reset time and an
-  allowlisted opaque provider window identifier.
+  allowlisted opaque provider window identifier. That identifier is diagnostic
+  only; semantic capacity scopes are the planned M2a extension recorded in
+  `docs/capacity-model.md` (D-020).
 - `ModelProfile`: stable model identity, variants, provider, hard properties,
-  capability assessments and provenance.
-- `TaskRequirement`: level, capability minima, hard constraints and optional
-  policy hints.
+  capability assessments and provenance. M2 planning (D-020) adds explicit
+  capacity bindings to one or more capacity scopes and freezes the
+  provenance/human-override record shape.
+- `TaskRequirement`: task level, per-dimension capability minima on the frozen
+  `1..5` scale with explicit unknown representation, typed hard constraints and
+  single-place profile expansion (D-020).
 - `SelectionDecision`: selected candidate, ranked alternatives, exclusions,
   reasons, capacity/catalog versions and degraded/unknown indicators.
+
+M2 planning additionally freezes these not-yet-implemented conceptual
+contracts:
+
+- `CapacityScope`: `(provider, scope_id)` identity for one normalized capacity
+  scope; the M2a schema prerequisite recorded in `docs/capacity-model.md`.
+- `ReplenishmentState`: minimal safe reset-credit facts — replenishment
+  opportunities, never current capacity (D-021).
+- `ExecutionBudget`: the finite bounded envelope that must accompany any
+  compound recommendation (D-022).
 
 Schemas must distinguish omitted, unknown, unsupported, unavailable and zero. The
 capacity contract uses omitted optional fields for unknown values and explicit
