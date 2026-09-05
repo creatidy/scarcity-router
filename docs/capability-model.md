@@ -64,7 +64,6 @@ Some requirements are categorical or numeric, not quality scores:
 - tool-calling support;
 - vision support;
 - reasoning mode;
-- local-only or cloud allowed/disallowed;
 - required provider, model or variant;
 - privacy boundary;
 - runtime availability.
@@ -121,9 +120,9 @@ An initial model entry needs:
 - human override record where applicable.
 
 The initial catalog is restricted to models in the real workflow: GPT-5.6 Luna,
-GPT-5.6 Sol, GLM-5.3, GLM-5.3-Flash and the local Qwen3.8 27B configuration.
-Exact ratings are deliberately unresolved in M0 and must be established as a
-separate, reviewable M2 artifact. They must not be inferred solely from price or
+GPT-5.6 Sol, GLM-5.3 and GLM-5.3-Flash. Exact ratings are deliberately
+unresolved in M0 and must be established as a separate, reviewable M2 artifact.
+They must not be inferred solely from price or
 vendor marketing.
 
 ## Governance and uncertainty

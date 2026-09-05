@@ -1,6 +1,6 @@
-"""Contract tests for the pure v1 normalized capacity model.
+"""Contract tests for the pure v2 normalized capacity model.
 
-These tests construct normalized v1 objects directly (the contract in
+These tests construct normalized v2 objects directly (the contract in
 ``docs/capacity-model.md``) and assert the invariants the implementation must
 enforce. They do NOT parse provider fixtures; the Z.ai fixtures under
 ``tests/fixtures/zai-coding-plan`` are evidence inputs for the later adapter task.
@@ -26,7 +26,6 @@ from scarcity_router import (
     CapacitySnapshot,
     CapacityValidationError,
     CapacityWindow,
-    LocalRuntime,
 )
 
 
@@ -72,7 +71,7 @@ def _window(
 
 def openai_healthy() -> dict[str, object]:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "provider": "openai",
         "source": "codex_app_server",
         "plan": "plus",
@@ -88,7 +87,7 @@ def openai_healthy() -> dict[str, object]:
 
 def zai_healthy() -> dict[str, object]:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "provider": "zai",
         "source": "zai_usage_endpoint",
         "plan": "pro",
@@ -109,24 +108,6 @@ def zai_healthy() -> dict[str, object]:
             _window(resource="time", kind="unknown", used=None, remaining=None, resets_at=None),
         ],
         "diagnostics": [{"code": "window_semantics_unknown"}],
-    }
-
-
-def ollama_healthy() -> dict[str, object]:
-    return {
-        "schema_version": 1,
-        "provider": "ollama",
-        "source": "ollama_local",
-        "retrieved_at": "2026-09-01T22:49:51.000Z",
-        "status": "ok",
-        "windows": [],
-        "local_runtime": {
-            "reachable": True,
-            "model_presence": "present",
-            "model_name": "qwen3.8:27b",
-            "configured_context_tokens": 163840,
-        },
-        "diagnostics": [],
     }
 
 
@@ -151,15 +132,7 @@ class ValidSnapshots(unittest.TestCase):
         self.assertEqual(len(time_window), 1)
         self.assertEqual(time_window[0].window_id, None)
 
-    def test_3_ollama_healthy_no_windows(self) -> None:
-        snap = CapacitySnapshot.from_dict(_clone(ollama_healthy()))
-        self.assertEqual(snap.windows, ())
-        assert snap.local_runtime is not None
-        self.assertTrue(snap.local_runtime.reachable)
-        self.assertEqual(snap.local_runtime.model_presence, "present")
-        self.assertEqual(snap.local_runtime.configured_context_tokens, 163840)
-
-    def test_4_known_used_zero(self) -> None:
+    def test_3_known_used_zero(self) -> None:
         payload = openai_healthy()
         w = _windows(payload)[0]
         w["used_percent"] = 0
@@ -312,42 +285,6 @@ class FailSafeStates(unittest.TestCase):
         self.assertEqual(len(snap.windows), 2)
 
 
-class LocalRuntimeValidation(unittest.TestCase):
-    def test_reachable_present(self) -> None:
-        lr =                 _ = LocalRuntime.from_dict({
-            "reachable": True,
-            "model_presence": "present",
-            "model_name": "qwen3.8:27b",
-        })
-        self.assertTrue(lr.reachable)
-        self.assertEqual(lr.model_presence, "present")
-
-    def test_unreachable_requires_unknown(self) -> None:
-        with self.assertRaises(CapacityValidationError):
-            _ =                 _ = LocalRuntime.from_dict({
-                "reachable": False,
-                "model_presence": "present",
-                "model_name": "qwen3.8:27b",
-            })
-
-    def test_present_requires_model_name(self) -> None:
-        with self.assertRaises(CapacityValidationError):
-            _ =                 _ = LocalRuntime.from_dict({
-                "reachable": True,
-                "model_presence": "present",
-            })
-
-    def test_context_fields_are_optional_ints(self) -> None:
-        lr =                 _ = LocalRuntime.from_dict({
-            "reachable": True,
-            "model_presence": "present",
-            "model_name": "qwen3.8:27b",
-            "configured_context_tokens": 163840,
-        })
-        self.assertEqual(lr.configured_context_tokens, 163840)
-        self.assertIsNone(lr.effective_context_tokens)
-
-
 class SerializationShape(unittest.TestCase):
     def test_no_nulls_in_serialized(self) -> None:
         snap = CapacitySnapshot.from_dict(_clone(zai_healthy()))
@@ -385,7 +322,7 @@ class SerializationShape(unittest.TestCase):
 
     def test_diagnostics_shape(self) -> None:
         payload: dict[str, object] = {
-            "schema_version": 1,
+            "schema_version": 2,
             "provider": "zai",
             "source": "zai_usage_endpoint",
             "retrieved_at": "2026-09-01T22:49:51.000Z",
@@ -410,13 +347,13 @@ class SerializationShape(unittest.TestCase):
         snap = CapacitySnapshot.from_dict(_clone(openai_healthy()))
         text = json.dumps(snap.to_dict())
         for forbidden in ("capacity.", "CapacitySnapshot", "CapacityWindow",
-                          "CapacityDiagnostic", "LocalRuntime", "class ", "dataclass"):
+                          "CapacityDiagnostic", "class ", "dataclass"):
             self.assertNotIn(forbidden, text, msg=f"forbidden in serialized: {forbidden!r}")
 
 
 class CredentialSafety(unittest.TestCase):
     """The safe-id validator rejects identifiers that contain characters the
-    v1 safe-id rule does not allow: uppercase, spaces, forward/slash,
+    v2 safe-id rule does not allow: uppercase, spaces, forward/slash,
     leading punctuation, over-length, or non-ASCII. This covers the core
     guarantee that no credential shape with those characters can slip in."""
 
@@ -475,7 +412,6 @@ class ApiExports(unittest.TestCase):
         self.assertTrue(callable(CapacitySnapshot.to_dict))
         self.assertTrue(callable(CapacityWindow.from_dict))
         self.assertTrue(callable(CapacityDiagnostic.from_dict))
-        self.assertTrue(callable(LocalRuntime.from_dict))
         self.assertIn(CapacityError, CapacityValidationError.__mro__)
 
 
@@ -489,7 +425,7 @@ class InvalidSnapshots(unittest.TestCase):
 
     def test_01_unsupported_schema_version_wrong_int(self) -> None:
         p = openai_healthy()
-        p["schema_version"] = 2
+        p["schema_version"] = 1
         self.assert_rejected(p)
 
     def test_02_unsupported_schema_version_non_int(self) -> None:
@@ -500,6 +436,11 @@ class InvalidSnapshots(unittest.TestCase):
     def test_02b_schema_version_bool_rejected(self) -> None:
         p = openai_healthy()
         p["schema_version"] = True  # bool is technically int in Python; reject
+        self.assert_rejected(p)
+
+    def test_02c_removed_local_runtime_field_is_rejected(self) -> None:
+        p = openai_healthy()
+        p["local_runtime"] = {}
         self.assert_rejected(p)
 
     def test_03_invalid_status_outside_vocab(self) -> None:
@@ -609,21 +550,6 @@ class InvalidSnapshots(unittest.TestCase):
         p["diagnostics"] = [{"code": "source_unavailable"}]
         self.assert_rejected(p)
 
-    def test_09_local_runtime_rejects_fake_quota_fields(self) -> None:
-        # The core must not be able to represent a local runtime with a quota
-        # percentage, an "unlimited" marker, or a scarcity score. The
-        # LocalRuntime object has exactly the documented keys and nothing else,
-        # so any injected fake-quota field is rejected.
-        for fake in ({"quota_percent": 100}, {"unlimited": True},
-                     {"scarcity": 0.0}, {"percentage": 42}, {"remaining": 100}):
-            with self.assertRaises(CapacityValidationError, msg=f"rejected {fake}"):
-                _ =                 _ = LocalRuntime.from_dict({
-                    "reachable": True,
-                    "model_presence": "present",
-                    "model_name": "qwen3.8:27b",
-                    **fake,
-                })
-
     def test_10_unsafe_identifier_uppercase(self) -> None:
         p = openai_healthy()
         p["plan"] = "Plus"
@@ -653,6 +579,19 @@ class InvalidSnapshots(unittest.TestCase):
         p = openai_healthy()
         p["diagnostics"] = [{"code": "everything_is_fine"}]
         self.assert_rejected(p)
+
+    def test_11e_removed_local_diagnostics_are_rejected(self) -> None:
+        for code in (
+            "runtime_unreachable",
+            "model_missing",
+            "model_presence_unknown",
+            "configured_context_unknown",
+            "effective_context_unknown",
+        ):
+            p = openai_healthy()
+            p["diagnostics"] = [{"code": code}]
+            with self.subTest(code=code):
+                self.assert_rejected(p)
 
     def test_11b_diagnostic_window_code_requires_safe_id(self) -> None:
         p = openai_healthy()
@@ -726,32 +665,6 @@ class InvalidSnapshots(unittest.TestCase):
         with self.assertRaises(CapacityValidationError):
             _ = CapacityWindow.from_dict({"resource": "credits", "kind": "unknown"})
 
-    def test_18_local_runtime_rejects_invalid_presence(self) -> None:
-        with self.assertRaises(CapacityValidationError):
-            _ =                 _ = LocalRuntime.from_dict({
-                "reachable": True,
-                "model_presence": "degraded",
-            })
-
-    def test_19_local_runtime_rejects_non_positive_context(self) -> None:
-        with self.assertRaises(CapacityValidationError):
-            _ =                 _ = LocalRuntime.from_dict({
-                "reachable": True,
-                "model_presence": "present",
-                "model_name": "m",
-                "configured_context_tokens": 0,
-            })
-
-    def test_20_local_runtime_rejects_invalid_context_type(self) -> None:
-        with self.assertRaises(CapacityValidationError):
-            _ =                 _ = LocalRuntime.from_dict({
-                "reachable": True,
-                "model_presence": "present",
-                "model_name": "m",
-                "configured_context_tokens": "big",
-            })
-
-
 # ══════════════════════════ REGRESSION: findings 1 & 2 ═══════════════════════
 
 
@@ -797,19 +710,11 @@ class ConstructorInvariants(unittest.TestCase):
         )
         self.assertEqual(w.used_percent, 6)
 
-    def test_local_runtime_present_requires_model_name(self) -> None:
-        with self.assertRaises(CapacityValidationError):
-            _ = LocalRuntime(reachable=True, model_presence="present")
-
-    def test_local_runtime_unreachable_requires_unknown(self) -> None:
-        with self.assertRaises(CapacityValidationError):
-            _ = LocalRuntime(reachable=False, model_presence="present", model_name="m")
-
     def test_snapshot_rejects_non_ok_with_missing_code(self) -> None:
         # status "unavailable" requires the "quota_unavailable" diagnostic.
         with self.assertRaises(CapacityValidationError):
             _ = CapacitySnapshot(
-                schema_version=1,
+                schema_version=2,
                 provider="openai",
                 source="codex_app_server",
                 retrieved_at="2026-09-02T04:00:00.000Z",
@@ -834,11 +739,6 @@ class FromDictMissingKeyGuard(unittest.TestCase):
     def test_diagnostic_missing_code(self) -> None:
         with self.assertRaises(CapacityValidationError):
             _ = CapacityDiagnostic.from_dict({})
-
-    def test_local_runtime_missing_both(self) -> None:
-        with self.assertRaises(CapacityValidationError):
-            _ =                 _ = LocalRuntime.from_dict({})
-
 
 if __name__ == "__main__":
     _ = unittest.main(verbosity=2)

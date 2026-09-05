@@ -151,7 +151,7 @@ class KnownWindowsFixture(unittest.TestCase):
     def test_full_normalization(self) -> None:
         snap = _parse(_load("ratelimits-ok-plus.json"))
         self.assertEqual(snap.status, "ok")
-        self.assertEqual(snap.schema_version, 1)
+        self.assertEqual(snap.schema_version, 2)
         self.assertEqual(snap.provider, "openai")
         self.assertEqual(snap.source, "codex_app_server")
         self.assertEqual(snap.plan, "plus")
@@ -978,7 +978,7 @@ class DegradedFixture(unittest.TestCase):
         self.assertEqual(snap.status, "ok")
         self.assertEqual(snap.plan, "unknown")
 
-    def test_degraded_snapshot_validates_through_v1(self) -> None:
+    def test_degraded_snapshot_validates_through_v2(self) -> None:
         snap = _parse(_load("ratelimits-degraded.json"))
         reparsed = CapacitySnapshot.from_dict(snap.to_dict())
         self.assertEqual(reparsed, snap)
@@ -1528,7 +1528,7 @@ class PurityAndDeterminism(unittest.TestCase):
                 payload, retrieved_at="2026-09-03T20:00:00Z"
             )
 
-    def test_all_fixtures_round_trip_through_v1(self) -> None:
+    def test_all_fixtures_round_trip_through_v2(self) -> None:
         for name in ALL_FIXTURES:
             with self.subTest(name=name):
                 snap = _parse(_load(name))

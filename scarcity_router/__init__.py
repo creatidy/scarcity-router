@@ -1,13 +1,12 @@
-"""Pure v1 normalized capacity contract for Scarcity Router.
+"""Pure v2 normalized capacity contract for Scarcity Router.
 
 Provider-independent, standard-library only. No provider parsing, credential
 access, network or subprocess behavior.
 
 Public API:
-    CapacitySnapshot    -- a v1 normalized capacity observation
+    CapacitySnapshot    -- a v2 normalized capacity observation
     CapacityWindow      -- one normalized quota/limit window
     CapacityDiagnostic  -- one allowlisted diagnostic record
-    LocalRuntime        -- local runtime reachability and model facts
     CapacityValidationError
     CapacityError
 
@@ -24,7 +23,6 @@ from .capacity import (
     CapacityDiagnostic,
     CapacitySnapshot,
     CapacityWindow,
-    LocalRuntime,
 )
 from .errors import CapacityError, CapacityValidationError
 
@@ -34,7 +32,6 @@ __all__ = [
     "CapacitySnapshot",
     "CapacityValidationError",
     "CapacityWindow",
-    "LocalRuntime",
 ]
 
 __version__ = "0.0.0"

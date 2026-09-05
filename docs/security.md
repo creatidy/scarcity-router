@@ -70,8 +70,6 @@ default. Its format and migration require a recorded decision.
 OpenAI collection should interact with the chosen Codex process rather than
 browser profiles. Z.ai discovery should parse only the configured Kilo auth file
 and select only `zai-coding-plan`; it must not display or return other entries.
-Ollama health should use local runtime interfaces and not inspect unrelated
-model or user files.
 
 ## Public-interface data
 
@@ -110,6 +108,5 @@ If a schema changes, fail closed for that collector: return `schema_changed` or
 ## Out of scope for M1
 
 Multi-user authentication, remote service exposure, centralized credential
-management, analytics and organization-wide audit are not needed for the local
+management, analytics and organization-wide audit are not needed for the M1
 collector milestone.
-

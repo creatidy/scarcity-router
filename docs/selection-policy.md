@@ -29,7 +29,7 @@ for the selector decision sequence and scarcity behavior.
 1. **Resolve requirements.** Expand a profile in one place, merge permitted
    explicit requirements and validate contradictions.
 2. **Filter hard constraints.** Remove candidates that cannot satisfy context,
-   modality, tool, privacy, locality, provider/model or runtime requirements.
+    modality, tool, privacy, provider/model or runtime requirements.
    Explicit provider/model blackout schedules compile to hard temporary
    exclusions at this stage.
 3. **Check capability sufficiency.** Remove candidates below any required
@@ -62,9 +62,10 @@ Subscription scarcity uses the normalized continuous function and all relevant
 windows defined in `capacity-model.md`. The maximum per-window penalty governs,
 so a healthy five-hour window cannot hide an exhausted weekly window.
 
-Local models have no subscription scarcity penalty. If a local model satisfies
-all requirements, `balanced` may select it. Runtime unavailability, missing
-model data or hard-property failure remains disqualifying.
+The initial candidate set contains supported subscription-backed models only.
+Every candidate is evaluated against the relevant provider capacity windows;
+there is no alternate API-cost or abundance score standing in for subscription
+scarcity.
 
 The exact penalty and label thresholds are accepted only after scenario tests
 at M2. They are documented now to prevent an undocumented scoring function from
@@ -144,13 +145,13 @@ Provider/service health is independent from model capability and account quota.
 The selector should prefer direct evidence in this order unless a later decision
 supersedes it:
 
-1. direct current account/runtime observation relevant to the candidate;
+1. direct current account observation relevant to the candidate;
 2. explicit provider-native failure/high-traffic signal from the supported
    access path;
 3. official public status metadata relevant to that product/component;
 4. optional third-party monitoring only when explicitly configured.
 
-An aggregate public status page must not override a successful direct local or
+An aggregate public status page must not override a successful direct provider
 account observation, and a green status page must not fabricate available
 quota. Conversely, a direct provider high-traffic/error signal may justify a
 short-lived degraded state even when published status is green.
@@ -164,10 +165,6 @@ Current planning notes:
 - no authoritative public Z.ai/GLM status page has been identified; use
   provider-native failure signals and explicit unknown state instead of
   inventing one.
-- Ollama direct reachability/model-presence from the local collector is the
-  authoritative local availability signal. Rich telemetry from the separate
-  `ollama-monitoring` project is optional future evidence, not required for
-  basic eligibility.
 
 ## External capability and performance evidence
 
@@ -195,8 +192,6 @@ when external evidence helped create that snapshot.
 Initial candidate modes are:
 
 - `balanced`: least scarce sufficient model;
-- `local-first`: prefer a sufficient healthy local candidate before cloud;
-- `subscription-first`: prefer sufficient subscription capacity before local;
 - `quality-first`: prefer greater capability margin, still respecting hard
   constraints and explicit reservations;
 - `conserve-openai` and `conserve-zai`: add a documented preference/penalty to

@@ -2,14 +2,14 @@
 
 ## Mission and priority
 
-Build a small, local-first service that recommends which available AI model to
-use now by combining task requirements, model capabilities, current capacity
-and user policy. The governing rule is: **choose the least scarce model that is
-capable enough for the task**.
+Build a small service that recommends which available subscription-backed AI
+model to use now by combining task requirements, model capabilities, current
+capacity and user policy. The governing rule is: **choose the least scarce
+model that is capable enough for the task**.
 
 The owner's real workflow takes priority over novelty, provider-count metrics,
-market features and abstract platform design. Solve the current OpenAI, Z.ai
-and Ollama use case before expanding scope.
+market features and abstract platform design. Solve the current OpenAI and Z.ai
+subscription-capacity use case before expanding scope.
 
 Read the documentation map in `README.md` and the relevant authoritative
 document before making a change. If documents conflict, stop and resolve the
@@ -115,6 +115,10 @@ Do not build prompt proxying, model-call execution, repository ingestion,
 source-code inspection, a generic LLM gateway, autonomous fallback execution
 or client-specific business logic. Kilo, Codex, Claude Code and other tools are
 consumers, not foundations of the core.
+
+Local inference providers, including Ollama, are not supported by Scarcity
+Router. Do not add, restore or preserve a local-model provider, local runtime
+health path or local-first routing mode without a new explicit product decision.
 
 Keep these concepts separate in schemas and code:
 

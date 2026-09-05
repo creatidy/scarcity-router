@@ -33,9 +33,8 @@ an external recommendation/decision service whose differentiating inputs are:
 ```text
 subscription quota headroom and reset/replenishment options
 + multiple rolling quota windows
++ provider availability and advisory health
 + explicit user reservations and provider blackout schedules
-+ local runtime availability
-+ optional advisory provider health
 + capability evidence with provenance
 ```
 
@@ -46,13 +45,6 @@ If compound workflow recommendations are added, `single`/cascade/critique are
 useful archetypes rather than an implementation to clone. The service should
 recommend explicit limits and expected aggregate consumption; the consuming
 orchestrator remains responsible for execution and enforcement.
-
-The September 2026 Ollama review/fix incident also makes HydraFusion's bounded
-execution and isolated-review principles directly relevant: reviewer strength
-without execution limits can improve local correctness while making the global
-system slower, more complex and less economical. Repository governance now
-bounds agent loops; the same principle must be reflected in any future public
-workflow recommendation contract.
 
 ## CodexBar
 
@@ -77,13 +69,12 @@ be documented without creating unnecessary coupling.
 ## Chuzom
 
 [Chuzom](https://github.com/Chuzom/Chuzom) is relevant for task-complexity
-classification and routing chains across local, subscription and premium
-models.
+classification and routing chains across subscription and premium models.
 
 Learn from:
 
 - understandable complexity levels;
-- local-versus-premium policy;
+- quota-preservation policy;
 - quota/cost preservation concepts;
 - explicit fallback ordering.
 
@@ -136,8 +127,9 @@ economics. Scarcity Router's initial problem is different:
 ```text
 existing subscription plans
 + multiple rolling quota windows
-+ local models
++ provider availability and health
 + explicit preservation of scarce capacity
++ user scheduling and preservation policy
 + no access to the prompt or model traffic
 ```
 
@@ -172,7 +164,7 @@ A useful positioning sentence is:
 > orchestrator decides how to execute the task.
 
 Over time the decision may include a bounded workflow envelope as well as a
-single model, but subscription headroom, local availability, replenishment
+single model, but subscription headroom, provider availability, replenishment
 options, time-based provider policy and explainability remain the distinctive
 center of gravity.
 

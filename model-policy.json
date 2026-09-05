@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "policy_version": 2,
+  "policy_version": 3,
   "updated_at": "2026-09-05",
   "versioning": {
     "schema_version": {
@@ -411,7 +411,7 @@
       ],
       "hard_requirement_categories": [
         "task-specific context and output limits",
-        "required tools and privacy or locality constraints"
+        "required tools and privacy or provider constraints"
       ],
       "class_affinities": [
         {
@@ -431,7 +431,7 @@
       ],
       "hard_requirement_categories": [
         "task-specific context and output limits",
-        "required tools and privacy or locality constraints"
+        "required tools and privacy or provider constraints"
       ],
       "class_affinities": [
         {
@@ -451,7 +451,7 @@
       ],
       "hard_requirement_categories": [
         "task-specific context and output limits",
-        "required tools and privacy or locality constraints"
+        "required tools and privacy or provider constraints"
       ],
       "class_affinities": [
         {
@@ -475,7 +475,7 @@
       ],
       "hard_requirement_categories": [
         "task-specific context and output limits",
-        "privacy, locality and reviewer-independence constraints when specified"
+        "privacy and reviewer-independence constraints when specified"
       ],
       "class_affinities": [
         {
@@ -494,7 +494,7 @@
       ],
       "hard_requirement_categories": [
         "task-specific context and output limits",
-        "privacy or locality constraints"
+        "privacy constraints"
       ],
       "class_affinities": [
         {
@@ -512,7 +512,7 @@
       ],
       "hard_requirement_categories": [
         "task-specific context and output limits",
-        "privacy, locality, tool and provider constraints when specified"
+        "privacy, tool and provider constraints when specified"
       ],
       "class_affinities": [
         {
@@ -538,7 +538,7 @@
       "hard_requirement_categories": [
         "adequate context allowance",
         "adequate output allowance",
-        "task-specific tool, privacy or locality constraints"
+        "task-specific tool and privacy constraints"
       ],
       "class_affinities": [
         {
@@ -563,7 +563,7 @@
       },
       "hard_requirement_categories": [
         "context and output limits appropriate to the source and target material",
-        "task-specific privacy or locality constraints"
+        "task-specific privacy constraints"
       ],
       "class_affinities": [
         {

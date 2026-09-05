@@ -1,7 +1,7 @@
 """Z.ai Coding Plan quota-response parser.
 
 Pure, deterministic provider-edge parsing: an already decoded JSON-compatible
-payload plus a caller-supplied retrieval timestamp are normalized into the v1
+payload plus a caller-supplied retrieval timestamp are normalized into the v2
 ``CapacitySnapshot`` contract (docs/capacity-model.md).
 
 This parser performs zero I/O. It never reads the clock, filesystem,
@@ -135,14 +135,14 @@ def _window_identity_id(type_token: str, unit: object, number: object) -> str:
     """Deterministic safe window ID from validated identity fields only.
 
     The fixed ``type_token`` plus two bounded components always satisfies the
-    v1 safe-ID grammar and 64-character limit. No array index, raw JSON or
+    v2 safe-ID grammar and 64-character limit. No array index, raw JSON or
     provider free-text participates in the ID.
     """
     return f"{type_token}-{_identity_part(unit)}-{_identity_part(number)}"
 
 
 def _canonical_from_epoch_ms(value: object) -> str | None:
-    """Convert a 13-digit epoch-millisecond integer to canonical v1 UTC.
+    """Convert a 13-digit epoch-millisecond integer to canonical v2 UTC.
 
     Only the evidenced representation is accepted: an integer (not bool),
     positive, within the 13-digit millisecond band. Values that look like
@@ -180,7 +180,7 @@ def _failure(
     retrieved_at: str,
 ) -> CapacitySnapshot:
     return CapacitySnapshot(
-        schema_version=1,
+        schema_version=2,
         provider=PROVIDER,
         source=SOURCE,
         retrieved_at=retrieved_at,
@@ -270,11 +270,11 @@ def parse_zai_quota_response(
     *,
     retrieved_at: str,
 ) -> CapacitySnapshot:
-    """Normalize one decoded Z.ai quota response into a v1 snapshot.
+    """Normalize one decoded Z.ai quota response into a v2 snapshot.
 
     ``payload`` must already be decoded (e.g. by the caller's HTTP layer);
     this function performs no I/O and does not call the clock. ``retrieved_at``
-    must be the canonical v1 UTC string and is validated by the snapshot
+    must be the canonical v2 UTC string and is validated by the snapshot
     constructor.
 
     Failures degrade safely to a documented status with an empty windows
@@ -323,7 +323,7 @@ def parse_zai_quota_response(
         diagnostics.extend(window_diagnostics)
 
     return CapacitySnapshot(
-        schema_version=1,
+        schema_version=2,
         provider=PROVIDER,
         source=SOURCE,
         retrieved_at=retrieved_at,

@@ -36,7 +36,7 @@ Security contract (docs/security.md):
 - the credential never enters exceptions, diagnostics, logs or the returned
   snapshot, and this module emits no stdout/stderr output.
 
-Expected operational conditions normalize to safe v1 snapshots
+Expected operational conditions normalize to safe v2 snapshots
 (docs/capacity-model.md): an unusable or ambiguous credential source and
 HTTP 401 map to ``auth_required``; a received success response whose body
 cannot satisfy the validated contract maps to ``schema_changed``;
@@ -297,7 +297,7 @@ def _snapshot(
 ) -> CapacitySnapshot:
     """Safe failure snapshot; carries only allowlisted safe identifiers."""
     return CapacitySnapshot(
-        schema_version=1,
+        schema_version=2,
         provider=PROVIDER,
         source=SOURCE,
         retrieved_at=retrieved_at,
