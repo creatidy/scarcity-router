@@ -60,8 +60,8 @@ class ModelPolicyContract(unittest.TestCase):
         self.assertIsInstance(policy, dict)
         parsed = cast(dict[str, object], policy)
         self.assertEqual(parsed["schema_version"], 1)
-        self.assertEqual(parsed["policy_version"], 1)
-        self.assertEqual(parsed["updated_at"], "2026-09-03")
+        self.assertEqual(parsed["policy_version"], 2)
+        self.assertEqual(parsed["updated_at"], "2026-09-05")
         self.assertEqual(json.loads(json.dumps(parsed)), parsed)
 
     def test_versioning_semantics_are_documented(self) -> None:
@@ -185,6 +185,87 @@ class ModelPolicyContract(unittest.TestCase):
             'if task == "deep_coding": choose_a_deep_technical_reasoner()',
             shortcuts,
         )
+
+    def test_multi_agent_orchestration_policy_is_bounded(self) -> None:
+        orchestration = _mapping(
+            _load_policy()["multi_agent_orchestration_policy"],
+            "multi_agent_orchestration_policy",
+        )
+        self.assertTrue(orchestration["bounded_by_default"])
+        self.assertFalse(orchestration["implicit_unlimited_mode"])
+        self.assertTrue(orchestration["human_escalation_on_budget_exhaustion"])
+        self.assertTrue(orchestration["review_head_must_be_frozen"])
+        self.assertTrue(orchestration["dependent_steps_are_serialized"])
+        self.assertTrue(orchestration["final_verification_is_scoped"])
+        self.assertEqual(
+            _mapping(orchestration["default_budgets"], "default_budgets"),
+            {
+                "max_initial_review_rounds": 1,
+                "max_remediation_rounds": 1,
+                "max_final_verification_rounds": 1,
+                "max_worker_retries": 1,
+                "max_reviewer_retries": 1,
+                "max_wall_clock_minutes": 120,
+            },
+        )
+        self.assertEqual(
+            _strings(orchestration["finding_classes"], "finding_classes"),
+            ["merge_blocker", "defer"],
+        )
+        self.assertEqual(
+            orchestration["stop_outcome"], "stop_and_escalate_to_human"
+        )
+        review_head = _mapping(
+            orchestration["review_head_policy"], "review_head_policy"
+        )
+        self.assertFalse(review_head["worker_may_push_during_review"])
+        self.assertTrue(review_head["branch_change_invalidates_review"])
+        self.assertTrue(review_head["dependent_phases_must_not_run_concurrently"])
+        self.assertEqual(
+            _strings(
+                orchestration["final_verification_scope"],
+                "final_verification_scope",
+            ),
+            [
+                "verify_previous_merge_blockers",
+                "check_obvious_remediation_regressions",
+            ],
+        )
+        self.assertEqual(
+            _mapping(
+                orchestration["final_verification_outcomes"],
+                "final_verification_outcomes",
+            ),
+            {
+                "ready_to_merge": "stop",
+                "remaining_merge_blocker": "stop_and_escalate_to_human",
+            },
+        )
+
+    def test_orchestration_class_requires_bounded_workflow_governance(self) -> None:
+        orchestration_class = next(
+            entry
+            for entry in _objects(
+                _load_policy()["model_capability_classes"],
+                "model_capability_classes",
+            )
+            if entry["id"] == "orchestration_synthesis"
+        )
+        governance = _mapping(
+            orchestration_class["orchestration_governance"],
+            "orchestration_governance",
+        )
+        self.assertEqual(
+            set(_strings(governance["requires"], "orchestration requirements")),
+            {
+                "explicit_execution_budget",
+                "explicit_stop_conditions",
+                "worker_reviewer_serialization",
+                "bounded_independent_review",
+                "human_escalation_when_budget_exhausted",
+            },
+        )
+        self.assertTrue(governance["independence_does_not_expand_scope"])
 
     def test_classes_record_formal_profiles_and_workflow_roles(self) -> None:
         expected_profiles = {

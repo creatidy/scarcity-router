@@ -42,6 +42,64 @@ authoritative and non-negotiable for agent work:
 This discipline exists because leaving valuable uncommitted work on `main` that
 a dependent agent then had to reroute is a workflow failure to prevent.
 
+## Multi-agent orchestration safety
+
+Multi-agent orchestration is bounded by default and is never implicitly
+unlimited. Before any worker or reviewer starts, record the task scope, frozen
+threat model, expected complexity boundary and execution budget. The defaults
+are:
+
+- `max_initial_review_rounds = 1`;
+- `max_remediation_rounds = 1`;
+- `max_final_verification_rounds = 1`;
+- `max_worker_retries = 1`;
+- `max_reviewer_retries = 1`;
+- `max_wall_clock_minutes = 120`.
+
+A task may override a default only explicitly, with a stated reason, before
+orchestration begins. There is no implicit unlimited mode. Budget exhaustion or
+failure to make meaningful progress after the retry budget means
+`STOP_AND_ESCALATE_TO_HUMAN`; repeated polling is not progress.
+Worker and reviewer retries are independently bounded. Each retry only recovers
+an interrupted or stalled session; it is not permission to restart an entire
+task or review repeatedly.
+
+The default lifecycle is:
+
+`implementation -> independent review -> optional single remediation -> final verification -> human merge gate`
+
+Every reviewer finding is exactly `MERGE_BLOCKER` or `DEFER`. A
+`MERGE_BLOCKER` materially violates current issue correctness, an explicit
+security invariant, an explicit public/data contract, normal resource/lifecycle
+safety or repository workflow integrity. A `DEFER` is out-of-scope hardening,
+architecture, future compatibility, marginal robustness or scope expansion;
+only blockers may trigger the single remediation. Independent review improves
+decision quality inside the frozen boundary and does not authorize recursive
+review/fix cycles. Independent specialist review is valuable precisely because
+it is independent, but independence does not imply recursive authority over
+task scope. Reviewer strength does not expand the frozen threat model. A
+concern outside that threat model is `DEFER` unless it violates an existing
+global security invariant.
+
+Review starts from one immutable `reviewed_head`. Workers must not push while
+review is in progress; a branch change invalidates the review result and it
+must not be treated as approval. Serialize worker, reviewer, remediation and
+verification phases, and never run a reviewer concurrently with the remediation
+worker on the same PR. Final verification only checks the identified blockers
+and obvious regressions from remediation; it is not a fresh architecture
+review, and it has no automatic third review/fix cycle. A new
+final-verification finding is `DEFER` unless it is an obvious critical
+correctness or security regression. After final verification,
+`READY_TO_MERGE` stops orchestration; a remaining `MERGE_BLOCKER` stops and
+escalates to the human.
+
+Before implementation, the orchestrator records a rough expected complexity
+boundary. A material breach stops work for architectural triage rather than
+accumulating review-driven defenses. Stalled or repeatedly retrying worker or
+reviewer sessions consume at most the configured retry budget, then escalate to
+the human. Workers, reviewers and orchestrators never merge; the human remains
+the merge gate.
+
 ## Current phase
 
 M0 is complete and M1 is the current milestone. Executable product code may now
