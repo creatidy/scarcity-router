@@ -1581,6 +1581,8 @@ class CollectionDeadline(_AcquisitionCase):
         # Stage registration after the deadline cancellation pass. The
         # synchronization-aware registry must cancel this handle immediately,
         # allowing the non-daemon worker to terminate before the return.
+        initial_release = threading.Event()
+        initial_socket = _FakeSocket(initial_release)
         late_socket = _FakeSocket(threading.Event())
 
         def late_factory(
@@ -1590,7 +1592,9 @@ class CollectionDeadline(_AcquisitionCase):
             register_handle: Callable[[object], None],
         ) -> object:
             _ = host, port, timeout
-            time.sleep(0.08)
+            register_handle(initial_socket)
+            if not initial_release.wait(1.0):
+                raise AssertionError("deadline cancellation did not arrive")
             register_handle(late_socket)
             raise OSError(FAKE_TRANSPORT_SECRET)
 
