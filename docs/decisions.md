@@ -460,6 +460,63 @@ direction was chosen. Dates use UTC.
   retry maxima have minimum `0`; the call, leg and wall-clock maxima have
   minimum `1`. No other D-022 term changed.
 
+### D-023 — Capacity contract v3 semantic scopes
+
+- **Status:** Accepted
+- **Date:** 2026-09-06
+- **Supersedes:** the "planned M2a extension" aspect of D-020 only — the
+  expected minimal scope direction is now the accepted v3 contract shape.
+  D-020's other selector-input freezes are unchanged, and D-020's planning-time
+  history is preserved as written.
+- **Decision:** The normalized capacity contract is **v3**
+  (`docs/capacity-model.md`). The only change from v2 is the addition of
+  `CapacityWindow.scope_id`, and this field is the final M2a shape:
+  - an optional, safe, provider-local semantic scope identifier
+    (`scope_id: str | None`, top-level normalized window data, never inside
+    `provider_metadata`);
+  - `None` — serialized as an omitted field — means scope applicability is
+    unknown; no magic sentinel string exists;
+  - `(snapshot.provider, window.scope_id)` identifies one semantic capacity
+    scope; the `scope_id` itself is never provider-prefixed;
+  - `scope_id` is opaque exact-match identity: consumers may compare it for
+    equality but must never split, parse, or infer model/provider/window
+    semantics from its spelling; the diagnostic `provider_metadata.window_id`
+    keeps its existing shape and remains non-semantic, and consumer/core code
+    never derives one identifier from the other;
+  - provider mappings: OpenAI windows carry the validated `limitId` —
+    `"codex"` for the main `rateLimits` snapshot and the exact mirror, the
+    validated map key for each additional `rateLimitsByLimitId` bucket —
+    independent of period semantics; `limitName` and `normalModelSlug` are
+    validated metadata and never become scope identity. Z.ai windows of
+    evidenced known limit types (`TOKENS_LIMIT`, `TIME_LIMIT`) carry the
+    adapter-owned `coding_plan` scope, including a known type whose
+    `(unit, number)` period is unrecognized; a structurally valid but
+    unevidenced provider type keeps `scope_id = None` because applicability
+    for that type is not evidenced, and raw type text never becomes a scope;
+  - no model-to-scope bindings, no catalog production types, no ratings and
+    no selector exist in M2a; binding catalog models to scope identities is
+    the M2b slice;
+  - version strictness: the production capacity model accepts and constructs
+    only `schema_version = 3`; serialized v2 snapshots fail closed exactly
+    like any other wrong version, with no compatibility shim and no silent
+    upgrade.
+- **Reason:** D-020 requires explicit normalized scope applicability before
+  any selector implementation and forbids deriving it from the diagnostic
+  `window_id`. M1 live evidence (multi-bucket `rateLimitsByLimitId`) shows
+  multiple windows — including equal periods — must coexist under distinct
+  scopes, and Z.ai's unknown future limit types must not be guessed into an
+  evidenced scope.
+- **Boundary:** Contract change plus provider scope emission only. Every v2
+  invariant is preserved (percentage pairs, canonical UTC timestamps, fixed
+  durations, status/diagnostic allowlists, strict provider metadata,
+  fail-closed serialized shapes, deterministic serialization). Live
+  structural acceptance (2026-09-06) observed both providers at
+  `schema_version = 3` / `ok` with per-window semantic scopes and distinct
+  additional scopes; only structural facts (window counts, distinct scope
+  counts, presence of the public `codex` main scope) were recorded — never
+  personal quota values or non-public bucket identifiers. No model prompt was
+  issued.
+
 ## Unresolved decisions
 
 ### U-001 — Codex binary discovery and compatibility

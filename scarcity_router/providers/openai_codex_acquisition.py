@@ -51,7 +51,7 @@ Security contract (docs/security.md):
   installs, upgrades or reconfigures anything;
 - the selected binary path, extension version, codex version, initialize
   result contents (which include local paths) and any error-response message
- text never enter the returned snapshot: v2 has no field for them. Error
+ text never enter the returned snapshot: the capacity contract has no field for them. Error
   responses map to ``unknown`` without parsing their free text, because no
   OpenAI failure-shape evidence is validated.
 
@@ -65,7 +65,7 @@ installations the highest extension version wins deterministically. Other
 installation sources (npm/standalone ``codex`` on PATH, other editors) are
 intentionally unsupported in M1.
 
-Expected operational conditions normalize to safe v2 snapshots
+Expected operational conditions normalize to safe v3 snapshots
 (docs/capacity-model.md): no installation, spawn failure, process exit or
 timeout maps to ``unavailable``; an installation whose layout cannot be
 validated maps to ``unsupported``; malformed or incompatible JSONL
@@ -95,7 +95,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Literal, Protocol, cast
 
-from ..capacity import CapacityDiagnostic, CapacitySnapshot
+from ..capacity import SCHEMA_VERSION, CapacityDiagnostic, CapacitySnapshot
 from .openai_codex import (
     PROVIDER,
     SOURCE,
@@ -1026,7 +1026,7 @@ def _snapshot(
 ) -> CapacitySnapshot:
     """Safe failure snapshot; carries only allowlisted safe identifiers."""
     return CapacitySnapshot(
-        schema_version=2,
+        schema_version=SCHEMA_VERSION,
         provider=PROVIDER,
         source=SOURCE,
         retrieved_at=retrieved_at,
@@ -1068,7 +1068,7 @@ def _run_session(
     if not _valid_initialize_result(response.get("result")):
         return _snapshot("schema_changed", "schema_changed", retrieved_at)
     # The validated initialize fields are deliberately not retained: codexHome
-  # can be a local path and v2 has no field for handshake metadata.
+  # can be a local path and the capacity contract has no field for handshake metadata.
 
     if not _send_message(proc, _initialized_notification()):
         return _snapshot("unavailable", "source_unavailable", retrieved_at)

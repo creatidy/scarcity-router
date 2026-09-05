@@ -3,7 +3,7 @@
 This module composes the OpenAI and Z.ai provider collectors without
 interpreting provider payloads. Each invocation creates one observation
 timestamp, calls the collectors in a fixed order, and exposes either a compact
-human view or the existing v2 snapshot dictionaries.
+human view or the existing v3 snapshot dictionaries.
 """
 
 from __future__ import annotations
@@ -110,6 +110,8 @@ def _format_window(window: CapacityWindow) -> str:
         f"remaining={_format_percentage(window.remaining_percent)}",
         f"reset={window.resets_at or 'unknown'}",
     ]
+    if window.scope_id is not None:
+        fields.append(f"scope={window.scope_id}")
     if window.window_id is not None:
         fields.append(f"id={window.window_id}")
     return "  window " + " ".join(fields)
@@ -166,7 +168,7 @@ def render_human(snapshots: Sequence[CapacitySnapshot]) -> str:
 
 
 def render_json(snapshots: Sequence[CapacitySnapshot]) -> str:
-    """Render the ordered snapshots with their existing v2 serialization."""
+    """Render the ordered snapshots with their existing v3 serialization."""
     payload = [
         _canonical_snapshot_dict(snapshot)
         for snapshot in _ordered_snapshots(snapshots)

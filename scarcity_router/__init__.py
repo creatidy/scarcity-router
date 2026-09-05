@@ -1,11 +1,12 @@
-"""Pure v2 normalized capacity contract for Scarcity Router.
+"""Pure v3 normalized capacity contract for Scarcity Router.
 
 Provider-independent, standard-library only. No provider parsing, credential
 access, network or subprocess behavior.
 
 Public API:
-    CapacitySnapshot    -- a v2 normalized capacity observation
-    CapacityWindow      -- one normalized quota/limit window
+    CapacitySnapshot    -- a v3 normalized capacity observation
+    CapacityWindow      -- one normalized quota/limit window (optional
+                           semantic scope_id)
     CapacityDiagnostic  -- one allowlisted diagnostic record
     CapacityValidationError
     CapacityError

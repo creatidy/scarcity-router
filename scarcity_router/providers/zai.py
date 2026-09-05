@@ -1,7 +1,7 @@
 """Z.ai Coding Plan quota-response parser.
 
 Pure, deterministic provider-edge parsing: an already decoded JSON-compatible
-payload plus a caller-supplied retrieval timestamp are normalized into the v2
+payload plus a caller-supplied retrieval timestamp are normalized into the v3
 ``CapacitySnapshot`` contract (docs/capacity-model.md).
 
 This parser performs zero I/O. It never reads the clock, filesystem,
@@ -23,6 +23,14 @@ fixtures under tests/fixtures/zai-coding-plan/:
   a missing ``unit``/``number``, is an unknown window, never guessed;
 - ``TIME_LIMIT`` is a distinct non-token limit: ``resource="time"`` with
   unknown period semantics;
+- semantic scope identity (capacity contract v3; D-020, D-023): every
+  window of an evidenced limit type carries the adapter-owned
+  ``coding_plan`` scope — including a known ``TOKENS_LIMIT`` whose
+  ``(unit, number)`` period is unrecognized, because scope applicability
+  and period semantics are independent. A structurally valid but
+  unevidenced limit type has no scope: its window carries ``scope_id``
+  ``None`` (never the raw type text), because applicability for an unknown
+  future type is not evidenced;
 - a limits object with an unevidenced string ``type`` is preserved as an
   ``unknown`` window without guessing: no raw type text, no derived
   ``window_id``, and its percentage/reset facts are omitted with explicit
@@ -50,7 +58,12 @@ from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 from typing import TypeGuard, cast
 
-from ..capacity import CapacityDiagnostic, CapacitySnapshot, CapacityWindow
+from ..capacity import (
+    SCHEMA_VERSION,
+    CapacityDiagnostic,
+    CapacitySnapshot,
+    CapacityWindow,
+)
 
 PROVIDER = "zai"
 SOURCE = "zai_usage_endpoint"
@@ -65,6 +78,15 @@ _KNOWN_TOKEN_WINDOWS: dict[tuple[int, int], tuple[str, int]] = {
 # unknown, preserved window type.
 _TOKENS_LIMIT = "TOKENS_LIMIT"
 _TIME_LIMIT = "TIME_LIMIT"
+
+# The provider-local semantic capacity-scope identity of the evidenced
+# Coding Plan quota (capacity contract v3; D-020, D-023). Every window of a
+# known limit type belongs to this scope — including a known type whose
+# (unit, number) period is not recognized — because scope applicability and
+# period semantics are independent. An unevidenced limit type has no scope:
+# applicability for an unknown future type is not evidenced, so its windows
+# carry scope_id None and raw provider type text never becomes a scope.
+_CAPACITY_SCOPE_ID = "coding_plan"
 
 # Adapter evidence allowlist of observed plan labels (docs/poc-evidence.md).
 # A future evidenced tier extends this mapping deliberately; arbitrary
@@ -135,14 +157,14 @@ def _window_identity_id(type_token: str, unit: object, number: object) -> str:
     """Deterministic safe window ID from validated identity fields only.
 
     The fixed ``type_token`` plus two bounded components always satisfies the
-    v2 safe-ID grammar and 64-character limit. No array index, raw JSON or
+    safe-ID grammar and 64-character limit. No array index, raw JSON or
     provider free-text participates in the ID.
     """
     return f"{type_token}-{_identity_part(unit)}-{_identity_part(number)}"
 
 
 def _canonical_from_epoch_ms(value: object) -> str | None:
-    """Convert a 13-digit epoch-millisecond integer to canonical v2 UTC.
+    """Convert a 13-digit epoch-millisecond integer to canonical UTC.
 
     Only the evidenced representation is accepted: an integer (not bool),
     positive, within the 13-digit millisecond band. Values that look like
@@ -180,7 +202,7 @@ def _failure(
     retrieved_at: str,
 ) -> CapacitySnapshot:
     return CapacitySnapshot(
-        schema_version=2,
+        schema_version=SCHEMA_VERSION,
         provider=PROVIDER,
         source=SOURCE,
         retrieved_at=retrieved_at,
@@ -202,14 +224,17 @@ def _parse_limit(
     if limit_type == _TOKENS_LIMIT:
         resource = "tokens"
         type_token = "tokens_limit"
+        scope_id: str | None = _CAPACITY_SCOPE_ID
     elif limit_type == _TIME_LIMIT:
         resource = "time"
         type_token = "time_limit"
+        scope_id = _CAPACITY_SCOPE_ID
     else:
         # A structurally valid window with an unevidenced type is preserved
         # without guessing semantics. Its percentage/reset semantics are not
         # validated for this type, so both facts are omitted with explicit
-        # diagnostics, and no window_id is derived from arbitrary text.
+        # diagnostics, no window_id is derived from arbitrary text, and the
+        # scope stays unknown (never the raw provider type).
         return (
             CapacityWindow(resource="unknown", kind="unknown"),
             [
@@ -256,6 +281,7 @@ def _parse_limit(
     window = CapacityWindow(
         resource=resource,
         kind=kind,
+        scope_id=scope_id,
         duration_seconds=duration_seconds,
         used_percent=used_percent,
         remaining_percent=remaining_percent,
@@ -270,11 +296,11 @@ def parse_zai_quota_response(
     *,
     retrieved_at: str,
 ) -> CapacitySnapshot:
-    """Normalize one decoded Z.ai quota response into a v2 snapshot.
+    """Normalize one decoded Z.ai quota response into a v3 snapshot.
 
     ``payload`` must already be decoded (e.g. by the caller's HTTP layer);
     this function performs no I/O and does not call the clock. ``retrieved_at``
-    must be the canonical v2 UTC string and is validated by the snapshot
+    must be the canonical UTC string and is validated by the snapshot
     constructor.
 
     Failures degrade safely to a documented status with an empty windows
@@ -323,7 +349,7 @@ def parse_zai_quota_response(
         diagnostics.extend(window_diagnostics)
 
     return CapacitySnapshot(
-        schema_version=2,
+        schema_version=SCHEMA_VERSION,
         provider=PROVIDER,
         source=SOURCE,
         retrieved_at=retrieved_at,

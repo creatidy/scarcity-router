@@ -101,7 +101,7 @@ class KnownWindowsFixture(unittest.TestCase):
             _load("quota-200-known-windows.json"), retrieved_at=RETRIEVED_AT
         )
         self.assertEqual(snap.status, "ok")
-        self.assertEqual(snap.schema_version, 2)
+        self.assertEqual(snap.schema_version, 3)
         self.assertEqual(snap.provider, "zai")
         self.assertEqual(snap.source, "zai_usage_endpoint")
         self.assertEqual(snap.plan, "pro")
@@ -225,7 +225,7 @@ class DegradedValuesFixture(unittest.TestCase):
         self.assertIn(("percentage_unknown", "tokens_limit-6-1"), scoped)
         self.assertIn(("reset_unknown", "tokens_limit-6-1"), scoped)
         self.assertNotIn(("percentage_unknown", "tokens_limit-3-5"), scoped)
-        # The degraded snapshot must still be a valid v2 snapshot.
+        # The degraded snapshot must still be a valid v3 snapshot.
         reparsed = CapacitySnapshot.from_dict(snap.to_dict())
         self.assertEqual(reparsed, snap)
 
@@ -448,6 +448,8 @@ class MalformedLimitStructure(unittest.TestCase):
                 self.assertIsNone(w.resets_at)
                 # No window_id is invented from arbitrary type text.
                 self.assertIsNone(w.window_id)
+                # An unevidenced type has no evidenced scope either.
+                self.assertIsNone(w.scope_id)
                 self.assertEqual(
                     _codes(snap),
                     {"window_semantics_unknown", "percentage_unknown", "reset_unknown"},
@@ -610,6 +612,92 @@ class PlanNormalization(unittest.TestCase):
         self.assertIsNone(snap.plan)
 
 
+class SemanticScopes(unittest.TestCase):
+    """V3 semantic capacity-scope emission (D-020, D-023).
+
+    Every evidenced Coding Plan limit window carries the adapter-owned
+    ``coding_plan`` scope — including a known type whose ``(unit, number)``
+    period is unrecognized — while an unevidenced limit type keeps an
+    unknown scope (``None``) and its raw type text never becomes a scope.
+    """
+
+    def test_known_five_hour_token_limit_scope(self) -> None:
+        snap = parse_zai_quota_response(
+            _load("quota-200-known-windows.json"), retrieved_at=RETRIEVED_AT
+        )
+        five_hour = _windows(snap, resource="tokens", kind="five_hour")
+        self.assertEqual(len(five_hour), 1)
+        self.assertEqual(five_hour[0].scope_id, "coding_plan")
+
+    def test_known_weekly_token_limit_scope(self) -> None:
+        snap = parse_zai_quota_response(
+            _load("quota-200-known-windows.json"), retrieved_at=RETRIEVED_AT
+        )
+        weekly = _windows(snap, resource="tokens", kind="weekly")
+        self.assertEqual(len(weekly), 1)
+        self.assertEqual(weekly[0].scope_id, "coding_plan")
+
+    def test_known_windows_share_one_semantic_scope(self) -> None:
+        # The five-hour and weekly periods are two windows of the same
+        # semantic Coding Plan scope.
+        snap = parse_zai_quota_response(
+            _load("quota-200-known-windows.json"), retrieved_at=RETRIEVED_AT
+        )
+        self.assertEqual({w.scope_id for w in snap.windows}, {"coding_plan"})
+
+    def test_time_limit_carries_coding_plan_scope(self) -> None:
+        payload = _limits_payload(
+            [
+                {
+                    "type": "TIME_LIMIT",
+                    "unit": 5,
+                    "number": 1,
+                    "percentage": 0,
+                    "nextResetTime": 1788300000000,
+                },
+            ]
+        )
+        snap = parse_zai_quota_response(payload, retrieved_at=RETRIEVED_AT)
+        time_windows = _windows(snap, resource="time", kind="unknown")
+        self.assertEqual(len(time_windows), 1)
+        self.assertEqual(time_windows[0].scope_id, "coding_plan")
+
+    def test_known_type_with_unknown_period_keeps_scope(self) -> None:
+        # Scope applicability and period semantics are independent: a known
+        # TOKENS_LIMIT with an unrecognized (unit, number) still belongs to
+        # the evidenced Coding Plan scope.
+        payload = _limits_payload([_token_limit(7, 1, 10)])
+        snap = parse_zai_quota_response(payload, retrieved_at=RETRIEVED_AT)
+        w = snap.windows[0]
+        self.assertEqual((w.resource, w.kind), ("tokens", "unknown"))
+        self.assertIsNone(w.duration_seconds)
+        self.assertEqual(w.scope_id, "coding_plan")
+
+    def test_unevidenced_type_has_unknown_scope(self) -> None:
+        # Applicability of an unknown future limit type is not evidenced:
+        # scope stays None and the raw provider type text never leaks.
+        payload = _limits_payload(
+            [{"type": "CREDITS_LIMIT", "percentage": 5, "nextResetTime": 1788000000000}]
+        )
+        snap = parse_zai_quota_response(payload, retrieved_at=RETRIEVED_AT)
+        w = snap.windows[0]
+        self.assertIsNone(w.scope_id)
+        self.assertNotIn("CREDITS_LIMIT", _canonical_json(snap))
+
+    def test_scope_serializes_top_level_not_in_provider_metadata(self) -> None:
+        snap = parse_zai_quota_response(
+            _load("quota-200-known-windows.json"), retrieved_at=RETRIEVED_AT
+        )
+        entries = cast("list[object]", snap.to_dict()["windows"])
+        for entry in entries:
+            window = cast("dict[str, object]", entry)
+            self.assertEqual(window.get("scope_id"), "coding_plan")
+            metadata = window.get("provider_metadata")
+            if metadata is not None:
+                metadata_map = cast("dict[str, object]", metadata)
+                self.assertNotIn("scope_id", metadata_map)
+
+
 class TimeLimitNormalization(unittest.TestCase):
     def test_time_limit_is_a_distinct_non_token_window(self) -> None:
         limits: list[object] = [
@@ -656,7 +744,7 @@ class PurityAndDeterminism(unittest.TestCase):
                 payload, retrieved_at="2026-09-01T22:49:51Z"
             )
 
-    def test_snapshot_validates_through_v2_contract(self) -> None:
+    def test_snapshot_validates_through_v3_contract(self) -> None:
         for name in (
             "quota-200-known-windows.json",
             "quota-200-unknown-window.json",

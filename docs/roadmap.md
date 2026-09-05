@@ -28,6 +28,18 @@ contract and the staged implementation sequence below are frozen in
 documentation (D-020, D-021, D-022). Selector implementation must not begin
 before the M2a capacity-applicability slice exists.
 
+**M2a complete (2026-09-06).** The first M2 implementation slice is done:
+capacity contract v3 (D-023) adds the normalized semantic
+`CapacityWindow.scope_id`, both providers emit validated scope identities
+(OpenAI: the validated `limitId` per snapshot/bucket; Z.ai: `coding_plan`
+for evidenced limit types), `window_id` remains diagnostic-only, and no
+core/consumer code infers scope from identifiers. Live structural
+acceptance in the owner's environment returned `schema_version = 3` /
+`ok` for both providers with per-window semantic scopes and distinct
+additional OpenAI scopes (structural facts only; no personal values or
+non-public bucket identifiers recorded). No model-to-scope bindings, catalog
+types, ratings or selector code exist yet.
+
 ## M0 — Repository foundation
 
 **Outcome:** A new contributor or agent can understand the product and begin M1
@@ -222,13 +234,14 @@ belongs to the implementation slices.
 
 Implementation proceeds in small, deterministic slices:
 
-- **M2a — normalized capacity applicability.** Implement the semantic
-  capacity-scope contract/version from D-020 (`CapacityWindow.scope_id` or an
-  equivalently minimal explicit normalized scope construct). No selector.
-- **M2b — TaskRequirement and ModelCatalog core types.** Capability scale,
-  task-requirement validation, hard constraints, profile-expansion contract,
-  model-catalog schema/provenance and capacity-binding fields. Still no
-  scarcity selector.
+- **M2a — normalized capacity applicability (complete 2026-09-06).**
+  Implemented the semantic capacity-scope contract/version from D-020:
+  capacity contract v3 with `CapacityWindow.scope_id` (D-023). No selector.
+- **M2b — TaskRequirement and ModelCatalog core types.** The next
+  implementation slice: capability scale, task-requirement validation, hard
+  constraints, profile-expansion contract, model-catalog schema/provenance
+  and capacity-binding fields (binding catalog models to the v3 scope
+  identities). Still no scarcity selector.
 - **M2c — curated initial ratings and profile calibration.** Populate only
   Luna, Sol, GLM-5.3 and GLM-5.3-Flash with explicit provenance; freeze
   profile minima through scenario tests (resolves U-006).

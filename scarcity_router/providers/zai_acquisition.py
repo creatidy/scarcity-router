@@ -36,7 +36,7 @@ Security contract (docs/security.md):
 - the credential never enters exceptions, diagnostics, logs or the returned
   snapshot, and this module emits no stdout/stderr output.
 
-Expected operational conditions normalize to safe v2 snapshots
+Expected operational conditions normalize to safe v3 snapshots
 (docs/capacity-model.md): an unusable or ambiguous credential source and
 HTTP 401 map to ``auth_required``; a received success response whose body
 cannot satisfy the validated contract maps to ``schema_changed``;
@@ -63,7 +63,7 @@ from http.client import HTTPException, HTTPMessage
 from pathlib import Path
 from typing import IO, cast, override
 
-from ..capacity import CapacityDiagnostic, CapacitySnapshot
+from ..capacity import SCHEMA_VERSION, CapacityDiagnostic, CapacitySnapshot
 from .zai import PROVIDER, SOURCE, parse_zai_quota_response
 
 # Evidenced default Kilo auth location (docs/poc-evidence.md).
@@ -297,7 +297,7 @@ def _snapshot(
 ) -> CapacitySnapshot:
     """Safe failure snapshot; carries only allowlisted safe identifiers."""
     return CapacitySnapshot(
-        schema_version=2,
+        schema_version=SCHEMA_VERSION,
         provider=PROVIDER,
         source=SOURCE,
         retrieved_at=retrieved_at,
