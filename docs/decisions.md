@@ -275,8 +275,8 @@ direction was chosen. Dates use UTC.
 - Select the supported local calls for health, model presence and effective
   configuration; distinguish configured from effective context.
 - Evidence needed: a local PoC against the actual Qwen configuration.
-- **Status:** Narrowly resolved for M1 (2026-09-04, hardened same day
-  after review); residuals below
+- **Status:** Superseded for transport implementation by U-005a; inspection
+  semantics remain narrowly resolved for M1 (2026-09-04); residuals below
 - **Decision:** The local collector makes at most three read-only GETs
   against one explicitly configured local endpoint — two when the validated
   listing proves the configured model absent. The endpoint is
@@ -284,10 +284,8 @@ direction was chosen. Dates use UTC.
   loopback hosts `127.0.0.1` or `::1` (`localhost` and every other name
   are rejected outright, so no DNS/hosts-file/proxy escape path exists);
   the omitted port canonically defaults to the documented Ollama port
-  11434, never an implicit socket default; explicitly empty port syntax,
-  empty query/fragment delimiters, whitespace/control characters and non-root paths are
-  rejected; proxies are disabled for the connection and redirects are
-  never followed; at most one attempt per read. The reads are
+  11434; explicitly empty port syntax, query/fragment delimiters,
+  whitespace/control characters and non-root paths are rejected. The reads are
   `GET /api/version` (validated envelope with a usable, bounded,
   printable version string — control, format and padding code points
   rejected — = the reachability fact),
@@ -307,47 +305,18 @@ direction was chosen. Dates use UTC.
   rather than attributing it to an unverifiable model image; the digest is
   never emitted. The effective context is never taken from the configured
   value and never from the `/api/tags` `details.context_length` model-file
-  metadata. Every response body first passes strict HTTP framing validation:
-  a declared `Content-Length` must be fully satisfied, conflicting
-  length/transfer headers and every `Transfer-Encoding` (including chunked)
-  fail closed. It then decodes under a strict JSON
-  contract (duplicate object keys at any depth, NaN/Infinity constants and
-  non-finite floats such as `1e10000`, integers outside the validated
-  signed 64-bit band, recursion-limit nesting and decoder resource failures
-  all normalize to
-  `schema_changed`), every transport result is narrowly
-  protocol-validated before use (integer HTTP status plus callable
-  `read`; body chunks must be `bytes`; a malformed response object or
-  contract-violating chunk degrades safely instead of raising), and one
-  monotonic collection deadline is enforced end to end:
-  direct numeric socket setup uses nonblocking connect readiness, and each
-  response exchange/body read runs inside a bounded non-daemon worker; the raw
-  socket is captured at connection setup (family and sockaddr built directly
-  from the validated numeric literal, so name resolution and DNS are
-  impossible) and stays valid across any
-  `Connection: close` ownership transfer to the response object. Cancellation
-  is synchronized with handle registration, so a late handle is cancelled
-  immediately. Every return or raise performs non-blocking operations on the
-  exact built-in raw socket and then joins the worker; the socket timeout
-  bounds production operations and the join proves termination. Foreign
-  handles are rejected during registration rather than inspected or invoked.
-  The collector never explicitly invokes response/connection closes, although
-  CPython response/file finalization may close its buffered file as the
-  response is released. The raw socket remains the resource cleanup guarantee.
-  A deadline expiring during the
-  listing or loaded-model read degrades the snapshot to `unknown` —
-  never a false `ok` — while preserving the already-validated
-  reachability/presence facts. Cleanup is redacted end
-  to end: provider-boundary failures can raise provider-controlled text without
-  it escaping; cancellation itself uses only direct built-in primitives and
-  retains no provider exception.
-  Expected response-operation failures — including provider-controlled
-  exception text — normalize to safe outcomes and are never propagated or
-  logged; internal framing/programming errors remain
-  distinguishable and are re-raised rather than swallowed. Error responses are
-  not read; raw-socket cleanup is used instead of explicit response/connection
-  close. Duplicate listed names and any malformed/drifted
-  body fail
+  metadata. Responses are handled by synchronous standard-library
+  `http.client.HTTPConnection` with a finite socket timeout and one bounded
+  body read; non-200 responses are not read, redirects are not followed and
+  each connection is closed in `finally`. Bodies then use strict JSON
+  decoding: duplicate object keys, NaN/Infinity, non-finite floats such as
+  `1e10000`, integers outside the validated signed 64-bit band, recursion-limit
+  nesting and decoder resource failures normalize to `schema_changed`.
+  Transport and response-shape failures normalize safely without retaining
+  exception text. The collector does not implement raw sockets, custom HTTP
+  framing, worker threads, cancellation or private response ownership rules;
+  those mechanisms are unnecessary for the frozen local M1 threat model.
+  Duplicate listed names and any malformed/drifted body fail
   closed; a healthy local runtime reports `windows: []` with no quota
   semantics. There is no generation, no model loading for inspection, no
   pull/delete and no runtime/config mutation.
@@ -364,6 +333,29 @@ direction was chosen. Dates use UTC.
   (c) the reconnaissance runtime was the installed `0.33.1`
   service, not the owner's loaded Qwen configuration, so load-state
   behavior of the real workflow remains to be observed in use.
+
+### U-005a — Bounded standard-library Ollama transport
+
+- **Status:** Accepted, 2026-09-05
+- **Supersedes:** U-005 transport details only; the endpoint, fixed-read and
+  normalized inspection semantics above remain authoritative.
+- **Decision:** Use synchronous `http.client.HTTPConnection` directly with the
+  validated numeric loopback host/port, a finite socket timeout, the fixed GET
+  paths, a simple maximum response-body bound, strict UTF-8/JSON decoding,
+  safe status/transport normalization and ordinary `finally` cleanup. Keep the
+  fake-connection contract tests and pure provider parsers; do not add a
+  generic transport abstraction.
+- **Reason:** M1 makes only local, read-only requests to one canonical numeric
+  loopback endpoint. The standard library already supplies HTTP request,
+  response parsing, timeout and connection lifecycle behavior. Reimplementing
+  socket connection readiness, HTTP framing, cancellation and worker
+  reclamation added complexity without improving the frozen M1 contract.
+- **Deferred risks:** A future requirement for a hard end-to-end collection
+  deadline, unusual peer framing policy, cancellation independent of socket
+  timeouts, or richer transport telemetry may require a new reviewed decision.
+  Slow or hostile local peers remain bounded per socket operation, not by a
+  custom collection-wide deadline. No live provider call is required to
+  validate this implementation choice.
 
 ### U-006 — Initial capability ratings and profile thresholds
 

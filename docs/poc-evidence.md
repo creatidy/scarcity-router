@@ -225,6 +225,16 @@ default local endpoint `http://127.0.0.1:11434`):
   resolution ever occurs — and canonicalizes an omitted port to the
   documented default 11434.
 
+The implementation uses a synchronous standard-library
+`http.client.HTTPConnection` with a finite socket timeout, a one-megabyte
+response-body bound, strict UTF-8/JSON decoding and `finally` cleanup. The
+collector does not add a raw-socket transport, custom HTTP framing, worker
+threads or cancellation state. This is an implementation simplification, not
+new provider evidence: the frozen M1 contract is local-only, fixed-path,
+read-only acquisition, and deferred risks include unusual HTTP peer behavior,
+slow or trickling responses beyond the socket timeout, and future transport
+requirements that the standard library does not expose safely.
+
 Recorded limitation: the effective-context evidence is validated in shape
 (envelope live, field name via the binary's serialization table) but the
 populated-value path is exercised only by synthetic fixtures until a

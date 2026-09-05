@@ -205,79 +205,35 @@ recorded in PoC evidence before being treated as confirmed.
 
 Status (M1): the collector is implemented and fixture-tested in
 `scarcity_router/providers/ollama.py` (pure parsers for the version probe,
-the model listing and the loaded-model listing) and
+model listing and loaded-model listing) and
 `scarcity_router/providers/ollama_acquisition.py`
-(`collect_ollama_capacity`): strict pre-I/O canonicalization of the
-explicit local
-endpoint (plain `http` on exactly the numeric loopback
-hosts `127.0.0.1` or `::1` only — `localhost` and every other name are
-rejected, and socket setup pins the address family with direct numeric
-sockaddr construction from the validated literal, so name resolution and
-DNS are impossible; the
-omitted port canonically defaults to 11434, never an implicit socket
-default; an explicitly empty port is rejected; empty query/fragment delimiters, whitespace and control
-characters are rejected; no LAN scanning, no internet access, no proxy
-routing, no redirects), a required explicit target model identity matching
-the v1 safe-ID grammar as a full string with no control characters (never
-a hard-coded default), and at most three fixed read-only GETs against the
-single canonical endpoint — two when the validated listing proves the
-configured model absent: `/api/version` (the reachability probe),
-`/api/tags` (exact-name model presence, with the listing's validated
-`sha256` digest as identity evidence; each entry's provider-supplied `name` and
-`model` must be printable safe-v1 identities and must match — conflicting or malformed identity fields are
-drift) and `/api/ps` (effective context,
-only from a validated positive integer `context_length` on the configured
-model's loaded entry whose validated digest agrees with the listing's — a
-missing, invalid or mismatched digest preserves the validated
-reachability/presence facts but degrades the telemetry to `unknown` and
-omits the effective context). Response bodies first pass strict HTTP framing
-validation: a declared `Content-Length` must be fully satisfied, conflicting
-length/transfer headers and every `Transfer-Encoding` (including chunked) fail
-closed. They then decode under a strict JSON contract (duplicate object keys at any depth, NaN/Infinity constants,
-non-finite floats such as `1e10000`, integers outside the validated
-signed 64-bit band, recursion-limit nesting and decoder resource failures all map to
-`schema_changed`), every transport result is narrowly protocol-validated
-before use (integer HTTP status plus callable `read`; body chunks must be
-`bytes`; a malformed response object or contract-violating chunk degrades
-safely instead of raising), and one monotonic collection deadline is
-enforced end to end: direct numeric socket setup uses nonblocking connect
-readiness, and each response exchange/body read executes inside a bounded
-non-daemon worker; the raw socket is captured at connection setup and stays valid across any
-`Connection: close` ownership transfer to the response object. Cancellation
-is synchronized with handle registration, so a handle registered after
-cancellation is cancelled immediately. Every return or raise performs
-non-blocking operations on the exact built-in raw socket and then joins the
-worker; the socket timeout bounds production operations and the join proves
-termination. Foreign handles are rejected during registration rather than
-inspected or invoked. The collector never explicitly invokes response or
-connection `close`, although CPython response/file finalization may close its
-buffered file as the response is released. The raw socket remains the resource
-cleanup guarantee. A deadline expiring during the listing or loaded-model
-read degrades the snapshot to `unknown` — never a false `ok` — while
-preserving the already-validated reachability/presence facts. Cleanup is
-redacted end to end: provider-boundary failures can raise provider-controlled
-text without it escaping; cancellation itself uses only direct built-in
-primitives and retains no provider exception.
-Expected response-operation failures — including provider-controlled exception
-text — normalize to safe outcomes and are never propagated or logged; internal
-framing/programming errors remain distinguishable and are re-raised rather
-than swallowed.
-Healthy local runtimes report `windows: []` with no quota
-semantics. The configured context is accepted only as an explicit
-configuration parameter and is never inferred; the effective context is
-never inferred from the configured value or from the listing's model-file
-metadata. Duplicate model names, non-object listing entries, malformed
-bodies and drifted envelopes fail closed
-(`schema_changed`/`unknown`/`unavailable` per the failure mapping in the
-module), `model_presence` stays `unknown` on runtime/listing failures,
-`/api/ps` supplemental failures preserve the tags-derived presence while
-omitting the effective context, and a runtime that explicitly lists its
-models without the configured target reports `missing`. Evidence and
-limitations: `docs/poc-evidence.md`
-("2026-09-04 M1 Ollama local runtime reconnaissance") — the populated
-effective-context path is synthetic-fixture-tested only until a naturally
-loaded model is observed, and the cross-version stability of
-`context_length` is explicitly unvalidated; live CLI/status integration
+(`collect_ollama_capacity`). It validates the explicit endpoint before I/O:
+plain `http` on exactly numeric loopback `127.0.0.1` or `::1` only,
+canonicalizing an omitted port to 11434 and rejecting names, unsafe ports,
+userinfo, query/fragment delimiters, whitespace, controls and non-root paths.
+It performs at most three fixed read-only GETs, or two when the validated
+listing proves the target absent: `/api/version`, `/api/tags` and conditional
+`/api/ps`. The transport is a synchronous standard-library
+`http.client.HTTPConnection` with a finite socket timeout, one bounded body
+read and `finally` cleanup. It does not use proxies or follow redirects; a
+non-200 response is normalized without reading its body. HTTP parsing and
+connection lifecycle are intentionally delegated to the standard library under
+the frozen local M1 threat model rather than reimplemented by the collector.
+
+Bodies use strict UTF-8/JSON decoding: duplicate keys, non-finite numbers,
+out-of-band integers, malformed JSON and decoder resource failures become
+`schema_changed`; oversized bodies and transport/response failures become safe
+degraded statuses. The pure parsers validate provider identities and digest
+shape. Effective context is accepted only from a positive `context_length` in
+`/api/ps` whose digest agrees with the validated `/api/tags` entry. Configured
+context comes only from explicit input, and tags model-file metadata is never
+used as effective context. Healthy local runtimes report `windows: []`; there
+are no quota, percentage, load, generation, pull, delete or runtime mutation
+semantics. Missing is reported only from a validated reachable listing, while
+supplemental `/api/ps` failures preserve validated presence and omit effective
+context. Safe snapshots and diagnostics never contain response bodies, headers,
+endpoint values, digests, paths or exception text. The populated effective-
+context path remains synthetic-fixture-tested, and live CLI/status integration
 is not implemented.
 
 ## Later providers
