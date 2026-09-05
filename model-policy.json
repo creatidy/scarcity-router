@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "policy_version": 1,
-  "updated_at": "2026-09-03",
+  "policy_version": 2,
+  "updated_at": "2026-09-05",
   "versioning": {
     "schema_version": {
       "meaning": "The machine-readable artifact shape.",
@@ -51,6 +51,63 @@
       "map a task level directly to a specific model",
       "treat a workflow exemplar as guaranteed capability"
     ]
+  },
+  "multi_agent_orchestration_policy": {
+    "bounded_by_default": true,
+    "implicit_unlimited_mode": false,
+    "human_escalation_on_budget_exhaustion": true,
+    "review_head_must_be_frozen": true,
+    "dependent_steps_are_serialized": true,
+    "final_verification_is_scoped": true,
+    "default_budgets": {
+      "max_initial_review_rounds": 1,
+      "max_remediation_rounds": 1,
+      "max_final_verification_rounds": 1,
+      "max_worker_retries": 1,
+      "max_wall_clock_minutes": 120
+    },
+    "finding_classes": [
+      "merge_blocker",
+      "defer"
+    ],
+    "stop_outcome": "stop_and_escalate_to_human",
+    "lifecycle": [
+      "implementation",
+      "independent_review",
+      "optional_single_remediation",
+      "final_verification",
+      "human_merge_gate"
+    ],
+    "review_head_policy": {
+      "worker_may_push_during_review": false,
+      "branch_change_invalidates_review": true,
+      "dependent_phases_must_not_run_concurrently": true
+    },
+    "threat_model_policy": {
+      "scope_and_threat_model_frozen_before_review": true,
+      "out_of_scope_concern": "defer",
+      "existing_global_security_invariant_violation": "merge_blocker"
+    },
+    "final_verification_scope": [
+      "verify_previous_merge_blockers",
+      "check_obvious_remediation_regressions"
+    ],
+    "final_verification_outcomes": {
+      "ready_to_merge": "stop",
+      "remaining_merge_blocker": "stop_and_escalate_to_human"
+    },
+    "new_final_verification_finding": "defer_unless_obvious_critical_correctness_or_security_regression",
+    "watchdogs": {
+      "expected_complexity_boundary_required": true,
+      "complexity_breach_action": "stop_and_escalate_to_human_for_architectural_triage",
+      "polling_is_not_progress": true,
+      "stalled_or_retrying_sessions_consume_retry_budget": true
+    },
+    "human_merge_gate": {
+      "workers_may_merge": false,
+      "reviewers_may_merge": false,
+      "orchestrators_may_merge_automatically": false
+    }
   },
   "capability_dimensions": [
     {
@@ -172,6 +229,16 @@
       "typical_workflow_roles": [
         "complex_synthesis"
       ],
+      "orchestration_governance": {
+        "requires": [
+          "explicit_execution_budget",
+          "explicit_stop_conditions",
+          "worker_reviewer_serialization",
+          "bounded_independent_review",
+          "human_escalation_when_budget_exhausted"
+        ],
+        "independence_does_not_expand_scope": true
+      },
       "task_level_guidance": {
         "levels": [
           "L2",
@@ -182,7 +249,9 @@
         "guidance": "Use when the main question is what is happening across the whole project, what should happen next and how to preserve intended structure and meaning."
       },
       "usage_guidance": [
-        "Do not treat this class as automatically superior for coding or scientific adjudication."
+        "Do not treat this class as automatically superior for coding or scientific adjudication.",
+        "Orchestration work requires an explicit execution budget, explicit stop conditions, worker/reviewer serialization, bounded independent review and human escalation when the budget is exhausted.",
+        "Independent specialist review is valuable precisely because it is independent, but independence does not imply recursive authority over task scope."
       ]
     },
     {

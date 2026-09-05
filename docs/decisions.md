@@ -144,6 +144,25 @@ direction was chosen. Dates use UTC.
   dimension; a dedicated orchestration/long-context quality dimension remains
   deferred. Numeric ratings and profile minima remain an M2 calibration task.
 
+### D-015 — Bounded multi-agent orchestration
+
+- **Status:** Accepted
+- **Date:** 2026-09-05
+- **Observed failure:** An unbounded review/fix feedback loop allowed an
+  independent reviewer and implementation worker to keep expanding the work.
+- **Why dangerous:** It consumes unbounded time, expands scope, grows
+  complexity, invalidates moving-head reviews and lets a reviewer optimize
+  correctness without an explicit cost function.
+- **Decision:** Every multi-agent or orchestrated task must declare an explicit
+  execution budget, review limits, frozen scope/threat model and stop
+  conditions before workers start. The default lifecycle is implementation,
+  independent review, at most one remediation, narrowly scoped final
+  verification and a human merge gate. Findings are `MERGE_BLOCKER` or
+  `DEFER`; only blockers can trigger remediation.
+- **Escalation:** Budget exhaustion, stalled progress after the retry budget or
+  a complexity-budget breach stops orchestration and escalates to a human.
+  Workers, reviewers and orchestrators never merge automatically.
+
 ## Unresolved decisions
 
 ### U-001 — Codex binary discovery and compatibility
