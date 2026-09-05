@@ -419,17 +419,63 @@ class _ResponseProtocol(Protocol):
 
 
 def open_connection(host: str, port: int, timeout: float) -> _ConnectionProtocol:
-    """Create one direct HTTP connection for a single fixed GET.
+    """Create one direct, connected HTTP connection for a single fixed GET.
 
     Direct by construction: ``http.client`` never consults environment
     proxies and never follows redirects — a 3xx is surfaced as a status,
-    not followed. ``timeout`` bounds each transport phase; the collection
-    deadline is enforced around it by the bounded worker, and closing the
-    connection is the cancellation path. Test seam: tests replace this
-    function with fake connection factories; no test contacts a runtime
-    or network.
+    not followed. The raw socket is created and connected here, inside the
+    phase timeout, and attached to the connection: the collector
+    immediately registers it as the cancellation handle, and that handle
+    stays valid even after ``Connection: close`` semantics transfer socket
+    ownership to the response object (our reference is independent of
+    ``HTTPResponse``/``HTTPConnection`` bookkeeping). ``shutdown``/
+    ``close`` on a raw socket are non-blocking syscalls, so deadline
+    cancellation never waits on a stuck close. Test seam: tests replace
+    this function with fake connection factories; no test contacts a
+    runtime or network.
     """
-    return HTTPConnection(host, port, timeout=timeout)
+    sock = socket.create_connection((host, port), timeout=timeout)
+    connection = HTTPConnection(host, port)
+    connection.sock = sock
+    return connection
+
+
+def _extract_socket_handle(connection: _ConnectionProtocol) -> object | None:
+    """Extract the raw socket cancellation handle, never raising.
+
+    The connection is an untrusted boundary object: a ``sock`` attribute
+    implemented as a raising descriptor must not leak exception text or
+    break the reclamation flow. ``None`` simply means no socket handle is
+    available and cancellation falls back to the worker's own cleanup.
+    """
+    try:
+        sock: object = getattr(connection, "sock", None)
+    except Exception:  # untrusted boundary: lookup failures stay contained
+        return None
+    return sock
+
+
+def _cancel_sockets(handles: list[object]) -> None:
+    """Cancel in-flight work through raw socket handles; never raises.
+
+    Only non-blocking syscalls are used (``shutdown`` then ``close``): a
+    stuck ``close`` implementation cannot delay the collection. Every
+    lookup and invocation is contained; double-cancellation is safe
+    (already-closed sockets raise ``OSError``, which is contained).
+    """
+    for handle in handles:
+        try:
+            shutdown = getattr(handle, "shutdown", None)
+            if callable(shutdown):
+                _ = shutdown(socket.SHUT_RDWR)
+        except Exception:  # already closed/cancelled: nothing to do
+            pass
+        try:
+            close = getattr(handle, "close", None)
+            if callable(close):
+                _ = close()
+        except Exception:  # deliberate best-effort cancel; see docstring
+            pass
 
 
 def _response_protocol_ok(response: object) -> bool:
@@ -473,51 +519,20 @@ def _close_discardable(response: object) -> None:
             pass
 
 
-def _cancel_transport(
-    connection: _ConnectionProtocol, response: object | None
-) -> None:
-    """Cancel one in-flight read; never raises, never leaks text.
-
-    The cancellation handle set deliberately spans the ownership transfer:
-    the raw socket (valid from connect until close, and ``shutdown`` hits
-    the protocol level so a blocked read through a duplicated file
-    descriptor unblocks even under ``Connection: close`` semantics), the
-    response object (which may own the socket file), and the connection.
-    Every step is idempotent and guarded: close paths can raise or be
-    called twice without deadlock or leaked exceptions.
-    """
-    sock: object = getattr(connection, "sock", None)
-    if sock is not None:
-        try:
-            shutdown: object = getattr(sock, "shutdown", None)
-            if callable(shutdown):
-                _ = shutdown(socket.SHUT_RDWR)
-        except Exception:  # already closed/cancelled: nothing to do
-            pass
-    _close_discardable(response)
-    try:
-        connection.close()
-    except Exception:  # deliberate best-effort cancel; see docstring
-        pass
-
-
 def _execute_read(
-    connection: _ConnectionProtocol,
-    path: str,
-    deadline: float,
-    handles: list[object],
+    connection: _ConnectionProtocol, path: str, deadline: float
 ) -> tuple[_CallOutcome, object]:
     """Run one full transport-plus-read phase against the deadline.
 
-    Executed only inside the bounded worker thread; newly produced
-    response objects are appended to ``handles`` so the collector's
-    cancellation routine can reach them even after socket ownership
-    transfers to the response (``Connection: close`` semantics). Each blocking phase is budgeted the remaining time (capped
-    at ``TIMEOUT_SECONDS``), the deadline is re-checked after every
-    blocking operation and again after EOF before the body is consumed,
-    chunks must be ``bytes``, and the connection is closed deterministically
-    on every exit path. ``ok`` payloads are raw body bytes, strictly
-    decoded by the caller. Outcome classes: ``transport_fail``
+    Executed only inside the bounded worker thread; the collector holds
+    the connection's raw socket (attached by ``open_connection``) as the
+    cancellation handle, which stays valid regardless of any socket
+    ownership transfer to the response object. Each blocking phase is
+    budgeted the remaining time (capped at ``TIMEOUT_SECONDS``), the
+    deadline is re-checked after every blocking operation and again after
+    EOF before the body is consumed, chunks must be ``bytes``, and the
+    connection is closed deterministically on every exit path. ``ok``
+    payloads are raw body bytes, strictly decoded by the caller. Outcome classes: ``transport_fail``
     (connection problem, deadline exceeded, or response-operation
     boundary anomaly — exception text is never inspected, retained or
     propagated), ``http_error`` (non-200 status, including declined
@@ -532,11 +547,6 @@ def _execute_read(
             "GET", path, headers={"Accept": "application/json"}
         )
         response = connection.getresponse()
-        # Register the response the moment it exists: with
-        # ``Connection: close`` responses the socket ownership transfers
-        # to the response object, so the collector's cancellation handle
-        # must include it, not just the connection.
-        handles.append(response)
         if not _response_protocol_ok(response):
             # A malformed transport result is a degraded outcome, never an
             # uncaught TypeError; anything closable is still closed.
@@ -613,8 +623,7 @@ def _read_call(
 
     results: list[tuple[_CallOutcome, object]] = []
     unexpected: list[Exception] = []
-    registered: list[_ConnectionProtocol] = []
-    response_handles: list[object] = []
+    registered_sockets: list[object] = []
 
     def _work() -> None:
         try:
@@ -625,10 +634,14 @@ def _read_call(
             connection = open_connection(
                 host, port, min(TIMEOUT_SECONDS, remaining)
             )
-            registered.append(connection)
-            outcome, payload = _execute_read(
-                connection, path, deadline, response_handles
-            )
+            # Register the raw socket the moment the (already connected)
+            # connection exists: the handle stays valid even after
+            # ``Connection: close`` semantics transfer ownership to the
+            # response object. Extraction is exception-contained.
+            socket_handle = _extract_socket_handle(connection)
+            if socket_handle is not None:
+                registered_sockets.append(socket_handle)
+            outcome, payload = _execute_read(connection, path, deadline)
             if outcome == "ok":
                 try:
                     payload = _decode_strict(cast("bytes", payload))
@@ -649,15 +662,15 @@ def _read_call(
     worker.start()
     worker.join(max(0.0, deadline - time.monotonic()))
     if worker.is_alive():
-        # Deadline exceeded: cancel through every handle that remains
-        # valid — the raw socket, the response (which may own the socket
-        # under ``Connection: close``) and the connection — then reclaim
-        # the worker with a bounded join. Its result, if any, is discarded
-        # and never observed.
-        connection = registered[-1] if registered else None
-        response = response_handles[-1] if response_handles else None
-        if connection is not None:
-            _cancel_transport(connection, response)
+        # Deadline exceeded: cancel through the registered raw-socket
+        # handles using only non-blocking syscalls (``shutdown`` reaches
+        # the protocol level, so a blocked read unblocks even after
+        # ``Connection: close`` ownership transfer to the response
+        # object), then reclaim the worker with a bounded join. Its
+        # result, if any, is discarded and never observed; the response
+        # and connection closes run in the worker's own cleanup once
+        # unblocked, never on this thread.
+        _cancel_sockets(registered_sockets)
         worker.join(_CANCEL_JOIN_SECONDS)
         if worker.is_alive():
             # Invariant violation: a transport ignored the cancellation

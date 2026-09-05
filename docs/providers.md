@@ -234,13 +234,14 @@ before use (integer HTTP status plus callable `read`; body chunks must be
 `bytes`; a malformed response object or contract-violating chunk degrades
 safely instead of raising), and one monotonic collection deadline is
 enforced end to end and **cancellably**: each read executes inside a
-bounded non-daemon worker; at the deadline the collector cancels through
-every handle that remains valid — the raw socket (`shutdown` reaches the
-protocol level, so a blocked read unblocks even after `Connection: close`
-ownership transfer to the response object), the response, and the
-connection — and then proves the worker reclaimed with a bounded join,
-never returning while a worker could remain blocked (an unreclaimed
-worker raises as an internal error instead). A deadline expiring during
+bounded non-daemon worker; the raw socket is captured at connection
+setup and stays valid across any `Connection: close` ownership transfer
+to the response object; at the deadline the collector cancels through it
+using only non-blocking syscalls (`shutdown`, then `close` — never a
+possibly stuck response/connection close on the collector thread) and
+then proves the worker reclaimed with a bounded join, never returning
+while a worker could remain blocked (an unreclaimed worker raises as an
+internal error instead). A deadline expiring during
 the listing or loaded-model read degrades the snapshot to `unknown` —
 never a false `ok` — while preserving the already-validated
 reachability/presence facts. Cleanup is redacted end to end: close

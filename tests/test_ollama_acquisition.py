@@ -211,6 +211,33 @@ class _FakeRuntime:
         ]
 
 
+class _FakeSocket:
+    """Raw-socket stand-in: ``shutdown``/``close`` release the blocker.
+
+    Satisfies the seam contract that cancellation through the registered
+    socket handle unblocks any in-flight operation, exactly like closing
+    a real socket.
+    """
+
+    _release: threading.Event
+    shutdown_count: int
+    closed: bool
+
+    def __init__(self, release: threading.Event) -> None:
+        self._release = release
+        self.shutdown_count = 0
+        self.closed = False
+
+    def shutdown(self, how: int) -> None:
+        _ = how
+        self.shutdown_count += 1
+        _ = self._release.set()
+
+    def close(self) -> None:
+        self.closed = True
+        _ = self._release.set()
+
+
 def _healthy_runtime(
     *,
     tags: object = None,
@@ -1118,18 +1145,20 @@ class TagsDrift(_AcquisitionCase):
 
 
 class _BlockingGetResponseConnection:
-    """Connection whose ``getresponse`` blocks until ``close`` cancels it."""
+    """Connection whose ``getresponse`` blocks until cancellation."""
 
     requests: list[tuple[str, str, object]]
+    sock: _FakeSocket
     _release: threading.Event
     closed: bool
     close_count: int
 
     def __init__(self) -> None:
         self.requests = []
+        self._release = threading.Event()
+        self.sock = _FakeSocket(self._release)
         self.closed = False
         self.close_count = 0
-        self._release = threading.Event()
 
     def request(
         self, method: str, path: str, /, *, headers: object = None
@@ -1151,30 +1180,31 @@ class _BlockedReaderResponse:
     """200 response whose single ``read`` blocks until cancellation."""
 
     status: int = 200
-    _release: threading.Event
+    release: threading.Event
     closed: bool
 
     def __init__(self) -> None:
         self.closed = False
-        self._release = threading.Event()
+        self.release = threading.Event()
 
     def read(self, size: int = -1) -> object:
         _ = size
-        _ = self._release.wait(30.0)
+        _ = self.release.wait(30.0)
         raise OSError("connection closed by collector")
 
     def cancel(self) -> None:
         self.closed = True
-        _ = self._release.set()
+        _ = self.release.set()
 
     def close(self) -> None:
         self.cancel()
 
 
 class _BlockingReadConnection:
-    """Connection serving a body that blocks until ``close`` cancels it."""
+    """Connection serving a body that blocks until cancellation."""
 
     requests: list[tuple[str, str, object]]
+    sock: _FakeSocket
     response: _BlockedReaderResponse
     closed: bool
     close_count: int
@@ -1182,6 +1212,7 @@ class _BlockingReadConnection:
     def __init__(self) -> None:
         self.requests = []
         self.response = _BlockedReaderResponse()
+        self.sock = _FakeSocket(self.response.release)
         self.closed = False
         self.close_count = 0
 
@@ -1382,13 +1413,18 @@ class BoundedWorkerDeadline(_AcquisitionCase):
         release = threading.Event()
         block = self.BLOCK
 
+        release = threading.Event()
+        block = self.BLOCK
+
         class _DelayedEofConnection:
             requests: list[tuple[str, str, object]]
+            sock: _FakeSocket
             _first: bool
             closed: bool
 
             def __init__(self) -> None:
                 self.requests = []
+                self.sock = _FakeSocket(release)
                 self.closed = False
                 self._first = True
 
@@ -1416,7 +1452,7 @@ class BoundedWorkerDeadline(_AcquisitionCase):
 
             def close(self) -> None:
                 self.closed = True
-                release.set()
+                _ = release.set()
 
         factory = _Factory(_DelayedEofConnection)
         self._collect_bounded(factory)
@@ -1806,12 +1842,14 @@ class RealTransportCancellation(_AcquisitionCase):
 
         class _RaisingCloseEverything:
             requests: list[tuple[str, str, object]]
+            sock: _FakeSocket
             status: int = 200
             close_count: int
             closed: bool
 
             def __init__(self) -> None:
                 self.requests = []
+                self.sock = _FakeSocket(release)
                 self.close_count = 0
                 self.closed = False
 
@@ -1874,17 +1912,36 @@ class RealTransportCancellation(_AcquisitionCase):
 
 
 class TransportMechanism(unittest.TestCase):
-    def test_default_connection_is_direct_http_client(self) -> None:
-        # Construction only: HTTPConnection connects lazily, so this stays
-        # off the network. Direct-by-construction: no proxy parameter
-        # exists, and redirects are surfaced as statuses (tested elsewhere).
-        connection = ollama_acquisition.open_connection("127.0.0.1", 11434, 1.5)
-        self.assertIsInstance(connection, HTTPConnection)
-        real = cast("http.client.HTTPConnection", connection)
-        self.assertEqual(real.host, "127.0.0.1")
-        self.assertEqual(real.port, 11434)
-        self.assertEqual(real.timeout, 1.5)
-        real.close()
+    def test_seam_returns_connected_connection_with_socket_handle(self) -> None:
+        # The real seam pre-connects within the phase timeout and exposes
+        # the raw socket as the cancellation handle. Used only against a
+        # local in-process listener fixture, never a provider runtime.
+        version_body = b'{"version": "0.0.0"}'
+        listener = _OneShotListener(
+            b"HTTP/1.1 200 OK\r\n"
+            + b"Content-Length: "
+            + str(len(version_body)).encode()
+            + b"\r\n"
+            + b"Connection: close\r\n"
+            + b"\r\n"
+            + version_body
+        )
+        try:
+            connection = ollama_acquisition.open_connection(
+                "127.0.0.1", listener.port, 2.0
+            )
+            self.assertIsInstance(connection, HTTPConnection)
+            real = cast("http.client.HTTPConnection", connection)
+            self.assertEqual(real.host, "127.0.0.1")
+            self.assertEqual(real.port, listener.port)
+            handle = getattr(connection, "sock", None)
+            self.assertIsInstance(handle, socket.socket)
+            socket_handle = cast("socket.socket", handle)
+            peer = cast("object", socket_handle.getpeername())
+            self.assertTrue(peer is not None)
+            connection.close()
+        finally:
+            listener.close()
 
 
 
