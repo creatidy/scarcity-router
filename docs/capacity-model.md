@@ -171,6 +171,11 @@ When a safe provider window identifier exists, `provider_metadata` contains only
 raw response fragments, URLs, filesystem paths, arbitrary error text or other
 sensitive data. If no safe identifier exists, omit `provider_metadata`.
 
+Its string format — including any delimiters — carries no contract meaning.
+Consumers must not parse it or infer semantics, model applicability or scope
+membership from it; which capacity scopes apply to a model is explicit
+normalized data, never derived from `window_id` (D-020).
+
 An unknown window remains in `windows` with `resource` and/or `kind` set to
 `unknown`, even when no safe `window_id` exists. Unknown semantics are not
 silently discarded because known windows look healthy.
@@ -221,3 +226,45 @@ staleness policy. M2 decisions remain responsible for scarcity and selection.
 
 These cases are contract checks for provider adapter tests. They do not define
 selection or scarcity outcomes.
+
+## Planned M2a extension: semantic capacity scopes
+
+This section records a frozen planning decision (`docs/decisions.md` D-020).
+It is **not** part of v2: v2 remains frozen exactly as documented above, and
+no schema v3 is implemented by the planning change.
+
+M1 proved that one provider may expose multiple independent or shared capacity
+buckets (for OpenAI, `rateLimitsByLimitId`). A model may therefore be
+constrained by one or more capacity scopes simultaneously, and M2 must know
+which scopes apply to which candidate without guessing from diagnostic
+identifiers. The diagnostic `window_id` cannot legally serve as a semantic
+scope identifier, so the **first M2 implementation prerequisite** (slice M2a)
+is a new normalized capacity-contract version that adds an explicit semantic
+capacity-scope identifier. The expected conceptual direction is minimal:
+
+```text
+CapacityWindow.scope_id: safe string | absent/unknown
+```
+
+or an equivalently minimal explicit normalized scope construct, finalized in
+the M2a implementation PR. The planned semantics:
+
+- `(provider, scope_id)` identifies one normalized capacity scope.
+- Scope identity is provider-local, safe, non-secret and semantically
+  meaningful — unlike diagnostic `window_id`.
+- Multiple windows may belong to one scope; multiple models may share one
+  scope; one model may be subject to multiple scopes.
+- Where evidence exists, provider adapters construct scope information at the
+  provider edge from validated provider quota identity: for OpenAI, the
+  validated multi-bucket view (`rateLimitsByLimitId`) with `limitId`,
+  `limitName` and `normalModelSlug` (the normal model whose
+  presentation/reasoning options correspond to that quota alias); for Z.ai,
+  the known subscription windows share one provider-default scope unless
+  future evidence establishes otherwise.
+- Unknown model-to-scope applicability is never guessed: when applicability is
+  unknown, selection policy returns an explicit degraded or no-selection
+  result rather than choosing an optimistic quota (D-020, D-021).
+
+Documentation examples must use placeholder scope identifiers, never real
+provider or personal bucket IDs. Selector implementation must not begin
+before this semantic capacity-applicability contract exists.

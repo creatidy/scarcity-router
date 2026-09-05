@@ -307,6 +307,132 @@ direction was chosen. Dates use UTC.
   spend-control limits, buckets and unknown structured fields still fail
   closed, no supplemental values are exposed, and the schema stays v2.
 
+### D-020 — M2 selector inputs and capacity applicability
+
+- **Status:** Accepted
+- **Date:** 2026-09-05
+- **Decision:** M2 freezes the selector input contracts before any selector
+  implementation:
+  - **TaskRequirement** has exactly four parts: task level (`L0`–`L5`, not a
+    capability score and never a source of capability minima), explicit
+    per-dimension capability minima, typed hard constraints and single-place
+    profile expansion (shape frozen in `docs/capability-model.md`).
+  - **Capability ratings** use the frozen ordinal scale `1..5` with missing or
+    unknown represented separately (`UNKNOWN_CAPABILITY`); `0 = unknown` is
+    forbidden. Dimensions are never averaged. Whether unknown capability may
+    proceed is explicit policy, never silent.
+  - **Hard constraints** use the frozen nine-member vocabulary
+    (`minimum_input_context_tokens`, `minimum_output_tokens`,
+    `requires_tool_use`, `requires_vision`, `requires_reasoning_mode`,
+    `required_provider`, `required_model`, `required_variant`,
+    `privacy_constraint`). Contradictions fail validation; there is no
+    local/cloud constraint after D-017 and no free-form constraint framework.
+  - **Model catalog entries** carry stable provider/model/variant identity
+    separate from display names, quota buckets, provider aliases and model
+    class; supported hard properties; context/output allowances;
+    per-dimension ratings with provenance (source, source version/date,
+    assessment date, confidence, rationale); an explicit reviewable
+    human-override record; and capacity bindings. The initial catalog covers
+    only GPT-5.6 Luna, GPT-5.6 Sol, GLM-5.3 and GLM-5.3-Flash.
+  - **Capacity applicability.** M2 requires a provider-independent
+    `capacity scope` concept: `(provider, scope_id)` identifies one
+    normalized capacity scope, and a catalog model binds to one or more
+    scopes whose consumption all participate in capacity/scarcity
+    evaluation. No optimistic single-scope selection.
+  - **Schema consequence.** The v2 `window_id` is diagnostic and cannot
+    legally serve as a semantic scope identifier, so the first M2
+    implementation prerequisite (slice M2a) is a new normalized
+    capacity-contract version adding an explicit semantic capacity-scope
+    identifier (expected direction: `CapacityWindow.scope_id`, safe string or
+    explicitly absent/unknown). Selector implementation must not begin before
+    it exists.
+  - **Scarcity aggregation invariants** are frozen in
+    `docs/selection-policy.md`: only applicable scopes participate, all
+    relevant windows within an applicable scope participate, the most
+    restrictive result governs under `balanced`, and unknown applicability is
+    explicit. The penalty formula and label thresholds remain deliberately
+    unfrozen until scenario calibration (U-007).
+- **Reason:** M1 proved a provider may expose multiple independent or shared
+  capacity buckets (`rateLimitsByLimitId`), and consumers must not infer
+  semantics from diagnostic `window_id` strings. Applicability must be
+  explicit normalized data, never guessed from identifiers.
+- **Boundary:** This decision freezes contract shapes and sequencing only.
+  It populates no ratings, implements no schema v3, changes no production
+  capacity class and adds no selector code. Exact ratings and profile minima
+  remain U-006/M2c; scarcity parameters remain U-007.
+
+### D-021 — M2 evidence, policy and replenishment precedence
+
+- **Status:** Accepted
+- **Date:** 2026-09-05
+- **Decision:**
+  - **Deterministic precedence.** (1) Explicit configured user policy is
+    hard: a configured blackout excludes a candidate for eligibility even
+    when provider quota is healthy, reports `policy_blocked` (never
+    `unavailable`) and never rewrites provider telemetry. (2) Successful
+    direct normalized account capacity is authoritative for current quota; a
+    public status page never rewrites its percentages. (3) A provider-native
+    failure/high-traffic state tied to the supported access path may degrade
+    or exclude a candidate under explicit policy and never changes model
+    capability. (4) Official public service health is advisory: a green page
+    never fabricates quota and a red page does not automatically overwrite a
+    successful direct account observation; at most it contributes advisory
+    degraded confidence unless a later explicit policy says otherwise.
+    (5) External performance evidence such as Artificial Analysis influences
+    curated catalog assessment only — never live quota, never a blackout
+    bypass, never a live routing oracle.
+  - **Artificial Analysis boundary.** AA is offline/periodic catalog
+    evidence: not runtime capacity, not automatic truth, never called during
+    `select()`. A future cached snapshot must carry stable model ID, stable
+    creator ID, source/API version, retrieval time, metric identity/version,
+    attribution and the human-curated mapping into capability evidence, with
+    the API key kept server-side and outside the repository and agent
+    prompts. Responses are not stored merely because they are available;
+    only fields used by an explicit catalog assessment are retained.
+  - **Replenishment.** Reset credits are replenishment opportunities, not
+    current capacity. They never enter quota percentages, never pretend quota
+    is restored and are never consumed by the broker. The selector input is a
+    minimal safe `ReplenishmentState` (`provider`, `kind`, `available_count`,
+    `details_known`, optional safely derivable `earliest_expiry`,
+    `retrieved_at`). Provider free-text titles/descriptions are not exposed,
+    and opaque credit IDs are not required for selection unless a later use
+    case proves they are needed.
+- **Reason:** M1 established that supplemental provider state must not
+  invalidate or impersonate validated quota facts (D-019); selection applies
+  the same discipline across policy, telemetry and external evidence classes.
+- **Boundary:** Conceptual contracts and precedence only; no AA client, no
+  health collector and no replenishment code in the planning change.
+
+### D-022 — Bounded compound recommendation contract
+
+- **Status:** Accepted
+- **Date:** 2026-09-05
+- **Decision:** If M2 later recommends more than one model call, the
+  recommendation must carry a conceptual `ExecutionBudget` with at least
+  `max_total_model_calls`, `max_legs`, `max_review_rounds`,
+  `max_remediation_rounds`, `max_retries_per_leg` and `max_wall_clock_minutes`;
+  every value is a finite positive bounded integer where applicable and there
+  is no unlimited sentinel. A compound recommendation without a complete
+  valid execution budget is invalid. Initial structural expectations:
+  `single` is one solver leg; `cascade` is a first solver plus at most one
+  escalation leg; `critique` is one solver, one independent critic, at most
+  one remediation and at most one narrow final verification when explicitly
+  recommended. “Review/fix until clean” is never recommended. Expected
+  consumption is aggregated over every planned leg; when exact token cost is
+  unknown it is not invented — call counts and applicable capacity-scope
+  accounting remain explicit. Scarcity Router recommends this envelope;
+  execution and enforcement remain the external orchestrator's
+  responsibility.
+- **Reason:** This mirrors repository multi-agent governance (D-015) at the
+  product boundary, informed by HydraFusion's Copilot CLI Research Preview
+  patterns (bounded workflows, independent critique, complete resource
+  accounting, explicit escalation, no open-ended review/fix cycle) without
+  runtime coupling or imitation of its product surface (see
+  `docs/competitive-landscape.md`).
+- **Boundary:** Contract freeze only. No archetype or budget implementation
+  belongs to the planning change, and compound recommendations remain an
+  optional later M2 addition, not a blocker for single-model selection.
+
 ## Unresolved decisions
 
 ### U-001 — Codex binary discovery and compatibility
@@ -420,12 +546,18 @@ direction was chosen. Dates use UTC.
 - No exact model scores are accepted yet.
 - Evidence needed: documented benchmark/experience sources, dated model
   versions, confidence and owner review during M2.
+- **Status:** The rating contract, scale and provenance shape are frozen by
+  D-020, but no rating value is accepted. Populating Luna, Sol, GLM-5.3 and
+  GLM-5.3-Flash with provenance and freezing profile minima is the M2c slice.
 
 ### U-007 — Scarcity parameters and policy boundaries
 
 - Validate `(1-r)^2`, label thresholds, reservation boundary behavior and
   unknown ordering through scenario tests before M2 acceptance.
 - Reset proximity is preserved but not included in the first formula.
+- **Status:** Scarcity aggregation invariants are frozen by D-020; the
+  penalty function and label thresholds remain open for scenario calibration
+  (M2c/M2d).
 
 ### U-008 — Package, CLI and final project name
 

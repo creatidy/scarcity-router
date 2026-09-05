@@ -7,27 +7,35 @@ these projects evolve quickly.
 
 ## GitHub Project HydraFusion
 
-GitHub announced Project HydraFusion as a research-preview runtime orchestration
-layer in Copilot in September 2026. It chooses among `single`, cascade and
-critique execution patterns, can select models across providers, and optimizes a
-quality/cost/latency trade-off while actually executing the workflow.
+HydraFusion is now a GitHub Copilot CLI Research Preview. It chooses among
+`single`, `cascade` and `critique` execution patterns and can execute multiple
+underlying models, optimizing a quality/cost/latency trade-off while actually
+running the workflow.
 
 The strongest ideas to learn from are operational rather than branding:
 
 - selectivity: use a compound workflow only when it is expected to improve the
   result;
+- bounded workflows with explicit time/cancellation behavior;
+- independent critique: isolated read-only review rather than allowing the
+  critic to mutate the workspace it is judging;
 - complete accounting across drafting, critique, revision, escalation, retry
   and fallback rather than pricing only the first call;
-- bounded execution with explicit time/cancellation behavior;
-- isolated read-only review rather than allowing the critic to mutate the
-  workspace it is judging;
+- explicit escalation instead of automatic deeper recursion;
+- no open-ended review/fix cycle;
 - fail-safe application when a workflow is cancelled or validation fails;
 - validated workflow/model bindings and availability before execution;
 - recording role, outcome, cost, latency and diagnostics for every leg.
 
 HydraFusion is close enough to validate the broader market direction, but its
-product boundary is materially different. It is a prompt-executing Copilot
-runtime that constructs and runs multi-model workflows. Scarcity Router remains
+product boundary is materially different:
+
+> HydraFusion chooses and executes an optimal workflow.
+> Scarcity Router decides which scarce capable resource or bounded resource
+> plan should be spent, without executing model calls.
+
+It is a prompt-executing Copilot runtime that constructs and runs multi-model
+workflows. Scarcity Router remains
 an external recommendation/decision service whose differentiating inputs are:
 
 ```text
