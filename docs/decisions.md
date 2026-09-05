@@ -306,8 +306,11 @@ direction was chosen. Dates use UTC.
   rather than attributing it to an unverifiable model image; the digest is
   never emitted. The effective context is never taken from the configured
   value and never from the `/api/tags` `details.context_length` model-file
-  metadata. Every response body decodes under a strict JSON contract
-  (duplicate object keys at any depth, NaN/Infinity constants and
+  metadata. Every response body first passes strict HTTP framing validation:
+  a declared `Content-Length` must be fully satisfied, conflicting
+  length/transfer headers and unsupported transfer codings fail closed, and
+  truncated chunked bodies are rejected. It then decodes under a strict JSON
+  contract (duplicate object keys at any depth, NaN/Infinity constants and
   non-finite floats such as `1e10000`, integers outside the validated
   signed 64-bit band, recursion-limit nesting and decoder resource failures
   all normalize to

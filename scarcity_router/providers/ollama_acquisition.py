@@ -51,7 +51,10 @@ Security contract (docs/security.md):
   must be ``bytes``): a malformed response object or non-bytes chunk
   normalizes to the documented degraded statuses instead of an uncaught
   ``TypeError``, and no payload or path detail ever leaks;
-- every response body is read under a hard size bound; non-200 responses
+- every response body is read under validated HTTP framing and a hard size
+  bound; declared ``Content-Length`` must be fully satisfied, conflicting
+  framing and unsupported transfer codings fail closed, and a truncated
+  chunked body is never accepted; non-200 responses
   (including declined redirects and error statuses) are never read, and
   no response/connection ``close`` runs on the collector path — socket
   and file-descriptor resources are released through the registered raw
@@ -131,7 +134,7 @@ import threading
 import time
 import urllib.parse
 from collections.abc import Callable, Mapping
-from http.client import HTTPConnection, HTTPException
+from http.client import HTTPConnection, HTTPException, IncompleteRead
 from typing import Literal, Protocol, cast
 
 from ..capacity import (
@@ -188,6 +191,7 @@ _CallOutcome = Literal[
     "malformed",
     "invalid_response",
 ]
+_BodyFraming = Literal["content_length", "chunked", "eof"]
 
 
 class _AmbiguousJson(ValueError):
@@ -418,6 +422,8 @@ class _ResponseProtocol(Protocol):
 
     def read(self, size: int = -1, /) -> object: ...
 
+    def getheader(self, name: str, default: object = None, /) -> object: ...
+
 
 _MAX_VERSION_LENGTH = 128
 
@@ -534,6 +540,59 @@ def _response_protocol_ok(response: object) -> bool:
     )
 
 
+def _response_body_framing(
+    response: _ResponseProtocol,
+) -> tuple[_BodyFraming, int | None] | None:
+    """Validate the response framing headers before consuming its body.
+
+    ``http.client`` enforces a declared content length for its own reads, but
+    it does not make a short close-delimited body distinguishable from EOF to
+    this loop. Conflicting ``Content-Length``/``Transfer-Encoding`` headers,
+    repeated lengths with different values and unsupported transfer codings
+    are ambiguous and therefore fail closed. A response seam without
+    ``getheader`` remains the synthetic EOF-framed contract used by the unit
+    fakes; real HTTP responses expose the header reader.
+    """
+    getheader_object: object = getattr(response, "getheader", None)
+    if getheader_object is None:
+        return "eof", None
+    if not callable(getheader_object):
+        return None
+    getheader = cast("Callable[[str], object]", getheader_object)
+    content_length = getheader("Content-Length")
+    transfer_encoding = getheader("Transfer-Encoding")
+    if content_length is not None and not isinstance(content_length, str):
+        return None
+    if transfer_encoding is not None and not isinstance(transfer_encoding, str):
+        return None
+    if content_length is not None and transfer_encoding is not None:
+        return None
+    if transfer_encoding is not None:
+        codings = [part.strip(" \t").lower() for part in transfer_encoding.split(",")]
+        if codings != ["chunked"]:
+            return None
+        return "chunked", None
+    if content_length is not None:
+        values = [part.strip(" \t") for part in content_length.split(",")]
+        if not values or any(
+            not value
+            or any(character < "0" or character > "9" for character in value)
+            for value in values
+        ):
+            return None
+        if len(set(values)) != 1:
+            return None
+        length = int(values[0])
+        return "content_length", length
+    will_close = getattr(response, "will_close", None)
+    if will_close is not None and not isinstance(will_close, bool):
+        return None
+    if will_close is False:
+        # EOF is not a frame boundary on a reusable HTTP/1.1 connection.
+        return None
+    return "eof", None
+
+
 def _execute_read(
     connection: _ConnectionProtocol, path: str, deadline: float
 ) -> tuple[_CallOutcome, object]:
@@ -543,10 +602,13 @@ def _execute_read(
     the connection's raw socket (attached by ``open_connection``) as the
     cancellation handle, which stays valid regardless of any socket
     ownership transfer to the response object. Each blocking phase is
-    budgeted the remaining time (capped at ``TIMEOUT_SECONDS``), the
-    deadline is re-checked after every blocking operation and again after
-    EOF before the body is consumed, and chunks must be ``bytes``. ``ok``
-    payloads are raw body bytes, strictly decoded by the caller. Outcome
+    budgeted the remaining time (capped at ``TIMEOUT_SECONDS``). Response
+    framing is validated before body consumption: a declared
+    ``Content-Length`` must be completely read, only a single ``chunked``
+    transfer coding is accepted, and EOF is accepted only for an EOF-framed
+    response. The deadline is re-checked after every blocking operation and
+    again after EOF before the body is consumed, and chunks must be ``bytes``.
+    ``ok`` payloads are raw body bytes, strictly decoded by the caller. Outcome
     classes: ``transport_fail``
     (connection problem, deadline exceeded, or response-operation
     boundary anomaly — exception text is never inspected, retained or
@@ -578,26 +640,52 @@ def _execute_read(
             # Non-200 (including declined 3xx): the body is never read.
             return "http_error", None
 
+        framing = _response_body_framing(typed_response)
+        if framing is None:
+            return "malformed", None
+        _frame_kind, expected_length = framing
+        if expected_length is not None and expected_length > MAX_BODY_BYTES:
+            return "unreadable", None
+
         body = bytearray()
         while True:
             if deadline - time.monotonic() <= 0:
                 return "transport_fail", None
+            if expected_length is not None and len(body) == expected_length:
+                break
+            remaining = (
+                expected_length - len(body)
+                if expected_length is not None
+                else MAX_BODY_BYTES + 1 - len(body)
+            )
             chunk = typed_response.read(
-                min(READ_CHUNK_BYTES, MAX_BODY_BYTES + 1 - len(body))
+                min(READ_CHUNK_BYTES, remaining)
             )
             if not isinstance(chunk, bytes):
                 # Non-bytes chunk: the transport violated the response
                 # contract (e.g. a ``str``); degrade safely, never decode.
                 return "invalid_response", None
             if not chunk:
+                if expected_length is not None and len(body) != expected_length:
+                    # ``HTTPResponse.read(size)`` can turn an early socket EOF
+                    # into b"" instead of raising IncompleteRead.
+                    return "malformed", None
                 break
-            body.extend(chunk)
-            if len(body) > MAX_BODY_BYTES:
+            if len(chunk) > remaining:
+                return "malformed", None
+            if len(body) + len(chunk) > MAX_BODY_BYTES:
                 return "unreadable", None
+            body.extend(chunk)
+        if expected_length is not None and len(body) != expected_length:
+            return "malformed", None
         if deadline - time.monotonic() <= 0:
             # Delayed EOF must never smuggle a late body past the deadline.
             return "transport_fail", None
         return "ok", bytes(body)
+    except IncompleteRead:
+        # A truncated Content-Length or chunked body is framing drift, not a
+        # valid EOF and never reaches the strict JSON decoder.
+        return "malformed", None
     except (HTTPException, OSError):
         # BadStatusLine & co. derive from HTTPException; ConnectionError,
         # TimeoutError (socket.timeout) and cancellation-by-shutdown derive

@@ -30,7 +30,7 @@ import socket
 import threading
 import time
 import unittest
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from http.client import HTTPConnection, HTTPException
 from pathlib import Path
 from typing import cast, override
@@ -62,6 +62,36 @@ def _fixture(name: str) -> bytes:
     return (FIXTURES / name).read_bytes()
 
 
+def _http_response(
+    body: bytes,
+    *,
+    content_length: int | None = None,
+    chunked: bool = False,
+    extra: bytes = b"",
+) -> bytes:
+    """Build one synthetic HTTP response with explicit body framing."""
+    if chunked:
+        framing = (
+            f"{len(body):x}\r\n".encode()
+            + body
+            + b"\r\n0\r\n\r\n"
+        )
+        return (
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n"
+            + b"Connection: close\r\n\r\n"
+            + framing
+            + extra
+        )
+    declared = len(body) if content_length is None else content_length
+    return (
+        b"HTTP/1.1 200 OK\r\nContent-Length: "
+        + str(declared).encode()
+        + b"\r\nConnection: close\r\n\r\n"
+        + body
+        + extra
+    )
+
+
 def _serialized(snapshot: CapacitySnapshot) -> str:
     return json.dumps(snapshot.to_dict(), sort_keys=True) + repr(snapshot)
 
@@ -82,6 +112,7 @@ class _FakeHTTPResponse:
     _str_chunk_once: bool
     _chunk_delay: float | None
     _guard_read: bool
+    _headers: Mapping[str, object]
     guard_tripped: bool
     closed: bool
 
@@ -93,6 +124,7 @@ class _FakeHTTPResponse:
         str_chunk_once: bool = False,
         chunk_delay: float | None = None,
         guard_read: bool = False,
+        headers: Mapping[str, object] | None = None,
     ) -> None:
         self.status = status
         self._data = data
@@ -102,6 +134,7 @@ class _FakeHTTPResponse:
         self._chunk_delay = chunk_delay
         self.guard_tripped = False
         self._guard_read = guard_read
+        self._headers = {} if headers is None else headers
         self.closed = False
 
     def read(self, size: int = -1) -> object:
@@ -123,6 +156,9 @@ class _FakeHTTPResponse:
 
     def close(self) -> None:
         self.closed = True
+
+    def getheader(self, name: str, default: object = None) -> object:
+        return self._headers.get(name, default)
 
 
 class _TricklingBody:
@@ -2023,6 +2059,22 @@ class MalformedTransportResult(_AcquisitionCase):
         self.assertFalse(runtime.connections[0].closed)
         self._assert_no_output()
 
+    def test_ambiguous_response_framing_fails_closed(self) -> None:
+        for headers in (
+            {"Content-Length": "10", "Transfer-Encoding": "chunked"},
+            {"Content-Length": "10, 11"},
+            {"Transfer-Encoding": "gzip"},
+        ):
+            with self.subTest(headers=headers):
+                response = _FakeHTTPResponse(
+                    200, _fixture("version-ok.json"), headers=headers
+                )
+                _ = self._install(_healthy_runtime(version=response))
+                snapshot = self._collect()
+                self.assertEqual(snapshot.status, "schema_changed")
+                self.assertNotIn(FAKE_TRANSPORT_SECRET, _serialized(snapshot))
+                self._assert_no_collector_threads()
+
 
 # ═════════════ real-transport cancellation (http.client) ════════════════════
 
@@ -2084,13 +2136,17 @@ class _ScriptedListener:
     """
 
     _responses: list[bytes | None]
+    _close_after_send: bool
     _teardown: threading.Event
     _listener: socket.socket
     _thread: threading.Thread
     port: int
 
-    def __init__(self, responses: list[bytes | None]) -> None:
+    def __init__(
+        self, responses: list[bytes | None], close_after_send: bool = False
+    ) -> None:
         self._responses = responses
+        self._close_after_send = close_after_send
         self._teardown = threading.Event()
         self._listener = socket.socket()
         self._listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -2111,14 +2167,36 @@ class _ScriptedListener:
             # sequential collector reads are scripted while every held
             # connection stays open without EOF.
             thread = threading.Thread(
-                target=self._hold, args=(connection, respond), daemon=True
+                target=self._hold,
+                args=(connection, respond, self._close_after_send),
+                daemon=True,
             )
             thread.start()
 
-    def _hold(self, connection: socket.socket, respond: bytes | None) -> None:
+    def _hold(
+        self,
+        connection: socket.socket,
+        respond: bytes | None,
+        close_after_send: bool,
+    ) -> None:
         with connection:
+            if close_after_send:
+                # Drain the request before a graceful close; closing with an
+                # unread request can produce a reset instead of a FIN.
+                connection.settimeout(1.0)
+                request = b""
+                try:
+                    while b"\r\n\r\n" not in request:
+                        chunk = connection.recv(4096)
+                        if not chunk:
+                            return
+                        request += chunk
+                except OSError:
+                    return
             if respond is not None:
                 connection.sendall(respond)
+            if close_after_send:
+                return
             # Hold open (no EOF) until the test tears the listener down;
             # a mid-transfer reader stays blocked until cancellation.
             _ = self._teardown.wait(30.0)
@@ -2188,8 +2266,10 @@ class RealTransportCancellation(_AcquisitionCase):
         self._listeners.append(listener)
         return listener.port
 
-    def _start_scripted_listener(self, responses: list[bytes | None]) -> int:
-        listener = _ScriptedListener(responses)
+    def _start_scripted_listener(
+        self, responses: list[bytes | None], close_after_send: bool = False
+    ) -> int:
+        listener = _ScriptedListener(responses, close_after_send)
         self._listeners.append(listener)
         return listener.port
 
@@ -2264,6 +2344,79 @@ class RealTransportCancellation(_AcquisitionCase):
             ],
         )
         self._assert_reclaimed(elapsed)
+
+    def test_truncated_content_length_fails_closed_on_each_endpoint(self) -> None:
+        bodies = [
+            b'{"version": "0.0.0"}',
+            _fixture("tags-present.json"),
+            _fixture("ps-loaded.json"),
+        ]
+        paths = ["version", "tags", "ps"]
+        for failing_index, path in enumerate(paths):
+            with self.subTest(path=path):
+                responses: list[bytes | None] = [
+                    _http_response(body)
+                    for body in bodies[:failing_index]
+                ]
+                body = bodies[failing_index]
+                responses.append(
+                    _http_response(body, content_length=len(body) + 10)
+                )
+                port = self._start_scripted_listener(
+                    responses, close_after_send=True
+                )
+                snapshot = self._collect(endpoint=f"http://127.0.0.1:{port}")
+                self.assertEqual(snapshot.status, "schema_changed")
+                local = snapshot.local_runtime
+                assert local is not None
+                self.assertEqual(
+                    local.model_presence,
+                    {"version": "unknown", "tags": "unknown", "ps": "present"}[path],
+                )
+                self.assertNotIn(FAKE_RAW_FRAGMENT, _serialized(snapshot))
+                self._assert_reclaimed(0.0)
+
+    def test_complete_and_truncated_chunked_frames_are_distinguished(self) -> None:
+        version_body = b'{"version": "0.0.0"}'
+        missing_body = _fixture("tags-missing.json")
+        complete_port = self._start_scripted_listener(
+            [
+                _http_response(version_body, chunked=True),
+                _http_response(missing_body, chunked=True),
+            ],
+            close_after_send=True,
+        )
+        complete = self._collect(endpoint=f"http://127.0.0.1:{complete_port}")
+        self.assertEqual(complete.status, "unavailable")
+        complete_local = complete.local_runtime
+        assert complete_local is not None
+        self.assertEqual(complete_local.model_presence, "missing")
+        self._assert_reclaimed(0.0)
+
+        truncated = (
+            b"HTTP/1.1 200 OK\r\n"
+            + b"Transfer-Encoding: chunked\r\n"
+            + b"Connection: close\r\n\r\n"
+            + f"{len(version_body) + 10:x}\r\n".encode()
+            + version_body
+            + b"\r\n"
+        )
+        truncated_port = self._start_scripted_listener(
+            [truncated], close_after_send=True
+        )
+        rejected = self._collect(endpoint=f"http://127.0.0.1:{truncated_port}")
+        self.assertEqual(rejected.status, "schema_changed")
+        self._assert_reclaimed(0.0)
+
+    def test_extra_bytes_inside_declared_body_fail_json_validation(self) -> None:
+        version_body = b'{"version": "0.0.0"}EXTRA'
+        port = self._start_scripted_listener(
+            [_http_response(version_body)], close_after_send=True
+        )
+        snapshot = self._collect(endpoint=f"http://127.0.0.1:{port}")
+        self.assertEqual(snapshot.status, "schema_changed")
+        self.assertNotIn(b"EXTRA".decode(), _serialized(snapshot))
+        self._assert_reclaimed(0.0)
 
     def test_repeated_real_timeouts_keep_threads_stable(self) -> None:
         for round_number in range(3):
