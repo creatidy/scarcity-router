@@ -109,12 +109,15 @@ def parse_ollama_version_response(payload: object) -> bool:
     """Validate one decoded ``/api/version`` response.
 
     True only when the payload is an object carrying a **usable** string
-    ``version``: non-empty, no control characters, no surrounding
-    whitespace and bounded length. An empty, control-only or overlong
-    value is drift (False) — reachability is never validated by an
-    unusable identity, and the value is never echoed. Additive keys are
-    tolerated; anything else is drift: the endpoint answered but not with
-    the evidenced Ollama version contract.
+    ``version``: non-empty, bounded length, no surrounding whitespace and
+    entirely printable Unicode (``str.isprintable`` — this rejects ASCII
+    C0 controls, DEL, the C1 controls such as U+0085, format characters
+    such as U+FEFF, separators, surrogates and unassigned code points).
+    An empty, control-only, padding or overlong value is drift (False) —
+    reachability is never validated by an unusable identity, and the
+    value is never echoed. Additive keys are tolerated; anything else is
+    drift: the endpoint answered but not with the evidenced Ollama
+    version contract.
     """
     envelope = _as_mapping(payload)
     if envelope is None:
@@ -126,10 +129,7 @@ def parse_ollama_version_response(payload: object) -> bool:
         return False
     if version != version.strip():
         return False
-    return not any(
-        ord(character) < 0x20 or ord(character) == 0x7F
-        for character in version
-    )
+    return version.isprintable()
 
 
 def _listed_entries(

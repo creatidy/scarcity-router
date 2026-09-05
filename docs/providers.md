@@ -246,7 +246,11 @@ using only non-blocking syscalls (`shutdown`, then `close` — never a
 possibly stuck response/connection close on the collector thread) and
 then proves the worker reclaimed with a bounded join, never returning
 while a worker could remain blocked (an unreclaimed worker raises as an
-internal error instead). A deadline expiring during
+internal error instead). The worker itself never invokes
+response/connection closes — all socket and file-descriptor resources
+are released through non-blocking `shutdown`/`close` on the registered
+raw-socket handles alone, so no exit or exception path can wait
+indefinitely on hostile cleanup. A deadline expiring during
 the listing or loaded-model read degrades the snapshot to `unknown` —
 never a false `ok` — while preserving the already-validated
 reachability/presence facts. Cleanup is redacted end to end: close

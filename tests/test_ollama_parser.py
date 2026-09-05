@@ -62,6 +62,16 @@ class VersionProbe(unittest.TestCase):
             with self.subTest(bad=bad):
                 self.assertFalse(parse_ollama_version_response({"version": bad}))
 
+    def test_unicode_control_and_format_characters_are_drift(self) -> None:
+        # C1 controls (e.g. U+0085) and format characters (e.g. U+FEFF)
+        # are non-printable: they must fail the reachability validation
+        # exactly like ASCII controls. Values are never echoed.
+        for bad in ("0.0.0\u0085", "\u00850.0.0", "0.0.0\ufeff", "\u200b0.0.0"):
+            with self.subTest(bad=repr(bad)):
+                self.assertFalse(
+                    parse_ollama_version_response({"version": bad})
+                )
+
     def test_unusable_version_values_are_drift(self) -> None:
         # Empty, padding-only, control-bearing and overlong version
         # strings cannot validate reachability; the value is never echoed.

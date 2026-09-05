@@ -288,7 +288,9 @@ direction was chosen. Dates use UTC.
   delimiters, whitespace/control characters and non-root paths are
   rejected; proxies are disabled for the connection and redirects are
   never followed; at most one attempt per read. The reads are
-  `GET /api/version` (validated envelope = the reachability fact),
+  `GET /api/version` (validated envelope with a usable, bounded,
+  printable version string — control, format and padding code points
+  rejected — = the reachability fact),
   `GET /api/tags` (exact `name`-identity model presence) and
   `GET /api/ps` (effective context). `model_presence` is `missing` only
   when a reachable runtime's validated listing lacks the configured name,
@@ -322,7 +324,10 @@ direction was chosen. Dates use UTC.
   syscalls (`shutdown`, then `close` — never a possibly stuck
   response/connection close on the collector thread) and proves the
   worker reclaimed with a bounded join, raising instead of returning if
-  a worker could still be blocked. A deadline expiring during the
+  a worker could still be blocked. The worker itself never invokes
+  response/connection closes — socket and file-descriptor resources are
+  released exclusively through non-blocking `shutdown`/`close` on the
+  registered raw-socket handles. A deadline expiring during the
   listing or loaded-model read degrades the snapshot to `unknown` —
   never a false `ok` — while preserving the already-validated
   reachability/presence facts. Cleanup is redacted end

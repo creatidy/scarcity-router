@@ -247,6 +247,42 @@ class _FakeSocket:
         _ = self._release.set()
 
 
+class _RecordingCloseConnection:
+    """Connection serving healthy canned responses, recording closes."""
+
+    requests: list[tuple[str, str, object]]
+    sock: _FakeSocket
+    _release: threading.Event
+    status: int = 200
+    closed: bool
+    close_calls: int
+
+    def __init__(self) -> None:
+        self.requests = []
+        self._release = threading.Event()
+        self.sock = _FakeSocket(self._release)
+        self.closed = False
+        self.close_calls = 0
+
+    def request(
+        self, method: str, path: str, /, *, headers: object = None
+    ) -> None:
+        self.requests.append((method, path, headers))
+
+    def getresponse(self) -> object:
+        path = self.requests[-1][1]
+        bodies = {
+            "/api/version": _fixture("version-ok.json"),
+            "/api/tags": _fixture("tags-present.json"),
+            "/api/ps": _fixture("ps-loaded.json"),
+        }
+        return _FakeHTTPResponse(200, bodies[path])
+
+    def close(self) -> None:
+        self.close_calls += 1
+        self.closed = True
+
+
 def _healthy_runtime(
     *,
     tags: object = None,
@@ -328,6 +364,29 @@ class _AcquisitionCase(unittest.TestCase):
     ) -> None:
         self.assertEqual(
             [diagnostic.code for diagnostic in snapshot.diagnostics], expected
+        )
+
+    def _assert_no_collector_threads(self) -> None:
+        # The collector's own worker must be reclaimed (poll briefly for
+        # thread-system scheduling). Fixture listener hold-threads are
+        # irrelevant here; global thread/fd stability is asserted in
+        # RealTransportCancellation.tearDown once the fixtures are
+        # released.
+        wait_until = time.monotonic() + 2.0
+        while (
+            any(
+                thread.name == "scarcity-router-ollama-read"
+                for thread in threading.enumerate()
+            )
+            and time.monotonic() < wait_until
+        ):
+            time.sleep(0.01)
+        self.assertFalse(
+            any(
+                thread.name == "scarcity-router-ollama-read"
+                for thread in threading.enumerate()
+            ),
+            "collector worker must be reclaimed before returning",
         )
 
 
@@ -441,7 +500,7 @@ class ConnectionSetup(_AcquisitionCase):
         # The connect-phase socket handle was registered before connect and
         # cancelled through shutdown: the connect phase cannot outlive the
         # collection bound.
-        self.assertEqual(sockets[0].shutdown_count, 1)
+        self.assertGreaterEqual(sockets[0].shutdown_count, 1)
         self._assert_no_output()
 
     def test_delayed_connect_cancels_within_budget(self) -> None:
@@ -884,11 +943,10 @@ class HealthyRuntime(_AcquisitionCase):
             runtime.requested_paths(),
             ["/api/version", "/api/tags", "/api/ps"],
         )
-        # One fresh connection per read, each closed exactly once.
+        # One fresh connection per read; the connection close is never
+        # part of the collector path (the raw socket handle is released
+        # instead).
         self.assertEqual(len(runtime.connections), 3)
-        for connection in runtime.connections:
-            self.assertEqual(connection.close_count, 1)
-            self.assertTrue(connection.closed)
 
     def test_windows_empty_and_no_quota_semantics(self) -> None:
         _ = self._install(_healthy_runtime())
@@ -1167,11 +1225,12 @@ class ProbeDrift(_AcquisitionCase):
                 )
                 # Redirects are never followed: exactly one attempt.
                 self.assertEqual(runtime.requested_paths(), ["/api/version"])
-                # The non-200 body was never read; response and connection
-                # were both closed deterministically.
+                # The non-200 body was never read; the response close is
+                # never invoked on the collector path (the raw socket
+                # handle is released instead).
                 self.assertFalse(response.guard_tripped)
-                self.assertTrue(response.closed)
-                self.assertTrue(runtime.connections[0].closed)
+                self.assertFalse(response.closed)
+                self.assertFalse(runtime.connections[0].closed)
 
     def test_oversized_probe_maps_to_unknown(self) -> None:
         _ = self._install(
@@ -1198,6 +1257,8 @@ class ProbeDrift(_AcquisitionCase):
             _fixture("version-malformed.json"),
             b"not json at all",
             b'{"version": \xff}',
+            b'{"version": "0.0.0\\u0085"}',
+            b'{"version": "0.0.0\\ufeff"}',
             b"",
         ):
             with self.subTest(body=body[:20]):
@@ -1442,10 +1503,9 @@ class CollectionDeadline(_AcquisitionCase):
         # The abandoned worker closes the response as soon as its current
         # chunk returns and it re-checks the same deadline (bounded by one
         # chunk interval).
-        wait_until = time.monotonic() + 1.0
-        while not trickling.closed and time.monotonic() < wait_until:
-            time.sleep(0.01)
-        self.assertTrue(trickling.closed)
+        # The abandoned worker self-aborts against the same deadline; no
+        # collector worker remains and no close is ever invoked on it.
+        self._assert_no_collector_threads()
         self._assert_safe_serialization(snapshot)
 
     def test_trickling_tags_expiry_degrades_to_unknown(self) -> None:
@@ -1471,11 +1531,9 @@ class CollectionDeadline(_AcquisitionCase):
                 "configured_context_unknown",
             ],
         )
-        wait_until = time.monotonic() + 1.0
-        while not trickling.closed and time.monotonic() < wait_until:
-            time.sleep(0.01)
-        self.assertTrue(trickling.closed)
-
+        # The abandoned worker self-aborts against the same deadline; no
+        # collector worker remains and no close is ever invoked on it.
+        self._assert_no_collector_threads()
     def test_expired_deadline_makes_no_transport_calls(self) -> None:
         runtime = self._install(_healthy_runtime())
         with mock.patch.object(ollama_acquisition, "COLLECTION_DEADLINE_SECONDS", 0.0):
@@ -1529,13 +1587,14 @@ class BoundedWorkerDeadline(_AcquisitionCase):
 
     def test_permanently_blocking_getresponse_is_cancelled(self) -> None:
         # The collector must return by the deadline even when one transport
-        # call blocks forever: cancellation closes the connection, which
-        # unblocks the worker, which is then reclaimed (no daemon left).
+        # call blocks forever: cancellation shutdowns and closes the
+        # registered raw socket (which unblocks the worker), and the
+        # worker is reclaimed (no daemon left).
         factory = _Factory(_BlockingGetResponseConnection)
         self._collect_bounded(factory)
         connection = cast("_BlockingGetResponseConnection", factory.connections[0])
-        self.assertTrue(connection.closed)
-        self.assertGreaterEqual(connection.close_count, 1)
+        self.assertTrue(connection.sock.closed)
+        self.assertGreaterEqual(connection.sock.shutdown_count, 1)
         # The worker was reclaimed, not abandoned.
         time.sleep(self.GRACE)
         self.assertEqual(threading.active_count(), self._baseline_threads)
@@ -1544,8 +1603,9 @@ class BoundedWorkerDeadline(_AcquisitionCase):
         factory = _Factory(_BlockingReadConnection)
         self._collect_bounded(factory)
         connection = cast("_BlockingReadConnection", factory.connections[0])
-        self.assertTrue(connection.closed)
-        self.assertTrue(connection.response.closed)
+        self.assertTrue(connection.sock.closed)
+        self.assertGreaterEqual(connection.sock.shutdown_count, 1)
+        self.assertFalse(connection.response.closed)
         time.sleep(self.GRACE)
         self.assertEqual(threading.active_count(), self._baseline_threads)
 
@@ -1561,100 +1621,34 @@ class BoundedWorkerDeadline(_AcquisitionCase):
                 connection = cast(
                     "_BlockingGetResponseConnection", factory.connections[-1]
                 )
-                self.assertTrue(connection.closed)
-                time.sleep(self.GRACE)
-                self.assertEqual(
-                    threading.active_count(), self._baseline_threads
-                )
+                self.assertTrue(connection.sock.closed)
+                self.assertGreaterEqual(connection.sock.shutdown_count, 1)
+                self._assert_no_collector_threads()
         if baseline_fds is not None:
             self.assertLessEqual(len(list(proc_fd.iterdir())), baseline_fds + 2)
 
-    def test_permanent_close_fails_safe_within_bound(self) -> None:
-        # A transport whose close blocks forever cannot hold the
-        # collection: the deadline cancel unblocks the read, the bounded
-        # reclaim join expires, and the collector raises an internal
-        # error instead of returning with a live worker. The blocker is
-        # released afterwards so the fixture thread is reclaimed too.
-        release = threading.Event()
-        close_release = threading.Event()
+    def test_permanently_blocked_close_cannot_leak_worker(self) -> None:
+        # A transport whose close blocks forever is NEVER invoked on the
+        # collector path: the deadline cancel unblocks the read through
+        # the registered raw socket, the collection returns on time, and
+        # zero collector workers remain alive immediately — even before
+        # the hostile close blocker is ever released.
+        close_blocker = threading.Event()
 
         class _PermanentCloseConnection:
-            # The read unblocks via the registered socket (cancellation);
-            # the close blocks on a separate event that cancellation does
-            # not touch: a permanently stuck close must fail safe within
-            # the bound instead of hanging the collection.
-            requests: list[tuple[str, str, object]]
-            sock: _FakeSocket
-            status: int = 200
-            closed: bool
-
-            def __init__(self) -> None:
-                self.requests = []
-                self.sock = _FakeSocket(release)
-                self.closed = False
-
-            def request(
-                self, method: str, path: str, /, *, headers: object = None
-            ) -> None:
-                self.requests.append((method, path, headers))
-
-            def getresponse(self) -> object:
-                return self
-
-            def read(self, size: int = -1) -> object:
-                _ = size
-                if release.wait(30.0):
-                    raise OSError("connection cancelled by collector")
-                return _fixture("version-ok.json")
-
-            def close(self) -> None:
-                _ = close_release.wait(30.0)
-                self.closed = True
-
-        connection = _PermanentCloseConnection()
-        factory = _Factory(lambda: connection)
-        patcher = mock.patch.object(
-            ollama_acquisition, "open_connection", factory
-        )
-        _ = patcher.start()
-        self.addCleanup(patcher.stop)
-        with mock.patch.object(
-            ollama_acquisition, "COLLECTION_DEADLINE_SECONDS", self.BUDGET
-        ), contextlib.redirect_stdout(
-            self.stdout
-        ), contextlib.redirect_stderr(self.stderr):
-            with self.assertRaises(RuntimeError) as ctx:
-                _ = ollama_acquisition.collect_ollama_capacity(
-                    retrieved_at=RETRIEVED_AT, model_name=MODEL
-                )
-        self.assertNotIn(FAKE_TRANSPORT_SECRET, str(ctx.exception))
-        # Release the permanent close: the worker finishes and is
-        # reclaimed; the failure already failed safe within the bound.
-        _ = close_release.set()
-        time.sleep(self.GRACE)
-        self.assertFalse(
-            any(
-                thread.name == "scarcity-router-ollama-read"
-                for thread in threading.enumerate()
-            )
-        )
-
-    def test_slow_close_is_bounded(self) -> None:
-        # A close that finishes after the deadline is tolerated (bounded),
-        # the collection still returns the cancelled outcome on time, and
-        # the worker is reclaimed.
-        class _SlowCloseConnection:
             requests: list[tuple[str, str, object]]
             sock: _FakeSocket
             _release: threading.Event
             status: int = 200
             closed: bool
+            close_calls: int
 
             def __init__(self) -> None:
                 self.requests = []
                 self._release = threading.Event()
                 self.sock = _FakeSocket(self._release)
                 self.closed = False
+                self.close_calls = 0
 
             def request(
                 self, method: str, path: str, /, *, headers: object = None
@@ -1671,11 +1665,11 @@ class BoundedWorkerDeadline(_AcquisitionCase):
                 return _fixture("version-ok.json")
 
             def close(self) -> None:
-                if not self.closed:
-                    time.sleep(0.05)
+                self.close_calls += 1
+                _ = close_blocker.wait(30.0)
                 self.closed = True
 
-        connection = _SlowCloseConnection()
+        connection = _PermanentCloseConnection()
         factory = _Factory(lambda: connection)
         patcher = mock.patch.object(
             ollama_acquisition, "open_connection", factory
@@ -1692,9 +1686,26 @@ class BoundedWorkerDeadline(_AcquisitionCase):
                 retrieved_at=RETRIEVED_AT, model_name=MODEL
             )
         elapsed = time.monotonic() - started
+        self.assertLess(elapsed, self.BUDGET + 0.1)
         self.assertEqual(snapshot.status, "unavailable")
-        self.assertLess(elapsed, self.BUDGET + 0.2)
-        self.assertTrue(connection.closed)
+        local = snapshot.local_runtime
+        assert local is not None
+        self.assertFalse(local.reachable)
+        # The hostile close was never invoked on the collector path.
+        self.assertEqual(connection.close_calls, 0)
+        # The raw socket handle was shutdown and closed: fd released.
+        self.assertTrue(connection.sock.closed)
+        self.assertGreaterEqual(connection.sock.shutdown_count, 1)
+        # Zero collector workers immediately — before the blocker releases.
+        self.assertFalse(
+            any(
+                thread.name == "scarcity-router-ollama-read"
+                for thread in threading.enumerate()
+            )
+        )
+        self._assert_no_output()
+        # Fixture hygiene: release the blocker so its thread finishes.
+        _ = close_blocker.set()
         time.sleep(self.GRACE)
         self.assertFalse(
             any(
@@ -1702,6 +1713,26 @@ class BoundedWorkerDeadline(_AcquisitionCase):
                 for thread in threading.enumerate()
             )
         )
+
+    def test_close_never_invoked_on_collector_path(self) -> None:
+        # Resource release is owned by the registered raw-socket handles
+        # (non-blocking shutdown+close). Response/connection ``close`` is
+        # never part of the collector path — success included — so no
+        # hostile close can ever be reached.
+        connection = _RecordingCloseConnection()
+        factory = _Factory(lambda: connection)
+        patcher = mock.patch.object(
+            ollama_acquisition, "open_connection", factory
+        )
+        _ = patcher.start()
+        self.addCleanup(patcher.stop)
+        snapshot = self._collect(configured_context_tokens=8192)
+        self.assertEqual(snapshot.status, "ok")
+        local = snapshot.local_runtime
+        assert local is not None
+        self.assertEqual(local.effective_context_tokens, 16384)
+        self.assertEqual(connection.close_calls, 0)
+        self.assertFalse(connection.closed)
 
     def test_delayed_eof_after_deadline_fails_closed(self) -> None:
         # A fully valid body whose EOF only arrives after the deadline must
@@ -1797,8 +1828,8 @@ class MalformedTransportResult(_AcquisitionCase):
                 "configured_context_unknown",
             ],
         )
-        self.assertTrue(response.closed)
-        self.assertTrue(runtime.connections[0].closed)
+        self.assertFalse(response.closed)
+        self.assertFalse(runtime.connections[0].closed)
         self._assert_no_output()
 
     def test_invalid_response_object_on_probe_maps_to_unknown(self) -> None:
@@ -1900,8 +1931,8 @@ class MalformedTransportResult(_AcquisitionCase):
         snapshot = self._collect()
         self.assertEqual(snapshot.status, "unknown")
         self.assertFalse(guarded.guard_tripped)
-        self.assertTrue(guarded.closed)
-        self.assertTrue(runtime.connections[0].closed)
+        self.assertFalse(guarded.closed)
+        self.assertFalse(runtime.connections[0].closed)
         self._assert_no_output()
 
 
@@ -2079,27 +2110,6 @@ class RealTransportCancellation(_AcquisitionCase):
         self._assert_no_collector_threads()
         self._assert_no_output()
 
-    def _assert_no_collector_threads(self) -> None:
-        # The collector's own worker must be reclaimed. Fixture listener
-        # hold-threads are irrelevant here; global thread/fd stability is
-        # asserted in tearDown once the fixtures are released.
-        wait_until = time.monotonic() + 2.0
-        while (
-            any(
-                thread.name == "scarcity-router-ollama-read"
-                for thread in threading.enumerate()
-            )
-            and time.monotonic() < wait_until
-        ):
-            time.sleep(0.01)
-        self.assertFalse(
-            any(
-                thread.name == "scarcity-router-ollama-read"
-                for thread in threading.enumerate()
-            ),
-            "collector worker must be reclaimed before returning",
-        )
-
     def test_header_phase_block_cancels_and_reclaims(self) -> None:
         # The runtime accepts, then sends nothing and holds the connection
         # open: getresponse genuinely blocks reading the status line until
@@ -2252,10 +2262,9 @@ class RealTransportCancellation(_AcquisitionCase):
         self.assertNotIn(FAKE_TRANSPORT_SECRET, text)
         self._assert_no_output()
         self._assert_no_collector_threads()
-        # Multi-close: cancel (discardable + connection) and worker
-        # cleanup (discardable + connection) all attempted, each contained;
-        # no deadlock, no double-close failure.
-        self.assertGreaterEqual(connection.close_count, 2)
+        # The hostile close descriptor is never invoked on the collector
+        # path at all: resource release happens through the raw socket.
+        self.assertEqual(connection.close_count, 0)
 
 
 # ═══════════════════════ transport mechanism ═════════════════════════════════

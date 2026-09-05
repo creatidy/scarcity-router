@@ -536,27 +536,6 @@ def _response_protocol_ok(response: object) -> bool:
     )
 
 
-def _close_discardable(response: object) -> None:
-    """Best-effort close of a response object being discarded.
-
-    Used for protocol-invalid responses and for deterministic cleanup of
-    validated ones. Both the attribute lookup and the invocation run
-    inside the untrusted transport boundary: a ``close`` implemented as a
-    raising property/descriptor, or a close call that fails, must never
-    escape an exception (provider-controlled text included) or mask the
-    normalized outcome.
-    """
-    try:
-        close = getattr(response, "close", None)
-    except Exception:  # untrusted boundary: lookup failures stay contained
-        return
-    if callable(close):
-        try:
-            _ = close()
-        except Exception:  # deliberate best-effort close; see docstring
-            pass
-
-
 def _execute_read(
     connection: _ConnectionProtocol, path: str, deadline: float
 ) -> tuple[_CallOutcome, object]:
@@ -568,14 +547,20 @@ def _execute_read(
     ownership transfer to the response object. Each blocking phase is
     budgeted the remaining time (capped at ``TIMEOUT_SECONDS``), the
     deadline is re-checked after every blocking operation and again after
-    EOF before the body is consumed, chunks must be ``bytes``, and the
-    connection is closed deterministically on every exit path. ``ok``
-    payloads are raw body bytes, strictly decoded by the caller. Outcome classes: ``transport_fail``
+    EOF before the body is consumed, and chunks must be ``bytes``. ``ok``
+    payloads are raw body bytes, strictly decoded by the caller. Outcome
+    classes: ``transport_fail``
     (connection problem, deadline exceeded, or response-operation
     boundary anomaly — exception text is never inspected, retained or
     propagated), ``http_error`` (non-200 status, including declined
     redirects), ``unreadable`` (oversized body), ``invalid_response``
     (malformed response object or non-bytes chunk) and ``ok``.
+
+    Deliberately no ``response.close()``/``connection.close()`` runs on
+    any exit path (a hostile or stuck close could block the worker
+    forever): socket/file-descriptor resources are released exclusively
+    through the registered raw-socket handles by the collector's
+    non-blocking shutdown/close; see :func:`_cancel_sockets`.
     """
     response: object | None = None
     try:
@@ -587,8 +572,8 @@ def _execute_read(
         response = connection.getresponse()
         if not _response_protocol_ok(response):
             # A malformed transport result is a degraded outcome, never an
-            # uncaught TypeError; anything closable is still closed.
-            _close_discardable(response)
+            # uncaught TypeError; the raw socket is released by the
+            # collector's socket-handle cancellation.
             return "invalid_response", None
         typed_response = cast("_ResponseProtocol", response)
         if typed_response.status != 200:
@@ -625,15 +610,14 @@ def _execute_read(
         # transport, including provider-controlled exception text): mapped
         # to a safe normalized outcome, never propagated or logged.
         return "transport_fail", None
-    finally:
-        # Deterministic cleanup on every exit path, including abandonment:
-        # the response (if one was produced) and the connection itself.
-        # Both closes are idempotent and best-effort by design.
-        _close_discardable(response)
-        try:
-            connection.close()
-        except Exception:  # deliberate best-effort close; see docstring
-            pass
+    # Deliberately NO response/connection close on any exit path: a
+    # hostile or stuck close implementation could block this worker
+    # forever. All socket/fd resources are released by the collector
+    # through the registered raw-socket handles (non-blocking
+    # shutdown+close); the response/connection Python objects hold no
+    # resources of their own once the raw socket is closed and are
+    # reclaimed by GC.
+
 
 def _open_and_read(
     host: str,
@@ -725,36 +709,47 @@ def _read_call(
     worker = threading.Thread(
         target=_work, name="scarcity-router-ollama-read"
     )
-    worker.start()
-    worker.join(max(0.0, deadline - time.monotonic()))
-    if worker.is_alive():
-        # Deadline exceeded: cancel through the registered raw-socket
-        # handles using only non-blocking syscalls (``shutdown`` reaches
-        # the protocol level, so a blocked read unblocks even after
-        # ``Connection: close`` ownership transfer to the response
-        # object), then reclaim the worker with a bounded join. Its
-        # result, if any, is discarded and never observed; the response
-        # and connection closes run in the worker's own cleanup once
-        # unblocked, never on this thread.
-        _cancel_sockets(registered_sockets)
-        worker.join(_CANCEL_JOIN_SECONDS)
+    try:
+        worker.start()
+        worker.join(max(0.0, deadline - time.monotonic()))
         if worker.is_alive():
-            # Invariant violation: a transport ignored the cancellation
-            # contract. Never return with a live blocked worker; surface
-            # it as an internal error without transport exception text.
-            raise RuntimeError(
-                "internal error: read worker did not terminate after "
-                + "deadline cancellation"
-            )
+            # Deadline exceeded: cancel through the registered raw-socket
+            # handles using only non-blocking syscalls (``shutdown``
+            # reaches the protocol level, so a blocked connect or read
+            # unblocks even after ``Connection: close`` ownership transfer
+            # to the response object), then reclaim the worker with a
+            # bounded join. Its result, if any, is discarded and never
+            # observed.
+            _cancel_sockets(registered_sockets)
+            worker.join(_CANCEL_JOIN_SECONDS)
+            if worker.is_alive():
+                # Invariant violation: a transport ignored the
+                # cancellation contract. Never return with a live blocked
+                # worker; surface it as an internal error without
+                # transport exception text.
+                raise RuntimeError(
+                    "internal error: read worker did not terminate after "
+                    + "deadline cancellation"
+                )
+            return "transport_fail", None
+        if deadline - time.monotonic() <= 0:
+            # A completion that lands at or past the deadline fails closed.
+            return "transport_fail", None
+        if unexpected:
+            raise unexpected[0]
+        if results:
+            return results[0]
         return "transport_fail", None
-    if deadline - time.monotonic() <= 0:
-        # A completion that lands at or past the deadline fails closed.
-        return "transport_fail", None
-    if unexpected:
-        raise unexpected[0]
-    if results:
-        return results[0]
-    return "transport_fail", None
+    finally:
+        # Non-blocking socket reclamation on every path (success, failure,
+        # cancellation, re-raise): ``shutdown`` + ``close`` on the
+        # registered raw sockets release the actual socket/file-descriptor
+        # resources. Response/connection ``close`` implementations are
+        # never invoked on the collector path, so no worker exit or
+        # exception path can wait indefinitely on hostile cleanup; the
+        # worker is always joined (or the invariant raised) before this
+        # runs.
+        _cancel_sockets(registered_sockets)
 
 
 def _snapshot(
