@@ -19,12 +19,14 @@ Evidenced shapes (structure only; see poc-evidence.md):
 - ``GET /api/version`` -> ``{"version": "<string>"}``; additive keys are
   tolerated, a missing or non-string ``version`` is drift;
 - ``GET /api/tags`` -> ``{"models": [...]}``; every entry must be an object
-  with a safe v1 identity ``name`` and matching ``model``; a non-object entry,
-  malformed/control-bearing identity or a **duplicate** ``name`` is drift,
-  because duplicate identities make the presence answer ambiguous rather than
-  merely redundant;
+  with a safe bounded provider identity ``name`` and matching ``model``; a
+  non-object entry, malformed/control-bearing identity or a **duplicate**
+  ``name`` is drift, because duplicate identities make the presence answer
+  ambiguous rather than merely redundant. Ollama's supported namespace form
+  (for example ``namespace/model:tag``) is accepted here; only the configured
+  target is later emitted through the normalized v1 model-name boundary;
 - ``GET /api/ps`` -> ``{"models": [...]}``; every listed (loaded) entry must
-  be an object with a safe v1 identity ``name`` and a positive integer
+  be an object with a safe bounded provider identity ``name`` and a positive integer
   ``context_length`` within the validated signed 64-bit band (the
   runtime's effective context for that loaded model). A listed entry
   without a usable ``context_length`` is drift: effective context is
@@ -58,7 +60,11 @@ SOURCE = "ollama_local"
 # Anything else degrades that entry's identity evidence (``None``), rather
 # than drifting the whole listing or accepting an unverifiable image.
 _SAFE_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
-_SAFE_ID_RE = re.compile(r"[a-z0-9][a-z0-9._:-]{0,63}")
+# Ollama permits a namespace prefix in model identities (``namespace/name``).
+# These keys remain internal; the configured target and serialized model name
+# are still validated against the narrower v1 identifier grammar at the CLI
+# and acquisition boundaries.
+_SAFE_ID_RE = re.compile(r"[a-z0-9][a-z0-9._:/-]{0,63}")
 
 # A version string is identity evidence only when it is usable: a
 # non-empty, non-control, non-padding string of bounded length. Unusable
@@ -149,8 +155,8 @@ def _listed_entries(
     """Shared strict listing validation for ``/api/tags`` and ``/api/ps``.
 
     Validates the ``{"models": [...]}`` envelope and every entry's
-    identity fields: each entry must carry a printable safe-v1 ``name``
-    and a matching printable safe-v1 ``model`` (the evidenced contract
+    identity fields: each entry must carry a printable bounded provider ``name``
+    and a matching printable bounded provider ``model`` (the evidenced contract
     carries both, with ``model`` equal to ``name``). A missing, malformed,
     control-bearing or **conflicting** ``model`` identity is drift — accepting it could
     attribute presence or effective context to a different model image —

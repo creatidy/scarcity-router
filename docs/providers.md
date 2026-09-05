@@ -225,8 +225,10 @@ the frozen local M1 threat model rather than reimplemented by the collector.
 Bodies use strict UTF-8/JSON decoding: duplicate keys, non-finite numbers,
 out-of-band integers, malformed JSON and decoder resource failures become
 `schema_changed`; oversized bodies and transport/response failures become safe
-degraded statuses. The pure parsers validate provider identities and digest
-shape. Effective context is accepted only from a positive `context_length` in
+degraded statuses. The pure parsers validate bounded provider identities,
+including Ollama's supported namespaced inventory form, and digest shape. Only
+the already validated configured target crosses the narrower v1 model-name
+boundary. Effective context is accepted only from a positive `context_length` in
 `/api/ps` whose digest agrees with the validated `/api/tags` entry. Configured
 context comes only from explicit input, and tags model-file metadata is never
 used as effective context. Healthy local runtimes report `windows: []`; there

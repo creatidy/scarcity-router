@@ -28,6 +28,7 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures" / "ollama-local"
 
 TARGET = "test-model:latest"
 OTHER = "other-model:1b"
+NAMESPACED = "namespace/embedding-model:latest"
 DIGEST_ZERO = "sha256:" + "0" * 64
 DIGEST_ONE = "sha256:" + "1" * 64
 
@@ -132,6 +133,22 @@ class TagsListing(unittest.TestCase):
     def test_missing_fixture_still_validates(self) -> None:
         listed = parse_ollama_tags_response(_load("tags-missing.json"))
         self.assertEqual(listed, {OTHER: DIGEST_ONE})
+
+    def test_namespaced_provider_identity_is_supported(self) -> None:
+        payload = {
+            "models": [
+                {"name": TARGET, "model": TARGET, "digest": DIGEST_ZERO},
+                {
+                    "name": NAMESPACED,
+                    "model": NAMESPACED,
+                    "digest": DIGEST_ONE,
+                },
+            ]
+        }
+        self.assertEqual(
+            parse_ollama_tags_response(payload),
+            {TARGET: DIGEST_ZERO, NAMESPACED: DIGEST_ONE},
+        )
 
     def test_invalid_digest_degrades_without_drift(self) -> None:
         listed = parse_ollama_tags_response(_load("tags-invalid-digest.json"))

@@ -11,10 +11,10 @@ The core rule is simple:
 > **Choose the least scarce model that is capable enough for the task.**
 
 The project completed **M0: documentation and contract design** on 2026-09-01
-and is now in **M1: capacity collectors and normalized status**. The three
+and **M1: capacity collectors and normalized status** on 2026-09-05. The three
 read-only collectors and a provisional unified status command are implemented.
 There is not yet an installable package, final executable name, selector, REST
-service or MCP server.
+service or MCP server; M2 selection work has not started.
 
 ## Why it exists
 
@@ -223,8 +223,8 @@ Each topic has one primary source of truth:
   small CLI, a small HTTP layer and the official MCP SDK. This is not binding.
 
 See the [roadmap](docs/roadmap.md) before starting implementation. M0 was
-documentation-only and is complete. M1 remains current and stops at normalized
-status, not routing.
+documentation-only and M1 is complete at normalized status, not routing. M2
+selection remains unstarted.
 
 The portable descriptive model policy is available at
 [`model-policy.json`](model-policy.json). External consumers needing

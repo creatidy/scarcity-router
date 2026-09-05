@@ -341,8 +341,11 @@ direction was chosen. Dates use UTC.
   printable version string — control, format and padding code points
   rejected — = the reachability fact),
   `GET /api/tags` (exact `name`-identity model presence; every provider-supplied
-  `name`/`model` is a printable safe-v1 identity) and
-  `GET /api/ps` (effective context). `model_presence` is `missing` only
+  `name`/`model` is a bounded printable provider identity, including the
+  supported namespaced inventory form) and `GET /api/ps` (effective context).
+  The configured target is validated separately against the narrower v1 model
+  identifier grammar before I/O and is the only model identity emitted.
+  `model_presence` is `missing` only
   when a reachable runtime's validated listing lacks the configured name,
   and `unknown` on runtime/listing failures; `/api/ps` supplemental
   failures preserve the tags-derived presence while omitting the optional
@@ -375,6 +378,11 @@ direction was chosen. Dates use UTC.
   ("2026-09-04 M1 Ollama local runtime reconnaissance"): live envelope
   shapes for all three reads against Ollama `0.33.1` plus the installed
   binary's serialization table for the `context_length` field name.
+- **M1 update (2026-09-05):** Owner acceptance observed a valid unrelated
+  namespaced model identity in the live `/api/tags` inventory. The internal
+  listing parser accepts that bounded provider form so it does not obscure the
+  separately validated configured target; this does not change the v1 output
+  contract or permit arbitrary endpoint/path data.
 - **Residuals:** (a) a live **populated** effective-context value has not
   been observed (nothing was loaded during reconnaissance; loading solely
   for inspection is side-effectful and was not performed) — the populated

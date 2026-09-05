@@ -395,6 +395,29 @@ The working mechanisms did not require browser-cookie inspection or a model
 prompt. No actual credential value belongs in this repository, its history,
 fixtures, logs or documentation.
 
+### 2026-09-05 M1 owner workflow acceptance
+
+Bounded acceptance used the provisional `uv run python -m scarcity_router status`
+surface in human-readable and `--json` modes with explicit Ollama configuration
+against the owner's Linux local environment. No personal quota values, secret
+values, authentication-file contents, sensitive paths or raw provider payloads
+are recorded here.
+
+- OpenAI live normalized capacity observation: yes; the source returned an
+  explicit normalized degraded/unknown snapshot rather than guessed windows.
+- Z.ai live normalized capacity state observation: yes; known windows and the
+  currently depleted state were exposed without treating exhaustion as an auth
+  failure.
+- Ollama live reachability and configured-model presence observation: yes; the
+  configured context was reported independently and effective context remained
+  unknown because no model was loaded solely for inspection.
+- Human/JSON parity: pass; provider order, window presence and diagnostics
+  described the same observation.
+- Model prompt issued: no.
+- Secrets recorded: no.
+- Acceptance result: pass after one narrow parser compatibility fix for a
+  namespaced unrelated model identity in the live Ollama inventory.
+
 ## ASSUMED / NOT YET VALIDATED
 
 - The OpenAI app-server fields and method will remain compatible with a future

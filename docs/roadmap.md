@@ -7,14 +7,12 @@ earlier outcome is useful in the owner's workflow.
 ## Current status
 
 **M0 PASS (2026-09-01).** The M0 exit criteria have been audited and passed.
-**M1 is current.** The OpenAI/Codex, Z.ai and Ollama read-only collectors and
-the unified status surface are implemented. Synchronous status now performs a
-fresh collection with one shared observation timestamp, but no cache or stale
-threshold has been chosen. The remaining M1 work is owner workflow validation
-and the final integration audit. A separate `doctor` command is not currently
-an M1 blocker because status exposes normalized diagnostics; defer it unless
-normal use demonstrates a concrete gap. Do not start M2 selection
-implementation before M1 is useful in the owner's workflow.
+**M1 PASS (2026-09-05).** The OpenAI/Codex, Z.ai and Ollama read-only collectors
+and the unified status surface passed the owner's real local workflow
+acceptance. Synchronous status performs a fresh collection with one shared
+observation timestamp, preserves provider degradation explicitly, and reports
+local model presence without inventing quota. No cache or stale threshold has
+been chosen. M2 selection implementation remains separate and has not started.
 
 ## M0 — Repository foundation
 
@@ -91,19 +89,21 @@ Exit criteria:
 - [x] Provider operational failures remain status data and do not suppress
   other provider snapshots.
 - [x] No model request is issued by status collection.
-- [ ] Validate that the owner can replace routine dashboard checks with the
+- [x] Validate that the owner can replace routine dashboard checks with the
   provisional command in the real local workflow, without recording secrets or
   personal quota values.
 
-**M1 STATUS: NOT YET PASS**
+**M1 PASS (2026-09-05)**
 
-Remaining:
-
-- Perform the owner workflow acceptance check against the supported local Codex,
-  Kilo/Z.ai and explicitly configured Ollama environment.
-- Reassess the documented residuals and decide whether any narrow M1 evidence
-  or integration defect remains after that real use; do not add cache or stale
-  thresholds without a separate U-003 decision.
+The owner workflow acceptance and final residual audit are complete. The live
+status command exposed normalized OpenAI degradation when the account read did
+not provide quota telemetry, live Z.ai windows including its depleted state,
+and reachable/present Ollama facts with configured and effective context kept
+separate. Human and JSON views agreed, no model prompt was issued, and no
+M1-blocking residual remains. Sanitized live evidence is recorded in
+`docs/poc-evidence.md`; package naming, broader discovery, effective-context
+population, freshness policy, advisory health signals and M2 selection remain
+deferred under their existing roadmap and decision entries.
 
 ### Follow-up health signals after the core M1 status surface
 
