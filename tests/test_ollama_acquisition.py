@@ -25,6 +25,7 @@ import contextlib
 import http.client
 import io
 import json
+import socket
 import threading
 import time
 import unittest
@@ -1252,18 +1253,29 @@ class CollectionDeadline(_AcquisitionCase):
         self.assertTrue(trickling.closed)
         self._assert_safe_serialization(snapshot)
 
-    def test_trickling_tags_read_preserves_reachability(self) -> None:
+    def test_trickling_tags_expiry_degrades_to_unknown(self) -> None:
+        # Deadline expiry during the listing read must not be reported as
+        # ``unavailable`` (the probe validated reachability) nor as ``ok``:
+        # it degrades to ``unknown`` with validated facts preserved.
         trickling = _TricklingBody()
         _ = self._install(_healthy_runtime(tags=trickling))
         with mock.patch.object(
             ollama_acquisition, "COLLECTION_DEADLINE_SECONDS", 0.3
         ):
             snapshot = self._collect()
-        self.assertEqual(snapshot.status, "unavailable")
+        self.assertEqual(snapshot.status, "unknown")
         local = snapshot.local_runtime
         assert local is not None
         self.assertTrue(local.reachable)  # validated by the probe
         self.assertEqual(local.model_presence, "unknown")
+        self._assert_codes(
+            snapshot,
+            [
+                "telemetry_unknown",
+                "model_presence_unknown",
+                "configured_context_unknown",
+            ],
+        )
         wait_until = time.monotonic() + 1.0
         while not trickling.closed and time.monotonic() < wait_until:
             time.sleep(0.01)
@@ -1556,6 +1568,306 @@ class MalformedTransportResult(_AcquisitionCase):
         self.assertTrue(guarded.closed)
         self.assertTrue(runtime.connections[0].closed)
         self._assert_no_output()
+
+
+# ═════════════ real-transport cancellation (http.client) ════════════════════
+
+
+class _OneShotListener:
+    """Local TCP listener serving one canned response, then holding open.
+
+    Purely an in-process test fixture (loopback, no provider contact): the
+    socketpair-equivalent needed to exercise the real ``HTTPConnection``
+    cancellation paths, including the ``Connection: close`` ownership
+    transfer where the response object owns the socket file.
+    """
+
+    _respond: bytes | None
+    _listener: socket.socket
+    _thread: threading.Thread
+    port: int
+
+    def __init__(self, respond: bytes | None) -> None:
+        self._respond = respond
+        self._listener = socket.socket()
+        self._listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._listener.bind(("127.0.0.1", 0))
+        self._listener.listen(1)
+        self.port = self._listener.getsockname()[1]
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+        self._thread.start()
+
+    def _serve(self) -> None:
+        try:
+            accepted: tuple[socket.socket, object] = self._listener.accept()
+            connection = accepted[0]
+        except OSError:
+            return
+        with connection:
+            respond = self._respond
+            if respond is not None:
+                connection.sendall(respond)
+            # Hold the connection open (no EOF): a reader stays blocked
+            # until the collector cancels through the socket.
+
+    def close(self) -> None:
+        self._listener.close()
+
+
+class _ScriptedListener:
+    """Local TCP listener serving one canned response per connection.
+
+    Each accepted connection receives its scripted bytes (or nothing) and
+    is then held open without EOF, so the next collector read blocks.
+    """
+
+    _responses: list[bytes | None]
+    _teardown: threading.Event
+    _listener: socket.socket
+    _thread: threading.Thread
+    port: int
+
+    def __init__(self, responses: list[bytes | None]) -> None:
+        self._responses = responses
+        self._teardown = threading.Event()
+        self._listener = socket.socket()
+        self._listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._listener.bind(("127.0.0.1", 0))
+        self._listener.listen(1)
+        self.port = self._listener.getsockname()[1]
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+        self._thread.start()
+
+    def _serve(self) -> None:
+        for respond in self._responses:
+            try:
+                accepted: tuple[socket.socket, object] = self._listener.accept()
+                connection = accepted[0]
+            except OSError:
+                return
+            # Serve each connection on its own fixture thread so several
+            # sequential collector reads are scripted while every held
+            # connection stays open without EOF.
+            thread = threading.Thread(
+                target=self._hold, args=(connection, respond), daemon=True
+            )
+            thread.start()
+
+    def _hold(self, connection: socket.socket, respond: bytes | None) -> None:
+        with connection:
+            if respond is not None:
+                connection.sendall(respond)
+            # Hold open (no EOF) until the test tears the listener down;
+            # a mid-transfer reader stays blocked until cancellation.
+            _ = self._teardown.wait(30.0)
+
+    def close(self) -> None:
+        _ = self._teardown.set()
+        self._listener.close()
+
+
+class RealTransportCancellation(_AcquisitionCase):
+    """Cancellation proven against the real ``HTTPConnection``."""
+
+    BUDGET: float = 0.15
+    ELAPSED_LIMIT: float = 0.6
+    _listeners: list[_OneShotListener | _ScriptedListener]
+
+    def __init__(self, methodName: str = "runTest") -> None:
+        super().__init__(methodName)
+        self._listeners = []
+
+    @override
+    def setUp(self) -> None:
+        super().setUp()
+
+    @override
+    def tearDown(self) -> None:
+        for listener in self._listeners:
+            listener.close()
+        super().tearDown()
+
+    def _start_listener(self, respond: bytes | None) -> int:
+        listener = _OneShotListener(respond)
+        self._listeners.append(listener)
+        return listener.port
+
+    def _start_scripted_listener(self, responses: list[bytes | None]) -> int:
+        listener = _ScriptedListener(responses)
+        self._listeners.append(listener)
+        return listener.port
+
+    def _assert_reclaimed(self, elapsed: float) -> None:
+        self.assertLess(elapsed, self.ELAPSED_LIMIT)
+        self.assertFalse(
+            any(
+                thread.name == "scarcity-router-ollama-read"
+                for thread in threading.enumerate()
+            ),
+            "collector worker must be reclaimed before returning",
+        )
+        self._assert_no_output()
+
+    def test_header_phase_block_cancels_and_reclaims(self) -> None:
+        # The runtime accepts but sends nothing: getresponse blocks reading
+        # the status line. Cancellation must reach the connect/header phase
+        # socket and reclaim the (non-daemon) worker.
+        port = self._start_listener(None)
+        started = time.monotonic()
+        with mock.patch.object(
+            ollama_acquisition, "COLLECTION_DEADLINE_SECONDS", self.BUDGET
+        ):
+            snapshot = self._collect(endpoint=f"http://127.0.0.1:{port}")
+        elapsed = time.monotonic() - started
+        self.assertEqual(snapshot.status, "unavailable")
+        local = snapshot.local_runtime
+        assert local is not None
+        self.assertFalse(local.reachable)
+        self.assertEqual(local.model_presence, "unknown")
+        self._assert_reclaimed(elapsed)
+
+    def test_body_phase_block_with_connection_close_cancels(self) -> None:
+        # With ``Connection: close`` the socket file ownership transfers to
+        # the response object: the cancellation handle set must span the
+        # response and the raw socket, not just the connection. The probe
+        # completes against a scripted valid response; the listing body
+        # then blocks mid-transfer.
+        version_body = b'{"version": "0.0.0"}'
+        complete = (
+            b"HTTP/1.1 200 OK\r\n"
+            + b"Content-Length: "
+            + str(len(version_body)).encode()
+            + b"\r\n"
+            + b"Connection: close\r\n"
+            + b"\r\n"
+            + version_body
+        )
+        partial = (
+            b"HTTP/1.1 200 OK\r\n"
+            + b"Content-Length: 100\r\n"
+            + b"Connection: close\r\n"
+            + b"\r\n"
+            + b"AB"
+        )
+        port = self._start_scripted_listener([complete, partial, None])
+        started = time.monotonic()
+        with mock.patch.object(
+            ollama_acquisition, "COLLECTION_DEADLINE_SECONDS", self.BUDGET
+        ):
+            snapshot = self._collect(endpoint=f"http://127.0.0.1:{port}")
+        elapsed = time.monotonic() - started
+        self.assertEqual(snapshot.status, "unknown")
+        local = snapshot.local_runtime
+        assert local is not None
+        self.assertTrue(local.reachable)  # validated before the body block
+        self.assertEqual(local.model_presence, "unknown")
+        self._assert_codes(
+            snapshot,
+            [
+                "telemetry_unknown",
+                "model_presence_unknown",
+                "configured_context_unknown",
+            ],
+        )
+        self._assert_reclaimed(elapsed)
+
+    def test_repeated_real_timeouts_keep_threads_stable(self) -> None:
+        baseline_threads = threading.active_count()
+        baseline_fds: int | None = None
+        proc_fd = Path("/proc/self/fd")
+        if proc_fd.is_dir():
+            baseline_fds = len(list(proc_fd.iterdir()))
+        for round_number in range(3):
+            with self.subTest(round=round_number):
+                port = self._start_listener(None)
+                started = time.monotonic()
+                with mock.patch.object(
+                    ollama_acquisition, "COLLECTION_DEADLINE_SECONDS", self.BUDGET
+                ):
+                    snapshot = self._collect(endpoint=f"http://127.0.0.1:{port}")
+                elapsed = time.monotonic() - started
+                self.assertEqual(snapshot.status, "unavailable")
+                self.assertLess(elapsed, self.ELAPSED_LIMIT)
+                self.assertFalse(
+                    any(
+                        thread.name == "scarcity-router-ollama-read"
+                        for thread in threading.enumerate()
+                    )
+                )
+        self.assertEqual(threading.active_count(), baseline_threads)
+        if baseline_fds is not None:
+            self.assertLessEqual(len(list(proc_fd.iterdir())), baseline_fds + 4)
+
+    def test_stuck_close_paths_do_not_deadlock_or_leak(self) -> None:
+        # Closes that raise (and run twice: cancel + worker cleanup) must
+        # neither deadlock the bounded reclaim nor leak provider-controlled
+        # exception text.
+        release = threading.Event()
+
+        class _RaisingCloseEverything:
+            requests: list[tuple[str, str, object]]
+            status: int = 200
+            close_count: int
+            closed: bool
+
+            def __init__(self) -> None:
+                self.requests = []
+                self.close_count = 0
+                self.closed = False
+
+            def request(
+                self, method: str, path: str, /, *, headers: object = None
+            ) -> None:
+                self.requests.append((method, path, headers))
+
+            def getresponse(self) -> object:
+                return self
+
+            def read(self, size: int = -1) -> object:
+                _ = size
+                if release.wait(30.0):
+                    raise OSError("connection closed by collector")
+                return _fixture("version-ok.json")
+
+            @property
+            def close(self) -> Callable[[], None]:
+                # A hostile descriptor: attribute access performs the
+                # unblocking work first (like a real close), then raises
+                # with provider-controlled text. Cancellation must still
+                # succeed and contain the text.
+                self.closed = True
+                self.close_count += 1
+                _ = release.set()
+                raise RuntimeError(FAKE_TRANSPORT_SECRET)
+
+        connection = _RaisingCloseEverything()
+        factory = _Factory(lambda: connection)
+        patcher = mock.patch.object(
+            ollama_acquisition, "open_connection", factory
+        )
+        _ = patcher.start()
+        self.addCleanup(patcher.stop)
+        started = time.monotonic()
+        with mock.patch.object(
+            ollama_acquisition, "COLLECTION_DEADLINE_SECONDS", self.BUDGET
+        ), contextlib.redirect_stdout(
+            self.stdout
+        ), contextlib.redirect_stderr(self.stderr):
+            snapshot = ollama_acquisition.collect_ollama_capacity(
+                retrieved_at=RETRIEVED_AT, model_name=MODEL
+            )
+        elapsed = time.monotonic() - started
+        self.assertEqual(snapshot.status, "unavailable")
+        self.assertLess(elapsed, self.ELAPSED_LIMIT)
+        text = _serialized(snapshot)
+        self.assertNotIn(FAKE_TRANSPORT_SECRET, text)
+        self._assert_no_output()
+        time.sleep(0.3)
+        self.assertEqual(threading.active_count(), self._baseline_threads)
+        # Multi-close: cancel (discardable + connection) and worker
+        # cleanup (discardable + connection) all attempted, each contained;
+        # no deadlock, no double-close failure.
+        self.assertGreaterEqual(connection.close_count, 2)
 
 
 # ═══════════════════════ transport mechanism ═════════════════════════════════

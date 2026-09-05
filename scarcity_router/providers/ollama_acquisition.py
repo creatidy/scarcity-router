@@ -121,6 +121,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import socket
 import threading
 import time
 import urllib.parse
@@ -155,10 +156,13 @@ COLLECTION_DEADLINE_SECONDS = 15.0
 MAX_BODY_BYTES = 1024 * 1024
 READ_CHUNK_BYTES = 64 * 1024
 
-# After deadline cancellation (connection close), the abandoned worker
-# unblocks deterministically — real sockets raise immediately on close.
-# This bounded join reclaims the thread before the collection returns.
-_CANCEL_JOIN_SECONDS = 2.0
+# After deadline cancellation the abandoned worker unblocks
+# deterministically: response/body-phase blocks end immediately via socket
+# ``shutdown``; a connect-phase block is bounded by its own phase timeout
+# (at most ``TIMEOUT_SECONDS``). This bounded join — strictly larger than
+# the worst phase timeout — reclaims the thread before the collection
+# returns; exceeding it is an internal invariant violation.
+_CANCEL_JOIN_SECONDS = 6.0
 
 # The v1 safe-identifier grammar (docs/capacity-model.md). The capacity
 # module remains the single source of truth for the rule; this boundary
@@ -451,10 +455,17 @@ def _response_protocol_ok(response: object) -> bool:
 def _close_discardable(response: object) -> None:
     """Best-effort close of a response object being discarded.
 
-    Used for protocol-invalid responses that may still carry a callable
-    ``close``; a close failure never masks the normalized outcome.
+    Used for protocol-invalid responses and for deterministic cleanup of
+    validated ones. Both the attribute lookup and the invocation run
+    inside the untrusted transport boundary: a ``close`` implemented as a
+    raising property/descriptor, or a close call that fails, must never
+    escape an exception (provider-controlled text included) or mask the
+    normalized outcome.
     """
-    close = getattr(response, "close", None)
+    try:
+        close = getattr(response, "close", None)
+    except Exception:  # untrusted boundary: lookup failures stay contained
+        return
     if callable(close):
         try:
             _ = close()
@@ -462,14 +473,46 @@ def _close_discardable(response: object) -> None:
             pass
 
 
+def _cancel_transport(
+    connection: _ConnectionProtocol, response: object | None
+) -> None:
+    """Cancel one in-flight read; never raises, never leaks text.
+
+    The cancellation handle set deliberately spans the ownership transfer:
+    the raw socket (valid from connect until close, and ``shutdown`` hits
+    the protocol level so a blocked read through a duplicated file
+    descriptor unblocks even under ``Connection: close`` semantics), the
+    response object (which may own the socket file), and the connection.
+    Every step is idempotent and guarded: close paths can raise or be
+    called twice without deadlock or leaked exceptions.
+    """
+    sock: object = getattr(connection, "sock", None)
+    if sock is not None:
+        try:
+            shutdown: object = getattr(sock, "shutdown", None)
+            if callable(shutdown):
+                _ = shutdown(socket.SHUT_RDWR)
+        except Exception:  # already closed/cancelled: nothing to do
+            pass
+    _close_discardable(response)
+    try:
+        connection.close()
+    except Exception:  # deliberate best-effort cancel; see docstring
+        pass
+
+
 def _execute_read(
-    connection: _ConnectionProtocol, path: str, deadline: float
+    connection: _ConnectionProtocol,
+    path: str,
+    deadline: float,
+    handles: list[object],
 ) -> tuple[_CallOutcome, object]:
     """Run one full transport-plus-read phase against the deadline.
 
-    Executed only inside the bounded worker thread; ``connection.close()``
-    (the collector's cancellation primitive) unblocks any of its blocking
-    operations. Each blocking phase is budgeted the remaining time (capped
+    Executed only inside the bounded worker thread; newly produced
+    response objects are appended to ``handles`` so the collector's
+    cancellation routine can reach them even after socket ownership
+    transfers to the response (``Connection: close`` semantics). Each blocking phase is budgeted the remaining time (capped
     at ``TIMEOUT_SECONDS``), the deadline is re-checked after every
     blocking operation and again after EOF before the body is consumed,
     chunks must be ``bytes``, and the connection is closed deterministically
@@ -489,6 +532,11 @@ def _execute_read(
             "GET", path, headers={"Accept": "application/json"}
         )
         response = connection.getresponse()
+        # Register the response the moment it exists: with
+        # ``Connection: close`` responses the socket ownership transfers
+        # to the response object, so the collector's cancellation handle
+        # must include it, not just the connection.
+        handles.append(response)
         if not _response_protocol_ok(response):
             # A malformed transport result is a degraded outcome, never an
             # uncaught TypeError; anything closable is still closed.
@@ -544,18 +592,21 @@ def _read_call(
 ) -> tuple[_CallOutcome, object]:
     """Perform one deadline-bounded local read and classify the outcome.
 
-    The whole read runs inside a single bounded worker and the collector
-    waits at most the remaining time on it. On deadline the collector
-    closes the worker's connection — the cancellation primitive that
-    unblocks the worker — and joins it with a bounded grace, so no timeout
-    path returns while the worker can remain blocked and no connection or
-    thread is left behind (real sockets unblock deterministically on
-    close; the seam contract requires the same of fakes). The deadline is
-    re-checked before any worker result is consumed, so a completion that
-    lands at or past the deadline fails closed. Exception text is
-    deliberately never inspected, retained or propagated; a genuinely
-    unexpected internal worker error is re-raised in this thread so
-    programming errors are never swallowed or misreported as telemetry.
+    The whole read runs inside a single bounded **non-daemon** worker and
+    the collector waits at most the remaining time on it. On deadline the
+    collector cancels through every valid handle — the raw socket
+    (``shutdown`` reaches the protocol level, so a blocked read unblocks
+    even after ``Connection: close`` ownership transfer to the response),
+    the response object, and the connection — then joins the worker with
+    a bounded grace. The path does not return until the worker has been
+    proven reclaimed: if it were still alive after cancellation, that is
+    an internal invariant violation and raises instead of silently
+    returning with a leaked thread. The deadline is re-checked before any
+    worker result is consumed, so a completion that lands at or past the
+    deadline fails closed. Exception text is deliberately never inspected,
+    retained or propagated; a genuinely unexpected internal worker error
+    is re-raised in this thread so programming errors are never swallowed
+    or misreported as telemetry.
     """
     if deadline - time.monotonic() <= 0:
         return "transport_fail", None
@@ -563,6 +614,7 @@ def _read_call(
     results: list[tuple[_CallOutcome, object]] = []
     unexpected: list[Exception] = []
     registered: list[_ConnectionProtocol] = []
+    response_handles: list[object] = []
 
     def _work() -> None:
         try:
@@ -574,7 +626,9 @@ def _read_call(
                 host, port, min(TIMEOUT_SECONDS, remaining)
             )
             registered.append(connection)
-            outcome, payload = _execute_read(connection, path, deadline)
+            outcome, payload = _execute_read(
+                connection, path, deadline, response_handles
+            )
             if outcome == "ok":
                 try:
                     payload = _decode_strict(cast("bytes", payload))
@@ -590,20 +644,29 @@ def _read_call(
             unexpected.append(exc)
 
     worker = threading.Thread(
-        target=_work, name="scarcity-router-ollama-read", daemon=True
+        target=_work, name="scarcity-router-ollama-read"
     )
     worker.start()
     worker.join(max(0.0, deadline - time.monotonic()))
     if worker.is_alive():
-        # Deadline exceeded: cancel through the connection (close unblocks
-        # every in-flight operation) and reclaim the worker with a bounded
-        # join. Its result, if any, is discarded and never observed.
-        for connection in registered:
-            try:
-                connection.close()
-            except Exception:  # best-effort cancel; see docstring
-                pass
+        # Deadline exceeded: cancel through every handle that remains
+        # valid — the raw socket, the response (which may own the socket
+        # under ``Connection: close``) and the connection — then reclaim
+        # the worker with a bounded join. Its result, if any, is discarded
+        # and never observed.
+        connection = registered[-1] if registered else None
+        response = response_handles[-1] if response_handles else None
+        if connection is not None:
+            _cancel_transport(connection, response)
         worker.join(_CANCEL_JOIN_SECONDS)
+        if worker.is_alive():
+            # Invariant violation: a transport ignored the cancellation
+            # contract. Never return with a live blocked worker; surface
+            # it as an internal error without transport exception text.
+            raise RuntimeError(
+                "internal error: read worker did not terminate after "
+                + "deadline cancellation"
+            )
         return "transport_fail", None
     if deadline - time.monotonic() <= 0:
         # A completion that lands at or past the deadline fails closed.
@@ -739,11 +802,22 @@ def collect_ollama_capacity(
             effective_context_tokens=None,
         )
 
+    def _degrade_on_expiry(outcome: _CallOutcome, failure_status: str) -> str:
+        """Deadline expiry during a read is never misreported.
+
+        A shared-budget expiry after a validated phase must not claim the
+        source was merely unavailable: it degrades to ``unknown`` while
+        the already-validated facts stay in the snapshot.
+        """
+        if outcome == "transport_fail" and time.monotonic() >= deadline:
+            return "unknown"
+        return failure_status
+
     # 2. Model listing: presence from exact listed-name identity, with the
     # listing's digest as the identity evidence for the effective context.
     tags_outcome, tags_payload = _read_call(host, port, "/api/tags", deadline)
     if tags_outcome != "ok":
-        status = _map_call_outcome(tags_outcome)
+        status = _degrade_on_expiry(tags_outcome, _map_call_outcome(tags_outcome))
         return _snapshot(
             retrieved_at=retrieved_at,
             status=status,
@@ -807,6 +881,16 @@ def collect_ollama_capacity(
                 status = "unknown"
     elif ps_outcome == "malformed":
         status = "schema_changed"
+    else:
+        # Supplemental read failure: validated facts are preserved and
+        # only the optional effective context is unknown — but a deadline
+        # expiry during the read degrades the snapshot to ``unknown``
+        # instead of a clean ``ok``.
+        status = _degrade_on_expiry(ps_outcome, "ok")
+    if status == "ok" and time.monotonic() >= deadline:
+        # Final deadline check: no ok result may be produced after the
+        # collection budget has expired.
+        status = "unknown"
     return _snapshot(
         retrieved_at=retrieved_at,
         status=status,
