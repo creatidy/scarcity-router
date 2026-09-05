@@ -217,6 +217,69 @@ the one allowed live acceptance retry returned the same normalized
 `ok` in both acceptance runs. No model prompt was issued and no personal quota
 value was recorded.
 
+### 2026-09-05 stale-managed-auth discriminator and live recovery evidence
+
+The `-32603` error above was root-caused with one bounded structural
+discriminator session against the installed `codex-cli 0.151.0-alpha.7.2`
+app-server (no model request, no login, no credential inspection):
+
+- after the normal handshake, one official `account/read` request with the
+  installed version's documented `{"refreshToken": true}` params succeeded,
+  with the account still visible;
+- exactly one subsequent no-params `account/rateLimits/read` returned a real
+  quota result (a `primary` window structurally present; `secondary`
+  absent). Presence only — no values recorded;
+- tagged source (`rust-v0.151.0-alpha.7.2`, matching the installed binary)
+  confirms the mapping: the rate-limits handler answers `-32600` when auth is
+  missing or not ChatGPT-backed and `-32603` (`internal_error`) only when its
+  backend fetch fails after auth was found — and that path never refreshes
+  tokens. A successful `account/read(refreshToken=true)` response does not
+  itself expose the refresh outcome; the subsequent successful rate-limits
+  read is the recovery oracle.
+
+Classification: **stale managed auth confirmed** (the earlier terminal
+`PROVIDER_BACKEND` classification is superseded). The owner approved the
+bounded recovery as D-018; the generation/window compatibility rules built on
+this evidence are D-019.
+
+Post-implementation live acceptance (2026-09-05, sanitized structural facts
+only):
+
+- OpenAI live collection returned real normalized subscription windows
+  (schema v2): one main weekly window plus one additional limit bucket with
+  its own five-hour and weekly windows; reset instants were populated. The
+  limit-bucket identifier is an account/workspace identity and is not
+  recorded here;
+- the same response is the legacy generation (envelope without
+  `ordinaryUsageAllowed`) and carries blocker evidence: a present valid
+  `CreditsSnapshot` on the main quota and a `null` `spendControlReached`
+  inside the additional bucket. Under the conservative contract preserved by
+  D-019, the snapshot honestly degrades to `unknown` with percentage pairs
+  withheld (`percentage_unknown`) while the validated windows and reset
+  facts are preserved. No window was synthesized;
+- Z.ai remained `ok` in the same run (JSON status: exactly the two providers,
+  schema v2). No model prompt was issued; no personal quota values were
+  recorded.
+
+**Remediation (2026-09-05, post-review).** The first acceptance interpretation
+treated the credit snapshot and the bucket's unavailable spend-control signal
+as blockers; bounded review established that this conflated supplemental
+provider state with invalid quota evidence. D-019 was amended with the
+principle that provider telemetry v2 does not yet expose must not invalidate
+independently validated quota facts v2 can represent. After the remediation,
+the one live acceptance run returned:
+
+- OpenAI `status=ok` (schema v2) with three validated windows — the main
+  weekly window plus the additional limit bucket's five-hour and weekly
+  windows — all with present, usable percentage pairs and populated reset
+  instants. Multiple buckets coexist; no missing window was synthesized; no
+  credit, account or other supplemental value was exposed (the bucket
+  identifier remains unrecorded);
+- Z.ai `status=ok` in the same run.
+
+Both the human-readable and JSON status surfaces were exercised; no model
+prompt was issued and no personal quota values were recorded.
+
 ### Z.ai Coding Plan capacity
 
 PoC environment included Kilo 7.5.6. Kilo reported a `Z.AI Coding Plan`

@@ -23,8 +23,9 @@ user policy ──────────────────────�
 
 ### Collectors
 
-Small read-only provider adapters acquire telemetry and translate it into the
-normalized capacity model. They own provider discovery, subprocess/protocol
+Small provider adapters acquire telemetry and translate it into the normalized
+capacity model. Acquisition is read-only except for the single bounded
+provider-managed OpenAI auth-recovery exception of `docs/decisions.md` D-018. They own provider discovery, subprocess/protocol
 handling, response validation and provider-specific error mapping. They do not
 rank models or interpret task difficulty.
 

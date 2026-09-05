@@ -7,16 +7,17 @@ earlier outcome is useful in the owner's workflow.
 ## Current status
 
 **M0 PASS (2026-09-01).** The M0 exit criteria have been audited and passed.
-**M1 is current.** The OpenAI/Codex and Z.ai read-only subscription collectors
-and the unified status surface are implemented. Synchronous status now performs
-a fresh collection with one shared observation timestamp, but no cache or stale
-threshold has been chosen. M1 remains **NOT YET PASS** because live OpenAI
-subscription-capacity telemetry must produce usable current quota windows in the
-owner's supported environment before status can fully replace routine quota
-checks. A separate `doctor` command is not currently an M1 blocker because
-status exposes normalized diagnostics; defer it unless normal use demonstrates a
-concrete gap. Do not start M2 selection implementation before M1 is useful in
-the owner's workflow.
+**M1 PASS (2026-09-05).** The OpenAI/Codex and Z.ai read-only subscription
+collectors and the unified status surface are implemented, and live
+collection in the owner's supported environment returns healthy normalized
+quota windows for both providers: bounded provider-managed auth recovery
+(D-018) restored live OpenAI reads, and the D-019 remediation guarantees that
+supplemental provider state never invalidates validated quota facts. A fresh
+synchronous collection with one shared observation timestamp backs every
+`status` call; no cache or stale threshold has been chosen. A separate
+`doctor` command was not an M1 blocker because status exposes normalized
+diagnostics; defer it unless normal use demonstrates a concrete gap. Do not
+start M2 selection implementation before its planning gates are met.
 
 ## M0 — Repository foundation
 
@@ -84,23 +85,40 @@ Exit criteria:
 
 - [x] OpenAI/Codex production collector implemented and fixture-tested.
 - [x] Z.ai Coding Plan production collector implemented and fixture-tested.
-- [x] Unified read-only `status` collection and human renderer implemented.
+- [x] Unified `status` collection and human renderer implemented.
 - [x] Deterministic normalized JSON status output implemented.
 - [x] One shared observation timestamp passed to both collectors.
 - [x] Provider operational failures remain status data and do not suppress
   other provider snapshots.
 - [x] No model request is issued by status collection.
-- [ ] Validate that the owner can replace routine dashboard checks with the
-  provisional command in the real local workflow, without recording secrets or
-  personal quota values.
+- [x] Bounded provider-managed OpenAI auth recovery implemented and
+  fixture-tested (D-018): live OpenAI collection now returns real normalized
+  quota windows with populated reset instants.
+- [x] Both evidenced Codex response generations and evidence-based window
+  coverage supported without synthesizing absent windows (D-019).
+- [x] Supplemental-telemetry principle verified live: validated quota pairs
+  survive credits, additional buckets and unavailable optional blocker
+  signals, with explicit blockers still degrading honestly (D-019
+  remediation).
+- [x] The owner can replace routine dashboard checks with the provisional
+  command in the real local workflow (live acceptance 2026-09-05), without
+  recording secrets or personal quota values.
 
-**M1 STATUS: NOT YET PASS**
+**M1 STATUS: PASS (2026-09-05)**
 
-Remaining blocker:
+Sanitized closeout evidence:
 
-- Live OpenAI subscription-capacity telemetry must produce usable current quota
-  windows in the owner's supported environment before status can fully replace
-  routine quota checks. Do not mix that investigation into this removal task.
+```text
+OpenAI live normalized subscription capacity observed: yes
+Z.ai live normalized subscription capacity observed: yes
+Provider-managed auth recovery exercised: yes
+OpenAI quota windows with usable percentage pairs observed: yes
+Multiple provider buckets coexist in one validated observation: yes
+No missing window synthesized
+No supplemental credit/account data exposed
+No model prompt issued
+No personal quota values recorded
+```
 
 ### Follow-up health signals after the core M1 status surface
 

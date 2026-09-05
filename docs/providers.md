@@ -2,8 +2,12 @@
 
 ## Shared Adapter Contract
 
-Each supported provider adapter performs one small read-only acquisition and maps
-it to a normalized capacity snapshot. It must:
+Each supported provider adapter performs one small telemetry acquisition and maps
+it to a normalized capacity snapshot. Acquisition is read-only except for the
+one bounded, owner-approved exception recorded in `docs/decisions.md` (D-018):
+after the evidenced OpenAI app-server `-32603` rate-limits failure the
+collector may request exactly one provider-managed credential refresh and
+retry the read once. It must:
 
 - discover/configure its source without copying secrets where practical;
 - validate authentication source, endpoint scheme and exact host before use;
@@ -52,18 +56,25 @@ Status (M1): the collector is implemented and fixture-tested in
 `scarcity_router/providers/openai_codex_acquisition.py`
 (`collect_openai_codex_capacity`). It performs deterministic read-only discovery
 of the supported Codex installation, bounded app-server supervision, strict
-JSONL validation, safe failure mapping and terminate/kill cleanup. The parser
-validates the complete evidenced response envelope, typed credit and spend
-states, reset-credit summaries, additional metered buckets and backend blockers.
-Unrepresentable states degrade to `unknown` without inventing quota.
+JSONL validation, safe failure mapping, terminate/kill cleanup and — only on
+the evidenced rate-limits `-32603` internal error — the single bounded
+provider-managed auth refresh and one retry of D-018. The parser validates the
+complete evidenced response envelope across both supported schema generations,
+typed credit and spend states, reset-credit summaries, additional metered
+buckets and backend blockers. Unrepresentable states degrade to `unknown`
+without inventing quota.
 
 The current upstream app-server schema also defines `ordinaryUsageAllowed`,
 `accountId`, `rateLimitUpsell` and `normalModelSlug`; these fields are
 explicitly handled at the adapter edge without expanding v2 or weakening the
-unknown-structured-field rule. Current upstream semantics are recorded in
-`docs/decisions.md` U-011. The installed supported Codex binary remains an
-older schema generation, and the 2026-09-05 live read returned a protocol
-error before a quota result, so live OpenAI usability remains an M1 blocker.
+unknown-structured-field rule. Current upstream semantics, the
+two-generation compatibility rule and the supplemental-telemetry principle
+are recorded in `docs/decisions.md` (U-011, D-019). Live OpenAI collection
+returns healthy normalized windows with usable percentage pairs;
+supplemental provider state that v2 does not expose (credits, additional
+buckets, unavailable optional blocker signals) never invalidates the
+independently validated quota facts, while explicit provider blockers
+degrade honestly.
 
 Supported discovery is exactly the VS Code ChatGPT extension layout documented
 in `docs/decisions.md` (U-001): non-symlink `openai.chatgpt-*` directories under

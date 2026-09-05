@@ -39,7 +39,9 @@ interfaces rather than forcing model traffic through the broker.
 
 ## In scope
 
-- read-only subscription capacity collection;
+- subscription capacity collection (read-only telemetry reads, plus the
+  single bounded provider-managed OpenAI auth-recovery exception of
+  `docs/decisions.md` D-018);
 - normalized capacity and capability schemas;
 - L0–L5 task levels, data-driven profiles and raw requirements;
 - hard-constraint filtering;

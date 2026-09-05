@@ -34,10 +34,12 @@ parsing paths rather than replay a live reading.
   `limitName: null`). `ordinaryUsageAllowed` is explicitly true. Healthy.
 - `ratelimits-credits-present.json` — valid typed credit/spend/reset-credit
   states (`CreditsSnapshot` with required boolean fields and optional
-  string-or-null `balance`, `SpendControlLimitSnapshot` with four required fields and string
-  `limit`/`used`, reset-credit summary with `availableCount` and fully typed
-  rows). The credit and spend states are valid but v2-unrepresentable and
-  degrade to `unknown` with percentage pairs withheld.
+  string-or-null `balance`, a non-exhausted `SpendControlLimitSnapshot` with
+  four required fields and string `limit`/`used`, reset-credit summary with
+  `availableCount` and fully typed rows). Credits and the non-exhausted
+  spend-control limit are validated-but-unrepresented supplemental
+  telemetry: the quota-window percentage pairs remain usable and no
+  supplemental value is serialized (D-019 remediation).
 - Valid reset-credit summaries, including `{availableCount: 0, credits: []}`,
   are supplemental telemetry and do not block or withhold current quota
   percentages.
@@ -47,8 +49,8 @@ parsing paths rather than replay a live reading.
   instead of the evidenced string-or-null: `schema_changed`.
 - `ratelimits-additional-window-present.json` — an additional metered bucket
   plus the required matching `codex` mirror. Its window is emitted with a
-  distinct safe identity rather than merged with a main window; the snapshot
-  is `unknown` because v2 cannot represent the cross-bucket metering.
+  distinct safe identity rather than merged with a main window; the bucket's
+  presence alone does not degrade the observation (D-019 remediation).
 - `ratelimits-additional-bucket-exhausted.json` — an additional metered
   bucket under `rateLimitsByLimitId` (key matching its `limitId`) with an
   exhausted window (`usedPercent` 100): blocker, main pairs withheld.
@@ -57,9 +59,10 @@ parsing paths rather than replay a live reading.
   the validated duration, never the slot position.
 - `ratelimits-unknown-duration.json` — one window with an **unvalidated**
   duration (60 minutes). The parser must preserve it with `kind: "unknown"`
-  and `duration_seconds: 3600`, never guess a known period, keep the
-  healthy weekly sibling's pair, and degrade the overall snapshot to
-  `unknown` because the five-hour constraint is missing.
+  and `duration_seconds: 3600`, never guess a known period, and keep the
+  healthy weekly sibling's pair. The snapshot itself stays healthy when the
+  supplied evidence is valid and unblocked; unknown semantics remain explicit
+  through the window diagnostic (D-019).
 - `ratelimits-exhausted-reached.json` — both windows report 100% used and a
   schema-backed `rateLimitReachedType` (`rate_limit_reached`). A non-null
   backend reached state must not yield a healthy snapshot with inferred
@@ -75,6 +78,12 @@ parsing paths rather than replay a live reading.
   (`rateLimits.windows[].{kind, consumedPercent, resetTimeUtc}`) that is not
   the observed shape. The parser must fail closed to `schema_changed` with no
   partial windows.
+- `ratelimits-legacy-generation-ok.json` — the installed supported generation
+  (`codex-cli 0.151.0-alpha.7.2`): the envelope carries no
+  `ordinaryUsageAllowed` member and the snapshot is the previous nine-member
+  shape with clear blocker evidence (`spendControlReached: false`, null
+  reached type). Healthy under the legacy blocker contract (D-019); the
+  permission member is never manufactured.
 
 ## Assertions expected of the collector
 
@@ -86,20 +95,27 @@ parsing paths rather than replay a live reading.
 - current envelope metadata is explicit: `ordinaryUsageAllowed` must be a
   boolean or null when present, `accountId` is validated as string-or-null but
   never emitted, and `rateLimitUpsell` is recognized as opaque presentation
-  data. A true ordinary-usage permission is required for usable pairs; false,
-  null or absence remains unknown. A non-null upsell is a current upstream
-  recovery blocker, but its content is never inspected or emitted. The
-  `normalModelSlug` snapshot member is validated as string-or-null and omitted
-  from v2 output;
-- missing window coverage, duplicate known periods and a non-`codex`
-  `limitId` never yield a healthy snapshot;
-- backend blockers — a non-null `rateLimitReachedType`,
-  `spendControlReached: true`, an exhausted `individualLimit`, or a
-  blocked/exhausted additional bucket — degrade to `unknown` with
-  percentage pairs withheld; valid v2-unrepresentable credit/spend states do
-  too; reset-credit summaries are supplemental and do not block; known
-  exhaustion without any blocker stays `ok` as
-  `(100, 0)`;
+  data. When the member is present, a true ordinary-usage permission is
+  required for usable pairs and false/null stays blocked. When the member is
+  absent (the installed legacy generation), permission is evaluated from the
+  evidenced legacy blocker contract and never manufactured (D-019). A
+  non-null upsell is a recovery blocker in either generation, but its content
+  is never inspected or emitted. The `normalModelSlug` snapshot member is
+  validated as string-or-null and omitted from v2 output;
+- an absent window is simply absent and never synthesized; a validated,
+  unblocked snapshot with at least one usable pair is healthy. Emptiness,
+  duplicate known periods and a non-`codex` `limitId` never yield a healthy
+  snapshot;
+- explicit backend blockers — a non-null `rateLimitReachedType`,
+  `spendControlReached: true`, an exhausted `individualLimit`
+  (`remainingPercent == 0`), or an explicit blocker (including a window at
+  `usedPercent == 100`) inside an additional bucket — degrade to `unknown`
+  with percentage pairs withheld. Supplemental-but-unrepresented state
+  (valid credits, a non-exhausted individual limit, the mere presence of
+  additional buckets, a missing/null optional blocker signal) never
+  invalidates the validated quota pairs; reset-credit summaries are
+  supplemental and do not block; known exhaustion without any blocker stays
+  `ok` as `(100, 0)`;
 - unknown / missing values remain unknown, never defaulted to 0 or 100;
 - schema change maps to `schema_changed` and no synthesized windows;
 - no credential- or authorization-shaped string, subprocess output or local

@@ -31,7 +31,13 @@ Never:
 - create another long-lived credential store by default;
 - attach a credential to an arbitrary user-provided URL;
 - issue model prompts as part of quota collection;
-- mutate provider quota/account state from a collector.
+- mutate provider quota/account state from a collector, except the single
+  owner-approved exception of D-018: after the evidenced OpenAI app-server
+  `-32603` rate-limits failure, the collector may trigger exactly one
+  provider-managed credential refresh through the official app-server
+  managed-auth flow and retry the read once. The token itself is never
+  received, read, stored or exposed by Scarcity Router, and no login,
+  logout, account change or direct auth endpoint is ever performed.
 
 Credential files must be read as narrowly as possible. Prefer an authenticated
 local protocol such as Codex app-server over extracting browser state.

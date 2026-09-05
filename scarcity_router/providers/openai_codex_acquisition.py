@@ -28,9 +28,16 @@ Security contract (docs/security.md):
   payloads treated as drift; so each protocol message has exactly one
   finite interpretation. Budget and decoding violations surface as safe
   statuses, never as raw content in exceptions;
-- requests are exactly three bounded writes (initialize, initialized
-  notification, rate-limits read); there is no retry, no prompt and no other
-  method call, so collection can never issue a model request;
+- requests are bounded writes: the normal session is exactly three
+  (initialize, initialized notification, rate-limits read). Only after the
+  evidenced rate-limits protocol error ``-32603`` (the app-server's internal
+  error while fetching quota from its backend) does the same bounded session
+  issue exactly one official provider-managed auth refresh
+  (``account/read`` with ``refreshToken: true``) followed by exactly one
+  rate-limits retry — the bounded recovery sequence of docs/decisions.md
+  D-018. There is no loop, no prompt and no other method call, so collection
+  can never issue a model request; every other protocol error keeps the
+  non-mutating behavior;
 - every failure path attempts bounded termination and reap — including a
   reader startup failure before the session begins: stdin is closed, the
   process is terminated (then killed if it refuses to exit) and the reader
@@ -63,9 +70,11 @@ Expected operational conditions normalize to safe v2 snapshots
 timeout maps to ``unavailable``; an installation whose layout cannot be
 validated maps to ``unsupported``; malformed or incompatible JSONL
 (including budget violations) maps to ``schema_changed``; a protocol error
-response for one of our requests maps to ``unknown``. Programmer errors are
-not disguised as telemetry failures and raise ``RuntimeError`` with
-credential-free, path-free messages.
+response for one of our requests maps to ``unknown`` — except the evidenced
+rate-limits ``-32603`` internal-error condition, which triggers the bounded
+D-018 recovery sequence above before any failure state is reported.
+Programmer errors are not disguised as telemetry failures and raise
+``RuntimeError`` with credential-free, path-free messages.
 """
 
 from __future__ import annotations
@@ -238,8 +247,15 @@ MAX_TOTAL_BYTES = 1024 * 1024
 
 _INITIALIZE_ID = 1
 _READ_RATE_LIMITS_ID = 2
+_REFRESH_ACCOUNT_ID = 3
+_RATE_LIMITS_RETRY_ID = 4
 _RATE_LIMITS_METHOD = "account/rateLimits/read"
 _INITIALIZED_NOTIFICATION_METHOD = "initialized"
+_ACCOUNT_METHOD = "account/read"
+# The evidenced app-server internal error while fetching quota from its own
+# backend (docs/poc-evidence.md 2026-09-05; tagged source error_code.rs):
+# the only trigger for the bounded D-018 auth recovery.
+_JSONRPC_INTERNAL_ERROR_CODE = -32603
 _INITIALIZE_RESPONSE_FIELDS = (
     "userAgent",
     "codexHome",
@@ -852,6 +868,26 @@ def _read_rate_limits_request() -> dict[str, object]:
     }
 
 
+def _refresh_account_request() -> dict[str, object]:
+    """The installed version's official managed-auth refresh request.
+
+    The provider owns the token end to end: this module never reads, copies
+    or stores any credential (docs/decisions.md D-018).
+    """
+    return {
+        "id": _REFRESH_ACCOUNT_ID,
+        "method": _ACCOUNT_METHOD,
+        "params": {"refreshToken": True},
+    }
+
+
+def _retry_rate_limits_request() -> dict[str, object]:
+    return {
+        "id": _RATE_LIMITS_RETRY_ID,
+        "method": _RATE_LIMITS_METHOD,
+    }
+
+
 def _send_message(
     proc: "subprocess.Popen[bytes]",
     payload: Mapping[str, object],
@@ -970,6 +1006,19 @@ def _valid_protocol_error(value: object) -> bool:
     )
 
 
+def _protocol_error_code(envelope: Mapping[str, object]) -> object:
+    """The integer code of a structurally valid protocol error, else ``None``.
+
+    Only the numeric code is ever read: the free-text message is not
+    inspected, compared or retained (no validated OpenAI failure-shape
+    evidence exists for error bodies).
+    """
+    error = envelope.get("error")
+    if not _valid_protocol_error(error):
+        return None
+    return cast("Mapping[str, object]", error).get("code")
+
+
 def _snapshot(
     status: str,
     diagnostic_code: str,
@@ -1034,9 +1083,54 @@ def _run_session(
         return _snapshot("schema_changed", "schema_changed", retrieved_at)
     response = cast("Mapping[str, object]", message)
     if "error" in response:
-        if not _valid_protocol_error(response["error"]):
+        code = _protocol_error_code(response)
+        if code is None:
             return _snapshot("schema_changed", "schema_changed", retrieved_at)
-        return _snapshot("unknown", "telemetry_unknown", retrieved_at)
+        if code == _JSONRPC_INTERNAL_ERROR_CODE:
+            # Bounded provider-managed auth recovery (D-018): the app-server
+            # hit its evidenced internal error while fetching quota from its
+            # own backend. Exactly one official account/read token refresh,
+            # then exactly one rate-limits retry, inside this same bounded
+            # session and deadline. The refresh response is consumed only as
+            # protocol framing — its account payload is never inspected or
+            # retained; the retry result is the recovery oracle.
+            if not _send_message(proc, _refresh_account_request()):
+                return _snapshot("unavailable", "source_unavailable", retrieved_at)
+            kind, message = _await_response(
+                reader, _REFRESH_ACCOUNT_ID, session_deadline, clock
+            )
+            if kind in ("timeout", "eof", "failed"):
+                return _snapshot("unavailable", "source_unavailable", retrieved_at)
+            if kind in ("malformed", "oversized"):
+                return _snapshot("schema_changed", "schema_changed", retrieved_at)
+            refresh = cast("Mapping[str, object]", message)
+            if "error" in refresh:
+                if _protocol_error_code(refresh) is None:
+                    return _snapshot(
+                        "schema_changed", "schema_changed", retrieved_at
+                    )
+                return _snapshot("unknown", "telemetry_unknown", retrieved_at)
+            if not _send_message(proc, _retry_rate_limits_request()):
+                return _snapshot("unavailable", "source_unavailable", retrieved_at)
+            kind, message = _await_response(
+                reader, _RATE_LIMITS_RETRY_ID, session_deadline, clock
+            )
+            if kind in ("timeout", "eof", "failed"):
+                return _snapshot("unavailable", "source_unavailable", retrieved_at)
+            if kind in ("malformed", "oversized"):
+                return _snapshot("schema_changed", "schema_changed", retrieved_at)
+            response = cast("Mapping[str, object]", message)
+            if "error" in response:
+                if _protocol_error_code(response) is None:
+                    return _snapshot(
+                        "schema_changed", "schema_changed", retrieved_at
+                    )
+                return _snapshot("unknown", "telemetry_unknown", retrieved_at)
+        else:
+            # Any other validated protocol error keeps the non-mutating
+            # safe behavior: no refresh is attempted for -32600, -32601,
+            # -32602, or any other code.
+            return _snapshot("unknown", "telemetry_unknown", retrieved_at)
     return parse_codex_rate_limits_result(
         response.get("result"), retrieved_at=retrieved_at
     )
