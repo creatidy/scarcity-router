@@ -2,7 +2,7 @@
 
 ## Problem
 
-People using several AI subscriptions and local models do not have one stable
+People using several AI subscriptions do not have one stable
 answer to: “Which capable model should this task consume right now?” Quota is
 split across rolling windows, subscriptions do not map cleanly to per-token
 prices, and an orchestrator may consume a different provider's quota through
@@ -30,9 +30,8 @@ structured explanation.
 ## Initial users and environment
 
 The owner is the first and primary user. The initial workflow uses an AI
-orchestrator with OpenAI/Codex and Z.ai subscription models plus a local Ollama
-fallback. Supporting this workflow reliably is more important than broad
-provider coverage.
+orchestrator with OpenAI/Codex and Z.ai subscription models. Supporting this
+workflow reliably is more important than broad provider coverage.
 
 Potential later consumers include Kilo, Codex, Claude Code, OpenClaw, shell
 scripts, IDE extensions and dashboards. They integrate through stable
@@ -41,7 +40,6 @@ interfaces rather than forcing model traffic through the broker.
 ## In scope
 
 - read-only subscription capacity collection;
-- local-model availability and configuration health;
 - normalized capacity and capability schemas;
 - L0–L5 task levels, data-driven profiles and raw requirements;
 - hard-constraint filtering;
@@ -71,7 +69,7 @@ The broker decides *where work should go*. The external orchestrator decides
 - Measured telemetry over inferred quota.
 - Normalized core over provider-specific leakage.
 - Read-only access over privileged access.
-- Local processing over cloud processing when equivalent.
+- Subscription capacity over generic API-cost assumptions.
 - Explainable decisions over opaque scoring.
 - Stable core over many integrations.
 - Real workflow value over novelty or market theater.
@@ -95,4 +93,3 @@ integration recipes—are secondary. Commercial investment is justified only
 after the local product survives provider changes and demonstrates recurring
 value. A possible later commercial layer may curate capability data or support
 teams and fleets, but those features are not present commitments.
-

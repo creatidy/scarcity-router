@@ -1,9 +1,9 @@
-# Provider collectors
+# Provider Collectors
 
-## Shared adapter contract
+## Shared Adapter Contract
 
-Each provider adapter performs one small read-only acquisition and maps it to a
-normalized capacity snapshot. It must:
+Each supported provider adapter performs one small read-only acquisition and maps
+it to a normalized capacity snapshot. It must:
 
 - discover/configure its source without copying secrets where practical;
 - validate authentication source, endpoint scheme and exact host before use;
@@ -11,15 +11,15 @@ normalized capacity snapshot. It must:
 - preserve all relevant quota windows and reset times;
 - return explicit health/failure status and safe diagnostics;
 - carry retrieval time, safe plan metadata when known and source mechanism;
-  account identifiers are not part of the v1 snapshot;
+  account identifiers are not part of the v2 snapshot;
 - have redacted fixtures, parser tests and contract tests;
 - treat new fields tolerantly and changed required semantics conservatively;
 - never print, return or persist credentials.
 
-Collector failures are isolated. `status` should still report healthy sources
+Collector failures are isolated. `status` should still report a healthy source
 when another source is `auth_required`, `schema_changed` or `unknown`.
 
-## OpenAI through Codex app-server
+## OpenAI Through Codex App-Server
 
 The proven mechanism launches a locally available `codex app-server`, speaks
 JSONL, sends `initialize`, sends the `initialized` notification, and calls
@@ -39,92 +39,28 @@ Implementation requirements:
 - never fall back to browser-cookie scraping as an incidental convenience;
 - fail with a clear unsupported/schema status if protocol behavior changes.
 
-The PoC used a binary included with a VS Code ChatGPT extension; production
-binary discovery is narrowly resolved for M1 in `docs/decisions.md` (U-001),
-and the minimum compatible version remains unresolved there.
-
 Status (M1): the collector is implemented and fixture-tested in
 `scarcity_router/providers/openai_codex.py` (pure parser
 `parse_codex_rate_limits_result` and the JSONL message classifier) and
 `scarcity_router/providers/openai_codex_acquisition.py`
-(`collect_openai_codex_capacity`): deterministic read-only discovery of a
-supported Codex installation, a bounded supervised `codex app-server`
-subprocess with discarded stderr, the proven
-initialize/initialized/`account/rateLimits/read` exchange with responses
-matched by request identity and message structure (never timing), bounded
-line/total output budgets, ambiguity-safe JSONL decoding (duplicate keys,
-NaN/Infinity constants, non-finite exponents such as `1e10000` and
-adversarial deep nesting all rejected as drift), bounded finite-positive
-wait-supported startup/session
-timeouts, and terminate→(bounded wait)→kill cleanup on every path —
-including a reader startup failure before the session begins. Cleanup reports
-`unavailable` whenever a bounded wait cannot prove that the child was reaped
-or the reader thread was stopped; it never claims successful collection on
-unproven cleanup.
-The parser validates the complete evidenced response envelope (U-010):
-only the `GetAccountRateLimitsResponse.rateLimits` member is required for input
-deserialization; `rateLimitsByLimitId` and `rateLimitResetCredits` are nullable
-optional members, so missing and explicit null states are accepted. Rust's
-tagged serializer does not skip these `Option` fields and the TypeScript shape
-requires both keys, so this input tolerance is not a claim about emitted wire
-success shape. `primary`/`secondary` are the
-only window slots; a present window requires i32 `usedPercent`, while nullable
-i64 `windowDurationMins` and `resetsAt` are validated and duration drives
-classification, never slot position. Typed states are validated: `credits` (`CreditsSnapshot` with
-required booleans and optional string-or-null `balance`), `individualLimit`
-(`SpendControlLimitSnapshot` with four required fields, string `limit`/`used`
-and integer `remainingPercent`/`resetsAt`) and `rateLimitResetCredits`
-(`availableCount` plus typed optional reset-credit rows; rows require `id`,
-`resetType`, `status` and `grantedAt`, with nullable optional detail fields);
-malformed shapes fail closed, and
-valid credit or spend-control states — being v1-unrepresentable — degrade to
-`unknown` with percentage pairs withheld. A valid reset-credit summary is
-supplemental telemetry: its presence or `availableCount` does not block or
-withhold current quota pairs. Additional `rateLimitsByLimitId` buckets
-validate as full quota snapshots; a present map must contain an exact
-`"codex"` mirror of top-level `rateLimits`, and non-mirror keys must equal
-their bucket `limitId` and never be `"codex"`; every emitted bucket window gets a distinct safe
-`<limitId>:<slot>` identity with no equal-period merging; same
-window/duplicate/nested rules). Backend
-blockers — a non-null `rateLimitReachedType`, an unavailable or true
-`spendControlReached`, an exhausted `individualLimit`, or a blocked/exhausted additional
-bucket — never yield a healthy snapshot and withhold the percentage pairs;
-a present-but-unblocked bucket degrades to `unknown` with its validated
-pairs. Plan labels accept every exact tagged `PlanType` member the v1
-safe-ID grammar permits as-is (underscores included, e.g. `edu_plus`,
-`enterprise_cbp_automation`, and the `unknown` catch-all), verbatim and
-never rewritten; a present nonmember is `schema_changed`, never silently
-omitted.
+(`collect_openai_codex_capacity`). It performs deterministic read-only discovery
+of the supported Codex installation, bounded app-server supervision, strict
+JSONL validation, safe failure mapping and terminate/kill cleanup. The parser
+validates the complete evidenced response envelope, typed credit and spend
+states, reset-credit summaries, additional metered buckets and backend blockers.
+Unrepresentable states degrade to `unknown` without inventing quota.
 
-Supported discovery (U-001, evidence in `docs/poc-evidence.md`):
-`openai.chatgpt-*` extension directories under `~/.vscode/extensions` or
-`~/.vscode-server/extensions` (the remote-server layout is the directly
-evidenced PoC environment), on currently supported Linux x86-64 hosts, highest
-extension version first, validated by a
-non-symlink candidate plus `bin/<platform>` directory, a regular non-symlink
-executable `bin/<platform>/codex` and a
-`codex-package.json` with
-`layoutVersion` 1 and `variant` `codex` (duplicate-key rejecting; this pins
-the installation filesystem layout, not protocol compatibility — protocol
-drift is caught at runtime by strict shape validation failing closed). No
+Supported discovery is exactly the VS Code ChatGPT extension layout documented
+in `docs/decisions.md` (U-001): non-symlink `openai.chatgpt-*` directories under
+`~/.vscode/extensions` or `~/.vscode-server/extensions`, on currently supported
+Linux x86-64 hosts, with a validated `codex-package.json` and executable. No
 installation maps to `unavailable`; an installation whose layout cannot be
 validated maps to `unsupported`.
 
-Known compatibility limits: other installation sources (a `codex` on PATH,
-npm installs, other editors) and a minimum/maximum codex version policy are
-unsupported and unresolved (U-001 residual; Darwin is intentionally
-unsupported until descriptor execution is evidenced); error-response text is never
-parsed, so protocol error responses map to `unknown` until failure shapes
-are captured as evidence; the selected binary path and versions are
-validated but not surfaced, because v1 has no field for them; a future
-`doctor` surface may report them; the reached enum uses the exact
-snake_case generated-schema values, so camelCase and arbitrary strings are
-rejected as drift; amount values inside credits/spend-control/reset-credit
-members are validated structurally but never interpreted (documented
-residual); the provisional `uv run python -m scarcity_router status` command
-composes this collector with the other normalized snapshots without exposing
-discovery paths or versions. The automated suite contains no live-account test
-and all transport tests use synthetic JSONL process fakes and fixtures under
+The provisional `uv run python -m scarcity_router status` command composes this
+collector with the Z.ai normalized snapshot without exposing discovery paths or
+versions. The automated suite contains no live-account test and all transport
+tests use synthetic JSONL process fakes and fixtures under
 `tests/fixtures/openai-codex-appserver/`.
 
 ## Z.ai Coding Plan
@@ -138,7 +74,7 @@ Authorization: <existing credential>
 ```
 
 The credential is transient input only. Before attaching it, the adapter must
-require HTTPS and the exact expected host. An endpoint override must pass an
+require HTTPS and the exact expected host. Endpoint overrides must pass an
 equally strict allowlist; arbitrary URLs are forbidden.
 
 The observed response contains a plan level and a list of typed limits. In the
@@ -150,104 +86,40 @@ unit=6, number=1 -> weekly token window
 ```
 
 These are validated adapter mappings, not universal constants. Unknown units or
-combinations must preserve safe metadata and yield unknown semantics rather
-than being guessed. Array position is not semantic.
+combinations must preserve safe metadata and yield unknown semantics rather than
+being guessed. Array position is not semantic.
 
 Status (M1): the response parser is implemented and fixture-tested in
-`scarcity_router/providers/zai.py` (`parse_zai_quota_response`), and the
-secure production acquisition shell is implemented and unit-tested in
-`scarcity_router/providers/zai_acquisition.py`
-(`collect_zai_capacity`): strict discovery of the `zai-coding-plan` entry
-(`type == "api"`, non-empty string `key`, sent as-is), destination validation
-against the fixed endpoint before Authorization is attached, exactly one
-redirect-free bounded GET, and safe failure mapping to the v1 statuses.
-The provisional `uv run python -m scarcity_router status` command composes this
-collector with the other normalized snapshots. The automated suite contains no
-live credential-dependent integration test; all transport tests use mocked fakes
-and synthetic secrets.
+`scarcity_router/providers/zai.py` (`parse_zai_quota_response`), and the secure
+production acquisition shell is implemented and unit-tested in
+`scarcity_router/providers/zai_acquisition.py` (`collect_zai_capacity`). It
+performs strict credential discovery, fixed HTTPS destination validation, one
+redirect-free bounded GET and safe failure mapping to the v2 statuses.
 
-Each observed window carries `nextResetTime`, a 13-digit epoch-**millisecond**
-value, and `percentage` is the **used** percentage (remaining is the complement).
-Both are current provider evidence, not a permanent contract; the authoritative
-record and the required fail-safe fixtures live in
-`poc-evidence.md` and `tests/fixtures/zai-coding-plan/`.
-
-The adapter needs fixtures for known windows, unknown windows, missing values,
-invalid percentages, authentication failure and schema change.
+Each observed window carries `nextResetTime`, a 13-digit epoch-millisecond value,
+and `percentage` is the used percentage. Both are provider evidence, not a
+permanent contract; the authoritative record and fail-safe fixtures live in
+`docs/poc-evidence.md` and `tests/fixtures/zai-coding-plan/`.
 
 The currently observed Kilo auth location is `~/.local/share/kilo/auth.json`.
 Discovery reads only the bounded auth file and selects only the
-`zai-coding-plan` entry with the evidenced `type == "api"`, non-empty `key`
-shape; it must never dump the file or return other entries. A credential
-value that cannot be represented safely as an HTTP header value (anything
-outside printable ASCII) and any duplicate object key in the document
-(ambiguous credential definitions) also fail closed to `auth_required`
-before any request is made. An explicit safe path parameter exists for
-deterministic tests and controlled local configuration; no second
-long-lived token store is created.
+`zai-coding-plan` entry with the evidenced `type == "api"` and non-empty `key`
+shape. It must never dump the file or return other entries. No second long-lived
+token store is created.
 
-## Local Ollama
+The provisional status command composes this collector with the OpenAI
+normalized snapshot. The automated suite contains no live credential-dependent
+integration test; transport tests use mocked fakes and synthetic secrets.
 
-The first local model is `qwen3.8:27b-3090-q4km-160k`. Known configuration at
-design time includes context 163840, output ceiling 49152, reasoning enabled,
-vision disabled, q8_0 KV cache, Flash Attention, no MTP/speculative decoding and
-full GPU fit on an RTX 3090.
-
-M1 only needs defensible local facts:
-
-- is the Ollama runtime reachable locally;
-- is the configured model present/available;
-- what configured model and context limits are known;
-- optional health/load state only if reliably measurable.
-
-Do not invent quota. Do not assume the configured context is the effective
-context without validating what the runtime exposes. The exact health and model
-inspection calls must be selected from supported Ollama behavior during M1 and
-recorded in PoC evidence before being treated as confirmed.
-
-Status (M1): the collector is implemented and fixture-tested in
-`scarcity_router/providers/ollama.py` (pure parsers for the version probe,
-model listing and loaded-model listing) and
-`scarcity_router/providers/ollama_acquisition.py`
-(`collect_ollama_capacity`). It validates the explicit endpoint before I/O:
-plain `http` on exactly numeric loopback `127.0.0.1` or `::1` only,
-canonicalizing an omitted port to 11434 and rejecting names, unsafe ports,
-userinfo, query/fragment delimiters, whitespace, controls and non-root paths.
-It performs at most three fixed read-only GETs, or two when the validated
-listing proves the target absent: `/api/version`, `/api/tags` and conditional
-`/api/ps`. The transport is a synchronous standard-library
-`http.client.HTTPConnection` with a finite socket timeout, one bounded body
-read and `finally` cleanup. It does not use proxies or follow redirects; a
-non-200 response is normalized without reading its body. HTTP parsing and
-connection lifecycle are intentionally delegated to the standard library under
-the frozen local M1 threat model rather than reimplemented by the collector.
-
-Bodies use strict UTF-8/JSON decoding: duplicate keys, non-finite numbers,
-out-of-band integers, malformed JSON and decoder resource failures become
-`schema_changed`; oversized bodies and transport/response failures become safe
-degraded statuses. The pure parsers validate provider identities and digest
-shape. Effective context is accepted only from a positive `context_length` in
-`/api/ps` whose digest agrees with the validated `/api/tags` entry. Configured
-context comes only from explicit input, and tags model-file metadata is never
-used as effective context. Healthy local runtimes report `windows: []`; there
-are no quota, percentage, load, generation, pull, delete or runtime mutation
-semantics. Missing is reported only from a validated reachable listing, while
-supplemental `/api/ps` failures preserve validated presence and omit effective
-context. Safe snapshots and diagnostics never contain response bodies, headers,
-endpoint values, digests, paths or exception text. The populated effective-
-context path remains synthetic-fixture-tested. The provisional
-`uv run python -m scarcity_router status` command composes this collector with
-the other normalized snapshots and requires an explicit target model.
-
-## Later providers
+## Later Providers
 
 Claude subscription is the highest-priority later collector because it would
-materially expand usefulness. It must not delay v0.1 and must be preceded by an
-auth, security and maintenance evaluation. Other providers are added based on
-user demand, stable telemetry, maintenance burden and routing value—not a
-provider-count target.
+materially expand usefulness. It must not delay the initial two-provider scope
+and must be preceded by an auth, security and maintenance evaluation. Other
+providers are added based on user demand, stable telemetry, maintenance burden
+and routing value, not a provider-count target.
 
-## Contract-test expectations
+## Contract-Test Expectations
 
 For each adapter, freeze minimal redacted provider-shaped fixtures and assert:
 
@@ -258,7 +130,8 @@ For each adapter, freeze minimal redacted provider-shaped fixtures and assert:
 - used/remaining validation and reset preservation;
 - error/status mapping;
 - no credential-shaped value appears in output, diagnostics or snapshots;
-- provider changes do not crash the core.
+- provider changes do not crash the core;
+- failures from one provider do not suppress the other provider's snapshot.
 
 Live integration checks may complement fixtures, but tests must not require or
 record the owner's credentials.

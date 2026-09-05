@@ -6,7 +6,7 @@ Scarcity Router is a local decision service between capacity sources, curated da
 and clients. It does not sit on the model request path.
 
 ```text
-provider/local telemetry ──> collectors ──> normalized capacity
+provider telemetry ────────> collectors ──> normalized capacity
 model catalog ────────────────────────────> capability data
 task/profile ─────────────────────────────> requirements
 user policy ──────────────────────────────> reservations/preferences
@@ -28,12 +28,16 @@ normalized capacity model. They own provider discovery, subprocess/protocol
 handling, response validation and provider-specific error mapping. They do not
 rank models or interpret task difficulty.
 
+The M1 collector set is exactly OpenAI/Codex and Z.ai Coding Plan. Adding a
+later provider requires separate scope and does not change the selector's
+provider-independent boundary.
+
 Provider drift must stop at this boundary. A broken adapter yields an explicit
 status such as `schema_changed` while the rest of the service remains healthy.
 
 ### Capacity store/view
 
-Holds the most recent v1 normalized snapshots and their retrieval timestamps.
+Holds the most recent v2 normalized snapshots and their retrieval timestamps.
 Freshness evaluation, refresh behavior and durable history are separate concerns;
 the initial implementation may be in-memory and refreshed on demand. Secrets and
 raw Authorization values never enter the normalized state.
@@ -90,11 +94,11 @@ not on the selector.
 
 ## Domain contracts
 
-M1 freezes `docs/capacity-model.md` as the v1 serialized capacity contract:
+M1 freezes `docs/capacity-model.md` as the v2 serialized capacity contract:
 
 - `CapacitySnapshot`: schema version, provider/source identifiers, optional safe
-  plan, retrieval time, status, windows, optional local runtime and safe
-  diagnostics. Account identifiers and freshness fields are not in v1.
+  plan, retrieval time, status, windows and safe diagnostics. Account identifiers
+  and freshness fields are not in v2.
 - `CapacityWindow`: validated resource and period kind, optional duration,
   complementary used/remaining percentage pair, optional reset time and an
   allowlisted opaque provider window identifier.
@@ -107,7 +111,7 @@ M1 freezes `docs/capacity-model.md` as the v1 serialized capacity contract:
 
 Schemas must distinguish omitted, unknown, unsupported, unavailable and zero. The
 capacity contract uses omitted optional fields for unknown values and explicit
-`unknown` enum values for unresolved window/runtime semantics.
+`unknown` enum values for unresolved window semantics.
 
 ## Configuration boundaries
 

@@ -7,14 +7,16 @@ earlier outcome is useful in the owner's workflow.
 ## Current status
 
 **M0 PASS (2026-09-01).** The M0 exit criteria have been audited and passed.
-**M1 is current.** The OpenAI/Codex, Z.ai and Ollama read-only collectors and
-the unified status surface are implemented. Synchronous status now performs a
-fresh collection with one shared observation timestamp, but no cache or stale
-threshold has been chosen. The remaining M1 work is owner workflow validation
-and the final integration audit. A separate `doctor` command is not currently
-an M1 blocker because status exposes normalized diagnostics; defer it unless
-normal use demonstrates a concrete gap. Do not start M2 selection
-implementation before M1 is useful in the owner's workflow.
+**M1 is current.** The OpenAI/Codex and Z.ai read-only subscription collectors
+and the unified status surface are implemented. Synchronous status now performs
+a fresh collection with one shared observation timestamp, but no cache or stale
+threshold has been chosen. M1 remains **NOT YET PASS** because live OpenAI
+subscription-capacity telemetry must produce usable current quota windows in the
+owner's supported environment before status can fully replace routine quota
+checks. A separate `doctor` command is not currently an M1 blocker because
+status exposes normalized diagnostics; defer it unless normal use demonstrates a
+concrete gap. Do not start M2 selection implementation before M1 is useful in
+the owner's workflow.
 
 ## M0 — Repository foundation
 
@@ -47,14 +49,13 @@ Exit criteria:
 ## M1 — Capacity collectors and normalized status
 
 **Outcome:** One command reliably shows current OpenAI and Z.ai subscription
-capacity plus honest Ollama availability, without issuing model requests.
+capacity without issuing model requests.
 
 Scope:
 
 - freeze the first versioned normalized capacity schema;
 - OpenAI/Codex collector using app-server;
 - Z.ai Coding Plan collector using the existing configured credential;
-- Ollama local health/model-presence collector;
 - safe discovery and normalized diagnostics through `status` (a separate
   `doctor` command is deferred);
 - provisional module `status` command with all windows, reset/freshness
@@ -77,17 +78,15 @@ Exit criteria:
 - an adapter schema failure does not break other providers or become guessed
   capacity;
 - no secret appears in output, tests or logs;
-- local status does not invent a quota percentage;
 - supported discovery and freshness behavior are documented.
 
 ### M1 implementation state and closeout
 
 - [x] OpenAI/Codex production collector implemented and fixture-tested.
 - [x] Z.ai Coding Plan production collector implemented and fixture-tested.
-- [x] Ollama production collector implemented and fixture-tested.
 - [x] Unified read-only `status` collection and human renderer implemented.
 - [x] Deterministic normalized JSON status output implemented.
-- [x] One shared observation timestamp passed to all three collectors.
+- [x] One shared observation timestamp passed to both collectors.
 - [x] Provider operational failures remain status data and do not suppress
   other provider snapshots.
 - [x] No model request is issued by status collection.
@@ -97,18 +96,16 @@ Exit criteria:
 
 **M1 STATUS: NOT YET PASS**
 
-Remaining:
+Remaining blocker:
 
-- Perform the owner workflow acceptance check against the supported local Codex,
-  Kilo/Z.ai and explicitly configured Ollama environment.
-- Reassess the documented residuals and decide whether any narrow M1 evidence
-  or integration defect remains after that real use; do not add cache or stale
-  thresholds without a separate U-003 decision.
+- Live OpenAI subscription-capacity telemetry must produce usable current quota
+  windows in the owner's supported environment before status can fully replace
+  routine quota checks. Do not mix that investigation into this removal task.
 
 ### Follow-up health signals after the core M1 status surface
 
 Provider status is a useful advisory input, but it must not delay or replace
-account/runtime telemetry:
+direct account-capacity telemetry:
 
 - OpenAI: evaluate the official `status.openai.com` machine-readable status and
   relevant Codex/CLI components as an advisory service-health signal. Direct
@@ -118,11 +115,6 @@ account/runtime telemetry:
   been identified in current provider documentation. Prefer provider-native
   failure/high-traffic signals and record `unknown` when authoritative service
   health is unavailable.
-- Ollama: direct local reachability/model presence remains the authoritative
-  availability signal. `creatidy/ollama-monitoring` remains a separate passive
-  observability project and should not become a core dependency merely to answer
-  whether Ollama is usable. Revisit an optional adapter only if richer runtime
-  load/performance/energy evidence materially improves later selection.
 
 ## M2 — Capability catalog and selector
 
@@ -133,8 +125,8 @@ Scope:
 
 - L0–L5 and data-driven profiles;
 - hard constraints and multidimensional requirements;
-- narrow, provenance-bearing catalog for Luna, Sol, GLM-5.3,
-  GLM-5.3-Flash and local Qwen;
+- narrow, provenance-bearing catalog for Luna, Sol, GLM-5.3 and
+  GLM-5.3-Flash;
 - continuous scarcity and explanatory labels;
 - reservation policies and only the needed user modes;
 - ranked fallbacks, exclusions and structured explanations;
@@ -183,7 +175,7 @@ Before freezing selector thresholds and public positioning:
   `single`/cascade/critique orchestration, complete accounting, bounded
   execution, isolated review and validated routing are useful patterns, but the
   project boundary remains different: Scarcity Router is an external decision
-  service centered on subscription scarcity, local capacity and user policy,
+  service centered on subscription scarcity, provider availability and user policy,
   not a prompt-executing Copilot runtime;
 - validate the supported OpenAI app-server representation of banked reset
   credits, including count and expiry/details when exposed, without using
@@ -239,7 +231,7 @@ than using browser scraping or delaying earlier value.
 
 Runtime failure feedback, history/audit, team quota pools, fleet policy, central
 dashboard, signed catalog releases and commercial curation are hypotheses. Add
-them only after regular personal use validates the core. Rich Ollama telemetry
-from `ollama-monitoring`, provider-performance histories and automatic
-replenishment actions remain deferred until selection evidence shows they add
-value; the core broker must not absorb those systems by default.
+them only after regular personal use validates the core. Provider-performance
+histories and automatic replenishment actions remain deferred until selection
+evidence shows they add value; the core broker must not absorb those systems by
+default.

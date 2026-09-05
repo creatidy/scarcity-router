@@ -1,6 +1,0 @@
-{
-  "models": [
-    "test-model:latest",
-    {"no_name_here": true}
-  ]
-}

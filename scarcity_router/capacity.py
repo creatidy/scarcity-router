@@ -1,13 +1,13 @@
-"""V1 capacity model for Scarcity Router.
+"""V2 capacity model for Scarcity Router.
 
 Pure, provider-independent, standard-library only.
 
-Implements the frozen v1 normalized capacity contract from docs/capacity-model.md:
-- snapshot, status, windows, local runtime, diagnostics
-- validation of all v1 invariants
+Implements the frozen v2 normalized capacity contract from docs/capacity-model.md:
+- snapshot, status, windows and diagnostics
+- validation of all v2 invariants
 - deterministic JSON-compatible serialization
 
-The v1 invariants are enforced at *construction* so an invalid object can never
+The v2 invariants are enforced at *construction* so an invalid object can never
 exist as a public, serializable value whether it is produced by ``from_dict()``
 or by a direct public constructor. The private ``_v_*`` validators are the single
 source of truth for the rules; ``from_dict`` uses them to check the serialized
@@ -27,7 +27,7 @@ from .errors import CapacityValidationError
 
 # ── Frozen value sets ─────────────────────────────────────────────────────────
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _STATUS_VALUES: frozenset[str] = frozenset({
     "ok",
@@ -42,8 +42,6 @@ _RESOURCE_VALUES: frozenset[str] = frozenset({"tokens", "time", "unknown"})
 
 _KIND_VALUES: frozenset[str] = frozenset({"five_hour", "weekly", "unknown"})
 
-_MODEL_PRESENCE_VALUES: frozenset[str] = frozenset({"present", "missing", "unknown"})
-
 _DIAGNOSTIC_CODES: frozenset[str] = frozenset({
     "source_unavailable",
     "auth_required",
@@ -53,11 +51,6 @@ _DIAGNOSTIC_CODES: frozenset[str] = frozenset({
     "window_semantics_unknown",
     "percentage_unknown",
     "reset_unknown",
-    "runtime_unreachable",
-    "model_missing",
-    "model_presence_unknown",
-    "configured_context_unknown",
-    "effective_context_unknown",
 })
 
 _WINDOW_SCOPED_CODES: frozenset[str] = frozenset({
@@ -86,7 +79,7 @@ _KIND_DURATION: dict[str, int] = {
     "weekly": 604_800,
 }
 
-# ── Validators (single source of truth for the v1 rules) ─────────────────────
+# ── Validators (single source of truth for the v2 rules) ─────────────────────
 
 _CANONICAL_TS_RE = re.compile(
     r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$"
@@ -95,14 +88,6 @@ _CANONICAL_TS_RE = re.compile(
 _SAFE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._:-]{0,63}$")
 
 T = TypeVar("T")
-
-
-def _v_bool(value: object, field: str) -> bool:
-    if not isinstance(value, bool):
-        raise CapacityValidationError(
-            f"{field}: expected bool, got {type(value).__name__} ({value!r})"
-        )
-    return value
 
 
 def _v_str(value: object, field: str) -> str:
@@ -207,13 +192,6 @@ def _v_tuple_of(value: object, item_type: type[T], label: str) -> None:
                 f"{label}: element must be a {item_type.__name__}, "
                 + f"got {type(item).__name__}"
             )
-
-
-def _v_instance_of(value: object, cls: type[T], label: str) -> None:
-    if not isinstance(value, cls):
-        raise CapacityValidationError(
-            f"{label}: must be a {cls.__name__}, got {type(value).__name__}"
-        )
 
 
 def _v_exact_shape(
@@ -347,7 +325,7 @@ class CapacityWindow:
     @classmethod
     def from_dict(cls, d: object) -> "CapacityWindow":
         dd = _v_exact_shape(d, cls._REQUIRED, cls._OPTIONAL, "window")
-        # provider_metadata has a fixed v1 shape: exactly the key "window_id".
+        # provider_metadata has a fixed v2 shape: exactly the key "window_id".
         window_id: str | None = None
         pm = dd.get("provider_metadata")
         if pm is not None:
@@ -389,87 +367,8 @@ class CapacityWindow:
 
 
 @dataclass(frozen=True)
-class LocalRuntime:
-    """Local runtime reachability and model facts (no quota semantics)."""
-
-    reachable: bool
-    model_presence: str
-    model_name: str | None = None
-    configured_context_tokens: int | None = None
-    effective_context_tokens: int | None = None
-
-    _REQUIRED: ClassVar[tuple[str, ...]] = ("reachable", "model_presence")
-    _OPTIONAL: ClassVar[tuple[str, ...]] = (
-        "model_name",
-        "configured_context_tokens",
-        "effective_context_tokens",
-    )
-
-    def __post_init__(self) -> None:
-        reachable = _v_bool(self.reachable, "local_runtime.reachable")
-        model_presence = _v_enum(
-            self.model_presence,
-            _MODEL_PRESENCE_VALUES,
-            "local_runtime.model_presence",
-        )
-        if self.model_name is not None:
-            _ = _v_safe_id(self.model_name, "local_runtime.model_name")
-        if self.configured_context_tokens is not None:
-            _ = _v_int(self.configured_context_tokens, "local_runtime.configured_context_tokens", lo=1)
-        if self.effective_context_tokens is not None:
-            _ = _v_int(self.effective_context_tokens, "local_runtime.effective_context_tokens", lo=1)
-
-        if model_presence in ("present", "missing") and self.model_name is None:
-            raise CapacityValidationError(
-                "local_runtime: model_name is required when model_presence is "
-                + "'present' or 'missing'"
-            )
-        if not reachable and model_presence != "unknown":
-            raise CapacityValidationError(
-                "local_runtime: model_presence must be 'unknown' when "
-                + "reachable is False"
-            )
-
-    @classmethod
-    def from_dict(cls, d: object) -> "LocalRuntime":
-        dd = _v_exact_shape(d, cls._REQUIRED, cls._OPTIONAL, "local_runtime")
-        return cls(
-            reachable=_v_bool(dd["reachable"], "local_runtime.reachable"),
-            model_presence=_v_enum(
-                dd["model_presence"],
-                _MODEL_PRESENCE_VALUES,
-                "local_runtime.model_presence",
-            ),
-            model_name=_v_opt_safe_id(dd.get("model_name"), "local_runtime.model_name"),
-            configured_context_tokens=_v_opt_int(
-                dd.get("configured_context_tokens"),
-                "local_runtime.configured_context_tokens",
-                lo=1,
-            ),
-            effective_context_tokens=_v_opt_int(
-                dd.get("effective_context_tokens"),
-                "local_runtime.effective_context_tokens",
-                lo=1,
-            ),
-        )
-
-    def to_dict(self) -> dict[str, object]:
-        out: dict[str, object] = {
-            "reachable": self.reachable,
-            "model_presence": self.model_presence,
-        }
-        if self.model_name is not None:
-            out["model_name"] = self.model_name
-        if self.configured_context_tokens is not None:
-            out["configured_context_tokens"] = self.configured_context_tokens
-        if self.effective_context_tokens is not None:
-            out["effective_context_tokens"] = self.effective_context_tokens
-        return out
-
-
-@dataclass(frozen=True)
 class CapacitySnapshot:
-    """One normalized capacity observation (v1)."""
+    """One normalized capacity observation (v2)."""
 
     schema_version: int
     provider: str
@@ -479,7 +378,6 @@ class CapacitySnapshot:
     windows: tuple[CapacityWindow, ...]
     diagnostics: tuple[CapacityDiagnostic, ...]
     plan: str | None = None
-    local_runtime: LocalRuntime | None = None
 
     _REQUIRED: ClassVar[tuple[str, ...]] = (
         "schema_version",
@@ -490,7 +388,7 @@ class CapacitySnapshot:
         "windows",
         "diagnostics",
     )
-    _OPTIONAL: ClassVar[tuple[str, ...]] = ("plan", "local_runtime")
+    _OPTIONAL: ClassVar[tuple[str, ...]] = ("plan",)
 
     def __post_init__(self) -> None:
         sv = _v_int(self.schema_version, "schema_version")
@@ -514,11 +412,6 @@ class CapacitySnapshot:
         codes: set[str] = set()
         for diag in diagnostics:
             codes.add(diag.code)
-
-        if self.local_runtime is not None:
-            _ = _v_instance_of(
-                self.local_runtime, LocalRuntime, "snapshot.local_runtime"
-            )
 
         # Cross-field invariants.
         if status in _STATUSES_WITHOUT_WINDOWS and windows:
@@ -557,11 +450,6 @@ class CapacitySnapshot:
             for x in cast("list[object]", raw_diagnostics)
         )
 
-        local_runtime: LocalRuntime | None = None
-        raw_lr = dd.get("local_runtime")
-        if raw_lr is not None:
-            local_runtime = LocalRuntime.from_dict(raw_lr)
-
         return cls(
             schema_version=_v_int(dd["schema_version"], "schema_version"),
             provider=_v_safe_id(dd["provider"], "provider"),
@@ -571,7 +459,6 @@ class CapacitySnapshot:
             windows=windows,
             diagnostics=diagnostics,
             plan=_v_opt_safe_id(dd.get("plan"), "plan"),
-            local_runtime=local_runtime,
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -584,8 +471,6 @@ class CapacitySnapshot:
         out["retrieved_at"] = self.retrieved_at
         out["status"] = self.status
         out["windows"] = [w.to_dict() for w in self.windows]
-        if self.local_runtime is not None:
-            out["local_runtime"] = self.local_runtime.to_dict()
         out["diagnostics"] = [dg.to_dict() for dg in self.diagnostics]
         return out
 

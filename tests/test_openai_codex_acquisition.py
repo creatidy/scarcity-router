@@ -1626,7 +1626,7 @@ class DiscoveryIntegration(_AcquisitionCase):
             _ = self._collect(discovery_roots=[roots], retrieved_at=INVALID_RETRIEVED_AT)
         self._assert_no_output()
 
-    def test_snapshot_round_trips_through_v1(self) -> None:
+    def test_snapshot_round_trips_through_v2(self) -> None:
         _ = self._install_fake(
             [INIT_RESPONSE, _read_response(_fixture_result("ratelimits-degraded.json"))]
         )

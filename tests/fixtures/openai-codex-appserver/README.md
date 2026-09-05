@@ -34,7 +34,7 @@ parsing paths rather than replay a live reading.
   states (`CreditsSnapshot` with required boolean fields and optional
   string-or-null `balance`, `SpendControlLimitSnapshot` with four required fields and string
   `limit`/`used`, reset-credit summary with `availableCount` and fully typed
-  rows). The credit and spend states are valid but v1-unrepresentable and
+  rows). The credit and spend states are valid but v2-unrepresentable and
   degrade to `unknown` with percentage pairs withheld.
 - Valid reset-credit summaries, including `{availableCount: 0, credits: []}`,
   are supplemental telemetry and do not block or withhold current quota
@@ -46,7 +46,7 @@ parsing paths rather than replay a live reading.
 - `ratelimits-additional-window-present.json` — an additional metered bucket
   plus the required matching `codex` mirror. Its window is emitted with a
   distinct safe identity rather than merged with a main window; the snapshot
-  is `unknown` because v1 cannot represent the cross-bucket metering.
+  is `unknown` because v2 cannot represent the cross-bucket metering.
 - `ratelimits-additional-bucket-exhausted.json` — an additional metered
   bucket under `rateLimitsByLimitId` (key matching its `limitId`) with an
   exhausted window (`usedPercent` 100): blocker, main pairs withheld.
@@ -86,7 +86,7 @@ parsing paths rather than replay a live reading.
 - backend blockers — a non-null `rateLimitReachedType`,
   `spendControlReached: true`, an exhausted `individualLimit`, or a
   blocked/exhausted additional bucket — degrade to `unknown` with
-  percentage pairs withheld; valid v1-unrepresentable credit/spend states do
+  percentage pairs withheld; valid v2-unrepresentable credit/spend states do
   too; reset-credit summaries are supplemental and do not block; known
   exhaustion without any blocker stays `ok` as
   `(100, 0)`;

@@ -74,10 +74,11 @@ direction was chosen. Dates use UTC.
 
 ### D-008 — Initial providers and roadmap order
 
-- **Status:** Accepted
+- **Status:** Superseded by D-017 (2026-09-05)
 - **Date:** 2026-09-01
-- **Decision:** v0.1 proves OpenAI/Codex, Z.ai Coding Plan and local Ollama.
-  Claude is the next provider only after a security/maintenance evaluation.
+- **Decision:** The superseded v0.1 scope explored OpenAI/Codex, Z.ai Coding
+  Plan and local Ollama. Claude was to be evaluated next only after a
+  security/maintenance review.
 - **Reason:** Solve the owner's workflow before pursuing provider breadth.
 
 ### D-009 — Security defaults
@@ -168,25 +169,42 @@ direction was chosen. Dates use UTC.
 
 ### D-016 — Provisional module status surface
 
-- **Status:** Accepted for M1 development use
+- **Status:** Superseded by D-017 (2026-09-05)
 - **Date:** 2026-09-05
-- **Decision:** The first unified status invocation is
-  `uv run python -m scarcity_router status`. It composes the existing OpenAI,
-  Z.ai and Ollama collectors in deterministic order, passes one caller-created
-  observation timestamp to each, isolates provider health as normalized data,
-  and renders either safe human output or an ordered JSON array of the existing
-  v1 snapshot serializations.
+- **Decision:** The historical three-provider status experiment used
+  `uv run python -m scarcity_router status`, one caller-created observation
+  timestamp and safe human/JSON output. It is retained only as context for the
+  superseding two-provider status surface.
 - **Reason:** This provides one useful local read-only status surface without
   choosing package metadata or a final executable name under U-008 and without
   adding a CLI, provider or configuration framework.
-- **Boundary:** Ollama requires an explicit model from the CLI or a narrowly
-  named environment variable. Endpoint and configured-context overrides remain
-  constrained by the existing collector policy. This is not REST, MCP,
-  selection, caching or model execution.
+- **Boundary:** This was not REST, MCP, selection, caching or model execution.
 - **M1 audit:** A separate `doctor` command is not an M1 blocker now that
   supported discovery/configuration validation and normalized diagnostics are
   visible through `status`. A richer doctor surface is deferred unless normal
   use demonstrates a concrete diagnostic gap.
+
+### D-017 — Local Ollama support removed
+
+- **Status:** Accepted
+- **Date:** 2026-09-05
+- **Supersedes:** D-008's three-provider scope, D-016's three-provider status
+  surface, the local-runtime portion of U-002, U-003's three-provider
+  timestamp boundary, and U-005's local inspection/transport decisions.
+- **Decision:** Remove Ollama and local-model support from Scarcity Router
+  completely. The initial supported environment is OpenAI subscription capacity
+  plus Z.ai Coding Plan subscription capacity. There is no supported mechanism
+  to discover, query, configure, select or recommend a local model.
+- **Reason:** The owner's workflow demonstrated unacceptable local runtime
+  operational instability and system interference. Maintaining that provider
+  class added complexity without sufficient practical value.
+- **Contract effect:** Schema v2 removes `LocalRuntime`,
+  `CapacitySnapshot.local_runtime`, their serialization and their diagnostics.
+  The status application contains exactly the `openai` and `zai` collectors and
+  requires no local-model configuration.
+- **M1 effect:** M1 remains **NOT YET PASS**. The remaining blocker is usable
+  current OpenAI subscription-capacity windows in the owner's supported
+  environment. Any future restoration requires a new explicit product decision.
 
 ## Unresolved decisions
 
@@ -217,8 +235,8 @@ direction was chosen. Dates use UTC.
   the observed extension/package layout, `codex-cli 0.151.0-alpha.7.2`
   matching the PoC, JSONL framing facts, and the absence of a PATH `codex`.
 - **Visibility:** the selected binary path, extension version and codex
-  version are validated in-process but deliberately not surfaced: the v1
-  capacity contract (U-002) has no field for them, and v1 diagnostics are a
+  version are validated in-process but deliberately not surfaced: the v2
+  capacity contract (U-002) has no field for them, and v2 diagnostics are a
   frozen allowlist. Reporting the selected binary/version safely is
   deferred to the M1 `doctor`/`status` work under a future decision.
 - **Residuals:** (a) minimum/maximum codex version policy — no version gate
@@ -239,58 +257,25 @@ direction was chosen. Dates use UTC.
 
 ### U-002 — Exact first serialized capacity contract
 
-- **Status:** Resolved
+- **Status:** Superseded by D-017 (2026-09-05)
 - **Date:** 2026-09-02
-- **Decision:** M1 adapters target the v1 internal serialized contract in
-  `docs/capacity-model.md`. Every snapshot carries integer `schema_version: 1`,
-  stable `provider` and `source` identifiers, optional safe `plan`, required
-  UTC `retrieved_at`, one of the six frozen provider statuses, an unordered
-  `windows` array, optional `local_runtime` facts and allowlisted diagnostic
-  codes. Account identifiers, freshness/cache fields, raw provider responses and
-  provider-specific orientation fields are excluded.
-- **Window semantics:** A window has independent normalized `resource`
-  (`tokens`, `time` or `unknown`) and `kind` (`five_hour`, `weekly` or
-  `unknown`) values, optional positive `duration_seconds`, an optional validated
-  percentage pair, optional canonical `resets_at` and an optional safe opaque
-  provider `window_id`. Known period kinds carry fixed durations. Unknown
-  windows survive normalization and array position has no meaning. A pair is
-  either `(used_percent, remaining_percent)` with an exact complement or is
-  omitted; an unvalidated provider orientation never becomes a guessed value.
-- **Time and local facts:** `retrieved_at` and `resets_at` use UTC RFC 3339
-  strings with exactly three fractional-second digits and `Z`. Ollama uses an
-  empty quota-window array plus reachability, model-presence and independently
-  validated configured/effective context fields; it never uses an unlimited or
-  100% quota sentinel.
-- **Boundary:** This is an internal M1 adapter/core contract, not REST, MCP or
-  CLI versioning. `U-003` still owns age, refresh, caching and staleness policy;
-  M2 still owns scarcity and selection.
+- **Decision:** The superseded M1 adapters targeted an internal v1 capacity
+  contract with provider-independent windows, safe diagnostics and no raw
+  provider data. Its detailed historical shape is retained only in repository
+  history; the current internal contract is v2 in `docs/capacity-model.md`.
 - **Reason:** Two independent subscription adapters need the same provider-free
-  semantics while Z.ai and Codex wire formats evolve independently. Omitting
-  account and freshness fields keeps v1 minimal and avoids prematurely
-  publishing security-sensitive or policy-shaped data.
-- **Evidence and validation:** The current OpenAI/Codex and Z.ai observations,
-  including known five-hour/weekly windows, unknown-window behavior, reset
-  conversion and Z.ai's evidence-backed used-oriented percentage, informed the
-  adapter boundary only. The normalized contract contains no Z.ai raw
-  `percentage`, epoch-millisecond value, `unit`/`number` pair or Codex
-  `primary`/`secondary` concept. The required OpenAI, Z.ai, schema-drift,
-  authentication, Ollama and missing-versus-zero scenarios are model-checked in
-  the contract document.
-- **Rejected alternatives:** Keeping `freshness`, stale thresholds or cache
-  lifetime in the snapshot would preempt `U-003`; using one raw provider
-  percentage would leak orientation; storing independently supplied used and
-  remaining values would allow contradictions; treating unknown windows as
-  healthy or discarding them would lose evidence; account IDs and raw metadata
-  were rejected for security and minimality; encoding local availability as a
-  fake quota percentage was rejected as semantically false.
+  semantics while Z.ai and Codex wire formats evolve independently.
+- **Boundary:** This remains an internal adapter/core contract, not REST, MCP or
+  CLI versioning. U-003 owns refresh and staleness policy; M2 owns scarcity and
+  selection.
 
 ### U-003 — Refresh and staleness policy
 
 - **Status:** Partially resolved for synchronous M1 status (2026-09-05)
 - **Decision:** Every `status` invocation performs a fresh sequential collection
   and establishes one canonical UTC millisecond `retrieved_at` immediately for
-  that observation attempt. The same value is passed to OpenAI, Z.ai and
-  Ollama; provider observations are never independently timestamped.
+  that observation attempt. The same value is passed to OpenAI and Z.ai;
+  provider observations are never independently timestamped.
 - **Boundary:** This resolves the on-demand observation behavior only. No cache
   TTL, background refresh, freshness score, stale threshold or timeout policy
   is invented here.
@@ -321,92 +306,13 @@ direction was chosen. Dates use UTC.
   change; (c) exact `TIME_LIMIT` counter semantics (`usage`/`currentValue`/
   `remaining`) are observed but only the used/remaining reading is relied on.
 
-### U-005 — Ollama inspection contract
+### U-005 — Local runtime inspection contract
 
-- Select the supported local calls for health, model presence and effective
-  configuration; distinguish configured from effective context.
-- Evidence needed: a local PoC against the actual Qwen configuration.
-- **Status:** Superseded for transport implementation by U-005a; inspection
-  semantics remain narrowly resolved for M1 (2026-09-04); residuals below
-- **Decision:** The local collector makes at most three read-only GETs
-  against one explicitly configured local endpoint — two when the validated
-  listing proves the configured model absent. The endpoint is
-  canonicalized before any I/O: plain `http` on exactly the numeric
-  loopback hosts `127.0.0.1` or `::1` (`localhost` and every other name
-  are rejected outright, so no DNS/hosts-file/proxy escape path exists);
-  the omitted port canonically defaults to the documented Ollama port
-  11434; explicitly empty port syntax, query/fragment delimiters,
-  whitespace/control characters and non-root paths are rejected. The reads are
-  `GET /api/version` (validated envelope with a usable, bounded,
-  printable version string — control, format and padding code points
-  rejected — = the reachability fact),
-  `GET /api/tags` (exact `name`-identity model presence; every provider-supplied
-  `name`/`model` is a printable safe-v1 identity) and
-  `GET /api/ps` (effective context). `model_presence` is `missing` only
-  when a reachable runtime's validated listing lacks the configured name,
-  and `unknown` on runtime/listing failures; `/api/ps` supplemental
-  failures preserve the tags-derived presence while omitting the optional
-  effective context. `configured_context_tokens` comes only from the
-  explicit configuration boundary; `effective_context_tokens` comes only
-  from a validated positive integer `context_length` on the configured
-  model's loaded `/api/ps` entry whose validated `sha256:<64 lowercase
-  hex>` digest agrees with the listing's validated digest — a missing,
-  invalid or mismatched digest preserves reachability/presence but
-  degrades the telemetry to `unknown` and withholds the effective context
-  rather than attributing it to an unverifiable model image; the digest is
-  never emitted. The effective context is never taken from the configured
-  value and never from the `/api/tags` `details.context_length` model-file
-  metadata. Responses are handled by synchronous standard-library
-  `http.client.HTTPConnection` with a finite socket timeout and one bounded
-  body read; non-200 responses are not read, redirects are not followed and
-  each connection is closed in `finally`. Bodies then use strict JSON
-  decoding: duplicate object keys, NaN/Infinity, non-finite floats such as
-  `1e10000`, integers outside the validated signed 64-bit band, recursion-limit
-  nesting and decoder resource failures normalize to `schema_changed`.
-  Transport and response-shape failures normalize safely without retaining
-  exception text. The collector does not implement raw sockets, custom HTTP
-  framing, worker threads, cancellation or private response ownership rules;
-  those mechanisms are unnecessary for the frozen local M1 threat model.
-  Duplicate listed names and any malformed/drifted body fail
-  closed; a healthy local runtime reports `windows: []` with no quota
-  semantics. There is no generation, no model loading for inspection, no
-  pull/delete and no runtime/config mutation.
-- **Evidence:** 2026-09-04 reconnaissance in `docs/poc-evidence.md`
-  ("2026-09-04 M1 Ollama local runtime reconnaissance"): live envelope
-  shapes for all three reads against Ollama `0.33.1` plus the installed
-  binary's serialization table for the `context_length` field name.
-- **Residuals:** (a) a live **populated** effective-context value has not
-  been observed (nothing was loaded during reconnaissance; loading solely
-  for inspection is side-effectful and was not performed) — the populated
-  path is synthetic-fixture-tested only; (b) `context_length` stability
-  across Ollama releases is unevidenced — the local interface must not be
-  described as stable — and the parser fails closed on its absence;
-  (c) the reconnaissance runtime was the installed `0.33.1`
-  service, not the owner's loaded Qwen configuration, so load-state
-  behavior of the real workflow remains to be observed in use.
-
-### U-005a — Bounded standard-library Ollama transport
-
-- **Status:** Accepted, 2026-09-05
-- **Supersedes:** U-005 transport details only; the endpoint, fixed-read and
-  normalized inspection semantics above remain authoritative.
-- **Decision:** Use synchronous `http.client.HTTPConnection` directly with the
-  validated numeric loopback host/port, a finite socket timeout, the fixed GET
-  paths, a simple maximum response-body bound, strict UTF-8/JSON decoding,
-  safe status/transport normalization and ordinary `finally` cleanup. Keep the
-  fake-connection contract tests and pure provider parsers; do not add a
-  generic transport abstraction.
-- **Reason:** M1 makes only local, read-only requests to one canonical numeric
-  loopback endpoint. The standard library already supplies HTTP request,
-  response parsing, timeout and connection lifecycle behavior. Reimplementing
-  socket connection readiness, HTTP framing, cancellation and worker
-  reclamation added complexity without improving the frozen M1 contract.
-- **Deferred risks:** A future requirement for a hard end-to-end collection
-  deadline, unusual peer framing policy, cancellation independent of socket
-  timeouts, or richer transport telemetry may require a new reviewed decision.
-  Slow or hostile local peers remain bounded per socket operation, not by a
-  custom collection-wide deadline. No live provider call is required to
-  validate this implementation choice.
+- **Status:** Superseded by D-017 (2026-09-05)
+- **Decision:** Earlier M1 work explored a read-only local runtime inspection
+  contract and a bounded transport implementation. Those implementation and
+  evidence decisions are historical only; no local runtime is a supported
+  Scarcity Router input after D-017.
 
 ### U-006 — Initial capability ratings and profile thresholds
 
@@ -429,13 +335,13 @@ direction was chosen. Dates use UTC.
 - Confirm that public distribution of each collector is compatible with current
   provider terms and maintenance expectations before release.
 
-### U-010 — Codex rate-limit snapshot semantics under v1
+### U-010 — Codex rate-limit snapshot semantics under v2
 
 - **Status:** Resolved, 2026-09-03 (updated twice same day after schema
   review against the exact tagged schema `rust-v0.151.0-alpha.7.2`)
 - **Decision:** The OpenAI adapter validates the complete evidenced
   `GetAccountRateLimitsResponse` envelope and normalizes it under the
-  existing v1 contract as follows:
+  existing v2 contract as follows:
   - **Envelope.** For input deserialization, the JSON Schema requires only the
      `rateLimits` member: missing is drift (`schema_changed`).
      `rateLimitsByLimitId` and `rateLimitResetCredits` are nullable optional
@@ -464,7 +370,7 @@ direction was chosen. Dates use UTC.
     `rateLimitResetCredits` (integer `availableCount` plus optional typed
     `credits` rows requiring `id`, `resetType`, `status` and `grantedAt`, with
     optional nullable `expiresAt`, `title` and `description`) are type-validated: malformed shapes
-    are `schema_changed`. Valid credits or individual-limit states have no v1
+    are `schema_changed`. Valid credits or individual-limit states have no v2
     representation: they degrade to `status: "unknown"` and withhold the
     percentage pairs (`percentage_unknown` per window); an individual limit
     with `remainingPercent == 0` is a backend blocker. A valid reset-credit
@@ -489,7 +395,7 @@ direction was chosen. Dates use UTC.
     at `usedPercent == 100`. Each degrades to `status: "unknown"` with
     `telemetry_unknown` and withholds the main percentage pairs. A
     present-but-unblocked additional bucket also degrades to `unknown`
-    (v1 cannot represent capacity metered across buckets) while keeping
+    (v2 cannot represent capacity metered across buckets) while keeping
     the main windows' validated pairs. Known exhaustion of the main quota
     *without* any blocker stays `ok` with the `(100, 0)` pair.
   - **Additional buckets.** The exact success response mirrors the main
@@ -502,7 +408,7 @@ direction was chosen. Dates use UTC.
     not merged or discarded. Bucket window coverage is not enforced (a bucket
     may legitimately carry one window).
   - **Plan labels.** `plan` accepts every exact tagged `PlanType` member
-    the v1 safe-ID grammar permits as-is (underscores included): `free`,
+    the v2 safe-ID grammar permits as-is (underscores included): `free`,
     `go`, `plus`, `pro`, `prolite`, `team`, `business`, `edu`, `edu_plus`,
     `edu_pro`, `enterprise`, `ent26`, `enterprise_cbp_automation`,
     `enterprise_cbp_usage_based`, `self_serve_business_prolite`,
@@ -531,8 +437,8 @@ direction was chosen. Dates use UTC.
   review-confirmed generated schema for `rust-v0.151.0-alpha.7.2`; no live
   capture was possible (the read errored during reconnaissance), so the
   PoC shape remains the validated success mapping.
-- **Boundary:** this is adapter-edge semantics under the frozen v1 contract;
-  it adds no v1 fields or diagnostics and does not preempt U-003
+- **Boundary:** this is adapter-edge semantics under the frozen v2 contract;
+  it adds no v2 fields or diagnostics and does not preempt U-003
   (freshness) or M2 (scarcity/selection).
 
 ## Superseding a decision

@@ -101,7 +101,7 @@ class KnownWindowsFixture(unittest.TestCase):
             _load("quota-200-known-windows.json"), retrieved_at=RETRIEVED_AT
         )
         self.assertEqual(snap.status, "ok")
-        self.assertEqual(snap.schema_version, 1)
+        self.assertEqual(snap.schema_version, 2)
         self.assertEqual(snap.provider, "zai")
         self.assertEqual(snap.source, "zai_usage_endpoint")
         self.assertEqual(snap.plan, "pro")
@@ -225,7 +225,7 @@ class DegradedValuesFixture(unittest.TestCase):
         self.assertIn(("percentage_unknown", "tokens_limit-6-1"), scoped)
         self.assertIn(("reset_unknown", "tokens_limit-6-1"), scoped)
         self.assertNotIn(("percentage_unknown", "tokens_limit-3-5"), scoped)
-        # The degraded snapshot must still be a valid v1 snapshot.
+        # The degraded snapshot must still be a valid v2 snapshot.
         reparsed = CapacitySnapshot.from_dict(snap.to_dict())
         self.assertEqual(reparsed, snap)
 
@@ -656,7 +656,7 @@ class PurityAndDeterminism(unittest.TestCase):
                 payload, retrieved_at="2026-09-01T22:49:51Z"
             )
 
-    def test_snapshot_validates_through_v1_contract(self) -> None:
+    def test_snapshot_validates_through_v2_contract(self) -> None:
         for name in (
             "quota-200-known-windows.json",
             "quota-200-unknown-window.json",

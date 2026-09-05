@@ -60,7 +60,7 @@ class ModelPolicyContract(unittest.TestCase):
         self.assertIsInstance(policy, dict)
         parsed = cast(dict[str, object], policy)
         self.assertEqual(parsed["schema_version"], 1)
-        self.assertEqual(parsed["policy_version"], 2)
+        self.assertEqual(parsed["policy_version"], 3)
         self.assertEqual(parsed["updated_at"], "2026-09-05")
         self.assertEqual(json.loads(json.dumps(parsed)), parsed)
 
@@ -554,6 +554,9 @@ class ModelPolicyContract(unittest.TestCase):
             },
         )
         self.assertFalse(any("Qwen" in _required_string(entry, "model_name") for entry in models))
+        policy_text = POLICY_PATH.read_text(encoding="utf-8").lower()
+        for removed_term in ("ollama", "qwen", "local-first", "local model"):
+            self.assertNotIn(removed_term, policy_text)
         for entry in models:
             primary = _strings(entry["primary_archetypes"], "primary_archetypes")
             secondary = _strings(entry["secondary_archetypes"], "secondary_archetypes")
