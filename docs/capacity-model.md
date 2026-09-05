@@ -7,8 +7,8 @@ not describe model capability, task requirements, user policy or scarcity.
 Provider adapters own wire-format parsing and emit this provider-independent
 record; consumers must not parse provider responses.
 
-This is the internal serialized contract between M1 read-only adapters and the
-core. It is not a public REST, MCP or CLI contract. Those interfaces, including
+This is the internal serialized contract between the M1 provider adapters and
+the core. It is not a public REST, MCP or CLI contract. Those interfaces, including
 their versioning, are later decisions. The record is an observation at one point
 in time, not a promise that the source remains available.
 

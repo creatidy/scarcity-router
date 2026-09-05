@@ -79,11 +79,25 @@ docs/poc-evidence.md ("OpenAI/Codex subscription capacity" and the
    optional. Empty arrays are valid, but empty or malformed rows are drift. A
    valid summary is supplemental telemetry: its presence and
    ``availableCount`` do not block or withhold current quota pairs;
-- ``ordinaryUsageAllowed == true`` is the only envelope permission state that
-  establishes ordinary included usage. ``false``, null or absence is an
-  insufficient/blocked state and never becomes usable from percentages alone.
-  A non-null ``rateLimitUpsell`` is also treated as a current upstream
-  recovery blocker, while its opaque presentation contents are discarded;
+- ``ordinaryUsageAllowed`` is the permission member of the *current* response
+  generation (upstream additions of 2026-09). Two evidenced generations are
+  supported explicitly (docs/decisions.md D-019):
+  - current generation (the envelope contains ``ordinaryUsageAllowed``):
+    ``true`` is the only state that establishes ordinary included usage;
+    ``false``, null are an insufficient/blocked state and never become usable
+    from percentages alone;
+  - previous evidenced installed generation (the member is absent): the
+    legacy schema has no ``ordinaryUsageAllowed`` field, so permission is
+    evaluated from the evidenced legacy blocker contract instead — explicit
+    ``spendControlReached == true`` blocks, any validated non-null
+    ``rateLimitReachedType`` blocks, v2-unrepresentable credit/spend states
+    block, and missing/null ``spendControlReached`` remains the legacy
+    conservative unavailable state that withholds pairs. Permission is never
+    inferred from percentages and ``ordinaryUsageAllowed=true`` is never
+    manufactured;
+  - a non-null ``rateLimitUpsell`` is treated as a current upstream recovery
+    blocker in either generation, while its opaque presentation contents are
+    discarded;
 - backend blockers and v2-unrepresentable states never yield a healthy
   snapshot: ``status="unknown"`` with ``telemetry_unknown``, all validated
   windows (main and additional) preserved with identity/duration/reset
@@ -92,11 +106,15 @@ docs/poc-evidence.md ("OpenAI/Codex subscription capacity" and the
   ``unknown`` (v2 cannot represent capacity metered across buckets) but
   keeps validated pairs. Known exhaustion of the main quota *without* any
   blocker stays ``ok`` with the ``(100, 0)`` pair;
-- main quota coverage is validated: a main snapshot lacking either known
-  window kind (five-hour or weekly) never reports ``ok``; it degrades to
-  ``unknown`` with the validated partial windows preserved. Two slot
-  windows sharing one known period duplicate the evidenced
-  primary/secondary semantics and fail closed as ``schema_changed``;
+- window coverage is evidence-based, not structural (D-019): a provider may
+  legitimately omit a quota window. A validated, unblocked main snapshot
+  with at least one window whose percentage pair is usable is healthy even
+  when the other expected window kind is absent — the absent window is
+  simply absent, never synthesized and never guessed at. A snapshot with no
+  window anywhere remains insufficient evidence (``unknown``), and so does a
+  snapshot whose windows all lack usable pairs. Two slot windows sharing one
+  known period still duplicate the evidenced primary/secondary semantics
+  and fail closed as ``schema_changed``;
  - ``usedPercent`` is a required i32 and is used-oriented for the evidenced
    schema (the PoC reading and the Codex extension's own
    ``remaining = 100 - used`` derivation agree): valid values 0..100
@@ -821,6 +839,11 @@ def parse_codex_rate_limits_result(
         ordinary_usage_allowed, bool
     ):
         return _failure("schema_changed", "schema_changed", retrieved_at)
+    # Response-generation compatibility (D-019): the current upstream
+    # generation carries the permission member; the installed supported
+    # generation predates it. The member's absence selects the evidenced
+    # legacy blocker contract instead of manufacturing permission.
+    legacy_generation = "ordinaryUsageAllowed" not in envelope
 
     account_id = envelope.get("accountId")
     if account_id is not None and not isinstance(account_id, str):
@@ -900,9 +923,6 @@ def parse_codex_rate_limits_result(
         return _failure("schema_changed", "schema_changed", retrieved_at)
 
     plan = _safe_plan(rate_limits.get("planType"))
-    main_kinds = [
-        facts.kind for facts in main_state.windows if facts.kind != "unknown"
-    ]
 
     # Deterministic emission: main slots, then additional buckets by key.
     emitted: list[CapacityWindow] = [f.window for f in main_state.windows]
@@ -915,13 +935,20 @@ def parse_codex_rate_limits_result(
             diagnostics.extend(facts.diagnostics)
 
     blocked = (
-        ordinary_usage_allowed is not True
-        or rate_limit_upsell_present
+        rate_limit_upsell_present
         or main_state.blocked
         or additional_blocked
         or main_state.unrepresentable
         or additional_unrepresentable
     )
+    if legacy_generation:
+        # Legacy schema has no ordinaryUsageAllowed field; permission is
+        # evaluated from the evidenced legacy blocker contract. Its
+        # conservative rule for missing/null spend-control evidence
+        # (unavailable, never guessed) withholds the percentage pairs.
+        blocked = blocked or main_state.unavailable
+    else:
+        blocked = blocked or ordinary_usage_allowed is not True
 
     if not emitted:
         # No window slots anywhere: the response cannot evidence any quota
@@ -953,15 +980,13 @@ def parse_codex_rate_limits_result(
             plan=plan,
         )
 
-    if (
-        additional_present
-        or "five_hour" not in main_kinds
-        or "weekly" not in main_kinds
+    if additional_present or not any(
+        facts.window.used_percent is not None for facts in main_state.windows
     ):
         # Additional metered buckets beyond the main quota are present, or
-        # an expected main window constraint is missing: never healthy,
+        # no main window exposes a usable percentage pair: never healthy,
         # keep the validated facts and degrade the overall status to
-        # unknown.
+        # unknown (D-019).
         diagnostics.append(CapacityDiagnostic(code="telemetry_unknown"))
         return CapacitySnapshot(
             schema_version=2,

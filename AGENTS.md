@@ -151,8 +151,11 @@ leakage. See `docs/security.md` for the complete invariants.
 
 ## Capacity collectors
 
-Collectors are small, read-only adapters that translate one provider response
-into the normalized model in `docs/capacity-model.md`.
+Collectors are small adapters that translate one provider response into the
+normalized model in `docs/capacity-model.md`. Collection is read-only except
+for the single owner-approved exception in `docs/decisions.md` D-018 (one
+provider-managed OpenAI credential refresh after the evidenced app-server
+`-32603` rate-limits error, followed by one retry).
 
 For every adapter:
 

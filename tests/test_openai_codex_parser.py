@@ -47,6 +47,7 @@ ALL_FIXTURES = (
     "ratelimits-zero-usage.json",
     "ratelimits-degraded.json",
     "ratelimits-schema-changed.json",
+    "ratelimits-legacy-generation-ok.json",
 )
 
 
@@ -332,21 +333,17 @@ class CurrentSchemaCompatibility(unittest.TestCase):
             [(None, None), (None, None)],
         )
 
-    def test_null_or_missing_ordinary_usage_permission_is_conservative(self) -> None:
-        for omit in ((), ("ordinaryUsageAllowed",)):
-            with self.subTest(omit=omit):
-                snap = _parse(
-                    _result(
-                        _snapshot(dict(_BOTH_SLOTS)),
-                        ordinary_usage_allowed=None,
-                        omit=omit,
-                    )
-                )
-                self.assertEqual(snap.status, "unknown")
-                self.assertEqual(
-                    [(w.used_percent, w.remaining_percent) for w in snap.windows],
-                    [(None, None), (None, None)],
-                )
+    def test_explicit_null_ordinary_usage_permission_is_conservative(self) -> None:
+        # The member present as null is the current generation's explicit
+        # insufficient-permission state: pairs stay withheld.
+        snap = _parse(
+            _result(_snapshot(dict(_BOTH_SLOTS)), ordinary_usage_allowed=None)
+        )
+        self.assertEqual(snap.status, "unknown")
+        self.assertEqual(
+            [(w.used_percent, w.remaining_percent) for w in snap.windows],
+            [(None, None), (None, None)],
+        )
 
     def test_malformed_ordinary_usage_permission_fails_closed(self) -> None:
         malformed: tuple[object, ...] = ("true", 1, [], {})
@@ -412,6 +409,93 @@ class CurrentSchemaCompatibility(unittest.TestCase):
         )
         self.assertEqual(snap.status, "schema_changed")
         self.assertEqual(snap.windows, ())
+
+
+class LegacyGenerationCompatibility(unittest.TestCase):
+    """The installed generation's envelope has no ordinaryUsageAllowed member.
+
+    Absence selects the evidenced legacy blocker contract (D-019): permission
+    is never manufactured, and the previously evidenced conservative rules
+    for spend-control evidence, reached types and unrepresentable states
+    continue to govern.
+    """
+
+    def test_legacy_fixture_without_permission_member_is_healthy(self) -> None:
+        snap = _parse(_load("ratelimits-legacy-generation-ok.json"))
+        self.assertEqual(snap.status, "ok")
+        self.assertEqual(snap.schema_version, 2)
+        self.assertEqual(snap.plan, "pro")
+        self.assertEqual(
+            [(w.kind, w.used_percent, w.remaining_percent) for w in snap.windows],
+            [("five_hour", 12, 88), ("weekly", 40, 60)],
+        )
+        self.assertEqual(_codes(snap), set())
+        self.assertNotIn("ordinaryUsageAllowed", _canonical_json(snap))
+
+    def test_legacy_absence_does_not_weaken_explicit_blockers(self) -> None:
+        blocked: tuple[dict[str, object], ...] = (
+            {"spendControlReached": True},
+            {"rateLimitReachedType": "rate_limit_reached"},
+        )
+        for extra in blocked:
+            with self.subTest(extra=extra):
+                snap = _parse(
+                    _result(_snapshot(dict(_BOTH_SLOTS), extra=extra),
+                            ordinary_usage_allowed=None,
+                            omit=("ordinaryUsageAllowed",))
+                )
+                self.assertEqual(snap.status, "unknown")
+                self.assertIn("telemetry_unknown", _codes(snap))
+                for window in snap.windows:
+                    self.assertIsNone(window.used_percent)
+                    self.assertIsNone(window.remaining_percent)
+
+    def test_legacy_missing_or_null_spend_control_stays_conservative(self) -> None:
+        for missing in (False, True):
+            with self.subTest(missing=missing):
+                rate_limits = _snapshot(
+                    dict(_BOTH_SLOTS), extra={"spendControlReached": None}
+                )
+                if missing:
+                    _ = rate_limits.pop("spendControlReached")
+                snap = _parse(
+                    _result(rate_limits, ordinary_usage_allowed=None,
+                            omit=("ordinaryUsageAllowed",))
+                )
+                self.assertEqual(snap.status, "unknown")
+                self.assertIn("telemetry_unknown", _codes(snap))
+                self.assertEqual(
+                    [(w.used_percent, w.remaining_percent) for w in snap.windows],
+                    [(None, None), (None, None)],
+                )
+
+    def test_legacy_unrepresentable_states_still_block(self) -> None:
+        snap = _parse(
+            _result(
+                _snapshot(
+                    dict(_BOTH_SLOTS),
+                    extra={
+                        "credits": {"hasCredits": True, "unlimited": False}
+                    },
+                ),
+                ordinary_usage_allowed=None,
+                omit=("ordinaryUsageAllowed",),
+            )
+        )
+        self.assertEqual(snap.status, "unknown")
+        self.assertIn("telemetry_unknown", _codes(snap))
+
+    def test_legacy_upsell_is_still_a_blocker(self) -> None:
+        snap = _parse(
+            _result(
+                _snapshot(dict(_BOTH_SLOTS)),
+                ordinary_usage_allowed=None,
+                omit=("ordinaryUsageAllowed",),
+                envelope_extra={"rateLimitUpsell": {"banner": "synthetic"}},
+            )
+        )
+        self.assertEqual(snap.status, "unknown")
+        self.assertNotIn("synthetic", _canonical_json(snap))
 
 
 class CreditsAndSpendControl(unittest.TestCase):
@@ -974,10 +1058,13 @@ class AdditionalBuckets(unittest.TestCase):
 class UnknownDurationFixture(unittest.TestCase):
     def test_unknown_window_preserved_without_guessing(self) -> None:
         snap = _parse(_load("ratelimits-unknown-duration.json"))
-        # The weekly sibling is validated, but the five-hour constraint is
-        # missing, so the snapshot must not appear healthy.
-        self.assertEqual(snap.status, "unknown")
-        self.assertIn("telemetry_unknown", _codes(snap))
+        # The unrecognized 60-minute period is preserved with kind "unknown"
+        # and its exact duration — never guessed into a known period. The
+        # snapshot itself is healthy: both supplied windows are valid,
+        # unblocked and carry usable pairs (D-019); unknown semantics stay
+        # explicit through the window diagnostics.
+        self.assertEqual(snap.status, "ok")
+        self.assertIn("window_semantics_unknown", _codes(snap))
         unknown = _windows(snap, resource="tokens", kind="unknown")
         self.assertEqual(len(unknown), 1)
         uw = unknown[0]
@@ -1134,9 +1221,14 @@ class SchemaChangedFixture(unittest.TestCase):
 
 
 class CoverageValidation(unittest.TestCase):
-    """A response missing an expected window constraint never looks healthy."""
+    """An absent window is simply absent (D-019): never synthesized.
 
-    def test_missing_weekly_degrades_to_unknown(self) -> None:
+    A validated, unblocked snapshot with at least one usable pair is healthy
+    regardless of which expected window kind the provider supplied. Emptiness,
+    duplicate known periods and identity drift still fail closed.
+    """
+
+    def test_missing_weekly_is_absent_not_unknown(self) -> None:
         for slots in (
             {"primary": _window(6, 300), "secondary": None},
             {"primary": _window(6, 300)},  # key absent entirely
@@ -1144,25 +1236,48 @@ class CoverageValidation(unittest.TestCase):
             with self.subTest(slots=sorted(slots)):
                 payload = _result(_snapshot(dict(slots)))
                 snap = _parse(payload)
-                self.assertEqual(snap.status, "unknown")
-                telemetry = [
-                    d.code for d in snap.diagnostics
-                    if d.code == "telemetry_unknown"
-                ]
-                self.assertEqual(telemetry, ["telemetry_unknown"])
+                self.assertEqual(snap.status, "ok")
+                self.assertEqual(_codes(snap), set())
                 self.assertEqual(len(snap.windows), 1)
                 five_hour = snap.windows[0]
                 self.assertEqual(five_hour.kind, "five_hour")
-                self.assertEqual(five_hour.used_percent, 6)  # validated fact kept
+                self.assertEqual(five_hour.used_percent, 6)
+                self.assertEqual(five_hour.remaining_percent, 94)
 
-    def test_missing_five_hour_degrades_to_unknown(self) -> None:
+    def test_missing_five_hour_is_absent_not_unknown(self) -> None:
         payload = _result(
             _snapshot({"secondary": _window(52, 10080, 1788748064)})
         )
         snap = _parse(payload)
-        self.assertEqual(snap.status, "unknown")
+        self.assertEqual(snap.status, "ok")
+        self.assertEqual(_codes(snap), set())
         self.assertEqual(len(snap.windows), 1)
-        self.assertEqual(snap.windows[0].kind, "weekly")
+        weekly = snap.windows[0]
+        self.assertEqual(weekly.kind, "weekly")
+        self.assertEqual((weekly.used_percent, weekly.remaining_percent), (52, 48))
+
+    def test_single_window_never_gains_a_synthesized_sibling(self) -> None:
+        for slots, supplied_kind in (
+            ({"primary": _window(6, 300)}, "five_hour"),
+            ({"secondary": _window(52, 10080, 1788748064)}, "weekly"),
+        ):
+            with self.subTest(supplied_kind=supplied_kind):
+                snap = _parse(_result(_snapshot(dict(slots))))
+                self.assertEqual(len(snap.windows), 1)
+                self.assertEqual(
+                    sorted(w.kind for w in snap.windows), [supplied_kind]
+                )
+
+    def test_all_pairs_unusable_is_unknown_not_ok(self) -> None:
+        payload = _result(
+            _snapshot({"primary": _window(101, 300)})
+        )
+        snap = _parse(payload)
+        self.assertEqual(snap.status, "unknown")
+        self.assertIn("telemetry_unknown", _codes(snap))
+        self.assertIn("percentage_unknown", _codes(snap))
+        self.assertEqual(len(snap.windows), 1)  # validated window preserved
+        self.assertIsNone(snap.windows[0].used_percent)
 
     def test_no_windows_at_all_is_unknown_never_ok(self) -> None:
         payload = _result(_snapshot({}))
@@ -1348,7 +1463,7 @@ class WindowStructureDrift(unittest.TestCase):
             )
         )
         snap = _parse(payload)
-        self.assertEqual(snap.status, "unknown")  # five-hour constraint unknown
+        self.assertEqual(snap.status, "ok")  # unblocked, usable pairs supplied
         unknown = _windows(snap, resource="tokens", kind="unknown")
         self.assertEqual(len(unknown), 1)
         self.assertEqual(unknown[0].used_percent, 6)
@@ -1369,7 +1484,7 @@ class WindowStructureDrift(unittest.TestCase):
             )
         )
         snap = _parse(payload)
-        self.assertEqual(snap.status, "unknown")
+        self.assertEqual(snap.status, "ok")
         unknown = _windows(snap, resource="tokens", kind="unknown")
         self.assertEqual(len(unknown), 1)
         self.assertIsNone(unknown[0].duration_seconds)
@@ -1462,7 +1577,10 @@ class WindowStructureDrift(unittest.TestCase):
         self.assertEqual(snap.status, "ok")
         self.assertEqual(len(snap.windows), 2)
 
-    def test_unknown_durations_on_both_slots_stay_unknown(self) -> None:
+    def test_unknown_durations_on_both_slots_stay_unknown_kind(self) -> None:
+        # Both supplied periods are unrecognized: each window keeps kind
+        # "unknown" with its validated duration, and the snapshot is honest
+        # about what the provider supplied (valid, unblocked, usable pairs).
         payload = _result(
             _snapshot(
                 {
@@ -1472,7 +1590,7 @@ class WindowStructureDrift(unittest.TestCase):
             )
         )
         snap = _parse(payload)
-        self.assertEqual(snap.status, "unknown")
+        self.assertEqual(snap.status, "ok")
         self.assertEqual(len(snap.windows), 2)
         for window in snap.windows:
             self.assertEqual(window.kind, "unknown")

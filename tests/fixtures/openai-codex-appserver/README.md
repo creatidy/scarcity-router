@@ -57,9 +57,10 @@ parsing paths rather than replay a live reading.
   the validated duration, never the slot position.
 - `ratelimits-unknown-duration.json` — one window with an **unvalidated**
   duration (60 minutes). The parser must preserve it with `kind: "unknown"`
-  and `duration_seconds: 3600`, never guess a known period, keep the
-  healthy weekly sibling's pair, and degrade the overall snapshot to
-  `unknown` because the five-hour constraint is missing.
+  and `duration_seconds: 3600`, never guess a known period, and keep the
+  healthy weekly sibling's pair. The snapshot itself stays healthy when the
+  supplied evidence is valid and unblocked; unknown semantics remain explicit
+  through the window diagnostic (D-019).
 - `ratelimits-exhausted-reached.json` — both windows report 100% used and a
   schema-backed `rateLimitReachedType` (`rate_limit_reached`). A non-null
   backend reached state must not yield a healthy snapshot with inferred
@@ -75,6 +76,12 @@ parsing paths rather than replay a live reading.
   (`rateLimits.windows[].{kind, consumedPercent, resetTimeUtc}`) that is not
   the observed shape. The parser must fail closed to `schema_changed` with no
   partial windows.
+- `ratelimits-legacy-generation-ok.json` — the installed supported generation
+  (`codex-cli 0.151.0-alpha.7.2`): the envelope carries no
+  `ordinaryUsageAllowed` member and the snapshot is the previous nine-member
+  shape with clear blocker evidence (`spendControlReached: false`, null
+  reached type). Healthy under the legacy blocker contract (D-019); the
+  permission member is never manufactured.
 
 ## Assertions expected of the collector
 
@@ -86,13 +93,17 @@ parsing paths rather than replay a live reading.
 - current envelope metadata is explicit: `ordinaryUsageAllowed` must be a
   boolean or null when present, `accountId` is validated as string-or-null but
   never emitted, and `rateLimitUpsell` is recognized as opaque presentation
-  data. A true ordinary-usage permission is required for usable pairs; false,
-  null or absence remains unknown. A non-null upsell is a current upstream
-  recovery blocker, but its content is never inspected or emitted. The
-  `normalModelSlug` snapshot member is validated as string-or-null and omitted
-  from v2 output;
-- missing window coverage, duplicate known periods and a non-`codex`
-  `limitId` never yield a healthy snapshot;
+  data. When the member is present, a true ordinary-usage permission is
+  required for usable pairs and false/null stays blocked. When the member is
+  absent (the installed legacy generation), permission is evaluated from the
+  evidenced legacy blocker contract and never manufactured (D-019). A
+  non-null upsell is a recovery blocker in either generation, but its content
+  is never inspected or emitted. The `normalModelSlug` snapshot member is
+  validated as string-or-null and omitted from v2 output;
+- an absent window is simply absent and never synthesized; a validated,
+  unblocked snapshot with at least one usable pair is healthy. Emptiness,
+  duplicate known periods and a non-`codex` `limitId` never yield a healthy
+  snapshot;
 - backend blockers — a non-null `rateLimitReachedType`,
   `spendControlReached: true`, an exhausted `individualLimit`, or a
   blocked/exhausted additional bucket — degrade to `unknown` with

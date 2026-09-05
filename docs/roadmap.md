@@ -7,8 +7,8 @@ earlier outcome is useful in the owner's workflow.
 ## Current status
 
 **M0 PASS (2026-09-01).** The M0 exit criteria have been audited and passed.
-**M1 is current.** The OpenAI/Codex and Z.ai read-only subscription collectors
-and the unified status surface are implemented. Synchronous status now performs
+**M1 is current.** The OpenAI/Codex and Z.ai subscription collectors and the
+unified status surface are implemented. Synchronous status now performs
 a fresh collection with one shared observation timestamp, but no cache or stale
 threshold has been chosen. M1 remains **NOT YET PASS** because live OpenAI
 subscription-capacity telemetry must produce usable current quota windows in the
@@ -84,12 +84,17 @@ Exit criteria:
 
 - [x] OpenAI/Codex production collector implemented and fixture-tested.
 - [x] Z.ai Coding Plan production collector implemented and fixture-tested.
-- [x] Unified read-only `status` collection and human renderer implemented.
+- [x] Unified `status` collection and human renderer implemented.
 - [x] Deterministic normalized JSON status output implemented.
 - [x] One shared observation timestamp passed to both collectors.
 - [x] Provider operational failures remain status data and do not suppress
   other provider snapshots.
 - [x] No model request is issued by status collection.
+- [x] Bounded provider-managed OpenAI auth recovery implemented and
+  fixture-tested (D-018): live OpenAI collection now returns real normalized
+  quota windows with populated reset instants.
+- [x] Both evidenced Codex response generations and evidence-based window
+  coverage supported without synthesizing absent windows (D-019).
 - [ ] Validate that the owner can replace routine dashboard checks with the
   provisional command in the real local workflow, without recording secrets or
   personal quota values.
@@ -98,9 +103,15 @@ Exit criteria:
 
 Remaining blocker:
 
-- Live OpenAI subscription-capacity telemetry must produce usable current quota
-  windows in the owner's supported environment before status can fully replace
-  routine quota checks. Do not mix that investigation into this removal task.
+- Live OpenAI collection returns real normalized windows, but the owner's
+  current live response carries provider-supplied blocker evidence (a present
+  valid credit state on the main quota, an additional limit bucket whose
+  `spendControlReached` is not reported, and cross-bucket metering). Under
+  the conservative contract preserved by D-019 the percentage pairs are
+  honestly withheld, so status cannot yet replace routine OpenAI dashboard
+  checks. Whether usable OpenAI percentage pairs can ever be represented
+  under this contract — or whether the credit/bucket metering states need a
+  v2 representation — is a product/contract decision for the human.
 
 ### Follow-up health signals after the core M1 status surface
 

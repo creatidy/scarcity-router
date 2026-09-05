@@ -12,7 +12,7 @@ The core rule is simple:
 
 The project completed **M0: documentation and contract design** on 2026-09-01
 and is now in **M1: capacity collectors and normalized status**. The two
-read-only subscription collectors and a provisional unified status command are
+subscription collectors and a provisional unified status command are
 implemented. There is not yet an installable package, final executable name,
 selector, REST service or MCP server.
 
@@ -130,8 +130,12 @@ All displayed values come from normalized snapshots. Unknown or exhausted
 windows remain explicit, and degraded provider diagnostics are shown without raw
 response bodies, credentials, paths, subprocess text or account data.
 
-Status is read-only. It issues no model prompt and merely checks the two
-subscription capacity sources.
+Status issues no model prompt and does not intentionally consume inference
+quota. OpenAI capacity collection normally performs only telemetry reads;
+after the evidenced app-server `-32603` internal-error condition it may
+request one provider-managed credential refresh and retry the read once
+(`docs/decisions.md` D-018). The token itself is never read, stored or
+exposed by Scarcity Router.
 
 ### JSON Status
 

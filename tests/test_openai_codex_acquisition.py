@@ -52,8 +52,12 @@ def _fixture_result(name: str) -> object:
         return cast("object", json.load(handle))
 
 
+def _response_for(request_id: int, result: object) -> bytes:
+    return json.dumps({"id": request_id, "result": result}).encode() + b"\n"
+
+
 def _read_response(result: object) -> bytes:
-    return json.dumps({"id": 2, "result": result}).encode() + b"\n"
+    return _response_for(2, result)
 
 
 class _FakeStdin:
@@ -689,20 +693,23 @@ class ResponseMatching(_AcquisitionCase):
                 self.assertEqual(snapshot.status, "schema_changed")
 
     def test_read_error_response_maps_to_unknown(self) -> None:
+        # A non-internal-error code keeps the non-mutating behavior: no
+        # recovery request is ever sent for codes other than -32603.
         error_line = json.dumps(
-            {"id": 2, "error": {"code": -32603, "message": f"auth token {SECRET}"}}
+            {"id": 2, "error": {"code": -32000, "message": f"auth token {SECRET}"}}
         ).encode() + b"\n"
-        _ = self._install_fake([INIT_RESPONSE, error_line])
+        fake = self._install_fake([INIT_RESPONSE, error_line])
         roots = self._make_installation()
         snapshot = self._collect(discovery_roots=[roots])
         self.assertEqual(snapshot.status, "unknown")
         self.assertEqual([d.code for d in snapshot.diagnostics], ["telemetry_unknown"])
         self.assertEqual(snapshot.windows, ())
         self.assertNotIn(SECRET, _serialized(snapshot))
+        self.assertEqual(len(fake.written_messages()), 3)  # no refresh request
         self._assert_no_output()
 
     def test_initialize_error_response_maps_to_unknown(self) -> None:
-        _ = self._install_fake(
+        fake = self._install_fake(
             [b'{"id":1,"error":{"code":-32603,"message":"x"}}\n']
         )
         roots = self._make_installation()
@@ -710,6 +717,9 @@ class ResponseMatching(_AcquisitionCase):
         self.assertEqual(snapshot.status, "unknown")
         self.assertEqual([d.code for d in snapshot.diagnostics], ["telemetry_unknown"])
         self.assertEqual(snapshot.windows, ())
+        # Recovery is rate-limits-phase only: an initialize error never
+        # triggers a refresh request.
+        self.assertEqual(len(fake.written_messages()), 1)
 
     def test_initialize_response_requires_tagged_fields(self) -> None:
         for result in (
@@ -802,6 +812,208 @@ class ResponseMatching(_AcquisitionCase):
         self.assertEqual(snapshot.status, "schema_changed")
         self.assertEqual([d.code for d in snapshot.diagnostics], ["schema_changed"])
         self.assertEqual(snapshot.windows, ())
+
+
+# ═════════════════════════ bounded auth recovery ═════════════════════════════
+
+# Conspicuous synthetic account material for the refresh response; it must
+# never appear in any normalized output.
+SYNTHETIC_ACCOUNT_EMAIL = "synthetic-account@invalid.example"
+SYNTHETIC_ACCOUNT_ID = "synthetic-account-id-000"
+SYNTHETIC_REFRESH_SECRET = "TEST_ONLY_REFRESH_SECRET_NEVER_REAL"
+
+REFRESH_RESPONSE = (
+    json.dumps(
+        {
+            "id": 3,
+            "result": {
+                "requiresOpenaiAuth": False,
+                "account": {
+                    "email": SYNTHETIC_ACCOUNT_EMAIL,
+                    "id": SYNTHETIC_ACCOUNT_ID,
+                    "planType": "plus",
+                },
+                "internalSecret": SYNTHETIC_REFRESH_SECRET,
+            },
+        }
+    ).encode()
+    + b"\n"
+)
+
+
+def _error_line(request_id: int, code: int) -> bytes:
+    return json.dumps(
+        {"id": request_id, "error": {"code": code, "message": SECRET}}
+    ).encode() + b"\n"
+
+
+class AuthRecovery(_AcquisitionCase):
+    """The bounded D-018 recovery: one refresh, one retry, nothing else."""
+
+    def _recovery_lines(self, retry_response: bytes) -> list[bytes]:
+        return [
+            INIT_RESPONSE,
+            _error_line(2, -32603),
+            REFRESH_RESPONSE,
+            retry_response,
+        ]
+
+    def test_internal_error_triggers_exactly_one_refresh_and_retry(self) -> None:
+        fake = self._install_fake(
+            self._recovery_lines(_response_for(4, _fixture_result("ratelimits-ok-plus.json")))
+        )
+        roots = self._make_installation()
+        snapshot = self._collect(discovery_roots=[roots])
+        self.assertEqual(snapshot.status, "ok")
+        self.assertEqual(len(snapshot.windows), 2)
+
+        messages = fake.written_messages()
+        self.assertEqual(len(messages), 5)  # three normal writes + refresh + retry
+        self.assertEqual(messages[0]["method"], "initialize")
+        self.assertEqual(messages[0]["id"], 1)
+        self.assertEqual(messages[1]["method"], "initialized")
+        self.assertEqual(messages[2]["method"], "account/rateLimits/read")
+        self.assertEqual(messages[2]["id"], 2)
+        self.assertNotIn("params", messages[2])
+        refresh = messages[3]
+        self.assertEqual(refresh["method"], "account/read")
+        self.assertEqual(refresh["id"], 3)
+        self.assertEqual(refresh["params"], {"refreshToken": True})
+        retry = messages[4]
+        self.assertEqual(retry["method"], "account/rateLimits/read")
+        self.assertEqual(retry["id"], 4)
+        self.assertNotIn("params", retry)
+        # Request identities remain distinct and matched.
+        self.assertEqual(
+            [m.get("id") for m in messages], [1, None, 2, 3, 4]
+        )
+        # The lifecycle stays bounded: normal termination, no kill.
+        self.assertEqual(fake.events, ["terminate"])
+        self.assertTrue(fake.stdin.closed)
+        self._assert_no_output()
+
+    def test_first_read_success_never_refreshes(self) -> None:
+        fake = self._install_fake(
+            [INIT_RESPONSE, _read_response(_fixture_result("ratelimits-ok-plus.json"))]
+        )
+        roots = self._make_installation()
+        snapshot = self._collect(discovery_roots=[roots])
+        self.assertEqual(snapshot.status, "ok")
+        messages = fake.written_messages()
+        self.assertEqual(len(messages), 3)
+        self.assertTrue(
+            all(m.get("method") != "account/read" for m in messages)
+        )
+
+    def test_refresh_protocol_error_fails_closed_without_retry(self) -> None:
+        fake = self._install_fake(
+            [INIT_RESPONSE, _error_line(2, -32603), _error_line(3, -32000)]
+        )
+        roots = self._make_installation()
+        snapshot = self._collect(discovery_roots=[roots])
+        self.assertEqual(snapshot.status, "unknown")
+        self.assertEqual([d.code for d in snapshot.diagnostics], ["telemetry_unknown"])
+        self.assertEqual(snapshot.windows, ())
+        self.assertEqual(len(fake.written_messages()), 4)  # no retry sent
+        self.assertNotIn(SECRET, _serialized(snapshot))
+        self._assert_no_output()
+
+    def test_retry_protocol_error_is_unknown_without_second_refresh(self) -> None:
+        fake = self._install_fake(
+            self._recovery_lines(_error_line(4, -32603))
+        )
+        roots = self._make_installation()
+        snapshot = self._collect(discovery_roots=[roots])
+        self.assertEqual(snapshot.status, "unknown")
+        self.assertEqual([d.code for d in snapshot.diagnostics], ["telemetry_unknown"])
+        self.assertEqual(snapshot.windows, ())
+        messages = fake.written_messages()
+        self.assertEqual(len(messages), 5)  # refresh happened once, retry once
+        self.assertEqual(
+            [m.get("method") for m in messages],
+            [
+                "initialize",
+                "initialized",
+                "account/rateLimits/read",
+                "account/read",
+                "account/rateLimits/read",
+            ],
+        )
+        self.assertNotIn(SECRET, _serialized(snapshot))
+        self._assert_no_output()
+
+    def test_standard_and_arbitrary_error_codes_never_refresh(self) -> None:
+        for code in (-32600, -32601, -32602, -32000, -32001, 401, 1):
+            with self.subTest(code=code):
+                fake = self._install_fake(
+                    [INIT_RESPONSE, _error_line(2, code)]
+                )
+                roots = self._make_installation()
+                snapshot = self._collect(discovery_roots=[roots])
+                self.assertEqual(snapshot.status, "unknown")
+                self.assertEqual(
+                    [d.code for d in snapshot.diagnostics], ["telemetry_unknown"]
+                )
+                self.assertEqual(snapshot.windows, ())
+                self.assertEqual(len(fake.written_messages()), 3)
+                self.assertEqual(fake.events, ["terminate"])
+                _ = fake
+
+    def test_dead_child_during_recovery_degrades_to_unavailable(self) -> None:
+        # The refresh request was sent but the child exited first: the
+        # bounded session degrades to unavailable, never guesses success.
+        fake = self._install_fake([INIT_RESPONSE, _error_line(2, -32603)])
+        roots = self._make_installation()
+        snapshot = self._collect(discovery_roots=[roots])
+        self.assertEqual(snapshot.status, "unavailable")
+        self.assertEqual(
+            [d.code for d in snapshot.diagnostics], ["source_unavailable"]
+        )
+        self.assertEqual(len(fake.written_messages()), 4)  # refresh was attempted
+        _ = fake
+
+    def test_refresh_account_payload_never_enters_output(self) -> None:
+        _ = self._install_fake(
+            self._recovery_lines(_response_for(4, _fixture_result("ratelimits-ok-plus.json")))
+        )
+        roots = self._make_installation()
+        snapshot = self._collect(discovery_roots=[roots])
+        self.assertEqual(snapshot.status, "ok")
+        text = _serialized(snapshot) + self.stdout.getvalue() + self.stderr.getvalue()
+        for forbidden in (
+            SYNTHETIC_ACCOUNT_EMAIL,
+            SYNTHETIC_ACCOUNT_ID,
+            SYNTHETIC_REFRESH_SECRET,
+            "requiresOpenaiAuth",
+            "account",
+            "email",
+        ):
+            self.assertNotIn(forbidden, text, msg=forbidden)
+        self._assert_no_output()
+
+    def test_malformed_first_response_never_refreshes(self) -> None:
+        fake = self._install_fake([INIT_RESPONSE, b"not json at all\n"])
+        roots = self._make_installation()
+        snapshot = self._collect(discovery_roots=[roots])
+        self.assertEqual(snapshot.status, "schema_changed")
+        self.assertEqual(snapshot.windows, ())
+        messages = fake.written_messages()
+        self.assertEqual(len(messages), 3)  # normal session writes only
+        self.assertTrue(
+            all(m.get("method") != "account/read" for m in messages)
+        )
+        _ = fake
+
+    def test_retry_success_normalizes_through_the_existing_parser(self) -> None:
+        _ = self._install_fake(
+            self._recovery_lines(_response_for(4, _fixture_result("ratelimits-degraded.json")))
+        )
+        roots = self._make_installation()
+        snapshot = self._collect(discovery_roots=[roots])
+        expected = parse_codex_rate_limits_result(
+            _fixture_result("ratelimits-degraded.json"), retrieved_at=RETRIEVED_AT
+        )
+        self.assertEqual(snapshot, expected)
 
 
 # ═════════════════════ process failures and bounds ═══════════════════════════
