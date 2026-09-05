@@ -166,6 +166,28 @@ direction was chosen. Dates use UTC.
   to a human.
   Workers, reviewers and orchestrators never merge automatically.
 
+### D-016 — Provisional module status surface
+
+- **Status:** Accepted for M1 development use
+- **Date:** 2026-09-05
+- **Decision:** The first unified status invocation is
+  `uv run python -m scarcity_router status`. It composes the existing OpenAI,
+  Z.ai and Ollama collectors in deterministic order, passes one caller-created
+  observation timestamp to each, isolates provider health as normalized data,
+  and renders either safe human output or an ordered JSON array of the existing
+  v1 snapshot serializations.
+- **Reason:** This provides one useful local read-only status surface without
+  choosing package metadata or a final executable name under U-008 and without
+  adding a CLI, provider or configuration framework.
+- **Boundary:** Ollama requires an explicit model from the CLI or a narrowly
+  named environment variable. Endpoint and configured-context overrides remain
+  constrained by the existing collector policy. This is not REST, MCP,
+  selection, caching or model execution.
+- **M1 audit:** A separate `doctor` command is not an M1 blocker now that
+  supported discovery/configuration validation and normalized diagnostics are
+  visible through `status`. A richer doctor surface is deferred unless normal
+  use demonstrates a concrete diagnostic gap.
+
 ## Unresolved decisions
 
 ### U-001 — Codex binary discovery and compatibility
@@ -264,9 +286,16 @@ direction was chosen. Dates use UTC.
 
 ### U-003 — Refresh and staleness policy
 
-- On-demand versus cached collection, timeouts and stale-use thresholds are not
-  yet chosen.
-- Evidence needed: observed collector latency/reliability and real workflow use.
+- **Status:** Partially resolved for synchronous M1 status (2026-09-05)
+- **Decision:** Every `status` invocation performs a fresh sequential collection
+  and establishes one canonical UTC millisecond `retrieved_at` immediately for
+  that observation attempt. The same value is passed to OpenAI, Z.ai and
+  Ollama; provider observations are never independently timestamped.
+- **Boundary:** This resolves the on-demand observation behavior only. No cache
+  TTL, background refresh, freshness score, stale threshold or timeout policy
+  is invented here.
+- **Evidence needed:** Real owner workflow use and observed collector
+  latency/reliability before choosing any retained-snapshot or staleness policy.
 
 ### U-004 — Z.ai reset metadata and schema drift
 

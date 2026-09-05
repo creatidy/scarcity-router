@@ -116,14 +116,15 @@ unsupported and unresolved (U-001 residual; Darwin is intentionally
 unsupported until descriptor execution is evidenced); error-response text is never
 parsed, so protocol error responses map to `unknown` until failure shapes
 are captured as evidence; the selected binary path and versions are
-validated but not surfaced, because v1 has no field for them (future
-`doctor`/`status` work reports them); the reached enum uses the exact
+validated but not surfaced, because v1 has no field for them; a future
+`doctor` surface may report them; the reached enum uses the exact
 snake_case generated-schema values, so camelCase and arbitrary strings are
 rejected as drift; amount values inside credits/spend-control/reset-credit
 members are validated structurally but never interpreted (documented
-residual); live CLI/status integration
-is not implemented, and the automated suite contains no live-account test —
-all transport tests use synthetic JSONL process fakes and fixtures under
+residual); the provisional `uv run python -m scarcity_router status` command
+composes this collector with the other normalized snapshots without exposing
+discovery paths or versions. The automated suite contains no live-account test
+and all transport tests use synthetic JSONL process fakes and fixtures under
 `tests/fixtures/openai-codex-appserver/`.
 
 ## Z.ai Coding Plan
@@ -160,9 +161,10 @@ secure production acquisition shell is implemented and unit-tested in
 (`type == "api"`, non-empty string `key`, sent as-is), destination validation
 against the fixed endpoint before Authorization is attached, exactly one
 redirect-free bounded GET, and safe failure mapping to the v1 statuses.
-Live CLI/status integration is still not implemented, and the automated
-suite contains no live credential-dependent integration test; all transport
-tests use mocked fakes and synthetic secrets.
+The provisional `uv run python -m scarcity_router status` command composes this
+collector with the other normalized snapshots. The automated suite contains no
+live credential-dependent integration test; all transport tests use mocked fakes
+and synthetic secrets.
 
 Each observed window carries `nextResetTime`, a 13-digit epoch-**millisecond**
 value, and `percentage` is the **used** percentage (remaining is the complement).
@@ -233,8 +235,9 @@ semantics. Missing is reported only from a validated reachable listing, while
 supplemental `/api/ps` failures preserve validated presence and omit effective
 context. Safe snapshots and diagnostics never contain response bodies, headers,
 endpoint values, digests, paths or exception text. The populated effective-
-context path remains synthetic-fixture-tested, and live CLI/status integration
-is not implemented.
+context path remains synthetic-fixture-tested. The provisional
+`uv run python -m scarcity_router status` command composes this collector with
+the other normalized snapshots and requires an explicit target model.
 
 ## Later providers
 
