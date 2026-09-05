@@ -172,6 +172,51 @@ text):
   and its referenced type definitions; this is evidence for the wire shape,
   not a permission to make live provider calls.
 
+### 2026-09-05 current Codex schema compatibility evidence
+
+The 2026-09-03 tagged evidence above is retained as the **previous validated
+schema**. It describes the installed `codex-cli 0.151.0-alpha.7.2` shape and
+the nine-member `RateLimitSnapshot`; it is not silently rewritten to represent
+later upstream additions.
+
+The current upstream `openai/codex` head inspected for this task is commit
+`a7a4321593c77933c18f84ba9bd28eba095759d8`. The exact sources inspected were
+the v2 `GetAccountRateLimitsResponse` JSON and TypeScript schemas,
+`codex-rs/app-server/tests/suite/v2/rate_limits.rs`,
+`codex-rs/backend-client/src/client/rate_limit_resets.rs`,
+`codex-rs/backend-client/src/types.rs`,
+`codex-rs/app-server/src/request_processors/account_processor.rs` and the TUI
+rate-limit/banner handling. They define these current additions:
+
+- the envelope has optional `ordinaryUsageAllowed` (boolean or null),
+  `accountId` (string or null) and `rateLimitUpsell` (opaque JSON value or
+  null), in addition to the existing rate-limit and reset-credit members;
+- `RateLimitSnapshot` has optional `normalModelSlug` (string or null);
+- backend `rate_limit.allowed` becomes `ordinaryUsageAllowed`, and the current
+  TUI recovery predicate requires explicit permission plus no upsell, reached
+  type or explicit spend-control blocker. Current source therefore supports
+  missing/null `spendControlReached` only when ordinary permission is true;
+  it does not support inferring permission from display percentages;
+- `credits`, `individualLimit`, reached-type blockers and additional buckets
+  remain conservative existing adapter states. Reset-credit telemetry remains
+  supplemental. The adapter validates the new fields, discards account/banner/
+  model metadata from v2 output, treats a non-null upsell as a blocker, and
+  continues to fail closed on unknown structured fields.
+
+The installed supported binary was also inspected without changing it:
+`codex-cli 0.151.0-alpha.7.2` successfully generated its JSON schema into
+temporary storage. That generated schema is the previous shape and does not
+contain the four current additions above. The generated-schema result was
+deleted after inspection.
+
+One structure-only live read on 2026-09-05 reached the installed app-server but
+returned a well-formed protocol error before a rate-limit result; no provider
+payload or error text was retained. After the narrow parser compatibility fix,
+the one allowed live acceptance retry returned the same normalized
+`unknown`/`telemetry_unknown` result with no OpenAI windows. Z.ai remained
+`ok` in both acceptance runs. No model prompt was issued and no personal quota
+value was recorded.
+
 ### Z.ai Coding Plan capacity
 
 PoC environment included Kilo 7.5.6. Kilo reported a `Z.AI Coding Plan`

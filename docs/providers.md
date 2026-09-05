@@ -36,6 +36,13 @@ Implementation requirements:
 - identify windows using `windowDurationMins` and validated fields, not the
   `primary`/`secondary` position alone;
 - validate `usedPercent`, preserve `resetsAt`, `planType` and reached status;
+- require explicit current-backend `ordinaryUsageAllowed: true` before
+  reporting usable ordinary quota pairs; false, null or missing permission is
+  unknown, while a missing/null `spendControlReached` is clear only under that
+  explicit permission;
+- recognize `accountId`, `rateLimitUpsell` and `normalModelSlug` at the
+  provider boundary without exposing them; a non-null upsell remains an
+  upstream recovery blocker, but its presentation content is not part of v2;
 - never fall back to browser-cookie scraping as an incidental convenience;
 - fail with a clear unsupported/schema status if protocol behavior changes.
 
@@ -49,6 +56,14 @@ JSONL validation, safe failure mapping and terminate/kill cleanup. The parser
 validates the complete evidenced response envelope, typed credit and spend
 states, reset-credit summaries, additional metered buckets and backend blockers.
 Unrepresentable states degrade to `unknown` without inventing quota.
+
+The current upstream app-server schema also defines `ordinaryUsageAllowed`,
+`accountId`, `rateLimitUpsell` and `normalModelSlug`; these fields are
+explicitly handled at the adapter edge without expanding v2 or weakening the
+unknown-structured-field rule. Current upstream semantics are recorded in
+`docs/decisions.md` U-011. The installed supported Codex binary remains an
+older schema generation, and the 2026-09-05 live read returned a protocol
+error before a quota result, so live OpenAI usability remains an M1 blocker.
 
 Supported discovery is exactly the VS Code ChatGPT extension layout documented
 in `docs/decisions.md` (U-001): non-symlink `openai.chatgpt-*` directories under
