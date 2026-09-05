@@ -1673,7 +1673,7 @@ class CollectionDeadline(_AcquisitionCase):
         self.assertEqual(snapshot.status, "unavailable")
         self.assertTrue(late_release.is_set())
         # This is intentionally immediate, rather than a polling assertion:
-        # _read_call must have completed its final bounded join already.
+        # _read_call must have completed its final join already.
         self.assertFalse(
             any(
                 thread.name == "scarcity-router-ollama-read"
@@ -2291,16 +2291,35 @@ class _ScriptedListener:
 
     _responses: list[bytes | None]
     _close_after_send: bool
+    _close_after_sends: list[bool]
+    _delayed_suffixes: list[bytes | None]
+    _suffix_delay: float
     _teardown: threading.Event
     _listener: socket.socket
     _thread: threading.Thread
     port: int
 
     def __init__(
-        self, responses: list[bytes | None], close_after_send: bool = False
+        self,
+        responses: list[bytes | None],
+        close_after_send: bool = False,
+        delayed_suffixes: list[bytes | None] | None = None,
+        suffix_delay: float = 0.03,
+        close_after_sends: list[bool] | None = None,
     ) -> None:
         self._responses = responses
         self._close_after_send = close_after_send
+        self._close_after_sends = (
+            [close_after_send] * len(responses)
+            if close_after_sends is None
+            else close_after_sends
+        )
+        self._delayed_suffixes = (
+            [None] * len(responses)
+            if delayed_suffixes is None
+            else delayed_suffixes
+        )
+        self._suffix_delay = suffix_delay
         self._teardown = threading.Event()
         self._listener = socket.socket()
         self._listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -2311,7 +2330,7 @@ class _ScriptedListener:
         self._thread.start()
 
     def _serve(self) -> None:
-        for respond in self._responses:
+        for response_index, respond in enumerate(self._responses):
             try:
                 accepted: tuple[socket.socket, object] = self._listener.accept()
                 connection = accepted[0]
@@ -2322,7 +2341,13 @@ class _ScriptedListener:
             # connection stays open without EOF.
             thread = threading.Thread(
                 target=self._hold,
-                args=(connection, respond, self._close_after_send),
+                args=(
+                    connection,
+                    respond,
+                    self._close_after_sends[response_index],
+                    self._delayed_suffixes[response_index],
+                    self._suffix_delay,
+                ),
                 daemon=True,
             )
             thread.start()
@@ -2332,9 +2357,11 @@ class _ScriptedListener:
         connection: socket.socket,
         respond: bytes | None,
         close_after_send: bool,
+        delayed_suffix: bytes | None,
+        suffix_delay: float,
     ) -> None:
         with connection:
-            if close_after_send:
+            if close_after_send or delayed_suffix is not None:
                 # Drain the request before a graceful close; closing with an
                 # unread request can produce a reset instead of a FIN.
                 connection.settimeout(1.0)
@@ -2349,7 +2376,10 @@ class _ScriptedListener:
                     return
             if respond is not None:
                 connection.sendall(respond)
-            if close_after_send:
+            if delayed_suffix is not None:
+                time.sleep(suffix_delay)
+                connection.sendall(delayed_suffix)
+            if close_after_send or delayed_suffix is not None:
                 return
             # Hold open (no EOF) until the test tears the listener down;
             # a mid-transfer reader stays blocked until cancellation.
@@ -2421,9 +2451,20 @@ class RealTransportCancellation(_AcquisitionCase):
         return listener.port
 
     def _start_scripted_listener(
-        self, responses: list[bytes | None], close_after_send: bool = False
+        self,
+        responses: list[bytes | None],
+        close_after_send: bool = False,
+        delayed_suffixes: list[bytes | None] | None = None,
+        suffix_delay: float = 0.03,
+        close_after_sends: list[bool] | None = None,
     ) -> int:
-        listener = _ScriptedListener(responses, close_after_send)
+        listener = _ScriptedListener(
+            responses,
+            close_after_send,
+            delayed_suffixes,
+            suffix_delay,
+            close_after_sends,
+        )
         self._listeners.append(listener)
         return listener.port
 
@@ -2477,7 +2518,9 @@ class RealTransportCancellation(_AcquisitionCase):
             + b"\r\n"
             + b"AB"
         )
-        port = self._start_scripted_listener([complete, partial, None])
+        port = self._start_scripted_listener(
+            [complete, partial, None], close_after_sends=[True, False, False]
+        )
         started = time.monotonic()
         with mock.patch.object(
             ollama_acquisition, "COLLECTION_DEADLINE_SECONDS", self.BUDGET
@@ -2530,7 +2573,7 @@ class RealTransportCancellation(_AcquisitionCase):
                 self.assertNotIn(FAKE_RAW_FRAGMENT, _serialized(snapshot))
                 self._assert_reclaimed(0.0)
 
-    def test_complete_and_truncated_chunked_frames_are_distinguished(self) -> None:
+    def test_chunked_framing_is_rejected_before_permissive_http_parsing(self) -> None:
         version_body = b'{"version": "0.0.0"}'
         missing_body = _fixture("tags-missing.json")
         complete_port = self._start_scripted_listener(
@@ -2541,10 +2584,7 @@ class RealTransportCancellation(_AcquisitionCase):
             close_after_send=True,
         )
         complete = self._collect(endpoint=f"http://127.0.0.1:{complete_port}")
-        self.assertEqual(complete.status, "unavailable")
-        complete_local = complete.local_runtime
-        assert complete_local is not None
-        self.assertEqual(complete_local.model_presence, "missing")
+        self.assertEqual(complete.status, "schema_changed")
         self._assert_reclaimed(0.0)
 
         truncated = (
@@ -2561,6 +2601,29 @@ class RealTransportCancellation(_AcquisitionCase):
         rejected = self._collect(endpoint=f"http://127.0.0.1:{truncated_port}")
         self.assertEqual(rejected.status, "schema_changed")
         self._assert_reclaimed(0.0)
+
+    def test_malformed_chunk_delimiters_and_trailers_fail_closed(self) -> None:
+        version_body = b'{"version": "0.0.0"}'
+        header = (
+            b"HTTP/1.1 200 OK\r\n"
+            + b"Transfer-Encoding: chunked\r\n"
+            + b"Connection: close\r\n\r\n"
+        )
+        body_chunk = f"{len(version_body):x}\r\n".encode() + version_body
+        frames = (
+            header + body_chunk + b"XX\r\n0\r\n\r\n",
+            header + body_chunk + b"\r\n0\r\n",
+            header + body_chunk + b"\r\n0\r\nNot-A-Header\r\n\r\n",
+        )
+        for frame in frames:
+            with self.subTest(frame=frame):
+                port = self._start_scripted_listener(
+                    [frame], close_after_send=True
+                )
+                snapshot = self._collect(endpoint=f"http://127.0.0.1:{port}")
+                self.assertEqual(snapshot.status, "schema_changed")
+                self.assertNotIn(b"Not-A-Header".decode(), _serialized(snapshot))
+                self._assert_reclaimed(0.0)
 
     def test_trailing_bytes_after_chunked_terminal_fail_closed_on_each_endpoint(
         self,
@@ -2603,6 +2666,30 @@ class RealTransportCancellation(_AcquisitionCase):
         self.assertEqual(snapshot.status, "schema_changed")
         self.assertNotIn(b"EXTRA".decode(), _serialized(snapshot))
         self._assert_reclaimed(0.0)
+
+    def test_delayed_trailing_bytes_after_content_length_fail_closed_on_each_endpoint(
+        self,
+    ) -> None:
+        bodies = [
+            b'{"version": "0.0.0"}',
+            _fixture("tags-present.json"),
+            _fixture("ps-loaded.json"),
+        ]
+        paths = ["version", "tags", "ps"]
+        for failing_index, path in enumerate(paths):
+            with self.subTest(path=path):
+                suffixes: list[bytes | None] = [None, None, None]
+                suffixes[failing_index] = b"EXTRA"
+                port = self._start_scripted_listener(
+                    [_http_response(body) for body in bodies],
+                    close_after_send=True,
+                    delayed_suffixes=suffixes,
+                    suffix_delay=0.03,
+                )
+                snapshot = self._collect(endpoint=f"http://127.0.0.1:{port}")
+                self.assertEqual(snapshot.status, "schema_changed")
+                self.assertNotIn(b"EXTRA".decode(), _serialized(snapshot))
+                self._assert_reclaimed(0.0)
 
     def test_repeated_real_timeouts_keep_threads_stable(self) -> None:
         for round_number in range(3):
@@ -2697,6 +2784,23 @@ class RealTransportCancellation(_AcquisitionCase):
 
 
 class TransportMechanism(unittest.TestCase):
+    def test_numeric_sockaddr_does_not_use_name_resolution(self) -> None:
+        numeric_sockaddr = cast(
+            "Callable[[str, int], tuple[object, ...]]",
+            getattr(ollama_acquisition, "_numeric_sockaddr"),
+        )
+        with mock.patch.object(
+            socket, "getaddrinfo", side_effect=AssertionError("resolver used")
+        ):
+            self.assertEqual(
+                numeric_sockaddr("127.0.0.1", 11434),
+                ("127.0.0.1", 11434),
+            )
+            self.assertEqual(
+                numeric_sockaddr("::1", 11434),
+                ("::1", 11434, 0, 0),
+            )
+
     def test_seam_returns_connected_connection_with_socket_handle(self) -> None:
         # The real seam pre-connects within the phase timeout and exposes
         # the raw socket as the cancellation handle. Used only against a
@@ -2749,7 +2853,10 @@ class RequestShape(_AcquisitionCase):
             self.assertEqual(len(connection.requests), 1)
             method, _path, headers = connection.requests[0]
             self.assertEqual(method, "GET")
-            self.assertEqual(headers, {"Accept": "application/json"})
+            self.assertEqual(
+                headers,
+                {"Accept": "application/json", "Connection": "close"},
+            )
 
     def test_timeouts_forwarded_within_bounds(self) -> None:
         runtime = self._install(_healthy_runtime())

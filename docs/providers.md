@@ -232,9 +232,8 @@ missing, invalid or mismatched digest preserves the validated
 reachability/presence facts but degrades the telemetry to `unknown` and
 omits the effective context). Response bodies first pass strict HTTP framing
 validation: a declared `Content-Length` must be fully satisfied, conflicting
-length/transfer headers and unsupported transfer codings fail closed, and
-truncated chunked bodies are rejected. They then decode under a strict JSON
-contract (duplicate object keys at any depth, NaN/Infinity constants,
+length/transfer headers and every `Transfer-Encoding` (including chunked) fail
+closed. They then decode under a strict JSON contract (duplicate object keys at any depth, NaN/Infinity constants,
 non-finite floats such as `1e10000`, integers outside the validated
 signed 64-bit band, recursion-limit nesting and decoder resource failures all map to
 `schema_changed`), every transport result is narrowly protocol-validated

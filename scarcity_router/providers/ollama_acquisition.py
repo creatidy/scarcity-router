@@ -51,8 +51,8 @@ Security contract (docs/security.md):
   ``TypeError``, and no payload or path detail ever leaks;
 - every response body is read under validated HTTP framing and a hard size
   bound; declared ``Content-Length`` must be fully satisfied, conflicting
-  framing and unsupported transfer codings fail closed, and a truncated
-  chunked body is never accepted; non-200 responses
+  framing and every ``Transfer-Encoding`` (including chunked) fail closed;
+  non-200 responses
   (including declined redirects and error statuses) are never read, and
   the collector never explicitly invokes response/connection ``close`` —
   CPython's response/file finalization may close its buffered file as the
@@ -125,10 +125,12 @@ typed capacity-contract validation.
 
 from __future__ import annotations
 
+import errno
 import ipaddress
 import json
 import math
 import re
+import select
 import socket
 import threading
 import time
@@ -190,7 +192,7 @@ _CallOutcome = Literal[
     "malformed",
     "invalid_response",
 ]
-_BodyFraming = Literal["content_length", "chunked", "eof"]
+_BodyFraming = Literal["content_length", "eof"]
 
 
 class _AmbiguousJson(ValueError):
@@ -448,41 +450,52 @@ _MAX_VERSION_LENGTH = 128
 
 
 def _numeric_sockaddr(host: str, port: int) -> tuple[object, ...]:
-    """Resolve the already-validated numeric literal to a sockaddr.
+    """Build a sockaddr directly from the already-validated numeric literal.
 
-    The host is guaranteed numeric loopback by the endpoint policy, and
-    ``getaddrinfo`` runs with ``AI_NUMERICHOST`` and an explicit family:
-    it can only parse the literal — it can never consult a resolver,
-    DNS, a hosts file or any name-based path.
+    ``ipaddress`` parses without any resolver or operating-system name lookup.
     """
     ip = ipaddress.ip_address(host)
-    family = socket.AF_INET6 if ip.version == 6 else socket.AF_INET
-    info = socket.getaddrinfo(
-        host,
-        port,
-        family,
-        socket.SOCK_STREAM,
-        socket.IPPROTO_TCP,
-        socket.AI_NUMERICHOST,
-    )
-    return cast("tuple[object, ...]", info[0][4])
+    if ip.version == 6:
+        return str(ip), port, 0, 0
+    return str(ip), port
 
 
-def _open_raw_socket(host: str, timeout: float) -> socket.socket:
+def _open_raw_socket(host: str) -> socket.socket:
     """Open the family-correct raw socket for the numeric literal.
 
     The address family comes from ``ipaddress.ip_address`` on the already
-    validated numeric loopback host, and the sockaddr from
-    :func:`_numeric_sockaddr` (``AI_NUMERICHOST``): no resolver, DNS or
-    name-based path can ever be consulted. The returned socket is
-    unconnected with the phase timeout applied; the caller registers it
-    as the cancellation handle *before* connecting.
+    validated numeric loopback host. The returned socket is unconnected and
+    nonblocking; the caller registers it as the cancellation handle *before*
+    connecting.
     """
     ip = ipaddress.ip_address(host)
     family = socket.AF_INET6 if ip.version == 6 else socket.AF_INET
     sock = socket.socket(family, socket.SOCK_STREAM)
-    sock.settimeout(timeout)
+    socket.socket.setblocking(sock, False)
     return sock
+
+
+def _connect_nonblocking(
+    sock: socket.socket, address: tuple[object, ...], timeout: float
+) -> None:
+    """Connect using readiness polling and one monotonic phase deadline."""
+    result = socket.socket.connect_ex(sock, address)
+    pending = {errno.EINPROGRESS, errno.EALREADY, errno.EWOULDBLOCK}
+    if result not in (0, *pending):
+        raise OSError(result, "numeric loopback connect failed")
+    deadline = time.monotonic() + timeout
+    while result in pending:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("numeric loopback connect timed out")
+        _readable, writable, exceptional = select.select(
+            [], [sock], [sock], remaining
+        )
+        if not writable and not exceptional:
+            raise TimeoutError("numeric loopback connect timed out")
+        result = socket.socket.getsockopt(sock, socket.SOL_SOCKET, socket.SO_ERROR)
+        if result not in (0, *pending):
+            raise OSError(result, "numeric loopback connect failed")
 
 
 def open_connection(
@@ -496,21 +509,25 @@ def open_connection(
     Direct by construction: ``http.client`` never consults environment
     proxies and never follows redirects — a 3xx is surfaced as a status,
     not followed. The raw socket is created with an explicit address
-    family (from the validated numeric literal, so no name resolution is
-    possible) and **registered as the cancellation handle before
-    ``connect``**: the handle stays valid across ``Connection: close``
-    ownership transfer to the response object, and ``shutdown``/``close``
-    on it are non-blocking syscalls that unblock connect, read and any
-    later phase — deadline cancellation never waits on a stuck close.
+    family from the validated numeric literal and **registered as the
+    cancellation handle before nonblocking ``connect_ex``**: the handle stays
+    valid across ``Connection: close`` ownership transfer to the response
+    object, and direct built-in ``shutdown``/``close`` operations cancel later
+    phases.
     Connection setup runs against the phase timeout and one monotonic
     deadline; failures normalize to the caller's transport outcome
     without retaining exception text. Test seam: tests replace this
     function with fake connection factories (invoking ``register_handle``
     with their fake socket); no test contacts a runtime or network.
     """
-    sock = _open_raw_socket(host, timeout)
-    register_handle(sock)
-    sock.connect(_numeric_sockaddr(host, port))
+    sock = _open_raw_socket(host)
+    try:
+        register_handle(sock)
+        _connect_nonblocking(sock, _numeric_sockaddr(host, port), timeout)
+        socket.socket.settimeout(sock, timeout)
+    except BaseException:
+        socket.socket.close(sock)
+        raise
     connection = HTTPConnection(host, port)
     connection.sock = sock
     connection.response_class = _NonClosingHTTPResponse
@@ -577,8 +594,8 @@ def _response_body_framing(
     this loop. The collector's non-closing response subclass keeps the buffer
     available for a nonblocking trailing-data probe. Conflicting
     ``Content-Length``/``Transfer-Encoding`` headers,
-    repeated lengths with different values and unsupported transfer codings
-    are ambiguous and therefore fail closed. A response seam without
+    repeated lengths with different values and every transfer coding are
+    unsupported and therefore fail closed. A response seam without
     ``getheader`` remains the synthetic EOF-framed contract used by the unit
     fakes; real HTTP responses expose the header reader.
     """
@@ -605,10 +622,9 @@ def _response_body_framing(
     if content_length is not None and transfer_encoding is not None:
         return None
     if transfer_encoding is not None:
-        codings = [part.strip(" \t").lower() for part in transfer_encoding.split(",")]
-        if codings != ["chunked"]:
-            return None
-        return "chunked", None
+        # Do not delegate chunk delimiters or trailers to HTTPResponse's
+        # permissive parser until a strict implementation is evidenced.
+        return None
     if content_length is not None:
         values = [part.strip(" \t") for part in content_length.split(",")]
         if not values or any(
@@ -636,34 +652,29 @@ def _response_body_framing(
     return "eof", None
 
 
-def _has_buffered_http_extra(response: HTTPResponse) -> bool:
-    """Probe for trailing bytes without waiting on a persistent peer.
-
-    ``HTTPResponse.read`` closes its buffered file as soon as a declared
-    length reaches zero, which would discard bytes after that frame. Reading
-    the exact body directly from the standard-library buffer leaves the
-    buffer inspectable. A nonblocking ``peek`` sees already-buffered or
-    immediately available trailing bytes, while a quiet keep-alive socket is
-    accepted without waiting for EOF.
-    """
+def _read_content_length_tail(
+    response: HTTPResponse, deadline: float
+) -> _CallOutcome:
+    """Require EOF after an exact body on the forced close connection."""
     file_object: object = cast("object", response.fp)
     if file_object is None:
-        return False
-    peek = getattr(file_object, "peek", None)
-    raw = getattr(file_object, "raw", None)
-    raw_socket = getattr(raw, "_sock", None)
-    if not callable(peek) or type(raw_socket) is not socket.socket:
-        return False
-    timeout = socket.socket.gettimeout(raw_socket)
-    socket.socket.setblocking(raw_socket, False)
+        return "malformed"
+    read_object: object = getattr(file_object, "read", None)
+    if not callable(read_object):
+        return "malformed"
+    read_tail = cast("Callable[[int], object]", read_object)
+    if deadline - time.monotonic() <= 0:
+        return "transport_fail"
     try:
-        try:
-            extra = peek(1)
-        except BlockingIOError:
-            return False
-        return isinstance(extra, bytes) and bool(extra)
-    finally:
-        socket.socket.settimeout(raw_socket, timeout)
+        extra = read_tail(1)
+    except (HTTPException, OSError):
+        return "transport_fail"
+    except Exception:
+        # This is still a response-file boundary; do not retain its text.
+        return "transport_fail"
+    if not isinstance(extra, bytes):
+        return "invalid_response"
+    return "malformed" if extra else "ok"
 
 
 def _execute_read(
@@ -677,9 +688,12 @@ def _execute_read(
     ownership transfer to the response object. Each blocking phase is
     budgeted the remaining time (capped at ``TIMEOUT_SECONDS``). Response
     framing is validated before body consumption: a declared
-    ``Content-Length`` must be completely read, only a single ``chunked``
-    transfer coding is accepted, and EOF is accepted only for an EOF-framed
-    response. The deadline is re-checked after every blocking operation and
+    ``Content-Length`` must be completely read, ``Transfer-Encoding`` is
+    unsupported (including chunked), and EOF is accepted only for an
+    EOF-framed response. The
+    forced ``Connection: close`` request requires an EOF check after an exact
+    length body, so delayed suffixes cannot be accepted as telemetry. The
+    deadline is re-checked after every blocking operation and
     again after EOF before the body is consumed, and chunks must be ``bytes``.
     ``ok`` payloads are raw body bytes, strictly decoded by the caller. Outcome
     classes: ``transport_fail``
@@ -702,7 +716,9 @@ def _execute_read(
         if deadline - time.monotonic() <= 0:
             return "transport_fail", None
         connection.request(
-            "GET", path, headers={"Accept": "application/json"}
+            "GET",
+            path,
+            headers={"Accept": "application/json", "Connection": "close"},
         )
         response = connection.getresponse()
         try:
@@ -769,23 +785,15 @@ def _execute_read(
             if len(body) + len(chunk) > MAX_BODY_BYTES:
                 return "unreadable", None
             body.extend(chunk)
-            if (
-                frame_kind == "chunked"
-                and real_response is not None
-                and real_response.chunk_left is None
-            ):
-                # The terminal chunk was consumed by this read. With the
-                # non-closing response subclass, do not ask HTTPResponse to
-                # parse a nonexistent next chunk.
-                break
         if expected_length is not None and len(body) != expected_length:
             return "malformed", None
-        if real_response is not None:
+        if frame_kind == "content_length" and real_response is not None:
             try:
-                if _has_buffered_http_extra(real_response):
-                    return "malformed", None
+                tail_outcome = _read_content_length_tail(real_response, deadline)
             except OSError:
                 return "transport_fail", None
+            if tail_outcome != "ok":
+                return tail_outcome, None
         if deadline - time.monotonic() <= 0:
             # Delayed EOF must never smuggle a late body past the deadline.
             return "transport_fail", None
