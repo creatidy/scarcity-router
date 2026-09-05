@@ -62,6 +62,26 @@ class VersionProbe(unittest.TestCase):
             with self.subTest(bad=bad):
                 self.assertFalse(parse_ollama_version_response({"version": bad}))
 
+    def test_unusable_version_values_are_drift(self) -> None:
+        # Empty, padding-only, control-bearing and overlong version
+        # strings cannot validate reachability; the value is never echoed.
+        for bad in (
+            "",
+            "   ",
+            "\n",
+            "\t",
+            "\x00",
+            "0.0.0\n",
+            "\x1f0.0.0",
+            "0.0.0\x7f",
+            "0" * 129,
+        ):
+            with self.subTest(bad=repr(bad)):
+                self.assertFalse(parse_ollama_version_response({"version": bad}))
+
+    def test_version_length_boundary_is_valid(self) -> None:
+        self.assertTrue(parse_ollama_version_response({"version": "0" * 128}))
+
     def test_non_object_payload_is_drift(self) -> None:
         for bad in (None, "0.0.0", 1, [1, 2], True):
             with self.subTest(bad=bad):
@@ -108,8 +128,48 @@ class TagsListing(unittest.TestCase):
         self.assertEqual(listed, {TARGET: None})
 
     def test_entry_without_digest_key_degrades_to_none(self) -> None:
-        payload = {"models": [{"name": TARGET}]}
+        payload = {"models": [{"name": TARGET, "model": TARGET}]}
         self.assertEqual(parse_ollama_tags_response(payload), {TARGET: None})
+
+    def test_conflicting_model_identity_is_drift(self) -> None:
+        # A `model` identity that conflicts with the `name` could attribute
+        # presence or effective context to a different model image: the
+        # listing is drift, never accepted.
+        payload = {"models": [{"name": TARGET, "model": OTHER}]}
+        self.assertIsNone(parse_ollama_tags_response(payload))
+
+    def test_malformed_model_identity_is_drift(self) -> None:
+        for bad_model in (None, "", 7, True, ["x"]):
+            with self.subTest(bad_model=bad_model):
+                payload = {"models": [{"name": TARGET, "model": bad_model}]}
+                self.assertIsNone(parse_ollama_tags_response(payload))
+
+    def test_ps_conflicting_model_identity_is_drift(self) -> None:
+        payload = {
+            "models": [
+                {
+                    "name": TARGET,
+                    "model": OTHER,
+                    "digest": DIGEST_ZERO,
+                    "context_length": 16384,
+                }
+            ]
+        }
+        self.assertIsNone(parse_ollama_ps_response(payload))
+
+    def test_ps_malformed_model_identity_is_drift(self) -> None:
+        for bad_model in (None, "", 7):
+            with self.subTest(bad_model=bad_model):
+                payload = {
+                    "models": [
+                        {
+                            "name": TARGET,
+                            "model": bad_model,
+                            "context_length": 16384,
+                        }
+                    ]
+                }
+                self.assertIsNone(parse_ollama_ps_response(payload))
 
     def test_duplicate_names_are_drift(self) -> None:
         self.assertIsNone(parse_ollama_tags_response(_load("tags-duplicate-names.json")))
@@ -136,7 +196,16 @@ class TagsListing(unittest.TestCase):
                 self.assertIsNone(parse_ollama_tags_response(payload))
 
     def test_additive_entry_keys_are_tolerated(self) -> None:
-        payload = {"models": [{"name": TARGET, "digest": DIGEST_ZERO, "future": {"x": 1}}]}
+        payload = {
+            "models": [
+                {
+                    "name": TARGET,
+                    "model": TARGET,
+                    "digest": DIGEST_ZERO,
+                    "future": {"x": 1},
+                }
+            ]
+        }
         self.assertEqual(parse_ollama_tags_response(payload), {TARGET: DIGEST_ZERO})
 
     def test_details_context_length_is_never_read_as_context_fact(self) -> None:
@@ -209,7 +278,12 @@ class PsListing(unittest.TestCase):
     def test_context_length_at_i64_band_edge_is_valid(self) -> None:
         payload = {
             "models": [
-                {"name": TARGET, "digest": DIGEST_ZERO, "context_length": 2**63 - 1}
+                {
+                    "name": TARGET,
+                    "model": TARGET,
+                    "digest": DIGEST_ZERO,
+                    "context_length": 2**63 - 1,
+                }
             ]
         }
         self.assertEqual(

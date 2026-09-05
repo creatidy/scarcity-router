@@ -15,9 +15,11 @@ Security contract (docs/security.md):
 
 - the endpoint must be an explicitly configured **local** endpoint: plain
   ``http`` on exactly the numeric loopback hosts ``127.0.0.1`` or ``::1``.
-  ``localhost`` and every other name is rejected outright — no DNS, hosts
-  file or resolver is ever consulted, so no resolve/connect race and no
-  name-based escape exists. The omitted port canonically defaults to the
+  ``localhost`` and every other name is rejected outright — socket setup
+  uses an explicit address family from ``ipaddress`` and ``getaddrinfo``
+  restricted to ``AI_NUMERICHOST`` on the validated literal, so no
+  resolver, DNS, hosts file or name-based path can ever be consulted and
+  no resolve/connect race exists. The omitted port canonically defaults to the
   documented Ollama port 11434 (never an implicit socket default), the
   base path must be empty or root, and empty-but-present query/fragment
   delimiters, leading/trailing whitespace and control characters are
@@ -118,6 +120,7 @@ typed capacity-contract validation.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import math
 import re
@@ -125,7 +128,7 @@ import socket
 import threading
 import time
 import urllib.parse
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from http.client import HTTPConnection, HTTPException
 from typing import Literal, Protocol, cast
 
@@ -157,12 +160,12 @@ MAX_BODY_BYTES = 1024 * 1024
 READ_CHUNK_BYTES = 64 * 1024
 
 # After deadline cancellation the abandoned worker unblocks
-# deterministically: response/body-phase blocks end immediately via socket
-# ``shutdown``; a connect-phase block is bounded by its own phase timeout
-# (at most ``TIMEOUT_SECONDS``). This bounded join — strictly larger than
-# the worst phase timeout — reclaims the thread before the collection
-# returns; exceeding it is an internal invariant violation.
-_CANCEL_JOIN_SECONDS = 6.0
+# deterministically: the registered raw socket handle exists before
+# ``connect``, and ``shutdown`` immediately ends a blocked connect, read
+# or any later phase. This bounded join reclaims the thread before the
+# collection returns; exceeding it is an internal invariant violation
+# (raise, never a silent return with a live worker).
+_CANCEL_JOIN_SECONDS = 1.0
 
 # The v1 safe-identifier grammar (docs/capacity-model.md). The capacity
 # module remains the single source of truth for the rule; this boundary
@@ -418,41 +421,76 @@ class _ResponseProtocol(Protocol):
     def read(self, size: int = -1, /) -> object: ...
 
 
-def open_connection(host: str, port: int, timeout: float) -> _ConnectionProtocol:
+_MAX_VERSION_LENGTH = 128
+
+
+def _numeric_sockaddr(host: str, port: int) -> tuple[object, ...]:
+    """Resolve the already-validated numeric literal to a sockaddr.
+
+    The host is guaranteed numeric loopback by the endpoint policy, and
+    ``getaddrinfo`` runs with ``AI_NUMERICHOST`` and an explicit family:
+    it can only parse the literal — it can never consult a resolver,
+    DNS, a hosts file or any name-based path.
+    """
+    ip = ipaddress.ip_address(host)
+    family = socket.AF_INET6 if ip.version == 6 else socket.AF_INET
+    info = socket.getaddrinfo(
+        host,
+        port,
+        family,
+        socket.SOCK_STREAM,
+        socket.IPPROTO_TCP,
+        socket.AI_NUMERICHOST,
+    )
+    return cast("tuple[object, ...]", info[0][4])
+
+
+def _open_raw_socket(host: str, timeout: float) -> socket.socket:
+    """Open the family-correct raw socket for the numeric literal.
+
+    The address family comes from ``ipaddress.ip_address`` on the already
+    validated numeric loopback host, and the sockaddr from
+    :func:`_numeric_sockaddr` (``AI_NUMERICHOST``): no resolver, DNS or
+    name-based path can ever be consulted. The returned socket is
+    unconnected with the phase timeout applied; the caller registers it
+    as the cancellation handle *before* connecting.
+    """
+    ip = ipaddress.ip_address(host)
+    family = socket.AF_INET6 if ip.version == 6 else socket.AF_INET
+    sock = socket.socket(family, socket.SOCK_STREAM)
+    sock.settimeout(timeout)
+    return sock
+
+
+def open_connection(
+    host: str,
+    port: int,
+    timeout: float,
+    register_handle: Callable[[object], None],
+) -> _ConnectionProtocol:
     """Create one direct, connected HTTP connection for a single fixed GET.
 
     Direct by construction: ``http.client`` never consults environment
     proxies and never follows redirects — a 3xx is surfaced as a status,
-    not followed. The raw socket is created and connected here, inside the
-    phase timeout, and attached to the connection: the collector
-    immediately registers it as the cancellation handle, and that handle
-    stays valid even after ``Connection: close`` semantics transfer socket
-    ownership to the response object (our reference is independent of
-    ``HTTPResponse``/``HTTPConnection`` bookkeeping). ``shutdown``/
-    ``close`` on a raw socket are non-blocking syscalls, so deadline
-    cancellation never waits on a stuck close. Test seam: tests replace
-    this function with fake connection factories; no test contacts a
-    runtime or network.
+    not followed. The raw socket is created with an explicit address
+    family (from the validated numeric literal, so no name resolution is
+    possible) and **registered as the cancellation handle before
+    ``connect``**: the handle stays valid across ``Connection: close``
+    ownership transfer to the response object, and ``shutdown``/``close``
+    on it are non-blocking syscalls that unblock connect, read and any
+    later phase — deadline cancellation never waits on a stuck close.
+    Connection setup runs against the phase timeout and one monotonic
+    deadline; failures normalize to the caller's transport outcome
+    without retaining exception text. Test seam: tests replace this
+    function with fake connection factories (invoking ``register_handle``
+    with their fake socket); no test contacts a runtime or network.
     """
-    sock = socket.create_connection((host, port), timeout=timeout)
+    sock = _open_raw_socket(host, timeout)
+    register_handle(sock)
+    sock.connect(_numeric_sockaddr(host, port))
     connection = HTTPConnection(host, port)
     connection.sock = sock
     return connection
-
-
-def _extract_socket_handle(connection: _ConnectionProtocol) -> object | None:
-    """Extract the raw socket cancellation handle, never raising.
-
-    The connection is an untrusted boundary object: a ``sock`` attribute
-    implemented as a raising descriptor must not leak exception text or
-    break the reclamation flow. ``None`` simply means no socket handle is
-    available and cancellation falls back to the worker's own cleanup.
-    """
-    try:
-        sock: object = getattr(connection, "sock", None)
-    except Exception:  # untrusted boundary: lookup failures stay contained
-        return None
-    return sock
 
 
 def _cancel_sockets(handles: list[object]) -> None:
@@ -597,6 +635,25 @@ def _execute_read(
         except Exception:  # deliberate best-effort close; see docstring
             pass
 
+def _open_and_read(
+    host: str,
+    port: int,
+    path: str,
+    deadline: float,
+    phase_timeout: float,
+    register_handle: Callable[[object], None],
+) -> tuple[_CallOutcome, object]:
+    """Open the connection, then run one full read phase.
+
+    Connection setup (socket creation, handle registration, connect) and
+    the read share the phase timeout and the collection deadline; setup
+    failures surface as ``OSError``/``HTTPException`` for the caller to
+    normalize.
+    """
+    connection = open_connection(host, port, phase_timeout, register_handle)
+    return _execute_read(connection, path, deadline)
+
+
 def _read_call(
     host: str, port: int, path: str, deadline: float
 ) -> tuple[_CallOutcome, object]:
@@ -625,23 +682,26 @@ def _read_call(
     unexpected: list[Exception] = []
     registered_sockets: list[object] = []
 
+    def _register(handle: object) -> None:
+        # Called by the transport the moment the raw socket exists —
+        # before ``connect`` — so deadline cancellation can reach every
+        # blocking phase. Extraction/registration is exception-contained.
+        registered_sockets.append(handle)
+
     def _work() -> None:
         try:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 results.append(("transport_fail", None))
                 return
-            connection = open_connection(
-                host, port, min(TIMEOUT_SECONDS, remaining)
+            outcome, payload = _open_and_read(
+                host,
+                port,
+                path,
+                deadline,
+                min(TIMEOUT_SECONDS, remaining),
+                _register,
             )
-            # Register the raw socket the moment the (already connected)
-            # connection exists: the handle stays valid even after
-            # ``Connection: close`` semantics transfer ownership to the
-            # response object. Extraction is exception-contained.
-            socket_handle = _extract_socket_handle(connection)
-            if socket_handle is not None:
-                registered_sockets.append(socket_handle)
-            outcome, payload = _execute_read(connection, path, deadline)
             if outcome == "ok":
                 try:
                     payload = _decode_strict(cast("bytes", payload))
@@ -653,6 +713,12 @@ def _read_call(
                     # retained.
                     outcome, payload = "malformed", None
             results.append((outcome, payload))
+        except (OSError, HTTPException):
+            # Connection-setup and transport-boundary failures (refusal,
+            # unreachability, timeout, cancellation-by-shutdown): normalized
+            # to a transport outcome; exception text is never inspected,
+            # retained or propagated.
+            results.append(("transport_fail", None))
         except Exception as exc:  # re-raised by the caller, never swallowed
             unexpected.append(exc)
 

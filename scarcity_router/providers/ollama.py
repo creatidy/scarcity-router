@@ -58,6 +58,11 @@ SOURCE = "ollama_local"
 # than drifting the whole listing or accepting an unverifiable image.
 _SAFE_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
+# A version string is identity evidence only when it is usable: a
+# non-empty, non-control, non-padding string of bounded length. Unusable
+# values fail closed instead of validating reachability.
+_MAX_VERSION_LENGTH = 128
+
 # Validated integer band for JSON-decoded values: signed 64-bit. The
 # acquisition layer's strict decoder rejects out-of-band integers before
 # any parser runs; this bound is defense in depth for direct parser calls
@@ -103,14 +108,28 @@ def safe_digest(value: object) -> str | None:
 def parse_ollama_version_response(payload: object) -> bool:
     """Validate one decoded ``/api/version`` response.
 
-    True only when the payload is an object carrying a string ``version``;
-    additive keys are tolerated. Anything else is drift (False): the
-    endpoint answered but not with the evidenced Ollama version contract.
+    True only when the payload is an object carrying a **usable** string
+    ``version``: non-empty, no control characters, no surrounding
+    whitespace and bounded length. An empty, control-only or overlong
+    value is drift (False) — reachability is never validated by an
+    unusable identity, and the value is never echoed. Additive keys are
+    tolerated; anything else is drift: the endpoint answered but not with
+    the evidenced Ollama version contract.
     """
     envelope = _as_mapping(payload)
     if envelope is None:
         return False
-    return isinstance(envelope.get("version"), str)
+    version = envelope.get("version")
+    if not isinstance(version, str):
+        return False
+    if not 0 < len(version) <= _MAX_VERSION_LENGTH:
+        return False
+    if version != version.strip():
+        return False
+    return not any(
+        ord(character) < 0x20 or ord(character) == 0x7F
+        for character in version
+    )
 
 
 def _listed_entries(
@@ -118,8 +137,13 @@ def _listed_entries(
 ) -> dict[str, Mapping[str, object]] | None:
     """Shared strict listing validation for ``/api/tags`` and ``/api/ps``.
 
-    Validates the ``{"models": [...]}`` envelope and every entry's string
-    ``name``, rejecting duplicates. Returns ``name -> entry`` on success,
+    Validates the ``{"models": [...]}`` envelope and every entry's
+    identity fields: each entry must carry a non-empty string ``name``
+    and a matching non-empty string ``model`` (the evidenced contract
+    carries both, with ``model`` equal to ``name``). A missing, malformed
+    or **conflicting** ``model`` identity is drift — accepting it could
+    attribute presence or effective context to a different model image —
+    and so are duplicate names. Returns ``name -> entry`` on success,
     ``None`` on any structural drift.
     """
     envelope = _as_mapping(payload)
@@ -134,7 +158,10 @@ def _listed_entries(
         if entry is None:
             return None
         name = entry.get("name")
+        model = entry.get("model")
         if not isinstance(name, str) or not name:
+            return None
+        if not isinstance(model, str) or not model or model != name:
             return None
         if name in listed:
             return None

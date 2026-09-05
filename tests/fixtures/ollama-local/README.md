@@ -43,6 +43,9 @@ not.
   identity is drift, not a redundant entry; parser must fail closed.
 - `tags-malformed-entries.json` — `models` containing a non-object entry
   and an entry without a string `name`. Parser must fail closed.
+- `tags-conflicting-identity.json` — the `model` identity conflicts with
+  the `name`. Identity correlation is required before presence or
+  effective context may be grounded: the listing is drift.
 - `tags-schema-changed.json` — a plausibly evolved envelope (`{"items":
   [...]}`) that is not the observed shape. Parser must map to
   `schema_changed`, never partially decode.
