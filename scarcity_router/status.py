@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Protocol, TextIO, cast
 
-from .capacity import CapacitySnapshot, CapacityWindow
+from .capacity import CapacityDiagnostic, CapacitySnapshot, CapacityWindow
 from .providers.ollama_acquisition import (
     DEFAULT_ENDPOINT,
     canonical_local_endpoint,
@@ -261,19 +261,33 @@ def _format_window(window: CapacityWindow) -> str:
     return "  window " + " ".join(fields)
 
 
+def _diagnostic_sort_key(diagnostic: CapacityDiagnostic) -> tuple[str, str]:
+    return diagnostic.code, diagnostic.window_id or ""
+
+
 def _format_diagnostics(snapshot: CapacitySnapshot) -> str | None:
     if not snapshot.diagnostics:
         return None
-    diagnostics = sorted(
-        snapshot.diagnostics,
-        key=lambda diagnostic: (diagnostic.code, diagnostic.window_id or ""),
-    )
+    diagnostics = sorted(snapshot.diagnostics, key=_diagnostic_sort_key)
     values = [
         diagnostic.code
         + (f"[{diagnostic.window_id}]" if diagnostic.window_id is not None else "")
         for diagnostic in diagnostics
     ]
     return "  diagnostics=" + ",".join(values)
+
+
+def _canonical_snapshot_dict(snapshot: CapacitySnapshot) -> dict[str, object]:
+    """Serialize one snapshot with canonical ordering for unordered arrays."""
+    payload = snapshot.to_dict()
+    payload["windows"] = [
+        window.to_dict() for window in sorted(snapshot.windows, key=_window_sort_key)
+    ]
+    payload["diagnostics"] = [
+        diagnostic.to_dict()
+        for diagnostic in sorted(snapshot.diagnostics, key=_diagnostic_sort_key)
+    ]
+    return payload
 
 
 def render_human(snapshots: Sequence[CapacitySnapshot]) -> str:
@@ -319,7 +333,10 @@ def render_human(snapshots: Sequence[CapacitySnapshot]) -> str:
 
 def render_json(snapshots: Sequence[CapacitySnapshot]) -> str:
     """Render the ordered snapshots with their existing v1 serialization."""
-    payload = [snapshot.to_dict() for snapshot in _ordered_snapshots(snapshots)]
+    payload = [
+        _canonical_snapshot_dict(snapshot)
+        for snapshot in _ordered_snapshots(snapshots)
+    ]
     return json.dumps(payload, indent=2, sort_keys=True) + "\n"
 
 

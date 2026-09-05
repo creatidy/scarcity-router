@@ -390,6 +390,42 @@ class StatusRenderingTests(unittest.TestCase):
         self.assertEqual(parsed, [snapshot.to_dict() for snapshot in snapshots])
         self.assertEqual(encoded, render_json((snapshots[0], snapshots[1], snapshots[2])))
 
+    def test_json_canonicalizes_zai_like_unordered_windows_and_diagnostics(self) -> None:
+        weekly = _window(
+            "weekly",
+            used=40,
+            remaining=60,
+            window_id="tokens_limit-6-1",
+        )
+        unknown = _window(
+            "unknown",
+            used=None,
+            remaining=None,
+            reset=None,
+            window_id="tokens_limit-7-1",
+        )
+        diagnostics = (
+            CapacityDiagnostic("percentage_unknown", window_id="tokens_limit-7-1"),
+            CapacityDiagnostic("reset_unknown", window_id="tokens_limit-7-1"),
+            CapacityDiagnostic(
+                "window_semantics_unknown", window_id="tokens_limit-7-1"
+            ),
+        )
+        first = _snapshot(
+            "zai",
+            windows=(weekly, unknown),
+            diagnostics=diagnostics,
+            plan="pro",
+        )
+        second = _snapshot(
+            "zai",
+            windows=(unknown, weekly),
+            diagnostics=tuple(reversed(diagnostics)),
+            plan="pro",
+        )
+
+        self.assertEqual(render_json((first,)), render_json((second,)))
+
     def test_degraded_provider_exit_code_is_zero(self) -> None:
         snapshots = (
             _snapshot(

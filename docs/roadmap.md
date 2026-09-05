@@ -105,14 +105,6 @@ Remaining:
   or integration defect remains after that real use; do not add cache or stale
   thresholds without a separate U-003 decision.
 
-Implementation readiness questions to resolve first:
-
-- supported Codex binary discovery/version policy;
-- exact redacted Z.ai reset metadata mapping;
-- supported Ollama health and effective-configuration calls;
-- refresh/freshness defaults;
-- minimal Python dependency set and package/CLI name.
-
 ### Follow-up health signals after the core M1 status surface
 
 Provider status is a useful advisory input, but it must not delay or replace
