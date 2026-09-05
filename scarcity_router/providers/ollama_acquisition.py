@@ -56,9 +56,10 @@ Security contract (docs/security.md):
   framing and unsupported transfer codings fail closed, and a truncated
   chunked body is never accepted; non-200 responses
   (including declined redirects and error statuses) are never read, and
-  no response/connection ``close`` runs on the collector path — socket
-  and file-descriptor resources are released through the registered raw
-  socket handles; oversized bodies are never parsed; expected
+  the collector never explicitly invokes response/connection ``close`` —
+  CPython's ``HTTPResponse`` may close its buffered file during read or
+  finalization — while socket and file-descriptor cleanup is performed through
+  the registered raw socket handles; oversized bodies are never parsed; expected
   response-operation failures — including provider-controlled exception text
   — normalize to safe outcomes and are never propagated, logged or retained;
   internal framing/programming errors remain distinguishable and are
@@ -167,11 +168,10 @@ READ_CHUNK_BYTES = 64 * 1024
 
 # After deadline cancellation, the registered raw socket handle is
 # cancelled with non-blocking ``shutdown``/``close`` and the worker is
-# reclaimed with this bounded join. Registration is synchronized with the
-# cancellation state, so a late handle is cancelled immediately. Exceeding
-# the join bound is an internal invariant violation (raise, never a silent
-# return with a live worker).
-_CANCEL_JOIN_SECONDS = 1.0
+# reclaimed with an unconditional join. Registration is synchronized with the
+# cancellation state, so a late handle is cancelled immediately. Production
+# socket operations are bounded by the socket timeout; foreign handles are
+# rejected before they can introduce an unbounded operation.
 
 # The v1 safe-identifier grammar (docs/capacity-model.md). The capacity
 # module remains the single source of truth for the rule; this boundary
@@ -532,24 +532,30 @@ def _cancel_sockets(handles: list[object]) -> None:
             threading.Event.set(handle)
 
 
-def _response_protocol_ok(response: object) -> bool:
+def _response_protocol_ok(
+    response: object,
+) -> tuple[int, Callable[[int], object]] | None:
     """Narrow transport-response protocol validation.
 
-    The collector only ever needs an integer status in the HTTP range and
-    a callable ``read``; a transport result without both is a malformed
-    response object, not telemetry, and is handled as a safe degraded
-    outcome instead of an uncaught ``TypeError``. Programming/configuration
-    errors elsewhere
-    are never swallowed through this check.
+    Capture the integer status and callable ``read`` exactly once. A transport
+    result without both is a malformed response object, not telemetry, and is
+    handled as a safe degraded outcome instead of an uncaught ``TypeError``.
+    Programming/configuration errors elsewhere are never swallowed through
+    this check.
     """
-    status = getattr(response, "status", None)
-    read = getattr(response, "read", None)
-    return (
+    try:
+        status: object = getattr(response, "status", None)
+        read: object = getattr(response, "read", None)
+    except Exception:
+        return None
+    if (
         isinstance(status, int)
         and not isinstance(status, bool)
         and 100 <= status <= 599
         and callable(read)
-    )
+    ):
+        return status, cast("Callable[[int], object]", read)
+    return None
 
 
 def _response_body_framing(
@@ -673,11 +679,11 @@ def _execute_read(
     (malformed response object or non-bytes chunk), ``malformed`` (invalid
     framing) and ``ok``.
 
-    Deliberately no ``response.close()``/``connection.close()`` runs on
-    any exit path (a hostile or stuck close could block the worker
-    forever): socket/file-descriptor resources are released exclusively
-    through the registered raw-socket handles by the collector's
-    non-blocking shutdown/close; see :func:`_cancel_sockets`.
+    The collector never explicitly invokes ``response.close()`` or
+    ``connection.close()``. CPython's ``HTTPResponse`` may nevertheless close
+    its buffered file during a read or finalization; socket/file-descriptor
+    cleanup is performed through the registered raw-socket handles by the
+    collector's non-blocking shutdown/close; see :func:`_cancel_sockets`.
     """
     response: object | None = None
     try:
@@ -688,18 +694,19 @@ def _execute_read(
         )
         response = connection.getresponse()
         try:
-            response_is_valid = _response_protocol_ok(response)
+            validated_response = _response_protocol_ok(response)
         except Exception:
             # Response protocol inspection is an untrusted boundary. Keep
             # provider-controlled descriptor errors out of the result.
             return "invalid_response", None
-        if not response_is_valid:
+        if validated_response is None:
             # A malformed transport result is a degraded outcome, never an
             # uncaught TypeError; the raw socket is released by the
             # collector's socket-handle cancellation.
             return "invalid_response", None
+        response_status, body_reader = validated_response
         typed_response = cast("_ResponseProtocol", response)
-        if typed_response.status != 200:
+        if response_status != 200:
             # Non-200 (including declined 3xx): the body is never read.
             return "http_error", None
 
@@ -710,7 +717,6 @@ def _execute_read(
         if expected_length is not None and expected_length > MAX_BODY_BYTES:
             return "unreadable", None
 
-        body_reader: Callable[[int], object] = typed_response.read
         real_response: HTTPResponse | None = None
         if frame_kind == "content_length" and type(cast(object, typed_response)) is HTTPResponse:
             real_response = cast("HTTPResponse", cast(object, typed_response))
@@ -775,13 +781,9 @@ def _execute_read(
         # TimeoutError (socket.timeout) and cancellation-by-shutdown derive
         # from OSError. Partial content is discarded.
         return "transport_fail", None
-    # Deliberately NO response/connection close on any exit path: a
-    # hostile or stuck close implementation could block this worker
-    # forever. All socket/fd resources are released by the collector
-    # through the registered raw-socket handles (non-blocking
-    # shutdown+close); the response/connection Python objects hold no
-    # resources of their own once the raw socket is closed and are
-    # reclaimed by GC.
+    # The collector makes no explicit response/connection close call. CPython
+    # may close the response's buffered file during its own read/finalization;
+    # the retained raw socket is the collector's socket/fd cleanup guarantee.
 
 
 def _open_and_read(
@@ -811,11 +813,10 @@ def _read_call(
     The whole read runs inside a single bounded **non-daemon** worker and
     the collector waits at most the remaining time on it. On deadline the
     collector requests cancellation through the registered raw-socket
-    handles (``shutdown`` then ``close``), then joins the worker with a
-    bounded grace. A handle registered after cancellation is cancelled before
-    the worker continues. The path does not return or re-raise until the
-    worker has been proven reclaimed: if it were still alive after
-    cancellation, that is an internal invariant violation. The deadline is
+  handles (``shutdown`` then ``close``), then joins the worker. A handle
+  registered after cancellation is cancelled before the worker continues.
+  The path does not return or re-raise until the worker has been proven
+  reclaimed. The deadline is
     re-checked before any worker result is consumed, so a completion that
     lands at or past the deadline fails closed. Exception text is deliberately
     never inspected, retained or propagated; a genuinely unexpected internal
@@ -853,13 +854,11 @@ def _read_call(
 
     def _join_after_cancellation(worker: threading.Thread) -> None:
         _request_cancellation()
-        worker.join(_CANCEL_JOIN_SECONDS)
-        if worker.is_alive():
-            # Never return or re-raise with an unjoined non-daemon worker.
-            raise RuntimeError(
-                "internal error: read worker did not terminate after "
-                + "deadline cancellation"
-            )
+        # Cancellation cannot invoke foreign methods: production work is
+        # bounded by the exact socket's timeout and test work by an Event.
+        # The unconditional join proves no worker or socket operation remains
+        # before the caller returns or re-raises.
+        worker.join()
 
     def _work() -> None:
         try:
@@ -1109,7 +1108,7 @@ def collect_ollama_capacity(
     # ``unknown`` while the validated presence facts are preserved.
     ps_outcome, ps_payload = _read_call(host, port, "/api/ps", deadline)
     effective_context_tokens: int | None = None
-    status = "ok"
+    status = "unknown" if listing_digest is None else "ok"
     if ps_outcome == "ok":
         loaded = parse_ollama_ps_response(ps_payload)
         if loaded is None:

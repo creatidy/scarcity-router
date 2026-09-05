@@ -246,11 +246,13 @@ the raw socket is captured at connection setup and stays valid across any
 `Connection: close` ownership transfer to the response object. Cancellation
 is synchronized with handle registration, so a handle registered after
 cancellation is cancelled immediately. Every return or raise performs
-non-blocking operations on the exact built-in raw socket and a bounded worker
-join; failure to prove termination raises an internal error. Foreign handles
-are rejected during registration rather than inspected or invoked. The worker itself never invokes
-response or connection `close`, so hostile close methods cannot block worker
-cleanup. A deadline expiring during the listing or loaded-model
+non-blocking operations on the exact built-in raw socket and then joins the
+worker; the socket timeout bounds production operations and the join proves
+termination. Foreign handles are rejected during registration rather than
+inspected or invoked. The collector never explicitly invokes response or
+connection `close`, although CPython's `HTTPResponse` may close its buffered
+file during a read or finalization. The raw socket remains the resource
+cleanup guarantee. A deadline expiring during the listing or loaded-model
 read degrades the snapshot to `unknown` — never a false `ok` — while
 preserving the already-validated reachability/presence facts. Cleanup is
 redacted end to end: provider-boundary failures can raise provider-controlled

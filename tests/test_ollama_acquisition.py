@@ -1191,6 +1191,26 @@ class DigestIdentityAgreement(_AcquisitionCase):
         snapshot = self._collect()
         self._assert_degraded(snapshot, with_configured=False)
 
+    def test_missing_tags_digest_degrades_with_empty_ps(self) -> None:
+        _ = self._install(
+            _healthy_runtime(
+                tags=_fixture("tags-missing-digest.json"),
+                ps=_fixture("ps-not-loaded.json"),
+            )
+        )
+        snapshot = self._collect()
+        self._assert_degraded(snapshot, with_configured=False)
+
+    def test_missing_tags_digest_degrades_with_loaded_ps(self) -> None:
+        _ = self._install(
+            _healthy_runtime(
+                tags=_fixture("tags-missing-digest.json"),
+                ps=_fixture("ps-loaded.json"),
+            )
+        )
+        snapshot = self._collect(configured_context_tokens=8192)
+        self._assert_degraded(snapshot, with_configured=True)
+
     def test_conflicting_identity_listing_is_drift(self) -> None:
         # A listing whose `model` identity conflicts with its `name` can
         # never ground presence or effective context: it is drift.
@@ -1309,9 +1329,8 @@ class ProbeDrift(_AcquisitionCase):
                 )
                 # Redirects are never followed: exactly one attempt.
                 self.assertEqual(runtime.requested_paths(), ["/api/version"])
-                # The non-200 body was never read; the response close is
-                # never invoked on the collector path (the raw socket
-                # handle is released instead).
+        # The non-200 body is never read and the collector does not explicitly
+        # close the response; raw-socket cleanup owns its resource guarantee.
                 self.assertFalse(response.guard_tripped)
                 self.assertFalse(response.closed)
                 self.assertFalse(runtime.connections[0].closed)
@@ -1763,8 +1782,8 @@ class BoundedWorkerDeadline(_AcquisitionCase):
 
     def test_permanently_blocked_close_cannot_leak_worker(self) -> None:
         # A transport whose close blocks forever is NEVER invoked on the
-        # collector path: the deadline cancel unblocks the read through
-        # the registered raw socket, the collection returns on time, and
+        # collector path: the deadline cancel sets the registered test
+        # primitive, the collection returns on time, and
         # zero collector workers remain alive immediately — even before
         # the hostile close blocker is ever released.
         close_blocker = threading.Event()
@@ -1920,11 +1939,11 @@ class BoundedWorkerDeadline(_AcquisitionCase):
         self._assert_no_collector_threads()
         self._assert_no_output()
 
-    def test_close_never_invoked_on_collector_path(self) -> None:
+    def test_response_close_not_explicitly_invoked_by_collector(self) -> None:
         # Resource release is owned by the registered cancellation primitive
         # (a raw socket in production). Response/connection ``close`` is
-        # never part of the collector path — success included — so no
-        # hostile close can ever be reached.
+        # never explicitly invoked by the collector — success included. The
+        # CPython response finalizer may still close its buffered file later.
         connection = _RecordingCloseConnection()
         factory = _Factory(lambda: connection)
         patcher = mock.patch.object(
@@ -2128,9 +2147,9 @@ class MalformedTransportResult(_AcquisitionCase):
         time.sleep(0.2)
         self.assertEqual(threading.active_count(), self._baseline_threads)
 
-    def test_error_response_not_read_without_response_close(self) -> None:
+    def test_error_response_not_read_before_possible_finalization(self) -> None:
         # The error body carries a read guard; raw-socket cleanup must happen
-        # without reading it or invoking response/connection close.
+        # without reading it or explicitly invoking response/connection close.
         guarded = _FakeHTTPResponse(500, b"TEST_ONLY_ERROR_BODY", guard_read=True)
         runtime = _healthy_runtime(version=guarded)
         _ = self._install(runtime)
@@ -2169,6 +2188,46 @@ class MalformedTransportResult(_AcquisitionCase):
             ):
                 _ = self._collect()
         self._assert_no_collector_threads()
+
+    def test_response_descriptor_values_are_captured_once(self) -> None:
+        class _SecondAccessResponse:
+            status_accesses: int
+            read_accesses: int
+            first_read: bool
+
+            def __init__(self) -> None:
+                self.status_accesses = 0
+                self.read_accesses = 0
+                self.first_read = True
+
+            @property
+            def status(self) -> int:
+                self.status_accesses += 1
+                if self.status_accesses > 1:
+                    raise RuntimeError("status descriptor accessed twice")
+                return 200
+
+            @property
+            def read(self) -> Callable[[int], object]:
+                self.read_accesses += 1
+                if self.read_accesses > 1:
+                    raise RuntimeError("read descriptor accessed twice")
+                return self._read
+
+            def _read(self, size: int = -1) -> bytes:
+                _ = size
+                if self.first_read:
+                    self.first_read = False
+                    return _fixture("version-ok.json")
+                return b""
+
+        response = _SecondAccessResponse()
+        _ = self._install_single(response)
+        snapshot = self._collect()
+        self.assertEqual(response.status_accesses, 1)
+        self.assertEqual(response.read_accesses, 1)
+        self.assertEqual(snapshot.status, "ok")
+        self._assert_no_output()
 
 
 # ═════════════ real-transport cancellation (http.client) ════════════════════

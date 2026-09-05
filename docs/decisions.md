@@ -326,23 +326,25 @@ direction was chosen. Dates use UTC.
   `Connection: close` ownership transfer to the response object. Cancellation
   is synchronized with handle registration, so a late handle is cancelled
   immediately. Every return or raise performs non-blocking operations on the
-  exact built-in raw socket and a bounded worker join, raising instead of
-  returning if a worker could still be blocked. Foreign handles are rejected
-  during registration rather than inspected or invoked. The worker itself never invokes
-  response/connection closes; socket and file-descriptor resources are
-  released exclusively through non-blocking operations on the registered
-  raw-socket handles. A deadline expiring during the
+  exact built-in raw socket and then joins the worker; the socket timeout
+  bounds production operations and the join proves termination. Foreign
+  handles are rejected during registration rather than inspected or invoked.
+  The collector never explicitly invokes response/connection closes, although
+  CPython's `HTTPResponse` may close its buffered file during a read or
+  finalization. The raw socket remains the resource cleanup guarantee. A
+  deadline expiring during the
   listing or loaded-model read degrades the snapshot to `unknown` —
   never a false `ok` — while preserving the already-validated
   reachability/presence facts. Cleanup is redacted end
   to end: provider-boundary failures can raise provider-controlled text without
   it escaping; cancellation itself uses only direct built-in primitives and
   retains no provider exception.
-  Response-operation failures of any kind — including
-  provider-controlled exception text — normalize to safe outcomes and are
-  never propagated or logged; internal framing/programming errors remain
-  distinguishable and are re-raised rather than swallowed. Error responses are not read; raw-socket
-  cleanup is used instead of response/connection close. Duplicate listed names and any malformed/drifted
+  Expected response-operation failures — including provider-controlled
+  exception text — normalize to safe outcomes and are never propagated or
+  logged; internal framing/programming errors remain
+  distinguishable and are re-raised rather than swallowed. Error responses are
+  not read; raw-socket cleanup is used instead of explicit response/connection
+  close. Duplicate listed names and any malformed/drifted
   body fail
   closed; a healthy local runtime reports `windows: []` with no quota
   semantics. There is no generation, no model loading for inspection, no
