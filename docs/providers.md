@@ -211,9 +211,9 @@ the model listing and the loaded-model listing) and
 explicit local
 endpoint (plain `http` on exactly the numeric loopback
 hosts `127.0.0.1` or `::1` only — `localhost` and every other name are
-rejected, and socket setup pins the address family from the validated
-literal with `getaddrinfo` restricted to `AI_NUMERICHOST`, so name
-resolution and DNS are impossible; the
+rejected, and socket setup pins the address family with direct numeric
+sockaddr construction from the validated literal, so name resolution and
+DNS are impossible; the
 omitted port canonically defaults to 11434, never an implicit socket
 default; an explicitly empty port is rejected; empty query/fragment delimiters, whitespace and control
 characters are rejected; no LAN scanning, no internet access, no proxy
@@ -223,8 +223,8 @@ a hard-coded default), and at most three fixed read-only GETs against the
 single canonical endpoint — two when the validated listing proves the
 configured model absent: `/api/version` (the reachability probe),
 `/api/tags` (exact-name model presence, with the listing's validated
-`sha256` digest as identity evidence; each entry must also carry a
-matching `model` identity — conflicting or malformed identity fields are
+`sha256` digest as identity evidence; each entry's provider-supplied `name` and
+`model` must be printable safe-v1 identities and must match — conflicting or malformed identity fields are
 drift) and `/api/ps` (effective context,
 only from a validated positive integer `context_length` on the configured
 model's loaded entry whose validated digest agrees with the listing's — a
@@ -240,8 +240,9 @@ signed 64-bit band, recursion-limit nesting and decoder resource failures all ma
 before use (integer HTTP status plus callable `read`; body chunks must be
 `bytes`; a malformed response object or contract-violating chunk degrades
 safely instead of raising), and one monotonic collection deadline is
-enforced end to end: each read executes inside a bounded non-daemon worker;
-the raw socket is captured at connection setup and stays valid across any
+enforced end to end: direct numeric socket setup uses nonblocking connect
+readiness, and each response exchange/body read executes inside a bounded
+non-daemon worker; the raw socket is captured at connection setup and stays valid across any
 `Connection: close` ownership transfer to the response object. Cancellation
 is synchronized with handle registration, so a handle registered after
 cancellation is cancelled immediately. Every return or raise performs

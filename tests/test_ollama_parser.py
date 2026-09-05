@@ -154,6 +154,20 @@ class TagsListing(unittest.TestCase):
                 payload = {"models": [{"name": TARGET, "model": bad_model}]}
                 self.assertIsNone(parse_ollama_tags_response(payload))
 
+    def test_provider_identities_reject_controls_and_format_characters(self) -> None:
+        bad_values = ("bad\x00name", "bad\u0085name", "bad\ufeffname")
+        for field in ("name", "model"):
+            for bad_value in bad_values:
+                with self.subTest(field=field, value=repr(bad_value)):
+                    entry: dict[str, object] = {
+                        "name": TARGET,
+                        "model": TARGET,
+                    }
+                    entry[field] = bad_value
+                    self.assertIsNone(
+                        parse_ollama_tags_response({"models": [entry]})
+                    )
+
     def test_ps_conflicting_model_identity_is_drift(self) -> None:
         payload = {
             "models": [
@@ -180,6 +194,21 @@ class TagsListing(unittest.TestCase):
                     ]
                 }
                 self.assertIsNone(parse_ollama_ps_response(payload))
+
+    def test_ps_provider_identities_reject_controls_and_format_characters(self) -> None:
+        bad_values = ("bad\x00name", "bad\u0085name", "bad\ufeffname")
+        for field in ("name", "model"):
+            for bad_value in bad_values:
+                with self.subTest(field=field, value=repr(bad_value)):
+                    entry: dict[str, object] = {
+                        "name": TARGET,
+                        "model": TARGET,
+                        "context_length": 16384,
+                    }
+                    entry[field] = bad_value
+                    self.assertIsNone(
+                        parse_ollama_ps_response({"models": [entry]})
+                    )
 
     def test_duplicate_names_are_drift(self) -> None:
         self.assertIsNone(parse_ollama_tags_response(_load("tags-duplicate-names.json")))

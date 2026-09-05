@@ -16,10 +16,9 @@ Security contract (docs/security.md):
 - the endpoint must be an explicitly configured **local** endpoint: plain
   ``http`` on exactly the numeric loopback hosts ``127.0.0.1`` or ``::1``.
   ``localhost`` and every other name is rejected outright — socket setup
-  uses an explicit address family from ``ipaddress`` and ``getaddrinfo``
-  restricted to ``AI_NUMERICHOST`` on the validated literal, so no
-  resolver, DNS, hosts file or name-based path can ever be consulted and
-  no resolve/connect race exists. The omitted port canonically defaults to the
+  uses an explicit address family and direct sockaddr construction from
+  ``ipaddress``, so no resolver, DNS, hosts file or name-based path can ever
+  be consulted and no resolve/connect race exists. The omitted port canonically defaults to the
   documented Ollama port 11434 (never an implicit socket default), an
   explicitly empty port is rejected, the base path must be empty or root, and
   empty-but-present query/fragment delimiters, leading/trailing whitespace and control characters are
@@ -678,7 +677,10 @@ def _read_content_length_tail(
 
 
 def _execute_read(
-    connection: _ConnectionProtocol, path: str, deadline: float
+    connection: _ConnectionProtocol,
+    path: str,
+    deadline: float,
+    cancellation_requested: threading.Event,
 ) -> tuple[_CallOutcome, object]:
     """Run one full transport-plus-read phase against the deadline.
 
@@ -767,6 +769,8 @@ def _execute_read(
             except (HTTPException, OSError):
                 return "transport_fail", None
             except Exception:
+                if cancellation_requested.is_set():
+                    raise
                 # Response reads are an untrusted provider boundary; their
                 # exception text must never escape or be retained.
                 return "transport_fail", None
@@ -808,42 +812,23 @@ def _execute_read(
     # the retained raw socket is the collector's socket/fd cleanup guarantee.
 
 
-def _open_and_read(
-    host: str,
-    port: int,
-    path: str,
-    deadline: float,
-    phase_timeout: float,
-    register_handle: Callable[[object], None],
-) -> tuple[_CallOutcome, object]:
-    """Open the connection, then run one full read phase.
-
-    Connection setup (socket creation, handle registration, connect) and
-    the read share the phase timeout and the collection deadline; setup
-    failures surface as ``OSError``/``HTTPException`` for the caller to
-    normalize.
-    """
-    connection = open_connection(host, port, phase_timeout, register_handle)
-    return _execute_read(connection, path, deadline)
-
-
 def _read_call(
     host: str, port: int, path: str, deadline: float
 ) -> tuple[_CallOutcome, object]:
     """Perform one deadline-bounded local read and classify the outcome.
 
-    The whole read runs inside a single bounded **non-daemon** worker and
-    the collector waits at most the remaining time on it. On deadline the
-    collector requests cancellation through the registered raw-socket
-  handles (``shutdown`` then ``close``), then joins the worker. A handle
-  registered after cancellation is cancelled before the worker continues.
-  The path does not return or re-raise until the worker has been proven
-  reclaimed. The deadline is
-    re-checked before any worker result is consumed, so a completion that
-    lands at or past the deadline fails closed. Exception text is deliberately
-    never inspected, retained or propagated; a genuinely unexpected internal
-    worker error is re-raised in this thread so programming errors are never
-    swallowed or misreported as telemetry.
+    Connection setup runs directly with nonblocking numeric ``connect_ex``;
+    the response exchange and body read run inside a single bounded
+    **non-daemon** worker. The collector waits at most the remaining deadline
+    on that worker. On deadline it requests cancellation through the registered
+    raw-socket handles (``shutdown`` then ``close``), then joins the worker. A
+    handle registered after cancellation is cancelled before the worker
+    continues. The path does not return or re-raise until the worker has been
+    proven reclaimed. The deadline is re-checked before any worker result is
+    consumed, so a completion that lands at or past the deadline fails closed.
+    Exception text is deliberately never inspected, retained or propagated; a
+    genuinely unexpected internal worker error is re-raised in this thread so
+    programming errors are never swallowed or misreported as telemetry.
     """
     if deadline - time.monotonic() <= 0:
         return "transport_fail", None
@@ -852,6 +837,7 @@ def _read_call(
     unexpected: list[Exception] = []
     registered_sockets: list[object] = []
     registration_lock = threading.Lock()
+    cancellation_event = threading.Event()
     cancellation_requested = False
 
     def _register(handle: object) -> None:
@@ -871,6 +857,7 @@ def _read_call(
         nonlocal cancellation_requested
         with registration_lock:
             cancellation_requested = True
+            cancellation_event.set()
             handles = list(registered_sockets)
         _cancel_sockets(handles)
 
@@ -882,19 +869,10 @@ def _read_call(
         # before the caller returns or re-raises.
         worker.join()
 
-    def _work() -> None:
+    def _work(connection: _ConnectionProtocol) -> None:
         try:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                results.append(("transport_fail", None))
-                return
-            outcome, payload = _open_and_read(
-                host,
-                port,
-                path,
-                deadline,
-                min(TIMEOUT_SECONDS, remaining),
-                _register,
+            outcome, payload = _execute_read(
+                connection, path, deadline, cancellation_event
             )
             if outcome == "ok":
                 try:
@@ -916,32 +894,57 @@ def _read_call(
         except Exception as exc:  # re-raised by the caller, never swallowed
             unexpected.append(exc)
 
-    worker = threading.Thread(
-        target=_work, name="scarcity-router-ollama-read", daemon=False
-    )
+    worker: threading.Thread | None = None
     worker_started = False
+    worker_timed_out = False
+    result: tuple[_CallOutcome, object] = ("transport_fail", None)
     try:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return "transport_fail", None
+        try:
+            connection = open_connection(
+                host,
+                port,
+                min(TIMEOUT_SECONDS, remaining),
+                _register,
+            )
+        except (OSError, HTTPException):
+            return "transport_fail", None
+        worker = threading.Thread(
+            target=_work,
+            args=(connection,),
+            name="scarcity-router-ollama-read",
+            daemon=False,
+        )
         worker.start()
         worker_started = True
         worker.join(max(0.0, deadline - time.monotonic()))
         if worker.is_alive():
-            # Deadline cleanup below requests cancellation and performs the
-            # bounded reclaim join. Its result, if any, is discarded.
-            return "transport_fail", None
-        if deadline - time.monotonic() <= 0:
-            # A completion that lands at or past the deadline fails closed.
-            return "transport_fail", None
-        if unexpected:
-            raise unexpected[0]
-        if results:
-            return results[0]
-        return "transport_fail", None
+            # Cleanup below requests cancellation and completes the
+            # reclaimable, deadline-bounded worker operation.
+            worker_timed_out = True
+        elif results:
+            result = results[0]
     finally:
-        # Every started worker is cancelled through the registered raw
-        # sockets and then joined on every return and exception path. The
-        # registry also cancels handles that arrive during this cleanup.
-        if worker_started:
+        # Every started worker is cancelled through the registered raw sockets
+        # and then joined on every return and exception path. The registry
+        # also cancels handles that arrive during this cleanup.
+        if worker_started and worker is not None:
             _join_after_cancellation(worker)
+        else:
+            # Setup runs on this thread and is already complete or failed;
+            # release any handle it registered before raising/returning.
+            _request_cancellation()
+    # Inspect worker errors only after cancellation cleanup has reclaimed the
+    # worker. This preserves programming-error distinction even when the
+    # worker was awakened by deadline cancellation.
+    if unexpected:
+        raise unexpected[0]
+    if worker_timed_out or deadline - time.monotonic() <= 0:
+        # A completion that lands at or past the deadline fails closed.
+        return "transport_fail", None
+    return result
 
 
 def _snapshot(

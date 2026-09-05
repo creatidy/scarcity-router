@@ -291,7 +291,8 @@ direction was chosen. Dates use UTC.
   `GET /api/version` (validated envelope with a usable, bounded,
   printable version string — control, format and padding code points
   rejected — = the reachability fact),
-  `GET /api/tags` (exact `name`-identity model presence) and
+  `GET /api/tags` (exact `name`-identity model presence; every provider-supplied
+  `name`/`model` is a printable safe-v1 identity) and
   `GET /api/ps` (effective context). `model_presence` is `missing` only
   when a reachable runtime's validated listing lacks the configured name,
   and `unknown` on runtime/listing failures; `/api/ps` supplemental
@@ -319,10 +320,11 @@ direction was chosen. Dates use UTC.
   `read`; body chunks must be `bytes`; a malformed response object or
   contract-violating chunk degrades safely instead of raising), and one
   monotonic collection deadline is enforced end to end:
-  each read runs inside a bounded non-daemon worker; the raw socket is
-  captured at connection setup (family from the validated numeric
-  literal; `getaddrinfo` restricted to `AI_NUMERICHOST`, so name
-  resolution and DNS are impossible) and stays valid across any
+  direct numeric socket setup uses nonblocking connect readiness, and each
+  response exchange/body read runs inside a bounded non-daemon worker; the raw
+  socket is captured at connection setup (family and sockaddr built directly
+  from the validated numeric literal, so name resolution and DNS are
+  impossible) and stays valid across any
   `Connection: close` ownership transfer to the response object. Cancellation
   is synchronized with handle registration, so a late handle is cancelled
   immediately. Every return or raise performs non-blocking operations on the

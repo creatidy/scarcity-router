@@ -19,11 +19,12 @@ Evidenced shapes (structure only; see poc-evidence.md):
 - ``GET /api/version`` -> ``{"version": "<string>"}``; additive keys are
   tolerated, a missing or non-string ``version`` is drift;
 - ``GET /api/tags`` -> ``{"models": [...]}``; every entry must be an object
-  with a string ``name``; a non-object entry, a non-string/missing ``name``
-  or a **duplicate** ``name`` is drift, because duplicate identities make
-  the presence answer ambiguous rather than merely redundant;
+  with a safe v1 identity ``name`` and matching ``model``; a non-object entry,
+  malformed/control-bearing identity or a **duplicate** ``name`` is drift,
+  because duplicate identities make the presence answer ambiguous rather than
+  merely redundant;
 - ``GET /api/ps`` -> ``{"models": [...]}``; every listed (loaded) entry must
-  be an object with a string ``name`` and a positive integer
+  be an object with a safe v1 identity ``name`` and a positive integer
   ``context_length`` within the validated signed 64-bit band (the
   runtime's effective context for that loaded model). A listed entry
   without a usable ``context_length`` is drift: effective context is
@@ -57,6 +58,7 @@ SOURCE = "ollama_local"
 # Anything else degrades that entry's identity evidence (``None``), rather
 # than drifting the whole listing or accepting an unverifiable image.
 _SAFE_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+_SAFE_ID_RE = re.compile(r"[a-z0-9][a-z0-9._:-]{0,63}")
 
 # A version string is identity evidence only when it is usable: a
 # non-empty, non-control, non-padding string of bounded length. Unusable
@@ -91,6 +93,15 @@ def _as_mapping(value: object) -> Mapping[str, object] | None:
 def _is_int(value: object) -> TypeGuard[int]:
     """True for a real JSON integer; booleans are not integers."""
     return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _is_safe_identity(value: object) -> TypeGuard[str]:
+    """True for a printable, safe v1 provider model identity."""
+    return (
+        isinstance(value, str)
+        and _SAFE_ID_RE.fullmatch(value) is not None
+        and value.isprintable()
+    )
 
 
 def safe_digest(value: object) -> str | None:
@@ -138,10 +149,10 @@ def _listed_entries(
     """Shared strict listing validation for ``/api/tags`` and ``/api/ps``.
 
     Validates the ``{"models": [...]}`` envelope and every entry's
-    identity fields: each entry must carry a non-empty string ``name``
-    and a matching non-empty string ``model`` (the evidenced contract
-    carries both, with ``model`` equal to ``name``). A missing, malformed
-    or **conflicting** ``model`` identity is drift — accepting it could
+    identity fields: each entry must carry a printable safe-v1 ``name``
+    and a matching printable safe-v1 ``model`` (the evidenced contract
+    carries both, with ``model`` equal to ``name``). A missing, malformed,
+    control-bearing or **conflicting** ``model`` identity is drift — accepting it could
     attribute presence or effective context to a different model image —
     and so are duplicate names. Returns ``name -> entry`` on success,
     ``None`` on any structural drift.
@@ -159,9 +170,9 @@ def _listed_entries(
             return None
         name = entry.get("name")
         model = entry.get("model")
-        if not isinstance(name, str) or not name:
+        if not _is_safe_identity(name):
             return None
-        if not isinstance(model, str) or not model or model != name:
+        if not _is_safe_identity(model) or model != name:
             return None
         if name in listed:
             return None

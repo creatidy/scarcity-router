@@ -485,7 +485,7 @@ class ConnectionSetup(_AcquisitionCase):
         self.assertNotIn(FAKE_TRANSPORT_SECRET, text)
         self._assert_no_output()
 
-    def _assert_bounded_connect_cancel(self, wait: float) -> None:
+    def _assert_bounded_first_read_cancel(self, wait: float) -> None:
         sockets: list[_ConnectBlockingSocket] = []
 
         class _ConnectBlockingSocket:
@@ -541,11 +541,11 @@ class ConnectionSetup(_AcquisitionCase):
         self.assertTrue(cast("threading.Event", getattr(sockets[0], "_release")).is_set())
         self._assert_no_output()
 
-    def test_delayed_connect_cancels_within_budget(self) -> None:
-        self._assert_bounded_connect_cancel(self.DELAY)
+    def test_delayed_first_read_cancels_within_budget(self) -> None:
+        self._assert_bounded_first_read_cancel(self.DELAY)
 
-    def test_permanent_connect_cancels_within_budget(self) -> None:
-        self._assert_bounded_connect_cancel(30.0)
+    def test_permanent_first_read_cancels_within_budget(self) -> None:
+        self._assert_bounded_first_read_cancel(30.0)
 
 
 # ═══════════════════════ configuration boundary ══════════════════════════════
@@ -1640,40 +1640,31 @@ class CollectionDeadline(_AcquisitionCase):
         # collector worker remains and no response/connection close is invoked.
         self._assert_no_collector_threads()
 
-    def test_late_socket_registration_is_cancelled_and_reclaimed(self) -> None:
-        # Stage registration after the deadline cancellation pass. The
-        # synchronization-aware registry must cancel this handle immediately,
-        # allowing the non-daemon worker to terminate before the return.
-        initial_release = threading.Event()
-        late_release = threading.Event()
+    def test_setup_failure_releases_registered_handle_without_worker(self) -> None:
+        # Setup now runs before the read worker. A registered handle is still
+        # released when setup fails, and no worker is created for this path.
+        release = threading.Event()
 
-        def late_factory(
+        def failing_factory(
             host: str,
             port: int,
             timeout: float,
             register_handle: Callable[[object], None],
         ) -> object:
             _ = host, port, timeout
-            register_handle(initial_release)
-            if not initial_release.wait(1.0):
-                raise AssertionError("deadline cancellation did not arrive")
-            register_handle(late_release)
+            register_handle(release)
             raise OSError(FAKE_TRANSPORT_SECRET)
 
         patcher = mock.patch.object(
-            ollama_acquisition, "open_connection", late_factory
+            ollama_acquisition, "open_connection", failing_factory
         )
         _ = patcher.start()
         self.addCleanup(patcher.stop)
-        with mock.patch.object(
-            ollama_acquisition, "COLLECTION_DEADLINE_SECONDS", 0.02
-        ):
-            snapshot = self._collect()
+        snapshot = self._collect()
 
         self.assertEqual(snapshot.status, "unavailable")
-        self.assertTrue(late_release.is_set())
-        # This is intentionally immediate, rather than a polling assertion:
-        # _read_call must have completed its final join already.
+        self.assertTrue(release.is_set())
+        # This is intentionally immediate: setup creates no worker.
         self.assertFalse(
             any(
                 thread.name == "scarcity-router-ollama-read"
@@ -1936,6 +1927,57 @@ class BoundedWorkerDeadline(_AcquisitionCase):
         self.assertEqual(foreign.shutdown_accesses, 0)
         self.assertEqual(foreign.close_accesses, 0)
         self.assertEqual(foreign.fileno_accesses, 0)
+        self._assert_no_collector_threads()
+        self._assert_no_output()
+
+    def test_cancelled_worker_programming_error_is_reraised_after_join(self) -> None:
+        release = threading.Event()
+
+        class _CancelledProgrammingConnection:
+            sock: _FakeSocket
+            status: int = 200
+
+            def __init__(self) -> None:
+                self.sock = _FakeSocket(release)
+
+            def request(
+                self, method: str, path: str, /, *, headers: object = None
+            ) -> None:
+                _ = method, path, headers
+
+            def getresponse(self) -> object:
+                return self
+
+            def read(self, size: int = -1) -> object:
+                _ = size
+                if release.wait(30.0):
+                    raise RuntimeError("INTERNAL_SENTINEL")
+                return _fixture("version-ok.json")
+
+        connection = _CancelledProgrammingConnection()
+
+        def factory(
+            host: str,
+            port: int,
+            timeout: float,
+            register_handle: Callable[[object], None],
+        ) -> object:
+            _ = host, port, timeout
+            register_handle(release)
+            return connection
+
+        patcher = mock.patch.object(ollama_acquisition, "open_connection", factory)
+        _ = patcher.start()
+        self.addCleanup(patcher.stop)
+        with mock.patch.object(
+            ollama_acquisition, "COLLECTION_DEADLINE_SECONDS", self.BUDGET
+        ), contextlib.redirect_stdout(
+            self.stdout
+        ), contextlib.redirect_stderr(self.stderr):
+            with self.assertRaisesRegex(RuntimeError, "INTERNAL_SENTINEL"):
+                _ = ollama_acquisition.collect_ollama_capacity(
+                    retrieved_at=RETRIEVED_AT, model_name=MODEL
+                )
         self._assert_no_collector_threads()
         self._assert_no_output()
 
