@@ -261,6 +261,25 @@ only):
   schema v2). No model prompt was issued; no personal quota values were
   recorded.
 
+**Remediation (2026-09-05, post-review).** The first acceptance interpretation
+treated the credit snapshot and the bucket's unavailable spend-control signal
+as blockers; bounded review established that this conflated supplemental
+provider state with invalid quota evidence. D-019 was amended with the
+principle that provider telemetry v2 does not yet expose must not invalidate
+independently validated quota facts v2 can represent. After the remediation,
+the one live acceptance run returned:
+
+- OpenAI `status=ok` (schema v2) with three validated windows — the main
+  weekly window plus the additional limit bucket's five-hour and weekly
+  windows — all with present, usable percentage pairs and populated reset
+  instants. Multiple buckets coexist; no missing window was synthesized; no
+  credit, account or other supplemental value was exposed (the bucket
+  identifier remains unrecorded);
+- Z.ai `status=ok` in the same run.
+
+Both the human-readable and JSON status surfaces were exercised; no model
+prompt was issued and no personal quota values were recorded.
+
 ### Z.ai Coding Plan capacity
 
 PoC environment included Kilo 7.5.6. Kilo reported a `Z.AI Coding Plan`

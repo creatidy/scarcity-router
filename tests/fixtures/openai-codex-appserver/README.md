@@ -34,10 +34,12 @@ parsing paths rather than replay a live reading.
   `limitName: null`). `ordinaryUsageAllowed` is explicitly true. Healthy.
 - `ratelimits-credits-present.json` — valid typed credit/spend/reset-credit
   states (`CreditsSnapshot` with required boolean fields and optional
-  string-or-null `balance`, `SpendControlLimitSnapshot` with four required fields and string
-  `limit`/`used`, reset-credit summary with `availableCount` and fully typed
-  rows). The credit and spend states are valid but v2-unrepresentable and
-  degrade to `unknown` with percentage pairs withheld.
+  string-or-null `balance`, a non-exhausted `SpendControlLimitSnapshot` with
+  four required fields and string `limit`/`used`, reset-credit summary with
+  `availableCount` and fully typed rows). Credits and the non-exhausted
+  spend-control limit are validated-but-unrepresented supplemental
+  telemetry: the quota-window percentage pairs remain usable and no
+  supplemental value is serialized (D-019 remediation).
 - Valid reset-credit summaries, including `{availableCount: 0, credits: []}`,
   are supplemental telemetry and do not block or withhold current quota
   percentages.
@@ -47,8 +49,8 @@ parsing paths rather than replay a live reading.
   instead of the evidenced string-or-null: `schema_changed`.
 - `ratelimits-additional-window-present.json` — an additional metered bucket
   plus the required matching `codex` mirror. Its window is emitted with a
-  distinct safe identity rather than merged with a main window; the snapshot
-  is `unknown` because v2 cannot represent the cross-bucket metering.
+  distinct safe identity rather than merged with a main window; the bucket's
+  presence alone does not degrade the observation (D-019 remediation).
 - `ratelimits-additional-bucket-exhausted.json` — an additional metered
   bucket under `rateLimitsByLimitId` (key matching its `limitId`) with an
   exhausted window (`usedPercent` 100): blocker, main pairs withheld.
@@ -104,13 +106,16 @@ parsing paths rather than replay a live reading.
   unblocked snapshot with at least one usable pair is healthy. Emptiness,
   duplicate known periods and a non-`codex` `limitId` never yield a healthy
   snapshot;
-- backend blockers — a non-null `rateLimitReachedType`,
-  `spendControlReached: true`, an exhausted `individualLimit`, or a
-  blocked/exhausted additional bucket — degrade to `unknown` with
-  percentage pairs withheld; valid v2-unrepresentable credit/spend states do
-  too; reset-credit summaries are supplemental and do not block; known
-  exhaustion without any blocker stays `ok` as
-  `(100, 0)`;
+- explicit backend blockers — a non-null `rateLimitReachedType`,
+  `spendControlReached: true`, an exhausted `individualLimit`
+  (`remainingPercent == 0`), or an explicit blocker (including a window at
+  `usedPercent == 100`) inside an additional bucket — degrade to `unknown`
+  with percentage pairs withheld. Supplemental-but-unrepresented state
+  (valid credits, a non-exhausted individual limit, the mere presence of
+  additional buckets, a missing/null optional blocker signal) never
+  invalidates the validated quota pairs; reset-credit summaries are
+  supplemental and do not block; known exhaustion without any blocker stays
+  `ok` as `(100, 0)`;
 - unknown / missing values remain unknown, never defaulted to 0 or 100;
 - schema change maps to `schema_changed` and no synthesized windows;
 - no credential- or authorization-shaped string, subprocess output or local

@@ -247,7 +247,8 @@ direction was chosen. Dates use UTC.
 
 ### D-019 — Codex response-generation compatibility and window coverage
 
-- **Status:** Accepted
+- **Status:** Accepted; amended 2026-09-05 by the post-review remediation
+  below
 - **Date:** 2026-09-05
 - **Supersedes:** U-010's window-coverage clause ("a main snapshot missing
   either expected window kind never reports `ok`") and U-011's rule that the
@@ -261,10 +262,9 @@ direction was chosen. Dates use UTC.
     the legacy generation the permission member is never manufactured;
     permission is evaluated from the evidenced legacy blocker contract:
     explicit `spendControlReached == true` blocks, any validated non-null
-    `rateLimitReachedType` blocks, v2-unrepresentable credit/spend states
-    block, and missing/null `spendControlReached` remains the legacy
-    conservative unavailable state that withholds percentage pairs. A
-    non-null `rateLimitUpsell` blocks in either generation.
+    `rateLimitReachedType` blocks, and an exhausted `individualLimit`
+    (`remainingPercent == 0`) blocks. A non-null `rateLimitUpsell` blocks in
+    either generation.
   - **Window coverage is evidence-based.** A provider may legitimately omit
     a quota window. A validated, unblocked main snapshot with at least one
     window whose percentage pair is usable is healthy even when the other
@@ -279,6 +279,33 @@ direction was chosen. Dates use UTC.
   provider evidence into fabricated ignorance.
 - **Boundary:** Adapter-edge semantics under the frozen v2 contract. No new
   v2 fields or diagnostics; additional-bucket semantics are unchanged.
+- **Amendment (2026-09-05, single post-review remediation):** the original
+  wording kept the U-010 coupling that turned validated-but-unrepresented
+  supplemental state into withheld quota pairs. That interpretation was
+  incorrect and is corrected under the explicit principle:
+
+  > Provider telemetry that v2 does not yet expose must not invalidate
+  > independently validated quota facts that v2 can represent.
+
+  Specifically: a valid `CreditsSnapshot` is validated-but-unrepresented
+  supplemental availability telemetry (Codex evaluates credit availability
+  alongside, never instead of, the quota percentages) and neither blocks nor
+  withholds pairs; a present non-exhausted `individualLimit`
+  (`remainingPercent > 0`) is an independently represented spend-control
+  state that does not invalidate ordinary quota percentages, while
+  `remainingPercent == 0` remains an explicit blocker; the mere presence of
+  additional `rateLimitsByLimitId` buckets — the provider's explicit
+  multi-bucket view — is real capacity evidence that neither degrades the
+  snapshot nor erases main pairs (their windows keep the safe
+  `<limitId>:<slot>` identities, and explicit blockers inside a bucket stay
+  conservative); and missing/null `spendControlReached` means that one
+  optional blocker signal is unavailable — it does not erase otherwise
+  validated percentage pairs in the main snapshot or in any bucket.
+  `status` describes the quality of the provider observation, not a scarcity
+  score; M2 will own candidate-to-bucket applicability while M1 owns honest
+  observation. Validation strictness is unchanged: malformed credits,
+  spend-control limits, buckets and unknown structured fields still fail
+  closed, no supplemental values are exposed, and the schema stays v2.
 
 ## Unresolved decisions
 

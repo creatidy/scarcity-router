@@ -40,21 +40,22 @@ docs/poc-evidence.md ("OpenAI/Codex subscription capacity" and the
     optional i64. Slot names carry no period semantics;
   - ``credits`` is the evidenced ``CreditsSnapshot``: ``hasCredits`` and
     ``unlimited`` are required booleans, while optional ``balance`` is a
-    decimal string or null. A present valid snapshot is a
-   v2-unrepresentable credit state (unknown + withheld pairs), never
-    interpreted;
+    decimal string or null. A valid snapshot is validated-but-unrepresented
+    supplemental availability telemetry: Codex evaluates credit availability
+    alongside — never instead of — the quota-window percentages, so its
+    presence neither blocks nor withholds the independently validated pairs.
+    Credit values are never interpreted or emitted;
   - ``individualLimit`` is the evidenced ``SpendControlLimitSnapshot``:
     ``limit`` and ``used`` are required strings, while
     ``remainingPercent`` and ``resetsAt`` are required integers. A present
-    valid snapshot is a
-   v2-unrepresentable spend state, and ``remainingPercent == 0`` is a
-    backend blocker. Amounts are never interpreted or compared;
+    non-exhausted limit (``remainingPercent > 0``) is an independently
+    represented spend-control state that does not invalidate the ordinary
+    quota-window percentages; ``remainingPercent == 0`` is an explicit
+    backend blocker. Amounts are never interpreted, compared or emitted;
   - ``spendControlReached`` is the boolean spend-control blocker: ``false``
-    means clear and ``true`` blocks. Missing or null is unavailable; current
-    upstream permits a full read with that state when
-    ``ordinaryUsageAllowed`` is explicitly true, while the envelope
-    permission still blocks missing/null/false permission. Any other shape is
-    drift;
+    means clear and ``true`` blocks. Missing or null means that one optional
+    blocker signal is unavailable — it does not erase otherwise validated
+    window percentage pairs (D-019 remediation). Any other shape is drift;
   - ``rateLimitReachedType`` accepts exactly the evidenced snake_case enum
     members (``rate_limit_reached``, ``workspace_member_credits_depleted``,
     ``workspace_owner_credits_depleted``,
@@ -90,22 +91,29 @@ docs/poc-evidence.md ("OpenAI/Codex subscription capacity" and the
     legacy schema has no ``ordinaryUsageAllowed`` field, so permission is
     evaluated from the evidenced legacy blocker contract instead — explicit
     ``spendControlReached == true`` blocks, any validated non-null
-    ``rateLimitReachedType`` blocks, v2-unrepresentable credit/spend states
-    block, and missing/null ``spendControlReached`` remains the legacy
-    conservative unavailable state that withholds pairs. Permission is never
-    inferred from percentages and ``ordinaryUsageAllowed=true`` is never
-    manufactured;
+    ``rateLimitReachedType`` blocks, and an exhausted ``individualLimit``
+    blocks. Permission is never inferred from percentages and
+    ``ordinaryUsageAllowed=true`` is never manufactured;
   - a non-null ``rateLimitUpsell`` is treated as a current upstream recovery
     blocker in either generation, while its opaque presentation contents are
     discarded;
-- backend blockers and v2-unrepresentable states never yield a healthy
-  snapshot: ``status="unknown"`` with ``telemetry_unknown``, all validated
-  windows (main and additional) preserved with identity/duration/reset
-  facts, and every percentage pair withheld (``percentage_unknown`` per
-  window). A present additional bucket without blockers also degrades to
-  ``unknown`` (v2 cannot represent capacity metered across buckets) but
-  keeps validated pairs. Known exhaustion of the main quota *without* any
-  blocker stays ``ok`` with the ``(100, 0)`` pair;
+- explicit blockers never yield a healthy snapshot: ``status="unknown"``
+  with ``telemetry_unknown``, all validated windows (main and additional)
+  preserved with identity/duration/reset facts, and every percentage pair
+  withheld (``percentage_unknown`` per window). Explicit blocker evidence is
+  a non-null validated ``rateLimitReachedType``, ``spendControlReached ==
+  true``, an exhausted ``individualLimit`` (``remainingPercent == 0``), a
+  non-null ``rateLimitUpsell``, or an explicit blocker (including a window
+  at ``usedPercent == 100``) inside an additional bucket. Known exhaustion
+  of the main quota *without* any blocker stays ``ok`` with the ``(100,
+  0)`` pair;
+- supplemental-but-unrepresented provider state never invalidates
+  independently validated quota facts that v2 can represent (D-019
+  remediation): valid credits, a non-exhausted individual limit, the mere
+  presence of additional buckets and an unavailable optional blocker signal
+  all leave validated percentage pairs intact. ``status`` describes the
+  quality of the provider observation, not a scarcity score; M2 will own
+  candidate-to-bucket applicability, while M1 owns honest observation;
 - window coverage is evidence-based, not structural (D-019): a provider may
   legitimately omit a quota window. A validated, unblocked main snapshot
   with at least one window whose percentage pair is usable is healthy even
@@ -348,12 +356,18 @@ class _WindowFacts:
 
 @dataclass(frozen=True)
 class _SnapshotState:
-    """Validated state of one quota snapshot (main or additional bucket)."""
+    """Validated state of one quota snapshot (main or additional bucket).
+
+    ``blocked`` carries explicit blocker evidence only (reached type,
+    spend-control blocker, exhausted individual limit, or — for additional
+    buckets — a window at 100% used). Validated-but-unrepresented
+    supplemental state such as a ``CreditsSnapshot`` or the mere presence of
+    additional buckets is deliberately absent from this state: it must not
+    invalidate independently validated quota facts (D-019 remediation).
+    """
 
     windows: tuple[_WindowFacts, ...]
     blocked: bool
-    unrepresentable: bool
-    unavailable: bool
 
 
 def classify_app_server_message(message: object) -> MessageKind:
@@ -588,11 +602,15 @@ def _without_percentages(
 def _credits_state(value: object) -> bool | None:
     """Validate the typed ``CreditsSnapshot``; ``None`` means drift.
 
-    Returns ``True`` when a valid credit state is present
-    (v2-unrepresentable), ``False`` when absent (null or missing). The
-    exact tagged schema requires the booleans ``hasCredits`` and
-    ``unlimited``; an optional ``balance`` must be a string or null. The
-    balance is never interpreted or surfaced.
+    Returns ``True`` when a valid credit state is present, ``False`` when
+    absent (null or missing). Credits are validated-but-unrepresented
+    supplemental availability telemetry: Codex evaluates credit availability
+    alongside — not instead of — the quota-window percentages, so a valid
+    present snapshot neither blocks nor withholds the independently
+    validated pairs (D-019 remediation). The exact tagged schema requires
+    the booleans ``hasCredits`` and ``unlimited``; an optional ``balance``
+    must be a string or null. The balance and all credit values are never
+    interpreted, surfaced or emitted.
     """
     if value is None:
         return False
@@ -618,17 +636,20 @@ def _credits_state(value: object) -> bool | None:
     return True
 
 
-def _individual_limit_state(value: object) -> tuple[bool, bool] | None:
+def _individual_limit_state(value: object) -> bool | None:
     """Validate the typed ``SpendControlLimitSnapshot``.
 
-    Returns ``(present, exhausted)``; ``None`` means drift. The exact
-    tagged schema requires all four members: ``limit`` and ``used`` as
-    strings, ``remainingPercent`` as an integer and ``resetsAt`` as an
-    integer. Amount strings are never interpreted or compared;
-    ``remainingPercent == 0`` is the evidenced exhausted state.
+    Returns the exhausted flag: ``None`` means drift, ``True`` is the
+    evidenced exhausted blocker (``remainingPercent == 0``) and ``False`` is
+    clear (absent, or present with remaining capacity). The exact tagged
+    schema requires all four members: ``limit`` and ``used`` as strings,
+    ``remainingPercent`` as an integer and ``resetsAt`` as an integer.
+    Amounts are never interpreted or compared, and a present non-exhausted
+    limit does not invalidate the independently validated quota-window
+    percentages (D-019 remediation).
     """
     if value is None:
-        return False, False
+        return False
     snapshot = _as_mapping(value)
     if snapshot is None:
         return None
@@ -649,19 +670,18 @@ def _individual_limit_state(value: object) -> tuple[bool, bool] | None:
     resets = snapshot["resetsAt"]
     if not _fits_i64(resets):
         return None
-    return True, remaining == 0
+    return cast(int, remaining) == 0
 
 
 def _reset_credits_state(value: object) -> bool | None:
     """Validate the typed reset-credit summary; ``None`` means drift.
 
-    Returns ``True`` when a valid summary is present
-    (v2-unrepresentable), ``False`` when absent (null or missing). The
-    exact tagged schema requires the integer ``availableCount``; each
-    optional ``credits`` row is a typed object requiring ``id``, ``resetType``,
-    ``status`` and ``grantedAt``. ``expiresAt``, ``title`` and ``description``
-    are optional and nullable. Empty arrays are valid, but empty or malformed
-    rows are drift.
+    Returns ``True`` when a valid summary is present, ``False`` when absent
+    (null or missing). The exact tagged schema requires the integer
+    ``availableCount``; each optional ``credits`` row is a typed object
+    requiring ``id``, ``resetType``, ``status`` and ``grantedAt``.
+    ``expiresAt``, ``title`` and ``description`` are optional and nullable.
+    Empty arrays are valid, but empty or malformed rows are drift.
     Values are never interpreted or surfaced.
     """
     if value is None:
@@ -757,24 +777,26 @@ def _quota_snapshot_state(
         blocked = True
 
     spend_control = snapshot.get("spendControlReached")
-    spend_control_unavailable = (
-        "spendControlReached" not in snapshot or spend_control is None
-    )
-    if spend_control_unavailable or spend_control is False:
+    if spend_control is None or spend_control is False:
+        # A missing/null optional blocker signal is unavailable evidence
+        # about that one blocker, not a reason to discard independently
+        # validated quota telemetry (D-019 remediation).
         pass
     elif spend_control is True:
         blocked = True
     else:
         return None
 
-    credits_present = _credits_state(snapshot.get("credits"))
-    if credits_present is None:
+    # Valid credits are validated-but-unrepresented supplemental telemetry
+    # (D-019 remediation): they never block or withhold the quota pairs.
+    if _credits_state(snapshot.get("credits")) is None:
         return None
 
-    individual = _individual_limit_state(snapshot.get("individualLimit"))
-    if individual is None:
+    individual_exhausted = _individual_limit_state(
+        snapshot.get("individualLimit")
+    )
+    if individual_exhausted is None:
         return None
-    individual_present, individual_exhausted = individual
     if individual_exhausted:
         blocked = True
 
@@ -804,12 +826,7 @@ def _quota_snapshot_state(
     if len(known_kinds) != len(set(known_kinds)):
         return None
 
-    return _SnapshotState(
-        windows=tuple(windows),
-        blocked=blocked,
-        unrepresentable=credits_present or individual_present,
-        unavailable=spend_control_unavailable,
-    )
+    return _SnapshotState(windows=tuple(windows), blocked=blocked)
 
 
 def parse_codex_rate_limits_result(
@@ -859,9 +876,7 @@ def parse_codex_rate_limits_result(
     if _reset_credits_state(envelope.get("rateLimitResetCredits")) is None:
         return _failure("schema_changed", "schema_changed", retrieved_at)
 
-    additional_present = False
     additional_blocked = False
-    additional_unrepresentable = False
     bucket_states: list[tuple[str, _SnapshotState]] = []
     buckets = envelope.get("rateLimitsByLimitId")
     buckets_map: Mapping[str, object] | None = None
@@ -907,13 +922,10 @@ def parse_codex_rate_limits_result(
             )
             if state is None:
                 return _failure("schema_changed", "schema_changed", retrieved_at)
-            additional_present = True
-            additional_blocked = (
-                additional_blocked or state.blocked or state.unavailable
-            )
-            additional_unrepresentable = (
-                additional_unrepresentable or state.unrepresentable
-            )
+            # An explicit blocker inside a bucket stays conservative; the
+            # bucket's mere presence, and an unavailable optional blocker
+            # signal inside it, do not (D-019 remediation).
+            additional_blocked = additional_blocked or state.blocked
             bucket_states.append((key, state))
 
     main_state = _quota_snapshot_state(
@@ -934,21 +946,18 @@ def parse_codex_rate_limits_result(
             emitted.append(facts.window)
             diagnostics.extend(facts.diagnostics)
 
+    # Supplemental-but-unrepresented provider state (valid credits, the
+    # mere presence of additional buckets, an unavailable optional blocker
+    # signal) does not invalidate independently validated quota facts that
+    # v2 can represent; only explicit blocker evidence does (D-019
+    # remediation). The current generation still requires its explicit
+    # ordinary-usage permission; the legacy generation has no such member.
     blocked = (
         rate_limit_upsell_present
         or main_state.blocked
         or additional_blocked
-        or main_state.unrepresentable
-        or additional_unrepresentable
+        or (ordinary_usage_allowed is not True and not legacy_generation)
     )
-    if legacy_generation:
-        # Legacy schema has no ordinaryUsageAllowed field; permission is
-        # evaluated from the evidenced legacy blocker contract. Its
-        # conservative rule for missing/null spend-control evidence
-        # (unavailable, never guessed) withholds the percentage pairs.
-        blocked = blocked or main_state.unavailable
-    else:
-        blocked = blocked or ordinary_usage_allowed is not True
 
     if not emitted:
         # No window slots anywhere: the response cannot evidence any quota
@@ -980,11 +989,8 @@ def parse_codex_rate_limits_result(
             plan=plan,
         )
 
-    if additional_present or not any(
-        facts.window.used_percent is not None for facts in main_state.windows
-    ):
-        # Additional metered buckets beyond the main quota are present, or
-        # no main window exposes a usable percentage pair: never healthy,
+    if not any(facts.window.used_percent is not None for facts in main_state.windows):
+        # No main window exposes a usable percentage pair: never healthy,
         # keep the validated facts and degrade the overall status to
         # unknown (D-019).
         diagnostics.append(CapacityDiagnostic(code="telemetry_unknown"))

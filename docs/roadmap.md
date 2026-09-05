@@ -7,16 +7,17 @@ earlier outcome is useful in the owner's workflow.
 ## Current status
 
 **M0 PASS (2026-09-01).** The M0 exit criteria have been audited and passed.
-**M1 is current.** The OpenAI/Codex and Z.ai subscription collectors and the
-unified status surface are implemented. Synchronous status now performs
-a fresh collection with one shared observation timestamp, but no cache or stale
-threshold has been chosen. M1 remains **NOT YET PASS** because live OpenAI
-subscription-capacity telemetry must produce usable current quota windows in the
-owner's supported environment before status can fully replace routine quota
-checks. A separate `doctor` command is not currently an M1 blocker because
-status exposes normalized diagnostics; defer it unless normal use demonstrates a
-concrete gap. Do not start M2 selection implementation before M1 is useful in
-the owner's workflow.
+**M1 PASS (2026-09-05).** The OpenAI/Codex and Z.ai read-only subscription
+collectors and the unified status surface are implemented, and live
+collection in the owner's supported environment returns healthy normalized
+quota windows for both providers: bounded provider-managed auth recovery
+(D-018) restored live OpenAI reads, and the D-019 remediation guarantees that
+supplemental provider state never invalidates validated quota facts. A fresh
+synchronous collection with one shared observation timestamp backs every
+`status` call; no cache or stale threshold has been chosen. A separate
+`doctor` command was not an M1 blocker because status exposes normalized
+diagnostics; defer it unless normal use demonstrates a concrete gap. Do not
+start M2 selection implementation before its planning gates are met.
 
 ## M0 — Repository foundation
 
@@ -95,23 +96,29 @@ Exit criteria:
   quota windows with populated reset instants.
 - [x] Both evidenced Codex response generations and evidence-based window
   coverage supported without synthesizing absent windows (D-019).
-- [ ] Validate that the owner can replace routine dashboard checks with the
-  provisional command in the real local workflow, without recording secrets or
-  personal quota values.
+- [x] Supplemental-telemetry principle verified live: validated quota pairs
+  survive credits, additional buckets and unavailable optional blocker
+  signals, with explicit blockers still degrading honestly (D-019
+  remediation).
+- [x] The owner can replace routine dashboard checks with the provisional
+  command in the real local workflow (live acceptance 2026-09-05), without
+  recording secrets or personal quota values.
 
-**M1 STATUS: NOT YET PASS**
+**M1 STATUS: PASS (2026-09-05)**
 
-Remaining blocker:
+Sanitized closeout evidence:
 
-- Live OpenAI collection returns real normalized windows, but the owner's
-  current live response carries provider-supplied blocker evidence (a present
-  valid credit state on the main quota, an additional limit bucket whose
-  `spendControlReached` is not reported, and cross-bucket metering). Under
-  the conservative contract preserved by D-019 the percentage pairs are
-  honestly withheld, so status cannot yet replace routine OpenAI dashboard
-  checks. Whether usable OpenAI percentage pairs can ever be represented
-  under this contract — or whether the credit/bucket metering states need a
-  v2 representation — is a product/contract decision for the human.
+```text
+OpenAI live normalized subscription capacity observed: yes
+Z.ai live normalized subscription capacity observed: yes
+Provider-managed auth recovery exercised: yes
+OpenAI quota windows with usable percentage pairs observed: yes
+Multiple provider buckets coexist in one validated observation: yes
+No missing window synthesized
+No supplemental credit/account data exposed
+No model prompt issued
+No personal quota values recorded
+```
 
 ### Follow-up health signals after the core M1 status surface
 

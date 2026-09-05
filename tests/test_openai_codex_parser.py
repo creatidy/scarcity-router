@@ -450,7 +450,11 @@ class LegacyGenerationCompatibility(unittest.TestCase):
                     self.assertIsNone(window.used_percent)
                     self.assertIsNone(window.remaining_percent)
 
-    def test_legacy_missing_or_null_spend_control_stays_conservative(self) -> None:
+    def test_legacy_missing_or_null_spend_control_keeps_valid_pairs(self) -> None:
+        # Missing/null spend-control evidence is an unavailable optional
+        # blocker signal, not a reason to erase otherwise validated quota
+        # percentages (D-019 remediation; applies to the legacy generation
+        # too).
         for missing in (False, True):
             with self.subTest(missing=missing):
                 rate_limits = _snapshot(
@@ -462,14 +466,16 @@ class LegacyGenerationCompatibility(unittest.TestCase):
                     _result(rate_limits, ordinary_usage_allowed=None,
                             omit=("ordinaryUsageAllowed",))
                 )
-                self.assertEqual(snap.status, "unknown")
-                self.assertIn("telemetry_unknown", _codes(snap))
+                self.assertEqual(snap.status, "ok")
                 self.assertEqual(
                     [(w.used_percent, w.remaining_percent) for w in snap.windows],
-                    [(None, None), (None, None)],
+                    [(6, 94), (52, 48)],
                 )
 
-    def test_legacy_unrepresentable_states_still_block(self) -> None:
+    def test_legacy_credits_are_supplemental_not_blocking(self) -> None:
+        # Valid credits in the legacy generation are validated-but-
+        # unrepresented supplemental telemetry: the quota pairs remain (no
+        # permission member is manufactured).
         snap = _parse(
             _result(
                 _snapshot(
@@ -482,8 +488,13 @@ class LegacyGenerationCompatibility(unittest.TestCase):
                 omit=("ordinaryUsageAllowed",),
             )
         )
-        self.assertEqual(snap.status, "unknown")
-        self.assertIn("telemetry_unknown", _codes(snap))
+        self.assertEqual(snap.status, "ok")
+        self.assertEqual(
+            [(w.used_percent, w.remaining_percent) for w in snap.windows],
+            [(6, 94), (52, 48)],
+        )
+        self.assertNotIn("ordinaryUsageAllowed", _canonical_json(snap))
+        self.assertNotIn("hasCredits", _canonical_json(snap))
 
     def test_legacy_upsell_is_still_a_blocker(self) -> None:
         snap = _parse(
@@ -501,14 +512,21 @@ class LegacyGenerationCompatibility(unittest.TestCase):
 class CreditsAndSpendControl(unittest.TestCase):
     """Typed CreditsSnapshot / SpendControlLimitSnapshot semantics."""
 
-    def test_present_valid_credits_degrade_with_withheld_pairs(self) -> None:
+    def test_present_valid_credits_keep_quota_pairs(self) -> None:
         snap = _parse(_load("ratelimits-credits-present.json"))
-        self.assertEqual(snap.status, "unknown")
-        self.assertIn("telemetry_unknown", _codes(snap))
-        for window in snap.windows:
-            self.assertIsNone(window.used_percent)
-            self.assertIsNone(window.remaining_percent)
-        self.assertIn("percentage_unknown", _codes(snap))
+        # Valid credits are validated-but-unrepresented supplemental
+        # telemetry (D-019 remediation): they never invalidate the
+        # independently validated quota-window percentage facts.
+        self.assertEqual(snap.status, "ok")
+        self.assertEqual(_codes(snap), set())
+        self.assertEqual(
+            [(w.used_percent, w.remaining_percent) for w in snap.windows],
+            [(6, 94), (52, 48)],
+        )
+        # No supplemental credit/account/provider material is serialized.
+        text = _canonical_json(snap)
+        for forbidden in ("hasCredits", "balance", "1000.00", "credits"):
+            self.assertNotIn(forbidden, text)
 
     def test_valid_reset_credit_summary_does_not_block(self) -> None:
         payload = _result(
@@ -751,7 +769,56 @@ class CreditsAndSpendControl(unittest.TestCase):
         self.assertEqual(snap.status, "schema_changed")
         self.assertEqual(snap.windows, ())
 
-    def test_explicit_null_credit_balance_is_valid(self) -> None:
+    def test_credit_presence_flag_does_not_change_quota_facts(self) -> None:
+        # Codex evaluates credit availability (hasCredits true or false)
+        # alongside — never instead of — the quota-window percentages.
+        for has_credits in (True, False):
+            with self.subTest(hasCredits=has_credits):
+                payload = _result(
+                    _snapshot(
+                        dict(_BOTH_SLOTS),
+                        extra={
+                            "credits": {
+                                "hasCredits": has_credits,
+                                "unlimited": False,
+                                "balance": "1000.00",
+                            }
+                        },
+                    )
+                )
+                snap = _parse(payload)
+                self.assertEqual(snap.status, "ok")
+                self.assertEqual(
+                    [(w.used_percent, w.remaining_percent) for w in snap.windows],
+                    [(6, 94), (52, 48)],
+                )
+
+    def test_non_exhausted_individual_limit_keeps_quota_pairs(self) -> None:
+        payload = _result(
+            _snapshot(
+                dict(_BOTH_SLOTS),
+                extra={
+                    "individualLimit": {
+                        "limit": "100.00",
+                        "used": "40.00",
+                        "remainingPercent": 60,
+                        "resetsAt": 1788306212,
+                    }
+                },
+            )
+        )
+        snap = _parse(payload)
+        self.assertEqual(snap.status, "ok")
+        self.assertEqual(
+            [(w.used_percent, w.remaining_percent) for w in snap.windows],
+            [(6, 94), (52, 48)],
+        )
+        # The spend-control amount fields are never serialized.
+        text = _canonical_json(snap)
+        for forbidden in ("individualLimit", "remainingPercent", "100.00", "40.00"):
+            self.assertNotIn(forbidden, text)
+
+    def test_explicit_null_credit_balance_keeps_quota_pairs(self) -> None:
         payload = _result(
             _snapshot(
                 dict(_BOTH_SLOTS),
@@ -765,8 +832,8 @@ class CreditsAndSpendControl(unittest.TestCase):
             )
         )
         snap = _parse(payload)
-        self.assertEqual(snap.status, "unknown")
-        self.assertIn("telemetry_unknown", _codes(snap))
+        self.assertEqual(snap.status, "ok")
+        self.assertEqual(_codes(snap), set())
 
     def test_boolean_spend_control_blocker_never_reports_healthy(self) -> None:
         payload = _result(
@@ -835,8 +902,9 @@ class AdditionalBuckets(unittest.TestCase):
 
     def test_additional_window_fixture_emits_bucket_window(self) -> None:
         snap = _parse(_load("ratelimits-additional-window-present.json"))
-        self.assertEqual(snap.status, "unknown")
-        self.assertIn("telemetry_unknown", _codes(snap))
+        # Additional buckets are real capacity evidence: their presence
+        # alone does not degrade the observation (D-019 remediation).
+        self.assertEqual(snap.status, "ok")
         # Both main windows keep their validated pairs...
         by_id = {w.window_id: w for w in snap.windows}
         self.assertEqual(by_id["primary"].used_percent, 6)
@@ -848,7 +916,7 @@ class AdditionalBuckets(unittest.TestCase):
         self.assertEqual(reserve.used_percent, 30)
         self.assertEqual(reserve.kind, "five_hour")
         self.assertEqual(reserve.duration_seconds, 18_000)
-        self.assertNotIn("percentage_unknown", _codes(snap))
+        self.assertEqual(_codes(snap), set())
 
     def test_bucket_windows_ordered_deterministically(self) -> None:
         payload = _result(
@@ -990,7 +1058,11 @@ class AdditionalBuckets(unittest.TestCase):
             self.assertIsNone(window.used_percent)
         self.assertIn("percentage_unknown", _codes(snap))
 
-    def test_bucket_missing_or_null_spend_control_is_conservative(self) -> None:
+    def test_bucket_missing_or_null_spend_control_keeps_valid_pairs(self) -> None:
+        # A missing/null optional blocker signal inside a bucket is
+        # unavailable evidence about that one blocker, not a reason to
+        # discard the provider-reported quota percentages (D-019
+        # remediation).
         for missing in (False, True):
             with self.subTest(missing=missing):
                 bucket = self._bucket(spend=None)
@@ -1001,10 +1073,10 @@ class AdditionalBuckets(unittest.TestCase):
                     buckets={"gpt-reserve": bucket},
                 )
                 snap = _parse(payload)
-                self.assertEqual(snap.status, "unknown")
+                self.assertEqual(snap.status, "ok")
                 self.assertEqual(
                     [(w.used_percent, w.remaining_percent) for w in snap.windows],
-                    [(None, None), (None, None), (None, None)],
+                    [(6, 94), (52, 48), (5, 95)],
                 )
 
     def test_bucket_exhausted_individual_limit_withholds_all_pairs(self) -> None:
@@ -1048,7 +1120,10 @@ class AdditionalBuckets(unittest.TestCase):
             _snapshot(dict(_BOTH_SLOTS)), buckets={"gpt-reserve": bucket}
         )
         snap = _parse(payload)
-        self.assertEqual(snap.status, "unknown")  # additional metering present
+        # The bucket's unknown-duration window is preserved with explicit
+        # unknown semantics; bucket presence alone does not degrade.
+        self.assertEqual(snap.status, "ok")
+        self.assertIn("window_semantics_unknown", _codes(snap))
         reserve = snap.windows[2]
         self.assertEqual(reserve.kind, "unknown")
         self.assertIsNone(reserve.duration_seconds)

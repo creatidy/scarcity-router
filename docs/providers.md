@@ -67,11 +67,14 @@ without inventing quota.
 The current upstream app-server schema also defines `ordinaryUsageAllowed`,
 `accountId`, `rateLimitUpsell` and `normalModelSlug`; these fields are
 explicitly handled at the adapter edge without expanding v2 or weakening the
-unknown-structured-field rule. Current upstream semantics and the
-two-generation compatibility rule are recorded in `docs/decisions.md`
-(U-011, D-019). Live OpenAI collection now returns real normalized windows;
-whether percentage pairs are usable depends on the blocker evidence the
-provider itself supplies in the response.
+unknown-structured-field rule. Current upstream semantics, the
+two-generation compatibility rule and the supplemental-telemetry principle
+are recorded in `docs/decisions.md` (U-011, D-019). Live OpenAI collection
+returns healthy normalized windows with usable percentage pairs;
+supplemental provider state that v2 does not expose (credits, additional
+buckets, unavailable optional blocker signals) never invalidates the
+independently validated quota facts, while explicit provider blockers
+degrade honestly.
 
 Supported discovery is exactly the VS Code ChatGPT extension layout documented
 in `docs/decisions.md` (U-001): non-symlink `openai.chatgpt-*` directories under
