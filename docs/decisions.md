@@ -158,9 +158,12 @@ direction was chosen. Dates use UTC.
   conditions before workers start. The default lifecycle is implementation,
   independent review, at most one remediation, narrowly scoped final
   verification and a human merge gate. Findings are `MERGE_BLOCKER` or
-  `DEFER`; only blockers can trigger remediation.
-- **Escalation:** Budget exhaustion, stalled progress after the retry budget or
-  a complexity-budget breach stops orchestration and escalates to a human.
+  `DEFER`; only blockers can trigger remediation. Worker and reviewer retries
+  are independently bounded at one by default, and a retry only recovers a
+  stalled or interrupted session rather than restarting the task or review.
+- **Escalation:** Exhaustion of either retry budget, stalled progress after its
+  retry budget or a complexity-budget breach stops orchestration and escalates
+  to a human.
   Workers, reviewers and orchestrators never merge automatically.
 
 ## Unresolved decisions

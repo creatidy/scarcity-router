@@ -204,6 +204,7 @@ class ModelPolicyContract(unittest.TestCase):
                 "max_remediation_rounds": 1,
                 "max_final_verification_rounds": 1,
                 "max_worker_retries": 1,
+                "max_reviewer_retries": 1,
                 "max_wall_clock_minutes": 120,
             },
         )

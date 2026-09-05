@@ -53,14 +53,16 @@ are:
 - `max_remediation_rounds = 1`;
 - `max_final_verification_rounds = 1`;
 - `max_worker_retries = 1`;
+- `max_reviewer_retries = 1`;
 - `max_wall_clock_minutes = 120`.
 
 A task may override a default only explicitly, with a stated reason, before
 orchestration begins. There is no implicit unlimited mode. Budget exhaustion or
 failure to make meaningful progress after the retry budget means
 `STOP_AND_ESCALATE_TO_HUMAN`; repeated polling is not progress.
-`max_worker_retries` only recovers an interrupted or stalled worker attempt; it
-is not permission to restart the task from scratch repeatedly.
+Worker and reviewer retries are independently bounded. Each retry only recovers
+an interrupted or stalled session; it is not permission to restart an entire
+task or review repeatedly.
 
 The default lifecycle is:
 
