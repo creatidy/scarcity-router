@@ -61,8 +61,9 @@ alternatives, exclusions, input provenance and reasons.
 
 ### Interfaces
 
-- **CLI** is the first operational interface (`doctor`, `status`, then
-  `select --explain` and `simulate`).
+- **CLI** is the first operational interface. The provisional read-only
+  `status` surface is implemented; a separate `doctor` command is deferred,
+  followed later by `select --explain` and `simulate`.
 - **REST** becomes the canonical language-neutral machine contract. It binds to
   `127.0.0.1` by default. Target endpoints include `/healthz`, `/v1/status`,
   `/v1/providers`, `/v1/providers/{provider}`, `/v1/select` and `/v1/simulate`.

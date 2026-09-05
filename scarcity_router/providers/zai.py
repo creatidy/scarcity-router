@@ -5,8 +5,8 @@ payload plus a caller-supplied retrieval timestamp are normalized into the v1
 ``CapacitySnapshot`` contract (docs/capacity-model.md).
 
 This parser performs zero I/O. It never reads the clock, filesystem,
-environment or network, and never touches credentials. Live acquisition is a
-separate, unimplemented concern.
+environment or network, and never touches credentials. Live acquisition is
+implemented in the separate ``zai_acquisition`` module.
 
 Provider semantics implemented here come only from the validated evidence in
 docs/poc-evidence.md ("2026-09-01 M1 reconnaissance") and the redacted

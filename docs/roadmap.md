@@ -7,10 +7,14 @@ earlier outcome is useful in the owner's workflow.
 ## Current status
 
 **M0 PASS (2026-09-01).** The M0 exit criteria have been audited and passed.
-**M1 is current.** The OpenAI/Codex, Z.ai and Ollama read-only collectors are
-implemented; the remaining M1 product outcome is the unified status/doctor
-surface, freshness behavior and final integration audit. Do not start M2
-selection implementation before M1 is useful in the owner's workflow.
+**M1 is current.** The OpenAI/Codex, Z.ai and Ollama read-only collectors and
+the unified status surface are implemented. Synchronous status now performs a
+fresh collection with one shared observation timestamp, but no cache or stale
+threshold has been chosen. The remaining M1 work is owner workflow validation
+and the final integration audit. A separate `doctor` command is not currently
+an M1 blocker because status exposes normalized diagnostics; defer it unless
+normal use demonstrates a concrete gap. Do not start M2 selection
+implementation before M1 is useful in the owner's workflow.
 
 ## M0 — Repository foundation
 
@@ -51,8 +55,10 @@ Scope:
 - OpenAI/Codex collector using app-server;
 - Z.ai Coding Plan collector using the existing configured credential;
 - Ollama local health/model-presence collector;
-- safe discovery and `doctor` diagnostics;
-- `status` CLI with all windows, reset/freshness and explicit unknown states;
+- safe discovery and normalized diagnostics through `status` (a separate
+  `doctor` command is deferred);
+- provisional module `status` command with all windows, reset/freshness
+  timestamps and explicit unknown states;
 - redacted fixtures and contract tests for every adapter;
 - endpoint, redaction and local-binding security tests where applicable.
 
@@ -74,13 +80,30 @@ Exit criteria:
 - local status does not invent a quota percentage;
 - supported discovery and freshness behavior are documented.
 
-Implementation readiness questions to resolve first:
+### M1 implementation state and closeout
 
-- supported Codex binary discovery/version policy;
-- exact redacted Z.ai reset metadata mapping;
-- supported Ollama health and effective-configuration calls;
-- refresh/freshness defaults;
-- minimal Python dependency set and package/CLI name.
+- [x] OpenAI/Codex production collector implemented and fixture-tested.
+- [x] Z.ai Coding Plan production collector implemented and fixture-tested.
+- [x] Ollama production collector implemented and fixture-tested.
+- [x] Unified read-only `status` collection and human renderer implemented.
+- [x] Deterministic normalized JSON status output implemented.
+- [x] One shared observation timestamp passed to all three collectors.
+- [x] Provider operational failures remain status data and do not suppress
+  other provider snapshots.
+- [x] No model request is issued by status collection.
+- [ ] Validate that the owner can replace routine dashboard checks with the
+  provisional command in the real local workflow, without recording secrets or
+  personal quota values.
+
+**M1 STATUS: NOT YET PASS**
+
+Remaining:
+
+- Perform the owner workflow acceptance check against the supported local Codex,
+  Kilo/Z.ai and explicitly configured Ollama environment.
+- Reassess the documented residuals and decide whether any narrow M1 evidence
+  or integration defect remains after that real use; do not add cache or stale
+  thresholds without a separate U-003 decision.
 
 ### Follow-up health signals after the core M1 status surface
 
