@@ -309,35 +309,35 @@ direction was chosen. Dates use UTC.
   metadata. Every response body decodes under a strict JSON contract
   (duplicate object keys at any depth, NaN/Infinity constants and
   non-finite floats such as `1e10000`, integers outside the validated
-  signed 64-bit band, and recursion-limit nesting all normalize to
+  signed 64-bit band, recursion-limit nesting and decoder resource failures
+  all normalize to
   `schema_changed`), every transport result is narrowly
   protocol-validated before use (integer HTTP status plus callable
   `read`; body chunks must be `bytes`; a malformed response object or
   contract-violating chunk degrades safely instead of raising), and one
-  monotonic collection deadline is enforced end to end and cancellably:
+  monotonic collection deadline is enforced end to end:
   each read runs inside a bounded non-daemon worker; the raw socket is
   captured at connection setup (family from the validated numeric
   literal; `getaddrinfo` restricted to `AI_NUMERICHOST`, so name
   resolution and DNS are impossible) and stays valid across any
-  `Connection: close` ownership transfer to the response object; at the
-  deadline the collector cancels through it using only non-blocking
-  syscalls (`shutdown`, then `close` — never a possibly stuck
-  response/connection close on the collector thread) and proves the
-  worker reclaimed with a bounded join, raising instead of returning if
-  a worker could still be blocked. The worker itself never invokes
-  response/connection closes — socket and file-descriptor resources are
+  `Connection: close` ownership transfer to the response object. Cancellation
+  is synchronized with handle registration, so a late handle is cancelled
+  immediately. Every return or raise performs non-blocking raw-socket
+  `shutdown`/`close` and a bounded worker join, raising instead of returning
+  if a worker could still be blocked. The worker itself never invokes
+  response/connection closes; socket and file-descriptor resources are
   released exclusively through non-blocking `shutdown`/`close` on the
   registered raw-socket handles. A deadline expiring during the
   listing or loaded-model read degrades the snapshot to `unknown` —
   never a false `ok` — while preserving the already-validated
   reachability/presence facts. Cleanup is redacted end
-  to end: close lookups, close invocations and cancellation can raise
+  to end: socket-handle lookup, close invocation and cancellation can raise
   provider-controlled text without it ever escaping.
   Response-operation failures of any kind — including
   provider-controlled exception text — normalize to safe outcomes and are
   never propagated or logged; an unexpected internal worker error is
-  re-raised rather than swallowed. Error responses are closed without
-  reading their content. Duplicate listed names and any malformed/drifted
+  re-raised rather than swallowed. Error responses are not read; raw-socket
+  cleanup is used instead of response/connection close. Duplicate listed names and any malformed/drifted
   body fail
   closed; a healthy local runtime reports `windows: []` with no quota
   semantics. There is no generation, no model loading for inspection, no

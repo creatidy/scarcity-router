@@ -4,8 +4,9 @@ The transport seam (``open_connection``) is replaced with fake connection
 factories dispatching per request path; no test in this module contacts a
 runtime, a network or the filesystem beyond the synthetic fixtures. The
 fakes honor the transport contract the real ``HTTPConnection`` provides:
-``close()`` unblocks in-flight operations, which is what makes the bounded
-worker genuinely reclaimable at the deadline.
+the registered raw socket's ``shutdown``/``close`` operations unblock
+in-flight operations, which is what makes the bounded worker reclaimable at
+the deadline.
 
 Every failure class asserts that conspicuous synthetic markers (fake
 secrets, fake paths, the endpoint URL, digests, provider-controlled
@@ -911,6 +912,50 @@ class StrictJsonDecoding(_AcquisitionCase):
         past_band = at_band.replace(str(2**63 - 1).encode(), str(2**63).encode())
         self._assert_ps_drift(past_band)
 
+    def test_decoder_memory_error_maps_to_schema_changed_on_all_endpoints(self) -> None:
+        # Decoder resource exhaustion is provider input drift, not an internal
+        # programming failure. Exercise the failing decode at each read stage.
+        original_decode = cast(
+            "Callable[[bytes], object]",
+            getattr(ollama_acquisition, "_decode_strict"),
+        )
+        for endpoint, failing_call in ("version", 1), ("tags", 2), ("ps", 3):
+            with self.subTest(endpoint=endpoint):
+                calls = 0
+
+                def decode(body: bytes) -> object:
+                    nonlocal calls
+                    calls += 1
+                    if calls == failing_call:
+                        raise MemoryError(FAKE_TRANSPORT_SECRET)
+                    return original_decode(body)
+
+                _ = self._install(_healthy_runtime())
+                with mock.patch.object(
+                    ollama_acquisition, "_decode_strict", side_effect=decode
+                ):
+                    snapshot = self._collect()
+                self.assertEqual(snapshot.status, "schema_changed")
+                local = snapshot.local_runtime
+                assert local is not None
+                self.assertEqual(
+                    local.model_presence,
+                    {"version": "unknown", "tags": "unknown", "ps": "present"}[endpoint],
+                )
+                self.assertNotIn(FAKE_TRANSPORT_SECRET, _serialized(snapshot))
+                self._assert_no_collector_threads()
+
+    def test_unexpected_decoder_error_is_reraised(self) -> None:
+        _ = self._install(_healthy_runtime())
+        with mock.patch.object(
+            ollama_acquisition,
+            "_decode_strict",
+            side_effect=RuntimeError("TEST_ONLY_PROGRAMMING_ERROR"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "TEST_ONLY_PROGRAMMING_ERROR"):
+                _ = self._collect()
+        self._assert_no_collector_threads()
+
 
 # ═══════════════════════ healthy collection paths ════════════════════════════
 
@@ -1500,11 +1545,8 @@ class CollectionDeadline(_AcquisitionCase):
             ],
         )
         self.assertEqual(runtime.requested_paths(), ["/api/version"])
-        # The abandoned worker closes the response as soon as its current
-        # chunk returns and it re-checks the same deadline (bounded by one
-        # chunk interval).
-        # The abandoned worker self-aborts against the same deadline; no
-        # collector worker remains and no close is ever invoked on it.
+        # The worker is cancelled through its registered raw socket; no
+        # collector worker remains and no response/connection close is invoked.
         self._assert_no_collector_threads()
         self._assert_safe_serialization(snapshot)
 
@@ -1531,9 +1573,51 @@ class CollectionDeadline(_AcquisitionCase):
                 "configured_context_unknown",
             ],
         )
-        # The abandoned worker self-aborts against the same deadline; no
-        # collector worker remains and no close is ever invoked on it.
+        # The worker is cancelled through its registered raw socket; no
+        # collector worker remains and no response/connection close is invoked.
         self._assert_no_collector_threads()
+
+    def test_late_socket_registration_is_cancelled_and_reclaimed(self) -> None:
+        # Stage registration after the deadline cancellation pass. The
+        # synchronization-aware registry must cancel this handle immediately,
+        # allowing the non-daemon worker to terminate before the return.
+        late_socket = _FakeSocket(threading.Event())
+
+        def late_factory(
+            host: str,
+            port: int,
+            timeout: float,
+            register_handle: Callable[[object], None],
+        ) -> object:
+            _ = host, port, timeout
+            time.sleep(0.08)
+            register_handle(late_socket)
+            raise OSError(FAKE_TRANSPORT_SECRET)
+
+        patcher = mock.patch.object(
+            ollama_acquisition, "open_connection", late_factory
+        )
+        _ = patcher.start()
+        self.addCleanup(patcher.stop)
+        with mock.patch.object(
+            ollama_acquisition, "COLLECTION_DEADLINE_SECONDS", 0.02
+        ):
+            snapshot = self._collect()
+
+        self.assertEqual(snapshot.status, "unavailable")
+        self.assertTrue(late_socket.closed)
+        self.assertGreaterEqual(late_socket.shutdown_count, 1)
+        # This is intentionally immediate, rather than a polling assertion:
+        # _read_call must have completed its final bounded join already.
+        self.assertFalse(
+            any(
+                thread.name == "scarcity-router-ollama-read"
+                for thread in threading.enumerate()
+            )
+        )
+        self.assertNotIn(FAKE_TRANSPORT_SECRET, _serialized(snapshot))
+        self._assert_no_output()
+
     def test_expired_deadline_makes_no_transport_calls(self) -> None:
         runtime = self._install(_healthy_runtime())
         with mock.patch.object(ollama_acquisition, "COLLECTION_DEADLINE_SECONDS", 0.0):
@@ -1738,8 +1822,8 @@ class BoundedWorkerDeadline(_AcquisitionCase):
         # A fully valid body whose EOF only arrives after the deadline must
         # never be reported ok: the worker re-checks the deadline after EOF
         # and the collector before consuming any result. The read models a
-        # real socket: cancellation through close() unblocks it with an
-        # error instead of delivering late data.
+        # real socket: raw-socket cancellation unblocks it with an error
+        # instead of delivering late data.
         release = threading.Event()
         block = self.BLOCK
 
@@ -1800,8 +1884,8 @@ class MalformedTransportResult(_AcquisitionCase):
         return runtime
 
     def test_response_object_without_read_maps_to_unknown(self) -> None:
-        # A closable-but-unreadable response object is closed deterministically
-        # and normalized, never a TypeError.
+        # A closable-but-unreadable response object is normalized without
+        # invoking its close method, never an uncaught TypeError.
         class _CloseOnlyResponse:
             closed: bool
 
@@ -1922,9 +2006,9 @@ class MalformedTransportResult(_AcquisitionCase):
         time.sleep(0.2)
         self.assertEqual(threading.active_count(), self._baseline_threads)
 
-    def test_error_response_closed_without_reading_body(self) -> None:
-        # The error body carries a read guard; the deterministic close must
-        # happen without ever reading it.
+    def test_error_response_not_read_without_response_close(self) -> None:
+        # The error body carries a read guard; raw-socket cleanup must happen
+        # without reading it or invoking response/connection close.
         guarded = _FakeHTTPResponse(500, b"TEST_ONLY_ERROR_BODY", guard_read=True)
         runtime = _healthy_runtime(version=guarded)
         _ = self._install(runtime)
@@ -2135,10 +2219,9 @@ class RealTransportCancellation(_AcquisitionCase):
 
     def test_body_phase_block_with_connection_close_cancels(self) -> None:
         # With ``Connection: close`` the socket file ownership transfers to
-        # the response object: the cancellation handle set must span the
-        # response and the raw socket, not just the connection. The probe
-        # completes against a scripted valid response; the listing body
-        # then blocks mid-transfer.
+        # the response object, but the separately retained raw-socket handle
+        # still cancels the body read. The probe completes against a scripted
+        # valid response; the listing body then blocks mid-transfer.
         version_body = b'{"version": "0.0.0"}'
         complete = (
             b"HTTP/1.1 200 OK\r\n"
@@ -2302,7 +2385,7 @@ class TransportMechanism(unittest.TestCase):
             # The cancellation handle was registered before any blocking
             # operation and is the connection's own raw socket.
             self.assertEqual(registered, [socket_handle])
-            connection.close()
+            real.close()
         finally:
             listener.close()
 

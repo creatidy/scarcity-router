@@ -29,19 +29,20 @@ Security contract (docs/security.md):
   construction) and no redirect following (a 3xx is surfaced as a status,
   never followed);
 - one monotonic collection deadline (``COLLECTION_DEADLINE_SECONDS``)
-  spans connect, headers and body reads **end to end and cancellably**:
+  spans connect, headers and body reads **end to end**:
   each read executes inside a single bounded worker and the collector
   waits at most the remaining time on it. On deadline the collector
-  closes the worker's connection — the cancellation primitive that
-  unblocks every in-flight operation (a closed socket makes a blocked
-  connect/read fail immediately) — and reclaims the worker with a bounded
-  join, so no timeout path returns while a worker can remain blocked and
-  no thread, socket or file descriptor is left behind. The worker
+  requests cancellation through the registered raw-socket handle using
+  non-blocking ``shutdown``/``close`` and then proves the worker reclaimed
+  with a bounded join. A worker registered after cancellation is cancelled
+  immediately; if the worker still cannot be proven terminated, collection
+  raises an internal error rather than returning with an unjoined worker.
+  The worker
   re-checks the deadline between all blocking phases and again after EOF
   before the body is consumed; the collector re-checks it before any
   worker result is consumed, so a completion landing at or past the
   deadline fails closed. Each blocking phase is additionally budgeted the
-  remaining time. An abandoned worker never feeds results back; a
+  remaining time. A cancelled worker never feeds results back; a
   genuinely unexpected worker error is re-raised in the collector thread
   instead of being swallowed. Bounded worker count (at most one per read,
   at most three sequential workers per collection);
@@ -49,12 +50,13 @@ Security contract (docs/security.md):
   integer status in the HTTP range plus a callable ``read``; body chunks
   must be ``bytes``): a malformed response object or non-bytes chunk
   normalizes to the documented degraded statuses instead of an uncaught
-  ``TypeError``, anything closable is still closed, and no payload or
-  path detail ever leaks;
+  ``TypeError``, and no payload or path detail ever leaks;
 - every response body is read under a hard size bound; non-200 responses
-  (including declined redirects and error statuses) are closed
-  deterministically without reading their content; oversized bodies are
-  never parsed; response-operation failures of any kind — including
+  (including declined redirects and error statuses) are never read, and
+  no response/connection ``close`` runs on the collector path — socket
+  and file-descriptor resources are released through the registered raw
+  socket handles; oversized bodies are never parsed; response-operation
+  failures of any kind — including
   provider-controlled exception text — normalize to safe outcomes and
   are never propagated, logged or retained;
 - response bodies decode under a strict JSON contract: duplicate object
@@ -159,12 +161,12 @@ COLLECTION_DEADLINE_SECONDS = 15.0
 MAX_BODY_BYTES = 1024 * 1024
 READ_CHUNK_BYTES = 64 * 1024
 
-# After deadline cancellation the abandoned worker unblocks
-# deterministically: the registered raw socket handle exists before
-# ``connect``, and ``shutdown`` immediately ends a blocked connect, read
-# or any later phase. This bounded join reclaims the thread before the
-# collection returns; exceeding it is an internal invariant violation
-# (raise, never a silent return with a live worker).
+# After deadline cancellation, the registered raw socket handle is
+# cancelled with non-blocking ``shutdown``/``close`` and the worker is
+# reclaimed with this bounded join. Registration is synchronized with the
+# cancellation state, so a late handle is cancelled immediately. Exceeding
+# the join bound is an internal invariant violation (raise, never a silent
+# return with a live worker).
 _CANCEL_JOIN_SECONDS = 1.0
 
 # The v1 safe-identifier grammar (docs/capacity-model.md). The capacity
@@ -393,10 +395,9 @@ def _require_config(
 class _ConnectionProtocol(Protocol):
     """The narrow connection contract the collector relies on.
 
-    ``close()`` is the cancellation primitive: it must unblock any
-    in-flight operation on the connection (the real ``HTTPConnection``
-    does this by closing the socket). This is what makes the bounded
-    worker genuinely reclaimable instead of abandonable.
+    The connection is paired with a raw socket registered by
+    :func:`open_connection`; cancellation is performed through that socket,
+    not through response or connection ``close`` methods.
     """
 
     def request(
@@ -404,9 +405,6 @@ class _ConnectionProtocol(Protocol):
     ) -> None: ...
 
     def getresponse(self) -> object: ...
-
-    def close(self) -> None: ...
-
 
 class _ResponseProtocol(Protocol):
     """The narrow validated-response contract (status + body reads).
@@ -522,8 +520,8 @@ def _response_protocol_ok(response: object) -> bool:
     The collector only ever needs an integer status in the HTTP range and
     a callable ``read``; a transport result without both is a malformed
     response object, not telemetry, and is handled as a safe degraded
-    outcome (with a best-effort close of anything closable) instead of an
-    uncaught ``TypeError``. Programming/configuration errors elsewhere
+    outcome instead of an uncaught ``TypeError``. Programming/configuration
+    errors elsewhere
     are never swallowed through this check.
     """
     status = getattr(response, "status", None)
@@ -602,7 +600,7 @@ def _execute_read(
         return "ok", bytes(body)
     except (HTTPException, OSError):
         # BadStatusLine & co. derive from HTTPException; ConnectionError,
-        # TimeoutError (socket.timeout) and cancellation-by-close derive
+        # TimeoutError (socket.timeout) and cancellation-by-shutdown derive
         # from OSError. Partial content is discarded.
         return "transport_fail", None
     except Exception:
@@ -645,19 +643,17 @@ def _read_call(
 
     The whole read runs inside a single bounded **non-daemon** worker and
     the collector waits at most the remaining time on it. On deadline the
-    collector cancels through every valid handle — the raw socket
-    (``shutdown`` reaches the protocol level, so a blocked read unblocks
-    even after ``Connection: close`` ownership transfer to the response),
-    the response object, and the connection — then joins the worker with
-    a bounded grace. The path does not return until the worker has been
-    proven reclaimed: if it were still alive after cancellation, that is
-    an internal invariant violation and raises instead of silently
-    returning with a leaked thread. The deadline is re-checked before any
-    worker result is consumed, so a completion that lands at or past the
-    deadline fails closed. Exception text is deliberately never inspected,
-    retained or propagated; a genuinely unexpected internal worker error
-    is re-raised in this thread so programming errors are never swallowed
-    or misreported as telemetry.
+    collector requests cancellation through the registered raw-socket
+    handles (``shutdown`` then ``close``), then joins the worker with a
+    bounded grace. A handle registered after cancellation is cancelled before
+    the worker continues. The path does not return or re-raise until the
+    worker has been proven reclaimed: if it were still alive after
+    cancellation, that is an internal invariant violation. The deadline is
+    re-checked before any worker result is consumed, so a completion that
+    lands at or past the deadline fails closed. Exception text is deliberately
+    never inspected, retained or propagated; a genuinely unexpected internal
+    worker error is re-raised in this thread so programming errors are never
+    swallowed or misreported as telemetry.
     """
     if deadline - time.monotonic() <= 0:
         return "transport_fail", None
@@ -665,12 +661,36 @@ def _read_call(
     results: list[tuple[_CallOutcome, object]] = []
     unexpected: list[Exception] = []
     registered_sockets: list[object] = []
+    registration_lock = threading.Lock()
+    cancellation_requested = False
 
     def _register(handle: object) -> None:
-        # Called by the transport the moment the raw socket exists —
-        # before ``connect`` — so deadline cancellation can reach every
-        # blocking phase. Extraction/registration is exception-contained.
-        registered_sockets.append(handle)
+        # Registration races with the collector's deadline path. Resolve the
+        # race under the lock, then cancel a late handle before the worker can
+        # enter another blocking phase.
+        with registration_lock:
+            cancel_now = cancellation_requested
+            if not cancel_now:
+                registered_sockets.append(handle)
+        if cancel_now:
+            _cancel_sockets([handle])
+
+    def _request_cancellation() -> None:
+        nonlocal cancellation_requested
+        with registration_lock:
+            cancellation_requested = True
+            handles = list(registered_sockets)
+        _cancel_sockets(handles)
+
+    def _join_after_cancellation(worker: threading.Thread) -> None:
+        _request_cancellation()
+        worker.join(_CANCEL_JOIN_SECONDS)
+        if worker.is_alive():
+            # Never return or re-raise with an unjoined non-daemon worker.
+            raise RuntimeError(
+                "internal error: read worker did not terminate after "
+                + "deadline cancellation"
+            )
 
     def _work() -> None:
         try:
@@ -689,12 +709,12 @@ def _read_call(
             if outcome == "ok":
                 try:
                     payload = _decode_strict(cast("bytes", payload))
-                except (ValueError, RecursionError):
+                except (ValueError, RecursionError, MemoryError):
                     # Duplicate keys, NaN/Infinity constants, non-finite
-                    # floats, overlarge integers, invalid UTF-8 and
-                    # recursion-limit nesting are all strict-contract
-                    # rejections: nothing about the shape is trusted or
-                    # retained.
+                    # floats, overlarge integers, invalid UTF-8, recursion-limit
+                    # nesting and decoder resource exhaustion are all
+                    # strict-contract rejections: nothing about the shape is
+                    # trusted or retained.
                     outcome, payload = "malformed", None
             results.append((outcome, payload))
         except (OSError, HTTPException):
@@ -707,30 +727,16 @@ def _read_call(
             unexpected.append(exc)
 
     worker = threading.Thread(
-        target=_work, name="scarcity-router-ollama-read"
+        target=_work, name="scarcity-router-ollama-read", daemon=False
     )
+    worker_started = False
     try:
         worker.start()
+        worker_started = True
         worker.join(max(0.0, deadline - time.monotonic()))
         if worker.is_alive():
-            # Deadline exceeded: cancel through the registered raw-socket
-            # handles using only non-blocking syscalls (``shutdown``
-            # reaches the protocol level, so a blocked connect or read
-            # unblocks even after ``Connection: close`` ownership transfer
-            # to the response object), then reclaim the worker with a
-            # bounded join. Its result, if any, is discarded and never
-            # observed.
-            _cancel_sockets(registered_sockets)
-            worker.join(_CANCEL_JOIN_SECONDS)
-            if worker.is_alive():
-                # Invariant violation: a transport ignored the
-                # cancellation contract. Never return with a live blocked
-                # worker; surface it as an internal error without
-                # transport exception text.
-                raise RuntimeError(
-                    "internal error: read worker did not terminate after "
-                    + "deadline cancellation"
-                )
+            # Deadline cleanup below requests cancellation and performs the
+            # bounded reclaim join. Its result, if any, is discarded.
             return "transport_fail", None
         if deadline - time.monotonic() <= 0:
             # A completion that lands at or past the deadline fails closed.
@@ -741,15 +747,11 @@ def _read_call(
             return results[0]
         return "transport_fail", None
     finally:
-        # Non-blocking socket reclamation on every path (success, failure,
-        # cancellation, re-raise): ``shutdown`` + ``close`` on the
-        # registered raw sockets release the actual socket/file-descriptor
-        # resources. Response/connection ``close`` implementations are
-        # never invoked on the collector path, so no worker exit or
-        # exception path can wait indefinitely on hostile cleanup; the
-        # worker is always joined (or the invariant raised) before this
-        # runs.
-        _cancel_sockets(registered_sockets)
+        # Every started worker is cancelled through the registered raw
+        # sockets and then joined on every return and exception path. The
+        # registry also cancels handles that arrive during this cleanup.
+        if worker_started:
+            _join_after_cancellation(worker)
 
 
 def _snapshot(

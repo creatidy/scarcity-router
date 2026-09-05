@@ -208,7 +208,7 @@ Status (M1): the collector is implemented and fixture-tested in
 the model listing and the loaded-model listing) and
 `scarcity_router/providers/ollama_acquisition.py`
 (`collect_ollama_capacity`): strict pre-I/O canonicalization of the
-explicit local explicit local
+explicit local
 endpoint (plain `http` on exactly the numeric loopback
 hosts `127.0.0.1` or `::1` only — `localhost` and every other name are
 rejected, and socket setup pins the address family from the validated
@@ -233,32 +233,28 @@ reachability/presence facts but degrades the telemetry to `unknown` and
 omits the effective context). Response bodies decode under a strict JSON
 contract (duplicate object keys at any depth, NaN/Infinity constants,
 non-finite floats such as `1e10000`, integers outside the validated
-signed 64-bit band, and recursion-limit nesting all map to
+signed 64-bit band, recursion-limit nesting and decoder resource failures all map to
 `schema_changed`), every transport result is narrowly protocol-validated
 before use (integer HTTP status plus callable `read`; body chunks must be
 `bytes`; a malformed response object or contract-violating chunk degrades
 safely instead of raising), and one monotonic collection deadline is
-enforced end to end and **cancellably**: each read executes inside a
-bounded non-daemon worker; the raw socket is captured at connection
-setup and stays valid across any `Connection: close` ownership transfer
-to the response object; at the deadline the collector cancels through it
-using only non-blocking syscalls (`shutdown`, then `close` — never a
-possibly stuck response/connection close on the collector thread) and
-then proves the worker reclaimed with a bounded join, never returning
-while a worker could remain blocked (an unreclaimed worker raises as an
-internal error instead). The worker itself never invokes
-response/connection closes — all socket and file-descriptor resources
-are released through non-blocking `shutdown`/`close` on the registered
-raw-socket handles alone, so no exit or exception path can wait
-indefinitely on hostile cleanup. A deadline expiring during
-the listing or loaded-model read degrades the snapshot to `unknown` —
-never a false `ok` — while preserving the already-validated
-reachability/presence facts. Cleanup is redacted end to end: close
-attribute lookups, close invocations and cancellation paths can raise
-provider-controlled text without it ever escaping. Response-operation
-failures of any kind — including provider-controlled exception text —
-normalize to safe outcomes and are never propagated or logged; an
-unexpected internal worker error is re-raised rather than swallowed.
+enforced end to end: each read executes inside a bounded non-daemon worker;
+the raw socket is captured at connection setup and stays valid across any
+`Connection: close` ownership transfer to the response object. Cancellation
+is synchronized with handle registration, so a handle registered after
+cancellation is cancelled immediately. Every return or raise performs
+non-blocking raw-socket `shutdown`/`close` and a bounded worker join; failure
+to prove termination raises an internal error. The worker itself never
+invokes response or connection `close`, so hostile close methods cannot
+block worker cleanup. A deadline expiring during the listing or loaded-model
+read degrades the snapshot to `unknown` — never a false `ok` — while
+preserving the already-validated reachability/presence facts. Cleanup is
+redacted end to end: socket-handle lookup, close invocation and cancellation
+failures can raise provider-controlled text without it escaping.
+Response-operation failures of any kind — including provider-controlled
+exception text — normalize to safe outcomes and are never propagated or
+logged; an unexpected internal worker error is re-raised rather than
+swallowed.
 Healthy local runtimes report `windows: []` with no quota
 semantics. The configured context is accepted only as an explicit
 configuration parameter and is never inferred; the effective context is
