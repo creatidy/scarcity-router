@@ -614,7 +614,8 @@ def _execute_read(
     boundary anomaly — exception text is never inspected, retained or
     propagated), ``http_error`` (non-200 status, including declined
     redirects), ``unreadable`` (oversized body), ``invalid_response``
-    (malformed response object or non-bytes chunk) and ``ok``.
+    (malformed response object or non-bytes chunk), ``malformed`` (invalid
+    framing) and ``ok``.
 
     Deliberately no ``response.close()``/``connection.close()`` runs on
     any exit path (a hostile or stuck close could block the worker

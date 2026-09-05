@@ -67,7 +67,6 @@ def _http_response(
     *,
     content_length: int | None = None,
     chunked: bool = False,
-    extra: bytes = b"",
 ) -> bytes:
     """Build one synthetic HTTP response with explicit body framing."""
     if chunked:
@@ -80,7 +79,6 @@ def _http_response(
             b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n"
             + b"Connection: close\r\n\r\n"
             + framing
-            + extra
         )
     declared = len(body) if content_length is None else content_length
     return (
@@ -88,7 +86,6 @@ def _http_response(
         + str(declared).encode()
         + b"\r\nConnection: close\r\n\r\n"
         + body
-        + extra
     )
 
 
