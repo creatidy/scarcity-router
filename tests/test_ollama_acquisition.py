@@ -232,7 +232,12 @@ class _FakeRuntime:
         connection = _FakeConnection(self)
         self.connections.append(connection)
         sock: object | None = getattr(connection, "sock", None)
-        if sock is not None:
+        release: object | None = (
+            getattr(sock, "_release", None) if sock is not None else None
+        )
+        if type(release) is threading.Event:
+            register_handle(release)
+        elif type(sock) is socket.socket:
             register_handle(sock)
         return connection
 
@@ -255,11 +260,10 @@ class _FakeRuntime:
 
 
 class _FakeSocket:
-    """Raw-socket stand-in: ``shutdown``/``close`` release the blocker.
+    """Raw-socket state stand-in paired with an explicit release event.
 
-    Satisfies the seam contract that cancellation through the registered
-    socket handle unblocks any in-flight operation, exactly like closing
-    a real socket.
+    The production seam registers the raw socket itself; test factories
+    register this object's event so no foreign methods are invoked.
     """
 
     _release: threading.Event
@@ -520,7 +524,7 @@ class ConnectionSetup(_AcquisitionCase):
         def make(register: Callable[[object], None]) -> object:
             sock = _ConnectBlockingSocket(threading.Event())
             sockets.append(sock)
-            register(sock)
+            register(cast("object", getattr(sock, "_release")))
             return sock
 
         self._install_factory(make)
@@ -531,10 +535,10 @@ class ConnectionSetup(_AcquisitionCase):
         self.assertFalse(local.reachable)
         self.assertEqual(local.model_presence, "unknown")
         self.assertLess(elapsed, self.BUDGET + 0.1)
-        # The connect-phase socket handle was registered before connect and
-        # cancelled through shutdown: the connect phase cannot outlive the
+        # The connect-phase test primitive was registered before the blocking
+        # call and cancelled directly: the connect phase cannot outlive the
         # collection bound.
-        self.assertGreaterEqual(sockets[0].shutdown_count, 1)
+        self.assertTrue(cast("threading.Event", getattr(sockets[0], "_release")).is_set())
         self._assert_no_output()
 
     def test_delayed_connect_cancels_within_budget(self) -> None:
@@ -640,6 +644,8 @@ class EndpointPolicy(unittest.TestCase):
     def test_malformed_urls_and_ports_fail_closed(self) -> None:
         for url in (
             "http://127.0.0.1:not-a-port",
+            "http://127.0.0.1:",
+            "http://[::1]:",
             "http://127.0.0.1:0",
             "http://127.0.0.1:65536",
             "http://[::1:11434",
@@ -1545,7 +1551,12 @@ class _Factory:
         connection = self._make()
         self.connections.append(connection)
         sock: object | None = getattr(connection, "sock", None)
-        if sock is not None:
+        release: object | None = (
+            getattr(sock, "_release", None) if sock is not None else None
+        )
+        if type(release) is threading.Event:
+            register_handle(release)
+        elif type(sock) is socket.socket:
             register_handle(sock)
         return connection
 
@@ -1615,8 +1626,7 @@ class CollectionDeadline(_AcquisitionCase):
         # synchronization-aware registry must cancel this handle immediately,
         # allowing the non-daemon worker to terminate before the return.
         initial_release = threading.Event()
-        initial_socket = _FakeSocket(initial_release)
-        late_socket = _FakeSocket(threading.Event())
+        late_release = threading.Event()
 
         def late_factory(
             host: str,
@@ -1625,10 +1635,10 @@ class CollectionDeadline(_AcquisitionCase):
             register_handle: Callable[[object], None],
         ) -> object:
             _ = host, port, timeout
-            register_handle(initial_socket)
+            register_handle(initial_release)
             if not initial_release.wait(1.0):
                 raise AssertionError("deadline cancellation did not arrive")
-            register_handle(late_socket)
+            register_handle(late_release)
             raise OSError(FAKE_TRANSPORT_SECRET)
 
         patcher = mock.patch.object(
@@ -1642,8 +1652,7 @@ class CollectionDeadline(_AcquisitionCase):
             snapshot = self._collect()
 
         self.assertEqual(snapshot.status, "unavailable")
-        self.assertTrue(late_socket.closed)
-        self.assertGreaterEqual(late_socket.shutdown_count, 1)
+        self.assertTrue(late_release.is_set())
         # This is intentionally immediate, rather than a polling assertion:
         # _read_call must have completed its final bounded join already.
         self.assertFalse(
@@ -1708,14 +1717,16 @@ class BoundedWorkerDeadline(_AcquisitionCase):
 
     def test_permanently_blocking_getresponse_is_cancelled(self) -> None:
         # The collector must return by the deadline even when one transport
-        # call blocks forever: cancellation shutdowns and closes the
-        # registered raw socket (which unblocks the worker), and the
+        # call blocks forever: cancellation sets the registered test
+        # primitive (the production equivalent is a raw socket), which
+        # unblocks the worker, and the
         # worker is reclaimed (no daemon left).
         factory = _Factory(_BlockingGetResponseConnection)
         self._collect_bounded(factory)
         connection = cast("_BlockingGetResponseConnection", factory.connections[0])
-        self.assertTrue(connection.sock.closed)
-        self.assertGreaterEqual(connection.sock.shutdown_count, 1)
+        self.assertTrue(
+            cast("threading.Event", getattr(connection.sock, "_release")).is_set()
+        )
         # The worker was reclaimed, not abandoned.
         time.sleep(self.GRACE)
         self.assertEqual(threading.active_count(), self._baseline_threads)
@@ -1724,8 +1735,9 @@ class BoundedWorkerDeadline(_AcquisitionCase):
         factory = _Factory(_BlockingReadConnection)
         self._collect_bounded(factory)
         connection = cast("_BlockingReadConnection", factory.connections[0])
-        self.assertTrue(connection.sock.closed)
-        self.assertGreaterEqual(connection.sock.shutdown_count, 1)
+        self.assertTrue(
+            cast("threading.Event", getattr(connection.sock, "_release")).is_set()
+        )
         self.assertFalse(connection.response.closed)
         time.sleep(self.GRACE)
         self.assertEqual(threading.active_count(), self._baseline_threads)
@@ -1742,8 +1754,9 @@ class BoundedWorkerDeadline(_AcquisitionCase):
                 connection = cast(
                     "_BlockingGetResponseConnection", factory.connections[-1]
                 )
-                self.assertTrue(connection.sock.closed)
-                self.assertGreaterEqual(connection.sock.shutdown_count, 1)
+                self.assertTrue(
+                    cast("threading.Event", getattr(connection.sock, "_release")).is_set()
+                )
                 self._assert_no_collector_threads()
         if baseline_fds is not None:
             self.assertLessEqual(len(list(proc_fd.iterdir())), baseline_fds + 2)
@@ -1814,9 +1827,10 @@ class BoundedWorkerDeadline(_AcquisitionCase):
         self.assertFalse(local.reachable)
         # The hostile close was never invoked on the collector path.
         self.assertEqual(connection.close_calls, 0)
-        # The raw socket handle was shutdown and closed: fd released.
-        self.assertTrue(connection.sock.closed)
-        self.assertGreaterEqual(connection.sock.shutdown_count, 1)
+        # The test cancellation event was set; the foreign close was not used.
+        self.assertTrue(
+            cast("threading.Event", getattr(connection.sock, "_release")).is_set()
+        )
         # Zero collector workers immediately — before the blocker releases.
         self.assertFalse(
             any(
@@ -1835,9 +1849,80 @@ class BoundedWorkerDeadline(_AcquisitionCase):
             )
         )
 
+    def test_foreign_registered_handle_methods_are_never_invoked(self) -> None:
+        release = threading.Event()
+
+        class _ForeignHandle:
+            shutdown_accesses: int
+            close_accesses: int
+            fileno_accesses: int
+
+            def __init__(self) -> None:
+                self.shutdown_accesses = 0
+                self.close_accesses = 0
+                self.fileno_accesses = 0
+
+            @property
+            def shutdown(self) -> Callable[[int], None]:
+                self.shutdown_accesses += 1
+                raise AssertionError("foreign shutdown must not be inspected")
+
+            @property
+            def close(self) -> Callable[[], None]:
+                self.close_accesses += 1
+                raise AssertionError("foreign close must not be inspected")
+
+            @property
+            def fileno(self) -> Callable[[], int]:
+                self.fileno_accesses += 1
+                raise AssertionError("foreign fileno must not be inspected")
+
+        foreign = _ForeignHandle()
+
+        class _BlockedConnection:
+            def request(
+                self, method: str, path: str, /, *, headers: object = None
+            ) -> None:
+                _ = method, path, headers
+
+            def getresponse(self) -> object:
+                _ = release.wait(30.0)
+                raise OSError("connection cancelled by collector")
+
+        connection = _BlockedConnection()
+
+        def factory(
+            host: str,
+            port: int,
+            timeout: float,
+            register_handle: Callable[[object], None],
+        ) -> object:
+            _ = host, port, timeout
+            register_handle(release)
+            register_handle(foreign)
+            return connection
+
+        patcher = mock.patch.object(ollama_acquisition, "open_connection", factory)
+        _ = patcher.start()
+        self.addCleanup(patcher.stop)
+        with contextlib.redirect_stdout(
+            self.stdout
+        ), contextlib.redirect_stderr(self.stderr):
+            with self.assertRaisesRegex(
+                RuntimeError, "unsupported cancellation handle"
+            ):
+                _ = ollama_acquisition.collect_ollama_capacity(
+                    retrieved_at=RETRIEVED_AT, model_name=MODEL
+                )
+        self.assertEqual(foreign.shutdown_accesses, 0)
+        self.assertEqual(foreign.close_accesses, 0)
+        self.assertEqual(foreign.fileno_accesses, 0)
+        self._assert_no_collector_threads()
+        self._assert_no_output()
+
     def test_close_never_invoked_on_collector_path(self) -> None:
-        # Resource release is owned by the registered raw-socket handles
-        # (non-blocking shutdown+close). Response/connection ``close`` is
+        # Resource release is owned by the registered cancellation primitive
+        # (a raw socket in production). Response/connection ``close`` is
         # never part of the collector path — success included — so no
         # hostile close can ever be reached.
         connection = _RecordingCloseConnection()
@@ -2071,6 +2156,19 @@ class MalformedTransportResult(_AcquisitionCase):
                 self.assertEqual(snapshot.status, "schema_changed")
                 self.assertNotIn(FAKE_TRANSPORT_SECRET, _serialized(snapshot))
                 self._assert_no_collector_threads()
+
+    def test_internal_framing_error_is_reraised(self) -> None:
+        _ = self._install(_healthy_runtime())
+        with mock.patch.object(
+            ollama_acquisition,
+            "_response_body_framing",
+            side_effect=RuntimeError("TEST_ONLY_INTERNAL_FRAMING_ERROR"),
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError, "TEST_ONLY_INTERNAL_FRAMING_ERROR"
+            ):
+                _ = self._collect()
+        self._assert_no_collector_threads()
 
 
 # ═════════════ real-transport cancellation (http.client) ════════════════════
@@ -2405,10 +2503,16 @@ class RealTransportCancellation(_AcquisitionCase):
         self.assertEqual(rejected.status, "schema_changed")
         self._assert_reclaimed(0.0)
 
-    def test_extra_bytes_inside_declared_body_fail_json_validation(self) -> None:
-        version_body = b'{"version": "0.0.0"}EXTRA'
+    def test_trailing_bytes_after_content_length_fail_closed(self) -> None:
+        version_body = b'{"version": "0.0.0"}'
+        version_with_trailing = _http_response(version_body) + b"EXTRA"
         port = self._start_scripted_listener(
-            [_http_response(version_body)], close_after_send=True
+            [
+                version_with_trailing,
+                _http_response(_fixture("tags-present.json")),
+                _http_response(_fixture("ps-loaded.json")),
+            ],
+            close_after_send=True,
         )
         snapshot = self._collect(endpoint=f"http://127.0.0.1:{port}")
         self.assertEqual(snapshot.status, "schema_changed")

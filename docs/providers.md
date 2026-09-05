@@ -215,7 +215,7 @@ rejected, and socket setup pins the address family from the validated
 literal with `getaddrinfo` restricted to `AI_NUMERICHOST`, so name
 resolution and DNS are impossible; the
 omitted port canonically defaults to 11434, never an implicit socket
-default; empty query/fragment delimiters, whitespace and control
+default; an explicitly empty port is rejected; empty query/fragment delimiters, whitespace and control
 characters are rejected; no LAN scanning, no internet access, no proxy
 routing, no redirects), a required explicit target model identity matching
 the v1 safe-ID grammar as a full string with no control characters (never
@@ -246,18 +246,20 @@ the raw socket is captured at connection setup and stays valid across any
 `Connection: close` ownership transfer to the response object. Cancellation
 is synchronized with handle registration, so a handle registered after
 cancellation is cancelled immediately. Every return or raise performs
-non-blocking raw-socket `shutdown`/`close` and a bounded worker join; failure
-to prove termination raises an internal error. The worker itself never
-invokes response or connection `close`, so hostile close methods cannot
-block worker cleanup. A deadline expiring during the listing or loaded-model
+non-blocking operations on the exact built-in raw socket and a bounded worker
+join; failure to prove termination raises an internal error. Foreign handles
+are rejected during registration rather than inspected or invoked. The worker itself never invokes
+response or connection `close`, so hostile close methods cannot block worker
+cleanup. A deadline expiring during the listing or loaded-model
 read degrades the snapshot to `unknown` — never a false `ok` — while
 preserving the already-validated reachability/presence facts. Cleanup is
-redacted end to end: socket-handle lookup, close invocation and cancellation
-failures can raise provider-controlled text without it escaping.
-Response-operation failures of any kind — including provider-controlled
-exception text — normalize to safe outcomes and are never propagated or
-logged; an unexpected internal worker error is re-raised rather than
-swallowed.
+redacted end to end: provider-boundary failures can raise provider-controlled
+text without it escaping; cancellation itself uses only direct built-in
+primitives and retains no provider exception.
+Expected response-operation failures — including provider-controlled exception
+text — normalize to safe outcomes and are never propagated or logged; internal
+framing/programming errors remain distinguishable and are re-raised rather
+than swallowed.
 Healthy local runtimes report `windows: []` with no quota
 semantics. The configured context is accepted only as an explicit
 configuration parameter and is never inferred; the effective context is

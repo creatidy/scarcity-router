@@ -20,9 +20,9 @@ Security contract (docs/security.md):
   restricted to ``AI_NUMERICHOST`` on the validated literal, so no
   resolver, DNS, hosts file or name-based path can ever be consulted and
   no resolve/connect race exists. The omitted port canonically defaults to the
-  documented Ollama port 11434 (never an implicit socket default), the
-  base path must be empty or root, and empty-but-present query/fragment
-  delimiters, leading/trailing whitespace and control characters are
+  documented Ollama port 11434 (never an implicit socket default), an
+  explicitly empty port is rejected, the base path must be empty or root, and
+  empty-but-present query/fragment delimiters, leading/trailing whitespace and control characters are
   rejected. Collection contacts exactly one canonical endpoint; there is
   no LAN scanning, no host discovery, no proxy routing (the transport is
   one direct ``http.client`` connection — proxies are not consulted by
@@ -58,10 +58,11 @@ Security contract (docs/security.md):
   (including declined redirects and error statuses) are never read, and
   no response/connection ``close`` runs on the collector path — socket
   and file-descriptor resources are released through the registered raw
-  socket handles; oversized bodies are never parsed; response-operation
-  failures of any kind — including
-  provider-controlled exception text — normalize to safe outcomes and
-  are never propagated, logged or retained;
+  socket handles; oversized bodies are never parsed; expected
+  response-operation failures — including provider-controlled exception text
+  — normalize to safe outcomes and are never propagated, logged or retained;
+  internal framing/programming errors remain distinguishable and are
+  re-raised;
 - response bodies decode under a strict JSON contract: duplicate object
   keys at any depth, the NaN/Infinity constants, any non-finite float
   result (e.g. ``1e10000``) and any integer outside the validated signed
@@ -134,7 +135,7 @@ import threading
 import time
 import urllib.parse
 from collections.abc import Callable, Mapping
-from http.client import HTTPConnection, HTTPException, IncompleteRead
+from http.client import HTTPConnection, HTTPException, HTTPResponse, IncompleteRead
 from typing import Literal, Protocol, cast
 
 from ..capacity import (
@@ -294,7 +295,8 @@ def canonical_local_endpoint(url: object) -> str:
     ``::1`` (``localhost`` and all other names are rejected: the collector
     never resolves names), with an optional explicit port defaulting to
     the documented Ollama port 11434 — never an implicit socket default —
-    and an empty or root base path. Rejects at minimum: non-strings,
+    rejects explicitly empty port syntax, and accepts an empty or root base
+    path. Rejects at minimum: non-strings,
     leading/trailing whitespace, any control character or space, empty
     query/fragment delimiters (``?``/``#`` anywhere), any other scheme,
     any non-loopback or suffixed host, userinfo, non-root paths and
@@ -328,13 +330,22 @@ def canonical_local_endpoint(url: object) -> str:
             and parts.username is None
             and parts.password is None
         )
+        host_port = parts.netloc.rsplit("@", 1)[-1]
+        explicit_empty_port = host_port.endswith(":") and (
+            host_port.count(":") == 1 or host_port.endswith("]:")
+        )
         port = parts.port  # may raise ValueError for a malformed port
     except ValueError:
         raise ValueError(
             "endpoint: refusing to collect; the configured endpoint is"
             + " malformed"
         ) from None
-    if not valid or port is not None and not 1 <= port <= 65535:
+    if (
+        explicit_empty_port
+        or not valid
+        or port is not None
+        and not 1 <= port <= 65535
+    ):
         raise ValueError(
             "endpoint: refusing to collect; the configured endpoint does"
             + " not satisfy the local endpoint policy (plain http on"
@@ -498,26 +509,27 @@ def open_connection(
 
 
 def _cancel_sockets(handles: list[object]) -> None:
-    """Cancel in-flight work through raw socket handles; never raises.
+    """Cancel in-flight work through built-in non-blocking primitives.
 
-    Only non-blocking syscalls are used (``shutdown`` then ``close``): a
-    stuck ``close`` implementation cannot delay the collection. Every
-    lookup and invocation is contained; double-cancellation is safe
-    (already-closed sockets raise ``OSError``, which is contained).
+    Production registers an exact built-in ``socket.socket`` before connect.
+    Tests may register an exact ``threading.Event`` as an in-process
+    cancellation primitive. Foreign objects are ignored: no arbitrary
+    ``fileno``, ``shutdown`` or ``close`` attribute is looked up or invoked on
+    the collector's critical path. Direct socket methods are invoked through
+    the built-in descriptor, so subclasses cannot replace the OS operation.
     """
     for handle in handles:
-        try:
-            shutdown = getattr(handle, "shutdown", None)
-            if callable(shutdown):
-                _ = shutdown(socket.SHUT_RDWR)
-        except Exception:  # already closed/cancelled: nothing to do
-            pass
-        try:
-            close = getattr(handle, "close", None)
-            if callable(close):
-                _ = close()
-        except Exception:  # deliberate best-effort cancel; see docstring
-            pass
+        if type(handle) is socket.socket:
+            try:
+                socket.socket.shutdown(handle, socket.SHUT_RDWR)
+            except OSError:  # already closed/cancelled: nothing to do
+                pass
+            try:
+                socket.socket.close(handle)
+            except OSError:  # already closed/cancelled: nothing to do
+                pass
+        elif type(handle) is threading.Event:
+            threading.Event.set(handle)
 
 
 def _response_protocol_ok(response: object) -> bool:
@@ -553,14 +565,22 @@ def _response_body_framing(
     ``getheader`` remains the synthetic EOF-framed contract used by the unit
     fakes; real HTTP responses expose the header reader.
     """
-    getheader_object: object = getattr(response, "getheader", None)
+    try:
+        getheader_object: object = getattr(response, "getheader", None)
+    except Exception:
+        return None
     if getheader_object is None:
         return "eof", None
     if not callable(getheader_object):
         return None
     getheader = cast("Callable[[str], object]", getheader_object)
-    content_length = getheader("Content-Length")
-    transfer_encoding = getheader("Transfer-Encoding")
+    try:
+        content_length = getheader("Content-Length")
+        transfer_encoding = getheader("Transfer-Encoding")
+    except Exception:
+        # Header access is an untrusted transport boundary; never retain its
+        # exception or confuse it with a framing implementation defect.
+        return None
     if content_length is not None and not isinstance(content_length, str):
         return None
     if transfer_encoding is not None and not isinstance(transfer_encoding, str):
@@ -582,15 +602,51 @@ def _response_body_framing(
             return None
         if len(set(values)) != 1:
             return None
-        length = int(values[0])
+        try:
+            length = int(values[0])
+        except ValueError:
+            return None
         return "content_length", length
-    will_close = getattr(response, "will_close", None)
+    try:
+        will_close = getattr(response, "will_close", None)
+    except Exception:
+        return None
     if will_close is not None and not isinstance(will_close, bool):
         return None
     if will_close is False:
         # EOF is not a frame boundary on a reusable HTTP/1.1 connection.
         return None
     return "eof", None
+
+
+def _has_buffered_http_extra(response: HTTPResponse) -> bool:
+    """Probe for trailing bytes without waiting on a persistent peer.
+
+    ``HTTPResponse.read`` closes its buffered file as soon as a declared
+    length reaches zero, which would discard bytes after that frame. Reading
+    the exact body directly from the standard-library buffer leaves the
+    buffer inspectable. A nonblocking ``peek`` sees already-buffered or
+    immediately available trailing bytes, while a quiet keep-alive socket is
+    accepted without waiting for EOF.
+    """
+    file_object: object = cast("object", response.fp)
+    if file_object is None:
+        return False
+    peek = getattr(file_object, "peek", None)
+    raw = getattr(file_object, "raw", None)
+    raw_socket = getattr(raw, "_sock", None)
+    if not callable(peek) or type(raw_socket) is not socket.socket:
+        return False
+    timeout = socket.socket.gettimeout(raw_socket)
+    socket.socket.setblocking(raw_socket, False)
+    try:
+        try:
+            extra = peek(1)
+        except BlockingIOError:
+            return False
+        return isinstance(extra, bytes) and bool(extra)
+    finally:
+        socket.socket.settimeout(raw_socket, timeout)
 
 
 def _execute_read(
@@ -631,7 +687,13 @@ def _execute_read(
             "GET", path, headers={"Accept": "application/json"}
         )
         response = connection.getresponse()
-        if not _response_protocol_ok(response):
+        try:
+            response_is_valid = _response_protocol_ok(response)
+        except Exception:
+            # Response protocol inspection is an untrusted boundary. Keep
+            # provider-controlled descriptor errors out of the result.
+            return "invalid_response", None
+        if not response_is_valid:
             # A malformed transport result is a degraded outcome, never an
             # uncaught TypeError; the raw socket is released by the
             # collector's socket-handle cancellation.
@@ -644,9 +706,21 @@ def _execute_read(
         framing = _response_body_framing(typed_response)
         if framing is None:
             return "malformed", None
-        _frame_kind, expected_length = framing
+        frame_kind, expected_length = framing
         if expected_length is not None and expected_length > MAX_BODY_BYTES:
             return "unreadable", None
+
+        body_reader: Callable[[int], object] = typed_response.read
+        real_response: HTTPResponse | None = None
+        if frame_kind == "content_length" and type(cast(object, typed_response)) is HTTPResponse:
+            real_response = cast("HTTPResponse", cast(object, typed_response))
+            response_file: object | None = cast("object", real_response.fp)
+            if response_file is None:
+                return "malformed", None
+            file_read_object: object = getattr(response_file, "read", None)
+            if not callable(file_read_object):
+                return "malformed", None
+            body_reader = cast("Callable[[int], object]", file_read_object)
 
         body = bytearray()
         while True:
@@ -659,9 +733,16 @@ def _execute_read(
                 if expected_length is not None
                 else MAX_BODY_BYTES + 1 - len(body)
             )
-            chunk = typed_response.read(
-                min(READ_CHUNK_BYTES, remaining)
-            )
+            try:
+                chunk = body_reader(min(READ_CHUNK_BYTES, remaining))
+            except IncompleteRead:
+                return "malformed", None
+            except (HTTPException, OSError):
+                return "transport_fail", None
+            except Exception:
+                # Response reads are an untrusted provider boundary; their
+                # exception text must never escape or be retained.
+                return "transport_fail", None
             if not isinstance(chunk, bytes):
                 # Non-bytes chunk: the transport violated the response
                 # contract (e.g. a ``str``); degrade safely, never decode.
@@ -679,23 +760,20 @@ def _execute_read(
             body.extend(chunk)
         if expected_length is not None and len(body) != expected_length:
             return "malformed", None
+        if real_response is not None:
+            try:
+                if _has_buffered_http_extra(real_response):
+                    return "malformed", None
+            except OSError:
+                return "transport_fail", None
         if deadline - time.monotonic() <= 0:
             # Delayed EOF must never smuggle a late body past the deadline.
             return "transport_fail", None
         return "ok", bytes(body)
-    except IncompleteRead:
-        # A truncated Content-Length or chunked body is framing drift, not a
-        # valid EOF and never reaches the strict JSON decoder.
-        return "malformed", None
     except (HTTPException, OSError):
         # BadStatusLine & co. derive from HTTPException; ConnectionError,
         # TimeoutError (socket.timeout) and cancellation-by-shutdown derive
         # from OSError. Partial content is discarded.
-        return "transport_fail", None
-    except Exception:
-        # Response-operation/transport boundary anomaly (broken or hostile
-        # transport, including provider-controlled exception text): mapped
-        # to a safe normalized outcome, never propagated or logged.
         return "transport_fail", None
     # Deliberately NO response/connection close on any exit path: a
     # hostile or stuck close implementation could block this worker
@@ -757,6 +835,8 @@ def _read_call(
         # Registration races with the collector's deadline path. Resolve the
         # race under the lock, then cancel a late handle before the worker can
         # enter another blocking phase.
+        if type(handle) not in (socket.socket, threading.Event):
+            raise RuntimeError("internal error: unsupported cancellation handle")
         with registration_lock:
             cancel_now = cancellation_requested
             if not cancel_now:

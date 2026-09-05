@@ -284,8 +284,8 @@ direction was chosen. Dates use UTC.
   loopback hosts `127.0.0.1` or `::1` (`localhost` and every other name
   are rejected outright, so no DNS/hosts-file/proxy escape path exists);
   the omitted port canonically defaults to the documented Ollama port
-  11434, never an implicit socket default; empty query/fragment
-  delimiters, whitespace/control characters and non-root paths are
+  11434, never an implicit socket default; explicitly empty port syntax,
+  empty query/fragment delimiters, whitespace/control characters and non-root paths are
   rejected; proxies are disabled for the connection and redirects are
   never followed; at most one attempt per read. The reads are
   `GET /api/version` (validated envelope with a usable, bounded,
@@ -325,21 +325,23 @@ direction was chosen. Dates use UTC.
   resolution and DNS are impossible) and stays valid across any
   `Connection: close` ownership transfer to the response object. Cancellation
   is synchronized with handle registration, so a late handle is cancelled
-  immediately. Every return or raise performs non-blocking raw-socket
-  `shutdown`/`close` and a bounded worker join, raising instead of returning
-  if a worker could still be blocked. The worker itself never invokes
+  immediately. Every return or raise performs non-blocking operations on the
+  exact built-in raw socket and a bounded worker join, raising instead of
+  returning if a worker could still be blocked. Foreign handles are rejected
+  during registration rather than inspected or invoked. The worker itself never invokes
   response/connection closes; socket and file-descriptor resources are
-  released exclusively through non-blocking `shutdown`/`close` on the
-  registered raw-socket handles. A deadline expiring during the
+  released exclusively through non-blocking operations on the registered
+  raw-socket handles. A deadline expiring during the
   listing or loaded-model read degrades the snapshot to `unknown` —
   never a false `ok` — while preserving the already-validated
   reachability/presence facts. Cleanup is redacted end
-  to end: socket-handle lookup, close invocation and cancellation can raise
-  provider-controlled text without it ever escaping.
+  to end: provider-boundary failures can raise provider-controlled text without
+  it escaping; cancellation itself uses only direct built-in primitives and
+  retains no provider exception.
   Response-operation failures of any kind — including
   provider-controlled exception text — normalize to safe outcomes and are
-  never propagated or logged; an unexpected internal worker error is
-  re-raised rather than swallowed. Error responses are not read; raw-socket
+  never propagated or logged; internal framing/programming errors remain
+  distinguishable and are re-raised rather than swallowed. Error responses are not read; raw-socket
   cleanup is used instead of response/connection close. Duplicate listed names and any malformed/drifted
   body fail
   closed; a healthy local runtime reports `windows: []` with no quota
