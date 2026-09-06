@@ -100,14 +100,30 @@ direction was chosen. Dates use UTC.
   MPL-2.0 remains an alternative only after a deliberate policy change; AGPL is
   not the default.
 
-### D-011 — Public hosting
+### D-011 — Repository hosting
 
-- **Status:** Accepted for public release
-- **Date:** 2026-09-01
-- **Decision:** GitHub is canonical and the owner's Forgejo receives an
-  automatic mirror.
-- **Reason:** Public discovery, contributions, Issues, Discussions, Actions and
-  security ecosystem should live on the canonical host.
+- **Status:** Accepted (revised in place 2026-09-07, replacing the initial
+  2026-09-01 hosting choice)
+- **Date:** 2026-09-07
+- **Decision:** Forgejo is canonical.
+
+  Canonical repository:
+  https://forgejo.creatidy.com/BioMedical-IT/scarcity-router
+
+  GitHub:
+  https://github.com/creatidy/scarcity-router
+
+  GitHub is an automatic secondary mirror.
+
+  Issues, PRs, reviews, agent workflow and branch integration are canonical
+  on Forgejo.
+
+  develop is the integration branch.
+
+  main is outside ordinary agent PR flow.
+- **Reason:** Forgejo provides the more effective day-to-day development
+  workflow for the owner, while GitHub remains valuable as a public/read-only
+  mirror and for integrations that only support GitHub.
 
 ### D-012 — Name remains provisional
 

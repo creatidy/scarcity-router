@@ -24,9 +24,26 @@ in [`docs/model-calibration.md`](docs/model-calibration.md); the selector
 and simulation live in `scarcity_router/selector.py` and
 `scarcity_router/simulation.py` with the frozen ranking semantics
 documented in [`docs/selection-policy.md`](docs/selection-policy.md).
-M2 implementation is complete; M2 exit/live acceptance in the owner's real
-workflow is still pending. There is not yet an installable package, final
-executable name, REST service or MCP server.
+M2 implementation is complete and closed as **PASS** (2026-09-06) after live
+acceptance in the owner's real workflow. There is not yet an installable
+package, final executable name, REST service or MCP server; M3 (REST and
+MCP) is the next planned milestone.
+
+## Repository
+
+Canonical development:
+https://forgejo.creatidy.com/BioMedical-IT/scarcity-router
+
+GitHub mirror:
+https://github.com/creatidy/scarcity-router
+
+Forgejo is canonical for branches, issues, pull requests, reviews and the
+development workflow; `develop` is the integration branch and ordinary PRs
+target `develop`. GitHub is an automatic mirror for public
+visibility/discovery, read-only integrations and consumers that only support
+GitHub — do not open normal issues or pull requests there. `main` is a
+human-controlled promotion/release branch and is not the normal agent
+integration branch.
 
 ## Why It Exists
 
@@ -256,21 +273,19 @@ Each topic has one primary source of truth:
 ## Current Project Choices
 
 - Intended license: Apache License 2.0.
-- Intended public hosting: GitHub canonical, Forgejo automatic mirror.
+- Repository hosting: Forgejo canonical, GitHub automatic mirror.
 - `Scarcity Router` is a working name pending a collision and naming search.
 - Likely implementation stack: Python 3.12+, `uv`, `pytest`, typed schemas, a
   small CLI, a small HTTP layer and the official MCP SDK. This is not binding.
 
-See the [roadmap](docs/roadmap.md) before starting implementation. M0 and M1
-are complete, and the M2 implementation slices M2a–M2e have landed (capacity
-scopes, selection-input contracts, calibration, scarcity and policy
-primitives, and the deterministic selector with explanation and simulation);
-M2 exit/live acceptance is still pending, and no production release is
-claimed.
+See the [roadmap](docs/roadmap.md) before starting implementation. M0, M1
+and M2 are complete; M2 closed as PASS (2026-09-06) after live acceptance,
+and no production release is claimed. Automatic live OpenAI reset-credit
+acquisition is deferred; manual normalized replenishment remains supported.
 
 The portable descriptive model policy is available at
 [`model-policy.json`](model-policy.json) and the calibrated model catalog at
 [`model-catalog.json`](model-catalog.json); the human-readable calibration
 rationale is [`docs/model-calibration.md`](docs/model-calibration.md).
-External consumers needing reproducible policy should pin a commit or release
-rather than assume `main` never changes.
+External consumers needing reproducible policy should pin a commit, tag or
+release rather than track a mutable integration or mirror branch.

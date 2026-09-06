@@ -113,11 +113,33 @@ and re-runs the same selector core without mutating live observations.
 Scenario, ranking, hard-constraint, tightening, no-solution, simulation and
 CLI tests pin the behavior; D-027 records the frozen semantics.
 
-**M2 implementation slices M2a–M2e are complete; M2 exit/live acceptance
-is still pending.** The next step after review/merge is M2 live
-acceptance / closeout in the owner's real workflow — not automatically
-another large implementation slice. Live reset-credit acquisition remains
-outside the implemented slices.
+**M2 PASS (2026-09-06).** M2 implementation slices M2a–M2e, live acceptance
+and closeout are complete. Sanitized closeout evidence:
+
+- 796 tests pass
+- basedpyright 0 errors / 0 warnings / 0 notes
+- live OpenAI normalized status structurally healthy
+- live Z.ai normalized status structurally healthy
+- `openai/codex` applicability observed
+- `zai/coding_plan` applicability observed
+- six representative real profile selections were capability-consistent
+- explanations were reconstructable
+- 98/2 scenario passed
+- blackout scenario passed
+- reservation block/permit boundary passed
+- unknown/capability/HumanOverride contracts passed
+- no model execution occurred
+
+Owner closeout choices:
+
+- OWNER TRUST GATE: PASS
+- RESET VISIBILITY GATE: PASS FOR M2 — manual normalized replenishment
+  visibility is sufficient for M2. Automatic live OpenAI reset-credit
+  acquisition is deferred and is not a reason to reopen M2.
+
+Next planned milestone: M3 — REST and MCP. Status: not started. M3 begins
+only after an explicitly selected or created Forgejo issue/task, never
+merely because it is documented here.
 
 ## M0 — Repository foundation
 
@@ -344,13 +366,16 @@ Implementation proceeds in small, deterministic slices:
   `simulate` with typed capacity/policy/replenishment/evaluated-at
   overrides that never mutate live observations.
 
-M2 implementation slices are complete; M2 exit/live acceptance is still
-pending. Later optional M2 additions — official health advisory, cached
-Artificial Analysis evidence and compound-workflow recommendations, plus
-live reset-credit acquisition — are not blockers for the first useful
-single-model selection unless the M2 exit criteria require them.
+M2 is closed as PASS (2026-09-06); see the closeout evidence above. Later
+optional M2 additions — official health advisory, cached Artificial Analysis
+evidence and compound-workflow recommendations, plus automatic live
+reset-credit acquisition — remain accepted deferrals, not blockers or open
+acceptance items.
 
 ## M3 — REST and MCP
+
+**Status:** Not started. M3 begins only after an explicitly selected or
+created Forgejo issue/task.
 
 **Outcome:** External orchestrators can obtain the same status and decision as
 the CLI through stable, minimal machine interfaces.
