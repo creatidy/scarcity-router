@@ -12,14 +12,16 @@ The core rule is simple:
 
 The project completed **M0: documentation and contract design** on 2026-09-01,
 **M1: capacity collectors and normalized status** on 2026-09-05, the
-**M2a: semantic capacity scopes** slice (capacity contract v3) on 2026-09-06
-and the **M2b: TaskRequirement and ModelCatalog core types** slice on
+**M2a: semantic capacity scopes** slice (capacity contract v3) on 2026-09-06,
+the **M2b: TaskRequirement and ModelCatalog core types** slice on 2026-09-06
+and the **M2c: curated initial ratings and profile calibration** slice on
 2026-09-06. The two subscription collectors and a provisional unified status
-command are implemented. M2 — capability catalog and selector — is current;
-its planning gate froze the selector contracts, and the next implementation
-slice is M2c: curated initial ratings and profile calibration. There is not
-yet an installable package, final executable name, selector, REST service or
-MCP server.
+command are implemented, and the calibrated catalog lives in
+[`model-catalog.json`](model-catalog.json) with rationale in
+[`docs/model-calibration.md`](docs/model-calibration.md). M2 — capability
+catalog and selector — is current; the next implementation slice is M2d:
+scarcity and policy primitives. There is not yet an installable package,
+final executable name, selector, REST service or MCP server.
 
 ## Why It Exists
 
@@ -205,6 +207,8 @@ implementation proceeds in the recorded M2a–M2e slices and stops short of
 routing until those slices land.
 
 The portable descriptive model policy is available at
-[`model-policy.json`](model-policy.json). External consumers needing
-reproducible policy should pin a commit or release rather than assume `main`
-never changes.
+[`model-policy.json`](model-policy.json) and the calibrated model catalog at
+[`model-catalog.json`](model-catalog.json); the human-readable calibration
+rationale is [`docs/model-calibration.md`](docs/model-calibration.md).
+External consumers needing reproducible policy should pin a commit or release
+rather than assume `main` never changes.

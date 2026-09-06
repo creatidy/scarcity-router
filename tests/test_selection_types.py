@@ -1186,13 +1186,17 @@ class ModelPolicyConsistency(unittest.TestCase):
         ]
         self.assertEqual(list(TASK_LEVELS), ids)
 
-    def test_policy_still_defers_numeric_minima(self) -> None:
+    def test_policy_numeric_minima_are_calibrated(self) -> None:
+        # M2c (D-025) calibrated the numeric profile minima; this supersedes
+        # the earlier deferral state. The authoritative numeric definitions
+        # live in task_profiles[].calibrated_requirement.
         policy = _load_policy()
         profile_policy = cast("dict[str, object]", policy["task_profile_policy"])
-        self.assertIs(profile_policy["numeric_minima_included"], False)
-        self.assertEqual(
-            profile_policy["numeric_minima_status"], "deferred_to_m2_calibration"
-        )
+        self.assertIs(profile_policy["numeric_minima_included"], True)
+        self.assertEqual(profile_policy["numeric_minima_status"], "calibrated_m2c")
+        for profile in cast("list[object]", policy["task_profiles"]):
+            entry = cast("dict[str, object]", profile)
+            self.assertIn("calibrated_requirement", entry)
 
 
 # ── Anti-inference contract assertions ────────────────────────────────────────

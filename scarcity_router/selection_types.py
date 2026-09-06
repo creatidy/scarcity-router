@@ -13,16 +13,20 @@ Implements the frozen M2b selection-input contracts (D-020, D-023, D-024):
 - capability provenance: ``EvidenceRef``, ``HumanOverride``,
   ``CapabilityAssessment`` and the six-dimension ``CapabilityAssessments``
 - catalog values: ``ModelCatalogEntry`` and the ``ModelCatalog`` container
+- calibrated profiles (M2c): ``TaskProfileDefinition`` and the
+  ``TaskProfileCatalog`` container with its authoritative ``resolve``
 
 This module implements types, validation and deterministic serialization only.
-It does not calibrate models or profiles, does not implement profile expansion
-(profile expansion is a construction pathway owned by M2c, not a serialized
-fourth field), does not score capability sufficiency and does not select.
-No rating, minimum or catalog entry value exists in this module; populating
-reviewed values is the M2c slice. Production code must not read the repository
-policy artifact at runtime; repository consistency tests compare the frozen
-vocabularies (``CAPABILITY_DIMENSIONS``, ``TASK_LEVELS``,
-``SUPPORTED_PROVIDERS``) against it instead.
+It does not calibrate model values (the accepted calibration lives in the
+repository catalog and portable policy artifacts), does not score capability
+sufficiency and does not select. Profile expansion is exactly the pure
+``TaskProfileDefinition.to_requirement()`` / ``TaskProfileCatalog.resolve()``
+pathway into the stored three-part ``TaskRequirement`` shape — no capability
+inference, no model lookup, no scarcity and no merge with explicit task
+inputs. Production code must not read the repository policy or catalog
+artifacts at runtime; the caller provides typed data, and repository
+consistency tests compare the frozen vocabularies (``CAPABILITY_DIMENSIONS``,
+``TASK_LEVELS``, ``SUPPORTED_PROVIDERS``) against them instead.
 
 The invariants are enforced at *construction* so an invalid object can never
 exist as a public, serializable value, whether produced by ``from_dict()`` or
@@ -686,6 +690,134 @@ class TaskRequirement:
             "task_level": self.task_level,
             "capability_minima": self.capability_minima.to_dict(),
             "hard_constraints": self.hard_constraints.to_dict(),
+        }
+
+
+# ── Calibrated task profiles ──────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class TaskProfileDefinition:
+    """One calibrated, named task profile (M2c, D-025).
+
+    A profile definition binds a stable profile ID to the calibrated stored
+    requirement it expands into. Expansion is pure and total:
+    :meth:`to_requirement` returns exactly the stored ``TaskRequirement`` —
+    no capability inference, no model lookup, no scarcity and no merge with
+    explicit task inputs (that merge belongs to later selector input
+    assembly). A profile never names a model, a provider or a class as its
+    output: the type has no such field, and the profile ID follows the
+    capacity safe-ID grammar.
+    """
+
+    profile_id: str
+    requirement: TaskRequirement
+
+    _REQUIRED: ClassVar[tuple[str, ...]] = ("profile_id", "requirement")
+    _OPTIONAL: ClassVar[tuple[str, ...]] = ()
+
+    def __post_init__(self) -> None:
+        _ = _v_safe_id(self.profile_id, "task_profile_definition.profile_id")
+        _ = _v_instance_of(
+            self.requirement, TaskRequirement, "task_profile_definition.requirement"
+        )
+
+    @classmethod
+    def from_dict(cls, d: object) -> "TaskProfileDefinition":
+        dd = _v_exact_shape(
+            d, cls._REQUIRED, cls._OPTIONAL, "task_profile_definition"
+        )
+        return cls(
+            profile_id=_v_safe_id(
+                dd["profile_id"], "task_profile_definition.profile_id"
+            ),
+            requirement=TaskRequirement.from_dict(dd["requirement"]),
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "profile_id": self.profile_id,
+            "requirement": self.requirement.to_dict(),
+        }
+
+    def to_requirement(self) -> TaskRequirement:
+        """The authoritative pure expansion: the calibrated stored requirement."""
+        return self.requirement
+
+
+@dataclass(frozen=True)
+class TaskProfileCatalog:
+    """Pure typed container of calibrated task profile definitions (M2c, D-025).
+
+    Profile IDs must be unique; there are no aliases. The stored definition
+    tuple is canonical (sorted by ``profile_id``), so equality and serialized
+    output are deterministic and independent of insertion order.
+    :meth:`resolve` is the only production profile
+    resolver — exact lookup by profile ID returning the calibrated
+    ``TaskRequirement``, with an unknown profile raising the typed
+    :class:`SelectionContractValidationError`. The container stays
+    filesystem-independent: the caller provides typed data, and production
+    core code never reads the repository policy artifact at runtime.
+    """
+
+    definitions: tuple[TaskProfileDefinition, ...]
+
+    _REQUIRED: ClassVar[tuple[str, ...]] = ("definitions",)
+    _OPTIONAL: ClassVar[tuple[str, ...]] = ()
+
+    def __post_init__(self) -> None:
+        _ = _v_tuple_of(
+            self.definitions,
+            TaskProfileDefinition,
+            "task_profile_catalog.definitions",
+        )
+        seen: set[str] = set()
+        for definition in self.definitions:
+            if definition.profile_id in seen:
+                raise SelectionContractValidationError(
+                    "task_profile_catalog.definitions: duplicate profile id "
+                    + f"{definition.profile_id!r}"
+                )
+            seen.add(definition.profile_id)
+        # Canonical stored form: sorted definitions make equality and
+        # serialized output deterministic and independent of insertion order.
+        object.__setattr__(
+            self,
+            "definitions",
+            tuple(sorted(self.definitions, key=lambda d: d.profile_id)),
+        )
+
+    def resolve(self, profile_id: str) -> TaskRequirement:
+        """Expand one profile ID into its calibrated stored requirement."""
+        for definition in self.definitions:
+            if definition.profile_id == profile_id:
+                return definition.to_requirement()
+        raise SelectionContractValidationError(
+            f"task_profile_catalog.resolve: unknown profile id {profile_id!r}"
+        )
+
+    @classmethod
+    def from_dict(cls, d: object) -> "TaskProfileCatalog":
+        dd = _v_exact_shape(d, cls._REQUIRED, cls._OPTIONAL, "task_profile_catalog")
+        raw = dd["definitions"]
+        if not isinstance(raw, list):
+            raise SelectionContractValidationError(
+                "task_profile_catalog.definitions: expected list, got "
+                + f"{type(raw).__name__}"
+            )
+        definitions = tuple(
+            TaskProfileDefinition.from_dict(x) for x in cast("list[object]", raw)
+        )
+        return cls(definitions=definitions)
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "definitions": [
+                definition.to_dict()
+                for definition in sorted(
+                    self.definitions, key=lambda d: d.profile_id
+                )
+            ]
         }
 
 

@@ -60,8 +60,8 @@ class ModelPolicyContract(unittest.TestCase):
         self.assertIsInstance(policy, dict)
         parsed = cast(dict[str, object], policy)
         self.assertEqual(parsed["schema_version"], 1)
-        self.assertEqual(parsed["policy_version"], 3)
-        self.assertEqual(parsed["updated_at"], "2026-09-05")
+        self.assertEqual(parsed["policy_version"], 4)
+        self.assertEqual(parsed["updated_at"], "2026-09-06")
         self.assertEqual(json.loads(json.dumps(parsed)), parsed)
 
     def test_versioning_semantics_are_documented(self) -> None:
@@ -371,10 +371,8 @@ class ModelPolicyContract(unittest.TestCase):
         )
         self.assertTrue(profile_policy["profiles_are_selector_facing"])
         self.assertTrue(profile_policy["class_affinities_are_hints_not_requirements"])
-        self.assertFalse(profile_policy["numeric_minima_included"])
-        self.assertEqual(
-            profile_policy["numeric_minima_status"], "deferred_to_m2_calibration"
-        )
+        self.assertTrue(profile_policy["numeric_minima_included"])
+        self.assertEqual(profile_policy["numeric_minima_status"], "calibrated_m2c")
         profiles = _objects(policy["task_profiles"], "task_profiles")
         ids = [_required_string(entry, "id") for entry in profiles]
         self.assertEqual(
@@ -396,6 +394,8 @@ class ModelPolicyContract(unittest.TestCase):
             self.assertIn("intent", entry)
             self.assertIn("indicative_capability_needs", entry)
             self.assertIn("hard_requirement_categories", entry)
+            # Exactly one authoritative numeric definition per profile.
+            self.assertIn("calibrated_requirement", entry)
 
         by_id = {
             _required_string(entry, "id"): entry for entry in profiles
