@@ -138,10 +138,10 @@ Owner closeout choices:
   acquisition is deferred and is not a reason to reopen M2.
 
 Next planned milestone: M3 — REST and MCP. Status: M3a planning gate
-complete (2026-09-07); M3b/M3c not started. M3 began only from an explicitly
+complete (2026-09-06); M3b/M3c not started. M3 began only from an explicitly
 created Forgejo issue (#45, M3a), never merely because it is documented here.
 
-**M3 planning gate (2026-09-07, M3a).** The REST and MCP machine-interface
+**M3 planning gate (2026-09-06, M3a).** The REST and MCP machine-interface
 contracts are frozen in `docs/machine-interfaces.md` (D-028) before any
 transport is implemented: the four-endpoint REST surface, the three stdio
 MCP tools calling the application directly, no-solution-as-HTTP-200 error
@@ -386,7 +386,7 @@ acceptance items.
 
 ## M3 — REST and MCP
 
-**Status:** M3a planning gate complete (2026-09-07); M3b/M3c not started.
+**Status:** M3a planning gate complete (2026-09-06); M3b/M3c not started.
 M3b starts only after M3a is merged into `develop` and only from an
 explicitly selected or created Forgejo issue.
 
@@ -411,7 +411,7 @@ The interface semantics are frozen in
 
 ### M3 implementation sequence
 
-- **M3a — interface contract planning gate (complete 2026-09-07).** Froze
+- **M3a — interface contract planning gate (complete 2026-09-06).** Froze
   the REST/MCP contract document and D-028 with no runtime, dependency or
   product source change.
 - **M3b — minimal local REST adapter.** Implements `/healthz`, `/v1/status`,

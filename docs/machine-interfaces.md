@@ -95,6 +95,23 @@ Requests and responses are `application/json`. Unknown request keys are
 rejected as invalid requests. The snapshot arrays use the same canonical
 ordering as the CLI (`openai` then `zai`).
 
+### Request parsing and strictness
+
+REST request bodies are parsed with the same deterministic strictness the
+application already applies at its artifact boundaries (duplicate keys and
+non-finite constants fail there). Framework JSON defaults must not decide
+this implicitly. For every REST request body, frozen:
+
+```text
+duplicate JSON object keys -> invalid_request (HTTP 400)
+NaN                        -> invalid_request (HTTP 400)
+Infinity                   -> invalid_request (HTTP 400)
+-Infinity                  -> invalid_request (HTTP 400)
+```
+
+MCP input validation mirrors these semantics logically through the same
+`invalid_request` error payload (see [MCP error semantics](#mcp-error-semantics)).
+
 ### GET /healthz
 
 Process/service liveness only. It must not trigger provider telemetry
@@ -157,8 +174,8 @@ CLI flag names:
 | `profile_id` | string, optional | Calibrated task profile id resolved through the profile catalog. |
 | `requirement` | TaskRequirement object, optional | Explicit full stored `TaskRequirement` (serialized contract). |
 | `tightening` | TaskRequirement object, optional | Full `TaskRequirement` that monotonically tightens the profile. |
-| `selector_policy` | SelectorPolicy object, optional | Serialized `SelectorPolicy`; absent means the documented neutral policy. |
-| `replenishment_states` | array of ReplenishmentState, optional | Normalized replenishment observations; absent or empty means none. |
+| `selector_policy` | SelectorPolicy object, optional | Serialized `SelectorPolicy`; missing or `null` means the documented neutral policy. |
+| `replenishment_states` | array of ReplenishmentState, optional | Normalized replenishment observations; missing or `[]` means none; explicit `null` is `invalid_request`. |
 
 The same exclusivity as the CLI is enforced — there is no alternative
 simplified requirement model:
@@ -170,6 +187,30 @@ tightening only with profile_id
 
 Supplying both `profile_id` and `requirement`, or `tightening` without
 `profile_id`, is an invalid request (HTTP 400).
+
+Missing and explicit-`null` field semantics are frozen exactly — there is no
+other implicit mapping:
+
+| Field | missing | explicit `null` |
+| --- | --- | --- |
+| `profile_id` | absent | absent |
+| `requirement` | absent | absent |
+| `tightening` | absent | absent |
+| `selector_policy` | neutral/default policy | neutral/default policy |
+| `replenishment_states` | no observations | `invalid_request` |
+
+`replenishment_states: null` is an `invalid_request`: the field is an array
+at this boundary and ordinary select input has no baseline-replacement
+tri-state to represent (that tri-state exists only in the nested simulation
+`overrides`; see below).
+
+Exactly one effective requirement source is required — effective
+`profile_id` XOR effective `requirement`, after the missing/`null` mapping
+above. Both absent/null and both present are `invalid_request`.
+
+An unknown `profile_id` — one that does not resolve in the configured
+profile catalog — is an `invalid_request` (HTTP 400): a client input error,
+not an internal error and not a no-solution.
 
 The response is the existing `SelectionDecision` inside the versioned
 envelope:
@@ -214,8 +255,12 @@ simulation overrides:
 "no overrides". The tri-state semantics of
 `replenishment_states`/`selector_policy`/`evaluated_at` inside overrides are
 the existing typed ones (D-027): absent/`null` retains the baseline input.
-Only `overrides.evaluated_at` can move the simulated instant; there is no
-other client-supplied clock.
+The nested `overrides.replenishment_states` deliberately keeps this
+`SimulationOverrides` tri-state and is not conflated with the top-level
+select semantics: missing/`null` retains the baseline observations, `[]`
+replaces them with no observations, and a non-empty array fully replaces
+them. Only `overrides.evaluated_at` can move the simulated instant; there is
+no other client-supplied clock.
 
 The response reuses the existing `SimulationResult` — baseline and simulated
 decisions are both produced by the same selector core; REST never creates a
@@ -249,10 +294,13 @@ reason_codes includes no_eligible_candidate
 HTTP 404, 409, 422 and 500 are never used for a valid no-solution.
 
 **2. Invalid client request — HTTP 400.** Malformed JSON, a non-JSON content
-type on a POST, unknown keys, a schema-invalid `TaskRequirement`,
+type on a POST, duplicate JSON object keys, `NaN`/`Infinity`/`-Infinity`
+constants, unknown keys, a schema-invalid `TaskRequirement`,
 `SelectorPolicy`, `ReplenishmentState` or `SimulationOverrides`, the
-profile+requirement exclusivity violation, tightening with an explicit
-requirement, or an invalid simulation override all return:
+requirement-source violation (profile and requirement both present, or both
+absent/null), an unknown `profile_id`, `replenishment_states: null`,
+tightening with an explicit requirement, or an invalid simulation override
+all return:
 
 ```json
 {
@@ -362,14 +410,41 @@ belongs to M3c.
 
 ### MCP error semantics
 
-- A contract-invalid input (the HTTP 400 class above) is a tool **input
-  error**: a structured protocol-level invalid-input tool result carrying the
-  same safe `invalid_request` structural message. It is never converted into
-  a fabricated `SelectionDecision`.
-- An application failure is a structured tool error carrying the safe
-  `internal_error` code.
-- A valid no-solution and a degraded provider are **successful** structured
-  tool results (the same payloads as their REST HTTP 200 counterparts).
+The **logical** structured error payloads are frozen now; SDK-specific wire
+encoding is not. The eventual official SDK may carry these payloads through
+its supported tool-error mechanism (`isError`, structured content or
+equivalent), but M3c must preserve this logical payload and the closed
+error-code vocabulary:
+
+```json
+{
+  "error": {
+    "code": "invalid_request",
+    "message": "safe structural message"
+  }
+}
+```
+
+```json
+{
+  "error": {
+    "code": "internal_error",
+    "message": "safe structural message"
+  }
+}
+```
+
+- A contract-invalid input (the HTTP 400 class, including strict-parsing
+  failures — duplicate keys, `NaN`/`Infinity`/`-Infinity` — missing/`null`
+  violations, the requirement-source violation, an unknown `profile_id`, or
+  an invalid override) is a tool **input error** carrying the logical
+  `invalid_request` payload. It is never converted into a fabricated
+  `SelectionDecision`.
+- An application failure carries the logical `internal_error` payload.
+- A valid no-solution and a degraded provider remain **successful**
+  structured tool results (the same payloads as their REST HTTP 200
+  counterparts) and never use the error shape.
+- No additional error codes are invented.
 
 ## Parity
 
@@ -429,17 +504,29 @@ Separate contracts carry separate versions; they are never collapsed:
 | `catalog_version` | Model catalog content version | `1` (current artifact) |
 | `policy_version` | Model policy/profile content version | `4` (current artifact) |
 
-Within machine-interface v1:
+The machine-interface contract includes **both its envelope and the
+serialized domain documents exposed inside it**. `CapacitySnapshot`,
+`TaskRequirement`, `SelectorPolicy`, `ReplenishmentState`,
+`SelectionDecision`, `SimulationResult` and `SimulationOverrides` are all
+part of the v1 wire contract. Within machine-interface v1:
 
-- additive optional fields may be introduced only if existing clients remain
-  valid;
-- removing or renaming fields, or changing semantics, requires a new version
-  or an explicit versioned migration decision;
-- existing domain contract serialization is reused rather than forked — a
-  domain contract bump (for example capacity v4) propagates through the
-  interfaces by reusing its new serialization; it does not by itself bump the
-  machine-interface version unless the envelope itself changes
-  incompatibly.
+- additive backwards-compatible domain fields may flow through v1 as long as
+  existing v1 clients remain valid;
+- an incompatible removal, rename, type change or semantic change in **any**
+  exposed nested domain contract is an incompatible machine-interface
+  change, and requires either:
+  1. a compatibility serializer preserving the v1 wire contract, or
+  2. a new machine-interface major version;
+- changing only a domain's internal version number does not by itself
+  require a new machine-interface version when its serialized v1-visible
+  shape remains backwards compatible (a future capacity v4 that adds only
+  optional fields would flow through v1; one that removes or retypes a v1
+  field would not);
+- existing domain serialization is reused rather than forked.
+
+M3a creates no compatibility serializers; choosing between the two options
+above for a concrete incompatible nested-domain evolution is a future
+explicit decision, never an implementation accident.
 
 MCP exposes the same v1 logical contract under simple, unversioned tool
 names, with the version stated in the tool documentation.
@@ -487,6 +574,21 @@ quota):
 6. **Scientific-review no-solution.** If Sol is unavailable and no
    sufficient candidate remains, the HTTP call and the MCP call still
    succeed with a valid no-solution `SelectionDecision`.
+7. **Duplicate JSON object key in a request.** REST: HTTP 400
+   `invalid_request` — strict parsing is frozen, never framework-default
+   lenient parsing (`NaN`/`Infinity`/`-Infinity` constants are the same
+   class). MCP: the logical `invalid_request` input error.
+8. **Both or neither requirement source.** `profile_id` and `requirement`
+   both present, or both absent/null, is HTTP 400 `invalid_request` — never
+   a guessed default requirement.
+9. **Unknown profile id.** A `profile_id` that does not resolve in the
+   configured profile catalog is HTTP 400 `invalid_request` — a client
+   input error, not an internal error and not a no-solution.
+10. **MCP invalid input.** Carries the logical `invalid_request` error
+    payload through the eventual SDK tool-error mechanism — never a
+    fabricated `SelectionDecision`.
+11. **MCP internal failure.** Carries the logical `internal_error` error
+    payload.
 
 ## Non-goals
 
