@@ -1023,6 +1023,26 @@ direction was chosen. Dates use UTC.
   history or audit stores, no prompt proxying and no model execution. M2 is
   **not** PASS: M2 exit requires separate post-merge live acceptance in the
   owner's real workflow.
+- **Amendment (2026-09-06, single post-review remediation):** the selection
+  algorithm is unchanged; three explanation/provenance gaps are closed.
+  (1) Per-candidate replenishment output preserves the complete normalized
+  `ReplenishmentState` provenance (`provider`, `kind`, `available_count`,
+  `details_known`, `earliest_expiry`, `retrieved_at`) next to its
+  `ReplenishmentDecision` through the `ReplenishmentEvaluation` wrapper,
+  and selector and simulation replenishment sets are canonicalized by
+  `(provider, kind)` — output/provenance determinism only; availability,
+  expiry and retrieval time never gain ranking semantics, and eligibility
+  semantics are unchanged. (2) `SelectionDecision` preserves the exact
+  `SelectorPolicy.preference_order` as decision provenance: ordered (never
+  sorted), unique identities, serialized as an explicit list (empty list
+  when absent). (3) Human `--explain` surfaces governing capacity evidence
+  (provider/scope, resource, kind, remaining, diagnostic window id when
+  present — never parsed) for the selected, alternative and
+  capacity-excluded candidates where it exists, full reservation decisions
+  (including triggered-but-permitted ones) for eligible candidates while
+  continuing to render excluded candidates' decisions, and the applied
+  preference order. No new decision number is created; D-027 remains the
+  governing M2e decision.
 
 ## Unresolved decisions
 

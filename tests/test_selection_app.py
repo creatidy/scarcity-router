@@ -18,9 +18,20 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import cast
 
-from scarcity_router import CapacityDiagnostic, CapacitySnapshot, CapacityWindow
+from scarcity_router import (
+    CapacityDiagnostic,
+    CapabilityMinima,
+    CapacitySnapshot,
+    CapacityWindow,
+    HardConstraints,
+    ModelCatalog,
+    SelectorPolicy,
+    TaskRequirement,
+    neutral_selector_policy,
+    select_model,
+)
 from scarcity_router.cli import build_parser, main
-from scarcity_router.selection_app import load_strict_json
+from scarcity_router.selection_app import load_strict_json, render_select_human
 from scarcity_router.status import StatusCollectors
 
 REPO = Path(__file__).resolve().parents[1]
@@ -553,6 +564,103 @@ class ArtifactFailureTests(unittest.TestCase):
             self.assertEqual(1, code)
             self.assertTrue(err.startswith("error:"))
             self.assertNotIn("Traceback", err)
+
+
+class ExplainRenderingTests(unittest.TestCase):
+    """Human --explain surfaces governing capacity, reservations, preference."""
+
+    def _catalog(self) -> ModelCatalog:
+        return ModelCatalog.from_dict(
+            cast(object, json.loads(CATALOG_PATH.read_text(encoding="utf-8")))
+        )
+
+    def _deep_coding(self) -> TaskRequirement:
+        return TaskRequirement(
+            task_level="L3",
+            capability_minima=CapabilityMinima(reasoning=4, coding=5, tool_use=4),
+            hard_constraints=HardConstraints(
+                requires_tool_use=True,
+                requires_reasoning_mode=True,
+            ),
+        )
+
+    def _snap98(self) -> tuple[CapacitySnapshot, CapacitySnapshot]:
+        return (_snap("openai", 40, 40), _snap("zai", 98, 2))
+
+    def _select_explain(
+        self, *, policy: SelectorPolicy | None = None
+    ) -> str:
+        decision = select_model(
+            catalog=self._catalog(),
+            requirement=self._deep_coding(),
+            policy=policy if policy is not None else neutral_selector_policy(),
+            snapshots=list(self._snap98()),
+            evaluated_at=FIXED_AT,
+        )
+        return render_select_human(decision, explain=True)
+
+    def test_explain_shows_governing_window_98_2(self) -> None:
+        text = self._select_explain()
+        # The selected Sol's governing window (openai, both windows at 40%;
+        # five_hour wins the canonical tie-break) and the GLM-5.3
+        # alternative's governing weekly window (zai 2%) are both shown.
+        self.assertIn("Governing capacity: openai/codex tokens five_hour", text)
+        self.assertIn("40% remaining", text)
+        self.assertIn("Governing capacity: zai/coding_plan tokens weekly", text)
+        self.assertIn("2% remaining", text)
+
+    def test_explain_shows_permitted_reservation(self) -> None:
+        from scarcity_router import CapacityScopeRef, ReservationRule, UserPolicy
+
+        policy = SelectorPolicy(
+            mode="balanced",
+            resource_policy=UserPolicy(
+                policy_version=1,
+                unknown_capacity_mode="degraded",
+                replenishment_mode="advisory",
+                reservations=(
+                    ReservationRule(
+                        rule_id="protect-zai-weekly",
+                        scope=CapacityScopeRef(
+                            provider="zai", scope_id="coding_plan"
+                        ),
+                        resource="tokens",
+                        kind="weekly",
+                        when_remaining_below=20,
+                        minimum_task_level="L3",
+                    ),
+                ),
+                blackouts=(),
+            ),
+        )
+        text = self._select_explain(policy=policy)
+        # GLM-5.3 stays eligible (triggered, permitted at L3) and the human
+        # explanation reports that policy event explicitly.
+        self.assertIn("protect-zai-weekly", text)
+        self.assertIn("reservation_triggered", text)
+        self.assertIn("reservation_permitted_by_task_level", text)
+        self.assertIn("triggered=true", text)
+        self.assertIn("blocked=false", text)
+        self.assertIn("remaining=2%", text)
+
+    def test_explain_shows_preference_order(self) -> None:
+        from scarcity_router import ModelIdentity
+
+        # Neutral policy: explicit "none" section.
+        self.assertIn("Preference order: none", self._select_explain())
+
+        policy = SelectorPolicy(
+            mode="balanced",
+            resource_policy=neutral_selector_policy().resource_policy,
+            preference_order=(
+                ModelIdentity(
+                    provider="openai", model="gpt-5.6-sol", variant="high"
+                ),
+            ),
+        )
+        text = self._select_explain(policy=policy)
+        self.assertIn("Preference order:", text)
+        self.assertIn("1. openai/gpt-5.6-sol/high", text)
 
 
 class StrictJsonAndRenderingTests(unittest.TestCase):

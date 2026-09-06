@@ -31,10 +31,11 @@ from pathlib import Path
 from typing import cast
 
 from .errors import SelectionContractValidationError
-from .policy import ReplenishmentDecision, ReplenishmentState
+from .policy import ReplenishmentState, ReservationDecision
 from .selector import (
     EXCLUSION_STAGES,
     CandidateEvaluation,
+    ReplenishmentEvaluation,
     SelectionDecision,
     SelectorPolicy,
     neutral_selector_policy,
@@ -321,9 +322,10 @@ def run_select(
 ) -> SelectionDecision:
     """Run one live selection: load artifacts, collect status, select.
 
-    Issues no model prompt and consumes no inference quota; capacity
-    collection uses the existing telemetry path and may exercise the bounded
-    provider-managed authentication recovery already accepted in D-018.
+    Selection issues no model prompt and does not intentionally consume
+    inference quota. Capacity collection uses the existing telemetry path
+    and may exercise the bounded provider-managed authentication recovery
+    already accepted in D-018.
     """
     (
         catalog,
@@ -502,14 +504,65 @@ def _failure_lines(candidate: CandidateEvaluation) -> list[str]:
     return lines
 
 
-def _replenishment_label(decision: ReplenishmentDecision) -> str:
-    if not decision.visible:
-        return "not visible"
-    parts = [f"mode {decision.mode}", f"available {decision.available_count}"]
-    if decision.recoverable:
-        parts.append("human action required")
-    if decision.reason_codes:
-        parts.append(",".join(decision.reason_codes))
+def _governing_line(candidate: CandidateEvaluation) -> str | None:
+    """One-line governing capacity evidence, or None when it does not exist.
+
+    Unknown scarcity has no governing window; none is ever invented. The
+    diagnostic ``window_id`` is rendered verbatim and never parsed.
+    """
+    scarcity = candidate.scarcity_assessment
+    if scarcity is None or scarcity.governing_window is None:
+        return None
+    window = scarcity.governing_window
+    scope = window.scope
+    detail = (
+        f"Governing capacity: {scope.provider}/{scope.scope_id} "
+        + f"{window.resource} {window.kind} — "
+        + f"{window.remaining_percent}% remaining"
+    )
+    if window.window_id is not None:
+        detail += f" (window {window.window_id})"
+    return detail
+
+
+def _reservation_detail_lines(decisions: tuple[ReservationDecision, ...]) -> list[str]:
+    """Deterministic detail lines for one candidate's reservation decisions."""
+    lines: list[str] = []
+    for decision in decisions:
+        parts = [f"state={decision.state}"]
+        if decision.triggered is not None:
+            parts.append(f"triggered={'true' if decision.triggered else 'false'}")
+        if decision.blocked is not None:
+            parts.append(f"blocked={'true' if decision.blocked else 'false'}")
+        if decision.evidence_remaining_percent is not None:
+            parts.append(
+                f"remaining={decision.evidence_remaining_percent}%"
+            )
+        if decision.reason_codes:
+            parts.append("codes: " + ",".join(decision.reason_codes))
+        lines.append(f"- {decision.rule_id}: " + ", ".join(parts))
+    return lines
+
+
+def _replenishment_label(evaluation: ReplenishmentEvaluation) -> str:
+    """One observation's provenance next to its policy decision."""
+    state = evaluation.state
+    decision = evaluation.decision
+    parts = [
+        f"{state.provider}/{state.kind}",
+        f"available {state.available_count}",
+        f"retrieved {state.retrieved_at}",
+    ]
+    if state.earliest_expiry is not None:
+        parts.append(f"earliest expiry {state.earliest_expiry}")
+    parts.append(f"mode={decision.mode}")
+    if decision.visible:
+        if decision.recoverable:
+            parts.append("human action required")
+        if decision.reason_codes:
+            parts.append("codes: " + ",".join(decision.reason_codes))
+    else:
+        parts.append("not visible")
     return ", ".join(parts)
 
 
@@ -544,8 +597,19 @@ def _explain_sections(decision: SelectionDecision) -> list[str]:
             + f"capability margin={selected.capability_margin}, "
             + f"mode={decision.selector_mode}"
         )
+        governing = _governing_line(selected)
+        if governing is not None:
+            lines.append(f"  {governing}")
+        if selected.reservation_decisions:
+            lines.append("  Reservations:")
+            lines.extend(
+                "    " + line
+                for line in _reservation_detail_lines(
+                    selected.reservation_decisions
+                )
+            )
         if selected.replenishment_evaluations:
-            lines.append("  Replenishment (advisory, never current capacity):")
+            lines.append("  Replenishment (visibility only, never current capacity):")
             lines.extend(
                 "    - " + _replenishment_label(evaluation)
                 for evaluation in selected.replenishment_evaluations
@@ -561,6 +625,15 @@ def _explain_sections(decision: SelectionDecision) -> list[str]:
                 for candidate in decision.closest_candidates
             )
 
+    if decision.preference_order:
+        lines.append("Preference order:")
+        lines.extend(
+            f"  {index}. {entry.provider}/{entry.model}/{entry.variant}"
+            for index, entry in enumerate(decision.preference_order, start=1)
+        )
+    else:
+        lines.append("Preference order: none")
+
     if decision.alternatives:
         lines.append("Alternatives (exact ranking order):")
         for index, alternative in enumerate(decision.alternatives, start=1):
@@ -568,6 +641,17 @@ def _explain_sections(decision: SelectionDecision) -> list[str]:
                 f"  {index}. {_identity_label(alternative)} — "
                 + _short_state(alternative)
             )
+            governing = _governing_line(alternative)
+            if governing is not None:
+                lines.append(f"     {governing}")
+            if alternative.reservation_decisions:
+                lines.append("     Reservations:")
+                lines.extend(
+                    "       " + line
+                    for line in _reservation_detail_lines(
+                        alternative.reservation_decisions
+                    )
+                )
 
     grouped: dict[str, list[CandidateEvaluation]] = {}
     for candidate in decision.excluded:
@@ -598,13 +682,14 @@ def _explain_sections(decision: SelectionDecision) -> list[str]:
                             f"      scarcity state {scarcity.state}, codes: "
                             + ",".join(scarcity.reason_codes)
                         )
+                    governing = _governing_line(candidate)
+                    if governing is not None:
+                        lines.append(f"      {governing}")
                 if candidate.exclusion_stage == "reservation":
-                    for reservation in candidate.reservation_decisions:
-                        lines.append(
-                            f"      reservation {reservation.rule_id}: state "
-                            + f"{reservation.state}, codes: "
-                            + ",".join(reservation.reason_codes)
-                        )
+                    for line in _reservation_detail_lines(
+                        candidate.reservation_decisions
+                    ):
+                        lines.append(f"      {line}")
 
     if decision.recoverable_candidates:
         lines.append(

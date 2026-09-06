@@ -555,8 +555,12 @@ class ScenarioTests(unittest.TestCase):
         self.assertIn("replenishment_recoverable", recoverable.reason_codes)
         evaluations = recoverable.replenishment_evaluations
         self.assertEqual(1, len(evaluations))
-        self.assertTrue(evaluations[0].recoverable)
-        self.assertTrue(evaluations[0].human_action_required)
+        self.assertTrue(evaluations[0].decision.recoverable)
+        self.assertTrue(evaluations[0].decision.human_action_required)
+        # The observation provenance travels with the decision.
+        self.assertEqual("rate_limit_reset", evaluations[0].state.kind)
+        self.assertEqual("openai", evaluations[0].state.provider)
+        self.assertEqual(RETRIEVED_AT, evaluations[0].state.retrieved_at)
 
     def test_scenario_18_vision_hard_requirement_excludes_glm(self) -> None:
         explicit = TaskRequirement(
@@ -782,6 +786,162 @@ class ScenarioTests(unittest.TestCase):
         self.assertEqual(1, len(failures))
 
 
+class ReplenishmentProvenanceTests(unittest.TestCase):
+    """Replenishment output preserves observation provenance (D-027 remediation).
+
+    The frozen semantics are unchanged: replenishment never changes current
+    scarcity or eligibility. These tests pin provenance retention and the
+    canonical ``(provider, kind)`` output ordering only.
+    """
+
+    def _recoverable_policy(self) -> SelectorPolicy:
+        return SelectorPolicy(
+            mode="balanced",
+            resource_policy=UserPolicy(
+                policy_version=1,
+                unknown_capacity_mode="degraded",
+                replenishment_mode="recoverable",
+                reservations=(),
+                blackouts=(),
+            ),
+        )
+
+    def _state(
+        self,
+        provider: str,
+        kind: str,
+        *,
+        count: int = 2,
+        expiry: str | None = None,
+    ) -> ReplenishmentState:
+        return ReplenishmentState(
+            provider=provider,
+            kind=kind,
+            available_count=count,
+            details_known=True,
+            earliest_expiry=expiry,
+            retrieved_at=RETRIEVED_AT,
+        )
+
+    def _scientific_review_decision(
+        self, states: tuple[ReplenishmentState, ...]
+    ) -> SelectionDecision:
+        return _select(
+            PROFILES.resolve("scientific_review"),
+            [_snap("openai", 98, 0), _snap("zai", 80, 80)],
+            policy=self._recoverable_policy(),
+            states=states,
+        )
+
+    def _sol_evaluation(self, decision: SelectionDecision) -> CandidateEvaluation:
+        self.assertIsNone(decision.selected)
+        recoverable = [
+            c
+            for c in decision.excluded
+            if c.identity.model == "gpt-5.6-sol"
+        ]
+        self.assertEqual(1, len(recoverable))
+        return recoverable[0]
+
+    def test_candidate_json_preserves_kind_and_retrieved_at(self) -> None:
+        decision = self._scientific_review_decision(
+            (self._state("openai", "rate_limit_reset"),)
+        )
+        payload = self._sol_evaluation(decision).to_dict()
+        evaluations = cast("list[object]", payload["replenishment_evaluations"])
+        record = cast("dict[str, object]", evaluations[0])
+        state = cast("dict[str, object]", record["state"])
+        self.assertEqual("openai", state["provider"])
+        self.assertEqual("rate_limit_reset", state["kind"])
+        self.assertEqual(RETRIEVED_AT, state["retrieved_at"])
+
+    def test_candidate_json_preserves_earliest_expiry(self) -> None:
+        expiry = "2026-09-12T09:00:00.000Z"
+        decision = self._scientific_review_decision(
+            (self._state("openai", "rate_limit_reset", expiry=expiry),)
+        )
+        payload = self._sol_evaluation(decision).to_dict()
+        evaluations = cast("list[object]", payload["replenishment_evaluations"])
+        state = cast(
+            "dict[str, object]",
+            cast("dict[str, object]", evaluations[0])["state"],
+        )
+        self.assertEqual(expiry, state["earliest_expiry"])
+
+    def test_decision_remains_linked_to_exact_state(self) -> None:
+        decision = self._scientific_review_decision(
+            (self._state("openai", "rate_limit_reset", count=3),)
+        )
+        payload = self._sol_evaluation(decision).to_dict()
+        evaluations = cast("list[object]", payload["replenishment_evaluations"])
+        record = cast("dict[str, object]", evaluations[0])
+        state = cast("dict[str, object]", record["state"])
+        decision_payload = cast("dict[str, object]", record["decision"])
+        self.assertEqual(3, state["available_count"])
+        self.assertEqual(3, decision_payload["available_count"])
+        self.assertEqual("recoverable", decision_payload["mode"])
+        self.assertTrue(decision_payload["recoverable"])
+        self.assertTrue(decision_payload["human_action_required"])
+
+    def test_two_kinds_for_one_provider_remain_distinguishable(self) -> None:
+        decision = self._scientific_review_decision(
+            (
+                self._state("openai", "rate_limit_reset"),
+                self._state("openai", "other_reset"),
+            )
+        )
+        payload = self._sol_evaluation(decision).to_dict()
+        evaluations = cast("list[object]", payload["replenishment_evaluations"])
+        kinds = [
+            cast(
+                "dict[str, object]",
+                cast("dict[str, object]", record)["state"],
+            )["kind"]
+            for record in evaluations
+        ]
+        self.assertEqual(["other_reset", "rate_limit_reset"], kinds)
+
+    def test_reverse_input_order_produces_identical_decision_json(self) -> None:
+        states = (
+            self._state("openai", "rate_limit_reset"),
+            self._state("openai", "other_reset"),
+            self._state("zai", "quota_reset"),
+        )
+        first = self._scientific_review_decision(states)
+        second = self._scientific_review_decision(tuple(reversed(states)))
+        self.assertEqual(first.to_dict(), second.to_dict())
+
+    def test_replenishment_never_changes_scarcity_or_eligibility(self) -> None:
+        states = (self._state("openai", "rate_limit_reset", count=5),)
+        with_states = self._scientific_review_decision(states)
+        without_states = self._scientific_review_decision(())
+        self.assertIsNone(with_states.selected)
+        self.assertIsNone(without_states.selected)
+        sol_with = self._sol_evaluation(with_states)
+        sol_without = self._sol_evaluation(without_states)
+        assert sol_with.scarcity_assessment is not None
+        assert sol_without.scarcity_assessment is not None
+        self.assertEqual(
+            sol_with.scarcity_assessment.to_dict(),
+            sol_without.scarcity_assessment.to_dict(),
+        )
+        self.assertEqual(
+            sol_with.exclusion_stage, sol_without.exclusion_stage
+        )
+
+
+class PreferenceProvenanceTests(unittest.TestCase):
+    """The decision preserves the exact selector preference order (D-027)."""
+
+    def test_neutral_decision_has_empty_preference_order(self) -> None:
+        decision = _select(
+            PROFILES.resolve("routine_coding"),
+            [_snap("openai", 40, 40), _snap("zai", 80, 80)],
+        )
+        payload = decision.to_dict()
+        self.assertEqual([], payload["preference_order"])
+
+
 class RankingTests(unittest.TestCase):
     """The exact ``balanced`` ranking-order tests (D-027)."""
 
@@ -876,6 +1036,20 @@ class RankingTests(unittest.TestCase):
         )
         assert preferred.selected is not None
         self.assertEqual("beta", preferred.selected.identity.model)
+        # The decision preserves the applied preference order as provenance:
+        # ordered (never sorted), and serialized for reconstruction.
+        self.assertEqual(
+            (ModelIdentity(provider="openai", model="beta", variant="max"),),
+            preferred.preference_order,
+        )
+        preferred_payload = preferred.to_dict()
+        self.assertEqual(
+            [{"provider": "openai", "model": "beta", "variant": "max"}],
+            preferred_payload["preference_order"],
+        )
+        # The no-preference run serializes an empty list.
+        plain_payload = plain.to_dict()
+        self.assertEqual([], plain_payload["preference_order"])
 
     def test_stable_identity_final_tie_independent_of_catalog_order(self) -> None:
         alpha = _synthetic_entry("openai", "alpha", "max")

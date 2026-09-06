@@ -42,7 +42,8 @@ Public API — scarcity and resource-policy primitives (M2d, D-026):
 Public API — deterministic selector (M2e, D-027):
     SelectorPolicy, neutral_selector_policy, tighten_requirement,
     HardConstraintFailure, CapabilityFailure, CandidateEvaluation,
-    SelectionDecision, select_model, capability_margin,
+    ReplenishmentEvaluation, SelectionDecision, select_model,
+    capability_margin,
     evaluate_hard_constraints, evaluate_capability_sufficiency,
     SELECTOR_MODE_BALANCED, SELECTOR_MODES, EXCLUSION_STAGES,
     SELECTION_REASON_CODES
@@ -109,6 +110,7 @@ from .selector import (
     CapabilityFailure,
     CandidateEvaluation,
     HardConstraintFailure,
+    ReplenishmentEvaluation,
     SelectionDecision,
     SelectorPolicy,
     capability_margin,
@@ -191,6 +193,7 @@ __all__ = [
     "ModelIdentity",
     "ModelRef",
     "ReplenishmentDecision",
+    "ReplenishmentEvaluation",
     "ReplenishmentState",
     "ReservationDecision",
     "ReservationRule",

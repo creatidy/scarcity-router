@@ -603,6 +603,78 @@ class ReplacementTests(unittest.TestCase):
         self.assertEqual(10000, sol.scarcity_assessment.penalty_units)
 
 
+class ReplacementOrderTests(unittest.TestCase):
+    """Replenishment replacement sets are canonical, duplicate-free sets."""
+
+    def _state(self, provider: str, kind: str) -> ReplenishmentState:
+        return ReplenishmentState(
+            provider=provider,
+            kind=kind,
+            available_count=1,
+            details_known=True,
+            earliest_expiry=None,
+            retrieved_at=RETRIEVED_AT,
+        )
+
+    def test_replacement_order_canonical(self) -> None:
+        first = SimulationOverrides(
+            replenishment_states=(
+                self._state("openai", "z_reset"),
+                self._state("openai", "a_reset"),
+            )
+        )
+        second = SimulationOverrides(
+            replenishment_states=(
+                self._state("openai", "a_reset"),
+                self._state("openai", "z_reset"),
+            )
+        )
+        self.assertEqual(first.to_dict(), second.to_dict())
+        states = cast("tuple[ReplenishmentState, ...]", first.replenishment_states)
+        self.assertEqual(
+            [("openai", "a_reset"), ("openai", "z_reset")],
+            [(state.provider, state.kind) for state in states],
+        )
+
+    def test_duplicate_replacement_rejected(self) -> None:
+        with self.assertRaises(SelectionContractValidationError):
+            _ = SimulationOverrides(
+                replenishment_states=(
+                    self._state("openai", "a_reset"),
+                    self._state("openai", "a_reset"),
+                )
+            )
+        with self.assertRaises(SelectionContractValidationError):
+            _ = SimulationOverrides.from_dict(
+                _ill(
+                    {
+                        "replenishment_states": [
+                            {
+                                "provider": "openai",
+                                "kind": "a_reset",
+                                "available_count": 1,
+                                "details_known": True,
+                                "retrieved_at": RETRIEVED_AT,
+                            },
+                            {
+                                "provider": "openai",
+                                "kind": "a_reset",
+                                "available_count": 2,
+                                "details_known": True,
+                                "retrieved_at": RETRIEVED_AT,
+                            },
+                        ]
+                    }
+                )
+            )
+
+    def test_none_and_empty_semantics_unchanged(self) -> None:
+        retain = SimulationOverrides()
+        self.assertIsNone(retain.replenishment_states)
+        empty = SimulationOverrides(replenishment_states=())
+        self.assertEqual((), empty.replenishment_states)
+
+
 class SerializationTests(unittest.TestCase):
     """Deterministic overrides serialization and strict shapes."""
 

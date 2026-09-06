@@ -35,6 +35,12 @@ Implements the frozen M2e selection semantics (D-027):
 - the structured ``CandidateEvaluation`` and ``SelectionDecision`` output
   contracts, including structured no-solution results with closest
   candidates (stage progress only, capped at 3) and recoverable candidates.
+  Provenance is retained: each per-candidate replenishment record wraps the
+  complete normalized ``ReplenishmentState`` next to its
+  ``ReplenishmentDecision`` (``ReplenishmentEvaluation``), and the decision
+  preserves the exact selector ``preference_order`` (ordered, never
+  sorted). Replenishment sets are canonicalized by ``(provider, kind)`` —
+  output determinism only, never ranking semantics.
 
 This module does not read files, does not collect capacity and does not
 simulate: the application layer composes it (``selection_app.py``), and
@@ -831,6 +837,38 @@ def capability_margin(
 
 
 @dataclass(frozen=True)
+class ReplenishmentEvaluation:
+    """One candidate's replenishment observation with its policy decision.
+
+    Preserves the complete normalized ``ReplenishmentState`` provenance —
+    provider, kind, available count, details state, optional earliest expiry
+    and retrieval time — next to the ``ReplenishmentDecision`` the active
+    visibility mode produced, so selector output remains explainable without
+    reintroducing provider-specific or raw payload data. The wrapper changes
+    nothing about the frozen M2d semantics: the decision is never current
+    capacity, never changes a scarcity assessment and never restores
+    eligibility.
+    """
+
+    state: ReplenishmentState
+    decision: ReplenishmentDecision
+
+    def __post_init__(self) -> None:
+        _ = _v_instance_of(
+            self.state, ReplenishmentState, "replenishment_evaluation.state"
+        )
+        _ = _v_instance_of(
+            self.decision, ReplenishmentDecision, "replenishment_evaluation.decision"
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "state": self.state.to_dict(),
+            "decision": self.decision.to_dict(),
+        }
+
+
+@dataclass(frozen=True)
 class CandidateEvaluation:
     """The structured deterministic per-candidate selector result.
 
@@ -858,7 +896,7 @@ class CandidateEvaluation:
     scarcity_assessment: ScarcityAssessment | None = None
     unknown_capacity_decision: UnknownCapacityDecision | None = None
     reservation_decisions: tuple[ReservationDecision, ...] = ()
-    replenishment_evaluations: tuple[ReplenishmentDecision, ...] = ()
+    replenishment_evaluations: tuple[ReplenishmentEvaluation, ...] = ()
     reason_codes: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
@@ -905,7 +943,7 @@ class CandidateEvaluation:
         )
         _ = _v_tuple_of(
             self.replenishment_evaluations,
-            ReplenishmentDecision,
+            ReplenishmentEvaluation,
             "candidate_evaluation.replenishment_evaluations",
         )
         if self.degraded:
@@ -1069,12 +1107,15 @@ def _evaluate_candidate(
     unknown_decision = resource_policy.apply_unknown_capacity(scarcity)
 
     replenishment_evaluations = tuple(
-        apply_replenishment_mode(resource_policy.replenishment_mode, state)
+        ReplenishmentEvaluation(
+            state=state,
+            decision=apply_replenishment_mode(resource_policy.replenishment_mode, state),
+        )
         for state in replenishment_states
         if state.provider == identity.provider
     )
     recoverable = any(
-        evaluation.recoverable and evaluation.human_action_required
+        evaluation.decision.recoverable and evaluation.decision.human_action_required
         for evaluation in replenishment_evaluations
     )
 
@@ -1250,6 +1291,10 @@ class SelectionDecision:
     reason_codes: tuple[str, ...] = ()
     profile_id: str | None = None
     profile_policy_version: int | None = None
+    # Decision provenance: the exact selector-policy preference order, in
+    # its semantically meaningful order (never sorted). It is a real ranking
+    # input — it can decide a true tie — so the decision preserves it.
+    preference_order: tuple[ModelIdentity, ...] = ()
 
     _SELECTED_CODES: ClassVar[frozenset[str]] = frozenset({
         "selected_balanced",
@@ -1366,6 +1411,20 @@ class SelectionDecision:
                     "selection_decision: recoverable candidates are excluded "
                     + "candidates"
                 )
+        _ = _v_tuple_of(
+            self.preference_order,
+            ModelIdentity,
+            "selection_decision.preference_order",
+        )
+        seen_preferences: set[tuple[str, str, str]] = set()
+        for entry in self.preference_order:
+            key = (entry.provider, entry.model, entry.variant)
+            if key in seen_preferences:
+                raise SelectionContractValidationError(
+                    "selection_decision.preference_order: duplicate entry "
+                    + f"{key}"
+                )
+            seen_preferences.add(key)
         if self.profile_id is None and self.profile_policy_version is not None:
             raise SelectionContractValidationError(
                 "selection_decision: profile_policy_version requires a "
@@ -1396,6 +1455,11 @@ class SelectionDecision:
             out["profile_id"] = self.profile_id
         if self.profile_policy_version is not None:
             out["profile_policy_version"] = self.profile_policy_version
+        # Always serialized, in its semantically meaningful order; an empty
+        # preference serializes as an empty list.
+        out["preference_order"] = [
+            entry.to_dict() for entry in self.preference_order
+        ]
         return out
 
 
@@ -1475,6 +1539,12 @@ def select_model(
             )
         state_keys.add(key)
         state_list.append(state)
+    # Canonical provenance ordering only: replenishment observations are
+    # identified semantically by (provider, kind), so evaluation output is
+    # deterministic and independent of caller input order. Ordering carries
+    # no ranking semantics — availability, expiry and retrieval time never
+    # participate in eligibility or ranking.
+    state_list.sort(key=lambda state: (state.provider, state.kind))
 
     if profile_id is not None:
         _ = _v_nonempty_str(profile_id, "select_model.profile_id")
@@ -1524,7 +1594,8 @@ def select_model(
             and candidate.scarcity_assessment is not None
             and candidate.scarcity_assessment.state == "unavailable"
             and any(
-                evaluation.recoverable and evaluation.human_action_required
+                evaluation.decision.recoverable
+                and evaluation.decision.human_action_required
                 for evaluation in candidate.replenishment_evaluations
             )
         ),
@@ -1532,6 +1603,7 @@ def select_model(
         reason_codes=decision_codes,
         profile_id=profile_id,
         profile_policy_version=profile_policy_version,
+        preference_order=policy.preference_order,
     )
 
 
@@ -1543,6 +1615,7 @@ __all__ = [
     "CapabilityFailure",
     "CandidateEvaluation",
     "HardConstraintFailure",
+    "ReplenishmentEvaluation",
     "SelectionDecision",
     "SelectorPolicy",
     "capability_margin",

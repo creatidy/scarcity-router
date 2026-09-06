@@ -275,7 +275,10 @@ class SimulationOverrides:
     present, replaces the baseline selector policy for the simulated run.
     ``replenishment_states`` is tri-state: ``None`` retains the baseline
     observations, an explicit empty tuple simulates no observations and a
-    non-empty tuple fully replaces them. ``evaluated_at``, when present, is
+    non-empty tuple fully replaces them; a replacement set is a set of
+    observations, not an ordered policy preference, so it is canonicalized
+    by ``(provider, kind)`` and duplicates are rejected at this contract
+    boundary. ``evaluated_at``, when present, is
     the simulated blackout-evaluation instant and must be timezone-aware.
     """
 
@@ -309,6 +312,30 @@ class SimulationOverrides:
                 self.replenishment_states,
                 ReplenishmentState,
                 "simulation_overrides.replenishment_states",
+            )
+            seen_states: set[tuple[str, str]] = set()
+            for state in self.replenishment_states:
+                key = (state.provider, state.kind)
+                if key in seen_states:
+                    raise SelectionContractValidationError(
+                        "simulation_overrides.replenishment_states: duplicate "
+                        + f"replenishment state for (provider, kind) {key}; "
+                        + "at most one state per (provider, kind) is permitted"
+                    )
+                seen_states.add(key)
+            # A replacement set is not an ordered policy preference:
+            # canonicalize by (provider, kind) so to_dict() is stable for
+            # semantically identical replacement sets. None vs empty-tuple
+            # semantics are unchanged.
+            object.__setattr__(
+                self,
+                "replenishment_states",
+                tuple(
+                    sorted(
+                        self.replenishment_states,
+                        key=lambda state: (state.provider, state.kind),
+                    )
+                ),
             )
         if self.evaluated_at is not None:
             _ = _v_aware_datetime(

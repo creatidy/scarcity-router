@@ -96,9 +96,23 @@ treated as untriggered.
 **Replenishment.** Replenishment never changes current eligibility. A
 currently exhausted candidate stays excluded; it is surfaced as
 `recoverable` (with `human_action_required`) when the active visibility
-mode reports it. Reset credits are visible only when a normalized
-`ReplenishmentState` is supplied as selector input; live reset-credit
-acquisition is not part of M2e.
+mode reports it. Each per-candidate replenishment record retains the
+complete normalized `ReplenishmentState` provenance (provider, kind,
+availability, details state, optional earliest expiry, retrieval time)
+next to its decision, and replenishment sets are canonicalized by
+`(provider, kind)` — output determinism only, never ranking semantics.
+Reset credits are visible only when a normalized `ReplenishmentState` is
+supplied as selector input; live reset-credit acquisition is not part of
+M2e.
+
+**Provenance and explanation.** `SelectionDecision` preserves the exact
+`SelectorPolicy.preference_order` (ordered, never sorted; empty list when
+absent) so a preference-decided tie is reconstructable from the decision
+alone. Human `--explain` surfaces governing capacity evidence (scope,
+resource, kind, remaining, diagnostic window id when present) for the
+selected, alternative and capacity-excluded candidates where it exists,
+full reservation decisions — including triggered-but-permitted ones — for
+eligible candidates, and the applied preference order.
 
 **Outputs.** The selector returns a structured `SelectionDecision`:
 selected candidate, alternatives in exact ranking order, excluded
