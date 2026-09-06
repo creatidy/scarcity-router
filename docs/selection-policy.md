@@ -26,6 +26,10 @@ for the selector decision sequence and scarcity behavior.
 - Optional external benchmark/performance evidence used to curate the model
   catalog, never as live capacity.
 
+The task-requirement and model-catalog input contracts are implemented as the
+pure, validated types in `scarcity_router/selection_types.py` (M2b, D-024).
+Ranking, scarcity, reservations and policy evaluation are later M2 slices.
+
 ## Deterministic decision sequence
 
 1. **Resolve requirements.** Expand a profile in one place, merge permitted

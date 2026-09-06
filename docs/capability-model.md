@@ -107,6 +107,15 @@ Explicit task inputs may tighten a profile expansion (raise a minimum, add a
 constraint) but never silently loosen it, and contradictory explicit
 requirements are a validation error, never heuristically resolved.
 
+**Implemented stored shape (M2b, D-024).** The core type
+(`scarcity_router/selection_types.py`) is a resolved requirement storing
+exactly the first three parts — `task_level`, `capability_minima` and
+`hard_constraints`. Profile expansion is a *construction pathway* into those
+three parts, not a fourth serialized field. The expansion mechanism and the
+calibrated profile definitions are owned by M2c, and no profile resolver
+exists in production code until the numeric minima they would expand are
+accepted (U-006); M2b cannot produce them, so it forbids them instead.
+
 The canonical machine-readable definitions for capability classes, profile
 vocabulary, class/profile relationships and current workflow exemplars live in
 [`model-policy.json`](../model-policy.json). This document keeps the conceptual
@@ -132,6 +141,16 @@ The initial M2 vocabulary is exactly:
 There is no local/cloud constraint and no local runtime after D-017, and no
 generic free-form constraint framework: a new constraint kind requires an
 explicit contract change, not a stringly-typed escape hatch.
+
+**Implemented typing (M2b, D-024).** `required_model` is a typed `ModelRef`
+(`provider`, `model`) rather than one qualified string, so the contradiction
+rule is validated, not parsed: when `required_provider` and
+`required_model.provider` are both supplied they must match exactly, or
+construction fails with `SelectionContractValidationError`. Model providers
+are exactly `openai` and `zai` until an explicit contract change;
+`required_variant` and `privacy_constraint` are safe opaque identifiers, and
+no privacy policy values or matching logic exist yet. Serialization is
+compact: `None` values and false `requires_*` members are omitted.
 
 Contradictions fail validation. For example, `required_provider=openai`
 together with a `required_model` of another provider is a validation error,
@@ -216,6 +235,31 @@ Each entry carries, conceptually:
   scope, because multiple quota constraints may apply simultaneously; the
   bindings are explicit normalized data, never derived from diagnostic window
   identifiers.
+
+**Implemented semantics (M2b, D-024).** The core types in
+`scarcity_router/selection_types.py` enforce these rules at construction:
+
+- A known rating (`1..5`) requires complete provenance — at least one
+  evidence reference, a coarse `low|medium|high` confidence, an assessment
+  date and a non-empty rationale. A naked rating is invalid.
+- Unknown capability is the explicit serialized state
+  `{"rating": null}` — never `0` and never an omitted dimension. All six
+  dimensions are required in every serialized capability vector, so a
+  well-formed "unknown" is distinguishable from a missing schema dimension,
+  and extra dimensions are rejected.
+- A human override never mutates the source assessment: the curated rating
+  and its evidence stay serialized and reviewable, and the effective value is
+  a derived view. An override requires an existing known base rating.
+- `capacity_bindings` is `None` when model-to-scope applicability is
+  **unknown** — which must never be read as "this model consumes no
+  subscription quota" — and a non-empty set of exact `(provider, scope_id)`
+  references when applicability is known. The empty set is invalid and must
+  never serve as an optimistic "unmetered" state. Known bindings are unique,
+  use the model's own provider and serialize deterministically;
+  cross-provider bindings are unsupported in the initial contract (D-024).
+- The catalog container enforces unique identities, admits an empty catalog
+  (the M2b contract precedes the M2c population) and serializes entries
+  sorted by `(provider, model, variant)` independent of insertion order.
 
 Exact ratings, provenance values and profile minima are deliberately not
 populated by the planning freeze. They are established as a separate,

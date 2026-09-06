@@ -111,10 +111,20 @@ The current normalized capacity contract is v3, frozen in
 - `ModelProfile`: stable model identity, variants, provider, hard properties,
   capability assessments and provenance. M2 planning (D-020) adds explicit
   capacity bindings to one or more capacity scopes and freezes the
-  provenance/human-override record shape.
+  provenance/human-override record shape. **Implemented in M2b** as
+  `ModelCatalogEntry` plus `ModelIdentity`, `ModelHardProperties`,
+  `EvidenceRef`, `HumanOverride` and the `CapabilityAssessment` vector in
+  `scarcity_router/selection_types.py` (D-024): unknown capability is the
+  explicit `{"rating": null}` state, a known rating requires complete
+  provenance, overrides preserve the source assessment, and
+  `capacity_bindings` distinguishes unknown applicability (`None`) from a
+  known non-empty set of exact `(provider, scope_id)` references.
 - `TaskRequirement`: task level, per-dimension capability minima on the frozen
   `1..5` scale with explicit unknown representation, typed hard constraints and
-  single-place profile expansion (D-020).
+  single-place profile expansion (D-020). **Implemented in M2b** with the
+  stored three-part shape (`task_level`, `capability_minima`,
+  `hard_constraints`); profile expansion is a construction pathway owned by
+  M2c, not a serialized fourth field (D-024).
 - `SelectionDecision`: selected candidate, ranked alternatives, exclusions,
   reasons, capacity/catalog versions and degraded/unknown indicators.
 
@@ -123,8 +133,8 @@ contracts:
 
 - `CapacityScope`: `(provider, scope_id)` identity for one normalized capacity
   scope. The identity now exists in the contract via
-  `CapacityWindow.scope_id` (D-023); a distinct core type and model bindings
-  remain future M2 slices.
+  `CapacityWindow.scope_id` (D-023), and M2b adds the core `CapacityScopeRef`
+  binding type; binding real catalog models to real scopes remains M2c work.
 - `ReplenishmentState`: minimal safe reset-credit facts — replenishment
   opportunities, never current capacity (D-021).
 - `ExecutionBudget`: the finite bounded envelope that must accompany any

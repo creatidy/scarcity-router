@@ -40,6 +40,20 @@ additional OpenAI scopes (structural facts only; no personal values or
 non-public bucket identifiers recorded). No model-to-scope bindings, catalog
 types, ratings or selector code exist yet.
 
+**M2b complete (2026-09-06).** The second M2 implementation slice is done:
+the provider-independent task and model-catalog core contracts (D-024) live
+in `scarcity_router/selection_types.py` — `TaskRequirement` (stored
+three-part shape), `CapabilityMinima`, the nine-member typed
+`HardConstraints` with validated `required_provider`/`required_model`
+contradictions, `ModelIdentity`/`ModelRef`/`CapacityScopeRef`,
+tri-state `ModelHardProperties`, provenance-bearing `CapabilityAssessment`
+records (unknown = explicit `{"rating": null}`; known ratings require
+complete evidence, confidence, date and rationale), preserved `HumanOverride`
+records, `ModelCatalogEntry` with unknown/known `capacity_bindings`
+semantics and the deterministic `ModelCatalog` container. No ratings, no
+profile minima, no profile resolver, no catalog artifact and no selector
+exist yet; populating the reviewed catalog is M2c.
+
 ## M0 — Repository foundation
 
 **Outcome:** A new contributor or agent can understand the product and begin M1
@@ -237,11 +251,13 @@ Implementation proceeds in small, deterministic slices:
 - **M2a — normalized capacity applicability (complete 2026-09-06).**
   Implemented the semantic capacity-scope contract/version from D-020:
   capacity contract v3 with `CapacityWindow.scope_id` (D-023). No selector.
-- **M2b — TaskRequirement and ModelCatalog core types.** The next
-  implementation slice: capability scale, task-requirement validation, hard
-  constraints, profile-expansion contract, model-catalog schema/provenance
-  and capacity-binding fields (binding catalog models to the v3 scope
-  identities). Still no scarcity selector.
+- **M2b — TaskRequirement and ModelCatalog core types (complete
+  2026-09-06).** Implemented the provider-independent core contracts (D-024)
+  in `scarcity_router/selection_types.py`: capability scale, task-requirement
+  validation (profile expansion recorded as a construction pathway deferred
+  to M2c), hard constraints, model-catalog schema/provenance/override types
+  and capacity-binding fields against the v3 scope identities. Still no
+  scarcity selector.
 - **M2c — curated initial ratings and profile calibration.** Populate only
   Luna, Sol, GLM-5.3 and GLM-5.3-Flash with explicit provenance; freeze
   profile minima through scenario tests (resolves U-006).
