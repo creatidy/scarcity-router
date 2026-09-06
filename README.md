@@ -13,15 +13,20 @@ The core rule is simple:
 The project completed **M0: documentation and contract design** on 2026-09-01,
 **M1: capacity collectors and normalized status** on 2026-09-05, the
 **M2a: semantic capacity scopes** slice (capacity contract v3) on 2026-09-06,
-the **M2b: TaskRequirement and ModelCatalog core types** slice on 2026-09-06
-and the **M2c: curated initial ratings and profile calibration** slice on
+the **M2b: TaskRequirement and ModelCatalog core types** slice on 2026-09-06,
+the **M2c: curated initial ratings and profile calibration** slice on
+2026-09-06 and the **M2d: scarcity and policy primitives** slice on
 2026-09-06. The two subscription collectors and a provisional unified status
 command are implemented, and the calibrated catalog lives in
 [`model-catalog.json`](model-catalog.json) with rationale in
-[`docs/model-calibration.md`](docs/model-calibration.md). M2 — capability
-catalog and selector — is current; the next implementation slice is M2d:
-scarcity and policy primitives. There is not yet an installable package,
-final executable name, selector, REST service or MCP server.
+[`docs/model-calibration.md`](docs/model-calibration.md). Scarcity assessment
+and resource policy are implemented as pure, deterministic primitives in
+`scarcity_router/scarcity.py` and `scarcity_router/policy.py` with the frozen
+parameters documented in [`docs/selection-policy.md`](docs/selection-policy.md).
+M2 — capability catalog and selector — is current; the next implementation
+slice is M2e: deterministic selector, explanation and simulation. There is
+not yet an installable package, final executable name, selector, REST service
+or MCP server.
 
 ## Why It Exists
 
@@ -202,9 +207,9 @@ Each topic has one primary source of truth:
   small CLI, a small HTTP layer and the official MCP SDK. This is not binding.
 
 See the [roadmap](docs/roadmap.md) before starting implementation. M0 and M1
-are complete. The M2 planning gate has frozen the selector contracts; M2
-implementation proceeds in the recorded M2a–M2e slices and stops short of
-routing until those slices land.
+are complete, and M2 implementation has landed its M2a–M2d slices (capacity
+scopes, selection-input contracts, calibration, scarcity and policy
+primitives); routing itself still waits for the M2e selector slice.
 
 The portable descriptive model policy is available at
 [`model-policy.json`](model-policy.json) and the calibrated model catalog at

@@ -725,6 +725,155 @@ direction was chosen. Dates use UTC.
   ranking, simulation, REST/MCP, new providers or additional models. No
   changes to `capacity.py`, provider adapters or `status.py`.
 
+### D-026 — Scarcity and resource-policy primitives
+
+- **Status:** Accepted
+- **Date:** 2026-09-06
+- **Resolves:** U-007. Finalizes the M2 parameters of D-005; D-005's history
+  is preserved as written.
+- **Decision:** M2d implements the frozen scarcity and resource-policy
+  primitives in `scarcity_router/scarcity.py` and `scarcity_router/policy.py`
+  — pure, standard-library-only modules with no filesystem, network,
+  environment, subprocess, clock or provider access; callers supply every
+  observation and every timezone-aware evaluation instant explicitly. M2d
+  does not choose a model, rank candidates or implement `select`.
+  - **Continuous penalty accepted.** The D-005 proposal `(1-r)^2` is accepted
+    exactly, in integer form: `penalty_units = (100 - remaining_percent)^2`
+    on scale `SCARCITY_PENALTY_SCALE = 10000` (normalized penalty =
+    `penalty_units / 10000`). Ranking uses the integer units, never floats.
+    The penalty contains no linear or logarithmic term, no reset proximity,
+    no provider price, no capability score, no model prestige and no
+    provider preference; it answers only "how constrained is this applicable
+    current subscription capacity".
+  - **Explanatory labels frozen** (explanation only, never ranking input):
+    `remaining >= 80 → plentiful`, `>= 50 → normal`, `>= 20 → scarce`,
+    `>= 1 → critical`, `== 0 → unavailable`; `unknown` is never produced
+    from a number and represents insufficient trustworthy capacity
+    information. Two candidates labelled `scarce` may still have different
+    penalties.
+  - **Applicability.** Only explicit catalog `capacity_bindings` participate;
+    a binding is the exact `CapacityScopeRef` `(provider, scope_id)`.
+    Applicability is never inferred from `window_id`, `limitName`,
+    `normalModelSlug`, model names or provider aliases.
+    `capacity_bindings = None` is unknown applicability and yields an
+    unknown assessment — never a guessed scope. At most one
+    `CapacitySnapshot` per provider is accepted per assessment; duplicates
+    fail typed validation.
+  - **Aggregation.** Every window of every bound scope carrying a usable
+    percentage pair participates, including provider-normalized `time`
+    windows and unknown-kind windows — the resource is never reinterpreted.
+    The most restrictive governs: `aggregate_penalty_units = max(window
+    penalties)`, equivalently `effective_remaining_percent = min(remaining
+    values)`; the label comes from the effective remaining, never an
+    average. Unrelated scopes never participate even at 0%. Governing-window
+    evidence is explanation-only (scope, resource, kind, remaining, optional
+    diagnostic `window_id`; never parsed) and ties are broken by a stable
+    canonical key over normalized fields (`provider, scope_id, resource,
+    kind, window_id-or-empty`), independent of input order.
+  - **Explicit exhaustion versus telemetry unknown.** Any known applicable
+    window at `remaining_percent == 0` makes current capacity explicitly
+    exhausted: `state = unavailable`, penalty `10000`, effective remaining
+    `0` — even when another bound scope is unknown. Otherwise the
+    assessment is `unknown` (no numeric penalty, no effective remaining, no
+    governing evidence — unknown is incomparable to numeric scarcity, with
+    no sentinel such as 0, 10000 or -1) whenever any bound scope cannot be
+    completely assessed: missing provider snapshot, unknown binding, a
+    snapshot whose status is not `ok`, no matching window for a bound scope,
+    or an applicable window without a percentage pair. A non-`ok` snapshot
+    status (`unavailable`, `auth_required`, `unsupported`, `schema_changed`,
+    `unknown`) means telemetry is not trustworthy; it never means quota
+    remaining is 0 and never produces `unavailable` scarcity. No
+    staleness-age threshold exists in M2d: acquisition is synchronous and
+    fresh-on-demand, and any future caching requires an explicit later
+    decision.
+  - **Unknown-capacity policy.** Exactly two modes: `degraded` (an
+    unknown-capacity candidate may remain conditionally usable with
+    `degraded = true`, no numeric penalty; a known sufficient candidate must
+    rank ahead) and `strict` (unknown capacity is blocked). Known
+    `unavailable` is blocked in both modes; known nonzero capacity is
+    eligible in both, subject to other policy.
+  - **Reservations target capacity scopes.** A `ReservationRule` targets a
+    `CapacityScopeRef`, never a model name: Luna and Sol share
+    `openai/codex` and GLM-5.3 and GLM-5.3-Flash share `zai/coding_plan`,
+    so a model-specific reservation would incorrectly imply independent
+    quota. `resource` must be a known normalized resource (`tokens`/`time`),
+    `kind` a known window kind (`five_hour`/`weekly`), the threshold an
+    integer 1..100 and `minimum_task_level` one of `L0`–`L5`. The trigger
+    boundary is strict: trigger iff `remaining_percent < when_remaining_below`
+    (remaining 20 at threshold 20 does not trigger; 19 does). When
+    triggered, use is blocked below the minimum task level and permitted at
+    or above it. A reservation never creates capacity and cannot override
+    explicit exhaustion. If the target window cannot be identified or lacks
+    usable percentage evidence, the reservation evaluation is explicitly
+    unknown, never silently not-triggered.
+  - **Blackouts.** `WeeklyBlackoutRule`s are user policy with a required
+    supported-provider target (optional exact model; optional exact variant
+    requiring its model; exact-identity matching, no wildcards), an IANA
+    time zone validated through the standard-library `zoneinfo`, a
+    duplicate-free weekday list (`mon`–`sun`, canonically ordered), strict
+    24-hour `HH:MM` local times and half-open `[start, end)` semantics:
+    exactly at start is blocked, exactly at end is not; `start == end` is
+    invalid, never a 24-hour blackout; cross-midnight intervals block from
+    start on each configured weekday through end on the following day.
+    Evaluation converts a caller-supplied timezone-aware instant into the
+    configured zone. A matching blackout is a hard `policy_blocked`
+    exclusion that never rewrites capacity status, percentages, scarcity or
+    capability. No vendor peak/off-peak schedule is hard-coded.
+  - **Replenishment.** The D-021 `ReplenishmentState` is implemented
+    (`provider`, safe normalized `kind`, `available_count >= 0`, strict
+    `details_known`, canonical UTC `earliest_expiry` only when present,
+    canonical UTC `retrieved_at`; a zero count forbids expiry; expiry
+    requires known details and a positive count; no provider free-text,
+    credit IDs, titles, descriptions or account identity) with visibility
+    modes `ignore` (no policy effect), `advisory` (expose availability
+    without recovery) and `recoverable` (`available_count > 0` exposes
+    `recoverable = true` and `human_action_required = true`). Replenishment
+    is never current capacity: it never changes a `ScarcityAssessment`,
+    never restores eligibility and is never consumed or redeemed by the
+    broker — no reset-consume call, redemption endpoint or provider
+    credential mutation exists.
+  - **UserPolicy container.** `policy_version >= 1`, the unknown-capacity
+    and replenishment modes, reservations and blackouts, with rule IDs
+    unique across the whole policy and deterministic canonical
+    serialization (rule tuples sorted by `rule_id`). No ranking modes
+    (`quality-first`, `conserve-openai`, `conserve-zai`), no candidate
+    ordering and no `select` exist in M2d.
+- **Reason:** U-007 required scenario-validated scarcity parameters before
+  M2 acceptance. The accepted integer quadratic penalty, frozen label
+  boundaries, most-restrictive aggregation and explicit unknown behavior
+  make future ranking deterministic and prevent optimistic window
+  selection, while scope-targeted reservations correctly express the
+  M2c-evidenced shared scopes (`openai/codex` for Luna/Sol, `zai/coding_plan`
+  for GLM-5.3/GLM-5.3-Flash).
+- **Boundary:** Pure primitives, contracts and tests only. No selector, no
+  ranking, no capability filtering, no provider/capacity/status changes, no
+  catalog or policy artifact changes, no reset consumption, no provider
+  acquisition changes and no REST/MCP. The next implementation slice is M2e
+  (deterministic selector, explanation and simulation).
+- **Amendment (2026-09-06, single post-review remediation):** the original
+  implementation deviated from D-026's intended semantics in three narrow
+  ways; this remediation conforms the code to the decision above without
+  changing any of its fundamental choices. (1) A scarcity result's
+  `applicable_scopes` always names the candidate's applicable capacity
+  scopes — empty only when `capacity_bindings is None` — so known bindings
+  are preserved on unknown telemetry (missing snapshot, non-`ok` status,
+  missing scope window, percentage-unknown window): the failure is in the
+  telemetry, never in the applicability. (2) Numeric
+  `ScarcityAssessment` states enforce their own contract at construction
+  (typed governing-window evidence before attribute access, non-empty
+  applicable scopes, the governing scope belonging to the applicable
+  scopes, and a fully `known` state carrying no reason codes while
+  `unavailable` may combine `capacity_exhausted` with incompleteness codes,
+  preserving exhaustion-dominates-unknown). (3)
+  `WeeklyBlackoutRule.blocks_at` validates its own instant — a naive
+  datetime is a contract error on every public path, never a host-local
+  interpretation. (4) Replenishment visibility is not availability: a
+  visible `ReplenishmentDecision` with `available_count == 0` carries no
+  reason codes in any mode; only a positive count earns
+  `replenishment_available` (and, under `recoverable`, the recoverable
+  codes). No new decision number is created; D-026 remains the governing
+  M2d decision.
+
 ## Unresolved decisions
 
 ### U-001 — Codex binary discovery and compatibility
@@ -851,10 +1000,15 @@ direction was chosen. Dates use UTC.
 - Validate `(1-r)^2`, label thresholds, reservation boundary behavior and
   unknown ordering through scenario tests before M2 acceptance.
 - Reset proximity is preserved but not included in the first formula.
-- **Status:** Scarcity aggregation invariants are frozen by D-020; the
-  penalty function and label thresholds remain open for scenario calibration
-  (M2d). Profile minima are no longer part of this decision — they were
-  calibrated by M2c (D-025, resolving U-006).
+- **Status:** RESOLVED by M2d / D-026 (2026-09-06). The penalty function
+  (`penalty_units = (100 - remaining_percent)^2` on integer scale 10000),
+  the exact label boundaries, the most-restrictive multi-window/multi-scope
+  aggregation, the reservation comparison semantics (strict `<` threshold,
+  minimum task level, scope-targeted rules) and the unknown-capacity policy
+  boundary (no numeric unknown penalty; `degraded`/`strict` modes) are now
+  frozen and scenario-tested in `tests/test_scarcity.py` and
+  `tests/test_resource_policy.py`. Profile minima were already resolved
+  separately by D-025 (resolving U-006).
 
 ### U-008 — Package, CLI and final project name
 
