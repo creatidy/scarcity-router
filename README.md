@@ -11,22 +11,22 @@ The core rule is simple:
 > **Choose the least scarce model that is capable enough for the task.**
 
 The project completed **M0: documentation and contract design** on 2026-09-01,
-**M1: capacity collectors and normalized status** on 2026-09-05, the
-**M2a: semantic capacity scopes** slice (capacity contract v3) on 2026-09-06,
-the **M2b: TaskRequirement and ModelCatalog core types** slice on 2026-09-06,
-the **M2c: curated initial ratings and profile calibration** slice on
-2026-09-06 and the **M2d: scarcity and policy primitives** slice on
-2026-09-06. The two subscription collectors and a provisional unified status
-command are implemented, and the calibrated catalog lives in
-[`model-catalog.json`](model-catalog.json) with rationale in
-[`docs/model-calibration.md`](docs/model-calibration.md). Scarcity assessment
-and resource policy are implemented as pure, deterministic primitives in
-`scarcity_router/scarcity.py` and `scarcity_router/policy.py` with the frozen
-parameters documented in [`docs/selection-policy.md`](docs/selection-policy.md).
-M2 — capability catalog and selector — is current; the next implementation
-slice is M2e: deterministic selector, explanation and simulation. There is
-not yet an installable package, final executable name, selector, REST service
-or MCP server.
+**M1: capacity collectors and normalized status** on 2026-09-05, and all
+five M2 implementation slices on 2026-09-06: **M2a: semantic capacity
+scopes** (capacity contract v3), **M2b: TaskRequirement and ModelCatalog
+core types**, **M2c: curated initial ratings and profile calibration**,
+**M2d: scarcity and policy primitives** and **M2e: deterministic selector,
+explanation and simulation**. The two subscription collectors, the
+provisional `status` command, the `select` command (with `--explain` and
+`--json`) and the `simulate` command are implemented. The calibrated
+catalog lives in [`model-catalog.json`](model-catalog.json) with rationale
+in [`docs/model-calibration.md`](docs/model-calibration.md); the selector
+and simulation live in `scarcity_router/selector.py` and
+`scarcity_router/simulation.py` with the frozen ranking semantics
+documented in [`docs/selection-policy.md`](docs/selection-policy.md).
+M2 implementation is complete; M2 exit/live acceptance in the owner's real
+workflow is still pending. There is not yet an installable package, final
+executable name, REST service or MCP server.
 
 ## Why It Exists
 
@@ -93,8 +93,10 @@ ALTERNATIVES
   1. GLM-5.3 — capable, but currently reserved
 ```
 
-The selection example remains target UX for a later milestone. The status
-surface below is the implemented M1 development interface.
+The selection example remains target UX styling for a later milestone. The
+implemented M2e development interface is the provisional module CLI below:
+`status`, and `select`/`simulate` with the exact `balanced` ranking
+documented in [`docs/selection-policy.md`](docs/selection-policy.md).
 
 ## M1 Status
 
@@ -165,6 +167,59 @@ Operational provider states such as `unavailable`, `auth_required`,
 `unsupported`, `schema_changed`, `unknown` and an exhausted window produce
 status output and exit 0. Internal or contract failures exit non-zero.
 
+### Select And Simulate
+
+Recommend the least scarce capable model for a calibrated task profile:
+
+```bash
+uv run python -m scarcity_router select --profile routine_coding
+uv run python -m scarcity_router select --profile deep_coding --explain
+uv run python -m scarcity_router select --profile deep_coding --json
+```
+
+Requirements can also be supplied explicitly or tighten a profile
+monotonically:
+
+```bash
+uv run python -m scarcity_router select --requirement task.json
+uv run python -m scarcity_router select --profile deep_coding --tighten stricter.json
+```
+
+Optional flags: `--selector-policy FILE` (defaults to the documented neutral
+policy), `--replenishment FILE` (normalized `ReplenishmentState` list),
+`--catalog FILE` and `--model-policy FILE` (defaults to the repository-root
+artifacts). A valid no-solution decision is a legitimate result and exits 0.
+
+Simulation applies typed overrides to copies of the current inputs and runs
+the SAME selector core for the CURRENT and SIMULATED decisions:
+
+```bash
+uv run python -m scarcity_router simulate \
+  --profile routine_coding --overrides simulation.json
+```
+
+with an overrides file such as (synthetic values):
+
+```json
+{
+  "capacity_percentages": [
+    {
+      "provider": "zai",
+      "scope_id": "coding_plan",
+      "resource": "tokens",
+      "kind": "weekly",
+      "remaining_percent": 2
+    }
+  ]
+}
+```
+
+Selection issues no model prompt and does not intentionally consume
+inference quota. It reuses the existing status telemetry path, including the
+bounded provider-managed OpenAI auth recovery accepted in D-018. Live
+reset-credit acquisition is not implemented: reset credits are visible only
+when a normalized `ReplenishmentState` file is supplied.
+
 ## Architecture At A Glance
 
 Four inputs remain independent:
@@ -207,9 +262,11 @@ Each topic has one primary source of truth:
   small CLI, a small HTTP layer and the official MCP SDK. This is not binding.
 
 See the [roadmap](docs/roadmap.md) before starting implementation. M0 and M1
-are complete, and M2 implementation has landed its M2a–M2d slices (capacity
+are complete, and the M2 implementation slices M2a–M2e have landed (capacity
 scopes, selection-input contracts, calibration, scarcity and policy
-primitives); routing itself still waits for the M2e selector slice.
+primitives, and the deterministic selector with explanation and simulation);
+M2 exit/live acceptance is still pending, and no production release is
+claimed.
 
 The portable descriptive model policy is available at
 [`model-policy.json`](model-policy.json) and the calibrated model catalog at

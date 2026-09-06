@@ -874,6 +874,176 @@ direction was chosen. Dates use UTC.
   codes). No new decision number is created; D-026 remains the governing
   M2d decision.
 
+### D-027 — Deterministic balanced selector and simulation
+
+- **Status:** Accepted
+- **Date:** 2026-09-06
+- **Decision:** M2e implements the first useful recommendation path in the
+  pure modules `scarcity_router/selector.py` and
+  `scarcity_router/simulation.py`, composed by the application layer
+  `scarcity_router/selection_app.py` and the top-level CLI dispatcher
+  `scarcity_router/cli.py` (`select`, `simulate`; the existing `status`
+  behavior and the direct `status.main` entry point are preserved).
+  - **Authoritative selector pipeline.** Per candidate, in order: blackout
+    evaluation (single caller-supplied timezone-aware instant) → hard
+    constraints → capability sufficiency → scarcity assessment and the M2d
+    unknown-capacity policy (contracts unchanged) → replenishment
+    visibility → applicable reservations → eligible for ranking. Later
+    stages are not run after a hard/capability failure merely to populate
+    fields. Candidate evaluation always proceeds in canonical
+    `(provider, model, variant)` order, so catalog, snapshot and input
+    ordering never affect the result.
+  - **Hard-property unknown fails hard requirements.** Tri-state semantics
+    are preserved: a `None` candidate property fails a required feature as
+    `unknown` and is never read as `False`; an explicit `False` fails as
+    `unsupported`; a `False` requirement is a no-op, never "must not
+    support". Numeric allowances fail as `unknown` or `insufficient`.
+    Identity constraints (`required_provider`, `required_model`,
+    `required_variant`) match exactly on typed identity, never display
+    names. `privacy_constraint` is an exact required privacy tag: unknown
+    tags fail as `privacy_unknown`, a known tag set without the required
+    tag fails as `privacy_unsatisfied`; no privacy hierarchy and no
+    cloud/local behavior is invented. All four current catalog entries have
+    unfrozen privacy characteristics, so a current privacy constraint
+    honestly produces no eligible model.
+  - **Requirement tightening.** `tighten_requirement` merges an explicit
+    `TaskRequirement` into a calibrated profile requirement monotonically:
+    a lower explicit task level, capability minimum or numeric hard minimum
+    is a validation error, never a silent `max()`; booleans combine with OR
+    (`False` cannot loosen `True`); identity/privacy constraints must agree
+    exactly or be newly supplied; final construction still validates
+    provider/model contradictions. `--tighten` is only permitted with the
+    profile path, never with an explicit requirement.
+  - **Capability sufficiency and margin.** Sufficiency and margin use
+    `CapabilityAssessment.effective_rating`, so a valid `HumanOverride`
+    participates without mutating catalog values (original rating and
+    evidence stay serialized). Unknown capability on a required dimension
+    fails — the strict initial policy; no unknown-capability policy mode
+    exists. Dimensions are never averaged and never compensate each other.
+    The frozen `balanced` capability margin is
+    `SUM(effective_rating - required_minimum)` over required dimensions
+    only; unrequired dimensions do not participate; all contributions are
+    nonnegative because the candidate already passed sufficiency; a
+    requirement with no minima yields margin 0. No weights, no task-level
+    bonus, no confidence multiplier, no benchmark score, no hard-property
+    margin.
+  - **Exact `balanced` ranking order.** (1) known nonzero capacity before
+    unknown/degraded capacity — unknown has no numeric sentinel and is
+    incomparable to a known percentage, even a critical one; (2) integer
+    scarcity penalty among known-capacity candidates only; (3) capability
+    margin, lower wins; (4) explicit `SelectorPolicy.preference_order`
+    (listed before unlisted, then index) — a late tie-break that cannot
+    override capability, hard constraints, blackout, capacity knowledge
+    class, scarcity or reservations and is never inferred from classes,
+    profiles, providers, catalog order or display names; (5) stable
+    `(provider, model, variant)` identity.
+  - **`SelectorPolicy`.** A selector-level wrapper distinct from the frozen
+    M2d `UserPolicy`: exactly the `balanced` mode in this slice (no
+    quality-first, no conserve-openai, no conserve-zai, no hidden provider
+    penalties, no invented quality score), the `UserPolicy` resource
+    policy, and the explicit preference order. The documented neutral
+    default application policy is `balanced` / `degraded` /
+    `advisory` with no reservations, no blackouts and no preferences — it
+    is not a checked-in personal quota policy.
+  - **Reservations and blackouts.** Reservations are scope-based: only
+    rules whose `CapacityScopeRef` is one of the candidate's known
+    capacity bindings apply; unknown bindings are never guessed into a
+    reservation match (the candidate is governed by the unknown-capacity
+    policy). An applicable reservation whose trigger state cannot be
+    determined fails closed (`reservation_unknown`), never silently
+    untriggered. A matching blackout is a hard `policy_blocked` exclusion
+    that never rewrites telemetry.
+  - **Replenishment.** Replenishment never changes current eligibility: a
+    candidate explicitly exhausted (`unavailable`) stays excluded; it is
+    surfaced in `recoverable_candidates` when the policy's visibility mode
+    reports `recoverable` with `human_action_required`. Reset credits are
+    visible only when a normalized `ReplenishmentState` is supplied as
+    selector input; **no live reset-credit acquisition is implemented in
+    M2e** — the OpenAI provider parser and acquisition files are untouched,
+    and first-party `rateLimitResetCredits` wiring remains a separate M2
+    closeout question after selector acceptance.
+  - **Structured outputs.** `CandidateEvaluation` (identity, eligibility,
+    degraded flag, one primary exclusion stage from the closed vocabulary
+    `policy_blackout`/`hard_constraint`/`capability`/`capacity`/
+    `reservation`, structured hard/capability failures, margin, blackout,
+    scarcity, unknown-capacity, reservation and replenishment records,
+    normalized reason codes) and `SelectionDecision` (evaluated instant,
+    resolved requirement, catalog version/date, profile and policy
+    versions, selected candidate, ordered alternatives, excluded candidates,
+    closest candidates, recoverable candidates, degraded flag, reason
+    codes). No raw provider payloads, credentials, account identifiers or
+    benchmark dumps are representable. A valid no-solution result carries
+    `no_eligible_candidate`, no alternatives, and closest candidates chosen
+    by stage progress only (a later stage is closer), ordered by stable
+    identity and capped at 3 — no second quality score. Requirements are
+    never relaxed and no fallback bypasses capability. The reason
+    vocabulary (`selected_balanced`, `no_eligible_candidate`,
+    `selected_degraded_capacity`, `policy_blocked`, `hard_constraint_failed`,
+    `capability_failed`, `capacity_unavailable`, `capacity_unknown_blocked`,
+    `reservation_blocked`, `reservation_unknown`,
+    `replenishment_recoverable`) never encodes dimensions or model names;
+    details live in structured failure records.
+  - **Simulation.** `simulate_selection` runs the baseline and the
+    simulated decision through the SAME `select_model` core — no copied
+    pipeline and no simulation-specific selector. `CapacityPercentageOverride`
+    targets exactly one existing window of an `ok` snapshot that already
+    carries a known percentage pair (zero or multiple matches fail typed
+    validation; an ambiguous match requires an exact, never-parsed
+    `window_id`), changes only the percentage pair, and never creates
+    windows or snapshots or fabricates known telemetry from unknown.
+    `SimulationOverrides` may also replace the selector policy, replace the
+    replenishment observations (`None` retains, `[]` simulates none,
+    non-empty replaces) and move the simulated evaluated instant
+    (timezone-aware). Baseline inputs are never mutated.
+  - **CLI.** `select` and `simulate` load the repository artifacts
+    (`model-catalog.json`, `model-policy.json` — only
+    `task_profiles[].id` and `.calibrated_requirement` feed selection, with
+    `policy_version` retained for provenance) and user-supplied JSON files
+    through strict parsing (duplicate keys, NaN/Infinity and malformed JSON
+    fail safely). One invocation obtains ONE timezone-aware instant and
+    passes it both to blackout evaluation and, through a fixed clock, to
+    the existing `collect_status` so both provider snapshots share it. No
+    model prompt, completion request or inference call is issued; capacity
+    collection reuses the telemetry path and may exercise the bounded
+    provider-managed auth recovery already accepted in D-018. A valid
+    no-solution result exits 0; non-zero exit is reserved for invalid
+    input/config/application failure — shell exit status is never a second
+    selection contract. Default artifact paths are the repository-root
+    files of the current source tree; U-008 remains unresolved and this is
+    not the final installed-package resource layout.
+- **Reason:** M2a–M2d provided validated inputs and primitives; M2e combines
+  them into the deterministic least-scarce-sufficient recommendation the
+  product exists for, with every frozen rule testable and every unknown
+  state honest. The exact ranking order and margin formula make the
+  "choose the least scarce model that is capable enough" rule auditable.
+- **Boundary:** Deterministic selection, explanation and simulation only.
+  No new models or ratings, no new task profiles, no ranking modes beyond
+  `balanced`, no reset-credit acquisition or redemption, no runtime failure
+  feedback, no quality-first/conserve modes, no REST/MCP/dashboard, no
+  history or audit stores, no prompt proxying and no model execution. M2 is
+  **not** PASS: M2 exit requires separate post-merge live acceptance in the
+  owner's real workflow.
+- **Amendment (2026-09-06, single post-review remediation):** the selection
+  algorithm is unchanged; three explanation/provenance gaps are closed.
+  (1) Per-candidate replenishment output preserves the complete normalized
+  `ReplenishmentState` provenance (`provider`, `kind`, `available_count`,
+  `details_known`, `earliest_expiry`, `retrieved_at`) next to its
+  `ReplenishmentDecision` through the `ReplenishmentEvaluation` wrapper,
+  and selector and simulation replenishment sets are canonicalized by
+  `(provider, kind)` — output/provenance determinism only; availability,
+  expiry and retrieval time never gain ranking semantics, and eligibility
+  semantics are unchanged. (2) `SelectionDecision` preserves the exact
+  `SelectorPolicy.preference_order` as decision provenance: ordered (never
+  sorted), unique identities, serialized as an explicit list (empty list
+  when absent). (3) Human `--explain` surfaces governing capacity evidence
+  (provider/scope, resource, kind, remaining, diagnostic window id when
+  present — never parsed) for the selected, alternative and
+  capacity-excluded candidates where it exists, full reservation decisions
+  (including triggered-but-permitted ones) for eligible candidates while
+  continuing to render excluded candidates' decisions, and the applied
+  preference order. No new decision number is created; D-027 remains the
+  governing M2e decision.
+
 ## Unresolved decisions
 
 ### U-001 — Codex binary discovery and compatibility
