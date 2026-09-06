@@ -594,5 +594,6 @@ __all__ = [
     "SimulationOverrides",
     "SimulationResult",
     "apply_capacity_overrides",
+    "select_model",
     "simulate_selection",
 ]

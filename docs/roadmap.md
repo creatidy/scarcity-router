@@ -94,6 +94,31 @@ reservation boundaries, DST/cross-midnight blackouts and the exhausted-
 but-recoverable distinction. No selector, no ranking and no catalog
 changes exist yet; the next implementation slice is M2e.
 
+**M2e complete (2026-09-06).** The fifth and final planned M2
+implementation slice is done: the deterministic `balanced` selector,
+explanation and simulation (D-027) live in the pure modules
+`scarcity_router/selector.py` and `scarcity_router/simulation.py`, composed
+by `selection_app.py` and the top-level CLI dispatcher (`status` preserved;
+`select` with `--profile`/`--requirement`/`--tighten`/`--explain`/`--json`
+and `simulate` with typed overrides). The frozen candidate pipeline runs
+blackout → hard constraints → capability → scarcity/unknown-capacity
+policy → replenishment visibility → applicable reservations; capability
+uses `effective_rating` (HumanOverride-aware, no averaging); the exact
+ranking order is known-capacity-before-degraded-unknown, scarcity penalty,
+capability margin, explicit preference, stable identity; reservations are
+scope-based and fail closed when unknown; replenishment never restores
+eligibility; structured no-solution results carry closest candidates by
+stage progress; simulation applies typed overrides to copies of the inputs
+and re-runs the same selector core without mutating live observations.
+Scenario, ranking, hard-constraint, tightening, no-solution, simulation and
+CLI tests pin the behavior; D-027 records the frozen semantics.
+
+**M2 implementation slices M2a–M2e are complete; M2 exit/live acceptance
+is still pending.** The next step after review/merge is M2 live
+acceptance / closeout in the owner's real workflow — not automatically
+another large implementation slice. Live reset-credit acquisition remains
+outside the implemented slices.
+
 ## M0 — Repository foundation
 
 **Outcome:** A new contributor or agent can understand the product and begin M1
@@ -312,14 +337,18 @@ Implementation proceeds in small, deterministic slices:
   `scarcity_router/policy.py` (unknown-capacity modes, scope-targeted
   reservations, timezone-aware blackouts, `ReplenishmentState` with
   visibility modes, the `UserPolicy` container). No selector.
-- **M2e — deterministic selector, explanation and simulation.** `select`,
-  `--explain` and simulation over the same core, only after the prior slices
-  are accepted.
+- **M2e — deterministic selector, explanation and simulation (complete
+  2026-09-06).** Implemented the pure `balanced` selector, structured
+  explanation and simulation over the same core (D-027): `select` with
+  profile/explicit/tightened requirements, `--explain` and `--json`, and
+  `simulate` with typed capacity/policy/replenishment/evaluated-at
+  overrides that never mutate live observations.
 
-Later optional M2 additions — official health advisory, cached Artificial
-Analysis evidence and compound-workflow recommendations — are not blockers
-for the first useful single-model selection unless the M2 exit criteria
-require them.
+M2 implementation slices are complete; M2 exit/live acceptance is still
+pending. Later optional M2 additions — official health advisory, cached
+Artificial Analysis evidence and compound-workflow recommendations, plus
+live reset-credit acquisition — are not blockers for the first useful
+single-model selection unless the M2 exit criteria require them.
 
 ## M3 — REST and MCP
 

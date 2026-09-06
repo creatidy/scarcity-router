@@ -71,11 +71,23 @@ It has no credential access, no provider parsing and no client-specific code.
 It produces a deterministic decision object with the selected model, ranked
 alternatives, exclusions, input provenance and reasons.
 
+**Implemented in M2e (D-027)** as the pure modules
+`scarcity_router/selector.py` (the `balanced` candidate pipeline, the exact
+ranking order, `SelectorPolicy` and the monotone `tighten_requirement`
+merge) and `scarcity_router/simulation.py` (typed overrides applied to
+copies of the inputs, re-running the SAME `select_model` core for the
+baseline and simulated decisions). The application layer
+`scarcity_router/selection_app.py` loads artifacts strictly, resolves the
+requirement, obtains one shared evaluation instant through
+`collect_status` and renders deterministic output; `scarcity_router/cli.py`
+dispatches `status`, `select` and `simulate`.
+
 ### Interfaces
 
 - **CLI** is the first operational interface. The provisional read-only
-  `status` surface is implemented; a separate `doctor` command is deferred,
-  followed later by `select --explain` and `simulate`.
+  `status` surface is implemented, and M2e adds `select` (with `--explain`
+  and `--json`) and `simulate` through the same dispatcher; a separate
+  `doctor` command remains deferred.
 - **REST** becomes the canonical language-neutral machine contract. It binds to
   `127.0.0.1` by default. Target endpoints include `/healthz`, `/v1/status`,
   `/v1/providers`, `/v1/providers/{provider}`, `/v1/select` and `/v1/simulate`.
@@ -134,7 +146,13 @@ The current normalized capacity contract is v3, frozen in
   M2c, not a serialized fourth field (D-024).
 - `SelectionDecision`: selected candidate, ranked alternatives, exclusions,
   reasons, capacity/catalog versions and degraded/unknown indicators.
-  Not yet implemented — it is the M2e selector's output.
+  **Implemented in M2e** in `scarcity_router/selector.py` (D-027) together
+  with the per-candidate `CandidateEvaluation` record: one primary
+  exclusion stage from the closed vocabulary (`policy_blackout`,
+  `hard_constraint`, `capability`, `capacity`, `reservation`), structured
+  hard/capability failures, normalized reason codes, deterministic
+  closest-candidate and recoverable-candidate lists for no-solution
+  results, and serialize-only `to_dict()` output.
 - `ScarcityAssessment`: the per-candidate scarcity result over explicit
   capacity bindings — continuous integer penalty, explanatory label,
   explicit `known`/`unknown`/`unavailable` state and normalized reason

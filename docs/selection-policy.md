@@ -32,7 +32,82 @@ Scarcity assessment and the resource-policy primitives (unknown modes,
 reservations, blackouts, replenishment visibility, the policy container) are
 implemented as pure, deterministic primitives in
 `scarcity_router/scarcity.py` and `scarcity_router/policy.py` (M2d, D-026).
-Candidate ranking and `select` remain M2e slices.
+The deterministic selector, explanation and simulation are implemented in
+`scarcity_router/selector.py` and `scarcity_router/simulation.py`, composed
+by `scarcity_router/selection_app.py` and the CLI (M2e, D-027).
+
+## Implemented balanced selector (M2e, D-027)
+
+The selector evaluates candidates in canonical `(provider, model, variant)`
+order through the pipeline: blackout (one caller-supplied aware instant) →
+hard constraints → capability sufficiency → scarcity and the
+unknown-capacity policy → replenishment visibility → applicable
+reservations → ranking. Later stages never run after a hard/capability
+failure merely to populate fields.
+
+**Exact `balanced` ranking order.** After all eligibility filters:
+
+1. known nonzero capacity before unknown/degraded capacity — unknown has no
+   numeric sentinel and is incomparable to any known percentage, even a
+   critical one (a known 1% candidate ranks ahead of a degraded unknown);
+2. integer scarcity penalty (`penalty_units`) among known-capacity
+   candidates only;
+3. capability margin, lower wins;
+4. explicit `SelectorPolicy.preference_order` (listed before unlisted, then
+   index) — a late tie-break only: it cannot override capability, hard
+   constraints, blackout, capacity knowledge class, scarcity margin or
+   reservations, and it is never inferred from model classes, profile
+   names, provider names, catalog order or display names;
+5. stable `(provider, model, variant)` identity.
+
+**Capability margin.** Exactly
+`SUM(effective_rating - required_minimum)` over the required dimensions
+only. Unrequired dimensions do not participate; all contributions are
+nonnegative because the candidate already passed sufficiency; a requirement
+with no minima yields margin 0. No averaging, no weights, no task-level
+bonus, no confidence multiplier and no benchmark score. Sufficiency and
+margin use `CapabilityAssessment.effective_rating`, so a valid
+`HumanOverride` participates without mutating catalog values. An unknown
+rating on a required capability dimension fails (strict initial policy);
+dimensions never compensate each other.
+
+**Hard-constraint evaluation.** Tri-state hard properties are honest:
+`None` fails a required feature as `unknown` and is never read as `False`;
+an explicit `False` fails as `unsupported`; a `False` requirement is a
+no-op, never "must not support". `privacy_constraint` is an exact required
+privacy tag — unknown tags fail as `privacy_unknown`, a known tag set
+without the required tag fails as `privacy_unsatisfied`; no hierarchy, no
+cloud/local assumptions. The current catalog's privacy characteristics are
+unfrozen, so a privacy constraint honestly yields no eligible model today.
+
+**Requirement tightening.** A profile requirement may be tightened by a
+full explicit `TaskRequirement` (`--tighten`) under monotone rules: a lower
+task level, capability minimum or numeric hard minimum is a validation
+error, never a silent `max()`; booleans combine with OR; identity/privacy
+constraints must agree exactly. Tightening is never permitted with an
+explicit requirement path.
+
+**Reservations.** Only rules whose scope is one of the candidate's known
+capacity bindings apply; unknown bindings are never guessed into a
+reservation match. An applicable reservation whose trigger state cannot be
+determined fails closed (`reservation_unknown`) — it is never silently
+treated as untriggered.
+
+**Replenishment.** Replenishment never changes current eligibility. A
+currently exhausted candidate stays excluded; it is surfaced as
+`recoverable` (with `human_action_required`) when the active visibility
+mode reports it. Reset credits are visible only when a normalized
+`ReplenishmentState` is supplied as selector input; live reset-credit
+acquisition is not part of M2e.
+
+**Outputs.** The selector returns a structured `SelectionDecision`:
+selected candidate, alternatives in exact ranking order, excluded
+candidates with one primary exclusion stage
+(`policy_blackout`, `hard_constraint`, `capability`, `capacity`,
+`reservation`) and normalized reason codes, closest candidates for a
+no-solution result (stage progress only, capped at 3, no second quality
+score), recoverable candidates and degraded flags. Requirements are never
+relaxed and no fallback bypasses capability.
 
 ## Deterministic decision sequence
 
@@ -525,14 +600,22 @@ The public response never includes credentials or unredacted provider payloads.
 
 ## Simulation
 
-Simulation applies typed overrides to a copy of normalized capacity or policy,
-then runs the same selector. It must not mutate live observations or call a
-model. Output distinguishes current and simulated inputs and decisions. This is
-valuable for tests, policy debugging, demonstrations and documentation.
+Simulation applies typed overrides to a copy of normalized capacity or
+policy, then runs the SAME selector core (`select_model`) — there is no
+copied ranking pipeline and no simulation-specific selector. It must not
+mutate live observations and must not call a model. A
+`CapacityPercentageOverride` targets exactly one existing window of an `ok`
+snapshot that already carries a known percentage pair and changes only that
+percentage pair; it never creates windows or snapshots and never turns
+unknown telemetry into fabricated known telemetry. Overrides may also
+replace the selector policy, replace the replenishment observations and
+move the simulated evaluated instant. Output distinguishes CURRENT and
+SIMULATED inputs and decisions. This is valuable for tests, policy
+debugging, demonstrations and documentation.
 
-Simulation should eventually cover blackout windows, replenishment availability
-and advisory health so policy behavior can be tested without waiting for real
-peak hours, outages or quota exhaustion.
+Simulation should eventually cover blackout windows, replenishment
+availability and advisory health so policy behavior can be tested without
+waiting for real peak hours, outages or quota exhaustion.
 
 ## Runtime feedback (deferred)
 
