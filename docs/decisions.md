@@ -850,6 +850,29 @@ direction was chosen. Dates use UTC.
   catalog or policy artifact changes, no reset consumption, no provider
   acquisition changes and no REST/MCP. The next implementation slice is M2e
   (deterministic selector, explanation and simulation).
+- **Amendment (2026-09-06, single post-review remediation):** the original
+  implementation deviated from D-026's intended semantics in three narrow
+  ways; this remediation conforms the code to the decision above without
+  changing any of its fundamental choices. (1) A scarcity result's
+  `applicable_scopes` always names the candidate's applicable capacity
+  scopes — empty only when `capacity_bindings is None` — so known bindings
+  are preserved on unknown telemetry (missing snapshot, non-`ok` status,
+  missing scope window, percentage-unknown window): the failure is in the
+  telemetry, never in the applicability. (2) Numeric
+  `ScarcityAssessment` states enforce their own contract at construction
+  (typed governing-window evidence before attribute access, non-empty
+  applicable scopes, the governing scope belonging to the applicable
+  scopes, and a fully `known` state carrying no reason codes while
+  `unavailable` may combine `capacity_exhausted` with incompleteness codes,
+  preserving exhaustion-dominates-unknown). (3)
+  `WeeklyBlackoutRule.blocks_at` validates its own instant — a naive
+  datetime is a contract error on every public path, never a host-local
+  interpretation. (4) Replenishment visibility is not availability: a
+  visible `ReplenishmentDecision` with `available_count == 0` carries no
+  reason codes in any mode; only a positive count earns
+  `replenishment_available` (and, under `recoverable`, the recoverable
+  codes). No new decision number is created; D-026 remains the governing
+  M2d decision.
 
 ## Unresolved decisions
 

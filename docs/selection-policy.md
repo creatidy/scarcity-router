@@ -148,11 +148,15 @@ numeric penalty and no effective remaining, because unknown is
 incomparable to numeric scarcity — whenever any bound scope cannot be
 completely assessed: missing provider snapshot, unknown capacity binding,
 a snapshot whose status is not `ok`, no matching window for a bound scope,
-or an applicable window without a percentage pair. A non-`ok` snapshot
-status means telemetry is not trustworthy; it never means quota is
-exhausted, and telemetry acquisition failure is never reported as
-`unavailable` scarcity. At most one snapshot per provider is accepted per
-assessment; duplicates fail typed validation.
+or an applicable window without a percentage pair. A scarcity result
+always names the candidate's applicable scopes: they are empty only when
+the capacity bindings themselves are unknown (`capacity_bindings = None`);
+known bindings are preserved even when their telemetry is incomplete,
+because the failure is in the telemetry, never in the applicability. A
+non-`ok` snapshot status means telemetry is not trustworthy; it never
+means quota is exhausted, and telemetry acquisition failure is never
+reported as `unavailable` scarcity. At most one snapshot per provider is
+accepted per assessment; duplicates fail typed validation.
 
 **No stale threshold.** M2d invents no staleness-age threshold. Current
 status acquisition is synchronous and fresh-on-demand; if caching ever
@@ -288,6 +292,11 @@ Visibility is an explicit policy mode (M2d, D-026):
   `recoverable = true` and `human_action_required = true`. This still does
   not make current capacity eligible: a currently exhausted candidate may be
   presented as *recoverable but not currently eligible*.
+
+Visibility is not availability: a visible decision with
+`available_count == 0` (advisory or recoverable) carries no availability
+reason code — the numeric zero itself is the normalized explanation, and no
+invented code exists for it.
 
 The evidenced Codex shape (`availableCount` plus an optional `credits` list
 whose detail rows may carry `id`, `resetType`, `status`, `grantedAt`,

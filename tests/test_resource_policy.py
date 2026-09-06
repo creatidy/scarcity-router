@@ -800,11 +800,29 @@ class BlackoutEvaluationTests(unittest.TestCase):
         )
         self.assertEqual(decision.rule_id, "other-window")
 
-    def test_naive_datetime_rejected(self) -> None:
+    def test_naive_datetime_rejected_by_evaluate_blackouts(self) -> None:
         with self.assertRaises(SelectionContractValidationError):
             _ = evaluate_blackouts(
                 [self._same_day_rule()], GLM53, datetime(2026, 9, 14, 12, 0)
             )
+
+    def test_blocks_at_rejects_naive_datetime_directly(self) -> None:
+        rule = self._same_day_rule()
+        with self.assertRaises(SelectionContractValidationError):
+            _ = rule.blocks_at(datetime(2026, 9, 14, 12, 0))
+
+    def test_blocks_at_direct_evaluation_matches_evaluate_blackouts(self) -> None:
+        rule = self._cross_midnight_rule()
+        for instant in (
+            datetime(2026, 9, 14, 15, 0, tzinfo=timezone.utc),  # Mon 17:00 CEST
+            datetime(2026, 9, 14, 14, 59, tzinfo=timezone.utc),  # Mon 16:59 CEST
+            datetime(2026, 9, 15, 1, 0, tzinfo=timezone.utc),  # Tue 03:00 CEST
+        ):
+            with self.subTest(instant=instant):
+                self.assertEqual(
+                    rule.blocks_at(instant),
+                    evaluate_blackouts([rule], GLM53, instant).blocked,
+                )
 
     def test_policy_block_never_mutates_capacity_or_scarcity(self) -> None:
         snapshot = _zai_snapshot(weekly=80)
@@ -959,8 +977,39 @@ class ReplenishmentModeTests(unittest.TestCase):
     def test_recoverable_mode_with_zero_count_is_not_recoverable(self) -> None:
         decision = apply_replenishment_mode("recoverable", _replenishment(count=0))
         self.assertTrue(decision.visible)
+        self.assertEqual(decision.available_count, 0)
         self.assertFalse(decision.recoverable)
         self.assertFalse(decision.human_action_required)
+        # Visibility is not availability: a zero count carries no reason
+        # codes; the numeric zero is the explanation.
+        self.assertEqual(decision.reason_codes, ())
+
+    def test_advisory_zero_count_is_visible_without_availability_reason(self) -> None:
+        decision = apply_replenishment_mode("advisory", _replenishment(count=0))
+        self.assertTrue(decision.visible)
+        self.assertEqual(decision.available_count, 0)
+        self.assertFalse(decision.recoverable)
+        self.assertFalse(decision.human_action_required)
+        self.assertEqual(decision.reason_codes, ())
+        self.assertEqual(ReplenishmentDecision.from_dict(decision.to_dict()), decision)
+
+    def test_visible_zero_count_rejects_invented_availability_reason(self) -> None:
+        with self.assertRaises(SelectionContractValidationError):
+            _ = ReplenishmentDecision(
+                mode="advisory",
+                visible=True,
+                available_count=0,
+                details_known=True,
+                reason_codes=("replenishment_available",),
+            )
+        with self.assertRaises(SelectionContractValidationError):
+            _ = ReplenishmentDecision(
+                mode="recoverable",
+                visible=True,
+                available_count=0,
+                details_known=True,
+                reason_codes=("replenishment_available",),
+            )
 
     def test_missing_observation_is_invisible_in_every_mode(self) -> None:
         for mode in ("ignore", "advisory", "recoverable"):

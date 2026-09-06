@@ -307,6 +307,29 @@ class GoverningEvidenceContractTests(unittest.TestCase):
             )
 
 
+def _numeric_assessment(
+    state: str,
+    effective: int,
+    scopes: tuple[CapacityScopeRef, ...],
+    reason_codes: tuple[str, ...],
+    governing: object,
+) -> ScarcityAssessment:
+    """Direct-construction helper for numeric-state invariant tests.
+
+    ``governing`` may be a deliberately ill-typed value; the cast keeps the
+    helper statically legal so the runtime validator is the one to reject it.
+    """
+    return ScarcityAssessment(
+        state=state,
+        label=scarcity_label(effective),
+        penalty_units=scarcity_penalty_units(effective),
+        effective_remaining_percent=effective,
+        applicable_scopes=scopes,
+        governing_window=cast("GoverningWindowEvidence | None", governing),
+        reason_codes=reason_codes,
+    )
+
+
 class ScarcityAssessmentContractTests(unittest.TestCase):
     def test_known_round_trip_is_exact(self) -> None:
         assessment = ScarcityAssessment(
@@ -538,6 +561,99 @@ class ScarcityAssessmentContractTests(unittest.TestCase):
                 key: value for key, value in base.items() if key != "reason_codes"
             })
 
+    def test_numeric_state_rejects_ill_typed_governing_window(self) -> None:
+        scope = CapacityScopeRef(provider="openai", scope_id="codex")
+        evidence = GoverningWindowEvidence(
+            scope=scope,
+            resource="tokens",
+            kind="weekly",
+            remaining_percent=50,
+        )
+        # The well-typed baseline constructs (and round-trips) fine.
+        baseline = _numeric_assessment("known", 50, (scope,), (), evidence)
+        self.assertEqual(
+            ScarcityAssessment.from_dict(baseline.to_dict()), baseline
+        )
+        for bad in (
+            {"scope": {"provider": "openai", "scope_id": "codex"}},
+            "tokens weekly",
+            object(),
+        ):
+            with self.subTest(governing=type(bad).__name__):
+                with self.assertRaises(SelectionContractValidationError):
+                    _ = _numeric_assessment("known", 50, (scope,), (), bad)
+
+    def test_known_state_rejects_contradictory_reason_codes(self) -> None:
+        scope = CapacityScopeRef(provider="openai", scope_id="codex")
+        evidence = GoverningWindowEvidence(
+            scope=scope,
+            resource="tokens",
+            kind="weekly",
+            remaining_percent=50,
+        )
+        with self.assertRaises(SelectionContractValidationError):
+            _ = _numeric_assessment(
+                "known", 50, (scope,), ("capacity_exhausted",), evidence
+            )
+        with self.assertRaises(SelectionContractValidationError):
+            _ = _numeric_assessment(
+                "known", 50, (scope,), ("missing_provider_snapshot",), evidence
+            )
+
+    def test_known_state_rejects_empty_applicable_scopes(self) -> None:
+        evidence = GoverningWindowEvidence(
+            scope=CapacityScopeRef(provider="openai", scope_id="codex"),
+            resource="tokens",
+            kind="weekly",
+            remaining_percent=50,
+        )
+        with self.assertRaises(SelectionContractValidationError):
+            _ = _numeric_assessment("known", 50, (), (), evidence)
+
+    def test_governing_scope_must_belong_to_applicable_scopes(self) -> None:
+        zai_scope = CapacityScopeRef(provider="zai", scope_id="coding_plan")
+        openai_scope = CapacityScopeRef(provider="openai", scope_id="codex")
+        foreign = GoverningWindowEvidence(
+            scope=zai_scope,
+            resource="tokens",
+            kind="weekly",
+            remaining_percent=50,
+        )
+        with self.assertRaises(SelectionContractValidationError):
+            _ = _numeric_assessment("known", 50, (openai_scope,), (), foreign)
+        zero = GoverningWindowEvidence(
+            scope=zai_scope,
+            resource="tokens",
+            kind="weekly",
+            remaining_percent=0,
+        )
+        with self.assertRaises(SelectionContractValidationError):
+            _ = _numeric_assessment(
+                "unavailable", 0, (openai_scope,), ("capacity_exhausted",), zero
+            )
+
+    def test_unavailable_with_incompleteness_reason_remains_valid(self) -> None:
+        # Explicit exhaustion may correctly dominate another unknown bound
+        # scope: capacity_exhausted plus an incompleteness code is valid.
+        scopes = (
+            CapacityScopeRef(provider="openai", scope_id="codex"),
+            CapacityScopeRef(provider="openai", scope_id="extra-scope"),
+        )
+        evidence = GoverningWindowEvidence(
+            scope=scopes[0],
+            resource="tokens",
+            kind="weekly",
+            remaining_percent=0,
+        )
+        assessment = _numeric_assessment(
+            "unavailable",
+            0,
+            scopes,
+            ("capacity_exhausted", "missing_scope_window"),
+            evidence,
+        )
+        self.assertEqual(ScarcityAssessment.from_dict(assessment.to_dict()), assessment)
+
     def test_frozen_vocabularies(self) -> None:
         self.assertEqual(SCARCITY_STATES, frozenset({"known", "unknown", "unavailable"}))
         self.assertEqual(
@@ -677,6 +793,12 @@ class AssessScarcityTests(unittest.TestCase):
         assessment = assess_scarcity(GLM53, [snapshot])
         self.assertEqual(assessment.state, "unknown")
         self.assertEqual(assessment.reason_codes, ("missing_provider_snapshot",))
+        # The failure is in the telemetry, not the applicability: the known
+        # binding is preserved.
+        self.assertEqual(
+            assessment.applicable_scopes,
+            (CapacityScopeRef(provider="zai", scope_id="coding_plan"),),
+        )
 
     def test_missing_bound_scope_is_unknown(self) -> None:
         snapshot = _snapshot(
@@ -685,6 +807,10 @@ class AssessScarcityTests(unittest.TestCase):
         assessment = assess_scarcity(GLM53, [snapshot])
         self.assertEqual(assessment.state, "unknown")
         self.assertEqual(assessment.reason_codes, ("missing_scope_window",))
+        self.assertEqual(
+            assessment.applicable_scopes,
+            (CapacityScopeRef(provider="zai", scope_id="coding_plan"),),
+        )
 
     def test_applicable_percentage_unknown_is_unknown(self) -> None:
         snapshot = _snapshot(
@@ -698,6 +824,10 @@ class AssessScarcityTests(unittest.TestCase):
         self.assertEqual(assessment.state, "unknown")
         self.assertEqual(assessment.reason_codes, ("window_percentage_unknown",))
         self.assertIsNone(assessment.penalty_units)
+        self.assertEqual(
+            assessment.applicable_scopes,
+            (CapacityScopeRef(provider="zai", scope_id="coding_plan"),),
+        )
 
     def test_non_ok_provider_telemetry_is_unknown_not_unavailable(self) -> None:
         for status in ("unknown", "auth_required", "schema_changed", "unavailable"):
@@ -710,6 +840,47 @@ class AssessScarcityTests(unittest.TestCase):
                 self.assertEqual(
                     assessment.reason_codes, ("provider_snapshot_not_ok",)
                 )
+                self.assertEqual(
+                    assessment.applicable_scopes,
+                    (CapacityScopeRef(provider="zai", scope_id="coding_plan"),),
+                )
+
+    def test_multiple_bindings_preserved_on_unknown_telemetry(self) -> None:
+        entry = _synthetic_entry(
+            "openai",
+            "test-model",
+            "max",
+            (
+                CapacityScopeRef(provider="openai", scope_id="extra-scope"),
+                CapacityScopeRef(provider="openai", scope_id="codex"),
+            ),
+        )
+        # Missing provider snapshot: ALL bound scopes are preserved,
+        # canonically ordered, independent of construction order.
+        missing = assess_scarcity(entry, [])
+        self.assertEqual(missing.state, "unknown")
+        self.assertEqual(missing.reason_codes, ("missing_provider_snapshot",))
+        self.assertEqual(
+            missing.applicable_scopes,
+            (
+                CapacityScopeRef(provider="openai", scope_id="codex"),
+                CapacityScopeRef(provider="openai", scope_id="extra-scope"),
+            ),
+        )
+        # One incomplete scope still preserves every binding.
+        partial = _snapshot(
+            "openai", (_window("tokens", "weekly", "codex", 80),)
+        )
+        incomplete = assess_scarcity(entry, [partial])
+        self.assertEqual(incomplete.state, "unknown")
+        self.assertEqual(incomplete.reason_codes, ("missing_scope_window",))
+        self.assertEqual(
+            incomplete.applicable_scopes,
+            (
+                CapacityScopeRef(provider="openai", scope_id="codex"),
+                CapacityScopeRef(provider="openai", scope_id="extra-scope"),
+            ),
+        )
 
     def test_exhaustion_dominates_unknown_scope(self) -> None:
         # One model cannot bind across providers (M2b contract), so the

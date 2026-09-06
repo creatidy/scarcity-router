@@ -991,8 +991,15 @@ class WeeklyBlackoutRule:
         _ = _v_safe_id(self.reason_code, "weekly_blackout_rule.reason_code")
 
     def blocks_at(self, at: datetime) -> bool:
-        """Half-open ``[start, end)`` check for one timezone-aware instant."""
-        local = at.astimezone(_zone(self.timezone))
+        """Half-open ``[start, end)`` check for one timezone-aware instant.
+
+        The argument is validated here — a naive datetime is rejected with
+        the contract error instead of being silently interpreted in the
+        host's local timezone — so this public path stays deterministic
+        independently of :func:`evaluate_blackouts`.
+        """
+        checked_at = _v_aware_datetime(at, "weekly_blackout_rule.blocks_at.at")
+        local = checked_at.astimezone(_zone(self.timezone))
         minute_of_day = local.hour * 60 + local.minute
         start = _hm_minutes(self.start_local)
         end = _hm_minutes(self.end_local)
@@ -1269,6 +1276,9 @@ class ReplenishmentDecision:
     additionally marks a positive available count as ``recoverable`` with
     ``human_action_required`` — the broker never redeems anything and the
     candidate's current eligibility is never restored by this decision.
+    Visibility is not availability: a visible decision with
+    ``available_count == 0`` carries no reason codes; the zero count itself
+    is the normalized explanation.
     """
 
     mode: str
@@ -1339,10 +1349,19 @@ class ReplenishmentDecision:
                     "replenishment: recoverable requires exactly the "
                     + "recoverable reason codes"
                 )
-        elif codes != _AVAILABLE_CODES:
+        elif available_count > 0:
+            if codes != _AVAILABLE_CODES:
+                raise SelectionContractValidationError(
+                    "replenishment: visible available replenishment "
+                    + "requires exactly the 'replenishment_available' "
+                    + "reason code"
+                )
+        elif codes:
+            # Visibility of the observation is not availability of a reset:
+            # a zero count is its own explanation, no invented code needed.
             raise SelectionContractValidationError(
-                "replenishment: visible non-recoverable requires exactly "
-                + "the 'replenishment_available' reason code"
+                "replenishment: a visible zero available count carries no "
+                + "reason codes"
             )
 
     @classmethod
@@ -1429,7 +1448,9 @@ def apply_replenishment_mode(
             visible=True,
             available_count=state.available_count,
             details_known=state.details_known,
-            reason_codes=_AVAILABLE_CODES,
+            reason_codes=(
+                _AVAILABLE_CODES if state.available_count > 0 else ()
+            ),
         )
     # recoverable
     if state.available_count > 0:
@@ -1447,7 +1468,6 @@ def apply_replenishment_mode(
         visible=True,
         available_count=state.available_count,
         details_known=state.details_known,
-        reason_codes=_AVAILABLE_CODES,
     )
 
 

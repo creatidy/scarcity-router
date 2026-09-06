@@ -326,10 +326,17 @@ class ScarcityAssessment:
       sentinel such as 0, 10000 or -1 exists).
 
     ``reason_codes`` is the normalized explanation vocabulary; an ``unknown``
-    or ``unavailable`` state always carries at least one code. The stored
-    scopes and codes are canonical (sorted), so equality and serialization
-    are deterministic and independent of construction order. Serialized
-    unknown values are omitted, never represented as ``null``.
+    or ``unavailable`` state always carries at least one code.
+    ``applicable_scopes`` always names the candidate's applicable capacity
+    scopes: empty only when the capacity bindings themselves are unknown
+    (``capacity_bindings = None``). Known bindings are preserved even when
+    their telemetry cannot be completely assessed — the failure is in the
+    telemetry, never in the applicability. A ``known`` state carries no
+    reason codes, and the governing window's scope always belongs to the
+    applicable scopes. The stored scopes and codes are canonical (sorted),
+    so equality and serialization are deterministic and independent of
+    construction order. Serialized unknown values are omitted, never
+    represented as ``null``.
     """
 
     state: str
@@ -429,22 +436,41 @@ class ScarcityAssessment:
                 + f"{self.label!r} does not equal the frozen label "
                 + f"{expected_label!r} for effective remaining {effective}"
             )
-        if self.governing_window is None:
-            raise SelectionContractValidationError(
-                "scarcity_assessment: a numeric state requires governing "
-                + "window evidence"
-            )
-        if self.governing_window.remaining_percent != effective:
+        # Runtime type guard before any attribute access: an ill-typed
+        # direct value must fail with the contract error, never with an
+        # ordinary AttributeError.
+        governing = _v_instance_of(
+            self.governing_window,
+            GoverningWindowEvidence,
+            "scarcity_assessment.governing_window",
+        )
+        if governing.remaining_percent != effective:
             raise SelectionContractValidationError(
                 "scarcity_assessment: governing window remaining "
-                + f"{self.governing_window.remaining_percent} does not "
+                + f"{governing.remaining_percent} does not "
                 + f"match effective remaining {effective}"
+            )
+        if not self.applicable_scopes:
+            raise SelectionContractValidationError(
+                "scarcity_assessment: a numeric state requires at least "
+                + "one applicable scope"
+            )
+        if governing.scope not in self.applicable_scopes:
+            raise SelectionContractValidationError(
+                "scarcity_assessment: governing window scope "
+                + f"({governing.scope.provider}, {governing.scope.scope_id}) "
+                + "must belong to the applicable scopes"
             )
         if self.state == "known":
             if effective == 0:
                 raise SelectionContractValidationError(
                     "scarcity_assessment: state 'known' requires a nonzero "
                     + "effective remaining; use state 'unavailable'"
+                )
+            if self.reason_codes:
+                raise SelectionContractValidationError(
+                    "scarcity_assessment: a fully known state carries no "
+                    + "reason codes"
                 )
         else:  # unavailable
             if effective != 0:
@@ -557,13 +583,24 @@ def _pick_governing(
     )
 
 
-def _unknown_assessment(reasons: tuple[str, ...]) -> ScarcityAssessment:
+def _unknown_assessment(
+    reasons: tuple[str, ...],
+    applicable_scopes: tuple[CapacityScopeRef, ...] = (),
+) -> ScarcityAssessment:
+    """Build an unknown assessment, preserving the candidate's applicability.
+
+    ``applicable_scopes`` must be empty only when the model's capacity
+    bindings themselves are unknown (``capacity_bindings is None``). When
+    the bindings are known but their telemetry cannot be completely
+    assessed, the failure is in the telemetry — the scopes the candidate
+    consumes are still known and must be preserved for explanation.
+    """
     return ScarcityAssessment(
         state="unknown",
         label="unknown",
         penalty_units=None,
         effective_remaining_percent=None,
-        applicable_scopes=(),
+        applicable_scopes=applicable_scopes,
         governing_window=None,
         reason_codes=reasons,
     )
@@ -673,7 +710,7 @@ def assess_scarcity(
         )
 
     if reason_codes:
-        return _unknown_assessment(tuple(sorted(reason_codes)))
+        return _unknown_assessment(tuple(sorted(reason_codes)), bindings)
 
     if not known_windows:  # structurally unreachable for known bindings
         raise SelectionContractValidationError(
