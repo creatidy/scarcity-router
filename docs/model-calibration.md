@@ -73,16 +73,24 @@ recorded as ordinary owner-observation evidence
 | --- | ---: | ---: | --- | --- | --- |
 | GPT-5.6 Luna Max | 1,050,000 | 128,000 | true | true | true |
 | GPT-5.6 Sol High | 1,050,000 | 128,000 | true | true | true |
-| GLM-5.3 Max | 1,000,000 | unknown | true | **unknown** | true |
-| GLM-5.3-Flash Max | 1,000,000 | unknown | true | true | true |
+| GLM-5.3 Max | 1,000,000 | 128,000 | true | **false** | true |
+| GLM-5.3-Flash Max | 1,000,000 | 128,000 | true | true | true |
 
-- GLM-5.3 `supports_vision` is deliberately **unknown** (serialized as an
-  omitted tri-state field, never `false`). Z.ai describes GLM-5.3-Flash as
-  the first native multimodal model in the GLM-5 series; no first-party
-  vision statement for GLM-5.3 was found in the evidence pass.
-- The GLM output allowance is deliberately **unfrozen**: current first-party
-  documentation does not evidence a stable architectural max-output value for
-  the subscription/ZCode variants, and no arbitrary API-era value is copied.
+- GLM-5.3 `supports_vision = false` is an **evidenced negative fact**, not an
+  inference: the first-party GLM-5.3 model documentation
+  (`https://docs.z.ai/guides/llm/glm-5.3`) states that GLM-5.3 currently
+  supports **text-only inputs** for GLM Coding Plan users. It is unrelated to
+  Flash being multimodal. A known negative must serialize explicitly
+  (`"supports_vision": false`); `None` stays reserved for genuinely unknown
+  properties.
+- The GLM output allowances are explicit first-party model/Coding Plan
+  documentation: the GLM-5.3 and GLM-5.3-Flash guides record a maximum output
+  of **128K tokens** (with the 1M-token context window). They are not copied
+  from a local ZCode UI setting and not carried over from an older GLM
+  generation.
+- Reasoning is always enabled for both GLM entries; the GLM-5.3 efforts are
+  `low`, `high`, `max`, and `reasoning_effort: max` is recommended for
+  GLM-5.3-Flash (`https://docs.z.ai/guides/vlm/glm-5.3-flash`).
 
 ## Capacity bindings
 
@@ -174,12 +182,19 @@ source is an announcement, otherwise the access date.
   coding/agentic model — large coding gains over GLM-5.2, long-horizon and
   tool-heavy strength, `low|high|max` thinking effort with max recommended
   for coding, 1M-token evaluations — with benchmark results comparable to
-  the GPT-5.6 frontier. The GLM-5.3-Flash documentation shows always-on
+  the GPT-5.6 frontier. The GLM-5.3 model guide
+  (`https://docs.z.ai/guides/llm/glm-5.3`) records the Coding Plan
+  availability, **text-only inputs**, 1M context window, **128K maximum
+  output** and always-on reasoning with `low|high|max` efforts. The
+  GLM-5.3-Flash guide
+  (`https://docs.z.ai/guides/vlm/glm-5.3-flash`) shows always-on
   thinking with `reasoning_effort: max` recommended, native multimodal/visual
-  understanding, 1M context, strong tool calling, and coding/automation
-  strength at flash cost. (`https://z.ai/blog/glm-5.3`,
+  understanding, 1M context, **128K maximum output**, strong tool calling,
+  and coding/automation strength at flash cost.
+  (`https://z.ai/blog/glm-5.3`,
   `https://docs.z.ai/release-notes/new-released`,
   `https://docs.z.ai/devpack/overview`,
+  `https://docs.z.ai/guides/llm/glm-5.3`,
   `https://docs.z.ai/guides/vlm/glm-5.3-flash`)
 - **Artificial Analysis (independent comparative).** The Intelligence Index
   places GLM-5.3 and GLM-5.3-Flash close to the GPT-5.6 frontier (GLM-5.3
@@ -221,7 +236,9 @@ worse than leaving the optional field absent.
   evidence is thin.
 - Comparative confidence is highest for coding/reasoning/tool use, where
   first-party positioning and independent benchmarks agree.
-- GLM-5.3 vision and both GLM output allowances are unknown, not false/zero.
+- GLM-5.3's lack of vision input is a first-party documented current state
+  ("text-only inputs"); a future first-party change would be a catalog
+  update under the governance below, not a silent edit.
 - AA index values drift with methodology versions; they are supporting
   comparative evidence only and are never mapped mechanically onto the
   internal scale.

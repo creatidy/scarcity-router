@@ -93,18 +93,20 @@ ACCEPTED_HARD_PROPERTIES: dict[tuple[str, str, str], dict[str, object]] = {
         "supports_vision": True,
         "supports_reasoning_mode": True,
     },
-    # GLM-5.3 vision is deliberately unknown (not False) and the output
-    # allowance is deliberately unfrozen; both serialize as omitted fields.
+    # GLM-5.3 vision=false is an evidenced negative fact (first-party
+    # "text-only inputs" documentation), and the GLM output allowance is
+    # first-party documented at 128K; both serialize explicitly. `None`
+    # stays reserved for genuinely unknown properties.
     GLM53: {
         "input_context_tokens": 1_000_000,
-        "output_tokens": None,
+        "output_tokens": 128_000,
         "supports_tool_use": True,
-        "supports_vision": None,
+        "supports_vision": False,
         "supports_reasoning_mode": True,
     },
     FLASH: {
         "input_context_tokens": 1_000_000,
-        "output_tokens": None,
+        "output_tokens": 128_000,
         "supports_tool_use": True,
         "supports_vision": True,
         "supports_reasoning_mode": True,
@@ -293,17 +295,25 @@ class ModelCatalogCalibration(unittest.TestCase):
             )
             self.assertIsNone(props.privacy_tags)
 
-    def test_unknown_hard_properties_stay_unknown(self) -> None:
+    def test_evidenced_hard_properties_serialize_explicitly(self) -> None:
+        # GLM-5.3's vision=false is a KNOWN negative fact from first-party
+        # "text-only inputs" documentation: it must serialize explicitly,
+        # never be omitted (None remains reserved for genuinely unknown
+        # properties). The GLM output allowances are first-party documented.
         glm = _BY_IDENTITY[GLM53]
-        self.assertIsNone(glm.hard_properties.supports_vision)
-        self.assertIsNone(glm.hard_properties.output_tokens)
+        self.assertFalse(glm.hard_properties.supports_vision)
+        self.assertEqual(glm.hard_properties.output_tokens, 128_000)
         serialized_glm = glm.hard_properties.to_dict()
-        self.assertNotIn("supports_vision", serialized_glm)
-        self.assertNotIn("output_tokens", serialized_glm)
-        # Known properties on the other entries remain explicit true.
-        for identity in (LUNA, SOL, FLASH):
+        self.assertEqual(serialized_glm.get("supports_vision"), False)
+        self.assertEqual(serialized_glm.get("output_tokens"), 128_000)
+        flash = _BY_IDENTITY[FLASH]
+        self.assertTrue(flash.hard_properties.supports_vision)
+        self.assertEqual(flash.hard_properties.output_tokens, 128_000)
+        serialized_flash = flash.hard_properties.to_dict()
+        self.assertEqual(serialized_flash.get("output_tokens"), 128_000)
+        # Known properties on all entries remain explicit.
+        for identity in (LUNA, SOL, GLM53, FLASH):
             props = _BY_IDENTITY[identity].hard_properties
-            self.assertTrue(props.supports_vision)
             self.assertTrue(props.supports_tool_use)
             self.assertTrue(props.supports_reasoning_mode)
 

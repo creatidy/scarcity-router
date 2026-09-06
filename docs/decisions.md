@@ -643,17 +643,24 @@ direction was chosen. Dates use UTC.
     workflow-specific judgment. AA evidence is never mapped mechanically
     onto the internal scale and is never a live routing oracle (D-021).
     EvidenceRef identifiers record canonical source URLs; the evidence pass
-    used at most 3 first-party OpenAI pages, 4 first-party Z.ai pages and 4
-    AA pages, with no benchmark archaeology.
+    was a single bounded pass over first-party OpenAI, first-party Z.ai/ZCode
+    and Artificial Analysis documentation pages only, with no benchmark
+    archaeology and no recursive research.
   - **Hard properties.** Luna/Sol: input context 1,050,000, output 128,000,
     tools/vision/reasoning mode all known true. GLM-5.3: input 1,000,000,
-    tools true, reasoning mode true, vision **unknown** (Z.ai positions
-    GLM-5.3-Flash as the first native multimodal GLM-5 model; absence of
-    evidence is never turned into `false`) and output allowance **unfrozen**
-    (no stable first-party architectural max-output value for the current
-    subscription variants). Flash: input 1,000,000, tools/vision/reasoning
+    output 128,000, tools true, reasoning mode true and vision **known
+    false** — an evidenced negative fact from the first-party GLM-5.3 model
+    guide (`https://docs.z.ai/guides/llm/glm-5.3`), which states GLM-5.3
+    currently supports **text-only inputs** for GLM Coding Plan users; it is
+    not inferred from Flash being multimodal, and a known negative serializes
+    explicitly (`"supports_vision": false`), never as an omitted unknown.
+    GLM-5.3-Flash: input 1,000,000, output 128,000, tools/vision/reasoning
     mode known true — always-on thinking with recommended
-    `reasoning_effort: max` is first-party documented. No `model_version`
+    `reasoning_effort: max` is first-party documented
+    (`https://docs.z.ai/guides/vlm/glm-5.3-flash`). Both GLM output
+    allowances are explicit first-party model/Coding Plan documentation
+    (128K maximum output), not copied from a local ZCode UI setting and not
+    carried over from an older GLM generation. No `model_version`
     string is invented; `model_version_date` records evidenced dates
     (GPT-5.6 family GA 2026-07-09 after the 2026-06-26 Sol preview; GLM-5.3
     announcement 2026-08-14, with Z.ai's release-notes entry labeled
