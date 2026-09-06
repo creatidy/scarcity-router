@@ -71,6 +71,29 @@ evidence are documented in `docs/model-calibration.md`. No scarcity, no
 reservations, no selector and no catalog expansion exist yet; the next
 implementation slice is M2d.
 
+**M2d complete (2026-09-06).** The fourth M2 implementation slice is done:
+the frozen scarcity and resource-policy primitives (D-026, resolving U-007)
+live in the pure modules `scarcity_router/scarcity.py` and
+`scarcity_router/policy.py` — the continuous integer penalty
+`(100 - remaining_percent)^2` (scale 10000) with exact explanatory label
+boundaries; candidate capacity applicability over explicit
+`capacity_bindings` with most-restrictive multi-window/multi-scope
+aggregation and unrelated scopes ignored; explicit `known`/`unknown`/
+`unavailable` assessment states where explicit exhaustion wins and
+non-`ok` telemetry stays unknown with no numeric penalty; unknown-capacity
+modes `degraded`/`strict`; scope-targeted reservation rules (strict `<`
+threshold, minimum task level) reflecting the shared `openai/codex` and
+`zai/coding_plan` scopes; timezone-aware weekly blackout rules with
+half-open `[start, end)` semantics, cross-midnight support and no
+hard-coded vendor schedule; the normalized `ReplenishmentState` with
+`ignore`/`advisory`/`recoverable` visibility that never changes current
+scarcity and is never consumed; and the `UserPolicy` container with
+deterministic canonical serialization. Scenario tests cover the 98/2
+weekly-critical case, shared-scope equality, unrelated 0% buckets,
+reservation boundaries, DST/cross-midnight blackouts and the exhausted-
+but-recoverable distinction. No selector, no ranking and no catalog
+changes exist yet; the next implementation slice is M2e.
+
 ## M0 — Repository foundation
 
 **Outcome:** A new contributor or agent can understand the product and begin M1
@@ -281,9 +304,14 @@ Implementation proceeds in small, deterministic slices:
   minima as `calibrated_requirement` in `model-policy.json` and implemented
   the pure profile-expansion mechanism; scenario tests pin the
   capability-only eligible sets (resolves U-006, D-025).
-- **M2d — scarcity and policy primitives.** Candidate capacity applicability,
-  scarcity aggregation, reservations, unknown policy, the Z.ai blackout and
-  reset/replenishment visibility. No broad external integrations required.
+- **M2d — scarcity and policy primitives (complete 2026-09-06).**
+  Implemented the frozen scarcity parameters (D-026, resolving U-007):
+  `scarcity_router/scarcity.py` (integer quadratic penalty, labels,
+  binding applicability, most-restrictive aggregation,
+  known/unknown/unavailable assessment states) and
+  `scarcity_router/policy.py` (unknown-capacity modes, scope-targeted
+  reservations, timezone-aware blackouts, `ReplenishmentState` with
+  visibility modes, the `UserPolicy` container). No selector.
 - **M2e — deterministic selector, explanation and simulation.** `select`,
   `--explain` and simulation over the same core, only after the prior slices
   are accepted.

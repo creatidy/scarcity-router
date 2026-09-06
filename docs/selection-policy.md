@@ -28,7 +28,11 @@ for the selector decision sequence and scarcity behavior.
 
 The task-requirement and model-catalog input contracts are implemented as the
 pure, validated types in `scarcity_router/selection_types.py` (M2b, D-024).
-Ranking, scarcity, reservations and policy evaluation are later M2 slices.
+Scarcity assessment and the resource-policy primitives (unknown modes,
+reservations, blackouts, replenishment visibility, the policy container) are
+implemented as pure, deterministic primitives in
+`scarcity_router/scarcity.py` and `scarcity_router/policy.py` (M2d, D-026).
+Candidate ranking and `select` remain M2e slices.
 
 ## Deterministic decision sequence
 
@@ -85,30 +89,120 @@ Every candidate is evaluated against the relevant provider capacity windows;
 there is no alternate API-cost or abundance score standing in for subscription
 scarcity.
 
-The exact penalty function and NORMAL/SCARCE/CRITICAL-style label thresholds
-are deliberately not frozen here. They require scenario calibration in a
-later PR (U-007); they are documented as open now to prevent an undocumented
-scoring function from appearing in code.
+## Frozen scarcity parameters (M2d, D-026)
+
+U-007 is resolved: the D-005 concept is accepted with exact parameters.
+
+**Continuous penalty.** For every numerically known applicable window,
+
+```text
+penalty_units = (100 - remaining_percent)^2
+scale         = 10000            (SCARCITY_PENALTY_SCALE)
+```
+
+so remaining 100% costs 0 units, 80% costs 400, 50% costs 2500, 20% costs
+6400, 2% costs 9604, 1% costs 9801 and 0% costs 10000. Ranking must compare
+the integer units, never normalized floats. The penalty contains no linear
+or logarithmic term, no reset proximity, no provider price, no capability
+score, no model prestige and no provider preference. Scarcity answers only
+one question: how constrained is this applicable current subscription
+capacity?
+
+**Explanatory labels.** Labels are explanation only and never replace the
+continuous penalty; two candidates both labelled `scarce` may still have
+different penalties. Exact boundaries:
+
+```text
+remaining >= 80  -> plentiful
+remaining >= 50  -> normal
+remaining >= 20  -> scarce
+remaining >= 1   -> critical
+remaining == 0   -> unavailable
+```
+
+`unknown` is never produced from a numeric percentage; it represents
+insufficient trustworthy capacity information.
+
+**Applicability.** Only the candidate's explicit catalog
+`capacity_bindings` participate; applicability is never inferred from
+`window_id`, `limitName`, `normalModelSlug`, model names or provider
+aliases. Within every applicable scope, all windows carrying a usable
+percentage pair participate — token and provider-normalized `time`
+windows alike, so a restrictive Z.ai `TIME_LIMIT` window may govern while
+the token windows look healthy. Unrelated scopes never participate, even
+at 0%.
+
+**Aggregation.** Across all applicable windows of all bound scopes the most
+restrictive result governs: `aggregate_penalty_units = max(window
+penalties)`, equivalently `effective_remaining_percent = min(remaining
+values)`. The label derives from the effective remaining, never an average.
+Governing-window evidence is explanation-only and is tie-broken by a stable
+canonical key over normalized fields (provider, scope_id, resource, kind,
+window_id-or-empty), independent of input order.
+
+**Unknown versus unavailable.** Explicit exhaustion wins: any known
+applicable window at `remaining_percent == 0` makes the assessment
+`unavailable` (penalty 10000, effective remaining 0) even when another
+bound scope is unknown. Otherwise the assessment is `unknown` — with no
+numeric penalty and no effective remaining, because unknown is
+incomparable to numeric scarcity — whenever any bound scope cannot be
+completely assessed: missing provider snapshot, unknown capacity binding,
+a snapshot whose status is not `ok`, no matching window for a bound scope,
+or an applicable window without a percentage pair. A non-`ok` snapshot
+status means telemetry is not trustworthy; it never means quota is
+exhausted, and telemetry acquisition failure is never reported as
+`unavailable` scarcity. At most one snapshot per provider is accepted per
+assessment; duplicates fail typed validation.
+
+**No stale threshold.** M2d invents no staleness-age threshold. Current
+status acquisition is synchronous and fresh-on-demand; if caching ever
+exists, stale behavior will require an explicit later decision.
+
+**Unknown-capacity policy.** Exactly two modes exist:
+
+- `degraded`: an unknown-capacity candidate may remain conditionally
+  usable (`degraded = true`), carries no numeric scarcity penalty, and a
+  known healthy sufficient candidate must rank ahead;
+- `strict`: an unknown-capacity candidate is blocked.
+
+Known `unavailable` (explicit exhaustion) is blocked in both modes; known
+nonzero capacity is eligible in both, subject to other policy.
 
 ## Reservations
 
-A reservation rule conceptually states:
+A reservation rule states a preservation threshold over a capacity **scope**,
+not a model. The M2c calibration proved the reason: Luna and Sol both bind
+to `openai/codex`, and GLM-5.3 and GLM-5.3-Flash both bind to
+`zai/coding_plan` — they consume one shared subscription quota together, so
+a model-specific reservation would incorrectly imply independent per-model
+quota.
 
 ```yaml
 reserve:
-  openai/gpt-5.6-sol:
-    window: weekly
+  - rule_id: protect-openai-weekly
+    scope:
+      provider: openai
+      scope_id: codex
+    resource: tokens
+    kind: weekly
     when_remaining_below: 20
-    minimum_task_level: 4
+    minimum_task_level: L4
 ```
 
-Above the threshold the model competes normally. Below it, L0–L3 work does not
-consume the reserved model; L4–L5 work may. Boundary comparison (`<` versus
-`<=`) must be explicit in the final config schema and tested.
+The trigger boundary is strict and frozen: the reservation triggers iff
+`remaining_percent < when_remaining_below`. At a threshold of 20, remaining
+20 does **not** trigger and remaining 19 does. When triggered, use is
+blocked below `minimum_task_level` (L0–L3 above) and permitted at or above
+it (L4–L5). If the reservation's target window cannot be identified or
+lacks usable percentage evidence, the evaluation is explicitly unknown —
+never silently treated as not triggered.
 
-Reservations may target a provider, account, model or variant only where the
-capacity relationship is known. A shared provider quota must not be treated as
-independent per-model quota.
+A reservation does not create capacity: it cannot override explicit
+exhaustion, and a high task level cannot make a 0%-remaining scope usable.
+`resource` must be a known normalized resource (`tokens` or `time`) and
+`kind` a known window kind (`five_hour` or `weekly`), so the target window
+is always concretely identifiable. The example above is documentation of
+the mechanism, not a checked-in user default.
 
 ## Provider schedules and peak-hour policy
 
@@ -131,6 +225,26 @@ During a matching blackout, Z.ai candidates are excluded before capability
 ranking even if quota is healthy. The explanation must say the provider is
 policy-blocked, not unavailable or incapable.
 
+The frozen mechanics (M2d, D-026) are:
+
+- the target names a supported provider, optionally an exact model and an
+  exact variant (a variant requires its model); matching is exact identity,
+  with no wildcard string syntax;
+- the rule carries an explicit IANA time zone (validated through the
+  standard-library `zoneinfo`), a duplicate-free weekday list (`mon`–`sun`)
+  and strict 24-hour `HH:MM` local times;
+- intervals are half-open `[start, end)`: exactly at start is blocked,
+  exactly at end is not; `start == end` is invalid and is never interpreted
+  as a 24-hour blackout; a cross-midnight interval (for example
+  `17:00 -> 03:00` on Monday) blocks from Monday 17:00 inclusive through
+  Tuesday 03:00 exclusive;
+- evaluation converts a caller-supplied timezone-aware instant into the
+  configured zone, so DST transitions are handled by the time-zone database,
+  never by constructing ambiguous local timestamps as the source of truth;
+- a matching blackout returns the normalized `policy_blocked` exclusion and
+  never rewrites capacity status, `remaining_percent`, scarcity penalties or
+  model capability.
+
 Do not hard-code a vendor's current definition of peak/off-peak hours. Z.ai
 documentation describes off-peak benefits and dynamic resource behavior, and
 some off-peak/reset-card parameters are explicitly dynamic. The user's desired
@@ -150,15 +264,30 @@ The frozen M2 semantics are:
 They never enter current quota percentages, never pretend quota has been
 restored and are never consumed by the broker.
 
-The selector input is a separate concept, `ReplenishmentState`, carrying only
-the minimum safe facts needed for selection:
+The normalized D-021 contract is implemented as the typed
+`ReplenishmentState` in `scarcity_router/policy.py` (M2d), carrying only:
 
 - `provider`;
-- `kind`;
-- `available_count`;
-- `details_known`;
-- `earliest_expiry`, only when safely derivable and needed;
+- `kind` (a safe normalized identifier; the evidenced OpenAI concept is
+  `rate_limit_reset`);
+- `available_count` (integer `>= 0`);
+- `details_known` (strict boolean);
+- `earliest_expiry`, only when safely derivable and needed (requires known
+  details and a positive count; a zero count never carries an expiry);
 - `retrieved_at`.
+
+No provider free-text, credit IDs, titles, descriptions or account identity
+are representable.
+
+Visibility is an explicit policy mode (M2d, D-026):
+
+- `ignore`: replenishment does not affect policy output;
+- `advisory`: expose replenishment availability, `available_count` and the
+  details/provenance state, but do not mark current capacity recovered;
+- `recoverable`: when `available_count > 0`, expose
+  `recoverable = true` and `human_action_required = true`. This still does
+  not make current capacity eligible: a currently exhausted candidate may be
+  presented as *recoverable but not currently eligible*.
 
 The evidenced Codex shape (`availableCount` plus an optional `credits` list
 whose detail rows may carry `id`, `resetType`, `status`, `grantedAt`,
@@ -168,20 +297,12 @@ detail list may be absent or capped even when `availableCount` is larger, so
 descriptions are never exposed, and opaque credit IDs are not required for
 selection unless a later use case proves they are needed.
 
-The selector must not silently pretend a banked reset has already been applied.
-Instead, policy may choose among explicit behaviors such as:
-
-- ignore replenishment and judge only current capacity;
-- report replenishment as advisory context;
-- treat an otherwise sufficient candidate as `recoverable`, with an explicit
-  human action required before use.
-
-The initial personal workflow should be able to take available OpenAI resets
-into account so that scarce-looking current windows do not hide substantial
-recoverable capacity. The broker still does not call the reset-consume method;
-redemption is an external/user action. When the supported Codex app-server
-exposes reset count and expiry/details, preserve that provenance and freshness
-without using private backend endpoints.
+The selector must not silently pretend a banked reset has already been
+applied. The three modes above are the frozen behaviors; the broker never
+calls any reset-consume method, adds a redemption endpoint or mutates
+provider credentials — redemption is an external/user action. When the
+supported Codex app-server exposes reset count and expiry/details, preserve
+that provenance and freshness without using private backend endpoints.
 
 ## Evidence and policy precedence
 
@@ -271,11 +392,16 @@ Initial candidate modes are:
 - `conserve-openai` and `conserve-zai`: add a documented preference/penalty to
   protect the named provider.
 
-The initial implementation should add only modes needed by real use. Direct
-temporary preferences such as “Sol emergency-only” may be represented by the
-same policy layer. Modes cannot fabricate capacity or bypass explicit privacy
-constraints. Provider blackout schedules are orthogonal hard policy and must
-not be weakened by a mode unless the user explicitly overrides them.
+These modify candidate ordering and belong to the M2e selector. M2d (D-026)
+implements none of them: it owns only the resource-state and preservation
+primitives (scarcity assessment, unknown-capacity modes, reservations,
+blackouts, replenishment visibility) and the `UserPolicy` container that a
+later CLI/application will populate. The initial implementation should add
+only modes needed by real use. Direct temporary preferences such as “Sol
+emergency-only” may be represented by the same policy layer. Modes cannot
+fabricate capacity or bypass explicit privacy constraints. Provider blackout
+schedules are orthogonal hard policy and must not be weakened by a mode
+unless the user explicitly overrides them.
 
 ## Bounded compound workflow recommendations
 

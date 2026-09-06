@@ -55,7 +55,14 @@ runtime quota.
 Contains default scarcity behavior, reservation rules, preference modes and
 explicit overrides. Runtime policy is separate from repository governance and
 from the catalog, so a user can change today's preference without changing
-source repositories or capability claims.
+source repositories or capability claims. The resource-state and preservation
+primitives are implemented in M2d (D-026) as the pure modules
+`scarcity_router/scarcity.py` (continuous scarcity penalty, explanatory
+labels, binding applicability, most-restrictive aggregation,
+known/unknown/unavailable assessments) and `scarcity_router/policy.py`
+(unknown-capacity modes, scope-targeted reservations, timezone-aware
+blackouts, `ReplenishmentState` visibility modes, the `UserPolicy`
+container); ranking modes remain the M2e selector's concern.
 
 ### Selector
 
@@ -127,6 +134,14 @@ The current normalized capacity contract is v3, frozen in
   M2c, not a serialized fourth field (D-024).
 - `SelectionDecision`: selected candidate, ranked alternatives, exclusions,
   reasons, capacity/catalog versions and degraded/unknown indicators.
+  Not yet implemented — it is the M2e selector's output.
+- `ScarcityAssessment`: the per-candidate scarcity result over explicit
+  capacity bindings — continuous integer penalty, explanatory label,
+  explicit `known`/`unknown`/`unavailable` state and normalized reason
+  codes. **Implemented in M2d** in `scarcity_router/scarcity.py` (D-026):
+  the most restrictive applicable window governs, unrelated scopes are
+  ignored, explicit exhaustion (`remaining_percent == 0`) wins over
+  incomplete telemetry, and unknown carries no numeric penalty.
 
 M2 planning additionally freezes these not-yet-implemented conceptual
 contracts:
@@ -136,7 +151,10 @@ contracts:
   `CapacityWindow.scope_id` (D-023), and M2b adds the core `CapacityScopeRef`
   binding type; binding real catalog models to real scopes remains M2c work.
 - `ReplenishmentState`: minimal safe reset-credit facts — replenishment
-  opportunities, never current capacity (D-021).
+  opportunities, never current capacity (D-021). **Implemented in M2d** in
+  `scarcity_router/policy.py` (D-026) with the `ignore`/`advisory`/
+  `recoverable` visibility modes; provider-side wiring into selector input
+  assembly belongs to M2e.
 - `ExecutionBudget`: the finite bounded envelope that must accompany any
   compound recommendation (D-022).
 
