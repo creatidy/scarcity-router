@@ -288,10 +288,15 @@ def _v_opt_date(value: object | None, fld: str) -> str | None:
     return None if value is None else _v_date(value, fld)
 
 
-def _opt_bool_field(d: Mapping[str, object], key: str, label: str) -> bool:
-    """Read an optional strict-boolean serialized field (absent/null = False)."""
-    value = d.get(key)
-    return False if value is None else _v_bool(value, f"{label}.{key}")
+def _optional_bool_field(d: Mapping[str, object], key: str, label: str) -> bool:
+    """Read an optional strict-boolean serialized field (absent = False).
+
+    An explicitly present null is malformed, never "not required": a hard
+    requirement must not be silently relaxed by malformed external input.
+    """
+    if key not in d:
+        return False
+    return _v_bool(d[key], f"{label}.{key}")
 
 
 def _optional_present(d: Mapping[str, object], key: str) -> bool:
@@ -581,11 +586,13 @@ class HardConstraints:
                 "hard_constraints.minimum_output_tokens",
                 lo=1,
             ),
-            requires_tool_use=_opt_bool_field(
+            requires_tool_use=_optional_bool_field(
                 dd, "requires_tool_use", "hard_constraints"
             ),
-            requires_vision=_opt_bool_field(dd, "requires_vision", "hard_constraints"),
-            requires_reasoning_mode=_opt_bool_field(
+            requires_vision=_optional_bool_field(
+                dd, "requires_vision", "hard_constraints"
+            ),
+            requires_reasoning_mode=_optional_bool_field(
                 dd, "requires_reasoning_mode", "hard_constraints"
             ),
             required_provider=_v_opt_provider(
@@ -940,6 +947,12 @@ class CapabilityAssessment:
         _ = _v_tuple_of(
             self.evidence, EvidenceRef, "capability_assessment.evidence"
         )
+        if self.human_override is not None:
+            _ = _v_instance_of(
+                self.human_override,
+                HumanOverride,
+                "capability_assessment.human_override",
+            )
 
         if self.rating is None:
             # Unknown capability: no partial provenance state exists.

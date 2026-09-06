@@ -246,6 +246,27 @@ class HardConstraintsContract(unittest.TestCase):
             HardConstraints.from_dict(hc.to_dict()).requires_reasoning_mode, True
         )
 
+    def test_explicit_null_requires_field_rejected(self) -> None:
+        # An explicitly present null is malformed, never "not required":
+        # malformed external input must not silently relax a hard requirement.
+        for key in ("requires_tool_use", "requires_vision", "requires_reasoning_mode"):
+            with self.subTest(key=key):
+                with self.assertRaises(SelectionContractValidationError):
+                    _ = HardConstraints.from_dict({key: None})
+
+    def test_absent_and_explicit_false_requires_fields(self) -> None:
+        # Absent means not required: all three are false.
+        hc = HardConstraints.from_dict({})
+        self.assertIs(hc.requires_tool_use, False)
+        self.assertIs(hc.requires_vision, False)
+        self.assertIs(hc.requires_reasoning_mode, False)
+        self.assertEqual(hc.to_dict(), {})
+        # An explicit false is valid and canonicalizes back to an omitted
+        # false field.
+        false_hc = HardConstraints.from_dict({"requires_tool_use": False})
+        self.assertIs(false_hc.requires_tool_use, False)
+        self.assertEqual(false_hc.to_dict(), {})
+
     def test_required_model_structured_object(self) -> None:
         hc = HardConstraints(
             required_model=ModelRef(provider="openai", model="example-model")
@@ -758,6 +779,30 @@ class CapabilityAssessmentContract(unittest.TestCase):
                     rating=4, decided_on="2026-09-06", rationale="r"
                 ),
             )
+
+    def test_direct_override_type_validated_at_construction(self) -> None:
+        # An ill-typed override must fail construction immediately with the
+        # contract validation error; it must never survive construction and
+        # later raise AttributeError/TypeError from effective_rating/to_dict.
+        ev = (EvidenceRef(source="benchmark", identifier="x"),)
+        ill_typed_overrides = (
+            {"rating": 3, "decided_on": "2026-09-06", "rationale": "r"},
+            "HumanOverride(rating=3, decided_on=..., rationale=...)",
+            3,
+            [HumanOverride(rating=3, decided_on="2026-09-06", rationale="r")],
+            object(),
+        )
+        for bad in ill_typed_overrides:
+            with self.subTest(override_type=type(bad).__name__):
+                with self.assertRaises(SelectionContractValidationError):
+                    _ = CapabilityAssessment(
+                        rating=4,
+                        evidence=ev,
+                        confidence="medium",
+                        assessed_on="2026-09-06",
+                        rationale="initial curation",
+                        human_override=cast(HumanOverride, _ill(bad)),
+                    )
 
 
 # ── CapabilityAssessments vector ──────────────────────────────────────────────
