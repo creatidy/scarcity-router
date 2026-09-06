@@ -54,6 +54,23 @@ semantics and the deterministic `ModelCatalog` container. No ratings, no
 profile minima, no profile resolver, no catalog artifact and no selector
 exist yet; populating the reviewed catalog is M2c.
 
+**M2c complete (2026-09-06).** The third M2 implementation slice is done:
+the first reviewable, provenance-bearing catalog content and calibrated
+task profiles (D-025, resolving U-006) — exactly four routing identities
+(`openai/gpt-5.6-luna/max`, `openai/gpt-5.6-sol/high`, `zai/glm-5.3/max`,
+`zai/glm-5.3-flash/max`) in `model-catalog.json` with curated six-
+dimensional ratings, evidenced tri-state hard properties, explicit
+`openai/codex` and `zai/coding_plan` capacity bindings and complete rating
+provenance (no `HumanOverride` for initial curation); the eight formal task
+profiles each carry exactly one selector-facing `calibrated_requirement`
+(`model-policy.json` policy_version 4, numeric minima now calibrated); the
+pure profile-expansion mechanism (`TaskProfileDefinition` /
+`TaskProfileCatalog.resolve`) lives beside the M2b types; calibration
+acceptance tests pin the capability-only eligible sets; the rationale and
+evidence are documented in `docs/model-calibration.md`. No scarcity, no
+reservations, no selector and no catalog expansion exist yet; the next
+implementation slice is M2d.
+
 ## M0 — Repository foundation
 
 **Outcome:** A new contributor or agent can understand the product and begin M1
@@ -258,9 +275,12 @@ Implementation proceeds in small, deterministic slices:
   to M2c), hard constraints, model-catalog schema/provenance/override types
   and capacity-binding fields against the v3 scope identities. Still no
   scarcity selector.
-- **M2c — curated initial ratings and profile calibration.** Populate only
-  Luna, Sol, GLM-5.3 and GLM-5.3-Flash with explicit provenance; freeze
-  profile minima through scenario tests (resolves U-006).
+- **M2c — curated initial ratings and profile calibration (complete
+  2026-09-06).** Populated only Luna, Sol, GLM-5.3 and GLM-5.3-Flash with
+  explicit provenance in `model-catalog.json`; froze the eight profile
+  minima as `calibrated_requirement` in `model-policy.json` and implemented
+  the pure profile-expansion mechanism; scenario tests pin the
+  capability-only eligible sets (resolves U-006, D-025).
 - **M2d — scarcity and policy primitives.** Candidate capacity applicability,
   scarcity aggregation, reservations, unknown policy, the Z.ai blackout and
   reset/replenishment visibility. No broad external integrations required.

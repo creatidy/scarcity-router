@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "policy_version": 3,
-  "updated_at": "2026-09-05",
+  "policy_version": 4,
+  "updated_at": "2026-09-06",
   "versioning": {
     "schema_version": {
       "meaning": "The machine-readable artifact shape.",
@@ -396,8 +396,9 @@
     "profiles_are_selector_facing": true,
     "class_affinities_are_hints_not_requirements": true,
     "expansion_rule": "At selection time a profile expands into explicit per-dimension capability minima and hard requirements; class affinities provide role hints only.",
-    "numeric_minima_included": false,
-    "numeric_minima_status": "deferred_to_m2_calibration",
+    "numeric_minima_included": true,
+    "numeric_minima_status": "calibrated_m2c",
+    "numeric_minima_definition": "task_profiles[].calibrated_requirement is the sole selector-facing numeric definition of each profile; descriptive fields remain metadata.",
     "hard_requirements_remain_task_specific": true
   },
   "task_profiles": [
@@ -418,7 +419,15 @@
           "class_id": "execution_generalist",
           "relationship": "likely"
         }
-      ]
+      ],
+      "calibrated_requirement": {
+        "task_level": "L0",
+        "capability_minima": {
+          "tool_use": 2,
+          "writing_editorial": 2
+        },
+        "hard_constraints": {}
+      }
     },
     {
       "id": "routine_coding",
@@ -438,7 +447,18 @@
           "class_id": "execution_generalist",
           "relationship": "likely"
         }
-      ]
+      ],
+      "calibrated_requirement": {
+        "task_level": "L1",
+        "capability_minima": {
+          "reasoning": 2,
+          "coding": 3,
+          "tool_use": 3
+        },
+        "hard_constraints": {
+          "requires_tool_use": true
+        }
+      }
     },
     {
       "id": "deep_coding",
@@ -463,7 +483,19 @@
           "relationship": "alternative",
           "condition": "Any execution_generalist whose actual capability vector satisfies the required minima."
         }
-      ]
+      ],
+      "calibrated_requirement": {
+        "task_level": "L3",
+        "capability_minima": {
+          "reasoning": 4,
+          "coding": 5,
+          "tool_use": 4
+        },
+        "hard_constraints": {
+          "requires_tool_use": true,
+          "requires_reasoning_mode": true
+        }
+      }
     },
     {
       "id": "scientific_review",
@@ -482,7 +514,18 @@
           "class_id": "scientific_methodological_specialist",
           "relationship": "likely"
         }
-      ]
+      ],
+      "calibrated_requirement": {
+        "task_level": "L4",
+        "capability_minima": {
+          "reasoning": 4,
+          "scientific_methodological": 5,
+          "writing_editorial": 4
+        },
+        "hard_constraints": {
+          "requires_reasoning_mode": true
+        }
+      }
     },
     {
       "id": "editorial",
@@ -501,7 +544,15 @@
           "class_id": "orchestration_synthesis",
           "relationship": "likely"
         }
-      ]
+      ],
+      "calibrated_requirement": {
+        "task_level": "L2",
+        "capability_minima": {
+          "reasoning": 3,
+          "writing_editorial": 5
+        },
+        "hard_constraints": {}
+      }
     },
     {
       "id": "general_reasoning",
@@ -519,7 +570,15 @@
           "class_id": "execution_generalist",
           "relationship": "likely"
         }
-      ]
+      ],
+      "calibrated_requirement": {
+        "task_level": "L2",
+        "capability_minima": {
+          "reasoning": 4,
+          "writing_editorial": 3
+        },
+        "hard_constraints": {}
+      }
     },
     {
       "id": "orchestration",
@@ -545,7 +604,19 @@
           "class_id": "orchestration_synthesis",
           "relationship": "likely"
         }
-      ]
+      ],
+      "calibrated_requirement": {
+        "task_level": "L3",
+        "capability_minima": {
+          "reasoning": 4,
+          "writing_editorial": 5,
+          "tool_use": 5
+        },
+        "hard_constraints": {
+          "requires_tool_use": true,
+          "requires_reasoning_mode": true
+        }
+      }
     },
     {
       "id": "translation",
@@ -570,7 +641,15 @@
           "class_id": "translation_editorial_specialist",
           "relationship": "likely"
         }
-      ]
+      ],
+      "calibrated_requirement": {
+        "task_level": "L4",
+        "capability_minima": {
+          "writing_editorial": 4,
+          "translation_multilingual": 5
+        },
+        "hard_constraints": {}
+      }
     }
   ],
   "task_level_relationship": {

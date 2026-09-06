@@ -605,6 +605,126 @@ direction was chosen. Dates use UTC.
   provider/runtime changes. Populating reviewed ratings, minima and capacity
   bindings for Luna, Sol, GLM-5.3 and GLM-5.3-Flash is the M2c slice (U-006).
 
+### D-025 — Initial capability and task-profile calibration
+
+- **Status:** Accepted
+- **Date:** 2026-09-06
+- **Resolves:** U-006. U-007 (scarcity parameters) remains open for M2d.
+- **Decision:** M2c populates the first accepted content for the frozen
+  M2b contracts (D-024), curated by the owner's accepted workflow-role
+  calibration and verified against one bounded external evidence pass
+  (2026-09-06):
+  - **Four-model scope.** The catalog artifact `model-catalog.json`
+    (`catalog_version = 1`, `updated_on = 2026-09-06`) contains exactly four
+    routing identities: `openai/gpt-5.6-luna/max`, `openai/gpt-5.6-sol/high`,
+    `zai/glm-5.3/max` and `zai/glm-5.3-flash/max`. Reasoning effort is part
+    of the variant identity, never merged into the model name, and model
+    classes are never identities. Catalog expansion is a future explicit
+    decision.
+  - **Capability calibration.** The accepted rating matrix (frozen 1..5
+    scale, routing suitability in the owner's workflow) is: Luna
+    4/4/3/5/5/4; Sol 5/5/5/5/5/5; GLM-5.3 5/5/4/4/5/4; GLM-5.3-Flash
+    4/4/3/4/5/4 (dimension order: reasoning, coding,
+    scientific_methodological, writing_editorial, tool_use,
+    translation_multilingual). Sol's broad 5s are intentional — scarcity
+    policy owns preservation of premium capacity, not artificially lowered
+    capability. Every known rating carries at least one `EvidenceRef`, a
+    coarse confidence, `assessed_on = 2026-09-06` and a rationale; ratings
+    are not averaged, not percentile scores and never derived mechanically
+    from one benchmark.
+  - **No HumanOverride for initial curation.** These are the original
+    curated ratings; `human_override` is absent everywhere. The owner's
+    role judgment is recorded as ordinary owner-observation evidence
+    (`accepted_workflow_role_calibration_2026-09-06`, containing no
+    personal quota values or account identity).
+  - **Evidence hierarchy.** (1) first-party OpenAI model documentation;
+    (2) first-party Z.ai/ZCode model documentation; (3) Artificial Analysis
+    as independent comparative evidence only; (4) owner observation for
+    workflow-specific judgment. AA evidence is never mapped mechanically
+    onto the internal scale and is never a live routing oracle (D-021).
+    EvidenceRef identifiers record canonical source URLs; the evidence pass
+    was a single bounded pass over first-party OpenAI, first-party Z.ai/ZCode
+    and Artificial Analysis documentation pages only, with no benchmark
+    archaeology and no recursive research.
+  - **Hard properties.** Luna/Sol: input context 1,050,000, output 128,000,
+    tools/vision/reasoning mode all known true. GLM-5.3: input 1,000,000,
+    output 128,000, tools true, reasoning mode true and vision **known
+    false** — an evidenced negative fact from the first-party GLM-5.3 model
+    guide (`https://docs.z.ai/guides/llm/glm-5.3`), which states GLM-5.3
+    currently supports **text-only inputs** for GLM Coding Plan users; it is
+    not inferred from Flash being multimodal, and a known negative serializes
+    explicitly (`"supports_vision": false`), never as an omitted unknown.
+    GLM-5.3-Flash: input 1,000,000, output 128,000, tools/vision/reasoning
+    mode known true — always-on thinking with recommended
+    `reasoning_effort: max` is first-party documented
+    (`https://docs.z.ai/guides/vlm/glm-5.3-flash`). Both GLM output
+    allowances are explicit first-party model/Coding Plan documentation
+    (128K maximum output), not copied from a local ZCode UI setting and not
+    carried over from an older GLM generation. No `model_version`
+    string is invented; `model_version_date` records evidenced dates
+    (GPT-5.6 family GA 2026-07-09 after the 2026-06-26 Sol preview; GLM-5.3
+    announcement 2026-08-14, with Z.ai's release-notes entry labeled
+    2026-08-18; GLM-5.3-Flash 2026-08-26).
+  - **Capacity bindings.** Each OpenAI entry binds to exactly
+    `openai/codex`; each Z.ai entry binds to exactly `zai/coding_plan`
+    (M2a v3 scope identities). No entry keeps unknown applicability
+    (`capacity_bindings = None`) and no entry has an empty binding set.
+    Absence of an additional OpenAI binding is deliberate: the additional
+    live bucket observed in M1 may be a provider-specific reserve/alternate
+    route, and no evidence shows Luna or Sol necessarily consumes it. No
+    private/non-public live scope identifier is recorded, and no binding is
+    inferred from `window_id`, `limitName` or `normalModelSlug`.
+  - **Calibrated task profiles.** All eight formal profile IDs keep their
+    descriptive entries and gain exactly one selector-facing numeric
+    definition, `calibrated_requirement`, in `model-policy.json`
+    (`schema_version` stays 1; `policy_version` 3 → 4;
+    `numeric_minima_included = true`;
+    `numeric_minima_status = calibrated_m2c`): mechanical L0
+    (tool_use ≥ 2, writing_editorial ≥ 2); routine_coding L1
+    (reasoning ≥ 2, coding ≥ 3, tool_use ≥ 3, requires_tool_use);
+    deep_coding L3 (reasoning ≥ 4, coding ≥ 5, tool_use ≥ 4,
+    requires_tool_use + requires_reasoning_mode); scientific_review L4
+    (reasoning ≥ 4, scientific_methodological ≥ 5, writing_editorial ≥ 4,
+    requires_reasoning_mode); editorial L2 (reasoning ≥ 3,
+    writing_editorial ≥ 5); general_reasoning L2 (reasoning ≥ 4,
+    writing_editorial ≥ 3); orchestration L3 (reasoning ≥ 4,
+    writing_editorial ≥ 5, tool_use ≥ 5, requires_tool_use +
+    requires_reasoning_mode); translation L4 (writing_editorial ≥ 4,
+    translation_multilingual ≥ 5) — deliberately L4 because the initial
+    profile means publication-quality translation, not casual translation.
+  - **Profile expansion mechanism.** `TaskProfileDefinition` (safe profile
+    ID + typed stored requirement; no model/provider/class affinity fields)
+    and `TaskProfileCatalog` (unique IDs, deterministic serialization,
+    exact lookup) live in `scarcity_router/selection_types.py` next to the
+    M2b types. `resolve(profile_id)` is the only production profile
+    resolver: a pure expansion returning the calibrated stored
+    `TaskRequirement` — no capability inference, no model lookup, no
+    scarcity, no filesystem access (the caller provides typed data) and no
+    merge with explicit task inputs, which belongs to later selector input
+    assembly.
+  - **Capability-only scenario expectations.** Tests prove the calibration
+    expresses the intended routing distinctions: mechanical,
+    routine_coding and general_reasoning admit all four models;
+    deep_coding admits Sol and GLM-5.3 (GLM-5.3 substitutes for Sol on
+    deep technical work); scientific_review and translation admit only
+    Sol; editorial and orchestration admit Luna and Sol (Luna is a viable
+    orchestration/editorial model); Flash stays a real professional-
+    capability model rather than an L0 toy. These are capability-only
+    expectations, not selector decisions; no scarcity or select logic
+    exists in M2c.
+- **Reason:** M2b built validated contracts but deliberately populated no
+  values; routing quality depends on curated, provenance-bearing content
+  that a human can review and change deliberately. The calibration encodes
+  the owner's accepted role structure — Sol as protected specialist, GLM-5.3
+  as technical peer to Sol, Luna as orchestration/editorial workhorse,
+  Flash as capable execution generalist — while keeping capability strictly
+  separate from scarcity.
+- **Boundary:** Catalog/policy content, the two profile core types and
+  calibration tests only. No scarcity penalty, labels, reservations,
+  capacity aggregation, provider health, replenishment, AA client, selector,
+  ranking, simulation, REST/MCP, new providers or additional models. No
+  changes to `capacity.py`, provider adapters or `status.py`.
+
 ## Unresolved decisions
 
 ### U-001 — Codex binary discovery and compatibility
@@ -718,9 +838,13 @@ direction was chosen. Dates use UTC.
 - No exact model scores are accepted yet.
 - Evidence needed: documented benchmark/experience sources, dated model
   versions, confidence and owner review during M2.
-- **Status:** The rating contract, scale and provenance shape are frozen by
-  D-020, but no rating value is accepted. Populating Luna, Sol, GLM-5.3 and
-  GLM-5.3-Flash with provenance and freezing profile minima is the M2c slice.
+- **Status:** RESOLVED by M2c / D-025 (2026-09-06). The four-model catalog
+  (`model-catalog.json`) and the eight calibrated task profiles
+  (`model-policy.json`, `calibrated_requirement`) are populated with
+  provenance, confidence and rationale, and are pinned by calibration
+  acceptance tests (`tests/test_model_calibration.py`) and documented in
+  `docs/model-calibration.md`. Future rating changes follow D-025's update
+  governance.
 
 ### U-007 — Scarcity parameters and policy boundaries
 
@@ -729,7 +853,8 @@ direction was chosen. Dates use UTC.
 - Reset proximity is preserved but not included in the first formula.
 - **Status:** Scarcity aggregation invariants are frozen by D-020; the
   penalty function and label thresholds remain open for scenario calibration
-  (M2c/M2d).
+  (M2d). Profile minima are no longer part of this decision — they were
+  calibrated by M2c (D-025, resolving U-006).
 
 ### U-008 — Package, CLI and final project name
 

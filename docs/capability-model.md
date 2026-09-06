@@ -80,9 +80,10 @@ forbidden. The intended rubric is approximately:
 | 4 | Strong / expert-grade. |
 | 5 | Exceptional / frontier-grade for the dimension. |
 
-These are routing rubrics, not scientific measurements. Exact per-model ratings
-are deliberately not part of the planning freeze; populating them with
-provenance is the M2c calibration slice (U-006).
+These are routing rubrics, not scientific measurements. The accepted
+per-model ratings are curated in [`model-catalog.json`](../model-catalog.json)
+with full provenance (M2c, D-025) and documented in
+[`docs/model-calibration.md`](model-calibration.md).
 
 ## TaskRequirement contract
 
@@ -111,10 +112,13 @@ requirements are a validation error, never heuristically resolved.
 (`scarcity_router/selection_types.py`) is a resolved requirement storing
 exactly the first three parts — `task_level`, `capability_minima` and
 `hard_constraints`. Profile expansion is a *construction pathway* into those
-three parts, not a fourth serialized field. The expansion mechanism and the
-calibrated profile definitions are owned by M2c, and no profile resolver
-exists in production code until the numeric minima they would expand are
-accepted (U-006); M2b cannot produce them, so it forbids them instead.
+three parts, not a fourth serialized field. M2c (D-025) implemented the
+expansion mechanism and the calibrated profile definitions:
+`TaskProfileDefinition.to_requirement()` and the authoritative
+`TaskProfileCatalog.resolve(profile_id)` return exactly the calibrated stored
+requirement — pure, with no capability inference, no model lookup and no
+merge with explicit task inputs (that merge belongs to later selector input
+assembly).
 
 The canonical machine-readable definitions for capability classes, profile
 vocabulary, class/profile relationships and current workflow exemplars live in
@@ -191,8 +195,10 @@ deep_coding:
 ```
 
 This example shows structure, not accepted ratings or final file syntax.
-Final numeric minima are not assigned by the planning freeze; calibrating them
-through scenario tests is the M2c slice. Advanced clients may supply raw
+The accepted numeric minima are calibrated per profile as
+`calibrated_requirement` in [`model-policy.json`](../model-policy.json)
+(M2c, D-025) and verified through capability-only scenario tests.
+Advanced clients may supply raw
 capability minima and hard constraints directly.
 Profile definitions must live in one catalog/config source, not duplicated in
 CLI, REST, MCP or selector branches.
@@ -261,9 +267,11 @@ Each entry carries, conceptually:
   (the M2b contract precedes the M2c population) and serializes entries
   sorted by `(provider, model, variant)` independent of insertion order.
 
-Exact ratings, provenance values and profile minima are deliberately not
-populated by the planning freeze. They are established as a separate,
-reviewable M2c artifact and must not be inferred solely from price or vendor
+The accepted values are established as reviewable artifacts:
+[`model-catalog.json`](../model-catalog.json) for ratings, provenance and
+capacity bindings and [`model-policy.json`](../model-policy.json) for profile
+minima, with rationale in [`docs/model-calibration.md`](model-calibration.md).
+They must not be inferred solely from price or vendor
 marketing.
 
 ## Governance and uncertainty

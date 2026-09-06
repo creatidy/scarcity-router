@@ -1,0 +1,513 @@
+{
+  "catalog_version": 1,
+  "updated_on": "2026-09-06",
+  "entries": [
+    {
+      "identity": {
+        "provider": "openai",
+        "model": "gpt-5.6-luna",
+        "variant": "max"
+      },
+      "display_name": "GPT-5.6 Luna Max",
+      "hard_properties": {
+        "input_context_tokens": 1050000,
+        "output_tokens": 128000,
+        "supports_tool_use": true,
+        "supports_vision": true,
+        "supports_reasoning_mode": true
+      },
+      "capabilities": {
+        "reasoning": {
+          "rating": 4,
+          "evidence": [
+            {
+              "source": "official_docs",
+              "identifier": "https://openai.com/index/gpt-5-6/",
+              "date": "2026-07-09"
+            },
+            {
+              "source": "owner_observation",
+              "identifier": "accepted_workflow_role_calibration_2026-09-06",
+              "date": "2026-09-06"
+            }
+          ],
+          "confidence": "medium",
+          "assessed_on": "2026-09-06",
+          "rationale": "Strong orchestration-grade professional reasoning below the family's escalation ceiling."
+        },
+        "coding": {
+          "rating": 4,
+          "evidence": [
+            {
+              "source": "official_docs",
+              "identifier": "https://openai.com/index/gpt-5-6/",
+              "date": "2026-07-09"
+            },
+            {
+              "source": "official_docs",
+              "identifier": "https://developers.openai.com/api/docs/models",
+              "date": "2026-09-06"
+            }
+          ],
+          "confidence": "high",
+          "assessed_on": "2026-09-06",
+          "rationale": "Strong family-level coding and agentic capability at cost-sensitive positioning."
+        },
+        "scientific_methodological": {
+          "rating": 3,
+          "evidence": [
+            {
+              "source": "owner_observation",
+              "identifier": "accepted_workflow_role_calibration_2026-09-06",
+              "date": "2026-09-06"
+            }
+          ],
+          "confidence": "medium",
+          "assessed_on": "2026-09-06",
+          "rationale": "Usable scientific/methodological work; specialist adjudication is reserved for Sol in the accepted workflow."
+        },
+        "writing_editorial": {
+          "rating": 5,
+          "evidence": [
+            {
+              "source": "owner_observation",
+              "identifier": "accepted_workflow_role_calibration_2026-09-06",
+              "date": "2026-09-06"
+            },
+            {
+              "source": "official_docs",
+              "identifier": "https://developers.openai.com/api/docs/models",
+              "date": "2026-09-06"
+            }
+          ],
+          "confidence": "high",
+          "assessed_on": "2026-09-06",
+          "rationale": "Excellent synthesis and editorial behavior in the owner's real orchestration workflows."
+        },
+        "tool_use": {
+          "rating": 5,
+          "evidence": [
+            {
+              "source": "official_docs",
+              "identifier": "https://developers.openai.com/api/docs/models",
+              "date": "2026-09-06"
+            },
+            {
+              "source": "owner_observation",
+              "identifier": "accepted_workflow_role_calibration_2026-09-06",
+              "date": "2026-09-06"
+            }
+          ],
+          "confidence": "high",
+          "assessed_on": "2026-09-06",
+          "rationale": "First-party agentic emphasis (programmatic tool calling, computer use); excellent tool workflow behavior observed."
+        },
+        "translation_multilingual": {
+          "rating": 4,
+          "evidence": [
+            {
+              "source": "owner_observation",
+              "identifier": "accepted_workflow_role_calibration_2026-09-06",
+              "date": "2026-09-06"
+            }
+          ],
+          "confidence": "medium",
+          "assessed_on": "2026-09-06",
+          "rationale": "Strong professional multilingual output; not the reserved publication-quality translation specialist."
+        }
+      },
+      "capacity_bindings": [
+        {
+          "provider": "openai",
+          "scope_id": "codex"
+        }
+      ],
+      "model_version_date": "2026-07-09",
+      "last_reviewed_on": "2026-09-06"
+    },
+    {
+      "identity": {
+        "provider": "openai",
+        "model": "gpt-5.6-sol",
+        "variant": "high"
+      },
+      "display_name": "GPT-5.6 Sol High",
+      "hard_properties": {
+        "input_context_tokens": 1050000,
+        "output_tokens": 128000,
+        "supports_tool_use": true,
+        "supports_vision": true,
+        "supports_reasoning_mode": true
+      },
+      "capabilities": {
+        "reasoning": {
+          "rating": 5,
+          "evidence": [
+            {
+              "source": "official_docs",
+              "identifier": "https://openai.com/index/gpt-5-6/",
+              "date": "2026-07-09"
+            },
+            {
+              "source": "artificial_analysis",
+              "identifier": "https://artificialanalysis.ai/models/gpt-5-6-sol",
+              "date": "2026-09-06"
+            },
+            {
+              "source": "owner_observation",
+              "identifier": "accepted_workflow_role_calibration_2026-09-06",
+              "date": "2026-09-06"
+            }
+          ],
+          "confidence": "high",
+          "assessed_on": "2026-09-06",
+          "rationale": "Flagship positioning for complex professional work; independent comparison places it at the frontier."
+        },
+        "coding": {
+          "rating": 5,
+          "evidence": [
+            {
+              "source": "official_docs",
+              "identifier": "https://openai.com/index/gpt-5-6/",
+              "date": "2026-07-09"
+            },
+            {
+              "source": "official_docs",
+              "identifier": "https://developers.openai.com/api/docs/models",
+              "date": "2026-09-06"
+            },
+            {
+              "source": "artificial_analysis",
+              "identifier": "https://artificialanalysis.ai/models/gpt-5-6-sol",
+              "date": "2026-09-06"
+            }
+          ],
+          "confidence": "high",
+          "assessed_on": "2026-09-06",
+          "rationale": "First-party best-coding-model positioning with state-of-the-art coding claims."
+        },
+        "scientific_methodological": {
+          "rating": 5,
+          "evidence": [
+            {
+              "source": "official_docs",
+              "identifier": "https://openai.com/index/gpt-5-6/",
+              "date": "2026-07-09"
+            },
+            {
+              "source": "owner_observation",
+              "identifier": "accepted_workflow_role_calibration_2026-09-06",
+              "date": "2026-09-06"
+            }
+          ],
+          "confidence": "high",
+          "assessed_on": "2026-09-06",
+          "rationale": "First-party SOTA science positioning; designated scientific adjudication specialist in the accepted workflow."
+        },
+        "writing_editorial": {
+          "rating": 5,
+          "evidence": [
+            {
+              "source": "owner_observation",
+              "identifier": "accepted_workflow_role_calibration_2026-09-06",
+              "date": "2026-09-06"
+            },
+            {
+              "source": "official_docs",
+              "identifier": "https://developers.openai.com/api/docs/models",
+              "date": "2026-09-06"
+            }
+          ],
+          "confidence": "high",
+          "assessed_on": "2026-09-06",
+          "rationale": "Publication-quality editorial behavior; flagship knowledge-work positioning."
+        },
+        "tool_use": {
+          "rating": 5,
+          "evidence": [
+            {
+              "source": "official_docs",
+              "identifier": "https://developers.openai.com/api/docs/models",
+              "date": "2026-09-06"
+            },
+            {
+              "source": "owner_observation",
+              "identifier": "accepted_workflow_role_calibration_2026-09-06",
+              "date": "2026-09-06"
+            }
+          ],
+          "confidence": "high",
+          "assessed_on": "2026-09-06",
+          "rationale": "Flagship agentic emphasis: programmatic tool calling, computer use and multi-agent support."
+        },
+        "translation_multilingual": {
+          "rating": 5,
+          "evidence": [
+            {
+              "source": "owner_observation",
+              "identifier": "accepted_workflow_role_calibration_2026-09-06",
+              "date": "2026-09-06"
+            },
+            {
+              "source": "official_docs",
+              "identifier": "https://developers.openai.com/api/docs/models",
+              "date": "2026-09-06"
+            }
+          ],
+          "confidence": "high",
+          "assessed_on": "2026-09-06",
+          "rationale": "Publication-quality translation specialist in the accepted role calibration."
+        }
+      },
+      "capacity_bindings": [
+        {
+          "provider": "openai",
+          "scope_id": "codex"
+        }
+      ],
+      "model_version_date": "2026-07-09",
+      "last_reviewed_on": "2026-09-06"
+    },
+    {
+      "identity": {
+        "provider": "zai",
+        "model": "glm-5.3",
+        "variant": "max"
+      },
+      "display_name": "GLM-5.3 Max",
+      "hard_properties": {
+        "input_context_tokens": 1000000,
+        "output_tokens": 128000,
+        "supports_tool_use": true,
+        "supports_vision": false,
+        "supports_reasoning_mode": true
+      },
+      "capabilities": {
+        "reasoning": {
+          "rating": 5,
+          "evidence": [
+            {
+              "source": "official_docs",
+              "identifier": "https://z.ai/blog/glm-5.3",
+              "date": "2026-08-14"
+            },
+            {
+              "source": "artificial_analysis",
+              "identifier": "https://artificialanalysis.ai/models/comparisons/glm-5-3-vs-gpt-5-6-sol-xhigh",
+              "date": "2026-09-06"
+            }
+          ],
+          "confidence": "high",
+          "assessed_on": "2026-09-06",
+          "rationale": "Frontier technical reasoning at max thinking; benchmarks are comparable to the GPT-5.6 frontier."
+        },
+        "coding": {
+          "rating": 5,
+          "evidence": [
+            {
+              "source": "official_docs",
+              "identifier": "https://z.ai/blog/glm-5.3",
+              "date": "2026-08-14"
+            },
+            {
+              "source": "artificial_analysis",
+              "identifier": "https://artificialanalysis.ai/models/comparisons/glm-5-3-vs-gpt-5-6-sol-xhigh",
+              "date": "2026-09-06"
+            }
+          ],
+          "confidence": "high",
+          "assessed_on": "2026-09-06",
+          "rationale": "Flagship coding strength: large coding gain over GLM-5.2 and open-source SOTA on public coding benchmarks."
+        },
+        "scientific_methodological": {
+          "rating": 4,
+          "evidence": [
+            {
+              "source": "owner_observation",
+              "identifier": "accepted_workflow_role_calibration_2026-09-06",
+              "date": "2026-09-06"
+            }
+          ],
+          "confidence": "medium",
+          "assessed_on": "2026-09-06",
+          "rationale": "Strong methodological work; not the designated scientific specialist in the accepted calibration."
+        },
+        "writing_editorial": {
+          "rating": 4,
+          "evidence": [
+            {
+              "source": "owner_observation",
+              "identifier": "accepted_workflow_role_calibration_2026-09-06",
+              "date": "2026-09-06"
+            }
+          ],
+          "confidence": "medium",
+          "assessed_on": "2026-09-06",
+          "rationale": "Strong professional writing; editorial quality is not the reserved specialist strength."
+        },
+        "tool_use": {
+          "rating": 5,
+          "evidence": [
+            {
+              "source": "official_docs",
+              "identifier": "https://z.ai/blog/glm-5.3",
+              "date": "2026-08-14"
+            },
+            {
+              "source": "owner_observation",
+              "identifier": "accepted_workflow_role_calibration_2026-09-06",
+              "date": "2026-09-06"
+            }
+          ],
+          "confidence": "high",
+          "assessed_on": "2026-09-06",
+          "rationale": "Long-horizon, tool-heavy agentic workflows are a first-party emphasis."
+        },
+        "translation_multilingual": {
+          "rating": 4,
+          "evidence": [
+            {
+              "source": "owner_observation",
+              "identifier": "accepted_workflow_role_calibration_2026-09-06",
+              "date": "2026-09-06"
+            }
+          ],
+          "confidence": "medium",
+          "assessed_on": "2026-09-06",
+          "rationale": "Capable multilingual work; publication-quality translation remains Sol's role."
+        }
+      },
+      "capacity_bindings": [
+        {
+          "provider": "zai",
+          "scope_id": "coding_plan"
+        }
+      ],
+      "model_version_date": "2026-08-14",
+      "last_reviewed_on": "2026-09-06"
+    },
+    {
+      "identity": {
+        "provider": "zai",
+        "model": "glm-5.3-flash",
+        "variant": "max"
+      },
+      "display_name": "GLM-5.3-Flash Max",
+      "hard_properties": {
+        "input_context_tokens": 1000000,
+        "output_tokens": 128000,
+        "supports_tool_use": true,
+        "supports_vision": true,
+        "supports_reasoning_mode": true
+      },
+      "capabilities": {
+        "reasoning": {
+          "rating": 4,
+          "evidence": [
+            {
+              "source": "official_docs",
+              "identifier": "https://docs.z.ai/guides/vlm/glm-5.3-flash",
+              "date": "2026-09-06"
+            },
+            {
+              "source": "artificial_analysis",
+              "identifier": "https://artificialanalysis.ai/models/glm-5-3-flash",
+              "date": "2026-09-06"
+            }
+          ],
+          "confidence": "medium",
+          "assessed_on": "2026-09-06",
+          "rationale": "Strong execution-grade reasoning; efficient hybrid architecture rather than flagship depth."
+        },
+        "coding": {
+          "rating": 4,
+          "evidence": [
+            {
+              "source": "official_docs",
+              "identifier": "https://docs.z.ai/guides/vlm/glm-5.3-flash",
+              "date": "2026-09-06"
+            },
+            {
+              "source": "official_docs",
+              "identifier": "https://docs.z.ai/release-notes/new-released",
+              "date": "2026-09-06"
+            }
+          ],
+          "confidence": "high",
+          "assessed_on": "2026-09-06",
+          "rationale": "Coding and automation strength at max effort approaches prior-flagship quality at flash cost."
+        },
+        "scientific_methodological": {
+          "rating": 3,
+          "evidence": [
+            {
+              "source": "owner_observation",
+              "identifier": "accepted_workflow_role_calibration_2026-09-06",
+              "date": "2026-09-06"
+            }
+          ],
+          "confidence": "medium",
+          "assessed_on": "2026-09-06",
+          "rationale": "Competent scientific methodology; not specialist-grade."
+        },
+        "writing_editorial": {
+          "rating": 4,
+          "evidence": [
+            {
+              "source": "owner_observation",
+              "identifier": "accepted_workflow_role_calibration_2026-09-06",
+              "date": "2026-09-06"
+            },
+            {
+              "source": "official_docs",
+              "identifier": "https://docs.z.ai/release-notes/new-released",
+              "date": "2026-09-06"
+            }
+          ],
+          "confidence": "medium",
+          "assessed_on": "2026-09-06",
+          "rationale": "Good professional writing for document and office workflows."
+        },
+        "tool_use": {
+          "rating": 5,
+          "evidence": [
+            {
+              "source": "official_docs",
+              "identifier": "https://docs.z.ai/guides/vlm/glm-5.3-flash",
+              "date": "2026-09-06"
+            },
+            {
+              "source": "owner_observation",
+              "identifier": "accepted_workflow_role_calibration_2026-09-06",
+              "date": "2026-09-06"
+            }
+          ],
+          "confidence": "high",
+          "assessed_on": "2026-09-06",
+          "rationale": "Autonomous goal breakdown, tool invocation and output review; excellent execution in the owner's workflow."
+        },
+        "translation_multilingual": {
+          "rating": 4,
+          "evidence": [
+            {
+              "source": "owner_observation",
+              "identifier": "accepted_workflow_role_calibration_2026-09-06",
+              "date": "2026-09-06"
+            }
+          ],
+          "confidence": "medium",
+          "assessed_on": "2026-09-06",
+          "rationale": "Good multilingual capability; publication-quality translation is reserved."
+        }
+      },
+      "capacity_bindings": [
+        {
+          "provider": "zai",
+          "scope_id": "coding_plan"
+        }
+      ],
+      "model_version_date": "2026-08-26",
+      "last_reviewed_on": "2026-09-06"
+    }
+  ]
+}
