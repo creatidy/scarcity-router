@@ -26,8 +26,10 @@ and simulation live in `scarcity_router/selector.py` and
 documented in [`docs/selection-policy.md`](docs/selection-policy.md).
 M2 implementation is complete and closed as **PASS** (2026-09-06) after live
 acceptance in the owner's real workflow. There is not yet an installable
-package, final executable name, REST service or MCP server; M3 (REST and
-MCP) is the next planned milestone.
+package, final executable name, REST service or MCP server; the M3a planning
+gate has frozen the future REST and MCP contracts in
+[`docs/machine-interfaces.md`](docs/machine-interfaces.md) (D-028), with the
+transports themselves still to be implemented under M3.
 
 ## Repository
 
@@ -262,6 +264,7 @@ Each topic has one primary source of truth:
 | Subscription quota and provider capacity | [`docs/capacity-model.md`](docs/capacity-model.md) |
 | Task levels, profiles and model capabilities | [`docs/capability-model.md`](docs/capability-model.md) |
 | Eligibility, scarcity, reservation and ranking | [`docs/selection-policy.md`](docs/selection-policy.md) |
+| REST and MCP machine-interface contracts | [`docs/machine-interfaces.md`](docs/machine-interfaces.md) |
 | Provider adapter expectations | [`docs/providers.md`](docs/providers.md) |
 | Security invariants and threat boundaries | [`docs/security.md`](docs/security.md) |
 | Experimentally established facts | [`docs/poc-evidence.md`](docs/poc-evidence.md) |
