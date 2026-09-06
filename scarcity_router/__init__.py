@@ -47,11 +47,15 @@ Public API — deterministic selector (M2e, D-027):
     SELECTOR_MODE_BALANCED, SELECTOR_MODES, EXCLUSION_STAGES,
     SELECTION_REASON_CODES
 
-The selector is pure: callers supply the catalog, the resolved requirement,
-the policy, the current normalized snapshots, the replenishment states and
-one timezone-aware evaluation instant. Application composition (artifact
-loading, status collection, rendering) lives in ``selection_app``/``cli``;
-simulation re-runs this same selector (``simulation``).
+Public API — simulation over the same selector (M2e, D-027):
+    CapacityPercentageOverride, SimulationOverrides, SimulationResult,
+    apply_capacity_overrides, simulate_selection
+
+The selector and simulation are pure: callers supply the catalog, the
+resolved requirement, the policy, the current normalized snapshots, the
+replenishment states and one timezone-aware evaluation instant. Application
+composition (artifact loading, status collection, rendering) lives in
+``selection_app``/``cli``.
 """
 
 from __future__ import annotations
@@ -114,6 +118,13 @@ from .selector import (
     select_model,
     tighten_requirement,
 )
+from .simulation import (
+    CapacityPercentageOverride,
+    SimulationOverrides,
+    SimulationResult,
+    apply_capacity_overrides,
+    simulate_selection,
+)
 from .selection_types import (
     CAPABILITY_DIMENSIONS,
     CONFIDENCE_VALUES,
@@ -163,6 +174,7 @@ __all__ = [
     "CapacityDiagnostic",
     "CapacityError",
     "CapabilityMinima",
+    "CapacityPercentageOverride",
     "CapacityScopeRef",
     "CapacitySnapshot",
     "CapacityValidationError",
@@ -187,12 +199,15 @@ __all__ = [
     "SelectionContractValidationError",
     "SelectionDecision",
     "SelectorPolicy",
+    "SimulationOverrides",
+    "SimulationResult",
     "TaskRequirement",
     "UnknownCapacityDecision",
     "UserPolicy",
     "WeeklyBlackoutRule",
     "apply_replenishment_mode",
     "apply_unknown_capacity_mode",
+    "apply_capacity_overrides",
     "assess_scarcity",
     "capability_margin",
     "evaluate_blackouts",
@@ -203,6 +218,7 @@ __all__ = [
     "scarcity_label",
     "scarcity_penalty_units",
     "select_model",
+    "simulate_selection",
     "tighten_requirement",
 ]
 
