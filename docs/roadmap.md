@@ -137,9 +137,21 @@ Owner closeout choices:
   visibility is sufficient for M2. Automatic live OpenAI reset-credit
   acquisition is deferred and is not a reason to reopen M2.
 
-Next planned milestone: M3 — REST and MCP. Status: not started. M3 begins
-only after an explicitly selected or created Forgejo issue/task, never
-merely because it is documented here.
+Next planned milestone: M3 — REST and MCP. Status: M3a planning gate
+complete (2026-09-06); M3b/M3c not started. M3 began only from an explicitly
+created Forgejo issue (#45, M3a), never merely because it is documented here.
+
+**M3 planning gate (2026-09-06, M3a).** The REST and MCP machine-interface
+contracts are frozen in `docs/machine-interfaces.md` (D-028) before any
+transport is implemented: the four-endpoint REST surface, the three stdio
+MCP tools calling the application directly, no-solution-as-HTTP-200 error
+semantics with a closed `invalid_request`/`internal_error` vocabulary,
+loopback-only default binding with no authentication layer, the side-effect
+wording inheriting D-018, the separate capacity/envelope/catalog/policy
+version boundaries, the CLI/REST/MCP parity requirement, the U-008 M3
+disposition (stable `scarcity_router` module identity, branding deferred)
+and the M3 implementation sequence below. No REST/MCP runtime, dependency or
+product source change was made.
 
 ## M0 — Repository foundation
 
@@ -374,15 +386,17 @@ acceptance items.
 
 ## M3 — REST and MCP
 
-**Status:** Not started. M3 begins only after an explicitly selected or
-created Forgejo issue/task.
+**Status:** M3a planning gate complete (2026-09-06); M3b/M3c not started.
+M3b starts only after M3a is merged into `develop` and only from an
+explicitly selected or created Forgejo issue.
 
 **Outcome:** External orchestrators can obtain the same status and decision as
 the CLI through stable, minimal machine interfaces.
 
 Scope:
 
-- versioned REST status/provider/select/simulate contracts;
+- versioned REST status/select/simulate contracts (the earlier
+  provider-listing endpoint ideas are deferred per D-028);
 - `127.0.0.1` default binding;
 - thin stdio MCP tools over the same application/core;
 - parity and contract tests across CLI, REST and MCP;
@@ -391,6 +405,29 @@ Scope:
 No MCP-specific selection logic and no prompt proxy. If compound workflow
 recommendations exist by M3, REST/MCP expose the same bounded execution envelope
 rather than inventing interface-specific orchestration behavior.
+
+The interface semantics are frozen in
+[`docs/machine-interfaces.md`](machine-interfaces.md) (D-028).
+
+### M3 implementation sequence
+
+- **M3a — interface contract planning gate (complete 2026-09-06).** Froze
+  the REST/MCP contract document and D-028 with no runtime, dependency or
+  product source change.
+- **M3b — minimal local REST adapter.** Implements `/healthz`, `/v1/status`,
+  `/v1/select` and `/v1/simulate` over the existing application/core,
+  loopback-bound, with the frozen error envelopes. Must not start until M3a
+  is merged into `develop`. Any framework dependency is justified in the
+  M3b issue.
+- **M3c — thin stdio MCP adapter + parity tests.** Implements
+  `scarcity_status`, `scarcity_select` and `scarcity_simulate` calling the
+  application layer directly. May depend on M3b only for shared contract
+  fixtures/docs, never on runtime HTTP; MCP must not require the REST server
+  runtime. The official MCP Python SDK is adopted only if justified in the
+  M3c issue.
+- **M3 closeout.** Proves `direct application == CLI JSON == REST == MCP`
+  for representative deterministic scenarios, plus live acceptance in the
+  owner's real workflow.
 
 ## M4 — Minimal dashboard and recipes
 
