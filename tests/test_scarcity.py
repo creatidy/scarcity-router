@@ -371,12 +371,16 @@ class ScarcityAssessmentContractTests(unittest.TestCase):
         self.assertEqual(ScarcityAssessment.from_dict(payload), assessment)
 
     def test_unknown_omits_numeric_fields(self) -> None:
+        # Known applicability + unknown telemetry: the binding is preserved,
+        # only the numeric/governing fields are omitted.
         assessment = ScarcityAssessment(
             state="unknown",
             label="unknown",
             penalty_units=None,
             effective_remaining_percent=None,
-            applicable_scopes=(),
+            applicable_scopes=(
+                CapacityScopeRef(provider="zai", scope_id="coding_plan"),
+            ),
             governing_window=None,
             reason_codes=("missing_provider_snapshot",),
         )
@@ -384,15 +388,20 @@ class ScarcityAssessmentContractTests(unittest.TestCase):
         self.assertNotIn("penalty_units", payload)
         self.assertNotIn("effective_remaining_percent", payload)
         self.assertNotIn("governing_window", payload)
+        self.assertEqual(
+            payload["applicable_scopes"],
+            [{"provider": "zai", "scope_id": "coding_plan"}],
+        )
         self.assertEqual(ScarcityAssessment.from_dict(payload), assessment)
 
     def test_canonical_ordering(self) -> None:
+        zai_scope = CapacityScopeRef(provider="zai", scope_id="coding_plan")
         first = ScarcityAssessment(
             state="unknown",
             label="unknown",
             penalty_units=None,
             effective_remaining_percent=None,
-            applicable_scopes=(),
+            applicable_scopes=(zai_scope,),
             governing_window=None,
             reason_codes=("missing_scope_window", "missing_provider_snapshot"),
         )
@@ -401,7 +410,7 @@ class ScarcityAssessmentContractTests(unittest.TestCase):
             label="unknown",
             penalty_units=None,
             effective_remaining_percent=None,
-            applicable_scopes=(),
+            applicable_scopes=(zai_scope,),
             governing_window=None,
             reason_codes=("missing_provider_snapshot", "missing_scope_window"),
         )
@@ -411,13 +420,14 @@ class ScarcityAssessmentContractTests(unittest.TestCase):
         )
 
     def test_unknown_state_rejects_numeric_penalty(self) -> None:
+        zai_scope = CapacityScopeRef(provider="zai", scope_id="coding_plan")
         with self.assertRaises(SelectionContractValidationError):
             _ = ScarcityAssessment(
                 state="unknown",
                 label="unknown",
                 penalty_units=10000,
                 effective_remaining_percent=None,
-                applicable_scopes=(),
+                applicable_scopes=(zai_scope,),
                 governing_window=None,
                 reason_codes=("missing_provider_snapshot",),
             )
@@ -427,7 +437,7 @@ class ScarcityAssessmentContractTests(unittest.TestCase):
                 label="unknown",
                 penalty_units=None,
                 effective_remaining_percent=50,
-                applicable_scopes=(),
+                applicable_scopes=(zai_scope,),
                 governing_window=None,
                 reason_codes=("missing_provider_snapshot",),
             )
@@ -437,7 +447,7 @@ class ScarcityAssessmentContractTests(unittest.TestCase):
                 label="unknown",
                 penalty_units=None,
                 effective_remaining_percent=None,
-                applicable_scopes=(),
+                applicable_scopes=(zai_scope,),
                 governing_window=GoverningWindowEvidence(
                     scope=CapacityScopeRef(provider="openai", scope_id="codex"),
                     resource="tokens",
@@ -454,7 +464,9 @@ class ScarcityAssessmentContractTests(unittest.TestCase):
                 label="unknown",
                 penalty_units=None,
                 effective_remaining_percent=None,
-                applicable_scopes=(),
+                applicable_scopes=(
+                    CapacityScopeRef(provider="zai", scope_id="coding_plan"),
+                ),
                 governing_window=None,
                 reason_codes=(),
             )
@@ -547,7 +559,9 @@ class ScarcityAssessmentContractTests(unittest.TestCase):
         base = {
             "state": "unknown",
             "label": "unknown",
-            "applicable_scopes": [],
+            "applicable_scopes": [
+                {"provider": "zai", "scope_id": "coding_plan"}
+            ],
             "reason_codes": ["missing_provider_snapshot"],
         }
         with self.assertRaises(SelectionContractValidationError):
@@ -667,6 +681,99 @@ class ScarcityAssessmentContractTests(unittest.TestCase):
                 "capacity_exhausted",
             }),
         )
+
+
+class UnknownApplicabilityInvariantTests(unittest.TestCase):
+    """The unknown state's two mutually exclusive applicability classes."""
+
+    ZAI_SCOPE: CapacityScopeRef = CapacityScopeRef(
+        provider="zai", scope_id="coding_plan"
+    )
+    OPENAI_SCOPE: CapacityScopeRef = CapacityScopeRef(
+        provider="openai", scope_id="codex"
+    )
+
+    def _unknown(
+        self,
+        scopes: tuple[CapacityScopeRef, ...],
+        reason_codes: tuple[str, ...],
+    ) -> ScarcityAssessment:
+        return ScarcityAssessment(
+            state="unknown",
+            label="unknown",
+            penalty_units=None,
+            effective_remaining_percent=None,
+            applicable_scopes=scopes,
+            governing_window=None,
+            reason_codes=reason_codes,
+        )
+
+    def test_unknown_bindings_state_is_valid_and_round_trips(self) -> None:
+        assessment = self._unknown((), ("capacity_bindings_unknown",))
+        self.assertEqual(assessment.applicable_scopes, ())
+        self.assertEqual(
+            ScarcityAssessment.from_dict(assessment.to_dict()), assessment
+        )
+
+    def test_telemetry_unknown_with_empty_scopes_fails(self) -> None:
+        for code in (
+            "missing_provider_snapshot",
+            "provider_snapshot_not_ok",
+            "missing_scope_window",
+            "window_percentage_unknown",
+        ):
+            with self.subTest(reason=code):
+                with self.assertRaises(SelectionContractValidationError):
+                    _ = self._unknown((), (code,))
+
+    def test_bindings_unknown_with_scopes_fails(self) -> None:
+        with self.assertRaises(SelectionContractValidationError):
+            _ = self._unknown(
+                (self.OPENAI_SCOPE,), ("capacity_bindings_unknown",)
+            )
+
+    def test_mixed_applicability_semantics_fail(self) -> None:
+        with self.assertRaises(SelectionContractValidationError):
+            _ = self._unknown(
+                (self.OPENAI_SCOPE,),
+                ("capacity_bindings_unknown", "missing_provider_snapshot"),
+            )
+        with self.assertRaises(SelectionContractValidationError):
+            _ = self._unknown(
+                (),
+                ("capacity_bindings_unknown", "missing_scope_window"),
+            )
+
+    def test_multiple_telemetry_causes_with_known_scopes_round_trip(self) -> None:
+        assessment = self._unknown(
+            (self.OPENAI_SCOPE, self.ZAI_SCOPE),
+            ("missing_provider_snapshot", "window_percentage_unknown"),
+        )
+        self.assertEqual(
+            assessment.applicable_scopes,
+            (self.OPENAI_SCOPE, self.ZAI_SCOPE),
+        )
+        self.assertEqual(
+            ScarcityAssessment.from_dict(assessment.to_dict()), assessment
+        )
+
+    def test_from_dict_rejects_contradictory_serialized_state(self) -> None:
+        with self.assertRaises(SelectionContractValidationError):
+            _ = ScarcityAssessment.from_dict({
+                "state": "unknown",
+                "label": "unknown",
+                "applicable_scopes": [],
+                "reason_codes": ["missing_provider_snapshot"],
+            })
+        with self.assertRaises(SelectionContractValidationError):
+            _ = ScarcityAssessment.from_dict({
+                "state": "unknown",
+                "label": "unknown",
+                "applicable_scopes": [
+                    {"provider": "openai", "scope_id": "codex"}
+                ],
+                "reason_codes": ["capacity_bindings_unknown"],
+            })
 
 
 # ── Candidate capacity applicability ──────────────────────────────────────────

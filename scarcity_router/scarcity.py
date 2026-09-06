@@ -329,9 +329,11 @@ class ScarcityAssessment:
     or ``unavailable`` state always carries at least one code.
     ``applicable_scopes`` always names the candidate's applicable capacity
     scopes: empty only when the capacity bindings themselves are unknown
-    (``capacity_bindings = None``). Known bindings are preserved even when
-    their telemetry cannot be completely assessed — the failure is in the
-    telemetry, never in the applicability. A ``known`` state carries no
+    (``capacity_bindings = None``), which is exactly the state whose reason
+    code is ``capacity_bindings_unknown`` alone. Known bindings are preserved
+    even when their telemetry cannot be completely assessed — the failure is
+    in the telemetry, never in the applicability, and the two unknown classes
+    never mix. A ``known`` state carries no
     reason codes, and the governing window's scope always belongs to the
     applicable scopes. The stored scopes and codes are canonical (sorted),
     so equality and serialization are deterministic and independent of
@@ -408,6 +410,29 @@ class ScarcityAssessment:
                 raise SelectionContractValidationError(
                     "scarcity_assessment: unknown state must not claim "
                     + "capacity_exhausted"
+                )
+            # Applicability semantics: unknown applicability and unknown
+            # telemetry are mutually exclusive, and each pins the scopes.
+            # Empty applicable scopes are reserved for unknown bindings;
+            # telemetry causes mean the bindings are known and must be
+            # preserved.
+            if "capacity_bindings_unknown" in self.reason_codes:
+                if self.reason_codes != ("capacity_bindings_unknown",):
+                    raise SelectionContractValidationError(
+                        "scarcity_assessment: unknown applicability carries "
+                        + "exactly the 'capacity_bindings_unknown' reason "
+                        + "code; telemetry causes require known bindings"
+                    )
+                if self.applicable_scopes:
+                    raise SelectionContractValidationError(
+                        "scarcity_assessment: unknown applicability has no "
+                        + "normalized applicable scopes"
+                    )
+            elif not self.applicable_scopes:
+                raise SelectionContractValidationError(
+                    "scarcity_assessment: unknown telemetry requires at "
+                    + "least one applicable scope; empty applicable scopes "
+                    + "are reserved for unknown applicability"
                 )
             return
 
