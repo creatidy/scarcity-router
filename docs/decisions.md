@@ -517,6 +517,94 @@ direction was chosen. Dates use UTC.
   personal quota values or non-public bucket identifiers. No model prompt was
   issued.
 
+### D-024 — M2b task and model catalog core contracts
+
+- **Status:** Accepted
+- **Date:** 2026-09-06
+- **Decision:** M2b adds the provider-independent core types for the future
+  selector in `scarcity_router/selection_types.py` — frozen dataclasses with
+  construction-time validation, `from_dict()`/`to_dict()`, exact serialized
+  shapes, deterministic output, round-trip invariants and a dedicated error
+  family (`SelectionContractValidationError`, deliberately separate from
+  `CapacityValidationError`). The module is pure: standard library only, no
+  filesystem, network or environment access, no capacity/provider/status
+  changes and no `model-policy.json` loading at runtime.
+  - **TaskRequirement stored shape.** A resolved `TaskRequirement` stores
+    exactly three parts: `task_level` (validated `L0`–`L5` vocabulary, never a
+    capability score and never a source of minima), `capability_minima` and
+    `hard_constraints`.
+  - **Profile expansion is a construction pathway, not a fourth serialized
+    field.** M2c will define the calibrated profile definitions and the single
+    authoritative expansion mechanism. M2b deliberately implements no
+    profile resolver, because no numeric profile minima are accepted yet
+    (`model-policy.json` records `numeric_minima_status =
+    deferred_to_m2_calibration` and is unchanged by M2b).
+  - **Typed identity.** `ModelRef` replaces the stringly qualified
+    required-model form; `ModelIdentity` (`provider`, `model`, `variant`) is
+    the stable catalog identity, separate from display names, quota buckets,
+    provider aliases and capacity scopes; `CapacityScopeRef` is the exact
+    `(provider, scope_id)` identity of the v3 capacity contract (D-023) and
+    carries no window kind, no window id and no model data. Identifiers use
+    the capacity safe-ID grammar; supported model providers are exactly
+    `openai` and `zai` — adding one is an explicit contract/catalog change.
+  - **Capability minima.** `CapabilityMinima` is the fixed six-dimension
+    object: `None` = no minimum for this task, `1..5` = required minimum.
+    Zero, out-of-range values, bools, non-integers and unknown dimensions are
+    invalid. Minima are never averaged; no sufficiency scoring exists yet.
+  - **Hard constraints.** The frozen nine-member vocabulary with strict typed
+    validation (positive token minima, strict booleans, safe
+    variant/privacy identifiers) and a validated
+    `required_provider` ↔ `required_model.provider` contradiction rule:
+    contradictions are validation errors, never heuristically resolved.
+    `False` means "not required", never "must not support";
+    `privacy_constraint` is a safe opaque policy identifier with no values or
+    matching logic yet. Serialization is compact (`None` and false
+    `requires_*` are omitted).
+  - **Capability provenance.** A known rating (`1..5`) requires complete
+    provenance: at least one `EvidenceRef`, a coarse `low|medium|high`
+    confidence (no float scores), an assessment date (`YYYY-MM-DD`) and a
+    non-empty rationale; a naked rating is invalid. **Unknown catalog
+    capability is `rating: null`** — serialized explicitly, never `0`, never
+    an omitted dimension — and an unknown assessment serializes exactly
+    `{"rating": null}`; partial provenance on an unknown rating is not
+    representable. All six dimensions are required in every serialized
+    capability vector, so "well-formed unknown" is distinguishable from a
+    missing schema dimension; extra dimensions are rejected.
+  - **Human overrides.** `HumanOverride` (rating, decided_on, rationale; no
+    account identity) **preserves the source rating and evidence**: the
+    curated assessment is never mutated or replaced, both source and override
+    remain serialized/reviewable, and `effective_rating` is only a derived
+    view. An override requires an existing known base rating; original human
+    judgment belongs in ordinary evidence (M2c), not the override field.
+  - **Capacity bindings.** `ModelCatalogEntry.capacity_bindings`:
+    `None` = model-to-scope applicability is **unknown** and must never be
+    read as "consumes no subscription quota"; a non-empty tuple of
+    `CapacityScopeRef` = known applicability. **The empty binding set is
+    invalid** and must never serve as an optimistic "unmetered" state. A
+    known binding is the exact `(provider, scope_id)` pair; bindings must be
+    unique, serialize deterministically and use the model's own provider —
+    **cross-provider bindings are unsupported in the initial contract**
+    (no evidenced use case; requires an explicit future decision). M2b
+    defines the binding contract only; no real model is bound to a scope yet.
+  - **Catalog container.** `ModelCatalog` (`catalog_version >= 1`, UTC
+    `updated_on` date, entries) enforces unique model identities, admits an
+    empty catalog (the contract precedes the population) and serializes
+    entries sorted by `(provider, model, variant)`, independent of insertion
+    order. No production `model-catalog.json` artifact is created by M2b.
+- **Reason:** D-020 froze the selector input contracts conceptually; M2b
+  turns them into validated values so later slices can only construct
+  well-formed requirements, assessments and catalog entries. Provenance and
+  explicit unknown states are enforced at construction because a numeric
+  rating must never exist without reviewable evidence, and unknown capability
+  or unknown applicability must never silently degrade into zero, false or
+  "unmetered".
+- **Boundary:** Types, validation and deterministic serialization only.
+  M2b adds no actual catalog entries, no capability numeric ratings, no
+  profile numeric minima, no profile resolver, no sufficiency function, no
+  candidate filtering, no scarcity, no reservations, no selection and no
+  provider/runtime changes. Populating reviewed ratings, minima and capacity
+  bindings for Luna, Sol, GLM-5.3 and GLM-5.3-Flash is the M2c slice (U-006).
+
 ## Unresolved decisions
 
 ### U-001 — Codex binary discovery and compatibility
