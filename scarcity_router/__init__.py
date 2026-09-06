@@ -39,10 +39,19 @@ Public API — scarcity and resource-policy primitives (M2d, D-026):
         BlackoutDecision, evaluate_blackouts, ReplenishmentState,
         ReplenishmentDecision, apply_replenishment_mode, UserPolicy
 
-These types, validation and deterministic serialization only; they carry no
-ratings, no ranking modes, no candidate ordering and no selector (D-024,
-D-026). M2d assesses scarcity and evaluates resource policy for single
-candidates; M2e owns ranking and ``select``.
+Public API — deterministic selector (M2e, D-027):
+    SelectorPolicy, neutral_selector_policy, tighten_requirement,
+    HardConstraintFailure, CapabilityFailure, CandidateEvaluation,
+    SelectionDecision, select_model, capability_margin,
+    evaluate_hard_constraints, evaluate_capability_sufficiency,
+    SELECTOR_MODE_BALANCED, SELECTOR_MODES, EXCLUSION_STAGES,
+    SELECTION_REASON_CODES
+
+The selector is pure: callers supply the catalog, the resolved requirement,
+the policy, the current normalized snapshots, the replenishment states and
+one timezone-aware evaluation instant. Application composition (artifact
+loading, status collection, rendering) lives in ``selection_app``/``cli``;
+simulation re-runs this same selector (``simulation``).
 """
 
 from __future__ import annotations
@@ -88,6 +97,23 @@ from .scarcity import (
     scarcity_label,
     scarcity_penalty_units,
 )
+from .selector import (
+    EXCLUSION_STAGES,
+    SELECTION_REASON_CODES,
+    SELECTOR_MODES,
+    SELECTOR_MODE_BALANCED,
+    CapabilityFailure,
+    CandidateEvaluation,
+    HardConstraintFailure,
+    SelectionDecision,
+    SelectorPolicy,
+    capability_margin,
+    evaluate_capability_sufficiency,
+    evaluate_hard_constraints,
+    neutral_selector_policy,
+    select_model,
+    tighten_requirement,
+)
 from .selection_types import (
     CAPABILITY_DIMENSIONS,
     CONFIDENCE_VALUES,
@@ -113,6 +139,7 @@ from .selection_types import (
 __all__ = [
     "CAPABILITY_DIMENSIONS",
     "CONFIDENCE_VALUES",
+    "EXCLUSION_STAGES",
     "MAX_RATING",
     "MIN_RATING",
     "POLICY_REASON_CODES",
@@ -121,6 +148,9 @@ __all__ = [
     "SCARCITY_PENALTY_SCALE",
     "SCARCITY_REASON_CODES",
     "SCARCITY_STATES",
+    "SELECTION_REASON_CODES",
+    "SELECTOR_MODES",
+    "SELECTOR_MODE_BALANCED",
     "SUPPORTED_PROVIDERS",
     "TASK_LEVELS",
     "UNKNOWN_CAPACITY_MODES",
@@ -129,6 +159,7 @@ __all__ = [
     "BlackoutDecision",
     "CapabilityAssessment",
     "CapabilityAssessments",
+    "CapabilityFailure",
     "CapacityDiagnostic",
     "CapacityError",
     "CapabilityMinima",
@@ -136,8 +167,10 @@ __all__ = [
     "CapacitySnapshot",
     "CapacityValidationError",
     "CapacityWindow",
+    "CandidateEvaluation",
     "EvidenceRef",
     "GoverningWindowEvidence",
+    "HardConstraintFailure",
     "HardConstraints",
     "HumanOverride",
     "ModelCatalog",
@@ -152,6 +185,8 @@ __all__ = [
     "ScarcityAssessment",
     "SelectionContractError",
     "SelectionContractValidationError",
+    "SelectionDecision",
+    "SelectorPolicy",
     "TaskRequirement",
     "UnknownCapacityDecision",
     "UserPolicy",
@@ -159,10 +194,16 @@ __all__ = [
     "apply_replenishment_mode",
     "apply_unknown_capacity_mode",
     "assess_scarcity",
+    "capability_margin",
     "evaluate_blackouts",
+    "evaluate_capability_sufficiency",
+    "evaluate_hard_constraints",
     "evaluate_reservation",
+    "neutral_selector_policy",
     "scarcity_label",
     "scarcity_penalty_units",
+    "select_model",
+    "tighten_requirement",
 ]
 
 __version__ = "0.0.0"
