@@ -7,7 +7,7 @@ transport is implemented (M3a planning gate, decision D-028). Nothing here
 changes selection, scarcity, provider or capacity semantics; those remain
 owned by their existing authoritative documents.
 
-- **Status:** Frozen contract (M3a). REST v1 is implemented (M3b, D-029);
+- **Status:** Frozen contract (M3a). REST v1 is implemented (M3b, D-030);
   MCP is not yet implemented (M3c pending).
 - **Implementation:** M3b (minimal local REST adapter) and M3c (thin stdio
   MCP adapter + parity tests). See `docs/roadmap.md` for the frozen sequence.
@@ -503,7 +503,7 @@ Separate contracts carry separate versions; they are never collapsed:
 | `CapacitySnapshot.schema_version` | Capacity contract (`docs/capacity-model.md`) | `3` |
 | REST path prefix `/v1/` + envelope `schema_version` | Machine-interface contract (this document) | `1` |
 | `catalog_version` | Model catalog content version | `1` (current artifact) |
-| `policy_version` | Model policy/profile content version | `4` (current artifact) |
+| `policy_version` | Model policy/profile content version | `5` (current artifact) |
 
 The machine-interface contract includes **both its envelope and the
 serialized domain documents exposed inside it**. `CapacitySnapshot`,

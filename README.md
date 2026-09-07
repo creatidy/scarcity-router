@@ -29,7 +29,7 @@ acceptance in the owner's real workflow. There is not yet an installable
 package or final executable name. The M3a planning gate froze the REST and
 MCP contracts in
 [`docs/machine-interfaces.md`](docs/machine-interfaces.md) (D-028); the
-minimal loopback-only REST adapter is implemented (M3b, D-029), while the
+minimal loopback-only REST adapter is implemented (M3b, D-030), while the
 stdio MCP adapter is still to be implemented under M3c.
 
 ## Repository
@@ -243,7 +243,7 @@ when a normalized `ReplenishmentState` file is supplied.
 ## Local REST Service
 
 M3b adds a minimal, loopback-only REST adapter exposing the frozen machine
-interface v1 (D-028, D-029):
+interface v1 (D-028, D-030):
 
 ```bash
 uv run python -m scarcity_router.server            # binds 127.0.0.1:8765

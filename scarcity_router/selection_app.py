@@ -11,13 +11,13 @@ JSON output. All business logic stays in the pure core (``selector.py``,
 ``simulation.py``); this module never parses provider payloads and never
 issues model requests.
 
-Since M3b (D-029) the application layer also exposes a typed in-memory seam
+Since M3b (D-030) the application layer also exposes a typed in-memory seam
 (``select_from_inputs`` / ``simulate_from_inputs``) that takes already-typed
 inputs instead of file paths. The file-based CLI runners and the
 machine-interface adapters (REST, future MCP) call the same seam, so no
 transport owns requirement resolution or application semantics.
 Caller-supplied input violations raise ``ApplicationInputError`` so adapters
-can classify client errors by type (D-029).
+can classify client errors by type (D-030).
 
 The default artifact paths are the repository-root ``model-catalog.json``
 and ``model-policy.json`` of the current source tree — a provisional
@@ -38,7 +38,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import cast
 
-from .errors import ApplicationInputError, SelectionContractValidationError
+from .errors import (
+    ApplicationInputError,
+    SelectionContractValidationError,
+    SimulationOverrideApplicationError,
+)
 from .policy import ReplenishmentState, ReservationDecision
 from .selector import (
     EXCLUSION_STAGES,
@@ -231,7 +235,7 @@ def resolve_requirement(
     Caller-supplied input violations — the exclusivity rules, an unknown
     profile id and a non-monotone tightening — raise
     :class:`ApplicationInputError` so machine-interface adapters can classify
-    them as client errors by type (D-029).
+    them as client errors by type (D-030).
     """
     if explicit_requirement is not None:
         if profile_id is not None:
@@ -305,7 +309,7 @@ def load_configured_artifacts(
     return catalog, profiles, profile_policy_version
 
 
-# ── Typed in-memory application seam (M3b, D-029) ────────────────────────────
+# ── Typed in-memory application seam (M3b, D-030) ────────────────────────────
 
 
 def select_from_inputs(
@@ -393,19 +397,24 @@ def simulate_from_inputs(
         return instant
 
     snapshots = collect_status(collectors=collectors, clock=fixed_clock)
-    return simulate_selection(
-        catalog=catalog,
-        requirement=resolved_requirement,
-        policy=policy if policy is not None else neutral_selector_policy(),
-        snapshots=snapshots,
-        evaluated_at=instant,
-        overrides=overrides,
-        replenishment_states=replenishment_states,
-        profile_id=resolved_profile_id,
-        profile_policy_version=(
-            profile_policy_version if resolved_profile_id is not None else None
-        ),
-    )
+    try:
+        return simulate_selection(
+            catalog=catalog,
+            requirement=resolved_requirement,
+            policy=policy if policy is not None else neutral_selector_policy(),
+            snapshots=snapshots,
+            evaluated_at=instant,
+            overrides=overrides,
+            replenishment_states=replenishment_states,
+            profile_id=resolved_profile_id,
+            profile_policy_version=(
+                profile_policy_version if resolved_profile_id is not None else None
+            ),
+        )
+    except SimulationOverrideApplicationError as exc:
+        raise ApplicationInputError(
+            f"simulate_from_inputs: invalid simulation override: {exc}"
+        ) from exc
 
 
 # ── File-based application runners ───────────────────────────────────────────

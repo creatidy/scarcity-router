@@ -24,8 +24,17 @@ class SelectionContractValidationError(SelectionContractError):
     """
 
 
+class SimulationOverrideApplicationError(SelectionContractValidationError):
+    """Raised when a typed simulation override cannot apply to its baseline.
+
+    The override itself has passed the serialized contract boundary, but its
+    target is absent, ambiguous, non-usable or otherwise incompatible with
+    the supplied baseline snapshots.
+    """
+
+
 class ApplicationInputError(SelectionContractError):
-    """Raised when caller-supplied application input is invalid (D-029).
+    """Raised when caller-supplied application input is invalid (D-030).
 
     This is the explicit typed boundary between client-controlled input
     failures and server configuration/internal failures: machine-interface

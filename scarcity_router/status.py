@@ -153,7 +153,7 @@ def canonical_snapshot_documents(
 
     The CLI ``status --json`` output and the REST ``/v1/status`` envelope
     (D-028) both use this exact serialization: canonical provider ordering
-    and canonically sorted windows and diagnostics. Since M3b (D-029) no
+    and canonically sorted windows and diagnostics. Since M3b (D-030) no
     interface maintains its own snapshot serialization.
     """
     return [

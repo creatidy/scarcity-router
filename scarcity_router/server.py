@@ -1,4 +1,4 @@
-"""Minimal local REST adapter (M3b, D-028/D-029).
+"""Minimal local REST adapter (M3b, D-028/D-030).
 
 A thin, loopback-only HTTP transport over the same application/core the CLI
 uses. The adapter owns no selection, scarcity, provider, capacity or policy
@@ -7,7 +7,7 @@ seam (``selection_app.select_from_inputs`` / ``simulate_from_inputs`` /
 ``collect_status``) and serializes the existing typed results inside the
 frozen machine-interface envelopes of ``docs/machine-interfaces.md``.
 
-Implementation choice (D-029): the Python standard library
+Implementation choice (D-030): the Python standard library
 ``HTTPServer``/``BaseHTTPRequestHandler`` only. ``HTTPServer`` is
 deliberately single-threaded, so requests are serialized by construction —
 one request, one application invocation, the existing synchronous provider
@@ -61,6 +61,7 @@ BIND_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 ENVELOPE_SCHEMA_VERSION = 1
 MAX_REQUEST_BODY_BYTES = 1_048_576
+_MAX_REQUEST_DRAIN_BYTES = 4 * MAX_REQUEST_BODY_BYTES
 
 
 @dataclass(frozen=True)
@@ -83,7 +84,7 @@ type _Response = tuple[HTTPStatus, dict[str, object]]
 
 
 class RestHTTPServer(HTTPServer):
-    """Single-threaded loopback-only server (D-029).
+    """Single-threaded loopback-only server (D-030).
 
     ``HTTPServer`` handles one request at a time, so application and
     provider collection are serialized by construction. The bind address is
@@ -131,6 +132,7 @@ class RestRequestHandler(BaseHTTPRequestHandler):
     def _dispatch(self) -> None:
         """Route one request with the frozen 400/500 error boundary."""
         try:
+            self._require_valid_host()
             self._process()
         except ApplicationInputError as exc:
             self._send_error_json(
@@ -144,6 +146,17 @@ class RestRequestHandler(BaseHTTPRequestHandler):
                 "internal_error",
                 "internal server error",
             )
+
+    def _require_valid_host(self) -> None:
+        """Require the exact loopback Host value for this bound listener."""
+        host_values = self.headers.get_all("Host")
+        if host_values is None or len(host_values) != 1:
+            raise ApplicationInputError(
+                "exactly one valid loopback Host header is required"
+            )
+        _, bound_port = cast("tuple[str, int]", self.server.server_address)
+        if host_values[0] not in (BIND_HOST, f"{BIND_HOST}:{bound_port}"):
+            raise ApplicationInputError("Host header must identify the loopback listener")
 
     def _process(self) -> None:
         route = _ROUTES.get((self.command, self.path))
@@ -256,9 +269,11 @@ class RestRequestHandler(BaseHTTPRequestHandler):
                 "exactly one content-length header is required"
             )
         raw_length = lengths[0]
-        if not _is_decimal(raw_length):
-            raise ApplicationInputError("content-length must be a decimal integer")
-        length = int(raw_length.strip())
+        length = _parse_bounded_content_length(raw_length)
+        if length is None:
+            raise ApplicationInputError(
+                "request body exceeds the maximum request size"
+            )
         if length > MAX_REQUEST_BODY_BYTES:
             # Bounded best-effort drain of the oversized declared body so
             # the connection closes without an unread-data TCP reset and
@@ -517,9 +532,29 @@ def _parse_replenishment_states(
     return tuple(states)
 
 
-def _is_decimal(value: str) -> bool:
+def _parse_bounded_content_length(value: str) -> int | None:
+    """Validate decimal syntax and convert only a bounded magnitude.
+
+    Values through the bounded best-effort drain limit are converted safely so
+    the existing oversized-body drain remains precise. ``None`` denotes a
+    syntactically valid value too large for that bounded conversion; it is
+    rejected without conversion or draining an attacker-controlled amount.
+    """
     text = value.strip(" \t")
-    return bool(text) and all(character in "0123456789" for character in text)
+    if not text or any(character not in "0123456789" for character in text):
+        raise ApplicationInputError("content-length must be a decimal integer")
+    magnitude = text.lstrip("0") or "0"
+    maximum = str(MAX_REQUEST_BODY_BYTES)
+    exceeds_body_limit = len(magnitude) > len(maximum) or (
+        len(magnitude) == len(maximum) and magnitude > maximum
+    )
+    if exceeds_body_limit:
+        drain_limit = str(_MAX_REQUEST_DRAIN_BYTES)
+        if len(magnitude) > len(drain_limit) or (
+            len(magnitude) == len(drain_limit) and magnitude > drain_limit
+        ):
+            return None
+    return int(magnitude)
 
 
 # ── Runtime entry point (PHASE 4) ────────────────────────────────────────────
