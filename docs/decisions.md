@@ -1250,6 +1250,50 @@ direction was chosen. Dates use UTC.
   error cases. No new decision number is created; D-028 remains the
   governing M3a decision.
 
+### D-029 — Project-wide LLM operating policy and assignment separation
+
+- **Status:** Accepted
+- **Date:** 2026-09-07
+- **Decision:** Adopt [`docs/llm-operating-policy.md`](llm-operating-policy.md)
+  as the authoritative human-readable multi-model operating policy and keep
+  its compact durable facts in `model-policy.json` policy version 5.
+  - Stable capability archetypes and stable workflow role names are
+    independent from specific model assignments.
+  - Current model assignments are dated, revisable descriptive metadata. They
+    do not establish selector eligibility, capability ratings or capacity
+    bindings.
+  - GPT-6 Astra at low reasoning effort is the preferred reference for
+    scientific/methodological review, semantic figure review and deep technical
+    reasoning. No Astra
+    capacity scope, provider telemetry, model slug, hard property or
+    capability rating is accepted by this decision.
+  - GPT-5.6 Sol High is the primary translation specialist and an authorized
+    alternate scientific reviewer or second opinion; Luna remains the
+    orchestration/editorial reference, Flash remains the routine execution
+    generalist and GLM-5.3 remains the deep technical reasoner.
+  - Reasoning effort is an explicit routing concern. Lowest sufficient effort
+    is the governing principle, and importance or size alone does not trigger
+    escalation. Dynamic reasoning-effort optimization is not implemented in
+    the selector.
+  - Consequential review is independent; evidence preparation is separate from
+    scientific/methodological adjudication; large work uses early durable
+    checkpoints; repository and artifact state outranks session UI state;
+    runtime identity uses explicit attestation states; completed work is not
+    repeated without material source change or a concrete regression.
+  - Finite retries, bounded convergence, the immutable reviewed head, phase
+    serialization and the existing stricter one-initial-review,
+    one-remediation and one-narrow-final-verification policy remain in force.
+- **Reason:** The owner's updated operating model requires durable separation
+  between role guidance and selector data, deliberate effort selection,
+  independent judgment, evidence adjudication, incremental durable work and
+  honest execution provenance without changing accepted M2 selector behavior.
+- **Boundary:** `model-catalog.json`, selector semantics, task-profile numeric
+  minima, provider adapters, capacity parsing, runtime attestation code,
+  model execution and M3b/M3c remain unchanged. Astra selector onboarding is a
+  separate evidence-first follow-up. The generic principle that local
+  inference may be used when stable and sufficient is overridden for this
+  project by D-017: local inference remains unsupported.
+
 ## Unresolved decisions
 
 ### U-001 — Codex binary discovery and compatibility

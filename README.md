@@ -264,6 +264,7 @@ Each topic has one primary source of truth:
 | Subscription quota and provider capacity | [`docs/capacity-model.md`](docs/capacity-model.md) |
 | Task levels, profiles and model capabilities | [`docs/capability-model.md`](docs/capability-model.md) |
 | Eligibility, scarcity, reservation and ranking | [`docs/selection-policy.md`](docs/selection-policy.md) |
+| Multi-model roles, review, effort and durable execution governance | [`docs/llm-operating-policy.md`](docs/llm-operating-policy.md) |
 | REST and MCP machine-interface contracts | [`docs/machine-interfaces.md`](docs/machine-interfaces.md) |
 | Provider adapter expectations | [`docs/providers.md`](docs/providers.md) |
 | Security invariants and threat boundaries | [`docs/security.md`](docs/security.md) |
@@ -290,5 +291,8 @@ The portable descriptive model policy is available at
 [`model-policy.json`](model-policy.json) and the calibrated model catalog at
 [`model-catalog.json`](model-catalog.json); the human-readable calibration
 rationale is [`docs/model-calibration.md`](docs/model-calibration.md).
+Current reference model assignments may mention models not yet onboarded into
+the active selector catalog; `model-catalog.json` remains authoritative for
+actual selector candidates.
 External consumers needing reproducible policy should pin a commit, tag or
 release rather than track a mutable integration or mirror branch.
