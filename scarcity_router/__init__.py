@@ -23,7 +23,8 @@ Public API — selection inputs (M2b task/catalog core contracts):
     ModelHardProperties, EvidenceRef, HumanOverride,
     CapabilityAssessment, CapabilityAssessments,
     ModelCatalogEntry, ModelCatalog,
-    SelectionContractValidationError, SelectionContractError
+    SelectionContractValidationError, SimulationOverrideApplicationError,
+    SelectionContractError
 
 Public API — scarcity and resource-policy primitives (M2d, D-026):
     scarcity penalty and labels:
@@ -71,6 +72,7 @@ from .errors import (
     CapacityValidationError,
     SelectionContractError,
     SelectionContractValidationError,
+    SimulationOverrideApplicationError,
 )
 from .policy import (
     POLICY_REASON_CODES,
@@ -200,6 +202,7 @@ __all__ = [
     "ScarcityAssessment",
     "SelectionContractError",
     "SelectionContractValidationError",
+    "SimulationOverrideApplicationError",
     "SelectionDecision",
     "SelectorPolicy",
     "SimulationOverrides",

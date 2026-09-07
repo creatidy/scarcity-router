@@ -93,7 +93,7 @@ dispatches `status`, `select` and `simulate`.
   to exactly `/healthz`, `/v1/status`, `/v1/select` and `/v1/simulate`;
   `/v1/providers` and `/v1/providers/{provider}` are deferred because
   `/v1/status` already returns the full snapshot set. **Implemented in M3b**
-  (D-029) as the loopback-only standard-library adapter
+  (D-030) as the loopback-only standard-library adapter
   `scarcity_router/server.py` (`python -m scarcity_router.server`,
   default port 8765, single-threaded serialized requests, no runtime
   dependency), calling the same typed application seam

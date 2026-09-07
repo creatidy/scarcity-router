@@ -422,7 +422,7 @@ The interface semantics are frozen in
 - **M3a — interface contract planning gate (complete 2026-09-06).** Froze
   the REST/MCP contract document and D-028 with no runtime, dependency or
   product source change.
-- **M3b — minimal local REST adapter (complete 2026-09-07, D-029).**
+- **M3b — minimal local REST adapter (complete 2026-09-07, D-030).**
   Implements `/healthz`, `/v1/status`, `/v1/select` and `/v1/simulate` over
   the existing application/core, loopback-bound, with the frozen error
   envelopes. Standard-library `HTTPServer` only (serialized single-threaded

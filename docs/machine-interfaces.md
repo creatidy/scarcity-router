@@ -7,7 +7,7 @@ transport is implemented (M3a planning gate, decision D-028). Nothing here
 changes selection, scarcity, provider or capacity semantics; those remain
 owned by their existing authoritative documents.
 
-- **Status:** Frozen contract (M3a). REST v1 is implemented (M3b, D-029);
+- **Status:** Frozen contract (M3a). REST v1 is implemented (M3b, D-030);
   MCP is not yet implemented (M3c pending).
 - **Implementation:** M3b (minimal local REST adapter) and M3c (thin stdio
   MCP adapter + parity tests). See `docs/roadmap.md` for the frozen sequence.

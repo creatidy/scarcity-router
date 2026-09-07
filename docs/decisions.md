@@ -1384,6 +1384,18 @@ direction was chosen. Dates use UTC.
   mutually exclusive argparse group), no catalog/rating/policy change, no
   MCP implementation (M3c still pending), no auth/TLS/non-loopback option,
   no dependency change.
+- **Amendment (2026-09-07, single remediation):** Semantic failures while
+  applying an otherwise schema-valid simulation override use the narrow
+  `SimulationOverrideApplicationError` type and become the existing
+  `invalid_request` / HTTP 400 class at the application boundary; unrelated
+  selection, catalog, collector and internal failures remain HTTP 500.
+  Every request also requires exactly one exact loopback `Host` value (the
+  bare address or the actual bound port) before route dispatch, closing the
+  DNS-rebinding gap in the no-auth loopback boundary. Content-Length decimal
+  magnitudes are compared with the 1 MiB limit before integer conversion, so
+  pathological digit strings fail safely as HTTP 400 without being echoed or
+  logged. M3b references use D-030; D-029 remains the operating-policy
+  decision.
 
 ## Unresolved decisions
 

@@ -45,6 +45,10 @@ local protocol such as Codex app-server over extracting browser state.
 ## Network controls
 
 - REST binds to `127.0.0.1` by default, never `0.0.0.0` implicitly.
+- Because this unauthenticated interface is loopback-only, every request must
+  carry exactly one `Host` header whose value is `127.0.0.1` or
+  `127.0.0.1:<actual-bound-port>`. Rejecting missing, duplicate or foreign
+  values before route dispatch closes the DNS-rebinding gap in this boundary.
 - Stdio MCP is preferred for local agent integration.
 - Authorization-bearing requests require HTTPS and an exact approved provider
   hostname. Validate before constructing/sending the authenticated request.

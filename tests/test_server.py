@@ -1,4 +1,4 @@
-"""M3b REST adapter tests (D-028/D-029).
+"""M3b REST adapter tests (D-028/D-030).
 
 Deterministic contract and integration tests for the loopback-only REST
 server: synthetic collectors, a fixed clock and the repository artifacts.
@@ -648,6 +648,20 @@ class StrictJsonTests(ServerTestCase):
         )
         self.assertEqual(400, code)
 
+    def test_pathological_content_length_rejected_before_integer_conversion(self) -> None:
+        harness = self._serve()
+        head = (
+            "POST /v1/select HTTP/1.0\r\n"
+            + "Host: 127.0.0.1\r\n"
+            + "Content-Type: application/json\r\n"
+            + "Content-Length: "
+            + ("9" * 5000)
+            + "\r\n\r\n"
+        ).encode("ascii")
+        code, response = _raw_exchange(harness.port, head)
+        self.assertEqual(400, code)
+        self.assertNotIn(b"9" * 100, response)
+
     def test_negative_content_length_rejected(self) -> None:
         code = self._raw_post(
             "Content-Type: application/json\r\nContent-Length: -5\r\n"
@@ -734,6 +748,40 @@ class SimulationTests(ServerTestCase):
         self.assertEqual(400, status)
         self.assertEqual("invalid_request", _error_code(response))
 
+    def test_semantically_missing_override_target_is_invalid_request(self) -> None:
+        payload = {
+            "profile_id": "deep_coding",
+            "overrides": {
+                "capacity_percentages": [
+                    {
+                        "provider": "zai",
+                        "scope_id": "missing_plan",
+                        "resource": "tokens",
+                        "kind": "weekly",
+                        "remaining_percent": 2,
+                    }
+                ]
+            },
+        }
+        status, _, response = self._post("/v1/simulate", payload)
+        self.assertEqual(400, status)
+        self.assertEqual("invalid_request", _error_code(response))
+
+    def test_non_ok_override_target_is_invalid_request(self) -> None:
+        def unknown_zai(*, retrieved_at: str) -> CapacitySnapshot:
+            _ = retrieved_at
+            return _unknown_snap("zai")
+
+        collectors = StatusCollectors(openai=_collectors().openai, zai=unknown_zai)
+        harness = self._serve(_application(collectors=collectors))
+        payload = {
+            "profile_id": "deep_coding",
+            "overrides": _ZAI_WEEKLY_2,
+        }
+        status, _, response = _post_json(harness, "/v1/simulate", payload)
+        self.assertEqual(400, status)
+        self.assertEqual("invalid_request", _error_code(response))
+
     def test_unknown_top_level_key_rejected(self) -> None:
         payload: dict[str, object] = {"profile_id": "deep_coding", "overrides": {}, "bogus": 1}
         status, _, response = self._post("/v1/simulate", payload)
@@ -792,6 +840,23 @@ class ErrorBoundaryTests(ServerTestCase):
         self.assertEqual("internal_error", error["code"])
         self.assertNotIn("synthetic collector failure", json.dumps(error))
 
+    def test_simulation_collector_failure_is_internal_error(self) -> None:
+        def failing_openai(*, retrieved_at: str) -> CapacitySnapshot:
+            _ = retrieved_at
+            raise RuntimeError("synthetic simulation collector failure")
+
+        collectors = StatusCollectors(openai=failing_openai, zai=_collectors().zai)
+        harness = self._serve(_application(collectors=collectors))
+        status, _, response = _post_json(
+            harness,
+            "/v1/simulate",
+            {"profile_id": "routine_coding", "overrides": {}},
+        )
+        self.assertEqual(500, status)
+        error = _error_payload(response)
+        self.assertEqual("internal_error", error["code"])
+        self.assertNotIn("synthetic simulation collector failure", json.dumps(error))
+
     def test_unknown_routes_are_404(self) -> None:
         harness = self._serve()
         for path in ("/nope", "/v1/unknown", "/healthz?probe=1", "/v1/status?x=1"):
@@ -833,6 +898,79 @@ class SecurityRuntimeTests(ServerTestCase):
         harness = self._serve()
         host = cast("tuple[str, int]", harness.server.server_address)[0]
         self.assertEqual("127.0.0.1", host)
+
+    def test_accepts_bare_loopback_host(self) -> None:
+        harness = self._serve()
+        status, _, body = _request(
+            harness,
+            "GET",
+            "/healthz",
+            headers={"Host": "127.0.0.1"},
+        )
+        self.assertEqual(200, status)
+        self.assertEqual({"status": "ok"}, json.loads(body))
+
+    def test_accepts_bound_port_loopback_host(self) -> None:
+        harness = self._serve()
+        status, _, body = _request(
+            harness,
+            "GET",
+            "/healthz",
+            headers={"Host": f"127.0.0.1:{harness.port}"},
+        )
+        self.assertEqual(200, status)
+        self.assertEqual({"status": "ok"}, json.loads(body))
+
+    def test_rejects_missing_foreign_and_duplicate_hosts(self) -> None:
+        harness = self._serve()
+        requests = (
+            b"GET /healthz HTTP/1.0\r\n\r\n",
+            (
+                "GET /healthz HTTP/1.0\r\n"
+                + f"Host: attacker.example:{harness.port}\r\n\r\n"
+            ).encode("ascii"),
+            (
+                "GET /healthz HTTP/1.0\r\n"
+                + "Host: 127.0.0.1\r\nHost: 127.0.0.1\r\n\r\n"
+            ).encode("ascii"),
+        )
+        for raw in requests:
+            code, response = _raw_exchange(harness.port, raw)
+            self.assertEqual(400, code)
+            body = response.split(b"\r\n\r\n", 1)[1]
+            self.assertEqual("invalid_request", _error_code(_parse(body)))
+            self.assertNotIn(b"attacker.example", response)
+
+    def test_host_validation_precedes_each_endpoint(self) -> None:
+        def failing_openai(*, retrieved_at: str) -> CapacitySnapshot:
+            _ = retrieved_at
+            raise RuntimeError("endpoint must not be dispatched")
+
+        collectors = StatusCollectors(openai=failing_openai, zai=_collectors().zai)
+        harness = self._serve(_application(collectors=collectors))
+        requests = (
+            b"GET /healthz HTTP/1.0\r\nHost: attacker.example\r\n\r\n",
+            b"GET /v1/status HTTP/1.0\r\nHost: attacker.example\r\n\r\n",
+            (
+                "POST /v1/select HTTP/1.0\r\n"
+                + "Host: attacker.example\r\n"
+                + "Content-Type: application/json\r\n"
+                + "Content-Length: 31\r\n\r\n"
+                + '{"profile_id":"routine_coding"}'
+            ).encode("ascii"),
+            (
+                "POST /v1/simulate HTTP/1.0\r\n"
+                + "Host: attacker.example\r\n"
+                + "Content-Type: application/json\r\n"
+                + "Content-Length: 46\r\n\r\n"
+                + '{"profile_id":"routine_coding","overrides":{}}'
+            ).encode("ascii"),
+        )
+        for raw in requests:
+            code, response = _raw_exchange(harness.port, raw)
+            self.assertEqual(400, code)
+            body = response.split(b"\r\n\r\n", 1)[1]
+            self.assertEqual("invalid_request", _error_code(_parse(body)))
 
     def test_no_bind_address_option_is_exposed(self) -> None:
         help_text = build_parser().format_help()
