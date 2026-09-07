@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import cast
 
 POLICY_PATH = Path(__file__).resolve().parents[1] / "model-policy.json"
+CATALOG_PATH = Path(__file__).resolve().parents[1] / "model-catalog.json"
 SNAKE_CASE = re.compile(r"^[a-z]+(?:_[a-z0-9]+)*$")
 
 
@@ -60,8 +61,8 @@ class ModelPolicyContract(unittest.TestCase):
         self.assertIsInstance(policy, dict)
         parsed = cast(dict[str, object], policy)
         self.assertEqual(parsed["schema_version"], 1)
-        self.assertEqual(parsed["policy_version"], 4)
-        self.assertEqual(parsed["updated_at"], "2026-09-06")
+        self.assertEqual(parsed["policy_version"], 5)
+        self.assertEqual(parsed["updated_at"], "2026-09-07")
         self.assertEqual(json.loads(json.dumps(parsed)), parsed)
 
     def test_versioning_semantics_are_documented(self) -> None:
@@ -533,10 +534,17 @@ class ModelPolicyContract(unittest.TestCase):
         workflow = _mapping(
             policy["current_workflow_examples"], "current_workflow_examples"
         )
-        self.assertEqual(workflow["assessment_date"], "2026-09-03")
+        self.assertEqual(workflow["assessment_date"], "2026-09-07")
         self.assertTrue(workflow["dated_assessment"])
         self.assertFalse(workflow["part_of_class_definitions"])
         self.assertFalse(workflow["numeric_capability_ratings_included"])
+        self.assertFalse(workflow["selector_facing"])
+        self.assertFalse(workflow["establishes_selector_eligibility"])
+        self.assertFalse(workflow["establishes_capacity_binding"])
+        self.assertIn(
+            "do not establish catalog eligibility",
+            _required_string(workflow, "semantics"),
+        )
         class_ids = {
             _required_string(entry, "id")
             for entry in _objects(policy["model_capability_classes"], "classes")
@@ -551,6 +559,7 @@ class ModelPolicyContract(unittest.TestCase):
                 "GPT-5.6 Luna Max",
                 "GLM-5.3 Max",
                 "GPT-5.6 Sol High",
+                "GPT-6 Astra Low",
             },
         )
         self.assertFalse(any("Qwen" in _required_string(entry, "model_name") for entry in models))
@@ -593,15 +602,78 @@ class ModelPolicyContract(unittest.TestCase):
         )
         self.assertEqual(
             _strings(models["GPT-5.6 Sol High"]["primary_archetypes"], "primary"),
-            [
-                "scientific_methodological_specialist",
-                "translation_editorial_specialist",
-            ],
+            ["translation_editorial_specialist"],
         )
         self.assertEqual(
             _strings(models["GPT-5.6 Sol High"]["secondary_archetypes"], "secondary"),
-            ["orchestration_synthesis"],
+            ["scientific_methodological_specialist"],
         )
+        self.assertEqual(
+            _strings(models["GPT-6 Astra Low"]["primary_archetypes"], "primary"),
+            [
+                "scientific_methodological_specialist",
+                "deep_technical_reasoner",
+            ],
+        )
+        self.assertEqual(
+            _strings(models["GPT-6 Astra Low"]["secondary_archetypes"], "secondary"),
+            ["translation_editorial_specialist"],
+        )
+
+    def test_reasoning_effort_policy_is_explicit_and_not_selector_implemented(self) -> None:
+        effort = _mapping(
+            _load_policy()["reasoning_effort_policy"], "reasoning_effort_policy"
+        )
+        self.assertTrue(effort["is_routing_parameter"])
+        self.assertEqual(effort["principle"], "lowest_sufficient_effort")
+        self.assertFalse(effort["importance_alone_triggers_escalation"])
+        self.assertFalse(effort["size_alone_triggers_escalation"])
+        self.assertFalse(effort["prestige_alone_triggers_escalation"])
+        self.assertEqual(effort["selector_support"], "not_implemented")
+        defaults = _objects(
+            effort["current_reference_defaults"], "current_reference_defaults"
+        )
+        self.assertEqual(
+            defaults,
+            [
+                {
+                    "model_name": "GPT-6 Astra",
+                    "provider": "openai",
+                    "reasoning_effort": "low",
+                }
+            ],
+        )
+
+    def test_workflow_roles_are_stable_and_non_selector_facing(self) -> None:
+        assignments = _mapping(
+            _load_policy()["workflow_role_assignments"],
+            "workflow_role_assignments",
+        )
+        self.assertEqual(assignments["status"], "dated_reference_assignments")
+        self.assertEqual(assignments["assignment_date"], "2026-09-07")
+        self.assertFalse(assignments["selector_facing"])
+        self.assertFalse(assignments["establishes_selector_eligibility"])
+        self.assertFalse(assignments["establishes_capacity_binding"])
+        self.assertTrue(assignments["revisable"])
+        role_ids = {
+            _required_string(role, "role_id")
+            for role in _objects(assignments["roles"], "workflow roles")
+        }
+        self.assertEqual(
+            role_ids,
+            {
+                "PROGRAM_ORCHESTRATOR",
+                "ROUTINE_EXECUTION_WORKER",
+                "EDITORIAL_AUTHOR",
+                "DEEP_EXECUTION_WORKER",
+                "SCIENTIFIC_REVIEWER",
+                "SEMANTIC_FIGURE_REVIEWER",
+                "PL_TRANSLATION_EDITOR",
+            },
+        )
+
+    def test_reference_only_astra_is_absent_from_active_catalog(self) -> None:
+        self.assertNotIn("astra", CATALOG_PATH.read_text(encoding="utf-8").lower())
 
 
 if __name__ == "__main__":

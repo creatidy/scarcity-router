@@ -11,6 +11,17 @@ not measured quota and not scientific fact.
   `updated_on` / `updated_at`)
 - **Catalog version:** 1 · **Policy version:** 4
 
+## Operating-policy update after M2 calibration
+
+Policy v5 (2026-09-07) makes GPT-6 Astra Low the preferred reference
+scientific/methodological specialist and a deep-technical reasoning option.
+
+This does not modify catalog v1. Astra is not yet selector-eligible because
+capability calibration, hard properties and semantic capacity applicability
+have not been evidenced and accepted. The capability-only eligible sets below
+remain the current catalog truth. The historical M2c calibration date, ratings,
+provenance and four-model scope remain unchanged.
+
 ## Rating rubric
 
 The frozen ordinal scale of `docs/capability-model.md`:

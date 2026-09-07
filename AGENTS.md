@@ -114,6 +114,16 @@ reviewer sessions consume at most the configured retry budget, then escalate to
 the human. Workers, reviewers and orchestrators never merge; the human remains
 the merge gate.
 
+## Multi-model operating policy
+
+Multi-model task routing and execution governance are defined in
+[`docs/llm-operating-policy.md`](docs/llm-operating-policy.md) and the
+corresponding Kilo rule. Stable roles are separated from current model
+assignments; reasoning effort is chosen deliberately; consequential review is
+independent; large work creates early durable checkpoints; durable
+repository/artifact state outranks session UI state; completed gates are not
+repeated without material source change or a concrete regression.
+
 ## Current phase
 
 M0 PASS, M1 PASS and M2 PASS. M2 implementation (slices M2a–M2e) and its
