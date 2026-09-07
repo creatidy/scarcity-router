@@ -14,7 +14,7 @@ issues model requests.
 Since M3b (D-030) the application layer also exposes a typed in-memory seam
 (``select_from_inputs`` / ``simulate_from_inputs``) that takes already-typed
 inputs instead of file paths. The file-based CLI runners and the
-machine-interface adapters (REST, future MCP) call the same seam, so no
+machine-interface adapters (REST and MCP) call the same seam, so no
 transport owns requirement resolution or application semantics.
 Caller-supplied input violations raise ``ApplicationInputError`` so adapters
 can classify client errors by type (D-030).
@@ -275,11 +275,23 @@ def resolve_requirement(
 
 
 @dataclass(frozen=True)
-class SelectionApplication:
-    """Injected dependencies with a seam for synthetic application tests."""
+class ApplicationDependencies:
+    """Process-configured dependencies shared by machine transports.
 
+    Artifact paths are server configuration, never client-controlled request
+    data. Collectors and the clock remain injectable for deterministic tests;
+    production callers leave them as ``None``.
+    """
+
+    catalog_path: Path = DEFAULT_CATALOG_PATH
+    model_policy_path: Path = DEFAULT_MODEL_POLICY_PATH
     collectors: StatusCollectors | None = None
     clock: Clock | None = None
+
+
+# Retain the earlier development-only name while transports use the neutral
+# dependency record. The alias has identical construction and field semantics.
+SelectionApplication = ApplicationDependencies
 
 
 def _current_instant(clock: Clock | None) -> datetime:
@@ -905,6 +917,7 @@ def render_simulation_json(result: SimulationResult) -> str:
 
 
 __all__ = [
+    "ApplicationDependencies",
     "DEFAULT_CATALOG_PATH",
     "DEFAULT_MODEL_POLICY_PATH",
     "SelectionApplication",

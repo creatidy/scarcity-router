@@ -29,8 +29,9 @@ acceptance in the owner's real workflow. There is not yet an installable
 package or final executable name. The M3a planning gate froze the REST and
 MCP contracts in
 [`docs/machine-interfaces.md`](docs/machine-interfaces.md) (D-028); the
-minimal loopback-only REST adapter is implemented (M3b, D-030), while the
-stdio MCP adapter is still to be implemented under M3c.
+minimal loopback-only REST adapter is implemented (M3b, D-030), and the thin
+stdio MCP adapter is implemented (M3c, D-031). M3 closeout and live acceptance
+are still pending.
 
 ## Repository
 
@@ -270,6 +271,30 @@ adapter owns no selection logic: it calls the same typed application seam
 as the CLI. See
 [`docs/machine-interfaces.md`](docs/machine-interfaces.md) for the complete
 frozen contract.
+
+## Local Stdio MCP
+
+M3c exposes exactly three recommendation-only MCP tools over the official
+SDK's local stdio transport. The adapter calls the application layer directly;
+it does not start or call the REST server, execute model inference, accept
+credentials or expose resources/prompts.
+
+```bash
+uv run python -m scarcity_router.mcp
+```
+
+Tools:
+
+```text
+scarcity_status
+scarcity_select
+scarcity_simulate
+```
+
+See [`examples/mcp-stdio.json`](examples/mcp-stdio.json) for a generic
+external-orchestrator process configuration and
+[`docs/machine-interfaces.md`](docs/machine-interfaces.md) for the shared v1
+logical envelopes and error semantics.
 
 ## Architecture At A Glance
 
