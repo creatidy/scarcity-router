@@ -503,7 +503,7 @@ Separate contracts carry separate versions; they are never collapsed:
 | `CapacitySnapshot.schema_version` | Capacity contract (`docs/capacity-model.md`) | `3` |
 | REST path prefix `/v1/` + envelope `schema_version` | Machine-interface contract (this document) | `1` |
 | `catalog_version` | Model catalog content version | `1` (current artifact) |
-| `policy_version` | Model policy/profile content version | `4` (current artifact) |
+| `policy_version` | Model policy/profile content version | `5` (current artifact) |
 
 The machine-interface contract includes **both its envelope and the
 serialized domain documents exposed inside it**. `CapacitySnapshot`,
