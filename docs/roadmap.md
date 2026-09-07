@@ -154,6 +154,12 @@ disposition (stable `scarcity_router` module identity, branding deferred)
 and the M3 implementation sequence below. No REST/MCP runtime, dependency or
 product source change was made.
 
+**Standing operating-policy update (2026-09-07).** LLM operating policy v5
+adds dated reference role assignments, reasoning-effort governance, review
+independence, durable checkpoint and provenance rules. GPT-6 Astra selector
+onboarding remains deferred pending capability and capacity evidence; there is
+no M3 scope change and M3b/M3c remain separate implementation work.
+
 ## M0 — Repository foundation
 
 **Outcome:** A new contributor or agent can understand the product and begin M1

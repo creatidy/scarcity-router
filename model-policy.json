@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "policy_version": 4,
-  "updated_at": "2026-09-06",
+  "policy_version": 5,
+  "updated_at": "2026-09-07",
   "versioning": {
     "schema_version": {
       "meaning": "The machine-readable artifact shape.",
@@ -109,6 +109,131 @@
       "reviewers_may_merge": false,
       "orchestrators_may_merge_automatically": false
     }
+  },
+  "reasoning_effort_policy": {
+    "is_routing_parameter": true,
+    "principle": "lowest_sufficient_effort",
+    "importance_alone_triggers_escalation": false,
+    "size_alone_triggers_escalation": false,
+    "prestige_alone_triggers_escalation": false,
+    "escalate_only_when": [
+      "a bounded attempt demonstrates insufficient reasoning margin",
+      "the problem has demonstrated unresolved difficulty",
+      "additional reasoning depth is likely to materially help"
+    ],
+    "selector_support": "not_implemented",
+    "current_reference_defaults": [
+      {
+        "model_name": "GPT-6 Astra",
+        "provider": "openai",
+        "reasoning_effort": "low"
+      }
+    ]
+  },
+  "workflow_role_assignments": {
+    "status": "dated_reference_assignments",
+    "assignment_date": "2026-09-07",
+    "selector_facing": false,
+    "establishes_selector_eligibility": false,
+    "establishes_capacity_binding": false,
+    "revisable": true,
+    "roles": [
+      {
+        "role_id": "PROGRAM_ORCHESTRATOR",
+        "primary": {
+          "model_name": "GPT-5.6 Luna Max",
+          "provider": "openai",
+          "variant": "max"
+        }
+      },
+      {
+        "role_id": "ROUTINE_EXECUTION_WORKER",
+        "primary": {
+          "model_name": "GLM-5.3-Flash Max",
+          "provider": "zai",
+          "variant": "max"
+        },
+        "fallbacks": [
+          {
+            "model_name": "GPT-5.6 Luna Max",
+            "provider": "openai",
+            "variant": "max",
+            "condition": "when Z.ai is unavailable"
+          }
+        ]
+      },
+      {
+        "role_id": "EDITORIAL_AUTHOR",
+        "primary": {
+          "model_name": "GPT-5.6 Luna Max",
+          "provider": "openai",
+          "variant": "max"
+        }
+      },
+      {
+        "role_id": "DEEP_EXECUTION_WORKER",
+        "preferred_reference": {
+          "model_name": "GPT-6 Astra",
+          "provider": "openai",
+          "reasoning_effort": "low"
+        },
+        "authorized_alternates": [
+          {
+            "model_name": "GLM-5.3 Max",
+            "provider": "zai",
+            "variant": "max",
+            "condition": "when appropriate and available"
+          }
+        ]
+      },
+      {
+        "role_id": "SCIENTIFIC_REVIEWER",
+        "preferred_reference": {
+          "model_name": "GPT-6 Astra",
+          "provider": "openai",
+          "reasoning_effort": "low"
+        },
+        "authorized_alternates": [
+          {
+            "model_name": "GPT-5.6 Sol High",
+            "provider": "openai",
+            "variant": "high",
+            "condition": "independent second opinion or when Astra is unavailable"
+          }
+        ]
+      },
+      {
+        "role_id": "SEMANTIC_FIGURE_REVIEWER",
+        "preferred_reference": {
+          "model_name": "GPT-6 Astra",
+          "provider": "openai",
+          "reasoning_effort": "low"
+        },
+        "authorized_alternates": [
+          {
+            "model_name": "GPT-5.6 Sol High",
+            "provider": "openai",
+            "variant": "high",
+            "condition": "independent second opinion or when Astra is unavailable"
+          }
+        ]
+      },
+      {
+        "role_id": "PL_TRANSLATION_EDITOR",
+        "primary": {
+          "model_name": "GPT-5.6 Sol High",
+          "provider": "openai",
+          "variant": "high"
+        },
+        "authorized_alternates": [
+          {
+            "model_name": "GPT-6 Astra",
+            "provider": "openai",
+            "reasoning_effort": "low"
+          }
+        ]
+      }
+    ]
   },
   "capability_dimensions": [
     {
@@ -717,10 +842,14 @@
   "current_workflow_examples": {
     "status": "dated_assessment",
     "dated_assessment": true,
-    "assessment_date": "2026-09-03",
+    "assessment_date": "2026-09-07",
     "scope": "current_owner_workflow_policy",
     "part_of_class_definitions": false,
     "numeric_capability_ratings_included": false,
+    "selector_facing": false,
+    "establishes_selector_eligibility": false,
+    "establishes_capacity_binding": false,
+    "semantics": "Descriptive reference assignments do not establish catalog eligibility, capacity applicability, capability ratings or runtime implementation support.",
     "revisable_as_models_are_reassessed": true,
     "archetype_role_semantics": {
       "primary_archetypes": "The owner's primary current archetype assessment for the model.",
@@ -755,11 +884,21 @@
       {
         "model_name": "GPT-5.6 Sol High",
         "primary_archetypes": [
-          "scientific_methodological_specialist",
           "translation_editorial_specialist"
         ],
         "secondary_archetypes": [
-          "orchestration_synthesis"
+          "scientific_methodological_specialist"
+        ]
+      },
+      {
+        "model_name": "GPT-6 Astra",
+        "reasoning_effort": "low",
+        "primary_archetypes": [
+          "scientific_methodological_specialist",
+          "deep_technical_reasoner"
+        ],
+        "secondary_archetypes": [
+          "translation_editorial_specialist"
         ]
       }
     ]
