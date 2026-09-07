@@ -360,12 +360,14 @@ class DiscoveryTests(McpTestCase):
         status_schema = cast(
             dict[str, object], by_name["scarcity_status"].input_schema
         )
+        self.assertFalse(status_schema["additionalProperties"])
         self.assertEqual(
             {}, cast(dict[str, object], status_schema["properties"])
         )
         select_schema = cast(
             dict[str, object], by_name["scarcity_select"].input_schema
         )
+        self.assertFalse(select_schema["additionalProperties"])
         select_properties = cast(dict[str, object], select_schema["properties"])
         self.assertEqual(
             {
@@ -377,9 +379,14 @@ class DiscoveryTests(McpTestCase):
             },
             set(select_properties),
         )
+        replenishment_schema = cast(
+            dict[str, object], select_properties["replenishment_states"]
+        )
+        self.assertEqual("array", replenishment_schema["type"])
         simulate_schema = cast(
             dict[str, object], by_name["scarcity_simulate"].input_schema
         )
+        self.assertFalse(simulate_schema["additionalProperties"])
         simulate_properties = cast(
             dict[str, object], simulate_schema["properties"]
         )
@@ -387,6 +394,9 @@ class DiscoveryTests(McpTestCase):
             set(select_properties) | {"overrides"},
             set(simulate_properties),
         )
+        overrides_schema = cast(dict[str, object], simulate_properties["overrides"])
+        self.assertEqual("object", overrides_schema["type"])
+        self.assertEqual(["overrides"], simulate_schema["required"])
 
     def test_mcp_module_does_not_import_rest_runtime(self) -> None:
         source = Path(__file__).resolve().parents[1] / "scarcity_router" / "mcp.py"
@@ -654,6 +664,33 @@ class SimulationTests(McpTestCase):
         result = self._call(non_ok_application, "scarcity_simulate", non_ok)
         self.assertTrue(result.is_error)
         self.assertEqual(invalid_request_payload(), _error_payload(result))
+
+    def test_tighter_advertised_schema_does_not_replace_handler_validation(self) -> None:
+        application = self._application()
+        cases: tuple[tuple[str, Mapping[str, object]], ...] = (
+            (
+                "unknown field",
+                {"profile_id": "deep_coding", "unexpected": "field"},
+            ),
+            ("missing overrides", {"profile_id": "deep_coding"}),
+            (
+                "null overrides",
+                {"profile_id": "deep_coding", "overrides": None},
+            ),
+            (
+                "null top-level replenishment",
+                {
+                    "profile_id": "deep_coding",
+                    "overrides": {},
+                    "replenishment_states": None,
+                },
+            ),
+        )
+        for label, arguments in cases:
+            with self.subTest(label=label):
+                result = self._call(application, "scarcity_simulate", arguments)
+                self.assertTrue(result.is_error)
+                self.assertEqual(invalid_request_payload(), _error_payload(result))
 
 
 class InternalFailureTests(McpTestCase):

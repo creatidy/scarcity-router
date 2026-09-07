@@ -397,6 +397,10 @@ The SDK's official stdio transport owns JSON-RPC framing; the adapter itself
 has no HTTP, SSE, Streamable HTTP, REST subprocess or custom protocol loop.
 The shared transport-neutral dependency record and logical parser live in
 `selection_app.py` and `machine_api.py`; `mcp.py` only invokes them.
+The low-level SDK server does not apply an advertised `inputSchema` before
+`on_call_tool`, so the schemas describe obvious object/field structure while
+the shared logical parser remains authoritative for all application semantics
+and returns the frozen logical errors.
 
 ### Tool inputs
 

@@ -58,15 +58,20 @@ _TOOL_DESCRIPTION = (
 )
 
 
-def _object_schema(properties: Mapping[str, object]) -> dict[str, object]:
-    """Advertise fields without moving semantic validation into MCP schemas."""
-    return {
+def _object_schema(
+    properties: Mapping[str, object],
+    *,
+    required: list[str] | None = None,
+) -> dict[str, object]:
+    """Advertise structural constraints; the shared parser owns semantics."""
+    schema: dict[str, object] = {
         "type": "object",
         "properties": properties,
-        # The shared logical parser owns unknown-field and type semantics. A
-        # permissive schema ensures malformed application input reaches it.
-        "additionalProperties": True,
+        "additionalProperties": False,
     }
+    if required is not None:
+        schema["required"] = required
+    return schema
 
 
 _SELECT_PROPERTIES: dict[str, object] = {
@@ -87,7 +92,7 @@ _SELECT_PROPERTIES: dict[str, object] = {
         "description": "Serialized SelectorPolicy.",
     },
     "replenishment_states": {
-        "type": ["array", "null"],
+        "type": "array",
         "description": "Normalized replenishment observations.",
     }
 }
@@ -97,10 +102,11 @@ _SIMULATE_INPUT_SCHEMA = _object_schema(
     {
         **_SELECT_PROPERTIES,
         "overrides": {
-            "type": ["object", "null"],
+            "type": "object",
             "description": "Serialized SimulationOverrides; required.",
         },
-    }
+    },
+    required=["overrides"],
 )
 
 _TOOLS: tuple[Tool, Tool, Tool] = (
