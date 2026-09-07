@@ -1437,7 +1437,8 @@ decision.
   - **Scope.** No model execution, prompt proxying, automatic dispatch,
     provider/catalog/policy/ranking change, new provider, auth input, provider
     endpoint or catalog-path input is permitted. M3 closeout and live
-    acceptance remain pending; this decision does not mark M3 PASS.
+    acceptance are tracked separately; this decision does not by itself mark
+    M3 PASS.
   - **Raw MCP parser boundary (narrow D-028 amendment).** MCP transport
     framing and JSON-RPC decoding are owned by the official MCP SDK.
     Scarcity Router's `invalid_request` logical contract begins at the
@@ -1467,6 +1468,11 @@ decision.
   reasoning effort, OpenAI/Z.ai acquisition, Astra onboarding or live M3
   closeout. The REST strict duplicate/non-finite JSON contract remains
   unchanged.
+- **Closeout evidence (2026-09-07):** Live CLI, REST and MCP acceptance passed
+  without changing any provider, capacity, selector, catalog, policy or
+  machine-interface semantics. Sanitized evidence is recorded in
+  [`docs/m3-acceptance.md`](m3-acceptance.md); this milestone acceptance does
+  not create a new decision number.
 
 ## Unresolved decisions
 

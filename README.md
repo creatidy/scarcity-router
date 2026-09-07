@@ -30,8 +30,9 @@ package or final executable name. The M3a planning gate froze the REST and
 MCP contracts in
 [`docs/machine-interfaces.md`](docs/machine-interfaces.md) (D-028); the
 minimal loopback-only REST adapter is implemented (M3b, D-030), and the thin
-stdio MCP adapter is implemented (M3c, D-031). M3 closeout and live acceptance
-are still pending.
+stdio MCP adapter is implemented (M3c, D-031). Live CLI/REST/MCP acceptance
+is complete. M3 is closed as **PASS** (2026-09-07); sanitized
+evidence is recorded in [`docs/m3-acceptance.md`](docs/m3-acceptance.md).
 
 ## Repository
 
