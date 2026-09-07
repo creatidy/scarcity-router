@@ -45,7 +45,14 @@ local protocol such as Codex app-server over extracting browser state.
 ## Network controls
 
 - REST binds to `127.0.0.1` by default, never `0.0.0.0` implicitly.
-- Stdio MCP is preferred for local agent integration.
+- Because this unauthenticated interface is loopback-only, every request must
+  carry exactly one `Host` header whose value is `127.0.0.1` or
+  `127.0.0.1:<actual-bound-port>`. Rejecting missing, duplicate or foreign
+  values before route dispatch closes the DNS-rebinding gap in this boundary.
+- Stdio MCP is preferred for local agent integration. It is local process IPC:
+  the official SDK creates no network listener, so Host, CORS and remote MCP
+  authentication concerns do not apply to this transport. The MCP client owns
+  the child-process lifecycle.
 - Authorization-bearing requests require HTTPS and an exact approved provider
   hostname. Validate before constructing/sending the authenticated request.
 - Redirects must not carry Authorization to an unapproved origin. The safest
@@ -90,6 +97,15 @@ REST, MCP, CLI and dashboard may expose:
 They must not expose credential paths by default, raw Authorization material,
 unredacted raw responses or unrelated account data. A verbose/debug mode does
 not waive these rules.
+
+MCP-specific input is limited to the frozen logical selection and simulation
+fields. MCP must never accept credentials, provider endpoints, catalog paths or
+model-execution instructions. Its tools may invoke the existing read-only
+capacity collectors and the bounded D-018 provider-managed authentication
+recovery, but they never execute inference, redeem replenishment, write
+provider configuration or dispatch a selected model. Stdout is reserved for
+MCP framing; normal diagnostics, if ever needed, go to stderr and are quiet,
+safe and free of request arguments, provider payloads and local paths.
 
 ## Testing requirements
 

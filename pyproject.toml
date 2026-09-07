@@ -7,6 +7,7 @@
 [dependency-groups]
 dev = [
     "basedpyright>=1.0.0",
+    "mcp>=2,<3",
 ]
 
 [tool.basedpyright]

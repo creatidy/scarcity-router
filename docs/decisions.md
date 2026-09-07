@@ -100,14 +100,30 @@ direction was chosen. Dates use UTC.
   MPL-2.0 remains an alternative only after a deliberate policy change; AGPL is
   not the default.
 
-### D-011 — Public hosting
+### D-011 — Repository hosting
 
-- **Status:** Accepted for public release
-- **Date:** 2026-09-01
-- **Decision:** GitHub is canonical and the owner's Forgejo receives an
-  automatic mirror.
-- **Reason:** Public discovery, contributions, Issues, Discussions, Actions and
-  security ecosystem should live on the canonical host.
+- **Status:** Accepted (revised in place 2026-09-07, replacing the initial
+  2026-09-01 hosting choice)
+- **Date:** 2026-09-07
+- **Decision:** Forgejo is canonical.
+
+  Canonical repository:
+  https://forgejo.creatidy.com/BioMedical-IT/scarcity-router
+
+  GitHub:
+  https://github.com/creatidy/scarcity-router
+
+  GitHub is an automatic secondary mirror.
+
+  Issues, PRs, reviews, agent workflow and branch integration are canonical
+  on Forgejo.
+
+  develop is the integration branch.
+
+  main is outside ordinary agent PR flow.
+- **Reason:** Forgejo provides the more effective day-to-day development
+  workflow for the owner, while GitHub remains valuable as a public/read-only
+  mirror and for integrations that only support GitHub.
 
 ### D-012 — Name remains provisional
 
@@ -1044,6 +1060,420 @@ direction was chosen. Dates use UTC.
   preference order. No new decision number is created; D-027 remains the
   governing M2e decision.
 
+### D-028 — M3 machine-interface contract (REST and MCP)
+
+- **Status:** Accepted
+- **Date:** 2026-09-06
+- **Decision:** M3a freezes the machine-interface semantics for REST and MCP
+  in [`docs/machine-interfaces.md`](machine-interfaces.md) — the
+  authoritative M3 interface contract — before either transport is
+  implemented. The contract record:
+  - **Thin adapters over one core.** CLI, REST and MCP are transport
+    adapters over the SAME application/core (D-007 unchanged). They parse
+    transport input, call the application/core and serialize existing typed
+    results; they never own selection, scarcity, provider parsing,
+    simulation or policy semantics. No REST selector, MCP selector,
+    REST-only simulation or MCP-only fallback logic may be created.
+  - **REST surface.** Exactly `GET /healthz`, `GET /v1/status`,
+    `POST /v1/select`, `POST /v1/simulate`. `/v1/status` returns the
+    existing CapacitySnapshot v3 documents in the frozen envelope
+    `{"schema_version": 1, "snapshots": [...]}`; `/v1/select` and
+    `/v1/simulate` use typed JSON mirroring the application inputs
+    (profile XOR explicit requirement, tightening only with the profile)
+    and return the existing `SelectionDecision`/`SimulationResult`
+    serializations inside the same envelope. Reason codes are never
+    translated, provenance is never removed and results are never reduced
+    to a model identifier. The earlier roadmap ideas `/v1/providers` and
+    `/v1/providers/{provider}` are deferred: `/v1/status` already returns
+    the full two-provider snapshot set and per-provider filtering is a
+    trivial client-side operation.
+  - **Frozen request parsing and field semantics.** REST request bodies are
+    parsed with the application's deterministic strictness: duplicate JSON
+    object keys and `NaN`/`Infinity`/`-Infinity` constants are
+    `invalid_request` (HTTP 400), never framework-default lenient parsing.
+    Missing and explicit-`null` field semantics are frozen for
+    `/v1/select` and `/v1/simulate`: `profile_id`, `requirement` and
+    `tightening` — missing or `null` = absent; `selector_policy` — missing
+    or `null` = the neutral policy; `replenishment_states` — missing or
+    `[]` = no observations and explicit `null` = `invalid_request` (the
+    field is an array at this boundary; the baseline-replacement tri-state
+    exists only in the nested simulation `overrides`, which keeps the
+    existing `SimulationOverrides` semantics: missing/`null` = retain
+    baseline, `[]` = none, non-empty = full replacement). Exactly one
+    effective requirement source is required — effective `profile_id` XOR
+    effective `requirement`; both or neither is `invalid_request`. An
+    unknown `profile_id` is `invalid_request` (HTTP 400), not an internal
+    error and not a no-solution. MCP freezes the **logical** structured
+    error payloads (`invalid_request`, `internal_error`) that M3c must
+    preserve through the eventual SDK's tool-error mechanism; a valid
+    no-solution remains a successful tool result and never uses the error
+    shape; no additional codes are invented.
+  - **MCP surface.** Exactly three tools — `scarcity_status`,
+    `scarcity_select`, `scarcity_simulate` — over the stdio transport,
+    structurally mirroring the REST request bodies and returning the same
+    machine-structured payloads. No per-provider tools, no internal helper
+    tools, no reset redemption, no MCP-specific shorthand.
+  - **MCP calls the application directly.** The MCP adapter invokes the
+    application layer in-process; it does not require or invoke the local
+    REST server (`MCP → REST → application` is rejected: fewer runtime
+    dependencies, no server lifecycle requirement for MCP clients, the same
+    Python core is available in-process and parity is easier to test
+    directly).
+  - **No-solution is HTTP success.** A valid no-solution result
+    (`selected = null`, `no_eligible_candidate`) is HTTP 200 — never 404,
+    409, 422 or 500. Invalid client requests (malformed JSON, unknown keys,
+    schema-invalid inputs, exclusivity violations, invalid overrides) are
+    HTTP 400 with the frozen safe envelope
+    `{"error": {"code": "invalid_request", "message": "..."}}`; HTTP 400 is
+    chosen over 422 because the CLI already treats invalid input as one
+    failure class and no repository evidence justifies a second validation
+    status. Application/internal failures are HTTP 500 with the code
+    `internal_error`. The error vocabulary is closed (`invalid_request`,
+    `internal_error`); messages are safe structural messages only — no
+    traceback, raw provider payload, credential or local credential path.
+  - **Provider degradation remains domain data.** Provider operational
+    states (`unavailable`, `auth_required`, `unsupported`,
+    `schema_changed`, `unknown`, exhausted windows) stay normalized data in
+    successful responses; ordinary telemetry degradation is never mapped to
+    an HTTP transport error, and a degraded provider during select is
+    handled by the existing unknown/degraded policy, never HTTP 503.
+  - **Loopback-only default REST binding; no initial REST auth.** The
+    default bind is `127.0.0.1`; there is no `0.0.0.0` default, no LAN
+    exposure default and no remote multi-user assumption. M3 REST is a
+    local machine interface, not an internet-facing service, which is the
+    only reason no authentication layer is acceptable in M3; OAuth, API
+    keys, sessions, reverse-proxy auth and TLS termination are excluded,
+    and any non-loopback exposure requires an explicit future security
+    decision. REST and MCP never accept provider credentials from clients,
+    never return credentials, never accept arbitrary provider endpoints and
+    never proxy prompts (D-001, D-009 unchanged).
+  - **D-018 recovery semantics are inherited.** `status`/`select`/
+    `simulate` may trigger the existing capacity collectors, so they may
+    exercise the bounded provider-managed authentication recovery already
+    accepted in D-018. The frozen wording is: selection issues no model
+    prompt and does not intentionally consume inference quota; capacity
+    collection uses the existing telemetry path and may exercise the
+    bounded provider-managed authentication recovery already accepted in
+    D-018. The operations are never called absolutely side-effect-free; they
+    never execute model inference, consume reset credits, redeem
+    replenishment, write provider configuration or dispatch selected
+    models.
+  - **No model execution.** No interface executes models, proxies prompts or
+    dispatches fallbacks (D-001 unchanged).
+  - **Versioning boundary.** Capacity contract version
+    (`CapacitySnapshot.schema_version = 3`), machine-interface version (the
+    `/v1/` path prefix and outer envelope `schema_version = 1`), catalog
+    version and policy version are separate concepts, never collapsed. The
+    machine-interface contract includes both its envelope and the
+    serialized domain documents exposed inside it (`CapacitySnapshot`,
+    `TaskRequirement`, `SelectorPolicy`, `ReplenishmentState`,
+    `SelectionDecision`, `SimulationResult`, `SimulationOverrides`).
+    Within v1, additive backwards-compatible domain fields may flow through
+    v1 when existing clients remain valid; an incompatible removal, rename,
+    type change or semantic change in **any** exposed nested domain
+    contract is an incompatible machine-interface change requiring either a
+    compatibility serializer preserving the v1 wire contract or a new
+    machine-interface major version; changing only a domain's internal
+    version number does not by itself require a machine-interface bump when
+    the v1-visible wire shape stays backwards compatible. Existing domain
+    serialization is reused, never forked; M3a creates no compatibility
+    serializers. MCP tool names stay simple and unversioned;
+    tool documentation states they expose machine-interface contract v1.
+  - **Interface parity requirement.** Equivalent logical inputs must
+    produce equivalent core results through CLI, REST and MCP. Transport
+    wrapping may differ; the business result must not. For deterministic
+    injected inputs, unwrapped REST/MCP results equal the direct
+    application/core results (typed/domain equality, not byte equality),
+    and CLI JSON remains semantically equivalent to the same core result.
+    M3 closeout must prove `direct application == CLI JSON == REST == MCP`
+    for representative deterministic scenarios.
+  - **U-008 disposition for M3.** `scarcity_router` remains the stable
+    Python module/package identity for M3; the final branded
+    package/executable name is not frozen yet. REST/MCP development entry
+    points stay module-based (for example `python -m
+    scarcity_router.server`, `python -m scarcity_router.mcp`) until
+    packaging proves necessary. No package publishing or release
+    infrastructure is created in M3a. U-008 remains open only for final
+    release-time branding (collision search pending).
+  - **Dependency choice deferred.** M3a adds no dependency and does not
+    edit `pyproject.toml`. The REST implementation should prefer the
+    smallest justified framework and MCP should use the official MCP Python
+    SDK if it materially reduces protocol risk, but each dependency must be
+    justified in its own M3b/M3c implementation issue (D-013 unchanged).
+    FastAPI is not frozen merely because earlier roadmap prose mentioned
+    it.
+  - **No caching/database/history in M3.** REST is a single local process
+    with no daemon manager, background cache, database, persistent history
+    or scheduler; each request may collect current telemetry through the
+    existing application path. MCP's stdio lifecycle is owned by the MCP
+    client. No request caching is invented in M3.
+  - **Concurrency unchanged.** One request maps to one application
+    invocation using the existing deterministic synchronous provider
+    collection; no parallel provider collection semantics are introduced.
+    If concurrent transport requests create lifecycle/resource concerns,
+    the implementation must serialize or bound them explicitly — an M3
+    implementation concern, not an M2 redesign.
+  - **No M3 implementation in this decision.** M3a froze contracts and
+    documentation only; M3b (REST) and M3c (MCP + parity tests) are
+    separate issues that start only after M3a is merged into `develop`.
+- **Reason:** M2 accepted the CLI semantics through live use; M3 adds
+  machine interfaces whose transport code must not invent or diverge from
+  that accepted behavior. Freezing envelopes, error classes, security
+  boundaries and parity before implementation keeps the transports thin,
+  makes parity testable and prevents framework-chosen semantics.
+- **Boundary:** Documentation and contracts only. No REST/MCP runtime, no
+  dependency change, no product source change, no selection semantic
+  change, no provider change, no model execution and no M3b/M3c work.
+- **Amendment (2026-09-06, single post-review remediation):** the contract
+  choices and frozen surface are unchanged; three review blockers are
+  closed in `docs/machine-interfaces.md` and this record, and the record's
+  date was corrected to the UTC convention (the reviewed head was created
+  2026-09-06T23:11:16Z). (1) The versioning rule is unambiguous: the
+  machine-interface contract includes the envelope AND the serialized
+  domain documents exposed inside it, so an incompatible nested-domain
+  change (in any exposed contract among `CapacitySnapshot`,
+  `TaskRequirement`, `SelectorPolicy`, `ReplenishmentState`,
+  `SelectionDecision`, `SimulationResult`, `SimulationOverrides`) is an
+  incompatible machine-interface change requiring a compatibility
+  serializer preserving the v1 wire contract or a new machine-interface
+  major version; a domain-internal version bump alone does not force either
+  when the v1-visible wire shape stays backwards compatible. (2) Request
+  parsing and field semantics are frozen: duplicate JSON keys and
+  `NaN`/`Infinity`/`-Infinity` constants are `invalid_request`; exact
+  missing/`null` semantics for select/simulate inputs, including
+  `replenishment_states: null` = `invalid_request` at the select boundary,
+  the exactly-one-effective-requirement-source rule and unknown
+  `profile_id` = `invalid_request`; the nested simulation override
+  tri-state is preserved and not conflated; MCP freezes the logical
+  `invalid_request`/`internal_error` error payloads M3c must preserve.
+  (3) The design scenarios gained the matching invalid-request and MCP
+  error cases. No new decision number is created; D-028 remains the
+  governing M3a decision.
+
+### D-029 — Project-wide LLM operating policy and assignment separation
+
+- **Status:** Accepted
+- **Date:** 2026-09-07
+- **Decision:** Adopt [`docs/llm-operating-policy.md`](llm-operating-policy.md)
+  as the authoritative human-readable multi-model operating policy and keep
+  its compact durable facts in `model-policy.json` policy version 5.
+  - Stable capability archetypes and stable workflow role names are
+    independent from specific model assignments.
+  - Current model assignments are dated, revisable descriptive metadata. They
+    do not establish selector eligibility, capability ratings or capacity
+    bindings.
+  - GPT-6 Astra at low reasoning effort is the preferred reference for
+    scientific/methodological review, semantic figure review and deep technical
+    reasoning. No Astra
+    capacity scope, provider telemetry, model slug, hard property or
+    capability rating is accepted by this decision.
+  - GPT-5.6 Sol High is the primary translation specialist and an authorized
+    alternate scientific reviewer or second opinion; Luna remains the
+    orchestration/editorial reference, Flash remains the routine execution
+    generalist and GLM-5.3 remains the deep technical reasoner.
+  - Reasoning effort is an explicit routing concern. Lowest sufficient effort
+    is the governing principle, and importance or size alone does not trigger
+    escalation. Dynamic reasoning-effort optimization is not implemented in
+    the selector.
+  - Consequential review is independent; evidence preparation is separate from
+    scientific/methodological adjudication; large work uses early durable
+    checkpoints; repository and artifact state outranks session UI state;
+    runtime identity uses explicit attestation states; completed work is not
+    repeated without material source change or a concrete regression.
+  - Finite retries, bounded convergence, the immutable reviewed head, phase
+    serialization and the existing stricter one-initial-review,
+    one-remediation and one-narrow-final-verification policy remain in force.
+- **Reason:** The owner's updated operating model requires durable separation
+  between role guidance and selector data, deliberate effort selection,
+  independent judgment, evidence adjudication, incremental durable work and
+  honest execution provenance without changing accepted M2 selector behavior.
+- **Boundary:** `model-catalog.json`, selector semantics, task-profile numeric
+  minima, provider adapters, capacity parsing, runtime attestation code,
+  model execution and M3b/M3c remain unchanged. Astra selector onboarding is a
+  separate evidence-first follow-up. The generic principle that local
+  inference may be used when stable and sufficient is overridden for this
+  project by D-017: local inference remains unsupported.
+
+### D-030 — M3b local REST implementation
+
+- **Status:** Accepted
+- **Date:** 2026-09-07
+- **Decision:** M3b implements the frozen D-028 REST v1 surface as a thin,
+  loopback-only adapter in `scarcity_router/server.py`, using the Python
+  standard library only:
+  - **Implementation choice.** `http.server.HTTPServer` +
+    `BaseHTTPRequestHandler`; no FastAPI/Starlette/Flask/aiohttp/Uvicorn and
+    no other runtime dependency is added (`pyproject.toml` and `uv.lock`
+    unchanged). Exactly four local endpoints do not justify framework
+    machinery, strict JSON semantics are controlled explicitly by reusing
+    `selection_app.load_strict_json`, and the deliberate synchronous
+    application semantics stay synchronous.
+  - **Serialized request handling.** `HTTPServer` is single-threaded, so
+    requests are serialized by construction: one request, one application
+    invocation, the existing deterministic synchronous provider collection.
+    This satisfies the D-028 concurrency requirement without locks around
+    selector internals. A 60-second socket read timeout bounds a stalled
+    client; it does not bound provider collection.
+  - **Loopback-only fixed binding.** The bind address is the constant
+    `127.0.0.1` and is not configurable; there is no `--host`/`--bind`
+    option and no `0.0.0.0` path. The only runtime flag is `--port`
+    (default 8765). The public runtime entry point stays module-based under
+    U-008: `python -m scarcity_router.server`.
+  - **Request-body rules.** Maximum body size is frozen at
+    `MAX_REQUEST_BODY_BYTES = 1_048_576` (1 MiB). POST requires exactly one
+    valid decimal `Content-Length`; malformed, negative, duplicate or
+    missing Content-Length and any `Transfer-Encoding` (no chunked request
+    bodies) are rejected with HTTP 400 `invalid_request`. Content-Type must
+    be `application/json` with an optional `charset=utf-8` parameter only;
+    bodies are decoded as strict UTF-8. Duplicate JSON object keys and
+    `NaN`/`Infinity`/`-Infinity` fail through the existing strict parser.
+    An oversized declared body is drained with a bounded best-effort read
+    (never stored or logged) so the client can read the 400 before the
+    connection closes.
+  - **Typed in-memory application seam.** `selection_app` gains
+    `select_from_inputs` and `simulate_from_inputs`, which take typed
+    in-memory inputs (profile id XOR explicit `TaskRequirement`, optional
+    tightening, optional `SelectorPolicy` defaulting to the neutral policy,
+    a replenishment-state tuple, the loaded catalog/profile artifacts,
+    collectors and clock), resolve the requirement through the existing
+    authoritative `resolve_requirement`, apply tightening exactly once,
+    obtain ONE aware instant and call the existing `select_model` /
+    `simulate_selection` cores. The file-based CLI runners `run_select` /
+    `run_simulate` delegate to the same seam after loading their JSON
+    files; the REST adapter contains no selection, requirement-resolution
+    or capacity logic and uses no temp files, subprocesses or CLI
+    invocation. The future M3c MCP adapter calls the same seam directly.
+    `/v1/status` and CLI status share `canonical_snapshot_documents` so no
+    interface keeps its own snapshot serialization.
+  - **Typed client-input error boundary.** `ApplicationInputError` (in
+    `errors.py`, deriving from `SelectionContractError`) marks
+    client-controlled failures — strict JSON failures, request-shape
+    failures, `from_dict` failures for `TaskRequirement`,
+    `SelectorPolicy`, `ReplenishmentState` and `SimulationOverrides`, the
+    requirement-source XOR violations (including the previously
+    argparse-enforced both-present case, now enforced in
+    `resolve_requirement` itself), unknown profile ids and invalid
+    tightenings. The REST adapter maps it to HTTP 400 `invalid_request` by
+    type, never by matching exception message text; everything else is
+    HTTP 500 `internal_error` with the fixed message "internal server
+    error" (no paths, tracebacks or exception details). The CLI's single
+    invalid-input failure class is unchanged because the new type derives
+    from `SelectionContractError`.
+  - **Security and runtime scope.** No authentication, no TLS, no
+    non-loopback exposure, no daemonization, no PID files, no cache,
+    database or history. Request logging is suppressed entirely
+    (`log_message` is a no-op), so no request body, credential, provider
+    payload or traceback is ever logged; framework HTML error pages are
+    replaced with body-less status responses so request material is never
+    reflected. `/healthz` touches no collector, artifact or application
+    component. No model execution, prompt proxy or dispatch exists.
+  - **Routing.** Unknown paths (including any query or fragment suffix,
+    which are not part of v1) return 404; a known path with an unsupported
+    method (`HEAD`, `PUT`, `PATCH`, `DELETE`, `OPTIONS`, and each route's
+    non-listed methods) returns 405 with an `Allow` header — never the
+    framework-default 501. No new domain error codes are invented for
+    routing responses.
+- **Reason:** M3a deliberately deferred the implementation choice to M3b.
+  A standard-library single-threaded server is the smallest implementation
+  that satisfies the frozen contract: it adds zero dependencies while
+  U-008 packaging remains narrow, makes the strict parsing explicit rather
+  than framework-chosen, and provides serialization by construction.
+- **Boundary:** REST transport only. No selection/scarcity/provider
+  semantic change (the requirement-source XOR now enforced in
+  `resolve_requirement` was previously enforced only by the CLI's
+  mutually exclusive argparse group), no catalog/rating/policy change, no
+  MCP implementation (M3c still pending), no auth/TLS/non-loopback option,
+  no dependency change.
+- **Amendment (2026-09-07, single remediation):** Semantic failures while
+  applying an otherwise schema-valid simulation override use the narrow
+  `SimulationOverrideApplicationError` type and become the existing
+  `invalid_request` / HTTP 400 class at the application boundary; unrelated
+  selection, catalog, collector and internal failures remain HTTP 500.
+  Every request also requires exactly one exact loopback `Host` value (the
+  bare address or the actual bound port) before route dispatch, closing the
+  DNS-rebinding gap in the no-auth loopback boundary. Content-Length decimal
+  magnitudes are compared with the 1 MiB limit before integer conversion, so
+  pathological digit strings fail safely as HTTP 400 without being echoed or
+   logged. M3b references use D-030; D-029 remains the operating-policy
+decision.
+
+### D-031 — M3c stdio MCP implementation
+
+- **Status:** Accepted
+- **Date:** 2026-09-07
+- **Decision:** M3c implements the frozen machine-interface v1 MCP surface as
+  a thin, local stdio adapter:
+  - **Official SDK.** Adopt the official MCP Python SDK stable v2 line,
+    package constraint `mcp>=2,<3`, resolved to `mcp` 2.1.1 in `uv.lock`.
+    The dependency is placed in the existing development dependency group for
+    the current module-based runtime. No `[project]` table, final package
+    branding or `mcp[cli]` extra is introduced; installable-package runtime
+    metadata remains a U-008 release/packaging concern.
+  - **Low-level server.** Use `mcp.server.lowlevel.Server` with the official
+    `mcp.server.stdio.stdio_server` transport. The low-level API gives M3c
+    exact control over tool names, `structured_content` and `is_error` instead
+    of delegating logical result/error shaping to a high-level wrapper.
+  - **Surface and lifecycle.** Expose exactly `scarcity_status`,
+    `scarcity_select` and `scarcity_simulate`, with no resources, prompts,
+    sampling, elicitation, subscriptions, execution tools or version suffixes.
+    Stdio is the only transport; the MCP client owns the process lifecycle.
+    No HTTP, SSE, Streamable HTTP, auth layer or network listener is added.
+  - **Application boundary.** MCP calls the shared transport-neutral
+    `ApplicationDependencies` record and the typed
+    `select_from_inputs`/`simulate_from_inputs` application seam in-process.
+    `machine_api.py` owns the shared logical request parsing and v1 envelopes
+    used by REST and MCP. MCP never imports or starts the REST runtime, invokes
+    the CLI, uses temp files or duplicates selector/scarcity/provider logic.
+  - **Results and errors.** Successful tools return the exact REST logical
+    envelopes as `structured_content`, plus one deterministic text block with
+    the same JSON. Logical `invalid_request` and `internal_error` payloads set
+    `is_error = true`; valid no-solution and degraded-provider results remain
+    successful domain data. Internal messages are fixed and safe.
+  - **Verification.** Fixture-based tests use synthetic collectors and a
+    fixed clock to prove direct/CLI/REST/MCP parity for status, select and
+    simulation, cover the logical error matrix and assert no secret/error
+    detail leakage. Official in-memory Client tests and a real stdio subprocess
+    discovery smoke verify the transport lifecycle without live collection.
+  - **Scope.** No model execution, prompt proxying, automatic dispatch,
+    provider/catalog/policy/ranking change, new provider, auth input, provider
+    endpoint or catalog-path input is permitted. M3 closeout and live
+    acceptance are tracked separately; this decision does not by itself mark
+    M3 PASS.
+  - **Raw MCP parser boundary (narrow D-028 amendment).** MCP transport
+    framing and JSON-RPC decoding are owned by the official MCP SDK.
+    Scarcity Router's `invalid_request` logical contract begins at the
+    tool-argument object delivered by that SDK. All application-level argument
+    semantics remain identical to REST. Raw JSON-RPC framing failures,
+    including duplicate-name/non-standard-number behavior that occurs before
+    the tool handler, follow official SDK/protocol transport behavior and are
+    not reimplemented by Scarcity Router.
+- **Evidence:** A bounded ephemeral probe of installed MCP SDK 2.1.1 APIs
+  verified `mcp.server.lowlevel.Server`, `stdio_server`, the `Tool` and
+  `CallToolResult` structured fields, the official in-memory Client and the
+  official stdio subprocess Client. The same SDK JSON decoder accepted a
+  duplicate object name with last-value normalization and carried `NaN`,
+  `Infinity` and `-Infinity` in untyped tool arguments as floats; duplicate
+  evidence is therefore unavailable to the handler. Malformed JSON syntax and
+  malformed JSON-RPC shape were rejected by the decoder before the tool
+  handler. Typed Scarcity Router parsing remains strict for fields it owns.
+- **Reason:** The official SDK preserves protocol interoperability and owns
+  stdio framing, while the low-level API preserves exact M3 logical result and
+  error envelopes. Avoiding custom protocol parsing prevents a second MCP
+  implementation and honestly records the unavoidable raw-transport boundary;
+  sharing `machine_api.py` and the application seam keeps CLI, REST and MCP
+  semantics identical.
+- **Boundary:** This is an MCP transport and machine-boundary decision only.
+  It does not change `load_strict_json`, selector ranking, scarcity formulas,
+  capacity schema, provider adapters, model catalog, model policy, ratings,
+  reasoning effort, OpenAI/Z.ai acquisition, Astra onboarding or live M3
+  closeout. The REST strict duplicate/non-finite JSON contract remains
+  unchanged.
+- **Closeout evidence (2026-09-07):** Live CLI, REST and MCP acceptance passed
+  without changing any provider, capacity, selector, catalog, policy or
+  machine-interface semantics. Sanitized evidence is recorded in
+  [`docs/m3-acceptance.md`](m3-acceptance.md); this milestone acceptance does
+  not create a new decision number.
+
 ## Unresolved decisions
 
 ### U-001 — Codex binary discovery and compatibility
@@ -1183,6 +1613,11 @@ direction was chosen. Dates use UTC.
 ### U-008 — Package, CLI and final project name
 
 - Decide only after a collision search and before publishing an installable M1.
+- **Status:** Narrowly resolved for M3 by D-028 (2026-09-06):
+  `scarcity_router` is the stable Python module/package identity, and
+  REST/MCP development entry points remain module-based until packaging
+  proves necessary. The final branded package/executable name remains
+  unresolved until the release-time collision search.
 
 ### U-009 — Provider terms and public supportability
 

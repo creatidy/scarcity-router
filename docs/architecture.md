@@ -88,15 +88,32 @@ dispatches `status`, `select` and `simulate`.
   `status` surface is implemented, and M2e adds `select` (with `--explain`
   and `--json`) and `simulate` through the same dispatcher; a separate
   `doctor` command remains deferred.
-- **REST** becomes the canonical language-neutral machine contract. It binds to
-  `127.0.0.1` by default. Target endpoints include `/healthz`, `/v1/status`,
-  `/v1/providers`, `/v1/providers/{provider}`, `/v1/select` and `/v1/simulate`.
-- **MCP** is a thin adapter with tools such as `get_capacity_status`,
-  `select_model` and `simulate_selection`. Local stdio is preferred initially.
+- **REST** becomes the canonical language-neutral machine contract. It binds
+  to `127.0.0.1` by default. The M3a planning gate (D-028) froze the surface
+  to exactly `/healthz`, `/v1/status`, `/v1/select` and `/v1/simulate`;
+  `/v1/providers` and `/v1/providers/{provider}` are deferred because
+  `/v1/status` already returns the full snapshot set. **Implemented in M3b**
+  (D-030) as the loopback-only standard-library adapter
+  `scarcity_router/server.py` (`python -m scarcity_router.server`,
+  default port 8765, single-threaded serialized requests, no runtime
+  dependency), calling the same typed application seam
+  (`select_from_inputs` / `simulate_from_inputs`) as the CLI runners.
+- **MCP** is a thin adapter. M3a froze three tools — `scarcity_status`,
+  `scarcity_select` and `scarcity_simulate` — over local stdio, calling the
+  application layer directly in-process and never requiring the REST server.
+  **Implemented in M3c (D-031)** in `scarcity_router/mcp.py` with the official
+  MCP SDK v2 low-level `Server` API, structured tool results and the client-owned
+  stdio lifecycle. It shares the transport-neutral dependency record in
+  `selection_app.py`, the logical parser/envelopes in
+  `scarcity_router/machine_api.py`,
+  and the same typed application seam; it has no REST runtime dependency.
 - **Dashboard** is a small operational view after core contracts exist, not a
   separate frontend product.
 
-No interface owns selection or collector business logic.
+The authoritative machine-interface contract — envelopes, error semantics,
+side-effect wording, security/lifecycle boundary, versioning and the
+CLI/REST/MCP parity requirement — is [`docs/machine-interfaces.md`](machine-interfaces.md)
+(D-028). No interface owns selection or collector business logic.
 
 ## Dependency direction
 
@@ -111,6 +128,12 @@ data files -----------------> catalog/policy loaders -> selector/domain
 The domain must not import a provider, web framework, MCP SDK, CLI framework or
 Kilo-specific module. Provider adapters may depend on small protocol helpers but
 not on the selector.
+
+The MCP SDK is isolated at the `scarcity_router/mcp.py` transport edge. The
+shared `ApplicationDependencies` record carries only process-configured
+artifact paths plus injectable collectors and clock; clients cannot supply
+paths, endpoints or credentials. `machine_api.py` contains logical request
+parsing and v1 envelopes, not selection or scarcity logic.
 
 ## Domain contracts
 

@@ -24,9 +24,31 @@ in [`docs/model-calibration.md`](docs/model-calibration.md); the selector
 and simulation live in `scarcity_router/selector.py` and
 `scarcity_router/simulation.py` with the frozen ranking semantics
 documented in [`docs/selection-policy.md`](docs/selection-policy.md).
-M2 implementation is complete; M2 exit/live acceptance in the owner's real
-workflow is still pending. There is not yet an installable package, final
-executable name, REST service or MCP server.
+M2 implementation is complete and closed as **PASS** (2026-09-06) after live
+acceptance in the owner's real workflow. There is not yet an installable
+package or final executable name. The M3a planning gate froze the REST and
+MCP contracts in
+[`docs/machine-interfaces.md`](docs/machine-interfaces.md) (D-028); the
+minimal loopback-only REST adapter is implemented (M3b, D-030), and the thin
+stdio MCP adapter is implemented (M3c, D-031). Live CLI/REST/MCP acceptance
+is complete. M3 is closed as **PASS** (2026-09-07); sanitized
+evidence is recorded in [`docs/m3-acceptance.md`](docs/m3-acceptance.md).
+
+## Repository
+
+Canonical development:
+https://forgejo.creatidy.com/BioMedical-IT/scarcity-router
+
+GitHub mirror:
+https://github.com/creatidy/scarcity-router
+
+Forgejo is canonical for branches, issues, pull requests, reviews and the
+development workflow; `develop` is the integration branch and ordinary PRs
+target `develop`. GitHub is an automatic mirror for public
+visibility/discovery, read-only integrations and consumers that only support
+GitHub — do not open normal issues or pull requests there. `main` is a
+human-controlled promotion/release branch and is not the normal agent
+integration branch.
 
 ## Why It Exists
 
@@ -220,6 +242,61 @@ bounded provider-managed OpenAI auth recovery accepted in D-018. Live
 reset-credit acquisition is not implemented: reset credits are visible only
 when a normalized `ReplenishmentState` file is supplied.
 
+## Local REST Service
+
+M3b adds a minimal, loopback-only REST adapter exposing the frozen machine
+interface v1 (D-028, D-030):
+
+```bash
+uv run python -m scarcity_router.server            # binds 127.0.0.1:8765
+uv run python -m scarcity_router.server --port 9000
+```
+
+Exactly four endpoints:
+
+```text
+GET  /healthz     process liveness only
+GET  /v1/status   normalized CapacitySnapshot v3 snapshots in a versioned envelope
+POST /v1/select   {"profile_id" | "requirement", "tightening"?, "selector_policy"?, "replenishment_states"?}
+POST /v1/simulate the select input plus a required "overrides" object
+```
+
+The server binds only to `127.0.0.1` (there is no bind-address option), has
+no authentication, handles requests serially and adds no runtime dependency.
+Request bodies are strict JSON (duplicate keys and `NaN`/`Infinity` are
+rejected), unknown request keys are rejected, valid no-solution decisions
+are HTTP 200 with `selected = null`, invalid client requests are HTTP 400
+`invalid_request` and internal failures are HTTP 500 `internal_error`.
+Provider degradation stays normalized data in successful responses. The
+adapter owns no selection logic: it calls the same typed application seam
+as the CLI. See
+[`docs/machine-interfaces.md`](docs/machine-interfaces.md) for the complete
+frozen contract.
+
+## Local Stdio MCP
+
+M3c exposes exactly three recommendation-only MCP tools over the official
+SDK's local stdio transport. The adapter calls the application layer directly;
+it does not start or call the REST server, execute model inference, accept
+credentials or expose resources/prompts.
+
+```bash
+uv run python -m scarcity_router.mcp
+```
+
+Tools:
+
+```text
+scarcity_status
+scarcity_select
+scarcity_simulate
+```
+
+See [`examples/mcp-stdio.json`](examples/mcp-stdio.json) for a generic
+external-orchestrator process configuration and
+[`docs/machine-interfaces.md`](docs/machine-interfaces.md) for the shared v1
+logical envelopes and error semantics.
+
 ## Architecture At A Glance
 
 Four inputs remain independent:
@@ -245,6 +322,8 @@ Each topic has one primary source of truth:
 | Subscription quota and provider capacity | [`docs/capacity-model.md`](docs/capacity-model.md) |
 | Task levels, profiles and model capabilities | [`docs/capability-model.md`](docs/capability-model.md) |
 | Eligibility, scarcity, reservation and ranking | [`docs/selection-policy.md`](docs/selection-policy.md) |
+| Multi-model roles, review, effort and durable execution governance | [`docs/llm-operating-policy.md`](docs/llm-operating-policy.md) |
+| REST and MCP machine-interface contracts | [`docs/machine-interfaces.md`](docs/machine-interfaces.md) |
 | Provider adapter expectations | [`docs/providers.md`](docs/providers.md) |
 | Security invariants and threat boundaries | [`docs/security.md`](docs/security.md) |
 | Experimentally established facts | [`docs/poc-evidence.md`](docs/poc-evidence.md) |
@@ -256,21 +335,22 @@ Each topic has one primary source of truth:
 ## Current Project Choices
 
 - Intended license: Apache License 2.0.
-- Intended public hosting: GitHub canonical, Forgejo automatic mirror.
+- Repository hosting: Forgejo canonical, GitHub automatic mirror.
 - `Scarcity Router` is a working name pending a collision and naming search.
 - Likely implementation stack: Python 3.12+, `uv`, `pytest`, typed schemas, a
   small CLI, a small HTTP layer and the official MCP SDK. This is not binding.
 
-See the [roadmap](docs/roadmap.md) before starting implementation. M0 and M1
-are complete, and the M2 implementation slices M2a–M2e have landed (capacity
-scopes, selection-input contracts, calibration, scarcity and policy
-primitives, and the deterministic selector with explanation and simulation);
-M2 exit/live acceptance is still pending, and no production release is
-claimed.
+See the [roadmap](docs/roadmap.md) before starting implementation. M0, M1
+and M2 are complete; M2 closed as PASS (2026-09-06) after live acceptance,
+and no production release is claimed. Automatic live OpenAI reset-credit
+acquisition is deferred; manual normalized replenishment remains supported.
 
 The portable descriptive model policy is available at
 [`model-policy.json`](model-policy.json) and the calibrated model catalog at
 [`model-catalog.json`](model-catalog.json); the human-readable calibration
 rationale is [`docs/model-calibration.md`](docs/model-calibration.md).
-External consumers needing reproducible policy should pin a commit or release
-rather than assume `main` never changes.
+Current reference model assignments may mention models not yet onboarded into
+the active selector catalog; `model-catalog.json` remains authoritative for
+actual selector candidates.
+External consumers needing reproducible policy should pin a commit, tag or
+release rather than track a mutable integration or mirror branch.

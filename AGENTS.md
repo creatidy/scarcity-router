@@ -17,30 +17,44 @@ conflict explicitly in `docs/decisions.md`; do not choose silently.
 
 ## Repository workflow
 
-This project uses one issue → one feature branch → one PR, with `main` as the
-integration branch and human review as the merge gate. The invariants are
-authoritative and non-negotiable for agent work:
+Forgejo (`https://forgejo.creatidy.com/BioMedical-IT/scarcity-router`) is the
+canonical repository: issues, pull requests, reviews, agent workflow and
+branch integration are canonical there. GitHub
+(`https://github.com/creatidy/scarcity-router`) is an automatic mirror and a
+read-only secondary view; it is not the operational issue/PR source of truth.
+Do not create or mutate GitHub issues, PRs, branches or tags, and do not push
+to GitHub, unless Adrian explicitly requests a GitHub-specific operation.
 
-- Never make a substantive file modification while checked out on `main`.
-  Establish the issue and create the feature branch before the first
-  task-related edit. `main` is only for integrating merged work.
-- One issue drives one feature branch and one PR. The PR targets `main`.
+This project uses one issue → one feature branch → one Forgejo PR, with
+`develop` as the integration branch and human review as the merge gate. The
+invariants are authoritative and non-negotiable for agent work:
+
+- Never make a substantive file modification while checked out on the
+  integration branch `develop`. Establish the issue and create the feature
+  branch before the first task-related edit. `develop` is only for
+  integrating merged work.
+- One issue drives one feature branch and one PR. The PR targets `develop`.
 - An agent leaves its PR open and unmerged. Do not merge your own PR; a human
   is the merge gate.
+- `main` is the human-controlled promotion/release branch. It is never the
+  normal agent integration branch. Agents do not push to, merge to or promote
+  `main` unless Adrian explicitly authorizes a separate promotion/release
+  operation.
 - Before a later task starts, any uncommitted or unmerged work from an earlier
   related Scarcity Router task must be resolved through its own issue/branch/PR.
   Do not bypass an unmet dependency by opening a clean secondary worktree.
-- A clean secondary worktree based on current `origin/main` is acceptable only
+- A clean secondary worktree based on current `origin/develop` is acceptable only
   to preserve genuinely unrelated user work; it must not absorb unrelated
   changes or sidestep an earlier task's work. Preserve user work untouched.
-- No force-push, no rewriting published history, no merging `main` into the
+- No force-push, no rewriting published history, no merging `develop` into the
   feature branch, and no synchronization merge commits.
-- Before completion verify that `origin/main..HEAD` contains only this task's
+- Before completion verify that `origin/develop..HEAD` contains only this task's
   diff, that there is no unintended merge commit, and that the change touches
   only the files the issue scopes.
 
-This discipline exists because leaving valuable uncommitted work on `main` that
-a dependent agent then had to reroute is a workflow failure to prevent.
+This discipline exists because leaving valuable uncommitted work on the
+integration branch that a dependent agent then had to reroute is a workflow
+failure to prevent.
 
 ## Multi-agent orchestration safety
 
@@ -100,18 +114,29 @@ reviewer sessions consume at most the configured retry budget, then escalate to
 the human. Workers, reviewers and orchestrators never merge; the human remains
 the merge gate.
 
+## Multi-model operating policy
+
+Multi-model task routing and execution governance are defined in
+[`docs/llm-operating-policy.md`](docs/llm-operating-policy.md) and the
+corresponding Kilo rule. Stable roles are separated from current model
+assignments; reasoning effort is chosen deliberately; consequential review is
+independent; large work creates early durable checkpoints; durable
+repository/artifact state outranks session UI state; completed gates are not
+repeated without material source change or a concrete regression.
+
 ## Current phase
 
-M0 and M1 are complete. M2 is the current milestone and starts with its
-planning gate: selector input contracts, semantic capacity applicability,
-evidence/policy precedence, replenishment semantics and the implementation
-order are frozen in documentation (`docs/decisions.md` D-020, D-021, D-022)
-before any selector implementation. Executable product code may now be added
-only for explicitly scoped M2 slices, in the recorded order: M2a (semantic
-capacity applicability) is the first implementation prerequisite, M2b–M2d
-build the selector inputs and policy primitives, and selector implementation
-(M2e) must not begin before the prior slices are accepted. Documentation
-utilities or repository metadata must not masquerade as a working broker.
+M0 PASS, M1 PASS and M2 PASS. M2 implementation (slices M2a–M2e) and its
+technical live acceptance are complete, and the owner has closed the M2
+tasks and accepted the closeout decisions; sanitized closeout evidence is
+recorded in `docs/roadmap.md`. Automatic live OpenAI reset-credit
+acquisition remains deferred and is not a reason to reopen M2; manual
+normalized replenishment remains supported.
+
+M3 (REST and MCP) is the next planned milestone, but it must not start
+automatically. Start M3 only from an explicitly selected or created Forgejo
+issue. Documentation utilities or repository metadata must not masquerade
+as a working broker.
 
 ## Product boundary
 

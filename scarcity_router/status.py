@@ -146,6 +146,22 @@ def _canonical_snapshot_dict(snapshot: CapacitySnapshot) -> dict[str, object]:
     return payload
 
 
+def canonical_snapshot_documents(
+    snapshots: Sequence[CapacitySnapshot],
+) -> list[dict[str, object]]:
+    """Ordered canonical snapshot dictionaries — the shared JSON contract.
+
+    The CLI ``status --json`` output and the REST ``/v1/status`` envelope
+    (D-028) both use this exact serialization: canonical provider ordering
+    and canonically sorted windows and diagnostics. Since M3b (D-030) no
+    interface maintains its own snapshot serialization.
+    """
+    return [
+        _canonical_snapshot_dict(snapshot)
+        for snapshot in _ordered_snapshots(snapshots)
+    ]
+
+
 def render_human(snapshots: Sequence[CapacitySnapshot]) -> str:
     """Render snapshots using only safe normalized contract fields."""
     ordered = _ordered_snapshots(snapshots)
@@ -169,10 +185,7 @@ def render_human(snapshots: Sequence[CapacitySnapshot]) -> str:
 
 def render_json(snapshots: Sequence[CapacitySnapshot]) -> str:
     """Render the ordered snapshots with their existing v3 serialization."""
-    payload = [
-        _canonical_snapshot_dict(snapshot)
-        for snapshot in _ordered_snapshots(snapshots)
-    ]
+    payload = canonical_snapshot_documents(snapshots)
     return json.dumps(payload, indent=2, sort_keys=True) + "\n"
 
 
@@ -217,6 +230,7 @@ def main(
 __all__ = [
     "StatusCollectors",
     "build_parser",
+    "canonical_snapshot_documents",
     "collect_status",
     "main",
     "observation_timestamp",

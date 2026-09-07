@@ -23,7 +23,7 @@ Baseline inputs are never mutated: overridden snapshots are new frozen
 copies and every other input is reused read-only. A percentage override
 must match exactly one existing window of an ``ok`` snapshot that already
 carries a known percentage pair; zero or multiple matches are typed
-validation failures (an ambiguous match requires an exact ``window_id``,
+application failures (an ambiguous match requires an exact ``window_id``,
 which is matched exactly and never parsed).
 """
 
@@ -36,7 +36,10 @@ from datetime import datetime, timezone
 from typing import ClassVar, TypeVar, cast
 
 from .capacity import CapacitySnapshot
-from .errors import SelectionContractValidationError
+from .errors import (
+    SelectionContractValidationError,
+    SimulationOverrideApplicationError,
+)
 from .policy import ReplenishmentState
 from .selector import SelectionDecision, SelectorPolicy, select_model
 from .selection_types import SUPPORTED_PROVIDERS, ModelCatalog, TaskRequirement
@@ -418,7 +421,7 @@ def apply_capacity_overrides(
     existing window of the target provider's ``ok`` snapshot that already
     carries a known percentage pair; zero matches, ambiguous matches (use an
     exact ``window_id``) and a second override of the same window are typed
-    validation failures. Providers, statuses, non-target windows and all
+    application failures. Providers, statuses, non-target windows and all
     other snapshot data are preserved as-is.
     """
     snapshot_by_provider: dict[str, CapacitySnapshot] = {}
@@ -441,12 +444,12 @@ def apply_capacity_overrides(
         )
         snapshot = snapshot_by_provider.get(override.provider)
         if snapshot is None:
-            raise SelectionContractValidationError(
+            raise SimulationOverrideApplicationError(
                 "apply_capacity_overrides: override target provider "
                 + f"{override.provider!r} has no baseline snapshot"
             )
         if snapshot.status != "ok":
-            raise SelectionContractValidationError(
+            raise SimulationOverrideApplicationError(
                 "apply_capacity_overrides: override target snapshot for "
                 + f"provider {override.provider!r} has status "
                 + f"{snapshot.status!r}; overrides require status 'ok' and "
@@ -461,7 +464,7 @@ def apply_capacity_overrides(
             and (override.window_id is None or window.window_id == override.window_id)
         ]
         if not matches:
-            raise SelectionContractValidationError(
+            raise SimulationOverrideApplicationError(
                 "apply_capacity_overrides: override target window not found "
                 + f"for provider {override.provider!r}, scope "
                 + f"{override.scope_id!r}, resource {override.resource!r}, "
@@ -473,7 +476,7 @@ def apply_capacity_overrides(
                 )
             )
         if len(matches) > 1:
-            raise SelectionContractValidationError(
+            raise SimulationOverrideApplicationError(
                 "apply_capacity_overrides: override matches "
                 + f"{len(matches)} windows for provider {override.provider!r}, "
                 + f"scope {override.scope_id!r}, resource "
@@ -482,7 +485,7 @@ def apply_capacity_overrides(
             )
         window = matches[0]
         if window.used_percent is None or window.remaining_percent is None:
-            raise SelectionContractValidationError(
+            raise SimulationOverrideApplicationError(
                 "apply_capacity_overrides: override target window "
                 + f"{override.scope_id!r}/{override.resource!r}/"
                 + f"{override.kind!r} has no known percentage pair; unknown "
@@ -496,7 +499,7 @@ def apply_capacity_overrides(
             window.window_id,
         )
         if key in overridden_window_keys:
-            raise SelectionContractValidationError(
+            raise SimulationOverrideApplicationError(
                 "apply_capacity_overrides: the same window may not be "
                 + f"overridden twice ({key})"
             )

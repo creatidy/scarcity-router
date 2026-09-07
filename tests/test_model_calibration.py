@@ -34,6 +34,7 @@ CATALOG_PATH = REPO / "model-catalog.json"
 POLICY_PATH = REPO / "model-policy.json"
 
 ASSESSED_ON = "2026-09-06"
+POLICY_UPDATED_ON = "2026-09-07"
 
 LUNA = ("openai", "gpt-5.6-luna", "max")
 SOL = ("openai", "gpt-5.6-sol", "high")
@@ -389,8 +390,8 @@ class TaskProfileCalibration(unittest.TestCase):
     def test_policy_version_incremented_and_calibrated(self) -> None:
         policy = _load_policy()
         self.assertEqual(policy["schema_version"], 1)
-        self.assertEqual(policy["policy_version"], 4)
-        self.assertEqual(policy["updated_at"], ASSESSED_ON)
+        self.assertEqual(policy["policy_version"], 5)
+        self.assertEqual(policy["updated_at"], POLICY_UPDATED_ON)
         task_policy = _mapping(policy["task_profile_policy"], "task_profile_policy")
         self.assertTrue(task_policy["numeric_minima_included"])
         self.assertEqual(task_policy["numeric_minima_status"], "calibrated_m2c")

@@ -11,6 +11,14 @@ JSON output. All business logic stays in the pure core (``selector.py``,
 ``simulation.py``); this module never parses provider payloads and never
 issues model requests.
 
+Since M3b (D-030) the application layer also exposes a typed in-memory seam
+(``select_from_inputs`` / ``simulate_from_inputs``) that takes already-typed
+inputs instead of file paths. The file-based CLI runners and the
+machine-interface adapters (REST and MCP) call the same seam, so no
+transport owns requirement resolution or application semantics.
+Caller-supplied input violations raise ``ApplicationInputError`` so adapters
+can classify client errors by type (D-030).
+
 The default artifact paths are the repository-root ``model-catalog.json``
 and ``model-policy.json`` of the current source tree — a provisional
 source-tree CLI layout only (U-008 remains unresolved; this is not the
@@ -30,7 +38,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import cast
 
-from .errors import SelectionContractValidationError
+from .errors import (
+    ApplicationInputError,
+    SelectionContractValidationError,
+    SimulationOverrideApplicationError,
+)
 from .policy import ReplenishmentState, ReservationDecision
 from .selector import (
     EXCLUSION_STAGES,
@@ -219,34 +231,67 @@ def resolve_requirement(
     complete ``TaskRequirement`` supplied directly; tightening is not
     permitted with it. Returns the resolved requirement and the profile id
     (``None`` on the explicit path).
+
+    Caller-supplied input violations — the exclusivity rules, an unknown
+    profile id and a non-monotone tightening — raise
+    :class:`ApplicationInputError` so machine-interface adapters can classify
+    them as client errors by type (D-030).
     """
     if explicit_requirement is not None:
+        if profile_id is not None:
+            raise ApplicationInputError(
+                "resolve_requirement: exactly one requirement source is "
+                + "permitted: a profile id or an explicit TaskRequirement, "
+                + "never both"
+            )
         if tightening is not None:
-            raise SelectionContractValidationError(
+            raise ApplicationInputError(
                 "resolve_requirement: tightening is only permitted with the "
                 + "profile path, never with an explicit requirement"
             )
         return explicit_requirement, None
     if profile_id is None:
-        raise SelectionContractValidationError(
+        raise ApplicationInputError(
             "resolve_requirement: exactly one requirement source is required: "
             + "a profile id or an explicit TaskRequirement"
         )
-    base = profiles.resolve(profile_id)
+    try:
+        base = profiles.resolve(profile_id)
+    except SelectionContractValidationError as exc:
+        raise ApplicationInputError(
+            f"resolve_requirement: unknown profile id {profile_id!r}"
+        ) from exc
     if tightening is None:
         return base, profile_id
-    return tighten_requirement(base, tightening), profile_id
+    try:
+        return tighten_requirement(base, tightening), profile_id
+    except SelectionContractValidationError as exc:
+        raise ApplicationInputError(
+            f"resolve_requirement: invalid tightening: {exc}"
+        ) from exc
 
 
 # ── Application runner ────────────────────────────────────────────────────────
 
 
 @dataclass(frozen=True)
-class SelectionApplication:
-    """Injected dependencies with a seam for synthetic application tests."""
+class ApplicationDependencies:
+    """Process-configured dependencies shared by machine transports.
 
+    Artifact paths are server configuration, never client-controlled request
+    data. Collectors and the clock remain injectable for deterministic tests;
+    production callers leave them as ``None``.
+    """
+
+    catalog_path: Path = DEFAULT_CATALOG_PATH
+    model_policy_path: Path = DEFAULT_MODEL_POLICY_PATH
     collectors: StatusCollectors | None = None
     clock: Clock | None = None
+
+
+# Retain the earlier development-only name while transports use the neutral
+# dependency record. The alias has identical construction and field semantics.
+SelectionApplication = ApplicationDependencies
 
 
 def _current_instant(clock: Clock | None) -> datetime:
@@ -259,53 +304,132 @@ def _current_instant(clock: Clock | None) -> datetime:
     return instant
 
 
-def _load_selection_inputs(
-    *,
+def load_configured_artifacts(
     catalog_path: Path,
     model_policy_path: Path,
-    profile_id: str | None,
-    requirement_path: Path | None,
-    tighten_path: Path | None,
-    selector_policy_path: Path | None,
-    replenishment_path: Path | None,
-) -> tuple[
-    ModelCatalog,
-    int,
-    TaskRequirement,
-    str | None,
-    SelectorPolicy,
-    tuple[ReplenishmentState, ...],
-]:
+) -> tuple[ModelCatalog, TaskProfileCatalog, int]:
+    """Load the two process-configured application artifacts.
+
+    Catalog and profile artifacts are server configuration, never
+    per-request inputs (D-028): every caller — CLI runner or machine
+    adapter — loads them through this one authoritative loader. A loading
+    or validation failure is a server configuration failure, not a
+    client-input error.
+    """
     catalog = load_catalog(catalog_path)
     profiles, profile_policy_version = load_model_policy(model_policy_path)
-    explicit_requirement = (
-        load_requirement(requirement_path) if requirement_path is not None else None
-    )
-    tightening = load_requirement(tighten_path) if tighten_path is not None else None
-    requirement, resolved_profile_id = resolve_requirement(
+    return catalog, profiles, profile_policy_version
+
+
+# ── Typed in-memory application seam (M3b, D-030) ────────────────────────────
+
+
+def select_from_inputs(
+    *,
+    catalog: ModelCatalog,
+    profiles: TaskProfileCatalog,
+    profile_policy_version: int,
+    profile_id: str | None,
+    requirement: TaskRequirement | None,
+    tightening: TaskRequirement | None,
+    policy: SelectorPolicy | None,
+    replenishment_states: tuple[ReplenishmentState, ...] = (),
+    collectors: StatusCollectors | None = None,
+    clock: Clock | None = None,
+) -> SelectionDecision:
+    """Run one selection from typed in-memory inputs — the shared seam.
+
+    This is the single application path behind the file-based CLI runners
+    and the machine-interface adapters: requirement resolution through the
+    existing authoritative mechanism (profile XOR explicit requirement,
+    optional monotone tightening applied exactly once), ONE aware
+    evaluation instant, one ``collect_status`` observation with a fixed
+    clock so both provider snapshots share it, then the pure
+    ``select_model`` core. A missing policy means the documented neutral
+    policy. Caller-supplied input violations raise
+    :class:`ApplicationInputError`; other failures are server failures and
+    are not classified here.
+    """
+    resolved_requirement, resolved_profile_id = resolve_requirement(
         profiles=profiles,
         profile_id=profile_id,
-        explicit_requirement=explicit_requirement,
+        explicit_requirement=requirement,
         tightening=tightening,
     )
-    policy = (
-        load_selector_policy(selector_policy_path)
-        if selector_policy_path is not None
-        else neutral_selector_policy()
+    instant = _current_instant(clock)
+
+    def fixed_clock() -> datetime:
+        return instant
+
+    snapshots = collect_status(collectors=collectors, clock=fixed_clock)
+    return select_model(
+        catalog=catalog,
+        requirement=resolved_requirement,
+        policy=policy if policy is not None else neutral_selector_policy(),
+        snapshots=snapshots,
+        evaluated_at=instant,
+        replenishment_states=replenishment_states,
+        profile_id=resolved_profile_id,
+        profile_policy_version=(
+            profile_policy_version if resolved_profile_id is not None else None
+        ),
     )
-    states = (
-        load_replenishment_states(replenishment_path)
-        if replenishment_path is not None
-        else ()
+
+
+def simulate_from_inputs(
+    *,
+    catalog: ModelCatalog,
+    profiles: TaskProfileCatalog,
+    profile_policy_version: int,
+    profile_id: str | None,
+    requirement: TaskRequirement | None,
+    tightening: TaskRequirement | None,
+    policy: SelectorPolicy | None,
+    replenishment_states: tuple[ReplenishmentState, ...] = (),
+    overrides: SimulationOverrides,
+    collectors: StatusCollectors | None = None,
+    clock: Clock | None = None,
+) -> SimulationResult:
+    """Run one baseline + simulated selection from typed in-memory inputs.
+
+    The baseline and simulated decisions are both produced by the SAME
+    ``select_model`` core through ``simulate_selection``; the seam adds no
+    simulation semantics of its own. See :func:`select_from_inputs` for the
+    shared selection-input handling.
+    """
+    resolved_requirement, resolved_profile_id = resolve_requirement(
+        profiles=profiles,
+        profile_id=profile_id,
+        explicit_requirement=requirement,
+        tightening=tightening,
     )
-    return (
-        catalog,
-        profile_policy_version,
-        requirement,
-        resolved_profile_id,
-        policy,
-        states,
-    )
+    instant = _current_instant(clock)
+
+    def fixed_clock() -> datetime:
+        return instant
+
+    snapshots = collect_status(collectors=collectors, clock=fixed_clock)
+    try:
+        return simulate_selection(
+            catalog=catalog,
+            requirement=resolved_requirement,
+            policy=policy if policy is not None else neutral_selector_policy(),
+            snapshots=snapshots,
+            evaluated_at=instant,
+            overrides=overrides,
+            replenishment_states=replenishment_states,
+            profile_id=resolved_profile_id,
+            profile_policy_version=(
+                profile_policy_version if resolved_profile_id is not None else None
+            ),
+        )
+    except SimulationOverrideApplicationError as exc:
+        raise ApplicationInputError(
+            f"simulate_from_inputs: invalid simulation override: {exc}"
+        ) from exc
+
+
+# ── File-based application runners ───────────────────────────────────────────
 
 
 def run_select(
@@ -325,41 +449,37 @@ def run_select(
     Selection issues no model prompt and does not intentionally consume
     inference quota. Capacity collection uses the existing telemetry path
     and may exercise the bounded provider-managed authentication recovery
-    already accepted in D-018.
+    already accepted in D-018. Delegates to the typed
+    :func:`select_from_inputs` seam after loading the JSON files.
     """
-    (
-        catalog,
-        profile_policy_version,
-        requirement,
-        resolved_profile_id,
-        policy,
-        states,
-    ) = _load_selection_inputs(
-        catalog_path=catalog_path,
-        model_policy_path=model_policy_path,
-        profile_id=profile_id,
-        requirement_path=requirement_path,
-        tighten_path=tighten_path,
-        selector_policy_path=selector_policy_path,
-        replenishment_path=replenishment_path,
+    catalog, profiles, profile_policy_version = load_configured_artifacts(
+        catalog_path, model_policy_path
     )
-    instant = _current_instant(clock)
-
-    def fixed_clock() -> datetime:
-        return instant
-
-    snapshots = collect_status(collectors=collectors, clock=fixed_clock)
-    return select_model(
+    return select_from_inputs(
         catalog=catalog,
-        requirement=requirement,
-        policy=policy,
-        snapshots=snapshots,
-        evaluated_at=instant,
-        replenishment_states=states,
-        profile_id=resolved_profile_id,
-        profile_policy_version=(
-            profile_policy_version if resolved_profile_id is not None else None
+        profiles=profiles,
+        profile_policy_version=profile_policy_version,
+        profile_id=profile_id,
+        requirement=(
+            load_requirement(requirement_path)
+            if requirement_path is not None
+            else None
         ),
+        tightening=(
+            load_requirement(tighten_path) if tighten_path is not None else None
+        ),
+        policy=(
+            load_selector_policy(selector_policy_path)
+            if selector_policy_path is not None
+            else None
+        ),
+        replenishment_states=(
+            load_replenishment_states(replenishment_path)
+            if replenishment_path is not None
+            else ()
+        ),
+        collectors=collectors,
+        clock=clock,
     )
 
 
@@ -376,42 +496,40 @@ def run_simulate(
     collectors: StatusCollectors | None = None,
     clock: Clock | None = None,
 ) -> SimulationResult:
-    """Run one live baseline + simulated selection over the same selector core."""
-    (
-        catalog,
-        profile_policy_version,
-        requirement,
-        resolved_profile_id,
-        policy,
-        states,
-    ) = _load_selection_inputs(
-        catalog_path=catalog_path,
-        model_policy_path=model_policy_path,
-        profile_id=profile_id,
-        requirement_path=requirement_path,
-        tighten_path=tighten_path,
-        selector_policy_path=selector_policy_path,
-        replenishment_path=replenishment_path,
+    """Run one live baseline + simulated selection over the same selector core.
+
+    Delegates to the typed :func:`simulate_from_inputs` seam after loading
+    the JSON files.
+    """
+    catalog, profiles, profile_policy_version = load_configured_artifacts(
+        catalog_path, model_policy_path
     )
-    overrides = load_simulation_overrides(overrides_path)
-    instant = _current_instant(clock)
-
-    def fixed_clock() -> datetime:
-        return instant
-
-    snapshots = collect_status(collectors=collectors, clock=fixed_clock)
-    return simulate_selection(
+    return simulate_from_inputs(
         catalog=catalog,
-        requirement=requirement,
-        policy=policy,
-        snapshots=snapshots,
-        evaluated_at=instant,
-        overrides=overrides,
-        replenishment_states=states,
-        profile_id=resolved_profile_id,
-        profile_policy_version=(
-            profile_policy_version if resolved_profile_id is not None else None
+        profiles=profiles,
+        profile_policy_version=profile_policy_version,
+        profile_id=profile_id,
+        requirement=(
+            load_requirement(requirement_path)
+            if requirement_path is not None
+            else None
         ),
+        tightening=(
+            load_requirement(tighten_path) if tighten_path is not None else None
+        ),
+        policy=(
+            load_selector_policy(selector_policy_path)
+            if selector_policy_path is not None
+            else None
+        ),
+        replenishment_states=(
+            load_replenishment_states(replenishment_path)
+            if replenishment_path is not None
+            else ()
+        ),
+        overrides=load_simulation_overrides(overrides_path),
+        collectors=collectors,
+        clock=clock,
     )
 
 
@@ -799,10 +917,12 @@ def render_simulation_json(result: SimulationResult) -> str:
 
 
 __all__ = [
+    "ApplicationDependencies",
     "DEFAULT_CATALOG_PATH",
     "DEFAULT_MODEL_POLICY_PATH",
     "SelectionApplication",
     "load_catalog",
+    "load_configured_artifacts",
     "load_model_policy",
     "load_replenishment_states",
     "load_requirement",
@@ -816,4 +936,6 @@ __all__ = [
     "resolve_requirement",
     "run_select",
     "run_simulate",
+    "select_from_inputs",
+    "simulate_from_inputs",
 ]

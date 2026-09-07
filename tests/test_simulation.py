@@ -33,6 +33,7 @@ from scarcity_router import (
     SelectionContractValidationError,
     SelectionDecision,
     SelectorPolicy,
+    SimulationOverrideApplicationError,
     SimulationOverrides,
     SimulationResult,
     TaskRequirement,
@@ -279,7 +280,7 @@ class CapacityOverrideTests(unittest.TestCase):
             ),
             diagnostics=(),
         )
-        with self.assertRaises(SelectionContractValidationError):
+        with self.assertRaises(SimulationOverrideApplicationError):
             _ = apply_capacity_overrides(
                 [_snap("openai", 40, 40), zai],
                 (
@@ -345,7 +346,7 @@ class CapacityOverrideTests(unittest.TestCase):
         self.assertEqual(80, weekly_a.remaining_percent)
 
     def test_missing_override_target_rejected(self) -> None:
-        with self.assertRaises(SelectionContractValidationError):
+        with self.assertRaises(SimulationOverrideApplicationError):
             _ = apply_capacity_overrides(
                 _snapshots(),
                 (
@@ -360,7 +361,7 @@ class CapacityOverrideTests(unittest.TestCase):
             )
 
     def test_missing_provider_override_rejected(self) -> None:
-        with self.assertRaises(SelectionContractValidationError):
+        with self.assertRaises(SimulationOverrideApplicationError):
             _ = apply_capacity_overrides(
                 [_snap("zai", 80, 80)],
                 (
@@ -384,7 +385,7 @@ class CapacityOverrideTests(unittest.TestCase):
             windows=(),
             diagnostics=(CapacityDiagnostic(code="telemetry_unknown"),),
         )
-        with self.assertRaises(SelectionContractValidationError):
+        with self.assertRaises(SimulationOverrideApplicationError):
             _ = apply_capacity_overrides(
                 [_snap("openai", 40, 40), bad],
                 (
@@ -414,7 +415,7 @@ class CapacityOverrideTests(unittest.TestCase):
             ),
             diagnostics=(),
         )
-        with self.assertRaises(SelectionContractValidationError):
+        with self.assertRaises(SimulationOverrideApplicationError):
             _ = apply_capacity_overrides(
                 [zai],
                 (
@@ -436,7 +437,7 @@ class CapacityOverrideTests(unittest.TestCase):
             kind="weekly",
             remaining_percent=2,
         )
-        with self.assertRaises(SelectionContractValidationError):
+        with self.assertRaises(SimulationOverrideApplicationError):
             _ = apply_capacity_overrides(
                 [_snap("zai", 80, 80)],
                 (override, override),

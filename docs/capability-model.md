@@ -125,6 +125,20 @@ vocabulary, class/profile relationships and current workflow exemplars live in
 [`model-policy.json`](../model-policy.json). This document keeps the conceptual
 model and selector-facing rules; it does not duplicate that policy artifact.
 
+## Reasoning effort and selector identity
+
+The operating policy treats reasoning effort as a routing parameter and
+requires the lowest effort that reliably satisfies the task. Current
+Scarcity Router selection, however, evaluates fixed provider/model/variant
+identities from `model-catalog.json`; it does not dynamically optimize
+reasoning effort. Effort-aware selection requires a separate evidence and
+design decision. Current calibrated entries (`max` for GLM-5.3, Luna and
+Flash; `high` for Sol) and the selector contract are unchanged by this policy.
+
+Reference role assignments can name a model or effort setting that is not yet
+in the active catalog. Such assignments are descriptive metadata only and do
+not establish capability ratings, capacity bindings or selector eligibility.
+
 ## Hard constraints
 
 Hard constraints are categorical or numeric requirements, not quality scores.

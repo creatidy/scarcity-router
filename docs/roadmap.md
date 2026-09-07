@@ -113,11 +113,52 @@ and re-runs the same selector core without mutating live observations.
 Scenario, ranking, hard-constraint, tightening, no-solution, simulation and
 CLI tests pin the behavior; D-027 records the frozen semantics.
 
-**M2 implementation slices M2a–M2e are complete; M2 exit/live acceptance
-is still pending.** The next step after review/merge is M2 live
-acceptance / closeout in the owner's real workflow — not automatically
-another large implementation slice. Live reset-credit acquisition remains
-outside the implemented slices.
+**M2 PASS (2026-09-06).** M2 implementation slices M2a–M2e, live acceptance
+and closeout are complete. Sanitized closeout evidence:
+
+- 796 tests pass
+- basedpyright 0 errors / 0 warnings / 0 notes
+- live OpenAI normalized status structurally healthy
+- live Z.ai normalized status structurally healthy
+- `openai/codex` applicability observed
+- `zai/coding_plan` applicability observed
+- six representative real profile selections were capability-consistent
+- explanations were reconstructable
+- 98/2 scenario passed
+- blackout scenario passed
+- reservation block/permit boundary passed
+- unknown/capability/HumanOverride contracts passed
+- no model execution occurred
+
+Owner closeout choices:
+
+- OWNER TRUST GATE: PASS
+- RESET VISIBILITY GATE: PASS FOR M2 — manual normalized replenishment
+  visibility is sufficient for M2. Automatic live OpenAI reset-credit
+  acquisition is deferred and is not a reason to reopen M2.
+
+Next planned milestone: M4 — Minimal dashboard and recipes. M3 PASS —
+2026-09-07. M3a, M3b and M3c are complete, and live CLI/REST/MCP acceptance
+is complete. M3 began only from explicitly created Forgejo issues (#45, M3a,
+#52, M3c, and #54 closeout), never merely because it was documented here.
+
+**M3 planning gate (2026-09-06, M3a).** The REST and MCP machine-interface
+contracts are frozen in `docs/machine-interfaces.md` (D-028) before any
+transport is implemented: the four-endpoint REST surface, the three stdio
+MCP tools calling the application directly, no-solution-as-HTTP-200 error
+semantics with a closed `invalid_request`/`internal_error` vocabulary,
+loopback-only default binding with no authentication layer, the side-effect
+wording inheriting D-018, the separate capacity/envelope/catalog/policy
+version boundaries, the CLI/REST/MCP parity requirement, the U-008 M3
+disposition (stable `scarcity_router` module identity, branding deferred)
+and the M3 implementation sequence below. No REST/MCP runtime, dependency or
+product source change was made.
+
+**Standing operating-policy update (2026-09-07).** LLM operating policy v5
+adds dated reference role assignments, reasoning-effort governance, review
+independence, durable checkpoint and provenance rules. GPT-6 Astra selector
+onboarding remains deferred pending capability and capacity evidence; there is
+no M3 scope change and M3b/M3c remain separate implementation work.
 
 ## M0 — Repository foundation
 
@@ -344,20 +385,28 @@ Implementation proceeds in small, deterministic slices:
   `simulate` with typed capacity/policy/replenishment/evaluated-at
   overrides that never mutate live observations.
 
-M2 implementation slices are complete; M2 exit/live acceptance is still
-pending. Later optional M2 additions — official health advisory, cached
-Artificial Analysis evidence and compound-workflow recommendations, plus
-live reset-credit acquisition — are not blockers for the first useful
-single-model selection unless the M2 exit criteria require them.
+M2 is closed as PASS (2026-09-06); see the closeout evidence above. Later
+optional M2 additions — official health advisory, cached Artificial Analysis
+evidence and compound-workflow recommendations, plus automatic live
+reset-credit acquisition — remain accepted deferrals, not blockers or open
+acceptance items.
 
 ## M3 — REST and MCP
+
+**Status:** M3 PASS (2026-09-07). M3a planning gate, M3b REST adapter, M3c
+implementation and live CLI/REST/MCP acceptance are complete. Sanitized
+acceptance evidence is recorded in [`docs/m3-acceptance.md`](m3-acceptance.md).
+Each slice starts only after its
+predecessor is merged into `develop` and only from an explicitly selected
+or created Forgejo issue.
 
 **Outcome:** External orchestrators can obtain the same status and decision as
 the CLI through stable, minimal machine interfaces.
 
 Scope:
 
-- versioned REST status/provider/select/simulate contracts;
+- versioned REST status/select/simulate contracts (the earlier
+  provider-listing endpoint ideas are deferred per D-028);
 - `127.0.0.1` default binding;
 - thin stdio MCP tools over the same application/core;
 - parity and contract tests across CLI, REST and MCP;
@@ -366,6 +415,35 @@ Scope:
 No MCP-specific selection logic and no prompt proxy. If compound workflow
 recommendations exist by M3, REST/MCP expose the same bounded execution envelope
 rather than inventing interface-specific orchestration behavior.
+
+The interface semantics are frozen in
+[`docs/machine-interfaces.md`](machine-interfaces.md) (D-028).
+
+### M3 implementation sequence
+
+- **M3a — interface contract planning gate (complete 2026-09-06).** Froze
+  the REST/MCP contract document and D-028 with no runtime, dependency or
+  product source change.
+- **M3b — minimal local REST adapter (complete 2026-09-07, D-030).**
+  Implements `/healthz`, `/v1/status`, `/v1/select` and `/v1/simulate` over
+  the existing application/core, loopback-bound, with the frozen error
+  envelopes. Standard-library `HTTPServer` only (serialized single-threaded
+  requests, no runtime dependency, default port 8765, 1 MiB body limit, no
+  chunked request bodies), sharing the new typed in-memory application seam
+  (`select_from_inputs` / `simulate_from_inputs`) with the file-based CLI
+  runners. MCP was intentionally outside M3b; at that point M3 remained not
+  PASS pending M3c and the closeout parity proof.
+- **M3c — thin stdio MCP adapter + parity tests.** Implements
+  `scarcity_status`, `scarcity_select` and `scarcity_simulate` calling the
+  application layer directly. **Complete (2026-09-07, D-031):** the official
+  MCP Python SDK v2 low-level stdio adapter, shared logical parser/envelopes,
+  structured logical tool errors, direct/CLI/REST/MCP parity tests, raw SDK
+  decoder boundary tests and a real stdio discovery smoke are implemented.
+  MCP has no runtime HTTP dependency and exposes no resources or prompts.
+- **M3 closeout (complete 2026-09-07).** Proves
+  `direct application == CLI JSON == REST == MCP` for representative
+  deterministic scenarios, plus live acceptance in the owner's real workflow.
+  See [`docs/m3-acceptance.md`](m3-acceptance.md). M3 is PASS.
 
 ## M4 — Minimal dashboard and recipes
 
