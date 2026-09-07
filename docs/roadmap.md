@@ -138,9 +138,10 @@ Owner closeout choices:
   acquisition is deferred and is not a reason to reopen M2.
 
 Next planned milestone: M3 — REST and MCP. Status: M3a planning gate
-complete (2026-09-06); M3b REST adapter complete (2026-09-07); M3c not
-started. M3 began only from an explicitly
-created Forgejo issue (#45, M3a), never merely because it is documented here.
+complete (2026-09-06); M3b REST adapter complete (2026-09-07); M3c
+implementation complete (2026-09-07). M3 closeout remains pending. M3 began
+only from explicitly created Forgejo issues (#45, M3a, and #52, M3c), never
+merely because it is documented here.
 
 **M3 planning gate (2026-09-06, M3a).** The REST and MCP machine-interface
 contracts are frozen in `docs/machine-interfaces.md` (D-028) before any
@@ -394,7 +395,8 @@ acceptance items.
 ## M3 — REST and MCP
 
 **Status:** M3a planning gate complete (2026-09-06); M3b complete
-(2026-09-07); M3c not started. Each slice starts only after its
+(2026-09-07); M3c implementation complete (2026-09-07). M3 closeout remains
+pending. Each slice starts only after its
 predecessor is merged into `develop` and only from an explicitly selected
 or created Forgejo issue.
 
@@ -429,17 +431,18 @@ The interface semantics are frozen in
   requests, no runtime dependency, default port 8765, 1 MiB body limit, no
   chunked request bodies), sharing the new typed in-memory application seam
   (`select_from_inputs` / `simulate_from_inputs`) with the file-based CLI
-  runners. MCP is not implemented; M3 remains not PASS until M3c and the
-  closeout parity proof.
+  runners. MCP was intentionally outside M3b; at that point M3 remained not
+  PASS pending M3c and the closeout parity proof.
 - **M3c — thin stdio MCP adapter + parity tests.** Implements
   `scarcity_status`, `scarcity_select` and `scarcity_simulate` calling the
-  application layer directly. May depend on M3b only for shared contract
-  fixtures/docs, never on runtime HTTP; MCP must not require the REST server
-  runtime. The official MCP Python SDK is adopted only if justified in the
-  M3c issue.
+  application layer directly. **Complete (2026-09-07, D-031):** the official
+  MCP Python SDK v2 low-level stdio adapter, shared logical parser/envelopes,
+  structured logical tool errors, direct/CLI/REST/MCP parity tests, raw SDK
+  decoder boundary tests and a real stdio discovery smoke are implemented.
+  MCP has no runtime HTTP dependency and exposes no resources or prompts.
 - **M3 closeout.** Proves `direct application == CLI JSON == REST == MCP`
   for representative deterministic scenarios, plus live acceptance in the
-  owner's real workflow.
+  owner's real workflow. This remains pending; M3 is not PASS.
 
 ## M4 — Minimal dashboard and recipes
 

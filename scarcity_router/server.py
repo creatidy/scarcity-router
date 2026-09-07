@@ -31,53 +31,39 @@ import argparse
 import json
 import sys
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from pathlib import Path
-from typing import ClassVar, TypeVar, cast, override
+from typing import ClassVar, cast, override
 
-from .errors import ApplicationInputError, SelectionContractError
-from .policy import ReplenishmentState
-from .selector import SelectorPolicy
+from .errors import ApplicationInputError
+from .machine_api import (
+    ENVELOPE_SCHEMA_VERSION,
+    internal_error_payload,
+    invalid_request_payload,
+    parse_selection_document,
+    parse_simulation_document,
+    selection_envelope,
+    simulation_envelope,
+    status_envelope,
+)
 from .selection_app import (
-    DEFAULT_CATALOG_PATH,
-    DEFAULT_MODEL_POLICY_PATH,
+    ApplicationDependencies,
     load_configured_artifacts,
     load_strict_json,
     select_from_inputs,
     simulate_from_inputs,
 )
-from .selection_types import TaskRequirement
-from .simulation import SimulationOverrides
 from .status import (
-    Clock,
-    StatusCollectors,
-    canonical_snapshot_documents,
     collect_status,
 )
 
 BIND_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
-ENVELOPE_SCHEMA_VERSION = 1
 MAX_REQUEST_BODY_BYTES = 1_048_576
 _MAX_REQUEST_DRAIN_BYTES = 4 * MAX_REQUEST_BODY_BYTES
 
 
-@dataclass(frozen=True)
-class RestApplication:
-    """Server-side application dependencies; never client-supplied.
-
-    Catalog and model-policy paths are process configuration (D-028):
-    clients never supply artifact paths, provider endpoints or credentials.
-    The collector and clock seams exist for deterministic tests only; in
-    production they stay ``None`` so the real collectors and clock are used.
-    """
-
-    catalog_path: Path = DEFAULT_CATALOG_PATH
-    model_policy_path: Path = DEFAULT_MODEL_POLICY_PATH
-    collectors: StatusCollectors | None = None
-    clock: Clock | None = None
+RestApplication = ApplicationDependencies
 
 
 type _Response = tuple[HTTPStatus, dict[str, object]]
@@ -134,17 +120,13 @@ class RestRequestHandler(BaseHTTPRequestHandler):
         try:
             self._require_valid_host()
             self._process()
-        except ApplicationInputError as exc:
-            self._send_error_json(
-                HTTPStatus.BAD_REQUEST, "invalid_request", str(exc)
-            )
+        except ApplicationInputError:
+            self._send_json(HTTPStatus.BAD_REQUEST, invalid_request_payload())
         except Exception:
             # Fail closed: a fixed structural message only — never exception
             # details, local paths, provider payloads or a traceback (D-028).
-            self._send_error_json(
-                HTTPStatus.INTERNAL_SERVER_ERROR,
-                "internal_error",
-                "internal server error",
+            self._send_json(
+                HTTPStatus.INTERNAL_SERVER_ERROR, internal_error_payload()
             )
 
     def _require_valid_host(self) -> None:
@@ -225,9 +207,6 @@ class RestRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(encoded)))
         self.end_headers()
         _ = self.wfile.write(encoded)
-
-    def _send_error_json(self, status: HTTPStatus, code: str, message: str) -> None:
-        self._send_json(status, {"error": {"code": code, "message": message}})
 
     def _send_empty(self, status: HTTPStatus, *, allow: str | None = None) -> None:
         self.send_response(status.value)
@@ -329,14 +308,11 @@ class RestRequestHandler(BaseHTTPRequestHandler):
         snapshots = collect_status(
             collectors=application.collectors, clock=application.clock
         )
-        return HTTPStatus.OK, {
-            "schema_version": ENVELOPE_SCHEMA_VERSION,
-            "snapshots": canonical_snapshot_documents(snapshots),
-        }
+        return HTTPStatus.OK, status_envelope(snapshots)
 
     def route_select(self) -> _Response:
         document = self._read_json_object()
-        parsed = _parse_selection_fields(document)
+        parsed = parse_selection_document(document)
         application = self._rest_application()
         catalog, profiles, profile_policy_version = load_configured_artifacts(
             application.catalog_path, application.model_policy_path
@@ -353,14 +329,11 @@ class RestRequestHandler(BaseHTTPRequestHandler):
             collectors=application.collectors,
             clock=application.clock,
         )
-        return HTTPStatus.OK, {
-            "schema_version": ENVELOPE_SCHEMA_VERSION,
-            "decision": decision.to_dict(),
-        }
+        return HTTPStatus.OK, selection_envelope(decision)
 
     def route_simulate(self) -> _Response:
         document = self._read_json_object()
-        parsed, overrides = _parse_simulation_fields(document)
+        parsed, overrides = parse_simulation_document(document)
         application = self._rest_application()
         catalog, profiles, profile_policy_version = load_configured_artifacts(
             application.catalog_path, application.model_policy_path
@@ -378,10 +351,7 @@ class RestRequestHandler(BaseHTTPRequestHandler):
             collectors=application.collectors,
             clock=application.clock,
         )
-        return HTTPStatus.OK, {
-            "schema_version": ENVELOPE_SCHEMA_VERSION,
-            "result": result.to_dict(),
-        }
+        return HTTPStatus.OK, simulation_envelope(result)
 
 
 _ROUTES: Mapping[tuple[str, str], Callable[[RestRequestHandler], _Response]] = {
@@ -390,147 +360,6 @@ _ROUTES: Mapping[tuple[str, str], Callable[[RestRequestHandler], _Response]] = {
     ("POST", "/v1/select"): RestRequestHandler.route_select,
     ("POST", "/v1/simulate"): RestRequestHandler.route_simulate,
 }
-
-
-# ── Client-input parsing (PHASE 10/11 semantics) ─────────────────────────────
-
-
-@dataclass(frozen=True)
-class _ParsedSelectionInputs:
-    """Client-parsed selection inputs; artifact inputs stay server-side."""
-
-    profile_id: str | None
-    requirement: TaskRequirement | None
-    tightening: TaskRequirement | None
-    policy: SelectorPolicy | None
-    replenishment_states: tuple[ReplenishmentState, ...]
-
-
-_SELECT_REQUEST_KEYS: frozenset[str] = frozenset(
-    {
-        "profile_id",
-        "requirement",
-        "tightening",
-        "selector_policy",
-        "replenishment_states",
-    }
-)
-_SIMULATE_REQUEST_KEYS: frozenset[str] = _SELECT_REQUEST_KEYS | {"overrides"}
-
-_T = TypeVar("_T")
-
-
-def _parse_client_object(
-    from_dict: Callable[[object], _T], value: object, field: str
-) -> _T:
-    """Run one typed ``from_dict`` boundary, classifying failures by type."""
-    try:
-        return from_dict(value)
-    except (ValueError, SelectionContractError) as exc:
-        raise ApplicationInputError(f"invalid {field}: {exc}") from exc
-
-
-def _reject_unknown_keys(
-    document: Mapping[str, object], allowed: frozenset[str]
-) -> None:
-    unknown = sorted(set(document) - allowed)
-    if unknown:
-        listed = ", ".join(repr(key) for key in unknown)
-        raise ApplicationInputError(f"unknown request key(s): {listed}")
-
-
-def _parse_common_selection_fields(
-    document: Mapping[str, object],
-) -> _ParsedSelectionInputs:
-    """Parse the frozen missing/explicit-null field semantics (D-028)."""
-    raw_profile = document.get("profile_id")
-    if raw_profile is not None and not isinstance(raw_profile, str):
-        raise ApplicationInputError("profile_id must be a string or null")
-    raw_requirement = document.get("requirement")
-    raw_tightening = document.get("tightening")
-    raw_policy = document.get("selector_policy")
-    return _ParsedSelectionInputs(
-        profile_id=raw_profile,
-        requirement=(
-            _parse_client_object(
-                TaskRequirement.from_dict, raw_requirement, "requirement"
-            )
-            if raw_requirement is not None
-            else None
-        ),
-        tightening=(
-            _parse_client_object(
-                TaskRequirement.from_dict, raw_tightening, "tightening"
-            )
-            if raw_tightening is not None
-            else None
-        ),
-        policy=(
-            _parse_client_object(
-                SelectorPolicy.from_dict, raw_policy, "selector_policy"
-            )
-            if raw_policy is not None
-            else None
-        ),
-        replenishment_states=_parse_replenishment_states(document),
-    )
-
-
-def _parse_selection_fields(
-    document: Mapping[str, object],
-) -> _ParsedSelectionInputs:
-    _reject_unknown_keys(document, _SELECT_REQUEST_KEYS)
-    return _parse_common_selection_fields(document)
-
-
-def _parse_simulation_fields(
-    document: Mapping[str, object],
-) -> tuple[_ParsedSelectionInputs, SimulationOverrides]:
-    _reject_unknown_keys(document, _SIMULATE_REQUEST_KEYS)
-    return _parse_common_selection_fields(document), _parse_overrides(document)
-
-
-def _parse_overrides(document: Mapping[str, object]) -> SimulationOverrides:
-    if "overrides" not in document:
-        raise ApplicationInputError("overrides is required")
-    raw = document["overrides"]
-    if not isinstance(raw, dict):
-        raise ApplicationInputError("overrides must be a JSON object")
-    return _parse_client_object(
-        SimulationOverrides.from_dict, cast("dict[str, object]", raw), "overrides"
-    )
-
-
-def _parse_replenishment_states(
-    document: Mapping[str, object],
-) -> tuple[ReplenishmentState, ...]:
-    if "replenishment_states" not in document:
-        return ()
-    raw = document["replenishment_states"]
-    if raw is None:
-        # Frozen boundary semantics: the top-level field is an array; the
-        # baseline-replacement tri-state exists only inside simulation
-        # overrides (D-028).
-        raise ApplicationInputError(
-            "replenishment_states must be an array, not null"
-        )
-    if not isinstance(raw, list):
-        raise ApplicationInputError("replenishment_states must be an array")
-    states: list[ReplenishmentState] = []
-    seen: set[tuple[str, str]] = set()
-    for item in cast("list[object]", raw):
-        state = _parse_client_object(
-            ReplenishmentState.from_dict, item, "replenishment_states entry"
-        )
-        key = (state.provider, state.kind)
-        if key in seen:
-            raise ApplicationInputError(
-                f"duplicate replenishment state for (provider, kind) {key}"
-            )
-        seen.add(key)
-        states.append(state)
-    return tuple(states)
-
 
 def _parse_bounded_content_length(value: str) -> int | None:
     """Validate decimal syntax and convert only a bounded magnitude.

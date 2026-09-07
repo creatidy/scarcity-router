@@ -8,7 +8,8 @@ changes selection, scarcity, provider or capacity semantics; those remain
 owned by their existing authoritative documents.
 
 - **Status:** Frozen contract (M3a). REST v1 is implemented (M3b, D-030);
-  MCP is not yet implemented (M3c pending).
+  the stdio MCP adapter and automated parity surface are implemented (M3c,
+  D-031). M3 closeout remains pending.
 - **Implementation:** M3b (minimal local REST adapter) and M3c (thin stdio
   MCP adapter + parity tests). See `docs/roadmap.md` for the frozen sequence.
 - **Scope guard:** M3a froze this document only. No REST or MCP runtime, no
@@ -110,8 +111,14 @@ Infinity                   -> invalid_request (HTTP 400)
 -Infinity                  -> invalid_request (HTTP 400)
 ```
 
-MCP input validation mirrors these semantics logically through the same
-`invalid_request` error payload (see [MCP error semantics](#mcp-error-semantics)).
+MCP application input validation mirrors the logical `invalid_request` payload
+through the same shared parser (see [MCP error semantics](#mcp-error-semantics)).
+The official MCP SDK owns stdio framing and JSON-RPC decoding before the tool
+handler. Duplicate-name evidence is not preserved by the installed SDK and
+non-standard numbers may reach the handler as floating-point values; the
+shared typed parser still rejects them wherever the logical field type forbids
+them. Raw framing failures and decoder behavior before the handler are
+protocol-level SDK behavior, not a second Scarcity Router parser (D-031).
 
 ### GET /healthz
 
@@ -384,6 +391,17 @@ the exact same application/core is already available in-process and parity is
 easier to test directly. No repository evidence shows a concrete benefit that
 would justify the indirection.
 
+M3c uses the official `mcp` Python SDK stable v2 line (`mcp>=2,<3`, resolved
+to 2.1.1 in `uv.lock`) and its low-level `mcp.server.lowlevel.Server` API.
+The SDK's official stdio transport owns JSON-RPC framing; the adapter itself
+has no HTTP, SSE, Streamable HTTP, REST subprocess or custom protocol loop.
+The shared transport-neutral dependency record and logical parser live in
+`selection_app.py` and `machine_api.py`; `mcp.py` only invokes them.
+The low-level SDK server does not apply an advertised `inputSchema` before
+`on_call_tool`, so the schemas describe obvious object/field structure while
+the shared logical parser remains authoritative for all application semantics
+and returns the frozen logical errors.
+
 ### Tool inputs
 
 - `scarcity_status` — no provider/model arguments for v1. Returns the same
@@ -403,19 +421,17 @@ contracts — the same JSON payloads as the REST envelopes:
 - `scarcity_select` → `{ "schema_version": 1, "decision": {...} }`
 - `scarcity_simulate` → `{ "schema_version": 1, "result": {...} }`
 
-Prose is never the primary result. A human-readable explanation may be added
-as an optional additional text field only if it does not replace the
-structured payload. Where the eventual MCP SDK supports typed structured
-content, the same JSON payload is the contract; the SDK encoding choice
-belongs to M3c.
+Prose is never the primary result. The implementation uses the official SDK's
+`structured_content` as the primary machine result and includes one
+deterministic JSON text block containing the same payload for clients that
+require text content. The SDK's `is_error` flag is true for the two logical
+error payloads.
 
 ### MCP error semantics
 
-The **logical** structured error payloads are frozen now; SDK-specific wire
-encoding is not. The eventual official SDK may carry these payloads through
-its supported tool-error mechanism (`isError`, structured content or
-equivalent), but M3c must preserve this logical payload and the closed
-error-code vocabulary:
+The **logical** structured error payloads are frozen now. M3c carries them in
+the official SDK's `structured_content` with `is_error = true`, preserving this
+logical payload and the closed error-code vocabulary:
 
 ```json
 {
@@ -435,12 +451,14 @@ error-code vocabulary:
 }
 ```
 
-- A contract-invalid input (the HTTP 400 class, including strict-parsing
-  failures — duplicate keys, `NaN`/`Infinity`/`-Infinity` — missing/`null`
-  violations, the requirement-source violation, an unknown `profile_id`, or
-  an invalid override) is a tool **input error** carrying the logical
-  `invalid_request` payload. It is never converted into a fabricated
-  `SelectionDecision`.
+- A contract-invalid input delivered to the handler (missing/`null`
+  violations, the requirement-source violation, an unknown `profile_id`, an
+  unknown field, a schema-invalid value or an invalid override) is a tool
+  **input error** carrying the logical `invalid_request` payload. It is never
+  converted into a fabricated `SelectionDecision`. Raw duplicate-key or
+  non-standard-number behavior that the official SDK resolves before the
+  handler follows the SDK boundary described above; REST strict parsing is
+  unchanged.
 - An application failure carries the logical `internal_error` payload.
 - A valid no-solution and a degraded provider remain **successful**
   structured tool results (the same payloads as their REST HTTP 200
@@ -491,7 +509,13 @@ representative deterministic scenarios (`docs/roadmap.md`).
   request may collect current provider telemetry through the existing
   application path. Request caching is not invented in M3.
 - **MCP runtime scope.** The stdio process lifecycle is owned by the MCP
-  client. No daemon and no shared cache between REST and MCP.
+  client. Stdio is local process IPC: it creates no network listener and has no
+  Host, CORS or MCP-auth concern. No daemon and no shared cache exists between
+  REST and MCP. The tools may invoke the existing provider collectors and the
+  bounded D-018 provider-managed auth recovery, but never accept credentials,
+  provider endpoints or catalog paths from MCP input. The MCP SDK dependency is
+  placed in the development dependency group for the current module-based M3
+  runtime; final installable-package runtime metadata remains a U-008 concern.
 - **Side effects.** As frozen in [Side-effect semantics](#side-effect-semantics).
 
 ## Versioning

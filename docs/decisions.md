@@ -1394,8 +1394,79 @@ direction was chosen. Dates use UTC.
   DNS-rebinding gap in the no-auth loopback boundary. Content-Length decimal
   magnitudes are compared with the 1 MiB limit before integer conversion, so
   pathological digit strings fail safely as HTTP 400 without being echoed or
-  logged. M3b references use D-030; D-029 remains the operating-policy
-  decision.
+   logged. M3b references use D-030; D-029 remains the operating-policy
+decision.
+
+### D-031 — M3c stdio MCP implementation
+
+- **Status:** Accepted
+- **Date:** 2026-09-07
+- **Decision:** M3c implements the frozen machine-interface v1 MCP surface as
+  a thin, local stdio adapter:
+  - **Official SDK.** Adopt the official MCP Python SDK stable v2 line,
+    package constraint `mcp>=2,<3`, resolved to `mcp` 2.1.1 in `uv.lock`.
+    The dependency is placed in the existing development dependency group for
+    the current module-based runtime. No `[project]` table, final package
+    branding or `mcp[cli]` extra is introduced; installable-package runtime
+    metadata remains a U-008 release/packaging concern.
+  - **Low-level server.** Use `mcp.server.lowlevel.Server` with the official
+    `mcp.server.stdio.stdio_server` transport. The low-level API gives M3c
+    exact control over tool names, `structured_content` and `is_error` instead
+    of delegating logical result/error shaping to a high-level wrapper.
+  - **Surface and lifecycle.** Expose exactly `scarcity_status`,
+    `scarcity_select` and `scarcity_simulate`, with no resources, prompts,
+    sampling, elicitation, subscriptions, execution tools or version suffixes.
+    Stdio is the only transport; the MCP client owns the process lifecycle.
+    No HTTP, SSE, Streamable HTTP, auth layer or network listener is added.
+  - **Application boundary.** MCP calls the shared transport-neutral
+    `ApplicationDependencies` record and the typed
+    `select_from_inputs`/`simulate_from_inputs` application seam in-process.
+    `machine_api.py` owns the shared logical request parsing and v1 envelopes
+    used by REST and MCP. MCP never imports or starts the REST runtime, invokes
+    the CLI, uses temp files or duplicates selector/scarcity/provider logic.
+  - **Results and errors.** Successful tools return the exact REST logical
+    envelopes as `structured_content`, plus one deterministic text block with
+    the same JSON. Logical `invalid_request` and `internal_error` payloads set
+    `is_error = true`; valid no-solution and degraded-provider results remain
+    successful domain data. Internal messages are fixed and safe.
+  - **Verification.** Fixture-based tests use synthetic collectors and a
+    fixed clock to prove direct/CLI/REST/MCP parity for status, select and
+    simulation, cover the logical error matrix and assert no secret/error
+    detail leakage. Official in-memory Client tests and a real stdio subprocess
+    discovery smoke verify the transport lifecycle without live collection.
+  - **Scope.** No model execution, prompt proxying, automatic dispatch,
+    provider/catalog/policy/ranking change, new provider, auth input, provider
+    endpoint or catalog-path input is permitted. M3 closeout and live
+    acceptance remain pending; this decision does not mark M3 PASS.
+  - **Raw MCP parser boundary (narrow D-028 amendment).** MCP transport
+    framing and JSON-RPC decoding are owned by the official MCP SDK.
+    Scarcity Router's `invalid_request` logical contract begins at the
+    tool-argument object delivered by that SDK. All application-level argument
+    semantics remain identical to REST. Raw JSON-RPC framing failures,
+    including duplicate-name/non-standard-number behavior that occurs before
+    the tool handler, follow official SDK/protocol transport behavior and are
+    not reimplemented by Scarcity Router.
+- **Evidence:** A bounded ephemeral probe of installed MCP SDK 2.1.1 APIs
+  verified `mcp.server.lowlevel.Server`, `stdio_server`, the `Tool` and
+  `CallToolResult` structured fields, the official in-memory Client and the
+  official stdio subprocess Client. The same SDK JSON decoder accepted a
+  duplicate object name with last-value normalization and carried `NaN`,
+  `Infinity` and `-Infinity` in untyped tool arguments as floats; duplicate
+  evidence is therefore unavailable to the handler. Malformed JSON syntax and
+  malformed JSON-RPC shape were rejected by the decoder before the tool
+  handler. Typed Scarcity Router parsing remains strict for fields it owns.
+- **Reason:** The official SDK preserves protocol interoperability and owns
+  stdio framing, while the low-level API preserves exact M3 logical result and
+  error envelopes. Avoiding custom protocol parsing prevents a second MCP
+  implementation and honestly records the unavoidable raw-transport boundary;
+  sharing `machine_api.py` and the application seam keeps CLI, REST and MCP
+  semantics identical.
+- **Boundary:** This is an MCP transport and machine-boundary decision only.
+  It does not change `load_strict_json`, selector ranking, scarcity formulas,
+  capacity schema, provider adapters, model catalog, model policy, ratings,
+  reasoning effort, OpenAI/Z.ai acquisition, Astra onboarding or live M3
+  closeout. The REST strict duplicate/non-finite JSON contract remains
+  unchanged.
 
 ## Unresolved decisions
 

@@ -101,7 +101,12 @@ dispatches `status`, `select` and `simulate`.
 - **MCP** is a thin adapter. M3a froze three tools — `scarcity_status`,
   `scarcity_select` and `scarcity_simulate` — over local stdio, calling the
   application layer directly in-process and never requiring the REST server.
-  Not yet implemented.
+  **Implemented in M3c (D-031)** in `scarcity_router/mcp.py` with the official
+  MCP SDK v2 low-level `Server` API, structured tool results and the client-owned
+  stdio lifecycle. It shares the transport-neutral dependency record in
+  `selection_app.py`, the logical parser/envelopes in
+  `scarcity_router/machine_api.py`,
+  and the same typed application seam; it has no REST runtime dependency.
 - **Dashboard** is a small operational view after core contracts exist, not a
   separate frontend product.
 
@@ -123,6 +128,12 @@ data files -----------------> catalog/policy loaders -> selector/domain
 The domain must not import a provider, web framework, MCP SDK, CLI framework or
 Kilo-specific module. Provider adapters may depend on small protocol helpers but
 not on the selector.
+
+The MCP SDK is isolated at the `scarcity_router/mcp.py` transport edge. The
+shared `ApplicationDependencies` record carries only process-configured
+artifact paths plus injectable collectors and clock; clients cannot supply
+paths, endpoints or credentials. `machine_api.py` contains logical request
+parsing and v1 envelopes, not selection or scarcity logic.
 
 ## Domain contracts
 
