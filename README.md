@@ -26,10 +26,11 @@ and simulation live in `scarcity_router/selector.py` and
 documented in [`docs/selection-policy.md`](docs/selection-policy.md).
 M2 implementation is complete and closed as **PASS** (2026-09-06) after live
 acceptance in the owner's real workflow. There is not yet an installable
-package, final executable name, REST service or MCP server; the M3a planning
-gate has frozen the future REST and MCP contracts in
-[`docs/machine-interfaces.md`](docs/machine-interfaces.md) (D-028), with the
-transports themselves still to be implemented under M3.
+package or final executable name. The M3a planning gate froze the REST and
+MCP contracts in
+[`docs/machine-interfaces.md`](docs/machine-interfaces.md) (D-028); the
+minimal loopback-only REST adapter is implemented (M3b, D-029), while the
+stdio MCP adapter is still to be implemented under M3c.
 
 ## Repository
 
@@ -238,6 +239,37 @@ inference quota. It reuses the existing status telemetry path, including the
 bounded provider-managed OpenAI auth recovery accepted in D-018. Live
 reset-credit acquisition is not implemented: reset credits are visible only
 when a normalized `ReplenishmentState` file is supplied.
+
+## Local REST Service
+
+M3b adds a minimal, loopback-only REST adapter exposing the frozen machine
+interface v1 (D-028, D-029):
+
+```bash
+uv run python -m scarcity_router.server            # binds 127.0.0.1:8765
+uv run python -m scarcity_router.server --port 9000
+```
+
+Exactly four endpoints:
+
+```text
+GET  /healthz     process liveness only
+GET  /v1/status   normalized CapacitySnapshot v3 snapshots in a versioned envelope
+POST /v1/select   {"profile_id" | "requirement", "tightening"?, "selector_policy"?, "replenishment_states"?}
+POST /v1/simulate the select input plus a required "overrides" object
+```
+
+The server binds only to `127.0.0.1` (there is no bind-address option), has
+no authentication, handles requests serially and adds no runtime dependency.
+Request bodies are strict JSON (duplicate keys and `NaN`/`Infinity` are
+rejected), unknown request keys are rejected, valid no-solution decisions
+are HTTP 200 with `selected = null`, invalid client requests are HTTP 400
+`invalid_request` and internal failures are HTTP 500 `internal_error`.
+Provider degradation stays normalized data in successful responses. The
+adapter owns no selection logic: it calls the same typed application seam
+as the CLI. See
+[`docs/machine-interfaces.md`](docs/machine-interfaces.md) for the complete
+frozen contract.
 
 ## Architecture At A Glance
 

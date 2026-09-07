@@ -92,7 +92,12 @@ dispatches `status`, `select` and `simulate`.
   to `127.0.0.1` by default. The M3a planning gate (D-028) froze the surface
   to exactly `/healthz`, `/v1/status`, `/v1/select` and `/v1/simulate`;
   `/v1/providers` and `/v1/providers/{provider}` are deferred because
-  `/v1/status` already returns the full snapshot set. Not yet implemented.
+  `/v1/status` already returns the full snapshot set. **Implemented in M3b**
+  (D-029) as the loopback-only standard-library adapter
+  `scarcity_router/server.py` (`python -m scarcity_router.server`,
+  default port 8765, single-threaded serialized requests, no runtime
+  dependency), calling the same typed application seam
+  (`select_from_inputs` / `simulate_from_inputs`) as the CLI runners.
 - **MCP** is a thin adapter. M3a froze three tools — `scarcity_status`,
   `scarcity_select` and `scarcity_simulate` — over local stdio, calling the
   application layer directly in-process and never requiring the REST server.

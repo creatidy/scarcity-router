@@ -1250,6 +1250,97 @@ direction was chosen. Dates use UTC.
   error cases. No new decision number is created; D-028 remains the
   governing M3a decision.
 
+### D-029 — M3b local REST implementation
+
+- **Status:** Accepted
+- **Date:** 2026-09-07
+- **Decision:** M3b implements the frozen D-028 REST v1 surface as a thin,
+  loopback-only adapter in `scarcity_router/server.py`, using the Python
+  standard library only:
+  - **Implementation choice.** `http.server.HTTPServer` +
+    `BaseHTTPRequestHandler`; no FastAPI/Starlette/Flask/aiohttp/Uvicorn and
+    no other runtime dependency is added (`pyproject.toml` and `uv.lock`
+    unchanged). Exactly four local endpoints do not justify framework
+    machinery, strict JSON semantics are controlled explicitly by reusing
+    `selection_app.load_strict_json`, and the deliberate synchronous
+    application semantics stay synchronous.
+  - **Serialized request handling.** `HTTPServer` is single-threaded, so
+    requests are serialized by construction: one request, one application
+    invocation, the existing deterministic synchronous provider collection.
+    This satisfies the D-028 concurrency requirement without locks around
+    selector internals. A 60-second socket read timeout bounds a stalled
+    client; it does not bound provider collection.
+  - **Loopback-only fixed binding.** The bind address is the constant
+    `127.0.0.1` and is not configurable; there is no `--host`/`--bind`
+    option and no `0.0.0.0` path. The only runtime flag is `--port`
+    (default 8765). The public runtime entry point stays module-based under
+    U-008: `python -m scarcity_router.server`.
+  - **Request-body rules.** Maximum body size is frozen at
+    `MAX_REQUEST_BODY_BYTES = 1_048_576` (1 MiB). POST requires exactly one
+    valid decimal `Content-Length`; malformed, negative, duplicate or
+    missing Content-Length and any `Transfer-Encoding` (no chunked request
+    bodies) are rejected with HTTP 400 `invalid_request`. Content-Type must
+    be `application/json` with an optional `charset=utf-8` parameter only;
+    bodies are decoded as strict UTF-8. Duplicate JSON object keys and
+    `NaN`/`Infinity`/`-Infinity` fail through the existing strict parser.
+    An oversized declared body is drained with a bounded best-effort read
+    (never stored or logged) so the client can read the 400 before the
+    connection closes.
+  - **Typed in-memory application seam.** `selection_app` gains
+    `select_from_inputs` and `simulate_from_inputs`, which take typed
+    in-memory inputs (profile id XOR explicit `TaskRequirement`, optional
+    tightening, optional `SelectorPolicy` defaulting to the neutral policy,
+    a replenishment-state tuple, the loaded catalog/profile artifacts,
+    collectors and clock), resolve the requirement through the existing
+    authoritative `resolve_requirement`, apply tightening exactly once,
+    obtain ONE aware instant and call the existing `select_model` /
+    `simulate_selection` cores. The file-based CLI runners `run_select` /
+    `run_simulate` delegate to the same seam after loading their JSON
+    files; the REST adapter contains no selection, requirement-resolution
+    or capacity logic and uses no temp files, subprocesses or CLI
+    invocation. The future M3c MCP adapter calls the same seam directly.
+    `/v1/status` and CLI status share `canonical_snapshot_documents` so no
+    interface keeps its own snapshot serialization.
+  - **Typed client-input error boundary.** `ApplicationInputError` (in
+    `errors.py`, deriving from `SelectionContractError`) marks
+    client-controlled failures — strict JSON failures, request-shape
+    failures, `from_dict` failures for `TaskRequirement`,
+    `SelectorPolicy`, `ReplenishmentState` and `SimulationOverrides`, the
+    requirement-source XOR violations (including the previously
+    argparse-enforced both-present case, now enforced in
+    `resolve_requirement` itself), unknown profile ids and invalid
+    tightenings. The REST adapter maps it to HTTP 400 `invalid_request` by
+    type, never by matching exception message text; everything else is
+    HTTP 500 `internal_error` with the fixed message "internal server
+    error" (no paths, tracebacks or exception details). The CLI's single
+    invalid-input failure class is unchanged because the new type derives
+    from `SelectionContractError`.
+  - **Security and runtime scope.** No authentication, no TLS, no
+    non-loopback exposure, no daemonization, no PID files, no cache,
+    database or history. Request logging is suppressed entirely
+    (`log_message` is a no-op), so no request body, credential, provider
+    payload or traceback is ever logged; framework HTML error pages are
+    replaced with body-less status responses so request material is never
+    reflected. `/healthz` touches no collector, artifact or application
+    component. No model execution, prompt proxy or dispatch exists.
+  - **Routing.** Unknown paths (including any query or fragment suffix,
+    which are not part of v1) return 404; a known path with an unsupported
+    method (`HEAD`, `PUT`, `PATCH`, `DELETE`, `OPTIONS`, and each route's
+    non-listed methods) returns 405 with an `Allow` header — never the
+    framework-default 501. No new domain error codes are invented for
+    routing responses.
+- **Reason:** M3a deliberately deferred the implementation choice to M3b.
+  A standard-library single-threaded server is the smallest implementation
+  that satisfies the frozen contract: it adds zero dependencies while
+  U-008 packaging remains narrow, makes the strict parsing explicit rather
+  than framework-chosen, and provides serialization by construction.
+- **Boundary:** REST transport only. No selection/scarcity/provider
+  semantic change (the requirement-source XOR now enforced in
+  `resolve_requirement` was previously enforced only by the CLI's
+  mutually exclusive argparse group), no catalog/rating/policy change, no
+  MCP implementation (M3c still pending), no auth/TLS/non-loopback option,
+  no dependency change.
+
 ## Unresolved decisions
 
 ### U-001 — Codex binary discovery and compatibility

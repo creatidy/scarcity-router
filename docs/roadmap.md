@@ -138,7 +138,8 @@ Owner closeout choices:
   acquisition is deferred and is not a reason to reopen M2.
 
 Next planned milestone: M3 — REST and MCP. Status: M3a planning gate
-complete (2026-09-06); M3b/M3c not started. M3 began only from an explicitly
+complete (2026-09-06); M3b REST adapter complete (2026-09-07); M3c not
+started. M3 began only from an explicitly
 created Forgejo issue (#45, M3a), never merely because it is documented here.
 
 **M3 planning gate (2026-09-06, M3a).** The REST and MCP machine-interface
@@ -386,9 +387,10 @@ acceptance items.
 
 ## M3 — REST and MCP
 
-**Status:** M3a planning gate complete (2026-09-06); M3b/M3c not started.
-M3b starts only after M3a is merged into `develop` and only from an
-explicitly selected or created Forgejo issue.
+**Status:** M3a planning gate complete (2026-09-06); M3b complete
+(2026-09-07); M3c not started. Each slice starts only after its
+predecessor is merged into `develop` and only from an explicitly selected
+or created Forgejo issue.
 
 **Outcome:** External orchestrators can obtain the same status and decision as
 the CLI through stable, minimal machine interfaces.
@@ -414,11 +416,15 @@ The interface semantics are frozen in
 - **M3a — interface contract planning gate (complete 2026-09-06).** Froze
   the REST/MCP contract document and D-028 with no runtime, dependency or
   product source change.
-- **M3b — minimal local REST adapter.** Implements `/healthz`, `/v1/status`,
-  `/v1/select` and `/v1/simulate` over the existing application/core,
-  loopback-bound, with the frozen error envelopes. Must not start until M3a
-  is merged into `develop`. Any framework dependency is justified in the
-  M3b issue.
+- **M3b — minimal local REST adapter (complete 2026-09-07, D-029).**
+  Implements `/healthz`, `/v1/status`, `/v1/select` and `/v1/simulate` over
+  the existing application/core, loopback-bound, with the frozen error
+  envelopes. Standard-library `HTTPServer` only (serialized single-threaded
+  requests, no runtime dependency, default port 8765, 1 MiB body limit, no
+  chunked request bodies), sharing the new typed in-memory application seam
+  (`select_from_inputs` / `simulate_from_inputs`) with the file-based CLI
+  runners. MCP is not implemented; M3 remains not PASS until M3c and the
+  closeout parity proof.
 - **M3c — thin stdio MCP adapter + parity tests.** Implements
   `scarcity_status`, `scarcity_select` and `scarcity_simulate` calling the
   application layer directly. May depend on M3b only for shared contract
