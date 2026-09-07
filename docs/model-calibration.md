@@ -13,8 +13,9 @@ not measured quota and not scientific fact.
 
 ## Operating-policy update after M2 calibration
 
-Policy v5 (2026-09-07) makes GPT-6 Astra Low the preferred reference
-scientific/methodological specialist and a deep-technical reasoning option.
+Policy v5 (2026-09-07) makes GPT-6 Astra at low reasoning effort the preferred
+reference scientific/methodological specialist and a deep-technical reasoning
+option.
 
 This does not modify catalog v1. Astra is not yet selector-eligible because
 capability calibration, hard properties and semantic capacity applicability

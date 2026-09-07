@@ -1262,8 +1262,9 @@ direction was chosen. Dates use UTC.
   - Current model assignments are dated, revisable descriptive metadata. They
     do not establish selector eligibility, capability ratings or capacity
     bindings.
-  - GPT-6 Astra Low is the preferred reference for scientific/methodological
-    review, semantic figure review and deep technical reasoning. No Astra
+  - GPT-6 Astra at low reasoning effort is the preferred reference for
+    scientific/methodological review, semantic figure review and deep technical
+    reasoning. No Astra
     capacity scope, provider telemetry, model slug, hard property or
     capability rating is accepted by this decision.
   - GPT-5.6 Sol High is the primary translation specialist and an authorized

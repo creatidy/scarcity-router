@@ -559,7 +559,7 @@ class ModelPolicyContract(unittest.TestCase):
                 "GPT-5.6 Luna Max",
                 "GLM-5.3 Max",
                 "GPT-5.6 Sol High",
-                "GPT-6 Astra Low",
+                "GPT-6 Astra",
             },
         )
         self.assertFalse(any("Qwen" in _required_string(entry, "model_name") for entry in models))
@@ -609,16 +609,53 @@ class ModelPolicyContract(unittest.TestCase):
             ["scientific_methodological_specialist"],
         )
         self.assertEqual(
-            _strings(models["GPT-6 Astra Low"]["primary_archetypes"], "primary"),
+            _strings(models["GPT-6 Astra"]["primary_archetypes"], "primary"),
             [
                 "scientific_methodological_specialist",
                 "deep_technical_reasoner",
             ],
         )
         self.assertEqual(
-            _strings(models["GPT-6 Astra Low"]["secondary_archetypes"], "secondary"),
+            _strings(models["GPT-6 Astra"]["secondary_archetypes"], "secondary"),
             ["translation_editorial_specialist"],
         )
+        self.assertEqual(models["GPT-6 Astra"]["reasoning_effort"], "low")
+
+    def test_astra_reference_assignments_keep_effort_separate(self) -> None:
+        assignments = _mapping(
+            _load_policy()["workflow_role_assignments"],
+            "workflow_role_assignments",
+        )
+        roles = {
+            _required_string(role, "role_id"): role
+            for role in _objects(assignments["roles"], "workflow roles")
+        }
+        references = [
+            _mapping(
+                roles[role_id]["preferred_reference"],
+                f"{role_id}.preferred_reference",
+            )
+            for role_id in (
+                "DEEP_EXECUTION_WORKER",
+                "SCIENTIFIC_REVIEWER",
+                "SEMANTIC_FIGURE_REVIEWER",
+            )
+        ]
+        references.append(
+            _objects(
+                roles["PL_TRANSLATION_EDITOR"]["authorized_alternates"],
+                "PL_TRANSLATION_EDITOR.authorized_alternates",
+            )[0]
+        )
+        for reference in references:
+            self.assertEqual(
+                reference,
+                {
+                    "model_name": "GPT-6 Astra",
+                    "provider": "openai",
+                    "reasoning_effort": "low",
+                },
+            )
 
     def test_reasoning_effort_policy_is_explicit_and_not_selector_implemented(self) -> None:
         effort = _mapping(

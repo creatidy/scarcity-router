@@ -173,7 +173,7 @@
       {
         "role_id": "DEEP_EXECUTION_WORKER",
         "preferred_reference": {
-          "model_name": "GPT-6 Astra Low",
+          "model_name": "GPT-6 Astra",
           "provider": "openai",
           "reasoning_effort": "low"
         },
@@ -189,7 +189,7 @@
       {
         "role_id": "SCIENTIFIC_REVIEWER",
         "preferred_reference": {
-          "model_name": "GPT-6 Astra Low",
+          "model_name": "GPT-6 Astra",
           "provider": "openai",
           "reasoning_effort": "low"
         },
@@ -205,7 +205,7 @@
       {
         "role_id": "SEMANTIC_FIGURE_REVIEWER",
         "preferred_reference": {
-          "model_name": "GPT-6 Astra Low",
+          "model_name": "GPT-6 Astra",
           "provider": "openai",
           "reasoning_effort": "low"
         },
@@ -227,7 +227,7 @@
         },
         "authorized_alternates": [
           {
-            "model_name": "GPT-6 Astra Low",
+            "model_name": "GPT-6 Astra",
             "provider": "openai",
             "reasoning_effort": "low"
           }
@@ -891,7 +891,7 @@
         ]
       },
       {
-        "model_name": "GPT-6 Astra Low",
+        "model_name": "GPT-6 Astra",
         "reasoning_effort": "low",
         "primary_archetypes": [
           "scientific_methodological_specialist",
