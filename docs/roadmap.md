@@ -137,11 +137,10 @@ Owner closeout choices:
   visibility is sufficient for M2. Automatic live OpenAI reset-credit
   acquisition is deferred and is not a reason to reopen M2.
 
-Next planned milestone: M3 — REST and MCP. Status: M3a planning gate
-complete (2026-09-06); M3b REST adapter complete (2026-09-07); M3c
-implementation complete (2026-09-07). M3 closeout remains pending. M3 began
-only from explicitly created Forgejo issues (#45, M3a, and #52, M3c), never
-merely because it is documented here.
+Next planned milestone: M4 — Minimal dashboard and recipes. M3 PASS —
+2026-09-07. M3a, M3b and M3c are complete, and live CLI/REST/MCP acceptance
+is complete. M3 began only from explicitly created Forgejo issues (#45, M3a,
+#52, M3c, and #54 closeout), never merely because it was documented here.
 
 **M3 planning gate (2026-09-06, M3a).** The REST and MCP machine-interface
 contracts are frozen in `docs/machine-interfaces.md` (D-028) before any
@@ -394,9 +393,10 @@ acceptance items.
 
 ## M3 — REST and MCP
 
-**Status:** M3a planning gate complete (2026-09-06); M3b complete
-(2026-09-07); M3c implementation complete (2026-09-07). M3 closeout remains
-pending. Each slice starts only after its
+**Status:** M3 PASS (2026-09-07). M3a planning gate, M3b REST adapter, M3c
+implementation and live CLI/REST/MCP acceptance are complete. Sanitized
+acceptance evidence is recorded in [`docs/m3-acceptance.md`](m3-acceptance.md).
+Each slice starts only after its
 predecessor is merged into `develop` and only from an explicitly selected
 or created Forgejo issue.
 
@@ -440,9 +440,10 @@ The interface semantics are frozen in
   structured logical tool errors, direct/CLI/REST/MCP parity tests, raw SDK
   decoder boundary tests and a real stdio discovery smoke are implemented.
   MCP has no runtime HTTP dependency and exposes no resources or prompts.
-- **M3 closeout.** Proves `direct application == CLI JSON == REST == MCP`
-  for representative deterministic scenarios, plus live acceptance in the
-  owner's real workflow. This remains pending; M3 is not PASS.
+- **M3 closeout (complete 2026-09-07).** Proves
+  `direct application == CLI JSON == REST == MCP` for representative
+  deterministic scenarios, plus live acceptance in the owner's real workflow.
+  See [`docs/m3-acceptance.md`](m3-acceptance.md). M3 is PASS.
 
 ## M4 — Minimal dashboard and recipes
 
