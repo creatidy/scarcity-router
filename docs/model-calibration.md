@@ -1,4 +1,50 @@
-# Model calibration (M2c)
+# Model calibration
+
+## Catalog v2 correction (D-032)
+
+Issue #57 adds three separately calibrated invocation configurations on
+2026-09-08. Catalog version is now 2; model-policy remains v5 with unchanged
+profile minima. The original M2c record below remains historical provenance,
+not a claim that its four-entry eligible sets are still the entire catalog.
+
+| Configuration | reasoning | coding | scientific_methodological | writing_editorial | tool_use | translation_multilingual |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Luna Medium | 3 | 4 | 3 | 5 | 5 | 4 |
+| Terra Medium | 4 | 5 | 4 | 4 | 5 | 4 |
+| Sol Medium | 5 | 5 | 4 | 5 | 5 | 4 |
+
+The architect-supplied official family launch/developer evidence uses the same
+source identifiers documented below, with Medium the API default and Terra
+positioned between Luna and Sol. This task accepts those external facts rather
+than claiming new measurements. Effort-specific vectors are the explicit
+owner-approved `accepted_reasoning_effort_calibration_2026-09-08_issue_57_D-032`
+judgment, with medium confidence, per-dimension rationales and assessment date.
+Luna Medium fails reasoning-4 tasks; Terra Medium's writing 4 preserves Luna
+Max's orchestration role; Sol Medium's scientific and translation 4 preserve
+Sol High's specialist role. No vectors are automatically copied across efforts.
+
+All three additions have 1,050,000 input tokens, 128,000 output tokens,
+tool/vision/reasoning support true, family version date 2026-07-09 and binding
+`openai/codex`. No effort-specific capacity is evidenced or invented. The four
+original vectors, hard properties, assessment provenance and dates are unchanged;
+their configured max/high/max/max effort is now explicit catalog data.
+
+Current capability-only eligible sets, pinned by calibration tests:
+
+| Profile | Eligible configurations |
+| --- | --- |
+| mechanical / routine_coding | All seven |
+| deep_coding | Terra Medium, Sol Medium, Sol High, GLM-5.3 Max |
+| scientific_review / translation | Sol High |
+| editorial | Luna Medium, Luna Max, Sol Medium, Sol High |
+| general_reasoning | All except Luna Medium |
+| orchestration | Luna Max, Sol Medium, Sol High |
+
+These are eligibility sets, not provider preferences. Scarcity still precedes
+capability margin and effort. No additional supported API effort is calibrated;
+Astra issue #49 and M4 remain independent.
+
+## Historical M2c calibration
 
 The human-reviewable record of the initial capability and task-profile
 calibration (D-025, resolving U-006). The machine-readable authorities are
@@ -20,7 +66,7 @@ option.
 This does not modify catalog v1. Astra is not yet selector-eligible because
 capability calibration, hard properties and semantic capacity applicability
 have not been evidenced and accepted. The capability-only eligible sets below
-remain the current catalog truth. The historical M2c calibration date, ratings,
+record catalog v1; the v2 correction above supersedes their scope. The historical M2c calibration date, ratings,
 provenance and four-model scope remain unchanged.
 
 ## Rating rubric

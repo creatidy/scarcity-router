@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import re
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from typing import cast
 
@@ -964,6 +965,70 @@ class CapacityBindingsContract(unittest.TestCase):
 
 
 class ModelCatalogEntryContract(unittest.TestCase):
+    def test_reasoning_effort_vocabulary_round_trip(self) -> None:
+        self.assertEqual(st.REASONING_EFFORTS, ("none", "low", "medium", "high", "xhigh", "max"))
+        for provider in ("openai", "zai"):
+            for effort in st.REASONING_EFFORTS:
+                with self.subTest(provider=provider, effort=effort):
+                    entry = replace(
+                        _entry(provider=provider, variant="opaque-configuration"),
+                        hard_properties=ModelHardProperties(supports_reasoning_mode=True),
+                        reasoning_effort=effort,
+                    )
+                    self.assertEqual(entry.to_dict()["reasoning_effort"], effort)
+                    self.assertEqual(ModelCatalogEntry.from_dict(entry.to_dict()), entry)
+
+    def test_invalid_effort_rejected_at_both_boundaries(self) -> None:
+        invalid: tuple[object, ...] = ("unknown", "Medium", "", " high", 0, True, [], {})
+        for bad in invalid:
+            with self.subTest(bad=bad):
+                with self.assertRaises(SelectionContractValidationError):
+                    _ = replace(_entry(), reasoning_effort=cast(str, bad))
+                payload = _entry().to_dict()
+                payload["reasoning_effort"] = bad
+                with self.assertRaises(SelectionContractValidationError):
+                    _ = ModelCatalogEntry.from_dict(payload)
+
+    def test_reasoning_mode_effort_consistency(self) -> None:
+        for support in (True, False, None):
+            for effort in (None, "none", "medium"):
+                with self.subTest(support=support, effort=effort):
+                    payload = _entry().to_dict()
+                    payload["hard_properties"] = {"supports_reasoning_mode": support}
+                    payload["reasoning_effort"] = effort
+                    if (support is True) == (effort is not None):
+                        entry = replace(
+                            _entry(),
+                            hard_properties=ModelHardProperties(supports_reasoning_mode=support),
+                            reasoning_effort=effort,
+                        )
+                        self.assertEqual(ModelCatalogEntry.from_dict(payload), entry)
+                    else:
+                        with self.assertRaises(SelectionContractValidationError):
+                            _ = replace(
+                                _entry(),
+                                hard_properties=ModelHardProperties(supports_reasoning_mode=support),
+                                reasoning_effort=effort,
+                            )
+                        with self.assertRaises(SelectionContractValidationError):
+                            _ = ModelCatalogEntry.from_dict(payload)
+
+    def test_null_and_string_none_are_distinct_without_variant_inference(self) -> None:
+        for variant in st.REASONING_EFFORTS:
+            entry = _entry(variant=variant)
+            self.assertIsNone(entry.reasoning_effort)
+            self.assertIsNone(entry.to_dict()["reasoning_effort"])
+            payload = entry.to_dict()
+            del payload["reasoning_effort"]
+            self.assertEqual(ModelCatalogEntry.from_dict(payload), entry)
+            payload["hard_properties"] = {"supports_reasoning_mode": True}
+            with self.assertRaises(SelectionContractValidationError):
+                _ = ModelCatalogEntry.from_dict(payload)
+            payload["reasoning_effort"] = "none"
+            configured = ModelCatalogEntry.from_dict(payload)
+            self.assertEqual(configured.reasoning_effort, "none")
+            self.assertEqual(configured.to_dict()["reasoning_effort"], "none")
+
     def test_minimal_unknown_entry_round_trip(self) -> None:
         entry = _entry()
         self.assertEqual(ModelCatalogEntry.from_dict(_clone(entry.to_dict())), entry)

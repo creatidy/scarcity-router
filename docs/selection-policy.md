@@ -36,7 +36,7 @@ The deterministic selector, explanation and simulation are implemented in
 `scarcity_router/selector.py` and `scarcity_router/simulation.py`, composed
 by `scarcity_router/selection_app.py` and the CLI (M2e, D-027).
 
-## Implemented balanced selector (M2e, D-027)
+## Implemented balanced selector (D-027, D-032)
 
 The selector evaluates candidates in canonical `(provider, model, variant)`
 order through the pipeline: blackout (one caller-supplied aware instant) →
@@ -53,12 +53,25 @@ failure merely to populate fields.
 2. integer scarcity penalty (`penalty_units`) among known-capacity
    candidates only;
 3. capability margin, lower wins;
-4. explicit `SelectorPolicy.preference_order` (listed before unlisted, then
+4. lowest explicit catalog `reasoning_effort`, in normalized order
+   `none < low < medium < high < xhigh < max`; null/absent uses an explicit
+   unconfigured comparison state after known effort, not a numeric sentinel;
+5. explicit `SelectorPolicy.preference_order` (listed before unlisted, then
    index) — a late tie-break only: it cannot override capability, hard
-   constraints, blackout, capacity knowledge class, scarcity margin or
+   constraints, blackout, capacity knowledge class, scarcity, capability margin,
+   reasoning effort or
    reservations, and it is never inferred from model classes, profile
    names, provider names, catalog order or display names;
-5. stable `(provider, model, variant)` identity.
+6. stable `(provider, model, variant)` identity.
+
+**Independent concepts.** Model capability is not reasoning effort and neither
+is subscription scarcity. Effort is curated catalog configuration data, never
+parsed from variant/display/model/provider names. It does not alter capacity
+observations, scarcity penalties, scope matching or capability requirements.
+All five OpenAI configurations share `openai/codex` telemetry, so their capacity
+assessments are equal. Smaller effort cannot rescue an incapable configuration
+or outrank better scarcity or a smaller capability surplus. No API-price or
+effort-specific quota penalty is introduced.
 
 **Capability margin.** Exactly
 `SUM(effective_rating - required_minimum)` over the required dimensions
@@ -114,6 +127,12 @@ selected, alternative and capacity-excluded candidates where it exists,
 full reservation decisions — including triggered-but-permitted ones — for
 eligible candidates, and the applied preference order.
 
+D-032 preserves machine-interface v1 and the SelectionDecision serialized
+field set. Current selected `identity.variant` values identify the configured
+effort without changing identity semantics; use the explicit field in the
+decision's versioned catalog to reconstruct effort comparisons. Variant is
+never parsed by production logic. Public explicit effort output is deferred.
+
 **Outputs.** The selector returns a structured `SelectionDecision`:
 selected candidate, alternatives in exact ranking order, excluded
 candidates with one primary exclusion stage
@@ -147,7 +166,8 @@ relaxed and no fallback bypasses capability.
    candidate *recoverable* under explicit policy, but is not treated as current
    remaining quota and is never consumed by the broker.
 6. **Rank sufficient eligible candidates.** Under `balanced`, prefer lower
-   scarcity penalty, then the smallest adequate capability margin, then stable
+   scarcity penalty, then the smallest adequate capability margin, then lowest
+   configured reasoning effort, then stable
    configured preference and stable model identity as deterministic ties.
 7. **Produce explanation.** Return the winner, alternatives, exclusions,
    capacity evidence, applied policy and reason codes, including schedule,
@@ -264,7 +284,7 @@ nonzero capacity is eligible in both, subject to other policy.
 ## Reservations
 
 A reservation rule states a preservation threshold over a capacity **scope**,
-not a model. The M2c calibration proved the reason: Luna and Sol both bind
+not a model. The calibration proves the reason: Luna, Terra and Sol all bind
 to `openai/codex`, and GLM-5.3 and GLM-5.3-Flash both bind to
 `zai/coding_plan` — they consume one shared subscription quota together, so
 a model-specific reservation would incorrectly imply independent per-model

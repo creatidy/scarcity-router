@@ -426,7 +426,8 @@ class SelectTests(ServerTestCase):
         )
         selected = cast("dict[str, object]", decision["selected"])
         identity = cast("dict[str, object]", selected["identity"])
-        self.assertEqual("gpt-5.6-sol", identity["model"])
+        self.assertEqual("gpt-5.6-terra", identity["model"])
+        self.assertEqual("medium", identity["variant"])
 
     def test_unknown_profile_is_invalid_request(self) -> None:
         status, _, response = self._post("/v1/select", {"profile_id": "no_such"})

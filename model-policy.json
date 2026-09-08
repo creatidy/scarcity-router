@@ -121,7 +121,7 @@
       "the problem has demonstrated unresolved difficulty",
       "additional reasoning depth is likely to materially help"
     ],
-    "selector_support": "not_implemented",
+    "selector_support": "calibrated_configurations",
     "current_reference_defaults": [
       {
         "model_name": "GPT-6 Astra",

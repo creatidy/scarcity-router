@@ -657,7 +657,7 @@ class ModelPolicyContract(unittest.TestCase):
                 },
             )
 
-    def test_reasoning_effort_policy_is_explicit_and_not_selector_implemented(self) -> None:
+    def test_reasoning_effort_policy_uses_calibrated_configurations(self) -> None:
         effort = _mapping(
             _load_policy()["reasoning_effort_policy"], "reasoning_effort_policy"
         )
@@ -666,7 +666,7 @@ class ModelPolicyContract(unittest.TestCase):
         self.assertFalse(effort["importance_alone_triggers_escalation"])
         self.assertFalse(effort["size_alone_triggers_escalation"])
         self.assertFalse(effort["prestige_alone_triggers_escalation"])
-        self.assertEqual(effort["selector_support"], "not_implemented")
+        self.assertEqual(effort["selector_support"], "calibrated_configurations")
         defaults = _objects(
             effort["current_reference_defaults"], "current_reference_defaults"
         )

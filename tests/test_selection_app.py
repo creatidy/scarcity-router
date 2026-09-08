@@ -180,7 +180,7 @@ class SelectCommandTests(unittest.TestCase):
         self.assertIn("Alternatives (exact ranking order):", out)
         self.assertIn("Excluded candidates:", out)
         self.assertIn("capability:", out)
-        self.assertIn("Versions: catalog 1 (2026-09-06)", out)
+        self.assertIn("Versions: catalog 2 (2026-09-08)", out)
 
     def test_select_requirement_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -232,9 +232,9 @@ class SelectCommandTests(unittest.TestCase):
                 )
             )
             self.assertEqual(0, code)
-            # GLM-5.3 (vision known false) is excluded; Sol is selected.
+            # GLM-5.3 (vision known false) is excluded; Terra is selected.
             self.assertIn(
-                "Selected: GPT-5.6 Sol High (openai/gpt-5.6-sol/high)", out
+                "Selected: GPT-5.6 Terra Medium (openai/gpt-5.6-terra/medium)", out
             )
             self.assertIn("requires_vision unsupported", out)
 
@@ -335,7 +335,7 @@ class SelectCommandTests(unittest.TestCase):
         self.assertIn("WARNING: selected with unknown capacity", rendered)
         self.assertIn("Unknown reason: unknown_capacity_degraded", rendered)
         self.assertIn("Scarcity: unknown — provider_snapshot_not_ok", rendered)
-        self.assertIn("Capability margin: 5", rendered)
+        self.assertIn("Capability margin: 4", rendered)
         self.assertIn(
             "Reason: selected_balanced,selected_degraded_capacity", rendered
         )
@@ -391,7 +391,7 @@ class SimulateCommandTests(unittest.TestCase):
             current_block = out.split("SIMULATED", 1)[0]
             simulated_block = out.split("SIMULATED", 1)[1]
             self.assertIn("GLM-5.3 Max", current_block)
-            self.assertIn("GPT-5.6 Sol High", simulated_block)
+            self.assertIn("GPT-5.6 Terra Medium", simulated_block)
 
     def test_simulate_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -426,7 +426,8 @@ class SimulateCommandTests(unittest.TestCase):
             simulated_identity = cast(
                 "dict[str, object]", simulated_selected["identity"]
             )
-            self.assertEqual("gpt-5.6-sol", simulated_identity["model"])
+            self.assertEqual("gpt-5.6-terra", simulated_identity["model"])
+            self.assertEqual("medium", simulated_identity["variant"])
             applied = cast("dict[str, object]", payload["applied_overrides"])
             percentages = cast("list[object]", applied["capacity_percentages"])
             first_override = cast("dict[str, object]", percentages[0])
