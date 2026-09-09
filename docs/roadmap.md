@@ -168,9 +168,21 @@ preference and identity; OpenAI configurations still share one `codex` scope.
 With OpenAI available and Z.ai exhausted, deterministic outcomes are Luna
 Medium (routine coding), Terra Medium (deep coding), Sol High (scientific
 review and translation), and Luna Max (orchestration). Machine-interface v1
-remains unchanged. This correction awaits human review/integration; it does
-not reopen or rewrite historical M3 PASS evidence, start M4 or onboard Astra.
-Issue #49 remains independent.
+remains unchanged. This correction was integrated through PR #58 at
+`d76b4a09ffa4365ea22b3121086b8198a197eaef`; it does not reopen or rewrite
+historical M3 PASS evidence, start M4 or onboard Astra.
+
+**Astra evidence gate (2026-09-09, issue #49, D-033).**
+`ASTRA_ONBOARDING_READY = NO`;
+`ONBOARDING_REQUIRES_PLAN_APPLICABILITY_EXTENSION`. Shared Work/Codex usage is
+evidenced, but the Plus/Business Standard limited-Astra semantics and any
+additional scope's Astra applicability are not represented completely by the
+current evidence/bindings. A current official total-context versus maximum-input
+distinction also requires reconciliation. Only the evidence packet is prepared
+for human review; catalog v2, policy v6 and routing remain unchanged. See
+[capacity-model.md](capacity-model.md#astra-onboarding-gate-issue-49) and
+[model-calibration.md](model-calibration.md#astra-low-evidence-gate-issue-49).
+Onboarding stops and escalates to the human; no new issue or M4 work starts.
 
 ## M0 — Repository foundation
 

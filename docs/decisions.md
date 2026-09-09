@@ -1546,6 +1546,89 @@ decision.
   One implementation session, no internal reviewer loop; a human freezes the
   PR head for one independent external review and remains the merge gate.
 
+### D-033 - GPT-6 Astra Low selector onboarding evidence gate
+
+- **Status:** Unresolved onboarding; evidence-only disposition under the explicit
+  owner/architect gate for [issue #49](https://forgejo.creatidy.com/BioMedical-IT/scarcity-router/issues/49).
+- **Date:** 2026-09-09
+- **Outcome:** `ASTRA_ONBOARDING_READY = NO`;
+  `ONBOARDING_REQUIRES_PLAN_APPLICABILITY_EXTENSION`;
+  `STOP_AND_ESCALATE_TO_HUMAN`. No Astra entry or routing change is authorized.
+- **Prerequisites and current-state reconciliation:** Clean starting worktree;
+  base `d76b4a09ffa4365ea22b3121086b8198a197eaef` contains merged PR #58 and
+  required ancestor `f503107ca9d82bdd34239af8f9a4261f6282c70c`. D-032 is
+  implemented: catalog v2 has seven configurations and policy v6. The original
+  #49 four-candidate premise is historical, not current. `AGENTS.md`'s claim
+  that M3 is next and the roadmap's pending-integration wording for D-032 are
+  stale status descriptions: D-031 closeout and merged #58 establish M3 PASS
+  and D-032 integration. This record explicitly reconciles those status
+  conflicts; no historical acceptance, D-032 semantics or milestone is reopened.
+- **Identity and effort:** Supplied architect-reviewed identity is GPT-6 Astra,
+  release 2026-09-03, `openai` / `gpt-6-astra` / `low`, with explicit
+  `reasoning_effort = low`. Official model documentation corroborates model ID
+  and `low|medium|high|xhigh|max`; Astra does not support `none`. The global
+  vocabulary remains unchanged, and variant is never parsed for effort.
+- **Hard-property evidence:** Official model documentation confirms text/image
+  input, text output, 128,000 output tokens and tool/vision/reasoning support.
+  It lists a 1,050,000-token context window **and** maximum input of 922,000.
+  The assignment supplied `input_context_tokens = 1_050_000`; the existing
+  contract describes an input allowance. That mapping is unresolved, not
+  silently accepted or substituted. Human reconciliation of total context
+  versus supported input allowance is required before a catalog entry.
+- **Calibration:** Preserve the architect-approved conditional vector
+  `(5,5,5,5,5,4)` in reasoning/coding/scientific/writing/tool/translation order,
+  with medium effort-specific confidence and rationale in
+  [model-calibration.md](model-calibration.md#astra-low-evidence-gate-issue-49).
+  No numeric Astra calibration is installed in the active catalog. Low is not
+  low capability; comparative evidence does not establish universal dominance.
+- **Capacity decision:** Shared Work/Codex allowance and its normalized main
+  `openai/codex` scope are evidenced, but completeness of a codex-only Astra
+  binding is not. Official guidance distinguishes Pro $100/$200 and Business
+  Premium (full existing allowance) from Plus/Business Standard (limited Astra
+  usage within that allowance). The current static bindings and informational
+  plan cannot enforce plan/seat/access conditions. One sanitized status read
+  observed OpenAI `ok`, main `codex` and one additional scope; that observation
+  does not identify any Astra-specific constraint. No private scope is named
+  or assigned. See the A-E matrix in
+  [capacity-model.md](capacity-model.md#astra-onboarding-gate-issue-49).
+- **Alternatives and evidence needed:** Keep Astra outside the catalog now.
+  Generic onboarding requires authoritative model-to-scope applicability for
+  every constraining limit across supported plans, safe normalized telemetry
+  for those limits and evidenced access/seat semantics. A plan-applicability
+  extension or an explicitly narrower support boundary requires human design
+  approval; neither is implemented here. Existing multiple bindings may express
+  an evidenced extra scope, but cannot infer its applicability. Whether future
+  support needs new collector parsing remains unresolved; no collector change
+  is required or made for this evidence-only result. Do not create another
+  issue automatically; #49 remains the durable onboarding issue.
+- **Marginal consumption:** Model, effort, task size and Fast mode can change
+  allowance consumption. Public message ranges are not per-task coefficients.
+  Scarcity remains observed remaining subscription capacity, not predicted
+  marginal cost. No model multiplier, percentage deduction or API-price penalty
+  is introduced; any future marginal-consumption design is deferred. Capability
+  margin, effort ordering and profile minima remain D-032 unchanged.
+- **Versioning and routing:** Catalog v2 and policy v6 (schema v1) are unchanged;
+  capacity v3 and machine-interface v1 are unchanged. All eight current eligible
+  sets and conditional future effects are recorded in model-calibration.md.
+  Catalog v3 is not produced, and no Astra-specific tests or live selection
+  acceptance are claimed.
+- **Live and execution boundary:** One existing Kilo session; requested Astra
+  Low, `RUNTIME_UNOBSERVABLE` because no independent generated-turn metadata
+  verifies the complete model/effort assignment. No subagents, model switching,
+  internal reviewer loop or deliberate model execution for quota research.
+  Only one status observation, filtered before inspection, using existing
+  collectors including the D-018 recovery boundary. No personal percentages,
+  reset timestamps, raw responses or private identifiers retained. Budget is
+  120 minutes with a bounded evidence pass; implementation stops at this gate.
+  The docs-only PR remains open/unmerged for the human gate; M4 does not start.
+- **Sources:** Official pages accessed 2026-09-09:
+  [model](https://developers.openai.com/api/docs/models/gpt-6-astra.md),
+  [usage guidance](https://help.openai.com/en/articles/20001516-managing-usage-with-gpt-6-astra-in-work-and-codex),
+  [Work and Codex](https://help.openai.com/en/articles/20001275).
+  Release date and independent benchmark comparisons are attributed to the
+  architect-reviewed evidence supplied in the 2026-09-09 assignment, not a new
+  benchmark run. This decision supersedes no accepted ranking or capacity rule.
+
 ## Unresolved decisions
 
 ### U-001 — Codex binary discovery and compatibility

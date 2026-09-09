@@ -47,6 +47,108 @@ These are eligibility sets, not provider preferences. Scarcity still precedes
 capability margin and effort. No additional supported API effort is calibrated;
 Astra issue #49 and M4 remain independent.
 
+## Astra Low evidence gate (issue #49)
+
+On 2026-09-09, D-033 records `ASTRA_ONBOARDING_READY = NO` and
+`ONBOARDING_REQUIRES_PLAN_APPLICABILITY_EXTENSION`. The capacity gate blocks
+catalog modification: Astra remains outside catalog v2, policy v6 is untouched,
+and the seven-configuration eligible sets above remain current. This is an
+evidence packet, not selector onboarding or live model acceptance.
+
+### Identity and hard properties
+
+Architect-reviewed evidence supplied with the assignment establishes GPT-6
+Astra, release 2026-09-03, provider `openai`, model `gpt-6-astra`, opaque variant
+`low` and explicit `reasoning_effort = low`. The
+[official model page](https://developers.openai.com/api/docs/models/gpt-6-astra.md)
+accessed 2026-09-09 corroborates model identity and efforts
+`low|medium|high|xhigh|max`. Astra does not support `none`; that does not change
+the global D-032 vocabulary or authorize any additional Astra configuration.
+
+| Property | Evidence disposition |
+| --- | --- |
+| Input/context | Assignment proposes `input_context_tokens = 1_050_000`; current official documentation separately lists 1,050,000 context and 922,000 maximum input. The catalog input-allowance mapping requires human reconciliation (D-033); neither value is installed. |
+| Output | 128,000 tokens, corroborated by official documentation. |
+| Tool use / vision / reasoning mode | All true, corroborated by function calling, image input and reasoning-token support. |
+
+Official documentation also lists structured outputs, web/file search, code
+interpreter, hosted shell, apply patch, skills and computer use. These do not
+introduce new catalog properties or prove subscription access to every API
+tool. Text/image input and text output are documented; no privacy property is
+invented.
+
+### Conditional calibration
+
+The architect-approved initial vector is retained here for later human-gated
+onboarding, **not installed as accepted selector data**. Effort-specific
+confidence is medium in each dimension; no new benchmark measurement or
+independent adjudication was performed by this session.
+
+| Dimension | Conditional rating | Rationale supplied by architect |
+| --- | ---: | --- |
+| reasoning | 5 | Official frontier reasoning, Low-vs-Sol-High guidance and independent comparative results. |
+| coding | 5 | Official strongest-coding positioning and strong Low agentic evidence. |
+| scientific_methodological | 5 | Official science/health frontier plus low/lower-cost evidence; explicitly approved specialist judgment. |
+| writing_editorial | 5 | Official professional/document-generation positioning; effort-specific judgment remains medium confidence. |
+| tool_use | 5 | Extensive first-party tool/computer-use support and performance evidence. |
+| translation_multilingual | 4 | Multilingual support, but insufficient effort-specific evidence for publication-quality specialist 5. |
+
+The [official usage guide](https://help.openai.com/en/articles/20001516-managing-usage-with-gpt-6-astra-in-work-and-codex)
+(accessed 2026-09-09) states Astra Low can outperform Sol High and recommends
+Low/Medium as a starting point for users coming from Sol High. This does not
+make Low a low-capability tier. Architect-reviewed Artificial Analysis evidence
+supplied on 2026-09-09 reports Astra Low above Sol High on the Intelligence
+Index, materially above on Terminal-Bench and above on Humanity's Last Exam,
+slightly below on SciCode and broadly comparable on long context. These are
+attributed supplied comparisons, not newly fetched/version-pinned benchmark
+scores; they do not prove every dimension improves or map mechanically to 1..5.
+
+### Profile effects and acceptance boundary
+
+The following freezes the current evidence packet's expected effects, not new
+production tests. Names abbreviate the existing catalog display names; all GLM
+entries use Max. Hypothetical effects assume the conditional vector above and
+an eventually evidenced capacity binding. No profile minimum changes.
+
+| Profile | Current capability/hard-eligible set (catalog v2) | Conditional Astra effect |
+| --- | --- | --- |
+| mechanical | Luna Medium, Luna Max, Terra Medium, Sol Medium, Sol High, GLM-5.3 Max, GLM-5.3-Flash Max | Add Astra Low. |
+| routine_coding | Luna Medium, Luna Max, Terra Medium, Sol Medium, Sol High, GLM-5.3 Max, GLM-5.3-Flash Max | Add Astra Low. |
+| deep_coding | Terra Medium, Sol Medium, Sol High, GLM-5.3 Max | Add Astra Low. |
+| scientific_review | Sol High | Add Astra Low. |
+| editorial | Luna Medium, Luna Max, Sol Medium, Sol High | Add Astra Low. |
+| general_reasoning | Luna Max, Terra Medium, Sol Medium, Sol High, GLM-5.3 Max, GLM-5.3-Flash Max | Add Astra Low. |
+| orchestration | Luna Max, Sol Medium, Sol High | Add Astra Low. |
+| translation | Sol High | No addition: Astra's multilingual 4 fails minimum 5. |
+
+With equal known available OpenAI capacity, neutral policy and Z.ai exhausted
+(not an assertion about live personal capacity), expected selected outcomes:
+
+| Profile | Current v2 | Conditional future Astra onboarding |
+| --- | --- | --- |
+| mechanical | Terra Medium | Terra Medium |
+| routine_coding | Luna Medium | Luna Medium |
+| deep_coding | Terra Medium | Terra Medium; Astra ahead of equal-margin Sol configurations. |
+| scientific_review | Sol High | Astra Low; Sol High remains an alternative. |
+| editorial | Luna Medium | Luna Medium |
+| general_reasoning | Terra Medium | Terra Medium |
+| orchestration | Luna Max | Luna Max |
+| translation | Sol High | Sol High |
+
+Capacity/scarcity still precedes margin and effort, so cross-provider winners
+can differ with other observations. Deep coding gives Terra margin 2 versus
+Astra/Sol margin 3 on required dimensions: smaller margin beats lower effort.
+At tied margins, Low precedes Medium, then High, before explicit preference.
+Sufficiency precedes all ranking. D-032 ordering is unchanged, not redesigned.
+
+No Astra ranking scenario, catalog v3 round-trip or live selector acceptance
+is implemented while the gate is blocked. If human-approved evidence later
+unblocks onboarding, the assignment still requires the explicit synthetic
+Terra Medium/Astra Low/Sol Medium/Sol High ordering test, all-profile eligible
+sets, five main outcomes, exact legitimate capacity assessment sharing and
+direct/CLI/REST/MCP parity. A bounded live selector check follows deterministic
+tests, never model execution merely to probe quota.
+
 ## Historical M2c calibration
 
 The human-reviewable record of the initial capability and task-profile
