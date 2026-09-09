@@ -1,19 +1,16 @@
 # Machine Interfaces (REST and MCP)
 
-This document is the authoritative M3 contract for the machine interfaces. It
-freezes the REST surface, the MCP tool surface, their shared semantics, error
-behavior, versioning, security boundary and parity requirement **before** any
-transport is implemented (M3a planning gate, decision D-028). Nothing here
+This document is the authoritative contract for the machine interfaces. It
+defines the REST surface, the MCP tool surface, their shared semantics, error
+behavior, versioning, security boundary and parity requirement. Nothing here
 changes selection, scarcity, provider or capacity semantics; those remain
 owned by their existing authoritative documents.
 
-- **Status:** Frozen contract (M3a). REST v1 is implemented (M3b, D-030);
-  the stdio MCP adapter and automated parity surface are implemented (M3c,
-  D-031). M3 closeout remains pending.
-- **Implementation:** M3b (minimal local REST adapter) and M3c (thin stdio
-  MCP adapter + parity tests). See `docs/roadmap.md` for the frozen sequence.
-- **Scope guard:** M3a froze this document only. No REST or MCP runtime, no
-  framework dependency and no product source change belongs to it.
+- **Status:** Frozen contract. REST v1, the stdio MCP adapter and their
+  automated parity surface are implemented and covered by live acceptance.
+- **Implementation:** The local REST adapter and thin stdio MCP adapter call the
+  shared application/core directly. Their transport code owns no selection,
+  scarcity, provider or capacity semantics.
 
 ## Principles
 
@@ -46,7 +43,7 @@ Transport adapters do only:
 parse transport input → call application/core → serialize existing typed result
 ```
 
-M3 must not create a REST selector, an MCP selector, REST-only simulation
+The interfaces must not create a REST selector, an MCP selector, REST-only simulation
 logic or MCP-only fallback logic. The serialized domain contracts are reused,
 never forked:
 
@@ -328,8 +325,9 @@ credentials, never local credential paths.
 **3. Application/internal failure — HTTP 500.** A failure of the application
 itself (for example artifact loading failure or an unexpected internal
 exception) returns the same envelope with the code `internal_error` and a
-safe message. Exception internals are never exposed. The M3 error-code
-vocabulary is closed: exactly `invalid_request` and `internal_error`.
+safe message. Exception internals are never exposed. The machine-interface
+error-code vocabulary is closed: exactly `invalid_request` and
+`internal_error`.
 
 **4. Transport routing responses.** An unknown path (404) or unsupported
 method (405) is transport-level routing with no domain meaning; its body is
@@ -370,7 +368,7 @@ scarcity_simulate
 Not exposed: one tool per provider, internal scarcity helper functions, reset
 redemption or any execution capability. Tool names carry no version suffix
 (no `scarcity_select_v1`); the tool descriptions state that they expose the
-M3 machine-interface contract v1 (the same logical `/v1` contract).
+machine-interface contract v1 (the same logical `/v1` contract).
 
 ### Transport and architecture
 
@@ -385,13 +383,13 @@ REST ──────┼─> application/core
 MCP stdio ─┘
 ```
 
-`MCP → REST → application` is rejected for M3: it would add a runtime
+`MCP → REST → application` is rejected: it would add a runtime
 dependency and a local server lifecycle requirement for MCP clients, while
 the exact same application/core is already available in-process and parity is
 easier to test directly. No repository evidence shows a concrete benefit that
 would justify the indirection.
 
-M3c uses the official `mcp` Python SDK stable v2 line (`mcp>=2,<3`, resolved
+The adapter uses the official `mcp` Python SDK stable v2 line (`mcp>=2,<3`, resolved
 to 2.1.1 in `uv.lock`) and its low-level `mcp.server.lowlevel.Server` API.
 The SDK's official stdio transport owns JSON-RPC framing; the adapter itself
 has no HTTP, SSE, Streamable HTTP, REST subprocess or custom protocol loop.
@@ -429,7 +427,7 @@ error payloads.
 
 ### MCP error semantics
 
-The **logical** structured error payloads are frozen now. M3c carries them in
+The **logical** structured error payloads are frozen now. The MCP adapter carries them in
 the official SDK's `structured_content` with `is_error = true`, preserving this
 logical payload and the closed error-code vocabulary:
 
@@ -483,9 +481,9 @@ Equality is typed/domain equality of the unwrapped contracts, not byte
 equality of transport envelopes. CLI `--json` output remains semantically
 equivalent to the same core result: the CLI emits the bare
 `SelectionDecision`/`SimulationResult`/snapshot-array documents without the
-REST envelope, and that released M1/M2e CLI behavior is preserved unchanged.
-M3 closeout must prove `direct application == CLI JSON == REST == MCP` for
-representative deterministic scenarios (`docs/roadmap.md`).
+REST envelope, and the released CLI behavior is preserved unchanged.
+The deterministic parity tests cover `direct application == CLI JSON == REST ==
+MCP` for representative scenarios.
 
 ## Security and lifecycle
 
@@ -494,11 +492,11 @@ representative deterministic scenarios (`docs/roadmap.md`).
   multi-user deployment assumption. Any non-loopback exposure requires an
   explicit future security decision and threat analysis
   (`docs/security.md`).
-- **No authentication layer in M3.** This is acceptable only because the
-  server binds to loopback by default. M3 REST is a local machine interface,
-  not an internet-facing service. OAuth, API keys, sessions, reverse-proxy
-  auth and TLS termination are out of scope; M3b/M3c must not add
-  non-loopback bind options.
+- **No authentication layer.** This is acceptable only because the server
+  binds to loopback by default. REST is a local machine interface, not an
+  internet-facing service. OAuth, API keys, sessions, reverse-proxy auth and
+  TLS termination are out of scope; non-loopback bind options require a future
+  security decision.
 - **Credentials are never interface data.** REST and MCP never accept
   provider credentials from clients, never return provider credentials, never
   accept arbitrary provider endpoints and never proxy model prompts. Clients
@@ -507,15 +505,15 @@ representative deterministic scenarios (`docs/roadmap.md`).
 - **REST runtime scope.** A single local process; no daemon manager, no
   background cache, no database, no persistent history, no scheduler. Each
   request may collect current provider telemetry through the existing
-  application path. Request caching is not invented in M3.
+  application path. Request caching is not part of the current service.
 - **MCP runtime scope.** The stdio process lifecycle is owned by the MCP
   client. Stdio is local process IPC: it creates no network listener and has no
   Host, CORS or MCP-auth concern. No daemon and no shared cache exists between
   REST and MCP. The tools may invoke the existing provider collectors and the
-  bounded D-018 provider-managed auth recovery, but never accept credentials,
+  bounded provider-managed auth recovery, but never accept credentials,
   provider endpoints or catalog paths from MCP input. The MCP SDK dependency is
-  placed in the development dependency group for the current module-based M3
-  runtime; final installable-package runtime metadata remains a U-008 concern.
+  in the development dependency group for the current module-based runtime;
+  final installable-package runtime metadata remains unresolved.
 - **Side effects.** As frozen in [Side-effect semantics](#side-effect-semantics).
 
 ## Versioning
@@ -526,8 +524,8 @@ Separate contracts carry separate versions; they are never collapsed:
 | --- | --- | --- |
 | `CapacitySnapshot.schema_version` | Capacity contract (`docs/capacity-model.md`) | `3` |
 | REST path prefix `/v1/` + envelope `schema_version` | Machine-interface contract (this document) | `1` |
-| `catalog_version` | Model catalog content version | `1` (current artifact) |
-| `policy_version` | Model policy/profile content version | `5` (current artifact) |
+| `catalog_version` | Model catalog content version | `2` (current artifact) |
+| `policy_version` | Model policy/profile content version | `6` (current artifact) |
 
 The machine-interface contract includes **both its envelope and the
 serialized domain documents exposed inside it**. `CapacitySnapshot`,
@@ -549,8 +547,8 @@ part of the v1 wire contract. Within machine-interface v1:
   field would not);
 - existing domain serialization is reused rather than forked.
 
-M3a creates no compatibility serializers; choosing between the two options
-above for a concrete incompatible nested-domain evolution is a future
+No compatibility serializer is currently needed; choosing between the two
+options above for a concrete incompatible nested-domain evolution is a future
 explicit decision, never an implementation accident.
 
 MCP exposes the same v1 logical contract under simple, unversioned tool
@@ -569,14 +567,12 @@ No parallel provider collection semantics are introduced through REST/MCP.
 A transport framework may technically admit concurrent requests later, but
 core/provider concurrency must never be invented implicitly: if concurrent
 service requests create lifecycle or resource concerns, the implementation
-must serialize or bound them explicitly. This is an M3b/M3c implementation
-concern, not a redesign of M2.
+must serialize or bound them explicitly.
 
 ## Design scenarios
 
-Expected machine-interface semantics for the representative scenarios
-(contract expectations for M3b/M3c tests; deterministic fixtures, never live
-quota):
+Representative machine-interface semantics are covered by deterministic tests
+using fixtures, never live quota:
 
 1. **Status with one degraded provider.** One provider `status = unknown`,
    the other `status = ok`. REST: HTTP 200 with both snapshots in the
@@ -617,14 +613,11 @@ quota):
 
 ## Non-goals
 
-M3a freezes contracts only. The following are explicitly out of scope for M3a
-and, unless a document says otherwise, for M3 as a whole: FastAPI or any
-specific framework commitment, HTTP listener runtime, Uvicorn, MCP server
-runtime, MCP SDK dependency, network sockets in tests, authentication, TLS,
-Docker, systemd, Windows services, databases, caches, history, dashboards,
-model execution, prompt proxying, automatic dispatch, reset-credit
-acquisition or redemption, provider health integration, Artificial Analysis
-runtime integration, new providers, new model ratings, new profiles, new
-ranking modes and M4. Framework and SDK choices are made — and their
-dependencies justified — in the M3b/M3c implementation issues, never in
-advance here.
+The current machine interfaces do not provide remote service exposure,
+authentication or TLS termination, Docker/systemd/Windows service packaging,
+databases, caches, persistent history, dashboards, model execution, prompt
+proxying, automatic dispatch, reset-credit acquisition or redemption, provider
+health integration, Artificial Analysis runtime integration, new providers,
+new model ratings, new profiles or additional ranking modes. Any expansion of
+the local security or runtime boundary requires an explicit decision and
+corresponding contract review.

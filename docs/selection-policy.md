@@ -26,17 +26,17 @@ for the selector decision sequence and scarcity behavior.
 - Optional external benchmark/performance evidence used to curate the model
   catalog, never as live capacity.
 
-The task-requirement and model-catalog input contracts are implemented as the
-pure, validated types in `scarcity_router/selection_types.py` (M2b, D-024).
-Scarcity assessment and the resource-policy primitives (unknown modes,
-reservations, blackouts, replenishment visibility, the policy container) are
-implemented as pure, deterministic primitives in
-`scarcity_router/scarcity.py` and `scarcity_router/policy.py` (M2d, D-026).
-The deterministic selector, explanation and simulation are implemented in
-`scarcity_router/selector.py` and `scarcity_router/simulation.py`, composed
-by `scarcity_router/selection_app.py` and the CLI (M2e, D-027).
+The task-requirement and model-catalog input contracts are the pure, validated
+types in `scarcity_router/selection_types.py`. Scarcity assessment and the
+resource-policy primitives (unknown modes, reservations, blackouts,
+replenishment visibility and the policy container) are pure, deterministic
+primitives in `scarcity_router/scarcity.py` and
+`scarcity_router/policy.py`. The deterministic selector, explanation and
+simulation are in `scarcity_router/selector.py` and
+`scarcity_router/simulation.py`, composed by
+`scarcity_router/selection_app.py` and the CLI.
 
-## Implemented balanced selector (D-027, D-032)
+## Balanced selector
 
 The selector evaluates candidates in canonical `(provider, model, variant)`
 order through the pipeline: blackout (one caller-supplied aware instant) →
@@ -116,7 +116,7 @@ next to its decision, and replenishment sets are canonicalized by
 `(provider, kind)` — output determinism only, never ranking semantics.
 Reset credits are visible only when a normalized `ReplenishmentState` is
 supplied as selector input; live reset-credit acquisition is not part of
-M2e.
+the current service.
 
 **Provenance and explanation.** `SelectionDecision` preserves the exact
 `SelectorPolicy.preference_order` (ordered, never sorted; empty list when
@@ -198,7 +198,7 @@ Every candidate is evaluated against the relevant provider capacity windows;
 there is no alternate API-cost or abundance score standing in for subscription
 scarcity.
 
-## Frozen scarcity parameters (M2d, D-026)
+## Scarcity parameters
 
 U-007 is resolved: the D-005 concept is accepted with exact parameters.
 
@@ -267,9 +267,9 @@ means quota is exhausted, and telemetry acquisition failure is never
 reported as `unavailable` scarcity. At most one snapshot per provider is
 accepted per assessment; duplicates fail typed validation.
 
-**No stale threshold.** M2d invents no staleness-age threshold. Current
-status acquisition is synchronous and fresh-on-demand; if caching ever
-exists, stale behavior will require an explicit later decision.
+**No stale threshold.** Current status acquisition is synchronous and
+fresh-on-demand; if caching is added, stale behavior will require an explicit
+decision.
 
 **Unknown-capacity policy.** Exactly two modes exist:
 
@@ -338,7 +338,7 @@ During a matching blackout, Z.ai candidates are excluded before capability
 ranking even if quota is healthy. The explanation must say the provider is
 policy-blocked, not unavailable or incapable.
 
-The frozen mechanics (M2d, D-026) are:
+The current mechanics are:
 
 - the target names a supported provider, optionally an exact model and an
   exact variant (a variant requires its model); matching is exact identity,
@@ -370,7 +370,7 @@ Replenishment options are distinct from the currently active quota windows.
 Examples include banked OpenAI Codex reset credits that can refresh usage limits
 when deliberately redeemed.
 
-The frozen M2 semantics are:
+The current semantics are:
 
 > Reset credits are replenishment opportunities, not current capacity.
 
@@ -378,7 +378,7 @@ They never enter current quota percentages, never pretend quota has been
 restored and are never consumed by the broker.
 
 The normalized D-021 contract is implemented as the typed
-`ReplenishmentState` in `scarcity_router/policy.py` (M2d), carrying only:
+`ReplenishmentState` in `scarcity_router/policy.py`, carrying only:
 
 - `provider`;
 - `kind` (a safe normalized identifier; the evidenced OpenAI concept is
@@ -392,7 +392,7 @@ The normalized D-021 contract is implemented as the typed
 No provider free-text, credit IDs, titles, descriptions or account identity
 are representable.
 
-Visibility is an explicit policy mode (M2d, D-026):
+Visibility is an explicit policy mode:
 
 - `ignore`: replenishment does not affect policy output;
 - `advisory`: expose replenishment availability, `available_count` and the
@@ -469,7 +469,7 @@ the model catalog. Its useful data includes stable model/creator identifiers,
 benchmark indices, pricing and observed performance metrics such as throughput
 and latency.
 
-The frozen M2 boundary:
+The boundary for external performance evidence is:
 
 ```text
 AA is offline/periodic catalog evidence
@@ -502,7 +502,8 @@ when external evidence helped create that snapshot.
 
 ## Policy modes
 
-Initial candidate modes are:
+The selector currently uses `balanced`, which chooses the least scarce
+sufficient model. The policy model also leaves room for these future modes:
 
 - `balanced`: least scarce sufficient model;
 - `quality-first`: prefer greater capability margin, still respecting hard
@@ -510,16 +511,13 @@ Initial candidate modes are:
 - `conserve-openai` and `conserve-zai`: add a documented preference/penalty to
   protect the named provider.
 
-These modify candidate ordering and belong to the M2e selector. M2d (D-026)
-implements none of them: it owns only the resource-state and preservation
-primitives (scarcity assessment, unknown-capacity modes, reservations,
-blackouts, replenishment visibility) and the `UserPolicy` container that a
-later CLI/application will populate. The initial implementation should add
-only modes needed by real use. Direct temporary preferences such as “Sol
-emergency-only” may be represented by the same policy layer. Modes cannot
-fabricate capacity or bypass explicit privacy constraints. Provider blackout
-schedules are orthogonal hard policy and must not be weakened by a mode
-unless the user explicitly overrides them.
+These modes modify candidate ordering while respecting hard constraints and
+explicit reservations. The resource-state and preservation primitives remain
+separate from ranking and are used by the application and selector. Direct
+temporary preferences such as “Sol emergency-only” may be represented by the
+same policy layer. Modes cannot fabricate capacity or bypass explicit privacy
+constraints. Provider blackout schedules are orthogonal hard policy and must
+not be weakened by a mode unless the user explicitly overrides them.
 
 ## Bounded compound workflow recommendations
 

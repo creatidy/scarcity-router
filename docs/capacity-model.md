@@ -8,9 +8,9 @@ Provider adapters own wire-format parsing and emit this provider-independent
 record; consumers must not parse provider responses.
 
 This is the internal serialized contract between the provider adapters and
-the core. It is not a public REST, MCP or CLI contract. Those interfaces, including
-their versioning, are later decisions. The record is an observation at one point
-in time, not a promise that the source remains available.
+the core. It is not a public REST, MCP or CLI contract; those interfaces have
+separate versioned contracts. The record is an observation at one point in
+time, not a promise that the source remains available.
 
 ## Versioning
 
@@ -20,10 +20,9 @@ omission rules and field semantics. It is a capacity-contract version, not a
 provider API, adapter implementation or interface version.
 
 Schema v2 removed the optional v1 `local_runtime` field and the diagnostics that
-only described local runtime state (decision D-017). Schema v3 — the M2a slice,
-decision D-023 — adds exactly one normalized field: the semantic capacity-scope
-identifier `CapacityWindow.scope_id`. All other v2 field shapes, semantics and
-invariants are unchanged. No compatibility reader is provided for the unreleased
+only described local runtime state. Schema v3 adds exactly one normalized field:
+the semantic capacity-scope identifier `CapacityWindow.scope_id`. All other v2
+field shapes, semantics and invariants are unchanged. No compatibility reader is provided for the unreleased
 internal v1 contract, and serialized v2 snapshots are not silently upgraded: the
 production model accepts and constructs only `schema_version = 3` and rejects any
 other version, including `2`.
@@ -160,9 +159,9 @@ For example, conceptually `("openai", "provider_scope")` or
 prefixed with the provider redundantly. Scope identity and period identity are
 separate concepts: one scope may contain several windows of different periods,
 and equal periods may coexist in different scopes (for OpenAI's multi-bucket
-view). Multiple windows may share one scope, and a later model may be subject
-to one or more scopes; model-to-scope bindings are a later M2 slice (M2b),
-never capacity telemetry.
+view). Multiple windows may share one scope, and a model may be subject to one
+or more scopes. Model-to-scope bindings are explicit catalog data, never
+capacity telemetry.
 
 Semantics of the field:
 
@@ -322,8 +321,9 @@ identifiers or endpoint URLs.
 This contract does not define freshness thresholds, caching, refresh behavior,
 timeouts, effective headroom, scarcity formulas or labels, reservations,
 selection, capability ratings, model identity/catalog data, history, audit
-storage, REST, MCP or CLI versioning. U-003 remains responsible for refresh and
-staleness policy. M2 decisions remain responsible for scarcity and selection.
+storage, REST, MCP or CLI versioning. Refresh and staleness policy belongs to
+the application layer; scarcity and selection behavior belongs to
+`docs/selection-policy.md`.
 
 ## Scenario Validation
 
