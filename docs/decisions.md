@@ -1529,10 +1529,11 @@ decision.
   External catalog authors must explicitly calibrate/encode effort for
   reasoning-capable entries; legacy absent effort is not inferred from v1
   variant strings. Null/absent remains valid for false/unknown reasoning
-  support. There is no automatic legacy catalog conversion. Model-policy v5
-  fields and profile minima are unchanged; only its descriptive
-  `reasoning_effort_policy.selector_support` status is corrected to
-  `calibrated_configurations` without a policy contract/version change.
+  support. There is no automatic legacy catalog conversion. Model-policy schema
+  remains v1; compatible policy content advances to policy_version 6 because
+  `reasoning_effort_policy.selector_support` changed from `not_implemented` to
+  `calibrated_configurations`; task profiles, calibrated minima, workflow
+  assignments and other policy semantics remain unchanged.
 - **Machine compatibility:** CLI JSON, SelectionDecision/CandidateEvaluation
   field sets, REST paths and v1 envelopes, MCP tools/input schemas and errors
   remain unchanged. Selection exposes the configured identity variant;

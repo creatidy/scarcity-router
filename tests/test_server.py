@@ -385,7 +385,7 @@ class SelectTests(ServerTestCase):
     def test_profile_path(self) -> None:
         decision = self._select({"profile_id": "routine_coding"})
         self.assertEqual("routine_coding", decision["profile_id"])
-        self.assertEqual(5, decision["profile_policy_version"])
+        self.assertEqual(6, decision["profile_policy_version"])
         self.assertEqual("balanced", decision["selector_mode"])
         selected = cast("dict[str, object]", decision["selected"])
         identity = cast("dict[str, object]", selected["identity"])

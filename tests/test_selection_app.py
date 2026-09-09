@@ -166,7 +166,7 @@ class SelectCommandTests(unittest.TestCase):
         self.assertEqual(0, code)
         decision = cast("dict[str, object]", json.loads(out))
         self.assertEqual("routine_coding", decision["profile_id"])
-        self.assertEqual(5, decision["profile_policy_version"])
+        self.assertEqual(6, decision["profile_policy_version"])
         self.assertEqual("balanced", decision["selector_mode"])
         self.assertEqual(["selected_balanced"], decision["reason_codes"])
         selected = cast("dict[str, object]", decision["selected"])

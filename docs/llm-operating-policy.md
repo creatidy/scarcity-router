@@ -259,9 +259,11 @@ configurations, not arbitrary dynamic effort generation. The selector compares
 known capacity, scarcity penalty, capability margin, lowest configured effort,
 preference and identity in that order after all eligibility gates. Effort comes
 from the catalog field, never from opaque variants. Existing GLM Max, Luna Max,
-Sol High and Flash Max capability vectors remain unchanged. The descriptive
-policy v5 support status now says `calibrated_configurations`; policy fields,
-profile minima and dated reference assignments are unchanged.
+Sol High and Flash Max capability vectors remain unchanged. The model-policy
+schema remains v1; compatible policy content is policy_version 6 because
+`reasoning_effort_policy.selector_support` changed from `not_implemented` to
+`calibrated_configurations`. Task profiles, profile minima and dated reference
+assignments are unchanged.
 
 ## Concurrency
 

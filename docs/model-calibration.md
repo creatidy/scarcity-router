@@ -3,9 +3,12 @@
 ## Catalog v2 correction (D-032)
 
 Issue #57 adds three separately calibrated invocation configurations on
-2026-09-08. Catalog version is now 2; model-policy remains v5 with unchanged
-profile minima. The original M2c record below remains historical provenance,
-not a claim that its four-entry eligible sets are still the entire catalog.
+2026-09-08. Catalog version is now 2; model-policy schema remains v1 and its
+compatible policy content advances to policy_version 6 because
+`reasoning_effort_policy.selector_support` changed from `not_implemented` to
+`calibrated_configurations`. Task-profile minima remain unchanged. The original
+M2c record below remains historical provenance, not a claim that its four-entry
+eligible sets are still the entire catalog.
 
 | Configuration | reasoning | coding | scientific_methodological | writing_editorial | tool_use | translation_multilingual |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
