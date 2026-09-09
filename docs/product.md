@@ -48,7 +48,7 @@ interfaces rather than forcing model traffic through the broker.
 - continuous scarcity, reservation and preference policies;
 - model recommendation, ranked alternatives and explanation;
 - simulation of capacity and policy states;
-- CLI first, followed by REST and MCP over the same core;
+- CLI, REST and MCP over the same authoritative core;
 - a minimal local dashboard and integration recipes after the core is useful.
 
 ## Explicit non-goals

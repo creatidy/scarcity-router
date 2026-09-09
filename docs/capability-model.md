@@ -56,9 +56,9 @@ high reasoning, strong `tool_use`, meaningful `writing_editorial` and adequate
 hard context/output requirements until routing experiments show that a new
 dimension is necessary.
 
-This six-dimension set is the frozen M2 vocabulary. No orchestration dimension
-and no factuality/reliability dimension is added yet; a new dimension requires
-a demonstrated routing need and an explicit contract change.
+This six-dimension set is the current vocabulary. No orchestration dimension
+and no factuality/reliability dimension is included; a new dimension requires a
+demonstrated routing need and an explicit contract change.
 
 ## Capability rating scale
 
@@ -82,13 +82,12 @@ forbidden. The intended rubric is approximately:
 
 These are routing rubrics, not scientific measurements. The accepted
 per-model ratings are curated in [`model-catalog.json`](../model-catalog.json)
-with full provenance (M2c, D-025) and documented in
+with full provenance and documented in
 [`docs/model-calibration.md`](model-calibration.md).
 
 ## TaskRequirement contract
 
-M2 freezes the conceptual task-requirement contract. A `TaskRequirement` has
-exactly four distinguishable parts:
+The task-requirement contract has exactly four distinguishable parts:
 
 1. **Task level** — `L0`–`L5` as defined above, supplied explicitly or as a
    profile-provided default. It is not a capability score and never generates
@@ -108,17 +107,13 @@ Explicit task inputs may tighten a profile expansion (raise a minimum, add a
 constraint) but never silently loosen it, and contradictory explicit
 requirements are a validation error, never heuristically resolved.
 
-**Implemented stored shape (M2b, D-024).** The core type
-(`scarcity_router/selection_types.py`) is a resolved requirement storing
-exactly the first three parts — `task_level`, `capability_minima` and
-`hard_constraints`. Profile expansion is a *construction pathway* into those
-three parts, not a fourth serialized field. M2c (D-025) implemented the
-expansion mechanism and the calibrated profile definitions:
-`TaskProfileDefinition.to_requirement()` and the authoritative
-`TaskProfileCatalog.resolve(profile_id)` return exactly the calibrated stored
-requirement — pure, with no capability inference, no model lookup and no
-merge with explicit task inputs (that merge belongs to later selector input
-assembly).
+The core type (`scarcity_router/selection_types.py`) stores exactly the first
+three parts — `task_level`, `capability_minima` and `hard_constraints`.
+Profile expansion is a *construction pathway* into those three parts, not a
+fourth serialized field. `TaskProfileDefinition.to_requirement()` and
+`TaskProfileCatalog.resolve(profile_id)` return the calibrated stored
+requirement as a pure operation, with no capability inference, model lookup or
+merge with explicit task inputs.
 
 The canonical machine-readable definitions for capability classes, profile
 vocabulary, class/profile relationships and current workflow exemplars live in
@@ -153,7 +148,7 @@ efforts are deferred until independently calibrated, not generated from defaults
 
 External catalog authors migrate explicitly to v2 by encoding reviewed effort
 values; legacy absent effort for reasoning-capable entries fails validation
-rather than being guessed from variants. M3 machine-interface v1 identity and
+rather than being guessed from variants. Machine-interface v1 identity and
 decision field sets remain unchanged: current variants identify configurations,
 and the versioned catalog supplies explicit effort for reconstruction. An
 explicit effort field in public decisions is deferred to a future v2 interface.
@@ -165,7 +160,7 @@ not establish capability ratings, capacity bindings or selector eligibility.
 ## Hard constraints
 
 Hard constraints are categorical or numeric requirements, not quality scores.
-The initial M2 vocabulary is exactly:
+The current vocabulary is exactly:
 
 | Constraint | Meaning |
 | --- | --- |
@@ -183,7 +178,7 @@ There is no local/cloud constraint and no local runtime after D-017, and no
 generic free-form constraint framework: a new constraint kind requires an
 explicit contract change, not a stringly-typed escape hatch.
 
-**Implemented typing (M2b, D-024).** `required_model` is a typed `ModelRef`
+The typed representation uses a `ModelRef` for `required_model`
 (`provider`, `model`) rather than one qualified string, so the contradiction
 rule is validated, not parsed: when `required_provider` and
 `required_model.provider` are both supplied they must match exactly, or
@@ -233,8 +228,8 @@ deep_coding:
 
 This example shows structure, not accepted ratings or final file syntax.
 The accepted numeric minima are calibrated per profile as
-`calibrated_requirement` in [`model-policy.json`](../model-policy.json)
-(M2c, D-025) and verified through capability-only scenario tests.
+`calibrated_requirement` in [`model-policy.json`](../model-policy.json) and
+verified through capability-only scenario tests.
 Advanced clients may supply raw
 capability minima and hard constraints directly.
 Profile definitions must live in one catalog/config source, not duplicated in
@@ -282,8 +277,8 @@ Each entry carries, conceptually:
   bindings are explicit normalized data, never derived from diagnostic window
   identifiers.
 
-**Implemented semantics (M2b, D-024).** The core types in
-`scarcity_router/selection_types.py` enforce these rules at construction:
+The core types in `scarcity_router/selection_types.py` enforce these rules at
+construction:
 
 - A known rating (`1..5`) requires complete provenance — at least one
   evidence reference, a coarse `low|medium|high` confidence, an assessment
@@ -303,9 +298,9 @@ Each entry carries, conceptually:
   never serve as an optimistic "unmetered" state. Known bindings are unique,
   use the model's own provider and serialize deterministically;
   cross-provider bindings are unsupported in the initial contract (D-024).
-- The catalog container enforces unique identities, admits an empty catalog
-  (the M2b contract precedes the M2c population) and serializes entries
-  sorted by `(provider, model, variant)` independent of insertion order.
+- The catalog container enforces unique identities, permits an empty catalog
+  when no entries are configured, and serializes entries sorted by
+  `(provider, model, variant)` independent of insertion order.
 
 The accepted values are established as reviewable artifacts:
 [`model-catalog.json`](../model-catalog.json) for ratings, provenance and
