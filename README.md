@@ -113,6 +113,10 @@ The installed process configuration recipe is
 - `scarcity_select` — a recommendation for a profile or explicit requirement;
 - `scarcity_simulate` — a recommendation with typed simulation overrides.
 
+The [agent routing prompt](examples/agent-routing-prompt.md) explains how to
+use Scarcity Router for dynamic model assignment: the MCP recipe answers how to
+connect it, while the prompt answers when and how an agent should use it.
+
 The tools call the same application/core as the CLI and REST interface. They
 use stdio, accept no credentials or provider endpoints, and never execute
 inference. Envelopes are defined in
@@ -163,6 +167,8 @@ rules and historical evidence remain available without being part of onboarding.
 - This README — quick start, capacity checks, selection and MCP.
 - [`examples/mcp-stdio.json`](examples/mcp-stdio.json) — installed MCP process
   configuration recipe.
+- [`examples/agent-routing-prompt.md`](examples/agent-routing-prompt.md) —
+  copy-paste instructions for dynamic agent model routing.
 
 ### UNDERSTAND IT
 
