@@ -198,6 +198,55 @@ Current provider mappings (adapter evidence, not universal constants):
   A structurally valid but unevidenced provider `type` keeps `scope_id`
   unknown (`None`) and its raw type text never becomes a scope.
 
+### Astra Onboarding Gate (Issue #49)
+
+The 2026-09-09 evidence gate (D-033) does **not** add Astra to the catalog.
+`ASTRA_ONBOARDING_READY = NO` and
+`ONBOARDING_REQUIRES_PLAN_APPLICABILITY_EXTENSION`.
+
+| Question | Evidence and decision |
+| --- | --- |
+| A. Is Astra Work/Codex usage part of the shared allowance? | Yes. Official Work/Codex and Astra usage guidance explicitly say so. Ordinary Chat GPT-6 Pro limits are separate and must not be imported into this scope. |
+| B. Does repository telemetry expose that allowance as `openai/codex`? | Yes. The validated main `limitId = codex` is normalized to this exact scope; a current status read confirms its presence. This establishes a shared constraint, not completeness of an Astra binding. |
+| C. Is an additional Astra-specific constraining scope evidenced? | Unresolved. One additional normalized scope was observed, but neither that observation nor existing project evidence establishes Astra applicability. No private ID is recorded, and absence of an identified Astra scope is not evidence of no additional constraint. |
+| D. Is a plan-dependent Astra limit unrepresented? | The documented limited-Astra semantics for Plus/Business Standard have no evidenced complete mapping into current telemetry. Static catalog bindings and informational `plan` do not represent model-specific plan/seat/access applicability. |
+| E. Can current bindings represent Astra honestly across supported plans? | No, not from this evidence packet. A codex-only entry would claim completeness without resolving D. Generic onboarding is blocked, irrespective of the owner's current account. |
+
+Official [Work and Codex guidance](https://help.openai.com/en/articles/20001275)
+(accessed 2026-09-09) distinguishes Pro $100/$200 and Business Premium, which
+can use their full existing allowance for Astra, from Plus/Business Standard,
+which have limited Astra usage within that allowance. It also requires Codex
+CLI 0.153.0 or newer for Astra and documents workspace access controls.
+Successful capacity collection is not proof that an execution client supports
+Astra or that a particular workspace grants access. The observed normalized
+`prolite` label is not mapped by guess to a public price tier or seat type.
+
+One `uv run python -m scarcity_router status --json` observation on 2026-09-09
+was piped directly through an allowlisted structural `jq` projection before
+inspection, without retaining the full output. OpenAI returned `ok`, schema 3,
+plan `prolite`, main `codex` present with a weekly window, one additional scope,
+five-hour/weekly kinds overall and zero unscoped windows. Z.ai returned `ok`,
+schema 3, with five-hour/weekly/unknown kinds. No model request was issued;
+collection retains the existing bounded D-018 auth-recovery semantics. No
+personal percentages, reset instants, window IDs or non-public scope IDs are
+recorded. This is structural reconnaissance, not Astra live acceptance.
+
+Implementation evidence: `parse_codex_rate_limits_result` preserves validated
+`rateLimitsByLimitId` buckets, discards `normalModelSlug`/`limitName` as identity
+sources and exposes validated `planType` only as informational `plan`.
+`ModelCatalogEntry` has static exact scope bindings; `assess_scarcity` matches
+those scopes without reading plan. An additional binding could constrain a
+candidate only after its applicability is evidenced. No collector parsing,
+private identifier commitment, plan inference or capacity-v3 change is made.
+
+The [Astra usage guide](https://help.openai.com/en/articles/20001516-managing-usage-with-gpt-6-astra-in-work-and-codex)
+also confirms that switching models does not restore shared allowance. Model,
+effort, input/output size and Fast mode affect consumption. Estimated local
+message ranges differ across Astra, Sol, Terra and Luna, but are explicitly not
+fixed message limits or per-task coefficients. Current scarcity measures
+observed remaining subscription capacity, not predicted marginal consumption;
+no synthetic multiplier, API-price penalty or quota deduction is justified.
+
 ### Percentage Invariant
 
 `used_percent` and `remaining_percent` are a pair: both are present or both are

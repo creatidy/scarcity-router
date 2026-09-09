@@ -44,6 +44,12 @@ CLI/REST/MCP machine-interface v1 shapes remain unchanged; variants remain
 opaque configuration identifiers, never parsed for effort. This is not M4 or
 Astra onboarding, and historical M3 PASS evidence is unchanged.
 
+Astra Low's evidence gate (issue #49, D-033) is **blocked**, not onboarded.
+The shared Work/Codex allowance is evidenced, but complete plan-dependent
+capacity applicability is not. Catalog v2 and policy v6 remain unchanged. See
+the [capacity decision matrix](docs/capacity-model.md#astra-onboarding-gate-issue-49)
+and [conditional calibration evidence](docs/model-calibration.md#astra-low-evidence-gate-issue-49).
+
 ## Repository
 
 Canonical development:
