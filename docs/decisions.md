@@ -1474,6 +1474,78 @@ decision.
   [`docs/m3-acceptance.md`](m3-acceptance.md); this milestone acceptance does
   not create a new decision number.
 
+### D-032 - Reasoning-effort-aware model configurations
+
+- **Status:** Accepted by explicit owner/architect assignment, issue #57
+- **Date:** 2026-09-08
+- **Supersedes:** D-027's ranking order only by inserting effort after capability
+  margin; D-025's four-entry catalog scope by adding three calibrated
+  configurations; D-029's implementation-status claim that effort-aware
+  selection is not implemented. Historical M2/M3 acceptance remains unchanged.
+- **Contract:** Catalog v2 adds explicit `ModelCatalogEntry.reasoning_effort`:
+  `none < low < medium < high < xhigh < max`. Null/absent is no configured
+  value (not applicable or support unknown), not the real string setting
+  `"none"`. Construction and deserialization reject unknown values, require
+  effort when reasoning support is true, and require null/absent when support
+  is false or unknown. No provider-specific validation or inference from
+  display names, model names or variants is permitted.
+- **Identity:** `ModelIdentity(provider, model, variant)` is unchanged. Variant
+  remains an opaque stable configuration identifier, never parsed for effort.
+  The current catalog deliberately uses readable effort spellings as variants;
+  only the explicit catalog field supplies semantics.
+- **Calibration:** Capabilities belong to an invocation configuration. No
+  automatic cloning across efforts is allowed. Preserve all accepted Luna Max,
+  Sol High and GLM vectors and explicitly encode their max/high/max/max effort.
+  Add exactly Luna Medium `(3,4,3,5,5,4)`, Terra Medium `(4,5,4,4,5,4)` and
+  Sol Medium `(5,5,4,5,5,4)` in reasoning/coding/scientific/writing/tool/translation
+  order. These initial effort-specific judgments use medium confidence and
+  dated owner calibration evidence, not invented benchmark precision.
+- **Evidence:** The architect supplied accepted official facts using existing
+  source identifiers `https://openai.com/index/gpt-5-6/` (2026-07-09 launch)
+  and `https://developers.openai.com/api/docs/models`. Luna is cost-sensitive,
+  Terra balanced intelligence/cost, Sol flagship complex-professional work;
+  family coding, professional, science/health and long-context evidence places
+  Terra between Luna and Sol. All three support the six normalized efforts,
+  with Medium the API default; Sol remains very strong at Medium. This task
+  accepts the supplied evidence, not a newly performed benchmark or web audit.
+  Developer-source dates of 2026-09-08 record this supplied evidence review.
+  `accepted_reasoning_effort_calibration_2026-09-08_issue_57_D-032` identifies
+  the owner-approved vectors and rationing direction in issue #57 and this
+  decision. Terra's evidenced properties are 1,050,000 input tokens, 128,000
+  output tokens, tools/vision/reasoning true and `openai/codex` applicability.
+- **Ranking:** After unchanged eligibility and reservation gates, compare
+  known capacity before degraded unknown, scarcity penalty, capability margin,
+  lowest reasoning effort, explicit preference, then stable identity. Unknown
+  or non-applicable effort uses an explicit typed comparison state after known
+  effort, with no numeric intensity or magic sentinel. It never ranks cheaper
+  than `none`. No effort can rescue a capability failure or override scarcity
+  or capability margin. Unrequired capability dimensions still do not count.
+- **Capacity:** Model capability, reasoning intensity and subscription capacity
+  scarcity are independent. All five OpenAI configurations share the observed
+  `openai/codex` assessment. No effort-specific quota bucket, fake percentage,
+  penalty multiplier or API-price cost is invented. Capacity v3, collectors,
+  matching, scarcity formula, reservations and replenishment are unchanged.
+- **Versioning and migration:** Catalog version becomes 2, updated 2026-09-08.
+  External catalog authors must explicitly calibrate/encode effort for
+  reasoning-capable entries; legacy absent effort is not inferred from v1
+  variant strings. Null/absent remains valid for false/unknown reasoning
+  support. There is no automatic legacy catalog conversion. Model-policy schema
+  remains v1; compatible policy content advances to policy_version 6 because
+  `reasoning_effort_policy.selector_support` changed from `not_implemented` to
+  `calibrated_configurations`; task profiles, calibrated minima, workflow
+  assignments and other policy semantics remain unchanged.
+- **Machine compatibility:** CLI JSON, SelectionDecision/CandidateEvaluation
+  field sets, REST paths and v1 envelopes, MCP tools/input schemas and errors
+  remain unchanged. Selection exposes the configured identity variant;
+  reconstruct effort ordering with the decision's versioned catalog and
+  structured margin/scarcity evaluations. No new prose-only explanation
+  subsystem or explicit public effort field is added; that is future v2 work.
+- **Boundary:** No other effort configurations are calibrated; API defaults
+  never auto-populate entries. Astra remains deferred to independent issue #49.
+  No M4, execution, model dispatch, local inference or new architecture.
+  One implementation session, no internal reviewer loop; a human freezes the
+  PR head for one independent external review and remains the merge gate.
+
 ## Unresolved decisions
 
 ### U-001 — Codex binary discovery and compatibility

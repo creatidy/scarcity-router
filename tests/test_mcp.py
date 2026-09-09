@@ -452,6 +452,40 @@ class StatusTests(McpTestCase):
 
 
 class SelectTests(McpTestCase):
+    def test_five_effort_profiles_match_direct_cli_rest_and_mcp_v1(self) -> None:
+        application = self._application(collectors=_collectors(zai_weekly=0))
+        catalog, profiles, version = load_configured_artifacts(CATALOG_PATH, POLICY_PATH)
+        harness = self._rest(application)
+        expected = {
+            "routine_coding": ("gpt-5.6-luna", "medium"),
+            "deep_coding": ("gpt-5.6-terra", "medium"),
+            "scientific_review": ("gpt-5.6-sol", "high"),
+            "orchestration": ("gpt-5.6-luna", "max"),
+            "translation": ("gpt-5.6-sol", "high"),
+        }
+        for profile_id, (model, variant) in expected.items():
+            with self.subTest(profile_id=profile_id):
+                direct = select_from_inputs(
+                    catalog=catalog, profiles=profiles, profile_policy_version=version,
+                    profile_id=profile_id, requirement=None, tightening=None, policy=None,
+                    replenishment_states=(), collectors=application.collectors,
+                    clock=application.clock,
+                )
+                assert direct.selected is not None
+                self.assertEqual(direct.selected.identity.to_dict(), {
+                    "provider": "openai", "model": model, "variant": variant,
+                })
+                cli = self._cli_json(application, ["select", "--profile", profile_id, "--json"])
+                status, rest = _rest_request(harness, "POST", "/v1/select", {"profile_id": profile_id})
+                self.assertEqual(200, status)
+                result = self._call(application, "scarcity_select", {"profile_id": profile_id})
+                self.assertFalse(result.is_error)
+                envelope = {"schema_version": 1, "decision": direct.to_dict()}
+                self.assertEqual(direct.to_dict(), cli)
+                self.assertEqual(envelope, rest)
+                self.assertEqual(envelope, cast(dict[str, object], result.structured_content))
+                self.assertEqual(envelope, _text_payload(result))
+
     def test_profile_and_explicit_requirement_paths(self) -> None:
         application = self._application()
         profile_result = self._call(

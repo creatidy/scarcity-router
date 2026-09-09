@@ -160,6 +160,18 @@ independence, durable checkpoint and provenance rules. GPT-6 Astra selector
 onboarding remains deferred pending capability and capacity evidence; there is
 no M3 scope change and M3b/M3c remain separate implementation work.
 
+**Post-M3 selector correction (2026-09-08, issue #57, D-032).** Catalog v2
+adds explicit validated reasoning effort and exactly Luna Medium, Terra Medium
+and Sol Medium, preserving the four accepted vectors and all profile minima.
+The selector inserts effort after scarcity and capability margin, before
+preference and identity; OpenAI configurations still share one `codex` scope.
+With OpenAI available and Z.ai exhausted, deterministic outcomes are Luna
+Medium (routine coding), Terra Medium (deep coding), Sol High (scientific
+review and translation), and Luna Max (orchestration). Machine-interface v1
+remains unchanged. This correction awaits human review/integration; it does
+not reopen or rewrite historical M3 PASS evidence, start M4 or onboard Astra.
+Issue #49 remains independent.
+
 ## M0 — Repository foundation
 
 **Outcome:** A new contributor or agent can understand the product and begin M1

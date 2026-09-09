@@ -50,6 +50,15 @@ curated multidimensional capabilities. Profiles map stable task names to
 requirements. Catalog data is versioned and human-reviewable; it does not read
 runtime quota.
 
+Catalog v2 (D-032) adds explicit normalized `reasoning_effort` per calibrated
+invocation configuration. Model capability, reasoning intensity and subscription
+scarcity are separate inputs: configurations do not inherit vectors from sibling
+efforts or invent separate quota buckets. `ModelIdentity` remains the same
+provider/model/opaque-variant triple. Selector ranking reads catalog effort
+directly after scarcity and capability margin, before preference and identity;
+no interface parses variant to infer effort. Null is unconfigured, distinct from
+the real `"none"` effort setting. M3 decision/envelope schemas remain v1 unchanged.
+
 ### Policy
 
 Contains default scarcity behavior, reservation rules, preference modes and

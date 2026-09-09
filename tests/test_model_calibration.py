@@ -1,7 +1,7 @@
 """M2c calibration acceptance tests (D-025).
 
 These tests pin the accepted curated content of the frozen M2a/M2b contracts:
-the four-model catalog artifact, its provenance, the calibrated task profiles
+the seven-configuration catalog v2 artifact, its provenance, the calibrated task profiles
 in ``model-policy.json`` and the pure profile-expansion mechanism. They use a
 TEST-ONLY capability-sufficiency helper (every specified minimum must pass
 against ``effective_rating``; unknown ratings fail) to prove the calibration's
@@ -34,17 +34,34 @@ CATALOG_PATH = REPO / "model-catalog.json"
 POLICY_PATH = REPO / "model-policy.json"
 
 ASSESSED_ON = "2026-09-06"
-POLICY_UPDATED_ON = "2026-09-07"
+EFFORT_ASSESSED_ON = "2026-09-08"
+POLICY_UPDATED_ON = "2026-09-08"
 
 LUNA = ("openai", "gpt-5.6-luna", "max")
 SOL = ("openai", "gpt-5.6-sol", "high")
 GLM53 = ("zai", "glm-5.3", "max")
 FLASH = ("zai", "glm-5.3-flash", "max")
-ALL_MODELS = frozenset({LUNA, SOL, GLM53, FLASH})
+LUNA_MEDIUM = ("openai", "gpt-5.6-luna", "medium")
+TERRA_MEDIUM = ("openai", "gpt-5.6-terra", "medium")
+SOL_MEDIUM = ("openai", "gpt-5.6-sol", "medium")
+NEW_CONFIGURATIONS = frozenset({LUNA_MEDIUM, TERRA_MEDIUM, SOL_MEDIUM})
+ALL_MODELS = frozenset({LUNA, SOL, GLM53, FLASH}) | NEW_CONFIGURATIONS
 
 # The accepted initial calibration (D-025). Ratings describe routing
 # suitability in the owner's workflow; they are not benchmark percentiles.
 ACCEPTED_RATINGS: dict[tuple[str, str, str], dict[str, int]] = {
+    LUNA_MEDIUM: {
+        "reasoning": 3, "coding": 4, "scientific_methodological": 3,
+        "writing_editorial": 5, "tool_use": 5, "translation_multilingual": 4,
+    },
+    TERRA_MEDIUM: {
+        "reasoning": 4, "coding": 5, "scientific_methodological": 4,
+        "writing_editorial": 4, "tool_use": 5, "translation_multilingual": 4,
+    },
+    SOL_MEDIUM: {
+        "reasoning": 5, "coding": 5, "scientific_methodological": 4,
+        "writing_editorial": 5, "tool_use": 5, "translation_multilingual": 4,
+    },
     LUNA: {
         "reasoning": 4,
         "coding": 4,
@@ -128,16 +145,25 @@ ACCEPTED_MODEL_VERSION_DATES: dict[tuple[str, str, str], str] = {
     FLASH: "2026-08-26",
 }
 
+for configuration in NEW_CONFIGURATIONS:
+    ACCEPTED_HARD_PROPERTIES[configuration] = {
+        "input_context_tokens": 1_050_000, "output_tokens": 128_000,
+        "supports_tool_use": True, "supports_vision": True,
+        "supports_reasoning_mode": True,
+    }
+    ACCEPTED_BINDINGS[configuration] = {("openai", "codex")}
+    ACCEPTED_MODEL_VERSION_DATES[configuration] = "2026-07-09"
+
 # Capability-only eligible sets (ignoring scarcity, capacity and policy):
 # which calibrated models satisfy every profile minimum.
 ACCEPTED_ELIGIBLE_SETS: dict[str, frozenset[tuple[str, str, str]]] = {
     "mechanical": frozenset(ALL_MODELS),
     "routine_coding": frozenset(ALL_MODELS),
-    "deep_coding": frozenset({SOL, GLM53}),
+    "deep_coding": frozenset({TERRA_MEDIUM, SOL_MEDIUM, SOL, GLM53}),
     "scientific_review": frozenset({SOL}),
-    "editorial": frozenset({LUNA, SOL}),
-    "general_reasoning": frozenset(ALL_MODELS),
-    "orchestration": frozenset({LUNA, SOL}),
+    "editorial": frozenset({LUNA_MEDIUM, LUNA, SOL_MEDIUM, SOL}),
+    "general_reasoning": ALL_MODELS - {LUNA_MEDIUM},
+    "orchestration": frozenset({LUNA, SOL_MEDIUM, SOL}),
     "translation": frozenset({SOL}),
 }
 
@@ -246,10 +272,11 @@ _PROFILES = _policy_profile_entries()
 
 class ModelCatalogCalibration(unittest.TestCase):
     def test_catalog_parses_with_accepted_version_and_dates(self) -> None:
-        self.assertEqual(_CATALOG.catalog_version, 1)
-        self.assertEqual(_CATALOG.updated_on, ASSESSED_ON)
+        self.assertEqual(_CATALOG.catalog_version, 2)
+        self.assertEqual(_CATALOG.updated_on, EFFORT_ASSESSED_ON)
         for entry in _CATALOG.entries:
-            self.assertEqual(entry.last_reviewed_on, ASSESSED_ON)
+            identity = (entry.identity.provider, entry.identity.model, entry.identity.variant)
+            self.assertEqual(entry.last_reviewed_on, EFFORT_ASSESSED_ON if identity in NEW_CONFIGURATIONS else ASSESSED_ON)
             self.assertEqual(
                 entry.model_version_date,
                 ACCEPTED_MODEL_VERSION_DATES[
@@ -258,14 +285,14 @@ class ModelCatalogCalibration(unittest.TestCase):
             )
             self.assertIsNone(entry.model_version)
 
-    def test_exactly_four_accepted_identities(self) -> None:
-        self.assertEqual(len(_CATALOG.entries), 4)
+    def test_exactly_seven_accepted_identities(self) -> None:
+        self.assertEqual(len(_CATALOG.entries), 7)
         self.assertEqual(set(_BY_IDENTITY), set(ALL_MODELS))
 
     def test_no_additional_model_slipped_into_catalog(self) -> None:
         for identity, entry in _BY_IDENTITY.items():
             serialized = json.dumps(entry.to_dict()).lower()
-            for forbidden in ("astra", "terra", "claude", "gemini", "kimi", "deepseek", "ollama"):
+            for forbidden in ("astra", "claude", "gemini", "kimi", "deepseek", "ollama"):
                 self.assertNotIn(forbidden, serialized, identity)
 
     def test_exact_rating_matrix(self) -> None:
@@ -277,6 +304,24 @@ class ModelCatalogCalibration(unittest.TestCase):
                     expected[dimension],
                     f"{identity}.{dimension}",
                 )
+
+    def test_explicit_efforts_and_new_configuration_provenance(self) -> None:
+        efforts = {LUNA: "max", SOL: "high", GLM53: "max", FLASH: "max",
+                   LUNA_MEDIUM: "medium", TERRA_MEDIUM: "medium", SOL_MEDIUM: "medium"}
+        for identity, expected in efforts.items():
+            self.assertEqual(_BY_IDENTITY[identity].reasoning_effort, expected)
+        for identity in NEW_CONFIGURATIONS:
+            entry = _BY_IDENTITY[identity]
+            for assessment in _assessments(entry.capabilities).values():
+                self.assertEqual(assessment.confidence, "medium")
+                self.assertIn(
+                    "accepted_reasoning_effort_calibration_2026-09-08_issue_57_D-032",
+                    {ref.identifier for ref in assessment.evidence},
+                )
+            sources = {ref.identifier for assessment in _assessments(entry.capabilities).values()
+                       for ref in assessment.evidence}
+            self.assertIn("https://openai.com/index/gpt-5-6/", sources)
+            self.assertIn("https://developers.openai.com/api/docs/models", sources)
 
     def test_exact_hard_property_matrix(self) -> None:
         for identity, expected in ACCEPTED_HARD_PROPERTIES.items():
@@ -313,7 +358,7 @@ class ModelCatalogCalibration(unittest.TestCase):
         serialized_flash = flash.hard_properties.to_dict()
         self.assertEqual(serialized_flash.get("output_tokens"), 128_000)
         # Known properties on all entries remain explicit.
-        for identity in (LUNA, SOL, GLM53, FLASH):
+        for identity in ALL_MODELS:
             props = _BY_IDENTITY[identity].hard_properties
             self.assertTrue(props.supports_tool_use)
             self.assertTrue(props.supports_reasoning_mode)
@@ -331,7 +376,7 @@ class ModelCatalogCalibration(unittest.TestCase):
                 self.assertEqual(binding.provider, entry.identity.provider)
 
     def test_no_additional_openai_scope_recorded(self) -> None:
-        for identity in (LUNA, SOL):
+        for identity in {LUNA, SOL} | NEW_CONFIGURATIONS:
             bindings = _BY_IDENTITY[identity].capacity_bindings
             assert bindings is not None
             scope_ids = {b.scope_id for b in bindings}
@@ -350,7 +395,7 @@ class ModelCatalogCalibration(unittest.TestCase):
                 self.assertIn(assessment.rating, range(1, 6))
                 self.assertTrue(assessment.evidence, dimension)
                 self.assertIn(assessment.confidence, ("low", "medium", "high"))
-                self.assertEqual(assessment.assessed_on, ASSESSED_ON, dimension)
+                self.assertEqual(assessment.assessed_on, entry.last_reviewed_on, dimension)
                 self.assertTrue(assessment.rationale)
                 for ref in assessment.evidence:
                     self.assertIn(
@@ -390,7 +435,7 @@ class TaskProfileCalibration(unittest.TestCase):
     def test_policy_version_incremented_and_calibrated(self) -> None:
         policy = _load_policy()
         self.assertEqual(policy["schema_version"], 1)
-        self.assertEqual(policy["policy_version"], 5)
+        self.assertEqual(policy["policy_version"], 6)
         self.assertEqual(policy["updated_at"], POLICY_UPDATED_ON)
         task_policy = _mapping(policy["task_profile_policy"], "task_profile_policy")
         self.assertTrue(task_policy["numeric_minima_included"])

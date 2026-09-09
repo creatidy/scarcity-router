@@ -127,13 +127,36 @@ model and selector-facing rules; it does not duplicate that policy artifact.
 
 ## Reasoning effort and selector identity
 
-The operating policy treats reasoning effort as a routing parameter and
-requires the lowest effort that reliably satisfies the task. Current
-Scarcity Router selection, however, evaluates fixed provider/model/variant
-identities from `model-catalog.json`; it does not dynamically optimize
-reasoning effort. Effort-aware selection requires a separate evidence and
-design decision. Current calibrated entries (`max` for GLM-5.3, Luna and
-Flash; `high` for Sol) and the selector contract are unchanged by this policy.
+Catalog v2 (D-032) represents calibrated invocation configurations with an
+explicit `reasoning_effort: str | null` field, independently of capability
+ratings and subscription capacity. The normalized order is
+`none < low < medium < high < xhigh < max`. String `"none"` is a real effort
+setting; null/absent means no configured effort, never zero intensity.
+
+Construction and deserialization validate the vocabulary. Reasoning support
+`true` requires known effort; `false` or unknown support requires null/absent
+effort. These rules are provider-independent. Neither model/display names nor
+`identity.variant` supply effort semantics. Variant remains an opaque stable
+configuration identifier. Capabilities are curated separately per configuration;
+Sol Medium does not automatically inherit Sol High's vector.
+
+Selection uses lowest effort only after capability sufficiency, capacity and
+reservation eligibility, scarcity penalty and capability margin. Unconfigured
+effort sorts after known effort in a separate typed state, not a magic numeric
+sentinel. All current selectable reasoning-capable entries have known effort.
+
+The exact initial additions are Luna Medium, Terra Medium and Sol Medium;
+existing Luna Max, Sol High and both GLM Max vectors are preserved. All five
+OpenAI configurations consume the same evidenced `openai/codex` scope. No
+effort-specific quota penalty or API-price metric exists. Other supported API
+efforts are deferred until independently calibrated, not generated from defaults.
+
+External catalog authors migrate explicitly to v2 by encoding reviewed effort
+values; legacy absent effort for reasoning-capable entries fails validation
+rather than being guessed from variants. M3 machine-interface v1 identity and
+decision field sets remain unchanged: current variants identify configurations,
+and the versioned catalog supplies explicit effort for reconstruction. An
+explicit effort field in public decisions is deferred to a future v2 interface.
 
 Reference role assignments can name a model or effort setting that is not yet
 in the active catalog. Such assignments are descriptive metadata only and do
@@ -228,6 +251,7 @@ selection.
 The initial catalog is restricted to the models in the real workflow:
 
 - GPT-5.6 Luna;
+- GPT-5.6 Terra;
 - GPT-5.6 Sol;
 - GLM-5.3;
 - GLM-5.3-Flash.
@@ -240,6 +264,8 @@ Each entry carries, conceptually:
   stable and separate from the display name, the provider quota bucket,
   provider-internal aliases and the descriptive model class. Model class never
   becomes identity.
+- **Configured reasoning effort** - the explicit normalized invocation setting,
+  not capability, identity parsing or subscription scarcity.
 - **Supported hard properties** — tool use, vision, reasoning mode and privacy
   characteristics the entry can honestly claim.
 - **Input context allowance and output allowance** — what the subscription

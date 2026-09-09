@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import cast
@@ -96,13 +97,17 @@ def _load_profiles() -> TaskProfileCatalog:
 
 CATALOG = _load_catalog()
 PROFILES = _load_profiles()
-BY_MODEL = {
-    (entry.identity.provider, entry.identity.model): entry for entry in CATALOG.entries
+BY_IDENTITY = {
+    (entry.identity.provider, entry.identity.model, entry.identity.variant): entry
+    for entry in CATALOG.entries
 }
-LUNA = BY_MODEL[("openai", "gpt-5.6-luna")]
-SOL = BY_MODEL[("openai", "gpt-5.6-sol")]
-GLM53 = BY_MODEL[("zai", "glm-5.3")]
-FLASH = BY_MODEL[("zai", "glm-5.3-flash")]
+LUNA = BY_IDENTITY[("openai", "gpt-5.6-luna", "max")]
+SOL = BY_IDENTITY[("openai", "gpt-5.6-sol", "high")]
+GLM53 = BY_IDENTITY[("zai", "glm-5.3", "max")]
+FLASH = BY_IDENTITY[("zai", "glm-5.3-flash", "max")]
+LUNA_MEDIUM = BY_IDENTITY[("openai", "gpt-5.6-luna", "medium")]
+TERRA_MEDIUM = BY_IDENTITY[("openai", "gpt-5.6-terra", "medium")]
+SOL_MEDIUM = BY_IDENTITY[("openai", "gpt-5.6-sol", "medium")]
 
 
 def _snap(
@@ -200,10 +205,12 @@ def _synthetic_entry(
     hard_properties: ModelHardProperties | None = None,
     capabilities: CapabilityAssessments | None = None,
     bindings: tuple[CapacityScopeRef, ...] | None = None,
+    reasoning_effort: str | None = None,
 ) -> ModelCatalogEntry:
     return ModelCatalogEntry(
         identity=ModelIdentity(provider=provider, model=model, variant=variant),
         display_name=f"Synthetic {model}",
+        reasoning_effort=reasoning_effort,
         hard_properties=(
             ModelHardProperties() if hard_properties is None else hard_properties
         ),
@@ -220,6 +227,83 @@ def _synthetic_entry(
 
 class ScenarioTests(unittest.TestCase):
     """The required M2e selector scenarios over the real M2c catalog."""
+
+    def test_original_configuration_set_reproduces_effort_gap(self) -> None:
+        baseline = replace(CATALOG, entries=(LUNA, SOL, GLM53, FLASH))
+        for profile, expected in (("routine_coding", LUNA), ("deep_coding", SOL)):
+            with self.subTest(profile=profile):
+                decision = _select(PROFILES.resolve(profile),
+                                   [_snap("openai"), _snap("zai", 98, 0)], catalog=baseline)
+                assert decision.selected is not None
+                self.assertEqual(expected.identity, decision.selected.identity)
+
+    def test_five_openai_configuration_outcomes(self) -> None:
+        expected = {
+            "routine_coding": LUNA_MEDIUM, "deep_coding": TERRA_MEDIUM,
+            "scientific_review": SOL, "orchestration": LUNA, "translation": SOL,
+        }
+        for profile, winner in expected.items():
+            with self.subTest(profile=profile):
+                base = PROFILES.resolve(profile)
+                requirement = replace(
+                    base, hard_constraints=replace(base.hard_constraints, required_provider="openai")
+                )
+                decision = _select(requirement, [_snap("openai"), _snap("zai")])
+                assert decision.selected is not None
+                self.assertEqual(winner.identity, decision.selected.identity)
+                self.assertEqual(winner.reasoning_effort, decision.selected.identity.variant)
+                payload = decision.selected.to_dict()
+                self.assertEqual(payload["identity"], winner.identity.to_dict())
+                self.assertNotIn("reasoning_effort", payload)
+                excluded = {c.identity: c for c in decision.excluded}
+                if profile == "deep_coding":
+                    self.assertEqual(
+                        [SOL_MEDIUM.identity, SOL.identity],
+                        [c.identity for c in decision.alternatives],
+                    )
+                    self.assertEqual(decision.alternatives[0].capability_margin,
+                                     decision.alternatives[1].capability_margin)
+                    for entry in (LUNA_MEDIUM, LUNA):
+                        self.assertIn("capability_failed", excluded[entry.identity].reason_codes)
+                        self.assertIn(("coding", 4, 5), {
+                            (f.dimension, f.actual_rating, f.required_rating)
+                            for f in excluded[entry.identity].capability_failures
+                        })
+                elif profile in ("scientific_review", "translation"):
+                    dimension = "scientific_methodological" if profile == "scientific_review" else "translation_multilingual"
+                    for entry in (TERRA_MEDIUM, SOL_MEDIUM):
+                        self.assertIn((dimension, 4, 5), {
+                            (f.dimension, f.actual_rating, f.required_rating)
+                            for f in excluded[entry.identity].capability_failures
+                        })
+                elif profile == "orchestration":
+                    for entry, dimension, actual in (
+                        (LUNA_MEDIUM, "reasoning", 3), (TERRA_MEDIUM, "writing_editorial", 4)
+                    ):
+                        self.assertIn((dimension, actual), {
+                            (f.dimension, f.actual_rating)
+                            for f in excluded[entry.identity].capability_failures
+                        })
+
+    def test_all_openai_efforts_share_identical_capacity_observation(self) -> None:
+        snapshots = [_snap("openai", 98, 20), _snap("zai", 90, 80)]
+        original = [snapshot.to_dict() for snapshot in snapshots]
+        assessments = [assess_scarcity(entry, snapshots) for entry in
+                       (LUNA_MEDIUM, LUNA, TERRA_MEDIUM, SOL_MEDIUM, SOL)]
+        self.assertTrue(all(value == assessments[0] for value in assessments))
+        self.assertEqual(6400, assessments[0].penalty_units)
+        self.assertEqual(original, [snapshot.to_dict() for snapshot in snapshots])
+
+    def test_exhausted_zai_does_not_bypass_capacity_for_any_effort(self) -> None:
+        decision = _select(PROFILES.resolve("routine_coding"),
+                           [_snap("openai", 80, 50), _snap("zai", 98, 0)])
+        assert decision.selected is not None
+        self.assertEqual(LUNA_MEDIUM.identity, decision.selected.identity)
+        self.assertEqual({GLM53.identity, FLASH.identity}, {c.identity for c in decision.excluded})
+        for candidate in decision.excluded:
+            self.assertEqual(candidate.exclusion_stage, "capacity")
+            assert candidate.scarcity_assessment is not None
+            self.assertIn("capacity_exhausted", candidate.scarcity_assessment.reason_codes)
 
     def test_scenario_1_routine_coding_least_scarce(self) -> None:
         decision = _select(
@@ -239,8 +323,9 @@ class ScenarioTests(unittest.TestCase):
         self.assertEqual(("selected_balanced",), decision.reason_codes)
         # Exact ranking: Z.ai less scarce, then smaller adequate margin.
         self.assertEqual(
-            ["glm-5.3", "gpt-5.6-luna", "gpt-5.6-sol"],
-            [c.identity.model for c in decision.alternatives],
+            [GLM53.identity, LUNA_MEDIUM.identity, LUNA.identity, TERRA_MEDIUM.identity,
+             SOL_MEDIUM.identity, SOL.identity],
+            [c.identity for c in decision.alternatives],
         )
 
     def test_scenario_2_deep_coding_uses_glm_when_zai_less_scarce(self) -> None:
@@ -251,13 +336,13 @@ class ScenarioTests(unittest.TestCase):
         assert decision.selected is not None
         self.assertEqual("glm-5.3", decision.selected.identity.model)
 
-    def test_scenario_3_deep_coding_uses_sol_when_openai_less_scarce(self) -> None:
+    def test_scenario_3_deep_coding_uses_terra_when_openai_less_scarce(self) -> None:
         decision = _select(
             PROFILES.resolve("deep_coding"),
             [_snap("openai", 80, 80), _snap("zai", 40, 40)],
         )
         assert decision.selected is not None
-        self.assertEqual("gpt-5.6-sol", decision.selected.identity.model)
+        self.assertEqual(TERRA_MEDIUM.identity, decision.selected.identity)
 
     def test_scenario_4_famous_zai_98_2_case(self) -> None:
         decision = _select(
@@ -265,13 +350,14 @@ class ScenarioTests(unittest.TestCase):
             [_snap("openai", 40, 40), _snap("zai", 98, 2)],
         )
         assert decision.selected is not None
-        self.assertEqual("gpt-5.6-sol", decision.selected.identity.model)
+        self.assertEqual(TERRA_MEDIUM.identity, decision.selected.identity)
         # GLM-5.3 stays eligible (2% is nonzero) with the critical 9604
-        # penalty and ranks behind Sol's 3600.
+        # penalty and ranks behind the OpenAI configurations' 3600.
         self.assertEqual(
-            ["glm-5.3"], [c.identity.model for c in decision.alternatives]
+            [SOL_MEDIUM.identity, SOL.identity, GLM53.identity],
+            [c.identity for c in decision.alternatives]
         )
-        glm = decision.alternatives[0]
+        glm = decision.alternatives[-1]
         assert glm.scarcity_assessment is not None
         self.assertEqual("known", glm.scarcity_assessment.state)
         self.assertEqual("critical", glm.scarcity_assessment.label)
@@ -290,7 +376,7 @@ class ScenarioTests(unittest.TestCase):
         assert decision.selected is not None
         self.assertEqual("gpt-5.6-sol", decision.selected.identity.model)
         self.assertEqual((), decision.alternatives)
-        self.assertEqual(3, len(decision.excluded))
+        self.assertEqual(6, len(decision.excluded))
         self.assertTrue(
             all(c.exclusion_stage == "capability" for c in decision.excluded)
         )
@@ -311,9 +397,9 @@ class ScenarioTests(unittest.TestCase):
         )
         assert decision.selected is not None
         self.assertEqual("gpt-5.6-luna", decision.selected.identity.model)
-        self.assertEqual(1, decision.selected.capability_margin)
+        self.assertEqual(0, decision.selected.capability_margin)
         assert decision.alternatives
-        self.assertEqual(2, decision.alternatives[0].capability_margin)
+        self.assertEqual(1, decision.alternatives[0].capability_margin)
 
     def test_scenario_8_orchestration_prefers_smaller_margin_luna(self) -> None:
         decision = _select(
@@ -394,7 +480,7 @@ class ScenarioTests(unittest.TestCase):
         )
         self.assertIsNone(decision.selected)
         self.assertEqual(("no_eligible_candidate",), decision.reason_codes)
-        self.assertEqual(4, len(decision.excluded))
+        self.assertEqual(7, len(decision.excluded))
         self.assertTrue(
             all(
                 c.exclusion_stage == "capacity"
@@ -573,7 +659,7 @@ class ScenarioTests(unittest.TestCase):
             requirement, [_snap("openai", 40, 40), _snap("zai", 80, 80)]
         )
         assert decision.selected is not None
-        self.assertEqual("gpt-5.6-sol", decision.selected.identity.model)
+        self.assertEqual(TERRA_MEDIUM.identity, decision.selected.identity)
         excluded = _excluded_by_identity(decision)
         glm = excluded[("zai", "glm-5.3", "max")]
         self.assertEqual("hard_constraint", glm.exclusion_stage)
@@ -595,7 +681,7 @@ class ScenarioTests(unittest.TestCase):
         )
         self.assertIsNone(decision.selected)
         self.assertEqual((), decision.alternatives)
-        self.assertEqual(4, len(decision.excluded))
+        self.assertEqual(7, len(decision.excluded))
         self.assertEqual(("no_eligible_candidate",), decision.reason_codes)
         self.assertTrue(
             all(c.exclusion_stage == "hard_constraint" for c in decision.excluded)
@@ -650,7 +736,7 @@ class ScenarioTests(unittest.TestCase):
             requirement, [_snap("openai", 40, 40), _snap("zai", 80, 80)]
         )
         self.assertIsNone(decision.selected)
-        self.assertEqual(4, len(decision.excluded))
+        self.assertEqual(7, len(decision.excluded))
         for candidate in decision.excluded:
             self.assertEqual("hard_constraint", candidate.exclusion_stage)
             failure = candidate.hard_constraint_failures[0]
@@ -838,7 +924,7 @@ class ReplenishmentProvenanceTests(unittest.TestCase):
         recoverable = [
             c
             for c in decision.excluded
-            if c.identity.model == "gpt-5.6-sol"
+            if c.identity == SOL.identity
         ]
         self.assertEqual(1, len(recoverable))
         return recoverable[0]
@@ -945,6 +1031,78 @@ class PreferenceProvenanceTests(unittest.TestCase):
 class RankingTests(unittest.TestCase):
     """The exact ``balanced`` ranking-order tests (D-027)."""
 
+    def _effort_pair(
+        self, first: ModelCatalogEntry, second: ModelCatalogEntry,
+        *, snapshots: list[CapacitySnapshot] | None = None,
+        requirement: TaskRequirement | None = None,
+    ) -> SelectionDecision:
+        # Prefer the second candidate to prove that earlier criteria dominate.
+        return _select(
+            requirement if requirement is not None else TaskRequirement(
+                task_level="L1", capability_minima=CapabilityMinima(), hard_constraints=HardConstraints()
+            ),
+            snapshots if snapshots is not None else [_snap("openai")],
+            catalog=replace(CATALOG, entries=(second, first)),
+            policy=replace(neutral_selector_policy(), preference_order=(second.identity,)),
+        )
+
+    def test_scarcity_beats_effort(self) -> None:
+        low = replace(SOL_MEDIUM, capacity_bindings=(CapacityScopeRef("openai", "other"),))
+        snapshot = _snap("openai", 80, 80)
+        snapshot = replace(snapshot, windows=snapshot.windows + (
+            CapacityWindow(resource="tokens", kind="weekly", scope_id="other",
+                           used_percent=90, remaining_percent=10),
+        ))
+        decision = self._effort_pair(SOL, low, snapshots=[snapshot])
+        assert decision.selected is not None
+        self.assertEqual(SOL.identity, decision.selected.identity)
+
+    def test_known_capacity_beats_lower_effort_with_unknown_capacity(self) -> None:
+        low = replace(SOL_MEDIUM, capacity_bindings=None)
+        decision = self._effort_pair(SOL, low, snapshots=[_snap("openai", 1, 1)])
+        assert decision.selected is not None
+        self.assertEqual(SOL.identity, decision.selected.identity)
+        self.assertTrue(decision.alternatives[0].degraded)
+
+    def test_capability_margin_beats_effort(self) -> None:
+        smaller = replace(LUNA, identity=ModelIdentity("openai", "synthetic", "z-smaller"))
+        larger = replace(SOL_MEDIUM, identity=ModelIdentity("openai", "synthetic", "a-larger"))
+        decision = self._effort_pair(smaller, larger, requirement=PROFILES.resolve("orchestration"))
+        assert decision.selected is not None
+        self.assertEqual(smaller.identity, decision.selected.identity)
+        self.assertEqual(0, decision.selected.capability_margin)
+        self.assertEqual(1, decision.alternatives[0].capability_margin)
+
+    def test_effort_order_beats_preference_and_conflicting_opaque_variants(self) -> None:
+        for lower, higher in (("none", "low"), ("low", "medium"), ("medium", "high"),
+                              ("high", "xhigh"), ("xhigh", "max"), ("high", "max")):
+            with self.subTest(lower=lower, higher=higher):
+                first = replace(SOL_MEDIUM, identity=ModelIdentity("openai", "synthetic", "z-first"),
+                                reasoning_effort=lower)
+                second = replace(first, identity=ModelIdentity("openai", "synthetic", "a-second"),
+                                 reasoning_effort=higher)
+                decision = self._effort_pair(first, second)
+                assert decision.selected is not None
+                self.assertEqual(first.identity, decision.selected.identity)
+                self.assertEqual(second.identity, decision.alternatives[0].identity)
+
+    def test_unconfigured_effort_is_not_cheaper_than_none(self) -> None:
+        for support in (False, None):
+            with self.subTest(support=support):
+                known = replace(SOL_MEDIUM, reasoning_effort="none")
+                unconfigured = replace(SOL, reasoning_effort=None,
+                                       hard_properties=replace(SOL.hard_properties, supports_reasoning_mode=support))
+                decision = self._effort_pair(known, unconfigured)
+                assert decision.selected is not None
+                self.assertEqual(known.identity, decision.selected.identity)
+
+    def test_capability_failure_cannot_be_rescued_by_lower_effort(self) -> None:
+        decision = self._effort_pair(SOL, LUNA_MEDIUM, requirement=PROFILES.resolve("deep_coding"))
+        assert decision.selected is not None
+        self.assertEqual(SOL.identity, decision.selected.identity)
+        self.assertEqual(LUNA_MEDIUM.identity, decision.excluded[0].identity)
+        self.assertIn("capability_failed", decision.excluded[0].reason_codes)
+
     def test_scarcity_before_margin(self) -> None:
         # Full order under routine_coding: penalty dominates margin, so GLM
         # (margin 7, penalty 400) ranks before Luna (margin 5, penalty 3600).
@@ -955,8 +1113,9 @@ class RankingTests(unittest.TestCase):
         assert decision.selected is not None
         order = [decision.selected] + list(decision.alternatives)
         self.assertEqual(
-            ["glm-5.3-flash", "glm-5.3", "gpt-5.6-luna", "gpt-5.6-sol"],
-            [c.identity.model for c in order],
+            [FLASH.identity, GLM53.identity, LUNA_MEDIUM.identity, LUNA.identity,
+             TERRA_MEDIUM.identity, SOL_MEDIUM.identity, SOL.identity],
+            [c.identity for c in order],
         )
 
     def test_margin_before_preference(self) -> None:
@@ -1089,7 +1248,7 @@ class RankingTests(unittest.TestCase):
         )
         self.assertEqual(base.to_dict(), reversed_snapshots.to_dict())
         reversed_catalog = ModelCatalog(
-            catalog_version=1,
+            catalog_version=CATALOG.catalog_version,
             updated_on=CATALOG.updated_on,
             entries=tuple(reversed(CATALOG.entries)),
         )

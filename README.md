@@ -34,6 +34,16 @@ stdio MCP adapter is implemented (M3c, D-031). Live CLI/REST/MCP acceptance
 is complete. M3 is closed as **PASS** (2026-09-07); sanitized
 evidence is recorded in [`docs/m3-acceptance.md`](docs/m3-acceptance.md).
 
+The post-M3 selector correction (issue #57, D-032) introduces catalog v2:
+explicit reasoning effort, Luna Medium, Terra Medium and Sol Medium alongside
+the four preserved configurations. Capability is calibrated per configuration;
+reasoning effort is not subscription scarcity. Ranking compares scarcity,
+capability margin, then lowest effort before preference and stable identity.
+All OpenAI configurations share the evidenced `openai/codex` capacity scope.
+CLI/REST/MCP machine-interface v1 shapes remain unchanged; variants remain
+opaque configuration identifiers, never parsed for effort. This is not M4 or
+Astra onboarding, and historical M3 PASS evidence is unchanged.
+
 ## Repository
 
 Canonical development:
@@ -103,7 +113,7 @@ Selection should be equally direct and explainable:
 $ Scarcity Router select deep-coding --level 4 --explain
 
 SELECTED
-  GPT-5.6 Luna Max
+  GPT-5.6 Terra Medium
 
 WHY
   task requires deep-coding at L4

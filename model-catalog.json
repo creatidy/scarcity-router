@@ -1,6 +1,6 @@
 {
-  "catalog_version": 1,
-  "updated_on": "2026-09-06",
+  "catalog_version": 2,
+  "updated_on": "2026-09-08",
   "entries": [
     {
       "identity": {
@@ -9,6 +9,7 @@
         "variant": "max"
       },
       "display_name": "GPT-5.6 Luna Max",
+      "reasoning_effort": "max",
       "hard_properties": {
         "input_context_tokens": 1050000,
         "output_tokens": 128000,
@@ -128,10 +129,135 @@
     {
       "identity": {
         "provider": "openai",
+        "model": "gpt-5.6-luna",
+        "variant": "medium"
+      },
+      "display_name": "GPT-5.6 Luna Medium",
+      "reasoning_effort": "medium",
+      "hard_properties": {
+        "input_context_tokens": 1050000,
+        "output_tokens": 128000,
+        "supports_tool_use": true,
+        "supports_vision": true,
+        "supports_reasoning_mode": true
+      },
+      "capabilities": {
+        "reasoning": {
+          "rating": 3,
+          "evidence": [
+            {
+              "source": "official_docs",
+              "identifier": "https://openai.com/index/gpt-5-6/",
+              "date": "2026-07-09"
+            },
+            {
+              "source": "owner_observation",
+              "identifier": "accepted_reasoning_effort_calibration_2026-09-08_issue_57_D-032",
+              "date": "2026-09-08"
+            }
+          ],
+          "confidence": "medium",
+          "assessed_on": "2026-09-08",
+          "rationale": "Initial Medium-specific calibration: solid routine reasoning in the cost-sensitive tier, below reasoning-4 deep-work and orchestration minima; Max retains higher reasoning capability."
+        },
+        "coding": {
+          "rating": 4,
+          "evidence": [
+            {
+              "source": "official_docs",
+              "identifier": "https://openai.com/index/gpt-5-6/",
+              "date": "2026-07-09"
+            },
+            {
+              "source": "owner_observation",
+              "identifier": "accepted_reasoning_effort_calibration_2026-09-08_issue_57_D-032",
+              "date": "2026-09-08"
+            }
+          ],
+          "confidence": "medium",
+          "assessed_on": "2026-09-08",
+          "rationale": "Owner-approved initial Medium configuration remains strong for routine coding; family evidence informs but does not mechanically determine this effort-specific rating."
+        },
+        "scientific_methodological": {
+          "rating": 3,
+          "evidence": [
+            {
+              "source": "owner_observation",
+              "identifier": "accepted_reasoning_effort_calibration_2026-09-08_issue_57_D-032",
+              "date": "2026-09-08"
+            }
+          ],
+          "confidence": "medium",
+          "assessed_on": "2026-09-08",
+          "rationale": "Initial Medium calibration supports ordinary methodological execution, not specialist scientific adjudication."
+        },
+        "writing_editorial": {
+          "rating": 5,
+          "evidence": [
+            {
+              "source": "official_docs",
+              "identifier": "https://developers.openai.com/api/docs/models",
+              "date": "2026-09-08"
+            },
+            {
+              "source": "owner_observation",
+              "identifier": "accepted_reasoning_effort_calibration_2026-09-08_issue_57_D-032",
+              "date": "2026-09-08"
+            }
+          ],
+          "confidence": "medium",
+          "assessed_on": "2026-09-08",
+          "rationale": "Excellent routine editorial execution is explicitly approved at Medium; this does not establish orchestration sufficiency without reasoning 4."
+        },
+        "tool_use": {
+          "rating": 5,
+          "evidence": [
+            {
+              "source": "official_docs",
+              "identifier": "https://developers.openai.com/api/docs/models",
+              "date": "2026-09-08"
+            },
+            {
+              "source": "owner_observation",
+              "identifier": "accepted_reasoning_effort_calibration_2026-09-08_issue_57_D-032",
+              "date": "2026-09-08"
+            }
+          ],
+          "confidence": "medium",
+          "assessed_on": "2026-09-08",
+          "rationale": "Family agentic support plus owner-approved initial calibration supports excellent tool execution at Medium, independently of reasoning depth."
+        },
+        "translation_multilingual": {
+          "rating": 4,
+          "evidence": [
+            {
+              "source": "owner_observation",
+              "identifier": "accepted_reasoning_effort_calibration_2026-09-08_issue_57_D-032",
+              "date": "2026-09-08"
+            }
+          ],
+          "confidence": "medium",
+          "assessed_on": "2026-09-08",
+          "rationale": "Strong professional multilingual execution at Medium; publication-quality translation remains outside this initial calibration."
+        }
+      },
+      "capacity_bindings": [
+        {
+          "provider": "openai",
+          "scope_id": "codex"
+        }
+      ],
+      "model_version_date": "2026-07-09",
+      "last_reviewed_on": "2026-09-08"
+    },
+    {
+      "identity": {
+        "provider": "openai",
         "model": "gpt-5.6-sol",
         "variant": "high"
       },
       "display_name": "GPT-5.6 Sol High",
+      "reasoning_effort": "high",
       "hard_properties": {
         "input_context_tokens": 1050000,
         "output_tokens": 128000,
@@ -270,11 +396,260 @@
     },
     {
       "identity": {
+        "provider": "openai",
+        "model": "gpt-5.6-sol",
+        "variant": "medium"
+      },
+      "display_name": "GPT-5.6 Sol Medium",
+      "reasoning_effort": "medium",
+      "hard_properties": {
+        "input_context_tokens": 1050000,
+        "output_tokens": 128000,
+        "supports_tool_use": true,
+        "supports_vision": true,
+        "supports_reasoning_mode": true
+      },
+      "capabilities": {
+        "reasoning": {
+          "rating": 5,
+          "evidence": [
+            {
+              "source": "official_docs",
+              "identifier": "https://openai.com/index/gpt-5-6/",
+              "date": "2026-07-09"
+            },
+            {
+              "source": "owner_observation",
+              "identifier": "accepted_reasoning_effort_calibration_2026-09-08_issue_57_D-032",
+              "date": "2026-09-08"
+            }
+          ],
+          "confidence": "medium",
+          "assessed_on": "2026-09-08",
+          "rationale": "Accepted official evidence supports very strong Sol reasoning at Medium; owner approves frontier technical sufficiency while rationing High rather than hard-wiring it for every hard task."
+        },
+        "coding": {
+          "rating": 5,
+          "evidence": [
+            {
+              "source": "official_docs",
+              "identifier": "https://openai.com/index/gpt-5-6/",
+              "date": "2026-07-09"
+            },
+            {
+              "source": "owner_observation",
+              "identifier": "accepted_reasoning_effort_calibration_2026-09-08_issue_57_D-032",
+              "date": "2026-09-08"
+            }
+          ],
+          "confidence": "medium",
+          "assessed_on": "2026-09-08",
+          "rationale": "Flagship complex-professional and coding strength remains sufficient at Medium under the approved effort-specific technical calibration."
+        },
+        "scientific_methodological": {
+          "rating": 4,
+          "evidence": [
+            {
+              "source": "owner_observation",
+              "identifier": "accepted_reasoning_effort_calibration_2026-09-08_issue_57_D-032",
+              "date": "2026-09-08"
+            }
+          ],
+          "confidence": "medium",
+          "assessed_on": "2026-09-08",
+          "rationale": "Strong methodological work at Medium is approved; specialist scientific adjudication remains calibrated only at High, not cloned from the High vector."
+        },
+        "writing_editorial": {
+          "rating": 5,
+          "evidence": [
+            {
+              "source": "official_docs",
+              "identifier": "https://developers.openai.com/api/docs/models",
+              "date": "2026-09-08"
+            },
+            {
+              "source": "owner_observation",
+              "identifier": "accepted_reasoning_effort_calibration_2026-09-08_issue_57_D-032",
+              "date": "2026-09-08"
+            }
+          ],
+          "confidence": "medium",
+          "assessed_on": "2026-09-08",
+          "rationale": "Excellent editorial capability is explicitly approved for the Medium configuration, independent of specialist translation quality."
+        },
+        "tool_use": {
+          "rating": 5,
+          "evidence": [
+            {
+              "source": "official_docs",
+              "identifier": "https://developers.openai.com/api/docs/models",
+              "date": "2026-09-08"
+            },
+            {
+              "source": "owner_observation",
+              "identifier": "accepted_reasoning_effort_calibration_2026-09-08_issue_57_D-032",
+              "date": "2026-09-08"
+            }
+          ],
+          "confidence": "medium",
+          "assessed_on": "2026-09-08",
+          "rationale": "Flagship agentic support and owner-approved Medium calibration support excellent technical tool workflows without requiring High."
+        },
+        "translation_multilingual": {
+          "rating": 4,
+          "evidence": [
+            {
+              "source": "owner_observation",
+              "identifier": "accepted_reasoning_effort_calibration_2026-09-08_issue_57_D-032",
+              "date": "2026-09-08"
+            }
+          ],
+          "confidence": "medium",
+          "assessed_on": "2026-09-08",
+          "rationale": "Strong multilingual output at Medium is approved; publication-quality specialist translation still requires the accepted Sol High calibration."
+        }
+      },
+      "capacity_bindings": [
+        {
+          "provider": "openai",
+          "scope_id": "codex"
+        }
+      ],
+      "model_version_date": "2026-07-09",
+      "last_reviewed_on": "2026-09-08"
+    },
+    {
+      "identity": {
+        "provider": "openai",
+        "model": "gpt-5.6-terra",
+        "variant": "medium"
+      },
+      "display_name": "GPT-5.6 Terra Medium",
+      "reasoning_effort": "medium",
+      "hard_properties": {
+        "input_context_tokens": 1050000,
+        "output_tokens": 128000,
+        "supports_tool_use": true,
+        "supports_vision": true,
+        "supports_reasoning_mode": true
+      },
+      "capabilities": {
+        "reasoning": {
+          "rating": 4,
+          "evidence": [
+            {
+              "source": "official_docs",
+              "identifier": "https://openai.com/index/gpt-5-6/",
+              "date": "2026-07-09"
+            },
+            {
+              "source": "owner_observation",
+              "identifier": "accepted_reasoning_effort_calibration_2026-09-08_issue_57_D-032",
+              "date": "2026-09-08"
+            }
+          ],
+          "confidence": "medium",
+          "assessed_on": "2026-09-08",
+          "rationale": "Balanced intelligence/cost positioning and family professional evaluations support an intermediate technical tier; owner approves reasoning 4 specifically at Medium."
+        },
+        "coding": {
+          "rating": 5,
+          "evidence": [
+            {
+              "source": "official_docs",
+              "identifier": "https://openai.com/index/gpt-5-6/",
+              "date": "2026-07-09"
+            },
+            {
+              "source": "owner_observation",
+              "identifier": "accepted_reasoning_effort_calibration_2026-09-08_issue_57_D-032",
+              "date": "2026-09-08"
+            }
+          ],
+          "confidence": "medium",
+          "assessed_on": "2026-09-08",
+          "rationale": "Family coding evidence places Terra between Luna and Sol; initial curated Medium coding 5 makes it sufficient for deep coding without inheriting Sol's entire vector."
+        },
+        "scientific_methodological": {
+          "rating": 4,
+          "evidence": [
+            {
+              "source": "official_docs",
+              "identifier": "https://openai.com/index/gpt-5-6/",
+              "date": "2026-07-09"
+            },
+            {
+              "source": "owner_observation",
+              "identifier": "accepted_reasoning_effort_calibration_2026-09-08_issue_57_D-032",
+              "date": "2026-09-08"
+            }
+          ],
+          "confidence": "medium",
+          "assessed_on": "2026-09-08",
+          "rationale": "Family science/health evidence supports strong methodological work; the initial Medium calibration deliberately does not claim specialist adjudication at 5."
+        },
+        "writing_editorial": {
+          "rating": 4,
+          "evidence": [
+            {
+              "source": "owner_observation",
+              "identifier": "accepted_reasoning_effort_calibration_2026-09-08_issue_57_D-032",
+              "date": "2026-09-08"
+            }
+          ],
+          "confidence": "medium",
+          "assessed_on": "2026-09-08",
+          "rationale": "Strong professional writing is approved initially, not editorial 5; Terra does not silently replace the accepted Luna Max orchestration role."
+        },
+        "tool_use": {
+          "rating": 5,
+          "evidence": [
+            {
+              "source": "official_docs",
+              "identifier": "https://developers.openai.com/api/docs/models",
+              "date": "2026-09-08"
+            },
+            {
+              "source": "owner_observation",
+              "identifier": "accepted_reasoning_effort_calibration_2026-09-08_issue_57_D-032",
+              "date": "2026-09-08"
+            }
+          ],
+          "confidence": "medium",
+          "assessed_on": "2026-09-08",
+          "rationale": "Evidenced tool support and owner-approved Medium calibration establish excellent technical tool workflows, independent of subscription scarcity."
+        },
+        "translation_multilingual": {
+          "rating": 4,
+          "evidence": [
+            {
+              "source": "owner_observation",
+              "identifier": "accepted_reasoning_effort_calibration_2026-09-08_issue_57_D-032",
+              "date": "2026-09-08"
+            }
+          ],
+          "confidence": "medium",
+          "assessed_on": "2026-09-08",
+          "rationale": "Initial strong multilingual calibration does not establish the publication-quality translation specialist minimum of 5."
+        }
+      },
+      "capacity_bindings": [
+        {
+          "provider": "openai",
+          "scope_id": "codex"
+        }
+      ],
+      "model_version_date": "2026-07-09",
+      "last_reviewed_on": "2026-09-08"
+    },
+    {
+      "identity": {
         "provider": "zai",
         "model": "glm-5.3",
         "variant": "max"
       },
       "display_name": "GLM-5.3 Max",
+      "reasoning_effort": "max",
       "hard_properties": {
         "input_context_tokens": 1000000,
         "output_tokens": 128000,
@@ -393,6 +768,7 @@
         "variant": "max"
       },
       "display_name": "GLM-5.3-Flash Max",
+      "reasoning_effort": "max",
       "hard_properties": {
         "input_context_tokens": 1000000,
         "output_tokens": 128000,
