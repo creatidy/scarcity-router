@@ -27,14 +27,36 @@ Requirements:
 
 Provider access is described in [Supported Providers](#supported-providers).
 
-From a checkout, sync the repository-managed tools and run the module CLI:
+The package is not published to any index; install it locally from a
+checkout (or a built wheel) into an isolated `uv` tool environment:
+
+```bash
+uv tool install /path/to/scarcity-router-checkout
+# or, after `uv build --no-sources`:
+uv tool install dist/scarcity_router-0.1.0-py3-none-any.whl
+```
+
+This exposes exactly three commands:
+
+- `scarcity-router` — the `status` / `select` / `simulate` CLI;
+- `scarcity-router-mcp` — the stdio MCP adapter;
+- `scarcity-router-server` — the loopback REST adapter.
+
+The installed commands load the packaged default catalog (version 2) and
+model policy (version 6) as package resources, so they work without a
+repository checkout and independent of the current directory; explicit
+`--catalog` and `--model-policy` flags always override the defaults.
+
+From a checkout instead, sync the repository-managed tools and run the
+module CLI:
 
 ```bash
 uv sync --only-dev
+uv run python -m scarcity_router --help
 ```
 
-There is not yet a published installable package or stable executable name, so
-the supported local entry point is `uv run python -m scarcity_router`.
+In a checkout the defaults resolve to the repository-root
+`model-catalog.json` and `model-policy.json`.
 
 ## Check Capacity
 
@@ -71,14 +93,20 @@ uv run python -m scarcity_router simulate \
 
 ## MCP Integration
 
-MCP is the primary machine-integration path for local orchestrators. Start the
-stdio adapter directly:
+MCP is the primary machine-integration path for local orchestrators. Start
+the stdio adapter through the installed command:
+
+```bash
+scarcity-router-mcp
+```
+
+or, from a checkout:
 
 ```bash
 uv run python -m scarcity_router.mcp
 ```
 
-A generic process configuration is available in
+The installed process configuration recipe is
 [`examples/mcp-stdio.json`](examples/mcp-stdio.json). It advertises exactly:
 
 - `scarcity_status` — current normalized provider capacity;
@@ -89,6 +117,16 @@ The tools call the same application/core as the CLI and REST interface. They
 use stdio, accept no credentials or provider endpoints, and never execute
 inference. Envelopes are defined in
 [`docs/machine-interfaces.md`](docs/machine-interfaces.md).
+
+### Global Kilo deployment note
+
+To use Scarcity Router globally in Kilo, add the
+[`examples/mcp-stdio.json`](examples/mcp-stdio.json) recipe (a
+`type: local` MCP server launching the installed `scarcity-router-mcp`
+command) to the `mcp` section of your Kilo configuration. This repository
+never edits your global Kilo configuration itself; the copy-paste is a
+manual owner action, and it requires the package to be installed as a `uv`
+tool (or the recipe adjusted to the checkout-based module command).
 
 ## Supported Providers
 
@@ -123,7 +161,8 @@ rules and historical evidence remain available without being part of onboarding.
 ### USE IT
 
 - This README — quick start, capacity checks, selection and MCP.
-- [`examples/mcp-stdio.json`](examples/mcp-stdio.json) — generic MCP process configuration.
+- [`examples/mcp-stdio.json`](examples/mcp-stdio.json) — installed MCP process
+  configuration recipe.
 
 ### UNDERSTAND IT
 
@@ -166,6 +205,12 @@ uv sync --only-dev
 make check
 uv run basedpyright
 git diff --check
+```
+
+Package artifact and isolated-install checks:
+
+```bash
+make package-check
 ```
 
 Forgejo is canonical for issues, branches, pull requests and reviews; `develop`

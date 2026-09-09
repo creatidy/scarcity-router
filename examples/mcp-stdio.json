@@ -1,12 +1,9 @@
 {
-  "transport": "stdio",
-  "command": "uv",
-  "args": [
-    "run",
-    "python",
-    "-m",
-    "scarcity_router.mcp"
+  "type": "local",
+  "command": [
+    "scarcity-router-mcp"
   ],
+  "enabled": true,
   "tools": [
     "scarcity_status",
     "scarcity_select",

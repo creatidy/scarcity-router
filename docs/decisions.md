@@ -1629,6 +1629,58 @@ decision.
   architect-reviewed evidence supplied in the 2026-09-09 assignment, not a new
   benchmark run. This decision supersedes no accepted ranking or capacity rule.
 
+### D-034 — Package Scarcity Router for local deployment
+
+- **Status:** Accepted
+- **Date:** 2026-09-09
+- **Decision:** Package the application as the installable local
+  distribution `scarcity-router` version `0.1.0` (issue #63), superseding the
+  tooling-only no-`[project]` state of `pyproject.toml`.
+  - **Build backend: Hatchling.** uv_build cannot include the
+    root-authoritative `model-catalog.json` and `model-policy.json` in the
+    wheel without committed in-package duplicates; Hatchling `force-include`
+    maps the two single root copies into the wheel as
+    `scarcity_router/model-catalog.json` /
+    `scarcity_router/model-policy.json` at build time. No duplicate
+    authoritative copies are committed; the sdist is a minimal allowlist
+    (package, the two root artifacts, `pyproject.toml`, README, LICENSE)
+    without tests, docs, tooling or local files.
+  - **Metadata.** `requires-python = ">=3.12"`, Apache-2.0 (SPDX expression
+    plus the LICENSE file), runtime dependency exactly `mcp>=2,<3` (the
+    official SDK is now runtime metadata, not only a dev dependency), and
+    the version read dynamically from the `scarcity_router.__version__`
+    literal (`0.1.0`), the single committed source of truth.
+    `get_version()` prefers installed distribution metadata and falls back
+    to the deterministic source literal.
+  - **Entry points.** Exactly the three console scripts `scarcity-router`
+    (`cli:main`), `scarcity-router-mcp` (`mcp:main`) and
+    `scarcity-router-server` (`server:main`); the `python -m
+    scarcity_router`, `python -m scarcity_router.mcp` and `python -m
+    scarcity_router.server` module forms remain supported. Parser help
+    shows the invoked script name when run through a console script.
+  - **Default artifact resolution.** `resolve_default_artifact` prefers the
+    repository-root copies when running from a checkout and otherwise uses
+    the packaged `importlib.resources` copies, depending only on module
+    location — never on cwd or environment variables. Explicit
+    `--catalog` / `--model-policy` overrides always bypass the defaults.
+  - **Branding.** The MCP server advertises `version=get_version()`
+    instead of the `"m3c"` milestone label; no other runtime surface
+    changes.
+  - **U-008 scope.** This resolves U-008 for local deployment naming
+    (`scarcity-router`, hyphenated distribution matching the existing
+    module identity `scarcity_router`). The release-time collision search
+    and any publication to a public index remain open under U-008/U-009;
+    nothing is published, tagged or merged by this decision.
+- **Reason:** The owner needs a one-time local install with stable command
+  names instead of checkout-relative module invocations, without changing
+  selector, provider, REST/MCP, security or serialized contracts.
+- **Boundary:** Packaging metadata, default resource resolution, entry
+  points, version branding, tests, the `package-check` target and
+  documentation only. No catalog/policy content or version change, no
+  selection semantics change, no provider change, no REST/MCP schema
+  change, no new network exposure, no credential handling change, and no
+  publication.
+
 ## Unresolved decisions
 
 ### U-001 — Codex binary discovery and compatibility
@@ -1773,6 +1825,10 @@ decision.
   REST/MCP development entry points remain module-based until packaging
   proves necessary. The final branded package/executable name remains
   unresolved until the release-time collision search.
+- **Status update (2026-09-09, D-034):** resolved for local deployment —
+  the distribution is `scarcity-router` `0.1.0` with the three console
+  scripts. Open only for the public-index collision search and any
+  publication naming.
 
 ### U-009 — Provider terms and public supportability
 
