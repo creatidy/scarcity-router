@@ -30,7 +30,8 @@ Implements the frozen M2e selection semantics (D-027):
   reservations -> ranking; replenishment never changes current eligibility;
 - the exact ``balanced`` ranking order: known capacity before degraded
   unknown (no numeric unknown sentinel), then the integer scarcity penalty,
-  then the capability margin, then the explicit preference order, then
+  then the capability margin, then lowest configured reasoning effort,
+  then the explicit preference order, then
   stable ``(provider, model, variant)`` identity;
 - the structured ``CandidateEvaluation`` and ``SelectionDecision`` output
   contracts, including structured no-solution results with closest
@@ -54,6 +55,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import IntEnum
 from typing import ClassVar, TypeVar, cast
 
 from .capacity import CapacitySnapshot
@@ -73,6 +75,7 @@ from .policy import (
 from .scarcity import ScarcityAssessment, assess_scarcity
 from .selection_types import (
     CAPABILITY_DIMENSIONS,
+    REASONING_EFFORTS,
     TASK_LEVELS,
     CapabilityAssessment,
     CapabilityAssessments,
@@ -308,7 +311,7 @@ class SelectorPolicy:
     behavior (exactly ``balanced`` in this slice), ``resource_policy`` is the
     ``UserPolicy`` whose unknown-capacity mode, reservations, blackouts and
     replenishment visibility the selector enforces, and ``preference_order``
-    is the explicit user preference used only as the fourth ranking
+    is the explicit user preference used only as the fifth ranking
     tie-break. The preference is never inferred from model classes, profile
     names, provider names, catalog entry order or display names, and a
     preference entry absent from a particular catalog is harmless and
@@ -1211,17 +1214,25 @@ def _preference_key(
     return (1, 0)
 
 
+class _EffortState(IntEnum):
+    KNOWN = 0
+    UNCONFIGURED = 1
+
+
 def _ranking_key(
-    evaluation: CandidateEvaluation, preference_order: tuple[ModelIdentity, ...]
-) -> tuple[int, int, int, int, int, str, str, str]:
-    """The exact ``balanced`` ranking key (D-027).
+    evaluation: CandidateEvaluation,
+    preference_order: tuple[ModelIdentity, ...],
+    reasoning_effort: str | None,
+) -> tuple[int, int, int, tuple[_EffortState, tuple[int, ...]], int, int, str, str, str]:
+    """The exact ``balanced`` ranking key (D-027, amended by D-032).
 
     1. capacity knowledge class: known nonzero capacity before unknown /
        degraded capacity (no numeric unknown sentinel exists);
     2. scarcity penalty (integer units) among known-capacity candidates only;
     3. capability margin (lower wins);
-    4. explicit preference order (listed before unlisted, then index);
-    5. stable ``(provider, model, variant)`` identity.
+    4. known effort in normalized order, then unconfigured effort;
+    5. explicit preference order (listed before unlisted, then index);
+    6. stable ``(provider, model, variant)`` identity.
     """
     scarcity = evaluation.scarcity_assessment
     penalty = 0
@@ -1245,10 +1256,18 @@ def _ranking_key(
         preference_order, evaluation.identity
     )
     identity = evaluation.identity
+    # Unconfigured effort has no numeric intensity, not even "none". Separate
+    # the comparison state and leave its ordinal empty, never a magic sentinel.
+    effort_key = (
+        (_EffortState.UNCONFIGURED, ())
+        if reasoning_effort is None
+        else (_EffortState.KNOWN, (REASONING_EFFORTS.index(reasoning_effort),))
+    )
     return (
         capacity_class,
         penalty,
         margin,
+        effort_key,
         preference_class,
         preference_index,
         identity.provider,
@@ -1557,8 +1576,12 @@ def select_model(
         for entry in entries
     ]
     eligible = [evaluation for evaluation in evaluations if evaluation.eligible]
+    effort_by_identity = {entry.identity: entry.reasoning_effort for entry in entries}
     ranked = sorted(
-        eligible, key=lambda evaluation: _ranking_key(evaluation, policy.preference_order)
+        eligible,
+        key=lambda evaluation: _ranking_key(
+            evaluation, policy.preference_order, effort_by_identity[evaluation.identity]
+        ),
     )
     selected = ranked[0] if ranked else None
     alternatives = tuple(ranked[1:])

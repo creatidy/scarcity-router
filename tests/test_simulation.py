@@ -208,7 +208,7 @@ class CapacityOverrideTests(unittest.TestCase):
         assert result.simulated.selected is not None
         self.assertEqual("glm-5.3", result.baseline.selected.identity.model)
         self.assertEqual(
-            "gpt-5.6-sol", result.simulated.selected.identity.model
+            "gpt-5.6-terra", result.simulated.selected.identity.model
         )
 
     def test_override_preserves_everything_but_percentages(self) -> None:
@@ -501,7 +501,7 @@ class ReplacementTests(unittest.TestCase):
         # Monday 12:00 UTC is outside the blackout; Monday 01:30 is inside.
         self.assertEqual("glm-5.3", result.baseline.selected.identity.model)
         self.assertEqual(
-            "gpt-5.6-sol", result.simulated.selected.identity.model
+            "gpt-5.6-terra", result.simulated.selected.identity.model
         )
         excluded = {
             (c.identity.provider, c.identity.model): c

@@ -99,10 +99,10 @@ Task routing is role- and requirement-driven. A role assignment is a useful
 starting reference; it does not override the active task profile, hard
 constraints, capability minima, capacity applicability or user reservations.
 
-The active M2 selector remains the least-scarce-sufficient implementation. Its
-current four selector identities are GPT-5.6 Luna Max, GPT-5.6 Sol High,
-GLM-5.3 Max and GLM-5.3-Flash Max. The capability-only eligible sets remain
-the accepted M2 calibration. Reference operating assignment and active
+The active selector remains the least-scarce-sufficient implementation. Catalog
+v2 (D-032) contains Luna Medium/Max, Terra Medium, Sol Medium/High and
+GLM-5.3/GLM-5.3-Flash Max. Existing M2 vectors are preserved; the three new
+Medium configurations have explicit approved calibration. Reference operating assignment and active
 selector eligibility are different layers: Astra is now a preferred external
 operating assignment, but Scarcity Router cannot recommend it until
 catalog/capacity onboarding is complete.
@@ -254,12 +254,16 @@ or there is evidence that additional depth is likely to materially help.
 Do not escalate merely because a task is important, large, expensive or
 prestigious. The current reference default for GPT-6 Astra is `low`.
 
-The operating policy treats effort as important, but current Scarcity Router
-selector support is explicitly `not_implemented`: candidates are fixed
-provider/model/variant identities and the selector does not dynamically
-optimize effort. Future effort-aware selection requires an explicit
-evidence-and-design decision. Existing calibrated GLM `max`, Luna `max`, Sol
-`high` and Flash `max` entries remain unchanged.
+D-032 implements effort-aware ranking among explicitly calibrated catalog
+configurations, not arbitrary dynamic effort generation. The selector compares
+known capacity, scarcity penalty, capability margin, lowest configured effort,
+preference and identity in that order after all eligibility gates. Effort comes
+from the catalog field, never from opaque variants. Existing GLM Max, Luna Max,
+Sol High and Flash Max capability vectors remain unchanged. The model-policy
+schema remains v1; compatible policy content is policy_version 6 because
+`reasoning_effort_policy.selector_support` changed from `not_implemented` to
+`calibrated_configurations`. Task profiles, profile minima and dated reference
+assignments are unchanged.
 
 ## Concurrency
 

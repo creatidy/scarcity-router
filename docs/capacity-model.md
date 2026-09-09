@@ -8,9 +8,9 @@ Provider adapters own wire-format parsing and emit this provider-independent
 record; consumers must not parse provider responses.
 
 This is the internal serialized contract between the provider adapters and
-the core. It is not a public REST, MCP or CLI contract. Those interfaces, including
-their versioning, are later decisions. The record is an observation at one point
-in time, not a promise that the source remains available.
+the core. It is not a public REST, MCP or CLI contract; those interfaces have
+separate versioned contracts. The record is an observation at one point in
+time, not a promise that the source remains available.
 
 ## Versioning
 
@@ -20,10 +20,9 @@ omission rules and field semantics. It is a capacity-contract version, not a
 provider API, adapter implementation or interface version.
 
 Schema v2 removed the optional v1 `local_runtime` field and the diagnostics that
-only described local runtime state (decision D-017). Schema v3 — the M2a slice,
-decision D-023 — adds exactly one normalized field: the semantic capacity-scope
-identifier `CapacityWindow.scope_id`. All other v2 field shapes, semantics and
-invariants are unchanged. No compatibility reader is provided for the unreleased
+only described local runtime state. Schema v3 adds exactly one normalized field:
+the semantic capacity-scope identifier `CapacityWindow.scope_id`. All other v2
+field shapes, semantics and invariants are unchanged. No compatibility reader is provided for the unreleased
 internal v1 contract, and serialized v2 snapshots are not silently upgraded: the
 production model accepts and constructs only `schema_version = 3` and rejects any
 other version, including `2`.
@@ -160,9 +159,9 @@ For example, conceptually `("openai", "provider_scope")` or
 prefixed with the provider redundantly. Scope identity and period identity are
 separate concepts: one scope may contain several windows of different periods,
 and equal periods may coexist in different scopes (for OpenAI's multi-bucket
-view). Multiple windows may share one scope, and a later model may be subject
-to one or more scopes; model-to-scope bindings are a later M2 slice (M2b),
-never capacity telemetry.
+view). Multiple windows may share one scope, and a model may be subject to one
+or more scopes. Model-to-scope bindings are explicit catalog data, never
+capacity telemetry.
 
 Semantics of the field:
 
@@ -197,6 +196,55 @@ Current provider mappings (adapter evidence, not universal constants):
   unrecognized (scope applicability and period semantics are independent).
   A structurally valid but unevidenced provider `type` keeps `scope_id`
   unknown (`None`) and its raw type text never becomes a scope.
+
+### Astra Onboarding Gate (Issue #49)
+
+The 2026-09-09 evidence gate (D-033) does **not** add Astra to the catalog.
+`ASTRA_ONBOARDING_READY = NO` and
+`ONBOARDING_REQUIRES_PLAN_APPLICABILITY_EXTENSION`.
+
+| Question | Evidence and decision |
+| --- | --- |
+| A. Is Astra Work/Codex usage part of the shared allowance? | Yes. Official Work/Codex and Astra usage guidance explicitly say so. Ordinary Chat GPT-6 Pro limits are separate and must not be imported into this scope. |
+| B. Does repository telemetry expose that allowance as `openai/codex`? | Yes. The validated main `limitId = codex` is normalized to this exact scope; a current status read confirms its presence. This establishes a shared constraint, not completeness of an Astra binding. |
+| C. Is an additional Astra-specific constraining scope evidenced? | Unresolved. One additional normalized scope was observed, but neither that observation nor existing project evidence establishes Astra applicability. No private ID is recorded, and absence of an identified Astra scope is not evidence of no additional constraint. |
+| D. Is a plan-dependent Astra limit unrepresented? | The documented limited-Astra semantics for Plus/Business Standard have no evidenced complete mapping into current telemetry. Static catalog bindings and informational `plan` do not represent model-specific plan/seat/access applicability. |
+| E. Can current bindings represent Astra honestly across supported plans? | No, not from this evidence packet. A codex-only entry would claim completeness without resolving D. Generic onboarding is blocked, irrespective of the owner's current account. |
+
+Official [Work and Codex guidance](https://help.openai.com/en/articles/20001275)
+(accessed 2026-09-09) distinguishes Pro $100/$200 and Business Premium, which
+can use their full existing allowance for Astra, from Plus/Business Standard,
+which have limited Astra usage within that allowance. It also requires Codex
+CLI 0.153.0 or newer for Astra and documents workspace access controls.
+Successful capacity collection is not proof that an execution client supports
+Astra or that a particular workspace grants access. The observed normalized
+`prolite` label is not mapped by guess to a public price tier or seat type.
+
+One `uv run python -m scarcity_router status --json` observation on 2026-09-09
+was piped directly through an allowlisted structural `jq` projection before
+inspection, without retaining the full output. OpenAI returned `ok`, schema 3,
+plan `prolite`, main `codex` present with a weekly window, one additional scope,
+five-hour/weekly kinds overall and zero unscoped windows. Z.ai returned `ok`,
+schema 3, with five-hour/weekly/unknown kinds. No model request was issued;
+collection retains the existing bounded D-018 auth-recovery semantics. No
+personal percentages, reset instants, window IDs or non-public scope IDs are
+recorded. This is structural reconnaissance, not Astra live acceptance.
+
+Implementation evidence: `parse_codex_rate_limits_result` preserves validated
+`rateLimitsByLimitId` buckets, discards `normalModelSlug`/`limitName` as identity
+sources and exposes validated `planType` only as informational `plan`.
+`ModelCatalogEntry` has static exact scope bindings; `assess_scarcity` matches
+those scopes without reading plan. An additional binding could constrain a
+candidate only after its applicability is evidenced. No collector parsing,
+private identifier commitment, plan inference or capacity-v3 change is made.
+
+The [Astra usage guide](https://help.openai.com/en/articles/20001516-managing-usage-with-gpt-6-astra-in-work-and-codex)
+also confirms that switching models does not restore shared allowance. Model,
+effort, input/output size and Fast mode affect consumption. Estimated local
+message ranges differ across Astra, Sol, Terra and Luna, but are explicitly not
+fixed message limits or per-task coefficients. Current scarcity measures
+observed remaining subscription capacity, not predicted marginal consumption;
+no synthetic multiplier, API-price penalty or quota deduction is justified.
 
 ### Percentage Invariant
 
@@ -273,8 +321,9 @@ identifiers or endpoint URLs.
 This contract does not define freshness thresholds, caching, refresh behavior,
 timeouts, effective headroom, scarcity formulas or labels, reservations,
 selection, capability ratings, model identity/catalog data, history, audit
-storage, REST, MCP or CLI versioning. U-003 remains responsible for refresh and
-staleness policy. M2 decisions remain responsible for scarcity and selection.
+storage, REST, MCP or CLI versioning. Refresh and staleness policy belongs to
+the application layer; scarcity and selection behavior belongs to
+`docs/selection-policy.md`.
 
 ## Scenario Validation
 

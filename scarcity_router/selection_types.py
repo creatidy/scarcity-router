@@ -35,9 +35,9 @@ source of truth for the rules; ``from_dict`` uses them to check the serialized
 shape and produce a well-typed value, while ``__post_init__`` applies the same
 rules to the stored attributes. This is one validation path, not duplicated
 rules. Serialized shapes are exact and deterministic: optional unknown values
-are omitted except for the two states where explicit ``null`` is the contract
+are omitted except for the states where explicit ``null`` is the contract
 (``CapabilityAssessment`` unknown rating, ``capacity_bindings`` unknown
-applicability).
+applicability, and ``reasoning_effort`` with no configured value).
 """
 
 from __future__ import annotations
@@ -67,6 +67,8 @@ CAPABILITY_DIMENSIONS: tuple[str, ...] = (
 TASK_LEVELS: tuple[str, ...] = ("L0", "L1", "L2", "L3", "L4", "L5")
 
 CONFIDENCE_VALUES: frozenset[str] = frozenset({"low", "medium", "high"})
+
+REASONING_EFFORTS: tuple[str, ...] = ("none", "low", "medium", "high", "xhigh", "max")
 
 MIN_RATING = 1
 MAX_RATING = 5
@@ -1264,9 +1266,20 @@ class CapabilityAssessments:
 # ── Model catalog values ──────────────────────────────────────────────────────
 
 
+def _v_reasoning_effort(value: object) -> str | None:
+    return None if value is None else _v_enum(
+        value, frozenset(REASONING_EFFORTS), "model_catalog_entry.reasoning_effort"
+    )
+
+
 @dataclass(frozen=True)
 class ModelCatalogEntry:
-    """One catalog model entry (contract only; no entries are populated yet).
+    """One calibrated invocation configuration (catalog v2, D-032).
+
+    ``reasoning_effort`` is explicit, never inferred from opaque identity or
+    display text. Null means no configured value, not the real setting "none".
+    Known reasoning support requires an effort; false/unknown support forbids
+    fabricating one. Capabilities belong to this configuration, not its model.
 
     ``capacity_bindings`` semantics are critical: ``None`` means
     model-to-capacity applicability is **unknown** and must never be read as
@@ -1286,6 +1299,7 @@ class ModelCatalogEntry:
     model_version: str | None = None
     model_version_date: str | None = None
     last_reviewed_on: str | None = None
+    reasoning_effort: str | None = None
 
     _REQUIRED: ClassVar[tuple[str, ...]] = (
         "identity",
@@ -1298,6 +1312,7 @@ class ModelCatalogEntry:
         "model_version",
         "model_version_date",
         "last_reviewed_on",
+        "reasoning_effort",
     )
 
     def __post_init__(self) -> None:
@@ -1310,6 +1325,18 @@ class ModelCatalogEntry:
             ModelHardProperties,
             "model_catalog_entry.hard_properties",
         )
+        _ = _v_reasoning_effort(self.reasoning_effort)
+        if self.hard_properties.supports_reasoning_mode is True:
+            if self.reasoning_effort is None:
+                raise SelectionContractValidationError(
+                    "model_catalog_entry.reasoning_effort: reasoning support requires "
+                    + "an explicit configured effort"
+                )
+        elif self.reasoning_effort is not None:
+            raise SelectionContractValidationError(
+                "model_catalog_entry.reasoning_effort: false or unknown reasoning "
+                + "support requires null effort"
+            )
         _ = _v_instance_of(
             self.capabilities,
             CapabilityAssessments,
@@ -1385,6 +1412,7 @@ class ModelCatalogEntry:
             hard_properties=ModelHardProperties.from_dict(dd["hard_properties"]),
             capabilities=CapabilityAssessments.from_dict(dd["capabilities"]),
             capacity_bindings=bindings,
+            reasoning_effort=_v_reasoning_effort(dd.get("reasoning_effort")),
             model_version=model_version,
             model_version_date=_v_opt_date(
                 dd.get("model_version_date"),
@@ -1399,6 +1427,7 @@ class ModelCatalogEntry:
         out: dict[str, object] = {
             "identity": self.identity.to_dict(),
             "display_name": self.display_name,
+            "reasoning_effort": self.reasoning_effort,
             "hard_properties": self.hard_properties.to_dict(),
             "capabilities": self.capabilities.to_dict(),
             # None (unknown applicability) serializes as an explicit null.

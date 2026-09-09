@@ -56,9 +56,9 @@ high reasoning, strong `tool_use`, meaningful `writing_editorial` and adequate
 hard context/output requirements until routing experiments show that a new
 dimension is necessary.
 
-This six-dimension set is the frozen M2 vocabulary. No orchestration dimension
-and no factuality/reliability dimension is added yet; a new dimension requires
-a demonstrated routing need and an explicit contract change.
+This six-dimension set is the current vocabulary. No orchestration dimension
+and no factuality/reliability dimension is included; a new dimension requires a
+demonstrated routing need and an explicit contract change.
 
 ## Capability rating scale
 
@@ -82,13 +82,12 @@ forbidden. The intended rubric is approximately:
 
 These are routing rubrics, not scientific measurements. The accepted
 per-model ratings are curated in [`model-catalog.json`](../model-catalog.json)
-with full provenance (M2c, D-025) and documented in
+with full provenance and documented in
 [`docs/model-calibration.md`](model-calibration.md).
 
 ## TaskRequirement contract
 
-M2 freezes the conceptual task-requirement contract. A `TaskRequirement` has
-exactly four distinguishable parts:
+The task-requirement contract has exactly four distinguishable parts:
 
 1. **Task level** — `L0`–`L5` as defined above, supplied explicitly or as a
    profile-provided default. It is not a capability score and never generates
@@ -108,17 +107,13 @@ Explicit task inputs may tighten a profile expansion (raise a minimum, add a
 constraint) but never silently loosen it, and contradictory explicit
 requirements are a validation error, never heuristically resolved.
 
-**Implemented stored shape (M2b, D-024).** The core type
-(`scarcity_router/selection_types.py`) is a resolved requirement storing
-exactly the first three parts — `task_level`, `capability_minima` and
-`hard_constraints`. Profile expansion is a *construction pathway* into those
-three parts, not a fourth serialized field. M2c (D-025) implemented the
-expansion mechanism and the calibrated profile definitions:
-`TaskProfileDefinition.to_requirement()` and the authoritative
-`TaskProfileCatalog.resolve(profile_id)` return exactly the calibrated stored
-requirement — pure, with no capability inference, no model lookup and no
-merge with explicit task inputs (that merge belongs to later selector input
-assembly).
+The core type (`scarcity_router/selection_types.py`) stores exactly the first
+three parts — `task_level`, `capability_minima` and `hard_constraints`.
+Profile expansion is a *construction pathway* into those three parts, not a
+fourth serialized field. `TaskProfileDefinition.to_requirement()` and
+`TaskProfileCatalog.resolve(profile_id)` return the calibrated stored
+requirement as a pure operation, with no capability inference, model lookup or
+merge with explicit task inputs.
 
 The canonical machine-readable definitions for capability classes, profile
 vocabulary, class/profile relationships and current workflow exemplars live in
@@ -127,13 +122,36 @@ model and selector-facing rules; it does not duplicate that policy artifact.
 
 ## Reasoning effort and selector identity
 
-The operating policy treats reasoning effort as a routing parameter and
-requires the lowest effort that reliably satisfies the task. Current
-Scarcity Router selection, however, evaluates fixed provider/model/variant
-identities from `model-catalog.json`; it does not dynamically optimize
-reasoning effort. Effort-aware selection requires a separate evidence and
-design decision. Current calibrated entries (`max` for GLM-5.3, Luna and
-Flash; `high` for Sol) and the selector contract are unchanged by this policy.
+Catalog v2 (D-032) represents calibrated invocation configurations with an
+explicit `reasoning_effort: str | null` field, independently of capability
+ratings and subscription capacity. The normalized order is
+`none < low < medium < high < xhigh < max`. String `"none"` is a real effort
+setting; null/absent means no configured effort, never zero intensity.
+
+Construction and deserialization validate the vocabulary. Reasoning support
+`true` requires known effort; `false` or unknown support requires null/absent
+effort. These rules are provider-independent. Neither model/display names nor
+`identity.variant` supply effort semantics. Variant remains an opaque stable
+configuration identifier. Capabilities are curated separately per configuration;
+Sol Medium does not automatically inherit Sol High's vector.
+
+Selection uses lowest effort only after capability sufficiency, capacity and
+reservation eligibility, scarcity penalty and capability margin. Unconfigured
+effort sorts after known effort in a separate typed state, not a magic numeric
+sentinel. All current selectable reasoning-capable entries have known effort.
+
+The exact initial additions are Luna Medium, Terra Medium and Sol Medium;
+existing Luna Max, Sol High and both GLM Max vectors are preserved. All five
+OpenAI configurations consume the same evidenced `openai/codex` scope. No
+effort-specific quota penalty or API-price metric exists. Other supported API
+efforts are deferred until independently calibrated, not generated from defaults.
+
+External catalog authors migrate explicitly to v2 by encoding reviewed effort
+values; legacy absent effort for reasoning-capable entries fails validation
+rather than being guessed from variants. Machine-interface v1 identity and
+decision field sets remain unchanged: current variants identify configurations,
+and the versioned catalog supplies explicit effort for reconstruction. An
+explicit effort field in public decisions is deferred to a future v2 interface.
 
 Reference role assignments can name a model or effort setting that is not yet
 in the active catalog. Such assignments are descriptive metadata only and do
@@ -142,7 +160,7 @@ not establish capability ratings, capacity bindings or selector eligibility.
 ## Hard constraints
 
 Hard constraints are categorical or numeric requirements, not quality scores.
-The initial M2 vocabulary is exactly:
+The current vocabulary is exactly:
 
 | Constraint | Meaning |
 | --- | --- |
@@ -160,7 +178,7 @@ There is no local/cloud constraint and no local runtime after D-017, and no
 generic free-form constraint framework: a new constraint kind requires an
 explicit contract change, not a stringly-typed escape hatch.
 
-**Implemented typing (M2b, D-024).** `required_model` is a typed `ModelRef`
+The typed representation uses a `ModelRef` for `required_model`
 (`provider`, `model`) rather than one qualified string, so the contradiction
 rule is validated, not parsed: when `required_provider` and
 `required_model.provider` are both supplied they must match exactly, or
@@ -210,8 +228,8 @@ deep_coding:
 
 This example shows structure, not accepted ratings or final file syntax.
 The accepted numeric minima are calibrated per profile as
-`calibrated_requirement` in [`model-policy.json`](../model-policy.json)
-(M2c, D-025) and verified through capability-only scenario tests.
+`calibrated_requirement` in [`model-policy.json`](../model-policy.json) and
+verified through capability-only scenario tests.
 Advanced clients may supply raw
 capability minima and hard constraints directly.
 Profile definitions must live in one catalog/config source, not duplicated in
@@ -228,6 +246,7 @@ selection.
 The initial catalog is restricted to the models in the real workflow:
 
 - GPT-5.6 Luna;
+- GPT-5.6 Terra;
 - GPT-5.6 Sol;
 - GLM-5.3;
 - GLM-5.3-Flash.
@@ -240,6 +259,8 @@ Each entry carries, conceptually:
   stable and separate from the display name, the provider quota bucket,
   provider-internal aliases and the descriptive model class. Model class never
   becomes identity.
+- **Configured reasoning effort** - the explicit normalized invocation setting,
+  not capability, identity parsing or subscription scarcity.
 - **Supported hard properties** — tool use, vision, reasoning mode and privacy
   characteristics the entry can honestly claim.
 - **Input context allowance and output allowance** — what the subscription
@@ -256,8 +277,8 @@ Each entry carries, conceptually:
   bindings are explicit normalized data, never derived from diagnostic window
   identifiers.
 
-**Implemented semantics (M2b, D-024).** The core types in
-`scarcity_router/selection_types.py` enforce these rules at construction:
+The core types in `scarcity_router/selection_types.py` enforce these rules at
+construction:
 
 - A known rating (`1..5`) requires complete provenance — at least one
   evidence reference, a coarse `low|medium|high` confidence, an assessment
@@ -277,9 +298,9 @@ Each entry carries, conceptually:
   never serve as an optimistic "unmetered" state. Known bindings are unique,
   use the model's own provider and serialize deterministically;
   cross-provider bindings are unsupported in the initial contract (D-024).
-- The catalog container enforces unique identities, admits an empty catalog
-  (the M2b contract precedes the M2c population) and serializes entries
-  sorted by `(provider, model, variant)` independent of insertion order.
+- The catalog container enforces unique identities, permits an empty catalog
+  when no entries are configured, and serializes entries sorted by
+  `(provider, model, variant)` independent of insertion order.
 
 The accepted values are established as reviewable artifacts:
 [`model-catalog.json`](../model-catalog.json) for ratings, provenance and

@@ -61,8 +61,8 @@ class ModelPolicyContract(unittest.TestCase):
         self.assertIsInstance(policy, dict)
         parsed = cast(dict[str, object], policy)
         self.assertEqual(parsed["schema_version"], 1)
-        self.assertEqual(parsed["policy_version"], 5)
-        self.assertEqual(parsed["updated_at"], "2026-09-07")
+        self.assertEqual(parsed["policy_version"], 6)
+        self.assertEqual(parsed["updated_at"], "2026-09-08")
         self.assertEqual(json.loads(json.dumps(parsed)), parsed)
 
     def test_versioning_semantics_are_documented(self) -> None:
@@ -657,7 +657,7 @@ class ModelPolicyContract(unittest.TestCase):
                 },
             )
 
-    def test_reasoning_effort_policy_is_explicit_and_not_selector_implemented(self) -> None:
+    def test_reasoning_effort_policy_uses_calibrated_configurations(self) -> None:
         effort = _mapping(
             _load_policy()["reasoning_effort_policy"], "reasoning_effort_policy"
         )
@@ -666,7 +666,7 @@ class ModelPolicyContract(unittest.TestCase):
         self.assertFalse(effort["importance_alone_triggers_escalation"])
         self.assertFalse(effort["size_alone_triggers_escalation"])
         self.assertFalse(effort["prestige_alone_triggers_escalation"])
-        self.assertEqual(effort["selector_support"], "not_implemented")
+        self.assertEqual(effort["selector_support"], "calibrated_configurations")
         defaults = _objects(
             effort["current_reference_defaults"], "current_reference_defaults"
         )

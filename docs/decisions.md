@@ -1474,6 +1474,161 @@ decision.
   [`docs/m3-acceptance.md`](m3-acceptance.md); this milestone acceptance does
   not create a new decision number.
 
+### D-032 - Reasoning-effort-aware model configurations
+
+- **Status:** Accepted by explicit owner/architect assignment, issue #57
+- **Date:** 2026-09-08
+- **Supersedes:** D-027's ranking order only by inserting effort after capability
+  margin; D-025's four-entry catalog scope by adding three calibrated
+  configurations; D-029's implementation-status claim that effort-aware
+  selection is not implemented. Historical M2/M3 acceptance remains unchanged.
+- **Contract:** Catalog v2 adds explicit `ModelCatalogEntry.reasoning_effort`:
+  `none < low < medium < high < xhigh < max`. Null/absent is no configured
+  value (not applicable or support unknown), not the real string setting
+  `"none"`. Construction and deserialization reject unknown values, require
+  effort when reasoning support is true, and require null/absent when support
+  is false or unknown. No provider-specific validation or inference from
+  display names, model names or variants is permitted.
+- **Identity:** `ModelIdentity(provider, model, variant)` is unchanged. Variant
+  remains an opaque stable configuration identifier, never parsed for effort.
+  The current catalog deliberately uses readable effort spellings as variants;
+  only the explicit catalog field supplies semantics.
+- **Calibration:** Capabilities belong to an invocation configuration. No
+  automatic cloning across efforts is allowed. Preserve all accepted Luna Max,
+  Sol High and GLM vectors and explicitly encode their max/high/max/max effort.
+  Add exactly Luna Medium `(3,4,3,5,5,4)`, Terra Medium `(4,5,4,4,5,4)` and
+  Sol Medium `(5,5,4,5,5,4)` in reasoning/coding/scientific/writing/tool/translation
+  order. These initial effort-specific judgments use medium confidence and
+  dated owner calibration evidence, not invented benchmark precision.
+- **Evidence:** The architect supplied accepted official facts using existing
+  source identifiers `https://openai.com/index/gpt-5-6/` (2026-07-09 launch)
+  and `https://developers.openai.com/api/docs/models`. Luna is cost-sensitive,
+  Terra balanced intelligence/cost, Sol flagship complex-professional work;
+  family coding, professional, science/health and long-context evidence places
+  Terra between Luna and Sol. All three support the six normalized efforts,
+  with Medium the API default; Sol remains very strong at Medium. This task
+  accepts the supplied evidence, not a newly performed benchmark or web audit.
+  Developer-source dates of 2026-09-08 record this supplied evidence review.
+  `accepted_reasoning_effort_calibration_2026-09-08_issue_57_D-032` identifies
+  the owner-approved vectors and rationing direction in issue #57 and this
+  decision. Terra's evidenced properties are 1,050,000 input tokens, 128,000
+  output tokens, tools/vision/reasoning true and `openai/codex` applicability.
+- **Ranking:** After unchanged eligibility and reservation gates, compare
+  known capacity before degraded unknown, scarcity penalty, capability margin,
+  lowest reasoning effort, explicit preference, then stable identity. Unknown
+  or non-applicable effort uses an explicit typed comparison state after known
+  effort, with no numeric intensity or magic sentinel. It never ranks cheaper
+  than `none`. No effort can rescue a capability failure or override scarcity
+  or capability margin. Unrequired capability dimensions still do not count.
+- **Capacity:** Model capability, reasoning intensity and subscription capacity
+  scarcity are independent. All five OpenAI configurations share the observed
+  `openai/codex` assessment. No effort-specific quota bucket, fake percentage,
+  penalty multiplier or API-price cost is invented. Capacity v3, collectors,
+  matching, scarcity formula, reservations and replenishment are unchanged.
+- **Versioning and migration:** Catalog version becomes 2, updated 2026-09-08.
+  External catalog authors must explicitly calibrate/encode effort for
+  reasoning-capable entries; legacy absent effort is not inferred from v1
+  variant strings. Null/absent remains valid for false/unknown reasoning
+  support. There is no automatic legacy catalog conversion. Model-policy schema
+  remains v1; compatible policy content advances to policy_version 6 because
+  `reasoning_effort_policy.selector_support` changed from `not_implemented` to
+  `calibrated_configurations`; task profiles, calibrated minima, workflow
+  assignments and other policy semantics remain unchanged.
+- **Machine compatibility:** CLI JSON, SelectionDecision/CandidateEvaluation
+  field sets, REST paths and v1 envelopes, MCP tools/input schemas and errors
+  remain unchanged. Selection exposes the configured identity variant;
+  reconstruct effort ordering with the decision's versioned catalog and
+  structured margin/scarcity evaluations. No new prose-only explanation
+  subsystem or explicit public effort field is added; that is future v2 work.
+- **Boundary:** No other effort configurations are calibrated; API defaults
+  never auto-populate entries. Astra remains deferred to independent issue #49.
+  No M4, execution, model dispatch, local inference or new architecture.
+  One implementation session, no internal reviewer loop; a human freezes the
+  PR head for one independent external review and remains the merge gate.
+
+### D-033 - GPT-6 Astra Low selector onboarding evidence gate
+
+- **Status:** Unresolved onboarding; evidence-only disposition under the explicit
+  owner/architect gate for [issue #49](https://forgejo.creatidy.com/BioMedical-IT/scarcity-router/issues/49).
+- **Date:** 2026-09-09
+- **Outcome:** `ASTRA_ONBOARDING_READY = NO`;
+  `ONBOARDING_REQUIRES_PLAN_APPLICABILITY_EXTENSION`;
+  `STOP_AND_ESCALATE_TO_HUMAN`. No Astra entry or routing change is authorized.
+- **Prerequisites and current-state reconciliation:** Clean starting worktree;
+  base `d76b4a09ffa4365ea22b3121086b8198a197eaef` contains merged PR #58 and
+  required ancestor `f503107ca9d82bdd34239af8f9a4261f6282c70c`. D-032 is
+  implemented: catalog v2 has seven configurations and policy v6. The original
+  #49 four-candidate premise is historical, not current. `AGENTS.md`'s claim
+  that M3 is next and the roadmap's pending-integration wording for D-032 are
+  stale status descriptions: D-031 closeout and merged #58 establish M3 PASS
+  and D-032 integration. This record explicitly reconciles those status
+  conflicts; no historical acceptance, D-032 semantics or milestone is reopened.
+- **Identity and effort:** Supplied architect-reviewed identity is GPT-6 Astra,
+  release 2026-09-03, `openai` / `gpt-6-astra` / `low`, with explicit
+  `reasoning_effort = low`. Official model documentation corroborates model ID
+  and `low|medium|high|xhigh|max`; Astra does not support `none`. The global
+  vocabulary remains unchanged, and variant is never parsed for effort.
+- **Hard-property evidence:** Official model documentation confirms text/image
+  input, text output, 128,000 output tokens and tool/vision/reasoning support.
+  It lists a 1,050,000-token context window **and** maximum input of 922,000.
+  The assignment supplied `input_context_tokens = 1_050_000`; the existing
+  contract describes an input allowance. That mapping is unresolved, not
+  silently accepted or substituted. Human reconciliation of total context
+  versus supported input allowance is required before a catalog entry.
+- **Calibration:** Preserve the architect-approved conditional vector
+  `(5,5,5,5,5,4)` in reasoning/coding/scientific/writing/tool/translation order,
+  with medium effort-specific confidence and rationale in
+  [model-calibration.md](model-calibration.md#astra-low-evidence-gate-issue-49).
+  No numeric Astra calibration is installed in the active catalog. Low is not
+  low capability; comparative evidence does not establish universal dominance.
+- **Capacity decision:** Shared Work/Codex allowance and its normalized main
+  `openai/codex` scope are evidenced, but completeness of a codex-only Astra
+  binding is not. Official guidance distinguishes Pro $100/$200 and Business
+  Premium (full existing allowance) from Plus/Business Standard (limited Astra
+  usage within that allowance). The current static bindings and informational
+  plan cannot enforce plan/seat/access conditions. One sanitized status read
+  observed OpenAI `ok`, main `codex` and one additional scope; that observation
+  does not identify any Astra-specific constraint. No private scope is named
+  or assigned. See the A-E matrix in
+  [capacity-model.md](capacity-model.md#astra-onboarding-gate-issue-49).
+- **Alternatives and evidence needed:** Keep Astra outside the catalog now.
+  Generic onboarding requires authoritative model-to-scope applicability for
+  every constraining limit across supported plans, safe normalized telemetry
+  for those limits and evidenced access/seat semantics. A plan-applicability
+  extension or an explicitly narrower support boundary requires human design
+  approval; neither is implemented here. Existing multiple bindings may express
+  an evidenced extra scope, but cannot infer its applicability. Whether future
+  support needs new collector parsing remains unresolved; no collector change
+  is required or made for this evidence-only result. Do not create another
+  issue automatically; #49 remains the durable onboarding issue.
+- **Marginal consumption:** Model, effort, task size and Fast mode can change
+  allowance consumption. Public message ranges are not per-task coefficients.
+  Scarcity remains observed remaining subscription capacity, not predicted
+  marginal cost. No model multiplier, percentage deduction or API-price penalty
+  is introduced; any future marginal-consumption design is deferred. Capability
+  margin, effort ordering and profile minima remain D-032 unchanged.
+- **Versioning and routing:** Catalog v2 and policy v6 (schema v1) are unchanged;
+  capacity v3 and machine-interface v1 are unchanged. All eight current eligible
+  sets and conditional future effects are recorded in model-calibration.md.
+  Catalog v3 is not produced, and no Astra-specific tests or live selection
+  acceptance are claimed.
+- **Live and execution boundary:** One existing Kilo session; requested Astra
+  Low, `RUNTIME_UNOBSERVABLE` because no independent generated-turn metadata
+  verifies the complete model/effort assignment. No subagents, model switching,
+  internal reviewer loop or deliberate model execution for quota research.
+  Only one status observation, filtered before inspection, using existing
+  collectors including the D-018 recovery boundary. No personal percentages,
+  reset timestamps, raw responses or private identifiers retained. Budget is
+  120 minutes with a bounded evidence pass; implementation stops at this gate.
+  The docs-only PR remains open/unmerged for the human gate; M4 does not start.
+- **Sources:** Official pages accessed 2026-09-09:
+  [model](https://developers.openai.com/api/docs/models/gpt-6-astra.md),
+  [usage guidance](https://help.openai.com/en/articles/20001516-managing-usage-with-gpt-6-astra-in-work-and-codex),
+  [Work and Codex](https://help.openai.com/en/articles/20001275).
+  Release date and independent benchmark comparisons are attributed to the
+  architect-reviewed evidence supplied in the 2026-09-09 assignment, not a new
+  benchmark run. This decision supersedes no accepted ranking or capacity rule.
+
 ## Unresolved decisions
 
 ### U-001 — Codex binary discovery and compatibility
