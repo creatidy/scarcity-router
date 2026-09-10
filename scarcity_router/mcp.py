@@ -26,6 +26,7 @@ from mcp.types import (
     Tool,
 )
 
+from . import get_version
 from .errors import ApplicationInputError
 from .machine_api import (
     internal_error_payload,
@@ -255,7 +256,7 @@ def build_server(
 
     return Server(
         "scarcity-router",
-        version="m3c",
+        version=get_version(),
         lifespan=empty_lifespan,
         on_list_tools=on_list_tools,
         on_call_tool=on_call_tool,

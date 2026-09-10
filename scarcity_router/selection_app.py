@@ -19,10 +19,11 @@ transport owns requirement resolution or application semantics.
 Caller-supplied input violations raise ``ApplicationInputError`` so adapters
 can classify client errors by type (D-030).
 
-The default artifact paths are the repository-root ``model-catalog.json``
-and ``model-policy.json`` of the current source tree — a provisional
-source-tree CLI layout only (U-008 remains unresolved; this is not the
-final installed-package resource layout).
+The default artifact paths resolve through ``resolve_default_artifact``:
+the repository-root ``model-catalog.json`` and ``model-policy.json`` win in
+a source tree (the single committed authoritative copies), and the packaged
+resource copies inside ``scarcity_router`` are used by an installed
+package (D-034). Explicit path overrides always replace the defaults.
 
 Strict JSON loading uses only the standard library: ``object_pairs_hook``
 rejects duplicate object keys, ``parse_constant`` rejects NaN/Infinity and
@@ -31,6 +32,7 @@ malformed JSON raises ``ValueError`` — never a raw payload dump.
 
 from __future__ import annotations
 
+import importlib.resources
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -64,8 +66,32 @@ from .simulation import SimulationOverrides, SimulationResult, simulate_selectio
 from .status import Clock, StatusCollectors, collect_status
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_CATALOG_PATH = REPO_ROOT / "model-catalog.json"
-DEFAULT_MODEL_POLICY_PATH = REPO_ROOT / "model-policy.json"
+
+
+def resolve_default_artifact(name: str, *, source_root: Path = REPO_ROOT) -> Path:
+    """Resolve one default artifact path for source-tree and installed runs.
+
+    Source tree: the repository-root authoritative copy wins, so a checkout
+    always uses the single committed root artifact and never depends on
+    packaging state. Installed package: the packaged resource copy inside
+    ``scarcity_router`` (mapped into the wheel at build time; no committed
+    duplicate) is used. Resolution depends only on the module location,
+    never on the working directory or environment variables. Explicit
+    ``--catalog`` / ``--model-policy`` overrides bypass it entirely.
+    """
+    source_copy = source_root / name
+    if source_copy.is_file():
+        return source_copy
+    # Regular (wheel) installs resolve to a real filesystem path; the
+    # context manager only matters for archive-based imports.
+    with importlib.resources.as_file(
+        importlib.resources.files("scarcity_router").joinpath(name)
+    ) as resource_path:
+        return resource_path
+
+
+DEFAULT_CATALOG_PATH = resolve_default_artifact("model-catalog.json")
+DEFAULT_MODEL_POLICY_PATH = resolve_default_artifact("model-policy.json")
 
 
 # ── Strict JSON loading ───────────────────────────────────────────────────────
@@ -926,6 +952,7 @@ __all__ = [
     "load_model_policy",
     "load_replenishment_states",
     "load_requirement",
+    "resolve_default_artifact",
     "load_selector_policy",
     "load_simulation_overrides",
     "load_strict_json",

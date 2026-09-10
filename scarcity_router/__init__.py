@@ -62,6 +62,8 @@ composition (artifact loading, status collection, rendering) lives in
 
 from __future__ import annotations
 
+from importlib import metadata as _metadata
+
 from .capacity import (
     CapacityDiagnostic,
     CapacitySnapshot,
@@ -220,6 +222,7 @@ __all__ = [
     "evaluate_capability_sufficiency",
     "evaluate_hard_constraints",
     "evaluate_reservation",
+    "get_version",
     "neutral_selector_policy",
     "scarcity_label",
     "scarcity_penalty_units",
@@ -228,4 +231,20 @@ __all__ = [
     "tighten_requirement",
 ]
 
-__version__ = "0.0.0"
+# ── Distribution version ─────────────────────────────────────────────────────
+#
+# ``__version__`` is the single authoritative source literal; the build
+# backend reads it for distribution metadata (no second committed copy).
+# Runtime callers use ``get_version()``, which prefers the installed
+# distribution metadata and falls back to this deterministic literal when
+# the package runs from a source tree without an installed distribution.
+
+__version__ = "0.1.0"
+
+
+def get_version() -> str:
+    """Return the installed distribution version or the source fallback."""
+    try:
+        return _metadata.version("scarcity-router")
+    except _metadata.PackageNotFoundError:
+        return __version__

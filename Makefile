@@ -3,11 +3,13 @@
 # invoked through the uv-managed environment, never a global executable.
 # Plain `pyright` is never substituted for basedpyright.
 #
-#   make test       -> full unit-test suite (auto-discovers tests/)
-#   make typecheck  -> repo-managed basedpyright (default "recommended" gate)
-#   make check      -> test + typecheck; must exit 0 before every commit/PR
+#   make test          -> full unit-test suite (auto-discovers tests/)
+#   make typecheck     -> repo-managed basedpyright (default "recommended" gate)
+#   make check         -> test + typecheck; must exit 0 before every commit/PR
+#   make package-check -> build wheel/sdist, inspect artifacts, isolated
+#                         temporary tool install and installed-surface smoke
 
-.PHONY: check typecheck test
+.PHONY: check typecheck test package-check
 
 check: test typecheck
 
@@ -16,3 +18,6 @@ typecheck:
 
 test:
 	uv run python -m unittest discover -s tests -p "test_*.py"
+
+package-check:
+	uv run python tools/package_check.py
