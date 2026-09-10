@@ -1,8 +1,58 @@
-# Tooling-only configuration. There is intentionally no [project] table:
-# package name, release version and publication metadata are an unresolved
-# decision (U-008 in docs/decisions.md) and must not be chosen incidentally by
-# development tooling. basedpyright is the declared development-only gate,
-# resolved and pinned via uv.lock so every run uses the same tool version.
+# Packaging and tooling configuration for the `scarcity-router` local
+# distribution (issue #63, D-034). The build backend is Hatchling: uv_build
+# cannot map the root-authoritative model-catalog.json / model-policy.json
+# into the wheel without committed in-package duplicates, while Hatchling's
+# force-include maps the single root copies into the wheel at build time.
+# basedpyright remains the declared development-only gate, resolved and
+# pinned via uv.lock so every run uses the same tool version.
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "scarcity-router"
+description = "Local decision service that recommends the least scarce capable subscription-backed AI model"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.12"
+dependencies = [
+    "mcp>=2,<3",
+]
+dynamic = ["version"]
+
+[project.scripts]
+scarcity-router = "scarcity_router.cli:main"
+scarcity-router-mcp = "scarcity_router.mcp:main"
+scarcity-router-server = "scarcity_router.server:main"
+
+# The version lives only in scarcity_router/__init__.py; metadata reads it
+# from there instead of committing a second copy in this file.
+[tool.hatch.version]
+path = "scarcity_router/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["scarcity_router"]
+
+# Map the two root-authoritative artifacts into the wheel as installed
+# package resources. No duplicate copies are committed in the package.
+[tool.hatch.build.targets.wheel.force-include]
+"model-catalog.json" = "scarcity_router/model-catalog.json"
+"model-policy.json" = "scarcity_router/model-policy.json"
+
+# Minimal sdist: exactly what rebuilding the wheel requires. Tests, docs,
+# tooling and local artifacts stay out of the distribution. (Hatchling
+# additionally injects the standard root .gitignore and PKG-INFO.)
+[tool.hatch.build.targets.sdist]
+include = [
+    "/scarcity_router",
+    "/model-catalog.json",
+    "/model-policy.json",
+    "/pyproject.toml",
+    "/README.md",
+    "/LICENSE",
+]
 
 [dependency-groups]
 dev = [

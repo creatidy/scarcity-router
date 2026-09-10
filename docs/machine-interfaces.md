@@ -511,9 +511,9 @@ MCP` for representative scenarios.
   Host, CORS or MCP-auth concern. No daemon and no shared cache exists between
   REST and MCP. The tools may invoke the existing provider collectors and the
   bounded provider-managed auth recovery, but never accept credentials,
-  provider endpoints or catalog paths from MCP input. The MCP SDK dependency is
-  in the development dependency group for the current module-based runtime;
-  final installable-package runtime metadata remains unresolved.
+  provider endpoints or catalog paths from MCP input. The MCP SDK is the
+  runtime dependency `mcp>=2,<3` of the installable package (D-034); the
+  development environment additionally resolves it through the dev group.
 - **Side effects.** As frozen in [Side-effect semantics](#side-effect-semantics).
 
 ## Versioning

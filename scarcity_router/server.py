@@ -33,6 +33,7 @@ import sys
 from collections.abc import Callable, Mapping, Sequence
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 from typing import ClassVar, cast, override
 
 from .errors import ApplicationInputError
@@ -389,10 +390,18 @@ def _parse_bounded_content_length(value: str) -> int | None:
 # ── Runtime entry point (PHASE 4) ────────────────────────────────────────────
 
 
+def _default_prog() -> str:
+    """Show the installed script name for script runs, the module form else."""
+    invoked = Path(sys.argv[0]).name if sys.argv and sys.argv[0] else ""
+    if invoked == "scarcity-router-server":
+        return invoked
+    return "python -m scarcity_router.server"
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the module parser; there is deliberately no bind-address flag."""
     parser = argparse.ArgumentParser(
-        prog="python -m scarcity_router.server",
+        prog=_default_prog(),
         description=(
             "Loopback-only local REST adapter for Scarcity Router (D-028): "
             + "GET /healthz, GET /v1/status, POST /v1/select, "

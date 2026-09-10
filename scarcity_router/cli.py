@@ -8,9 +8,10 @@ module entry point (``status.main``) is preserved unchanged for direct
 callers; the dispatcher re-uses the same collect/render primitives so the
 status output contract is identical.
 
-Default artifact paths are the repository-root ``model-catalog.json`` and
-``model-policy.json`` of the current source tree — provisional only, since
-U-008 (package/CLI/project name) is unresolved.
+Default artifact paths resolve through ``selection_app.resolve_default_artifact``:
+the repository-root ``model-catalog.json`` and ``model-policy.json`` in a
+source tree, the packaged resource copies in an installed package; explicit
+``--catalog`` / ``--model-policy`` overrides always win.
 
 Valid no-solution decisions are legitimate selector results and exit 0 for
 both ``select`` and ``simulate``; non-zero exit is reserved for invalid
@@ -46,10 +47,16 @@ from .status import (
 )
 
 
+def _default_prog() -> str:
+    """Show the installed script name for script runs, the module form else."""
+    invoked = Path(sys.argv[0]).name if sys.argv and sys.argv[0] else ""
+    return invoked if invoked == "scarcity-router" else "python -m scarcity_router"
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the top-level ``status`` / ``select`` / ``simulate`` parser."""
     parser = argparse.ArgumentParser(
-        prog="python -m scarcity_router",
+        prog=_default_prog(),
         description=(
             "Read-only normalized AI provider capacity status and "
             "deterministic least-scarce model selection."
@@ -153,13 +160,13 @@ def _fill_requirement_arguments(parser: argparse.ArgumentParser) -> None:
         "--catalog",
         metavar="FILE",
         default=str(DEFAULT_CATALOG_PATH),
-        help="model catalog JSON (default: repository-root model-catalog.json)",
+        help="model catalog JSON (default: the source-tree or packaged default catalog)",
     )
     _ = parser.add_argument(
         "--model-policy",
         metavar="FILE",
         default=str(DEFAULT_MODEL_POLICY_PATH),
-        help="model policy JSON (default: repository-root model-policy.json)",
+        help="model policy JSON (default: the source-tree or packaged default policy)",
     )
 
 
