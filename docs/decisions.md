@@ -1725,7 +1725,14 @@ decision.
     unique across reservations, blackouts and happy hours. Machine
     envelopes and the `SelectionDecision` field set are unchanged; the
     per-candidate `happy_hour_decision` (present only when preferred)
-    is additive inside the existing candidate payload.
+    is additive inside the existing candidate payload. The decision also
+    carries the additive optional member `expired_happy_hour_rules`
+    (serialized only when non-empty): the rule ids whose weekly window
+    would cover the evaluated instant but whose inclusive date bounds do
+    not — the campaign-ended signal. It is explanation-only provenance,
+    never a ranking or eligibility input, and `--explain` lists it under
+    "Expired happy-hour rules"; the compact human output names the active
+    preference with one `Happy hour:` line.
 - **Alternatives considered:** treating a happy hour as an inverse
   blackout (hard-blocking non-targeted models) — rejected because it
   manufactures exclusions from pricing knowledge and can manufacture
@@ -1783,7 +1790,11 @@ decision.
     the neutral policy with one concise stderr warning and never block
     a selection; a config file that exists but fails to load directly
     (application loaders) is a loud configuration error, never a
-    silent fall-through.
+    silent fall-through. The run that implicitly provisions the file
+    announces it once on stderr
+    (`note: provisioned default user config: <path>`); an existing file
+    is never announced, `install-config` output is unchanged, and JSON
+    stdout stays clean for piping.
 - **Reason:** The owner does not want to hand-create policy files or add
   flags to the MCP command; one XDG location provisioned from the
   reviewed example gives every surface the same policy with zero wiring,

@@ -107,7 +107,8 @@ scarcity-router install-config --force  # replaces it with the shipped defaults
 
 Every surface provisions the file from the checked-in
 [`examples/selector-policy.json`](examples/selector-policy.json) on first
-use when it is missing, and then uses it automatically:
+use when it is missing — the run that creates it prints a one-line note to
+stderr — and then uses it automatically:
 
 - CLI: an explicit `--selector-policy FILE` wins, then the default config
   file, then the documented neutral policy; `--neutral-policy` ignores the

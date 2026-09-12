@@ -430,6 +430,12 @@ Semantics and boundaries:
 - **Determinism.** Rules are stored canonically sorted by `rule_id`; the
   first matching active rule decides. Blackout always wins over an
   overlapping happy hour because it is an eligibility stage.
+- **Expiry is visible.** When a rule's weekly window would cover the
+  evaluated instant but its inclusive date bounds do not (a campaign that
+  has ended), the decision names it under `expired_happy_hour_rules` and
+  `--explain` lists it — the "why did the preference disappear?" question
+  answers itself. A rule that is simply outside its weekly window is
+  ordinary schedule behavior and is never flagged.
 
 ## Replenishment and reset opportunities
 

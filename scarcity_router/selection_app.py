@@ -795,6 +795,16 @@ def _explain_sections(decision: SelectionDecision) -> list[str]:
     else:
         lines.append("Preference order: none")
 
+    if decision.expired_happy_hour_rules:
+        lines.append(
+            "Expired happy-hour rules (weekly window would cover now, "
+            + "date bounds do not — preference not applied):"
+        )
+        lines.extend(
+            f"  - rule {rule_id}"
+            for rule_id in decision.expired_happy_hour_rules
+        )
+
     if decision.alternatives:
         lines.append("Alternatives (exact ranking order):")
         for index, alternative in enumerate(decision.alternatives, start=1):
@@ -886,6 +896,7 @@ def render_select_human(decision: SelectionDecision, *, explain: bool = False) -
         lines.append(f"Selected: {_identity_label(selected)}")
         lines.append(_scarcity_line(selected))
         lines.append(f"Capability margin: {selected.capability_margin}")
+        lines.extend(_happy_hour_lines(selected))
     else:
         lines.append("No eligible candidate")
         if decision.closest_candidates:

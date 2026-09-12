@@ -1359,6 +1359,11 @@ class SelectionDecision:
     # its semantically meaningful order (never sorted). It is a real ranking
     # input — it can decide a true tie — so the decision preserves it.
     preference_order: tuple[ModelIdentity, ...] = ()
+    # D-035 explanation-only provenance: happy-hour rules whose weekly
+    # window would cover the evaluated instant but whose inclusive date
+    # bounds exclude it — the "campaign ended" signal. Never a ranking or
+    # eligibility input; serialized only when non-empty.
+    expired_happy_hour_rules: tuple[str, ...] = ()
 
     _SELECTED_CODES: ClassVar[frozenset[str]] = frozenset({
         "selected_balanced",
@@ -1489,6 +1494,22 @@ class SelectionDecision:
                     + f"{key}"
                 )
             seen_preferences.add(key)
+        seen_expired: set[str] = set()
+        for rule_id in self.expired_happy_hour_rules:
+            _ = _v_nonempty_str(
+                rule_id, "selection_decision.expired_happy_hour_rules"
+            )
+            if rule_id in seen_expired:
+                raise SelectionContractValidationError(
+                    "selection_decision.expired_happy_hour_rules: "
+                    + f"duplicate rule id {rule_id!r}"
+                )
+            seen_expired.add(rule_id)
+        object.__setattr__(
+            self,
+            "expired_happy_hour_rules",
+            tuple(sorted(self.expired_happy_hour_rules)),
+        )
         if self.profile_id is None and self.profile_policy_version is not None:
             raise SelectionContractValidationError(
                 "selection_decision: profile_policy_version requires a "
@@ -1524,6 +1545,11 @@ class SelectionDecision:
         out["preference_order"] = [
             entry.to_dict() for entry in self.preference_order
         ]
+        # Additive D-035 member: absent from serialized output when empty.
+        if self.expired_happy_hour_rules:
+            out["expired_happy_hour_rules"] = list(
+                self.expired_happy_hour_rules
+            )
         return out
 
 
@@ -1672,6 +1698,13 @@ def select_model(
         profile_id=profile_id,
         profile_policy_version=profile_policy_version,
         preference_order=policy.preference_order,
+        expired_happy_hour_rules=tuple(
+            sorted(
+                rule.rule_id
+                for rule in policy.resource_policy.happy_hours
+                if rule.is_date_expired_at(evaluated_at)
+            )
+        ),
     )
 
 

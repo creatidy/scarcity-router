@@ -266,27 +266,49 @@ class LoadAndResolveTests(unittest.TestCase):
             blocked.mkdir(parents=True)
             with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": str(home)}):
                 warnings: list[str] = []
-                policy = resolve_default_selector_policy(warn=warnings.append)
+                notes: list[str] = []
+                policy = resolve_default_selector_policy(
+                    warn=warnings.append, note=notes.append
+                )
                 self.assertIsNone(policy)
                 self.assertEqual(1, len(warnings))
                 self.assertIn(
                     "default selector policy unavailable", warnings[0]
                 )
+                self.assertEqual([], notes)
         # A broken policy file is equally a loud degrade, never a crash.
         with _config_home({SELECTOR_POLICY_FILE_NAME: "{not json"}):
             broken_warnings: list[str] = []
-            policy = resolve_default_selector_policy(warn=broken_warnings.append)
+            broken_notes: list[str] = []
+            policy = resolve_default_selector_policy(
+                warn=broken_warnings.append, note=broken_notes.append
+            )
             self.assertIsNone(policy)
             self.assertEqual(1, len(broken_warnings))
             self.assertIn(
                 "default selector policy unavailable", broken_warnings[0]
             )
+            self.assertEqual([], broken_notes)
 
     def test_resolver_provisions_and_loads_the_example(self) -> None:
-        with _config_home():
-            policy = resolve_default_selector_policy(warn=lambda _message: None)
+        with _config_home() as directory:
+            notes: list[str] = []
+            policy = resolve_default_selector_policy(
+                warn=lambda _message: None, note=notes.append
+            )
             assert policy is not None
             self.assertEqual(load_selector_policy(EXAMPLE_PATH), policy)
+            # The provisioning run announces the created file exactly once.
+            self.assertEqual(1, len(notes))
+            self.assertIn("note: provisioned default user config", notes[0])
+            self.assertIn(
+                str(directory / SELECTOR_POLICY_FILE_NAME), notes[0]
+            )
+            # An existing file is never announced again.
+            _ = resolve_default_selector_policy(
+                warn=lambda _message: None, note=notes.append
+            )
+            self.assertEqual(1, len(notes))
 
 
 class InstallConfigCommandTests(_Quiet):
@@ -326,11 +348,20 @@ class CliPrecedenceTests(_Quiet):
         # 14:00–18:00 SGT; the fixed clock is a Monday 15:00 SGT, so the
         # neutral winner (GLM-5.3-Flash at 80%) is policy-blocked and the
         # least scarce OpenAI configuration wins instead.
-        with _config_home():
+        with _config_home() as directory:
             code, out, err = self._run(
                 ["select", "--profile", "routine_coding", "--json"]
             )
-            self.assertEqual((0, ""), (code, err))
+            self.assertEqual(0, code)
+            # The implicit first provisioning is announced once on stderr;
+            # the JSON stdout stays clean.
+            self.assertEqual(
+                [
+                    "note: provisioned default user config: "
+                    + str(directory / SELECTOR_POLICY_FILE_NAME)
+                ],
+                err.splitlines(),
+            )
             self.assertEqual("gpt-5.6-luna", self._selected_model(out))
 
     def test_neutral_policy_flag_ignores_the_user_config(self) -> None:
@@ -399,9 +430,101 @@ class CliPrecedenceTests(_Quiet):
                         "--json",
                     ]
                 )
-                self.assertEqual((0, ""), (code, err))
+                self.assertEqual(0, code)
+                self.assertIn(
+                    "note: provisioned default user config", err
+                )
                 self.assertIn('"policy_blocked"', out)
                 self.assertIn("gpt-5.6-luna", out)
+
+
+class ExplanationRenderingTests(_Quiet):
+    """End-user visible explanation of the happy-hour mechanics."""
+
+    def _write_policy(self, directory: Path, document: dict[str, object]) -> str:
+        path = directory / "policy.json"
+        _ = path.write_text(json.dumps(document), encoding="utf-8")
+        return str(path)
+
+    def test_compact_output_names_the_active_preference(self) -> None:
+        # Campaign-window override: Tuesday 02:00 SGT is inside the happy
+        # hour and outside the blackout. Even the compact output must say
+        # why the preference applied.
+        overrides = {"evaluated_at": "2026-09-15T02:00:00+08:00"}
+        with tempfile.TemporaryDirectory() as tmp:
+            overrides_path = Path(tmp) / "overrides.json"
+            _ = overrides_path.write_text(json.dumps(overrides), encoding="utf-8")
+            code, out, err = self._run(
+                [
+                    "simulate",
+                    "--profile",
+                    "routine_coding",
+                    "--selector-policy",
+                    str(EXAMPLE_PATH),
+                    "--overrides",
+                    str(overrides_path),
+                ]
+            )
+            self.assertEqual((0, ""), (code, err))
+            self.assertIn(
+                "Happy hour: rule zai-flash-campaign-night-sgt "
+                + "(glm53flash_campaign_zero_quota)",
+                out,
+            )
+
+    def test_explain_lists_date_expired_rules(self) -> None:
+        expired: dict[str, object] = {
+            "mode": "balanced",
+            "resource_policy": {
+                "policy_version": 1,
+                "unknown_capacity_mode": "degraded",
+                "replenishment_mode": "advisory",
+                "reservations": [],
+                "blackouts": [],
+                "happy_hours": [
+                    {
+                        "rule_id": "flash-expired",
+                        "target": {"provider": "zai"},
+                        "timezone": "Asia/Singapore",
+                        "weekdays": [
+                            "mon", "tue", "wed", "thu", "fri", "sat", "sun",
+                        ],
+                        "start_local": "00:00",
+                        "end_local": "23:59",
+                        "reason_code": "campaign_over",
+                        "start_date": "2026-09-01",
+                        "end_date": "2026-09-05",
+                    }
+                ],
+            },
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            policy_path = self._write_policy(Path(tmp), expired)
+            code, out, err = self._run(
+                [
+                    "select",
+                    "--profile",
+                    "routine_coding",
+                    "--selector-policy",
+                    policy_path,
+                    "--explain",
+                ]
+            )
+            self.assertEqual((0, ""), (code, err))
+            self.assertIn("Expired happy-hour rules", out)
+            self.assertIn("rule flash-expired", out)
+            # Explanation-only: the compact output carries no expiry note.
+            code, out, _ = self._run(
+                [
+                    "select",
+                    "--profile",
+                    "routine_coding",
+                    "--selector-policy",
+                    policy_path,
+                ]
+            )
+            self.assertEqual(0, code)
+            self.assertNotIn("Expired happy-hour rules", out)
 
 
 class SerializedPolicyContractTests(unittest.TestCase):

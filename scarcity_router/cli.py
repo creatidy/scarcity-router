@@ -217,7 +217,8 @@ def _resolve_selector_policy_path(args: dict[str, object]) -> Path | None:
 
     An explicit ``--selector-policy`` file always wins. Otherwise the
     default user configuration is provisioned from the checked-in example
-    when missing and used when present; ``--neutral-policy`` skips it. A
+    when missing and used when present; ``--neutral-policy`` skips it. The
+    run that first provisions reports the created file once on stderr; a
     provisioning failure degrades to the neutral policy with one concise
     warning — it never blocks a selection.
     """
@@ -225,13 +226,18 @@ def _resolve_selector_policy_path(args: dict[str, object]) -> Path | None:
     if explicit is not None or args.get("neutral_policy"):
         return explicit
     try:
-        config_path, _ = ensure_default_user_config(env=os.environ)
+        config_path, wrote = ensure_default_user_config(env=os.environ)
     except OSError as exc:
         print(
             f"warning: default selector policy unavailable: {exc.strerror}",
             file=sys.stderr,
         )
         return None
+    if wrote:
+        print(
+            f"note: provisioned default user config: {config_path}",
+            file=sys.stderr,
+        )
     return config_path if config_path.is_file() else None
 
 

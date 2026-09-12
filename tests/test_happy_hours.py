@@ -539,7 +539,7 @@ class RankingIntegrationTests(unittest.TestCase):
         self.assertEqual("policy_blackout", flash.exclusion_stage)
         self.assertIsNone(flash.happy_hour_decision)
 
-    def test_ended_campaign_no_longer_prefers(self) -> None:
+    def test_ended_campaign_no_longer_prefers_and_is_noted(self) -> None:
         rule = _rule(target=FLASH_RULE, start_date="2026-09-01", end_date="2026-09-12")
         decision = _select(
             _policy(rule),
@@ -549,6 +549,61 @@ class RankingIntegrationTests(unittest.TestCase):
         assert decision.selected is not None
         self.assertEqual(LUNA_MEDIUM, decision.selected.identity)
         self.assertIsNone(decision.selected.happy_hour_decision)
+        # The weekly window would cover 02:00 SGT; only the date bounds
+        # exclude it, so the decision names the expired rule (explanation
+        # only).
+        self.assertEqual(("night-campaign",), decision.expired_happy_hour_rules)
+        self.assertEqual(
+            ["night-campaign"], decision.to_dict()["expired_happy_hour_rules"]
+        )
+
+    def test_active_campaign_carries_no_expiry_note(self) -> None:
+        decision = _select(
+            _policy(_rule(target=FLASH_RULE)),
+            [_snap("openai", 90, 90), _snap("zai", 20, 20)],
+            at=_at(2),
+        )
+        self.assertEqual((), decision.expired_happy_hour_rules)
+        self.assertNotIn("expired_happy_hour_rules", decision.to_dict())
+        # An inactive rule whose weekly window does not cover the instant
+        # is ordinary schedule behavior, never an expiry note.
+        outside = _select(
+            _policy(_rule(target=FLASH_RULE, start_date=None, end_date=None)),
+            [_snap("openai", 90, 90), _snap("zai", 20, 20)],
+            at=_at(12),
+        )
+        self.assertEqual((), outside.expired_happy_hour_rules)
+
+
+class DateExpiryTests(unittest.TestCase):
+    """The explanation-only date-expiry signal for campaign rules."""
+
+    def test_window_covering_but_dates_excluding_is_expired(self) -> None:
+        rule = _rule(
+            start_local="00:00",
+            end_local="23:59",
+            start_date="2026-09-01",
+            end_date="2026-09-05",
+        )
+        # The weekly window covers all day, but Sep 14 is after end_date.
+        self.assertTrue(rule.is_date_expired_at(_at(15)))
+        # Inside the date bounds it is simply active.
+        self.assertFalse(rule.is_date_expired_at(_at(15, day=3)))
+        # Before start_date it is expired too.
+        self.assertTrue(
+            rule.is_date_expired_at(datetime(2026, 8, 25, 15, 0, tzinfo=SGT))
+        )
+
+    def test_window_not_covering_is_never_expired(self) -> None:
+        rule = _rule(start_date="2026-09-01", end_date="2026-09-05")
+        # 15:00 SGT is outside the nightly window: ordinary schedule
+        # behavior, not a notable expiry.
+        self.assertFalse(rule.is_date_expired_at(_at(15)))
+
+    def test_no_date_bounds_never_expired(self) -> None:
+        rule = _rule(start_date=None, end_date=None)
+        self.assertFalse(rule.is_date_expired_at(_at(2)))
+        self.assertFalse(rule.is_date_expired_at(_at(15)))
 
 
 class ExamplePolicyTests(unittest.TestCase):

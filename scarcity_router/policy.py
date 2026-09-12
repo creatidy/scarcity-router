@@ -1321,6 +1321,37 @@ class WeeklyHappyHourRule:
             return False
         return True
 
+    def is_date_expired_at(self, at: datetime) -> bool:
+        """Whether the weekly window would cover ``at`` but dates exclude it.
+
+        Explanation-only signal (D-035): a rule whose weekly interval covers
+        the instant while its inclusive ``start_date``/``end_date`` bounds
+        do not has silently gone inert — exactly the "my campaign ended,
+        why did the preference disappear?" case. A rule without date bounds
+        and a rule whose weekly window does not cover the instant are never
+        date-expired; being outside the weekly window is ordinary schedule
+        behavior, not a notable expiry.
+        """
+        checked_at = _v_aware_datetime(
+            at, "weekly_happy_hour_rule.is_date_expired_at.at"
+        )
+        if not _weekly_window_contains(
+            self.timezone, self.weekdays, self.start_local, self.end_local,
+            checked_at,
+        ):
+            return False
+        if self.start_date is None and self.end_date is None:
+            return False
+        local_date = checked_at.astimezone(_zone(self.timezone)).date()
+        if self.start_date is not None and (
+            local_date < date.fromisoformat(self.start_date)
+        ):
+            return True
+        return (
+            self.end_date is not None
+            and local_date > date.fromisoformat(self.end_date)
+        )
+
     @classmethod
     def from_dict(cls, d: object) -> "WeeklyHappyHourRule":
         dd = _v_exact_shape(d, cls._REQUIRED, cls._OPTIONAL, "weekly_happy_hour_rule")

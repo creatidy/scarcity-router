@@ -130,6 +130,7 @@ def resolve_default_selector_policy(
     *,
     env: Mapping[str, str] | None = None,
     warn: Callable[[str], None] = _warn_stderr,
+    note: Callable[[str], None] = _warn_stderr,
 ) -> SelectorPolicy | None:
     """Provision (best effort) and load the default user policy.
 
@@ -137,9 +138,13 @@ def resolve_default_selector_policy(
     and loading failures print one concise warning through ``warn`` (stderr
     by default) and yield ``None`` — the documented neutral policy — so a
     read-only or broken configuration directory never blocks selection.
+    The run that first provisions the file reports it once through ``note``
+    (stderr by default); an existing file is never announced.
     """
     try:
-        _ = ensure_default_user_config(env=env)
+        path, wrote = ensure_default_user_config(env=env)
+        if wrote:
+            note(f"note: provisioned default user config: {path}")
         return load_default_selector_policy(env=env)
     except (OSError, ValueError, SelectionContractError) as exc:
         warn(f"warning: default selector policy unavailable: {exc}")
