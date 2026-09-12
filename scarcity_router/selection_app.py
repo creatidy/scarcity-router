@@ -304,13 +304,18 @@ def resolve_requirement(
 class ApplicationDependencies:
     """Process-configured dependencies shared by machine transports.
 
-    Artifact paths are server configuration, never client-controlled request
-    data. Collectors and the clock remain injectable for deterministic tests;
-    production callers leave them as ``None``.
+    Artifact paths and the default selector policy are server
+    configuration, never client-controlled request data. Collectors and
+    the clock remain injectable for deterministic tests; production callers
+    leave them as ``None``. ``default_policy`` (D-036) is the server-side
+    policy loaded from the default user configuration; a request that
+    supplies its own ``selector_policy`` always wins over it, and a missing
+    default keeps the documented neutral policy.
     """
 
     catalog_path: Path = DEFAULT_CATALOG_PATH
     model_policy_path: Path = DEFAULT_MODEL_POLICY_PATH
+    default_policy: SelectorPolicy | None = None
     collectors: StatusCollectors | None = None
     clock: Clock | None = None
 
@@ -720,6 +725,17 @@ def _short_state(candidate: CandidateEvaluation) -> str:
     return f"degraded unknown capacity, margin {candidate.capability_margin}"
 
 
+def _happy_hour_lines(candidate: CandidateEvaluation) -> list[str]:
+    """Explanation lines for a candidate's happy-hour quota preference."""
+    decision = candidate.happy_hour_decision
+    if decision is None:
+        return []
+    return [
+        f"Happy hour: rule {decision.rule_id} ({decision.reason_code}) — "
+        + "quota-preference window active (ranking preference only)"
+    ]
+
+
 def _explain_sections(decision: SelectionDecision) -> list[str]:
     lines: list[str] = []
     lines.append("Resolved requirement:")
@@ -741,6 +757,7 @@ def _explain_sections(decision: SelectionDecision) -> list[str]:
             + f"capability margin={selected.capability_margin}, "
             + f"mode={decision.selector_mode}"
         )
+        lines.extend("  " + line for line in _happy_hour_lines(selected))
         governing = _governing_line(selected)
         if governing is not None:
             lines.append(f"  {governing}")
@@ -785,6 +802,7 @@ def _explain_sections(decision: SelectionDecision) -> list[str]:
                 f"  {index}. {_identity_label(alternative)} — "
                 + _short_state(alternative)
             )
+            lines.extend("     " + line for line in _happy_hour_lines(alternative))
             governing = _governing_line(alternative)
             if governing is not None:
                 lines.append(f"     {governing}")

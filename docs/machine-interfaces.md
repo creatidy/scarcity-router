@@ -179,7 +179,7 @@ CLI flag names:
 | `profile_id` | string, optional | Calibrated task profile id resolved through the profile catalog. |
 | `requirement` | TaskRequirement object, optional | Explicit full stored `TaskRequirement` (serialized contract). |
 | `tightening` | TaskRequirement object, optional | Full `TaskRequirement` that monotonically tightens the profile. |
-| `selector_policy` | SelectorPolicy object, optional | Serialized `SelectorPolicy`; missing or `null` means the documented neutral policy. |
+| `selector_policy` | SelectorPolicy object, optional | Serialized `SelectorPolicy`; missing or `null` means the server-configured default policy (the default user configuration, D-036) and, when none is configured, the documented neutral policy. An explicit request policy always wins. |
 | `replenishment_states` | array of ReplenishmentState, optional | Normalized replenishment observations; missing or `[]` means none; explicit `null` is `invalid_request`. |
 
 The same exclusivity as the CLI is enforced — there is no alternative
@@ -201,7 +201,7 @@ other implicit mapping:
 | `profile_id` | absent | absent |
 | `requirement` | absent | absent |
 | `tightening` | absent | absent |
-| `selector_policy` | neutral/default policy | neutral/default policy |
+| `selector_policy` | server default, else neutral | server default, else neutral |
 | `replenishment_states` | no observations | `invalid_request` |
 
 `replenishment_states: null` is an `invalid_request`: the field is an array

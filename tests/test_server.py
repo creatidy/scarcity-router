@@ -14,6 +14,7 @@ import contextlib
 import http.client
 import io
 import json
+import os
 import socket
 import tempfile
 import threading
@@ -51,6 +52,30 @@ REPO = Path(__file__).resolve().parents[1]
 CATALOG_PATH = REPO / "model-catalog.json"
 POLICY_PATH = REPO / "model-policy.json"
 FIXED_AT = datetime(2026, 9, 6, 12, 0, tzinfo=timezone.utc)
+
+# D-036 isolation: CLI runs in this module must never read or provision the
+# host's ~/.config/scarcity-router. XDG_CONFIG_HOME points at a throwaway
+# directory whose user config is the documented neutral policy, so every
+# expectation keeps its pre-D-036 neutral behavior; default-config
+# resolution has dedicated tests in tests/test_config.py.
+_TMP_CONFIG_HOME = Path(tempfile.mkdtemp(prefix="scarcity-router-tests-"))
+os.environ["XDG_CONFIG_HOME"] = str(_TMP_CONFIG_HOME)
+_ = (_TMP_CONFIG_HOME / "scarcity-router").mkdir(mode=0o700)
+_ = (_TMP_CONFIG_HOME / "scarcity-router" / "selector-policy.json").write_text(
+    json.dumps(
+        {
+            "mode": "balanced",
+            "resource_policy": {
+                "policy_version": 1,
+                "unknown_capacity_mode": "degraded",
+                "replenishment_mode": "advisory",
+                "reservations": [],
+                "blackouts": [],
+            },
+        }
+    ),
+    encoding="utf-8",
+)
 
 _REQUIREMENT_L3 = {
     "task_level": "L3",

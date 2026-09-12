@@ -13,6 +13,13 @@ the repository-root ``model-catalog.json`` and ``model-policy.json`` in a
 source tree, the packaged resource copies in an installed package; explicit
 ``--catalog`` / ``--model-policy`` overrides always win.
 
+The user selector policy resolves through ``config.py`` (D-036): an explicit
+``--selector-policy`` file wins; otherwise the default user configuration
+``~/.config/scarcity-router/selector-policy.json`` (XDG-aware) is
+provisioned from the checked-in example when missing and used when present;
+``--neutral-policy`` ignores the user default for one run. The
+``install-config`` command provisions the default configuration explicitly.
+
 Valid no-solution decisions are legitimate selector results and exit 0 for
 both ``select`` and ``simulate``; non-zero exit is reserved for invalid
 input, configuration or application failure. Shell exit status is never a
@@ -22,11 +29,13 @@ second selection contract.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from collections.abc import Sequence
 from pathlib import Path
 from typing import TextIO, cast
 
+from .config import ensure_default_user_config
 from .errors import CapacityError, SelectionContractError
 from .selection_app import (
     DEFAULT_CATALOG_PATH,
@@ -123,6 +132,24 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="append the readable explanation for both decisions",
     )
+
+    install_parser = commands.add_parser(
+        "install-config",
+        help=(
+            "provision the default user configuration "
+            + "(~/.config/scarcity-router, XDG-aware)"
+        ),
+        description=(
+            "Create the default selector-policy.json from the checked-in "
+            + "owner example. An existing file is never overwritten unless "
+            + "--force is given."
+        ),
+    )
+    _ = install_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="replace an existing selector-policy.json with the shipped defaults",
+    )
     return parser
 
 
@@ -146,10 +173,20 @@ def _fill_requirement_arguments(parser: argparse.ArgumentParser) -> None:
             + "profile (only valid with --profile)"
         ),
     )
-    _ = parser.add_argument(
+    policy_group = parser.add_mutually_exclusive_group()
+    _ = policy_group.add_argument(
         "--selector-policy",
         metavar="FILE",
-        help="selector policy JSON (defaults to the documented neutral policy)",
+        help=(
+            "selector policy JSON (default: the user default config "
+            + "~/.config/scarcity-router/selector-policy.json when present, "
+            + "else the documented neutral policy)"
+        ),
+    )
+    _ = policy_group.add_argument(
+        "--neutral-policy",
+        action="store_true",
+        help="run the documented neutral policy, ignoring the user default config",
     )
     _ = parser.add_argument(
         "--replenishment",
@@ -173,6 +210,47 @@ def _fill_requirement_arguments(parser: argparse.ArgumentParser) -> None:
 def _optional_path(value: object) -> Path | None:
     text = value if isinstance(value, str) else None
     return Path(text) if text is not None else None
+
+
+def _resolve_selector_policy_path(args: dict[str, object]) -> Path | None:
+    """Resolve the user selector policy path for one run (D-036).
+
+    An explicit ``--selector-policy`` file always wins. Otherwise the
+    default user configuration is provisioned from the checked-in example
+    when missing and used when present; ``--neutral-policy`` skips it. A
+    provisioning failure degrades to the neutral policy with one concise
+    warning — it never blocks a selection.
+    """
+    explicit = _optional_path(args.get("selector_policy"))
+    if explicit is not None or args.get("neutral_policy"):
+        return explicit
+    try:
+        config_path, _ = ensure_default_user_config(env=os.environ)
+    except OSError as exc:
+        print(
+            f"warning: default selector policy unavailable: {exc.strerror}",
+            file=sys.stderr,
+        )
+        return None
+    return config_path if config_path.is_file() else None
+
+
+def _run_install_config(args: dict[str, object], output: TextIO) -> int:
+    force = args.get("force")
+    if not isinstance(force, bool):
+        raise RuntimeError("parser produced an invalid force argument")
+    try:
+        path, wrote = ensure_default_user_config(force=force, env=os.environ)
+    except OSError as exc:
+        print(
+            f"error: cannot provision the default configuration: "
+            + f"{exc.strerror}",
+            file=sys.stderr,
+        )
+        return 1
+    action = "wrote" if wrote else "kept existing"
+    _ = output.write(f"{action}: {path}\n")
+    return 0
 
 
 def _run_status(
@@ -218,7 +296,7 @@ def _run_select(
         profile_id=profile_id,
         requirement_path=requirement_path,
         tighten_path=tighten_path,
-        selector_policy_path=_optional_path(args.get("selector_policy")),
+        selector_policy_path=_resolve_selector_policy_path(args),
         replenishment_path=_optional_path(args.get("replenishment")),
         catalog_path=Path(cast(str, args.get("catalog"))),
         model_policy_path=Path(cast(str, args.get("model_policy"))),
@@ -251,7 +329,7 @@ def _run_simulate(
         profile_id=profile_id,
         requirement_path=requirement_path,
         tighten_path=tighten_path,
-        selector_policy_path=_optional_path(args.get("selector_policy")),
+        selector_policy_path=_resolve_selector_policy_path(args),
         replenishment_path=_optional_path(args.get("replenishment")),
         catalog_path=Path(cast(str, args.get("catalog"))),
         model_policy_path=Path(cast(str, args.get("model_policy"))),
@@ -284,6 +362,8 @@ def main(
             return _run_select(arguments, output, collectors, clock)
         if command == "simulate":
             return _run_simulate(arguments, output, collectors, clock)
+        if command == "install-config":
+            return _run_install_config(arguments, output)
     except (ValueError, OSError, SelectionContractError, CapacityError) as exc:
         # Fail safely: a concise structural message only — never a raw
         # provider payload, credential or traceback dump.

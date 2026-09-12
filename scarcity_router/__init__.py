@@ -37,7 +37,8 @@ Public API — scarcity and resource-policy primitives (M2d, D-026):
         POLICY_REASON_CODES, UnknownCapacityDecision,
         apply_unknown_capacity_mode, ReservationRule, ReservationDecision,
         evaluate_reservation, AvailabilityTarget, WeeklyBlackoutRule,
-        BlackoutDecision, evaluate_blackouts, ReplenishmentState,
+        BlackoutDecision, evaluate_blackouts, WeeklyHappyHourRule,
+        HappyHourDecision, evaluate_happy_hours, ReplenishmentState,
         ReplenishmentDecision, apply_replenishment_mode, UserPolicy
 
 Public API — deterministic selector (M2e, D-027):
@@ -83,6 +84,7 @@ from .policy import (
     WEEKDAYS,
     AvailabilityTarget,
     BlackoutDecision,
+    HappyHourDecision,
     ReplenishmentDecision,
     ReplenishmentState,
     ReservationDecision,
@@ -90,9 +92,11 @@ from .policy import (
     UnknownCapacityDecision,
     UserPolicy,
     WeeklyBlackoutRule,
+    WeeklyHappyHourRule,
     apply_replenishment_mode,
     apply_unknown_capacity_mode,
     evaluate_blackouts,
+    evaluate_happy_hours,
     evaluate_reservation,
 )
 from .scarcity import (
@@ -190,6 +194,7 @@ __all__ = [
     "GoverningWindowEvidence",
     "HardConstraintFailure",
     "HardConstraints",
+    "HappyHourDecision",
     "HumanOverride",
     "ModelCatalog",
     "ModelCatalogEntry",
@@ -213,6 +218,7 @@ __all__ = [
     "UnknownCapacityDecision",
     "UserPolicy",
     "WeeklyBlackoutRule",
+    "WeeklyHappyHourRule",
     "apply_replenishment_mode",
     "apply_unknown_capacity_mode",
     "apply_capacity_overrides",
@@ -220,6 +226,7 @@ __all__ = [
     "capability_margin",
     "evaluate_blackouts",
     "evaluate_capability_sufficiency",
+    "evaluate_happy_hours",
     "evaluate_hard_constraints",
     "evaluate_reservation",
     "get_version",
