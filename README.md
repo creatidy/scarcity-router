@@ -91,6 +91,29 @@ uv run python -m scarcity_router simulate \
   --profile routine_coding --overrides simulation.json
 ```
 
+### Provider Availability Policy
+
+Availability windows such as personal peak-hour blackouts are user policy, not
+telemetry. The checked-in owner policy
+[`examples/selector-policy.json`](examples/selector-policy.json) blocks all
+Z.ai models (GLM-5.3, GLM-5.3-Flash) Monday–Friday 14:00–18:00
+Asia/Singapore to preserve the plan for off-peak use; outside the window the
+neutral ranking is unchanged. Use it with the CLI:
+
+```bash
+uv run python -m scarcity_router select \
+  --profile routine_coding --selector-policy examples/selector-policy.json
+```
+
+REST/MCP callers pass the same document inline as the optional
+`selector_policy` object (see
+[`docs/machine-interfaces.md`](docs/machine-interfaces.md)). During a matching
+window Z.ai candidates are excluded with a `policy_blocked` result — the
+explanation says the provider is policy-blocked, never unavailable or
+incapable, and capacity telemetry is untouched. The mechanism is documented in
+[`docs/selection-policy.md`](docs/selection-policy.md); the example file is
+opt-in configuration, so omitting `selector_policy` keeps the neutral policy.
+
 ## MCP Integration
 
 MCP is the primary machine-integration path for local orchestrators. Start

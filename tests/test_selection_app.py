@@ -14,9 +14,10 @@ import json
 import sys
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import date, datetime, time, timezone
 from pathlib import Path
 from typing import cast
+from zoneinfo import ZoneInfo
 
 from scarcity_router import (
     CapacityDiagnostic,
@@ -31,7 +32,11 @@ from scarcity_router import (
     select_model,
 )
 from scarcity_router.cli import build_parser, main
-from scarcity_router.selection_app import load_strict_json, render_select_human
+from scarcity_router.selection_app import (
+    load_selector_policy,
+    load_strict_json,
+    render_select_human,
+)
 from scarcity_router.status import StatusCollectors
 
 REPO = Path(__file__).resolve().parents[1]
@@ -727,6 +732,144 @@ class StrictJsonAndRenderingTests(unittest.TestCase):
         help_text = build_parser().format_help()
         for command in ("status", "select", "simulate"):
             self.assertIn(command, help_text)
+
+
+class SelectorPolicyExampleTests(unittest.TestCase):
+    """The checked-in owner policy blocks Z.ai Mon–Fri 14:00–18:00 SGT."""
+
+    POLICY_PATH: Path = REPO / "examples" / "selector-policy.json"
+
+    def _run_select_at(self, at: datetime, *extra: str) -> tuple[int, str, str]:
+        out = io.StringIO()
+        err = io.StringIO()
+        original_stderr = sys.stderr
+        sys.stderr = err
+        try:
+            code = main(
+                _select_args("--selector-policy", str(self.POLICY_PATH), *extra),
+                stdout=out,
+                collectors=_collectors(),
+                clock=lambda: at,
+            )
+        finally:
+            sys.stderr = original_stderr
+        return code, out.getvalue(), err.getvalue()
+
+    def test_policy_document_loads_with_expected_rule(self) -> None:
+        policy = load_selector_policy(self.POLICY_PATH)
+        self.assertEqual("balanced", policy.mode)
+        self.assertEqual((), policy.preference_order)
+        resource_policy = policy.resource_policy
+        self.assertEqual(1, resource_policy.policy_version)
+        self.assertEqual("degraded", resource_policy.unknown_capacity_mode)
+        self.assertEqual("advisory", resource_policy.replenishment_mode)
+        self.assertEqual((), resource_policy.reservations)
+        self.assertEqual(1, len(resource_policy.blackouts))
+        rule = resource_policy.blackouts[0]
+        self.assertEqual("zai-peak-hours-sgt", rule.rule_id)
+        self.assertEqual("zai", rule.target.provider)
+        self.assertIsNone(rule.target.model)
+        self.assertIsNone(rule.target.variant)
+        self.assertEqual("Asia/Singapore", rule.timezone)
+        self.assertEqual(("mon", "tue", "wed", "thu", "fri"), rule.weekdays)
+        self.assertEqual("14:00", rule.start_local)
+        self.assertEqual("18:00", rule.end_local)
+        self.assertEqual("preserve_zai_offpeak", rule.reason_code)
+
+    def test_rule_boundary_semantics_in_singapore_time(self) -> None:
+        sgt = ZoneInfo("Asia/Singapore")
+        rule = load_selector_policy(self.POLICY_PATH).resource_policy.blackouts[0]
+        monday = date(2026, 9, 7)
+        # Half-open [14:00, 18:00): 13:59 free, 14:00 blocked, 17:59
+        # blocked, 18:00 free.
+        self.assertFalse(rule.blocks_at(datetime.combine(monday, time(13, 59), sgt)))
+        self.assertTrue(rule.blocks_at(datetime.combine(monday, time(14, 0), sgt)))
+        self.assertTrue(rule.blocks_at(datetime.combine(monday, time(17, 59), sgt)))
+        self.assertFalse(rule.blocks_at(datetime.combine(monday, time(18, 0), sgt)))
+        # Saturday 14:00 SGT is outside the weekday list.
+        self.assertFalse(
+            rule.blocks_at(datetime.combine(date(2026, 9, 12), time(14, 0), sgt))
+        )
+        # Sunday 16:00 SGT is outside the weekday list.
+        self.assertFalse(
+            rule.blocks_at(datetime.combine(date(2026, 9, 13), time(16, 0), sgt))
+        )
+        # The same UTC instants straddle the window correctly: 05:59Z Monday
+        # is 13:59 SGT (free) and 06:00Z Monday is 14:00 SGT (blocked).
+        self.assertFalse(
+            rule.blocks_at(datetime(2026, 9, 7, 5, 59, tzinfo=timezone.utc))
+        )
+        self.assertTrue(
+            rule.blocks_at(datetime(2026, 9, 7, 6, 0, tzinfo=timezone.utc))
+        )
+
+    def test_select_excludes_zai_during_peak_and_falls_back_to_openai(self) -> None:
+        # Monday 2026-09-07 06:00 UTC is exactly 14:00 SGT: blocked at start.
+        code, out, err = self._run_select_at(
+            datetime(2026, 9, 7, 6, 0, tzinfo=timezone.utc),
+            "--profile",
+            "routine_coding",
+            "--json",
+        )
+        self.assertEqual(0, code)
+        self.assertEqual("", err)
+        decision = cast("dict[str, object]", json.loads(out))
+        selected = cast("dict[str, object]", decision["selected"])
+        identity = cast("dict[str, object]", selected["identity"])
+        self.assertEqual("openai", identity["provider"])
+        excluded = cast("list[object]", decision["excluded"])
+        zai_blocked = {
+            cast("dict[str, object]", cast("dict[str, object]", entry)["identity"])[
+                "model"
+            ]
+            for entry in excluded
+            if cast("dict[str, object]", entry).get("exclusion_stage")
+            == "policy_blackout"
+        }
+        self.assertEqual({"glm-5.3", "glm-5.3-flash"}, zai_blocked)
+
+    def test_select_selects_zai_outside_the_window(self) -> None:
+        # Half-open end: Monday 18:00 SGT (10:00 UTC) is not blocked, and the
+        # neutral-policy ranking is restored.
+        code, out, _ = self._run_select_at(
+            datetime(2026, 9, 7, 10, 0, tzinfo=timezone.utc),
+            "--profile",
+            "routine_coding",
+            "--json",
+        )
+        self.assertEqual(0, code)
+        decision = cast("dict[str, object]", json.loads(out))
+        selected = cast("dict[str, object]", decision["selected"])
+        identity = cast("dict[str, object]", selected["identity"])
+        self.assertEqual("zai", identity["provider"])
+        self.assertEqual("glm-5.3-flash", identity["model"])
+
+    def test_select_selects_zai_on_weekend_inside_wall_clock_window(self) -> None:
+        # Saturday 2026-09-12 06:00 UTC is 14:00 SGT on a non-configured day.
+        code, out, _ = self._run_select_at(
+            datetime(2026, 9, 12, 6, 0, tzinfo=timezone.utc),
+            "--profile",
+            "routine_coding",
+            "--json",
+        )
+        self.assertEqual(0, code)
+        decision = cast("dict[str, object]", json.loads(out))
+        selected = cast("dict[str, object]", decision["selected"])
+        identity = cast("dict[str, object]", selected["identity"])
+        self.assertEqual("zai", identity["provider"])
+
+    def test_explain_names_the_blackout_rule(self) -> None:
+        code, out, _ = self._run_select_at(
+            datetime(2026, 9, 7, 6, 30, tzinfo=timezone.utc),
+            "--profile",
+            "routine_coding",
+            "--explain",
+        )
+        self.assertEqual(0, code)
+        self.assertIn("policy_blackout:", out)
+        self.assertIn(
+            "blackout rule zai-peak-hours-sgt (preserve_zai_offpeak)", out
+        )
 
 
 if __name__ == "__main__":
