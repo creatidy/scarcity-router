@@ -110,7 +110,30 @@ REST/MCP callers pass the same document inline as the optional
 [`docs/machine-interfaces.md`](docs/machine-interfaces.md)). During a matching
 window Z.ai candidates are excluded with a `policy_blocked` result — the
 explanation says the provider is policy-blocked, never unavailable or
-incapable, and capacity telemetry is untouched. The mechanism is documented in
+incapable, and capacity telemetry is untouched.
+
+The installed wheel packages only the catalog and model policy, so `examples/`
+is not part of an installed distribution. When using the globally installed
+`scarcity-router` CLI or `scarcity-router-mcp`, reference the policy file by
+absolute path (for example the repository checkout) or copy it to a stable
+location such as `~/.config/scarcity-router/selector-policy.json`.
+
+To confirm the blackout fires without waiting for the window, `simulate` moves
+the evaluation instant through a typed override. With
+`{"evaluated_at": "2026-09-14T15:00:00+08:00"}` as `overrides.json` (a Monday
+inside the window):
+
+```bash
+uv run python -m scarcity_router simulate \
+  --profile routine_coding \
+  --selector-policy examples/selector-policy.json \
+  --overrides overrides.json --explain
+```
+
+both GLM models appear under the exclusion stage `policy_blackout`, each
+naming the rule: `blackout rule zai-peak-hours-sgt (preserve_zai_offpeak)`.
+
+The mechanism is documented in
 [`docs/selection-policy.md`](docs/selection-policy.md); the example file is
 opt-in configuration, so omitting `selector_policy` keeps the neutral policy.
 
