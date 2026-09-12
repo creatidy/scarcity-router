@@ -20,6 +20,8 @@ for the selector decision sequence and scarcity behavior.
 - Current normalized capacity snapshots and freshness.
 - User policy mode, reservations and explicit overrides.
 - Optional explicit provider/model availability schedules or blackout windows.
+- Optional provider/model happy-hour windows (quota-preference schedules,
+  typically limited-time vendor campaigns).
 - Optional advisory provider/service health evidence.
 - Optional replenishment metadata (`ReplenishmentState`) such as banked quota
   reset opportunities.
@@ -50,19 +52,22 @@ failure merely to populate fields.
 1. known nonzero capacity before unknown/degraded capacity — unknown has no
    numeric sentinel and is incomparable to any known percentage, even a
    critical one (a known 1% candidate ranks ahead of a degraded unknown);
-2. integer scarcity penalty (`penalty_units`) among known-capacity
+2. happy-hour quota-preference group — a candidate preferred by an active
+   happy-hour window ranks ahead of one that is not (D-035; within the same
+   knowledge class only, never across it, and never against eligibility);
+3. integer scarcity penalty (`penalty_units`) among known-capacity
    candidates only;
-3. capability margin, lower wins;
-4. lowest explicit catalog `reasoning_effort`, in normalized order
+4. capability margin, lower wins;
+5. lowest explicit catalog `reasoning_effort`, in normalized order
    `none < low < medium < high < xhigh < max`; null/absent uses an explicit
    unconfigured comparison state after known effort, not a numeric sentinel;
-5. explicit `SelectorPolicy.preference_order` (listed before unlisted, then
+6. explicit `SelectorPolicy.preference_order` (listed before unlisted, then
    index) — a late tie-break only: it cannot override capability, hard
-   constraints, blackout, capacity knowledge class, scarcity, capability margin,
-   reasoning effort or
-   reservations, and it is never inferred from model classes, profile
-   names, provider names, catalog order or display names;
-6. stable `(provider, model, variant)` identity.
+   constraints, blackout, happy-hour preference, capacity knowledge class,
+   scarcity, capability margin or reservations, and it is never inferred
+   from model classes, profile names, provider names, catalog order or
+   display names;
+7. stable `(provider, model, variant)` identity.
 
 **Independent concepts.** Model capability is not reasoning effort and neither
 is subscription scarcity. Effort is curated catalog configuration data, never
@@ -165,10 +170,11 @@ relaxed and no fallback bypasses capability.
    task level. A banked reset or similar replenishment option can make a
    candidate *recoverable* under explicit policy, but is not treated as current
    remaining quota and is never consumed by the broker.
-6. **Rank sufficient eligible candidates.** Under `balanced`, prefer lower
-   scarcity penalty, then the smallest adequate capability margin, then lowest
-   configured reasoning effort, then stable
-   configured preference and stable model identity as deterministic ties.
+6. **Rank sufficient eligible candidates.** Under `balanced`, prefer the
+   happy-hour quota-preference group, then lower scarcity penalty, then the
+   smallest adequate capability margin, then lowest configured reasoning
+   effort, then stable configured preference and stable model identity as
+   deterministic ties.
 7. **Produce explanation.** Return the winner, alternatives, exclusions,
    capacity evidence, applied policy and reason codes, including schedule,
    health or replenishment reasons when relevant.
@@ -363,6 +369,73 @@ documentation describes off-peak benefits and dynamic resource behavior, and
 some off-peak/reset-card parameters are explicitly dynamic. The user's desired
 schedule therefore belongs in configuration and must carry an explicit timezone
 and deterministic boundary semantics.
+
+## Happy hours (quota-preference windows)
+
+Happy hours are the preference-side counterpart of blackouts (D-035). A
+vendor may make consumption of one model cheap or free for a limited period —
+for example a usage campaign in which one model's quota is not counted, or
+counted at a discount, during nightly off-peak hours. During such a window,
+the conservation question flips: the cheap model should absorb the work so
+full-price plans are preserved. A happy-hour rule states exactly that window
+and target:
+
+```yaml
+happy_hours:
+  - rule_id: zai-flash-campaign-night-sgt
+    target:
+      provider: zai
+      model: glm-5.3-flash
+    timezone: Asia/Singapore
+    weekdays: [mon, tue, wed, thu, fri, sat, sun]
+    start_local: "23:00"
+    end_local: "09:00"
+    reason_code: glm53flash_campaign_zero_quota
+    start_date: "2026-09-03"
+    end_date: "2026-09-20"
+```
+
+The schedule reuses the blackout mechanics exactly: an explicit IANA time
+zone, the duplicate-free `mon`–`sun` weekday vocabulary, strict 24-hour
+`HH:MM` local times, half-open `[start, end)` intervals with cross-midnight
+support (`start == end` is invalid), and evaluation of a caller-supplied
+timezone-aware instant converted into the rule's zone. Unlike a blackout, a
+happy hour may be limited-time: the optional inclusive local calendar bounds
+`start_date`/`end_date` restrict the window to a campaign period, and both
+absent means a standing recurring window.
+
+Semantics and boundaries:
+
+- **Preference, never eligibility.** During an active window the matching
+  candidates form a preferred ranking group after the capacity knowledge
+  class: a preferred candidate outranks a non-preferred one with healthier
+  quota, because its marginal quota cost is zero or discounted. The
+  preference can never resurrect an excluded candidate: blackout, hard
+  constraints, capability sufficiency, capacity exhaustion/unknown policy
+  and reservations all still gate first.
+- **Knowledge class still dominates.** A happy-hour candidate with
+  unknown/degraded capacity still ranks behind a known healthy sufficient
+  candidate. Unknown capacity is never ranked against a numeric scarcity
+  value, and a preference is not evidence.
+- **Exhaustion still excludes.** A candidate at 0% stays excluded even
+  inside its happy hour. "Free right now" is user-side pricing knowledge,
+  never fabricated capacity; a campaign's own small print (weekly caps,
+  client-version gates) is exactly why the broker does not pretend
+  exhaustion away.
+- **No telemetry or capability rewrite.** The decision never touches
+  capacity status, `remaining_percent`, scarcity penalties or model
+  capability; `quota never changes a capability rating` holds in both
+  directions. The explanation names the governing rule and its configured
+  reason code, never "unavailable" or "incapable".
+- **Determinism.** Rules are stored canonically sorted by `rule_id`; the
+  first matching active rule decides. Blackout always wins over an
+  overlapping happy hour because it is an eligibility stage.
+- **Expiry is visible.** When a rule's weekly window would cover the
+  evaluated instant but its inclusive date bounds do not (a campaign that
+  has ended), the decision names it under `expired_happy_hour_rules` and
+  `--explain` lists it — the "why did the preference disappear?" question
+  answers itself. A rule that is simply outside its weekly window is
+  ordinary schedule behavior and is never flagged.
 
 ## Replenishment and reset opportunities
 
@@ -645,9 +718,11 @@ move the simulated evaluated instant. Output distinguishes CURRENT and
 SIMULATED inputs and decisions. This is valuable for tests, policy
 debugging, demonstrations and documentation.
 
-Simulation should eventually cover blackout windows, replenishment
-availability and advisory health so policy behavior can be tested without
-waiting for real peak hours, outages or quota exhaustion.
+Blackout and happy-hour windows are already covered by this mechanism:
+replacing the selector policy and moving `evaluated_at` exercises any
+schedule without waiting for real peak hours or campaign nights.
+Replenishment availability and advisory health acceptance follow the same
+pattern.
 
 ## Runtime feedback (deferred)
 

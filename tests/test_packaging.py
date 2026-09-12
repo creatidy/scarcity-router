@@ -96,6 +96,32 @@ class PackagingMetadataTests(unittest.TestCase):
         # must not carry packaged duplicates.
         self.assertFalse((PACKAGE_DIR / "model-catalog.json").is_file())
         self.assertFalse((PACKAGE_DIR / "model-policy.json").is_file())
+        # The default user selector policy (D-036) follows the same rule:
+        # the committed example is the single authoritative copy.
+        self.assertFalse((PACKAGE_DIR / "default-selector-policy.json").is_file())
+
+    def _build_targets_table(self) -> Mapping[str, object]:
+        with (REPO / "pyproject.toml").open("rb") as handle:
+            document = cast(dict[str, object], tomllib.load(handle))
+        tool = cast(Mapping[str, object], document["tool"])
+        hatch = cast(Mapping[str, object], tool["hatch"])
+        build = cast(Mapping[str, object], hatch["build"])
+        return cast(Mapping[str, object], build["targets"])
+
+    def test_wheel_maps_the_default_selector_policy_resource(self) -> None:
+        targets = self._build_targets_table()
+        wheel = cast(Mapping[str, object], targets["wheel"])
+        force_include = cast(Mapping[str, str], wheel["force-include"])
+        self.assertEqual(
+            "scarcity_router/default-selector-policy.json",
+            force_include["examples/selector-policy.json"],
+        )
+
+    def test_sdist_includes_the_default_selector_policy_source(self) -> None:
+        targets = self._build_targets_table()
+        sdist = cast(Mapping[str, object], targets["sdist"])
+        include = cast("list[str]", sdist["include"])
+        self.assertIn("/examples/selector-policy.json", include)
 
 
 class DefaultArtifactTests(unittest.TestCase):

@@ -88,8 +88,10 @@ core for the baseline and simulated decisions) provide the selection behavior.
 The application layer
 `scarcity_router/selection_app.py` loads artifacts strictly, resolves the
 requirement, obtains one shared evaluation instant through
-`collect_status` and renders deterministic output; `scarcity_router/cli.py`
-dispatches `status`, `select` and `simulate`.
+`collect_status` and renders deterministic output; `scarcity_router/config.py`
+resolves and provisions the default user configuration
+(`~/.config/scarcity-router`, D-036); `scarcity_router/cli.py`
+dispatches `status`, `select`, `simulate` and `install-config`.
 
 ### Interfaces
 

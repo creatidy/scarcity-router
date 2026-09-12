@@ -29,7 +29,9 @@ Implements the frozen M2e selection semantics (D-027):
   scarcity/unknown-capacity policy -> replenishment visibility -> applicable
   reservations -> ranking; replenishment never changes current eligibility;
 - the exact ``balanced`` ranking order: known capacity before degraded
-  unknown (no numeric unknown sentinel), then the integer scarcity penalty,
+  unknown (no numeric unknown sentinel), then an active happy-hour
+  quota-preference window (D-035, ranking preference only, never an
+  eligibility bypass), then the integer scarcity penalty,
   then the capability margin, then lowest configured reasoning effort,
   then the explicit preference order, then
   stable ``(provider, model, variant)`` identity;
@@ -64,6 +66,7 @@ from .policy import (
     REPLENISHMENT_MODE_ADVISORY,
     UNKNOWN_CAPACITY_MODE_DEGRADED,
     BlackoutDecision,
+    HappyHourDecision,
     ReplenishmentDecision,
     ReplenishmentState,
     ReservationDecision,
@@ -896,6 +899,11 @@ class CandidateEvaluation:
     capability_failures: tuple[CapabilityFailure, ...] = ()
     capability_margin: int | None = None
     blackout_decision: BlackoutDecision | None = None
+    # D-035: present only when an active happy-hour window prefers this
+    # candidate; ``None`` covers both "no window active" and "window active,
+    # candidate not targeted" — neither is a preference, and the preferred
+    # candidates carry the governing rule identity for explanation.
+    happy_hour_decision: HappyHourDecision | None = None
     scarcity_assessment: ScarcityAssessment | None = None
     unknown_capacity_decision: UnknownCapacityDecision | None = None
     reservation_decisions: tuple[ReservationDecision, ...] = ()
@@ -927,6 +935,17 @@ class CandidateEvaluation:
                 BlackoutDecision,
                 "candidate_evaluation.blackout_decision",
             )
+        if self.happy_hour_decision is not None:
+            _ = _v_instance_of(
+                self.happy_hour_decision,
+                HappyHourDecision,
+                "candidate_evaluation.happy_hour_decision",
+            )
+            if not self.happy_hour_decision.preferred or not self.eligible:
+                raise SelectionContractValidationError(
+                    "candidate_evaluation: happy_hour_decision is carried "
+                    + "only for eligible preferred candidates"
+                )
         if self.scarcity_assessment is not None:
             _ = _v_instance_of(
                 self.scarcity_assessment,
@@ -1028,6 +1047,8 @@ class CandidateEvaluation:
             out["capability_margin"] = self.capability_margin
         if self.blackout_decision is not None:
             out["blackout_decision"] = self.blackout_decision.to_dict()
+        if self.happy_hour_decision is not None:
+            out["happy_hour_decision"] = self.happy_hour_decision.to_dict()
         if self.scarcity_assessment is not None:
             out["scarcity_assessment"] = self.scarcity_assessment.to_dict()
         if self.unknown_capacity_decision is not None:
@@ -1062,10 +1083,13 @@ def _evaluate_candidate(
 
     Pipeline: blackout -> hard constraints -> capability -> scarcity and
     unknown-capacity policy -> replenishment visibility -> applicable
-    reservations -> eligible for ranking. Replenishment is evaluated for
-    every candidate that passes capability (including capacity-excluded
-    ones) so a currently exhausted candidate can still be explained as
-    recoverable; it never changes current eligibility.
+    reservations -> happy-hour preference (D-035) -> eligible for ranking.
+    Replenishment is evaluated for every candidate that passes capability
+    (including capacity-excluded ones) so a currently exhausted candidate
+    can still be explained as recoverable; it never changes current
+    eligibility. The happy-hour decision is evaluated only for candidates
+    that reach the ranking stage: it is a ranking preference, so candidates
+    excluded earlier never carry one.
     """
     resource_policy = policy.resource_policy
     identity = entry.identity
@@ -1188,12 +1212,22 @@ def _evaluate_candidate(
             reason_codes=(reservation_primary,),
         )
 
+    # D-035: the happy-hour quota-preference window is a ranking input for
+    # eligible candidates only. It is evaluated after every eligibility
+    # stage, so a preference can never resurrect an excluded candidate.
+    happy_hour_decision: HappyHourDecision | None = None
+    if resource_policy.happy_hours:
+        decision = resource_policy.evaluate_happy_hours(identity, evaluated_at)
+        if decision.preferred:
+            happy_hour_decision = decision
+
     return CandidateEvaluation(
         identity=identity,
         display_name=entry.display_name,
         eligible=True,
         degraded=unknown_decision.degraded,
         capability_margin=margin,
+        happy_hour_decision=happy_hour_decision,
         scarcity_assessment=scarcity,
         unknown_capacity_decision=unknown_decision,
         reservation_decisions=reservation_decisions,
@@ -1223,16 +1257,20 @@ def _ranking_key(
     evaluation: CandidateEvaluation,
     preference_order: tuple[ModelIdentity, ...],
     reasoning_effort: str | None,
-) -> tuple[int, int, int, tuple[_EffortState, tuple[int, ...]], int, int, str, str, str]:
-    """The exact ``balanced`` ranking key (D-027, amended by D-032).
+) -> tuple[int, int, int, int, tuple[_EffortState, tuple[int, ...]], int, int, str, str, str]:
+    """The exact ``balanced`` ranking key (D-027, amended by D-032 and D-035).
 
     1. capacity knowledge class: known nonzero capacity before unknown /
        degraded capacity (no numeric unknown sentinel exists);
-    2. scarcity penalty (integer units) among known-capacity candidates only;
-    3. capability margin (lower wins);
-    4. known effort in normalized order, then unconfigured effort;
-    5. explicit preference order (listed before unlisted, then index);
-    6. stable ``(provider, model, variant)`` identity.
+    2. happy-hour quota-preference group (D-035): a candidate preferred by
+       an active window ranks ahead of one that is not. Preference only:
+       it can never move a candidate across the capacity knowledge class
+       and never changes any eligibility outcome;
+    3. scarcity penalty (integer units) among known-capacity candidates only;
+    4. capability margin (lower wins);
+    5. known effort in normalized order, then unconfigured effort;
+    6. explicit preference order (listed before unlisted, then index);
+    7. stable ``(provider, model, variant)`` identity.
     """
     scarcity = evaluation.scarcity_assessment
     penalty = 0
@@ -1247,6 +1285,12 @@ def _ranking_key(
         # Unknown/degraded capacity has no honest numeric comparison against
         # a known percentage; it is separated by the knowledge class first.
         capacity_class = 1
+    # D-035: within the same knowledge class, a candidate targeted by an
+    # active happy-hour window ranks ahead — its marginal quota cost is
+    # zero or discounted during the window, so consuming an untargeted
+    # candidate's full-price quota is exactly what the window exists to
+    # avoid. The preference never bypasses eligibility stages.
+    happy_class = 0 if evaluation.happy_hour_decision is not None else 1
     margin = (
         evaluation.capability_margin
         if evaluation.capability_margin is not None
@@ -1265,6 +1309,7 @@ def _ranking_key(
     )
     return (
         capacity_class,
+        happy_class,
         penalty,
         margin,
         effort_key,
@@ -1314,6 +1359,11 @@ class SelectionDecision:
     # its semantically meaningful order (never sorted). It is a real ranking
     # input — it can decide a true tie — so the decision preserves it.
     preference_order: tuple[ModelIdentity, ...] = ()
+    # D-035 explanation-only provenance: happy-hour rules whose weekly
+    # window would cover the evaluated instant but whose inclusive date
+    # bounds exclude it — the "campaign ended" signal. Never a ranking or
+    # eligibility input; serialized only when non-empty.
+    expired_happy_hour_rules: tuple[str, ...] = ()
 
     _SELECTED_CODES: ClassVar[frozenset[str]] = frozenset({
         "selected_balanced",
@@ -1444,6 +1494,22 @@ class SelectionDecision:
                     + f"{key}"
                 )
             seen_preferences.add(key)
+        seen_expired: set[str] = set()
+        for rule_id in self.expired_happy_hour_rules:
+            _ = _v_nonempty_str(
+                rule_id, "selection_decision.expired_happy_hour_rules"
+            )
+            if rule_id in seen_expired:
+                raise SelectionContractValidationError(
+                    "selection_decision.expired_happy_hour_rules: "
+                    + f"duplicate rule id {rule_id!r}"
+                )
+            seen_expired.add(rule_id)
+        object.__setattr__(
+            self,
+            "expired_happy_hour_rules",
+            tuple(sorted(self.expired_happy_hour_rules)),
+        )
         if self.profile_id is None and self.profile_policy_version is not None:
             raise SelectionContractValidationError(
                 "selection_decision: profile_policy_version requires a "
@@ -1479,6 +1545,11 @@ class SelectionDecision:
         out["preference_order"] = [
             entry.to_dict() for entry in self.preference_order
         ]
+        # Additive D-035 member: absent from serialized output when empty.
+        if self.expired_happy_hour_rules:
+            out["expired_happy_hour_rules"] = list(
+                self.expired_happy_hour_rules
+            )
         return out
 
 
@@ -1627,6 +1698,13 @@ def select_model(
         profile_id=profile_id,
         profile_policy_version=profile_policy_version,
         preference_order=policy.preference_order,
+        expired_happy_hour_rules=tuple(
+            sorted(
+                rule.rule_id
+                for rule in policy.resource_policy.happy_hours
+                if rule.is_date_expired_at(evaluated_at)
+            )
+        ),
     )
 
 

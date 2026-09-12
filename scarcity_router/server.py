@@ -54,6 +54,7 @@ from .selection_app import (
     select_from_inputs,
     simulate_from_inputs,
 )
+from .config import resolve_default_selector_policy
 from .status import (
     collect_status,
 )
@@ -325,7 +326,11 @@ class RestRequestHandler(BaseHTTPRequestHandler):
             profile_id=parsed.profile_id,
             requirement=parsed.requirement,
             tightening=parsed.tightening,
-            policy=parsed.policy,
+            policy=(
+                parsed.policy
+                if parsed.policy is not None
+                else application.default_policy
+            ),
             replenishment_states=parsed.replenishment_states,
             collectors=application.collectors,
             clock=application.clock,
@@ -346,7 +351,11 @@ class RestRequestHandler(BaseHTTPRequestHandler):
             profile_id=parsed.profile_id,
             requirement=parsed.requirement,
             tightening=parsed.tightening,
-            policy=parsed.policy,
+            policy=(
+                parsed.policy
+                if parsed.policy is not None
+                else application.default_policy
+            ),
             replenishment_states=parsed.replenishment_states,
             overrides=overrides,
             collectors=application.collectors,
@@ -426,7 +435,13 @@ def make_server(
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Run the module REST server until interrupted (Ctrl-C exits cleanly)."""
+    """Run the module REST server until interrupted (Ctrl-C exits cleanly).
+
+    The default user selector policy (D-036) is provisioned and loaded once
+    at process start; requests that omit ``selector_policy`` run under it,
+    requests that supply one override it, and a broken or missing default
+    degrades to the neutral policy with a stderr warning.
+    """
     parser = build_parser()
     arguments = cast("dict[str, object]", vars(parser.parse_args(argv)))
     raw_port = arguments.get("port")
@@ -436,7 +451,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         or not 0 <= raw_port <= 65535
     ):
         parser.error("--port must be an integer between 0 and 65535")
-    server = make_server(RestApplication(), port=raw_port)
+    application = RestApplication(default_policy=resolve_default_selector_policy())
+    server = make_server(application, port=raw_port)
     bound_host, bound_port = cast("tuple[str, int]", server.server_address)
     print(
         f"scarcity-router REST listening on http://{bound_host}:{bound_port}",

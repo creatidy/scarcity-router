@@ -84,6 +84,16 @@ OpenAI collection should interact with the chosen Codex process rather than
 browser profiles. Z.ai discovery should parse only the configured Kilo auth file
 and select only `zai-coding-plan`; it must not display or return other entries.
 
+The default user configuration (D-036) is the one product-owned write
+outside the package itself: `scarcity-router` creates
+`$(XDG_CONFIG_HOME or ~/.config)/scarcity-router/selector-policy.json`
+(directory `0o700`, file `0o600`) when it is missing, provisioning the
+audited `examples/selector-policy.json` content verbatim. The file never
+stores credentials, tokens, cookies or provider endpoints, and an existing
+file is never silently overwritten (`install-config --force` is the only
+replace path). Read back, it feeds the selector policy only; a broken file
+is a loud configuration failure, never a silent fall-through.
+
 ## Public-interface data
 
 REST, MCP, CLI and dashboard may expose:
