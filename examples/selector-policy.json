@@ -1,0 +1,22 @@
+{
+  "mode": "balanced",
+  "resource_policy": {
+    "policy_version": 1,
+    "unknown_capacity_mode": "degraded",
+    "replenishment_mode": "advisory",
+    "reservations": [],
+    "blackouts": [
+      {
+        "rule_id": "zai-peak-hours-sgt",
+        "target": {
+          "provider": "zai"
+        },
+        "timezone": "Asia/Singapore",
+        "weekdays": ["mon", "tue", "wed", "thu", "fri"],
+        "start_local": "14:00",
+        "end_local": "18:00",
+        "reason_code": "preserve_zai_offpeak"
+      }
+    ]
+  }
+}
