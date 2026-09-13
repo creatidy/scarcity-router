@@ -34,6 +34,8 @@ checkout (or a built wheel) into an isolated `uv` tool environment:
 uv tool install /path/to/scarcity-router-checkout
 # or, after `uv build --no-sources`:
 uv tool install dist/scarcity_router-0.1.0-py3-none-any.whl
+# or, from a repository checkout (idempotent install-or-upgrade):
+make install
 ```
 
 This exposes exactly three commands:
