@@ -291,7 +291,8 @@ class ScenarioTests(unittest.TestCase):
         assessments = [assess_scarcity(entry, snapshots) for entry in
                        (LUNA_MEDIUM, LUNA, TERRA_MEDIUM, SOL_MEDIUM, SOL)]
         self.assertTrue(all(value == assessments[0] for value in assessments))
-        self.assertEqual(6400, assessments[0].penalty_units)
+        # D-037 blend: (98 + 5*20) // 6 = 33 -> penalty 4489.
+        self.assertEqual(4489, assessments[0].penalty_units)
         self.assertEqual(original, [snapshot.to_dict() for snapshot in snapshots])
 
     def test_exhausted_zai_does_not_bypass_capacity_for_any_effort(self) -> None:
@@ -351,8 +352,8 @@ class ScenarioTests(unittest.TestCase):
         )
         assert decision.selected is not None
         self.assertEqual(TERRA_MEDIUM.identity, decision.selected.identity)
-        # GLM-5.3 stays eligible (2% is nonzero) with the critical 9604
-        # penalty and ranks behind the OpenAI configurations' 3600.
+        # GLM-5.3 stays eligible (blended 18% is nonzero) with the critical
+        # 6724 penalty and ranks behind the OpenAI configurations' 3600.
         self.assertEqual(
             [SOL_MEDIUM.identity, SOL.identity, GLM53.identity],
             [c.identity for c in decision.alternatives]
@@ -361,7 +362,7 @@ class ScenarioTests(unittest.TestCase):
         assert glm.scarcity_assessment is not None
         self.assertEqual("known", glm.scarcity_assessment.state)
         self.assertEqual("critical", glm.scarcity_assessment.label)
-        self.assertEqual(9604, glm.scarcity_assessment.penalty_units)
+        self.assertEqual(6724, glm.scarcity_assessment.penalty_units)
         excluded = _excluded_by_identity(decision)
         luna = excluded[("openai", "gpt-5.6-luna", "max")]
         flash = excluded[("zai", "glm-5.3-flash", "max")]
@@ -1715,6 +1716,222 @@ class ValidationTests(unittest.TestCase):
             _ = SelectorPolicy.from_dict(
                 _ill({"mode": "balanced", "unexpected": True})
             )
+
+
+class RoleBlendRankingTests(unittest.TestCase):
+    """D-037 ranking outcomes: the owner case table, end to end."""
+
+    def test_weekly_healthy_provider_outranks_weekly_starved_provider(self) -> None:
+        # openai tactical 20 / strategic 80 (blend 70, penalty 900) vs
+        # zai tactical 80 / strategic 20 (blend 30, penalty 4900): the
+        # strategically healthy provider ranks ahead although its short
+        # window is the scarcer one.
+        decision = _select(
+            PROFILES.resolve("routine_coding"),
+            [_snap("openai", 20, 80), _snap("zai", 80, 20)],
+        )
+        assert decision.selected is not None
+        self.assertEqual("openai", decision.selected.identity.provider)
+        assert decision.selected.scarcity_assessment is not None
+        self.assertEqual(900, decision.selected.scarcity_assessment.penalty_units)
+        ranked_penalties = [
+            c.scarcity_assessment.penalty_units
+            for c in decision.alternatives
+            if c.scarcity_assessment is not None
+            and c.scarcity_assessment.penalty_units is not None
+        ]
+        self.assertEqual(sorted(ranked_penalties), ranked_penalties)
+        self.assertEqual(4900, ranked_penalties[-1])
+
+    def test_strategically_healthy_short_starved_outranks_the_reverse(self) -> None:
+        # openai tactical 95 / strategic 5 (blend 20, penalty 6400) vs
+        # zai tactical 5 / strategic 95 (blend 80, penalty 400): the owner
+        # case — 5h=5%/weekly=95% is preferred over 5h=95%/weekly=5%.
+        decision = _select(
+            PROFILES.resolve("routine_coding"),
+            [_snap("openai", 95, 5), _snap("zai", 5, 95)],
+        )
+        assert decision.selected is not None
+        self.assertEqual("zai", decision.selected.identity.provider)
+        assert decision.selected.scarcity_assessment is not None
+        self.assertEqual(400, decision.selected.scarcity_assessment.penalty_units)
+        openai_alternative = next(
+            c
+            for c in decision.alternatives
+            if c.identity.provider == "openai"
+        )
+        assert openai_alternative.scarcity_assessment is not None
+        self.assertEqual(6400, openai_alternative.scarcity_assessment.penalty_units)
+
+
+class ShortWindowFloorTests(unittest.TestCase):
+    """D-037 advisory floor: flags, never demotes, excludes or rewrites."""
+
+    def _policy(self, floor: int | None) -> SelectorPolicy:
+        return SelectorPolicy(
+            mode="balanced",
+            resource_policy=UserPolicy(
+                policy_version=1,
+                unknown_capacity_mode="degraded",
+                replenishment_mode="advisory",
+                reservations=(),
+                blackouts=(),
+            ),
+            short_window_floor_percent=floor,
+        )
+
+    def test_default_floor_is_ten_when_omitted(self) -> None:
+        self.assertEqual(10, neutral_selector_policy().resolved_short_window_floor())
+        self.assertEqual(
+            10, SelectorPolicy.from_dict(neutral_selector_policy().to_dict())
+            .resolved_short_window_floor()
+        )
+        self.assertEqual(25, self._policy(25).resolved_short_window_floor())
+        self.assertEqual(0, self._policy(0).resolved_short_window_floor())
+
+    def test_low_tactical_selected_candidate_is_flagged(self) -> None:
+        # zai tactical 5 / strategic 95 blends to 80 and ranks first; the
+        # 5% tactical window is below the default floor of 10.
+        decision = _select(
+            PROFILES.resolve("routine_coding"),
+            [_snap("openai", 50, 50), _snap("zai", 5, 95)],
+        )
+        assert decision.selected is not None
+        self.assertEqual("zai", decision.selected.identity.provider)
+        self.assertTrue(decision.selected.short_window_below_floor)
+        payload = decision.selected.to_dict()
+        self.assertTrue(payload["short_window_below_floor"])
+        # The advisory never rewrote the ranking inputs.
+        assert decision.selected.scarcity_assessment is not None
+        self.assertEqual(400, decision.selected.scarcity_assessment.penalty_units)
+
+    def test_floor_boundary_is_strict(self) -> None:
+        decision = _select(
+            PROFILES.resolve("routine_coding"),
+            [_snap("openai", 50, 50), _snap("zai", 10, 95)],
+        )
+        assert decision.selected is not None
+        self.assertEqual("zai", decision.selected.identity.provider)
+        self.assertFalse(decision.selected.short_window_below_floor)
+        self.assertNotIn("short_window_below_floor", decision.selected.to_dict())
+
+    def test_explicit_floor_tightens_the_advisory(self) -> None:
+        decision = _select(
+            PROFILES.resolve("routine_coding"),
+            [_snap("openai", 50, 50), _snap("zai", 15, 95)],
+            policy=self._policy(20),
+        )
+        assert decision.selected is not None
+        self.assertEqual("zai", decision.selected.identity.provider)
+        self.assertTrue(decision.selected.short_window_below_floor)
+
+    def test_zero_floor_disables_the_advisory(self) -> None:
+        decision = _select(
+            PROFILES.resolve("routine_coding"),
+            [_snap("openai", 50, 50), _snap("zai", 5, 95)],
+            policy=self._policy(0),
+        )
+        assert decision.selected is not None
+        self.assertFalse(decision.selected.short_window_below_floor)
+
+    def test_policy_floor_serialization_is_additive(self) -> None:
+        neutral = neutral_selector_policy()
+        self.assertNotIn("short_window_floor_percent", neutral.to_dict())
+        restored = SelectorPolicy.from_dict(neutral.to_dict())
+        self.assertIsNone(restored.short_window_floor_percent)
+        explicit = self._policy(0)
+        self.assertEqual(0, explicit.to_dict()["short_window_floor_percent"])
+        self.assertEqual(explicit, SelectorPolicy.from_dict(explicit.to_dict()))
+
+    def test_policy_floor_rejects_out_of_range_and_ill_typed(self) -> None:
+        for bad in (-1, 101, True, 1.5, "10"):
+            with self.subTest(value=bad):
+                with self.assertRaises(SelectionContractValidationError):
+                    _ = SelectorPolicy(
+                        mode="balanced",
+                        resource_policy=neutral_selector_policy().resource_policy,
+                        short_window_floor_percent=cast("int | None", _ill(bad)),
+                    )
+                with self.assertRaises(SelectionContractValidationError):
+                    _ = SelectorPolicy.from_dict({
+                        "mode": "balanced",
+                        "resource_policy": neutral_selector_policy()
+                        .resource_policy.to_dict(),
+                        "short_window_floor_percent": _ill(bad),
+                    })
+
+    def test_flag_requires_eligible_known_tactical_evidence(self) -> None:
+        from scarcity_router import (
+            CandidateEvaluation,
+            GoverningWindowEvidence,
+            ScarcityAssessment,
+        )
+
+        identity = ModelIdentity(provider="openai", model="alpha", variant="max")
+        tactical_evidence = GoverningWindowEvidence(
+            scope=CapacityScopeRef(provider="openai", scope_id="codex"),
+            resource="tokens",
+            kind="five_hour",
+            remaining_percent=5,
+        )
+        known = ScarcityAssessment(
+            state="known",
+            label="critical",
+            penalty_units=9025,
+            effective_remaining_percent=5,
+            applicable_scopes=(
+                CapacityScopeRef(provider="openai", scope_id="codex"),
+            ),
+            governing_window=tactical_evidence,
+            reason_codes=(),
+            tactical_window=tactical_evidence,
+        )
+        with self.assertRaises(SelectionContractValidationError):
+            _ = CandidateEvaluation(
+                identity=identity,
+                display_name="Alpha",
+                eligible=False,
+                exclusion_stage="capability",
+                reason_codes=("capability_failed",),
+                short_window_below_floor=True,
+            )
+        with self.assertRaises(SelectionContractValidationError):
+            _ = CandidateEvaluation(
+                identity=identity,
+                display_name="Alpha",
+                eligible=True,
+                capability_margin=0,
+                short_window_below_floor=True,
+            )
+        valid = CandidateEvaluation(
+            identity=identity,
+            display_name="Alpha",
+            eligible=True,
+            capability_margin=0,
+            scarcity_assessment=known,
+            short_window_below_floor=True,
+        )
+        self.assertTrue(valid.short_window_below_floor)
+
+    def test_human_render_warns_for_flagged_selected_candidate(self) -> None:
+        from scarcity_router.selection_app import render_select_human
+
+        decision = _select(
+            PROFILES.resolve("routine_coding"),
+            [_snap("openai", 50, 50), _snap("zai", 5, 95)],
+        )
+        text = render_select_human(decision)
+        self.assertIn(
+            "WARNING: selected candidate's short window (5% remaining) "
+            + "is below the configured floor — it may not finish the task",
+            text,
+        )
+        explained = render_select_human(decision, explain=True)
+        self.assertIn(
+            "Tactical capacity: zai/coding_plan tokens five_hour — 5% remaining "
+            + "(below floor — task may not fit this window)",
+            explained,
+        )
 
 
 if __name__ == "__main__":

@@ -190,7 +190,11 @@ class SelectCommandTests(unittest.TestCase):
         self.assertEqual("", err)
         self.assertIn("Selected: GLM-5.3-Flash Max (zai/glm-5.3-flash/max)", out)
         self.assertIn("Profile: routine_coding", out)
-        self.assertIn("Scarcity: plentiful — 80% remaining, penalty 400", out)
+        self.assertIn(
+            "Scarcity: plentiful — 80% blended remaining "
+            + "(short 80% / weekly 80%), penalty 400",
+            out,
+        )
         self.assertIn("Capability margin: 5", out)
         self.assertIn("Policy: balanced", out)
 
@@ -635,13 +639,18 @@ class ExplainRenderingTests(unittest.TestCase):
 
     def test_explain_shows_governing_window_98_2(self) -> None:
         text = self._select_explain()
-        # The selected Sol's governing window (openai, both windows at 40%;
-        # five_hour wins the canonical tie-break) and the GLM-5.3
-        # alternative's governing weekly window (zai 2%) are both shown.
-        self.assertIn("Governing capacity: openai/codex tokens five_hour", text)
+        # D-037: the selected Sol's governing window is the strategic
+        # weekly representative (openai, both role windows at 40%; the
+        # tactical five_hour line is shown alongside), and the GLM-5.3
+        # alternative's governing weekly window (zai 2%) is shown with its
+        # healthy tactical five_hour window.
+        self.assertIn("Governing capacity: openai/codex tokens weekly", text)
         self.assertIn("40% remaining", text)
+        self.assertIn("Tactical capacity: openai/codex tokens five_hour", text)
         self.assertIn("Governing capacity: zai/coding_plan tokens weekly", text)
         self.assertIn("2% remaining", text)
+        self.assertIn("Tactical capacity: zai/coding_plan tokens five_hour", text)
+        self.assertIn("98% remaining", text)
 
     def test_explain_shows_permitted_reservation(self) -> None:
         from scarcity_router import CapacityScopeRef, ReservationRule, UserPolicy

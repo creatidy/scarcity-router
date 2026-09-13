@@ -1811,6 +1811,94 @@ decision.
   provider change, no new network exposure, no credential handling
   change.
 
+### D-037 — Role-split scarcity blend and the advisory short-window floor
+
+- **Status:** Accepted
+- **Date:** 2026-09-13
+- **Issue:** BioMedical-IT/scarcity-router#71
+- **Amends:** D-026 / U-007 (the cross-window most-restrictive aggregation
+  rule only; the penalty function, label boundaries, reservation semantics
+  and unknown-capacity policy are unchanged)
+- **Decision:** Split every applicable capacity window into one of two
+  frozen roles — a code-level mapping, never user configuration — and blend
+  the two role aggregates into one scarcity penalty.
+  - **Roles.** `kind: weekly` windows are *strategic* (long-horizon
+    subscription health; exhaustion blocks for days). `kind: five_hour`
+    windows and `resource: time` windows (the Z.ai `TIME_LIMIT`
+    normalization) are *tactical* (whether work can happen right now;
+    exhaustion self-heals in hours). Unknown-kind token windows are
+    conservatively *strategic*, preserving the pre-D-037 most-restrictive
+    outcome for exactly that shape; unknown-resource windows never carry a
+    percentage pair and therefore never reach the blend.
+  - **Blend.** Within each role the pre-existing most-restrictive rule
+    governs: each role is represented by `min(remaining)` over its known
+    applicable windows across all bound scopes. With `a` the tactical and
+    `b` the strategic representative, and the owner's planning assumption
+    that weekly quota equals five × five-hour quota (`WEEKLY_TO_FIVE_HOUR_RATIO
+    = 5`, six total units):
+    `units = a + 5*b`, `effective_remaining_percent = units // 6`
+    (integer floor, 0..100). A role with no known windows defaults its slot
+    to the other role's value, so a single-role candidate keeps exactly its
+    own percentage (`only strategic b -> 6b//6 = b`; `only tactical a ->
+    6a//6 = a`) — no capacity is invented for a missing bucket. The penalty
+    and label remain the frozen pure functions of the blended effective:
+    `penalty_units = (100 - effective)^2` on scale 10000,
+    `label = scarcity_label(effective)`. Ranking compares the same integer
+    units as before; the ranking-key order (knowledge class → happy-hour
+    preference → penalty → capability margin → effort → preference order →
+    identity) is unchanged.
+  - **Evidence.** `ScarcityAssessment` gains the additive optional members
+    `strategic_window` and `tactical_window` (`GoverningWindowEvidence`,
+    serialized only when that role had a known window, role-consistent,
+    never fabricated for a missing role). For a known assessment the
+    governing window is the strategic representative when one exists, else
+    the tactical one; the old invariant "governing remaining equals
+    effective remaining" is replaced by blend consistency
+    (`effective == blended(tactical, strategic)`), so a serialized known
+    assessment without role evidence fails validation loudly on a new
+    reader. As with D-035's additive members this is accepted because
+    decision deserialization is not an input boundary in this slice: the
+    REST/MCP/CLI surfaces render `to_dict` output and never ingest stored
+    decisions. Exhaustion semantics are unchanged: any known applicable
+    window at 0% — in either role — is `unavailable` (governing exhausted
+    window, role members absent), and unknown/incomplete telemetry is
+    still never read as a number.
+  - **Advisory short-window floor.** `SelectorPolicy` gains the additive
+    optional member `short_window_floor_percent` (integer 0..100; absent
+    means the documented default 10, `0` disables). For an eligible
+    candidate with known capacity whose tactical representative is below
+    the floor, the selector sets the additive per-candidate advisory flag
+    `short_window_below_floor` (serialized only when true; eligible
+    candidates still carry no reason codes, so this is a flag, not a
+    code). The flag never demotes, excludes or rewrites ranking — the
+    answer to "the short window may not finish the task, consider another
+    provider" is the warning plus the exact ranking order, not a hidden
+    eligibility stage. `render_select_human` warns when the *selected*
+    candidate is flagged, and `--explain` shows both role representatives.
+- **Owner cases frozen by test:** tactical/strategic 80/20 → effective 30,
+  penalty 4900; 20/80 → 70, 900; 5/95 → 80, 400 (preferred); 95/5 → 20,
+  6400. A healthy short window still cannot hide a critical weekly one
+  (weekly weight 5/6), and a drained short window no longer hides a
+  healthy weekly one.
+- **Alternatives considered:** configurable per-kind weights — rejected:
+  new tuning knobs for no evidenced need and an averaging story that
+  breaks explainability; reset-proximity penalty using `resets_at` —
+  rejected: D-026 explicitly excludes reset proximity, `resets_at` is
+  honestly unknown on several provider shapes, and the duration proxy in
+  the role split achieves the intent with one frozen integer; lexicographic
+  (weekly, then 5h) ordering without a blend — rejected: cannot express
+  "5h=5/weekly=95 is strategically healthier than 5h=95/weekly=5" as a
+  strength, only as a tie; floor-as-ranking-class (demoting below-floor
+  candidates behind all feasible ones) — rejected by owner guidance: the
+  5h=5%/weekly=95% candidate must *rank first* against 5h=95%/weekly=5%,
+  so a short-window deficit must warn, not demote.
+- **Boundary:** `scarcity_router/scarcity.py`, `selector.py`
+  (`SelectorPolicy`, candidate evaluation flag), `selection_app.py`
+  rendering, `scarcity_router/__init__.py` exports, tests and docs. No
+  provider adapter changes (roles derive from already-normalized
+  `resource`/`kind`), no catalog ratings change, no REST/MCP
+  schema-version change, no execution or gateway behavior.
+
 ## Unresolved decisions
 
 ### U-001 — Codex binary discovery and compatibility
@@ -1937,7 +2025,8 @@ decision.
 - Validate `(1-r)^2`, label thresholds, reservation boundary behavior and
   unknown ordering through scenario tests before M2 acceptance.
 - Reset proximity is preserved but not included in the first formula.
-- **Status:** RESOLVED by M2d / D-026 (2026-09-06). The penalty function
+- **Status:** RESOLVED by M2d / D-026 (2026-09-06); aggregation amended by
+  D-037 (2026-09-13). The penalty function
   (`penalty_units = (100 - remaining_percent)^2` on integer scale 10000),
   the exact label boundaries, the most-restrictive multi-window/multi-scope
   aggregation, the reservation comparison semantics (strict `<` threshold,
@@ -1945,7 +2034,8 @@ decision.
   boundary (no numeric unknown penalty; `degraded`/`strict` modes) are now
   frozen and scenario-tested in `tests/test_scarcity.py` and
   `tests/test_resource_policy.py`. Profile minima were already resolved
-  separately by D-025 (resolving U-006).
+  separately by D-025 (resolving U-006). D-037 narrows the aggregation to
+  most-restrictive *within* each window role and blends the roles.
 
 ### U-008 — Package, CLI and final project name
 

@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import cast
 
 from scarcity_router import (
+    BLEND_UNIT_COUNT,
     CapabilityAssessment,
     CapabilityAssessments,
     CapacityDiagnostic,
@@ -37,11 +38,16 @@ from scarcity_router import (
     SCARCITY_PENALTY_SCALE,
     SCARCITY_REASON_CODES,
     SCARCITY_STATES,
+    WEEKLY_TO_FIVE_HOUR_RATIO,
+    WINDOW_ROLES,
+    WINDOW_ROLE_STRATEGIC,
     ScarcityAssessment,
     SelectionContractValidationError,
     assess_scarcity,
+    blended_effective_remaining_percent,
     scarcity_label,
     scarcity_penalty_units,
+    window_role,
 )
 
 REPO = Path(__file__).resolve().parents[1]
@@ -247,6 +253,70 @@ class ScarcityLabelTests(unittest.TestCase):
                 _ = scarcity_label(cast(int, bad))
 
 
+# ── Window roles and the strategic/tactical blend (D-037) ────────────────────
+
+
+class WindowRoleAndBlendTests(unittest.TestCase):
+    def test_frozen_constants(self) -> None:
+        self.assertEqual(5, WEEKLY_TO_FIVE_HOUR_RATIO)
+        self.assertEqual(6, BLEND_UNIT_COUNT)
+        self.assertEqual(frozenset({"strategic", "tactical"}), WINDOW_ROLES)
+
+    def test_role_classification_is_frozen(self) -> None:
+        cases = {
+            ("tokens", "weekly"): WINDOW_ROLE_STRATEGIC,
+            ("tokens", "five_hour"): "tactical",
+            # Z.ai TIME_LIMIT normalizes as resource "time", kind "unknown".
+            ("time", "unknown"): "tactical",
+            ("time", "five_hour"): "tactical",
+            # A weekly kind dominates its resource.
+            ("time", "weekly"): WINDOW_ROLE_STRATEGIC,
+            # Conservative: unknown-kind token windows stay strategic.
+            ("tokens", "unknown"): WINDOW_ROLE_STRATEGIC,
+        }
+        for (resource, kind), expected in cases.items():
+            self.assertEqual(expected, window_role(resource, kind), (resource, kind))
+
+    def test_role_rejects_ill_typed_values(self) -> None:
+        for resource, kind in (("bandwidth", "weekly"), ("tokens", "daily"), (1, 2)):
+            with self.subTest(value=(resource, kind)):
+                with self.assertRaises(SelectionContractValidationError):
+                    _ = window_role(cast(str, resource), cast(str, kind))
+
+    def test_blend_owner_case_table(self) -> None:
+        cases = {
+            (80, 20): 30,
+            (20, 80): 70,
+            (5, 95): 80,
+            (95, 5): 20,
+            (40, 40): 40,
+            (100, 100): 100,
+            (0, 100): 83,
+        }
+        for (tactical, strategic), expected in cases.items():
+            self.assertEqual(
+                expected,
+                blended_effective_remaining_percent(tactical, strategic),
+                (tactical, strategic),
+            )
+
+    def test_blend_single_role_defaults_to_the_other(self) -> None:
+        self.assertEqual(70, blended_effective_remaining_percent(None, 70))
+        self.assertEqual(30, blended_effective_remaining_percent(30, None))
+
+    def test_blend_rejects_missing_both_roles(self) -> None:
+        with self.assertRaises(SelectionContractValidationError):
+            _ = blended_effective_remaining_percent(None, None)
+
+    def test_blend_validates_percentage_inputs(self) -> None:
+        for a, b in ((101, None), (None, -1), (True, None), (None, 1.5)):
+            with self.subTest(value=(a, b)):
+                with self.assertRaises(SelectionContractValidationError):
+                    _ = blended_effective_remaining_percent(
+                        cast("int | None", a), cast("int | None", b)
+                    )
+
+
 # ── Assessment contract ───────────────────────────────────────────────────────
 
 
@@ -318,7 +388,17 @@ def _numeric_assessment(
 
     ``governing`` may be a deliberately ill-typed value; the cast keeps the
     helper statically legal so the runtime validator is the one to reject it.
+    For the known state with a well-typed governing window, the D-037 role
+    evidence is derived from it (the governing window doubles as its role's
+    representative); ill-typed values still fail on the governing check.
     """
+    strategic: GoverningWindowEvidence | None = None
+    tactical: GoverningWindowEvidence | None = None
+    if state == "known" and isinstance(governing, GoverningWindowEvidence):
+        if window_role(governing.resource, governing.kind) == WINDOW_ROLE_STRATEGIC:
+            strategic = governing
+        else:
+            tactical = governing
     return ScarcityAssessment(
         state=state,
         label=scarcity_label(effective),
@@ -327,25 +407,30 @@ def _numeric_assessment(
         applicable_scopes=scopes,
         governing_window=cast("GoverningWindowEvidence | None", governing),
         reason_codes=reason_codes,
+        strategic_window=strategic,
+        tactical_window=tactical,
     )
 
 
 class ScarcityAssessmentContractTests(unittest.TestCase):
     def test_known_round_trip_is_exact(self) -> None:
+        scope = CapacityScopeRef(provider="zai", scope_id="coding_plan")
+        strategic = GoverningWindowEvidence(
+            scope=scope,
+            resource="tokens",
+            kind="weekly",
+            remaining_percent=2,
+            window_id="weekly",
+        )
         assessment = ScarcityAssessment(
             state="known",
             label="critical",
             penalty_units=9604,
             effective_remaining_percent=2,
-            applicable_scopes=(CapacityScopeRef(provider="zai", scope_id="coding_plan"),),
-            governing_window=GoverningWindowEvidence(
-                scope=CapacityScopeRef(provider="zai", scope_id="coding_plan"),
-                resource="tokens",
-                kind="weekly",
-                remaining_percent=2,
-                window_id="weekly",
-            ),
+            applicable_scopes=(scope,),
+            governing_window=strategic,
             reason_codes=(),
+            strategic_window=strategic,
         )
         payload = assessment.to_dict()
         self.assertEqual(
@@ -359,6 +444,13 @@ class ScarcityAssessmentContractTests(unittest.TestCase):
                     {"provider": "zai", "scope_id": "coding_plan"}
                 ],
                 "governing_window": {
+                    "scope": {"provider": "zai", "scope_id": "coding_plan"},
+                    "resource": "tokens",
+                    "kind": "weekly",
+                    "remaining_percent": 2,
+                    "window_id": "weekly",
+                },
+                "strategic_window": {
                     "scope": {"provider": "zai", "scope_id": "coding_plan"},
                     "resource": "tokens",
                     "kind": "weekly",
@@ -682,6 +774,155 @@ class ScarcityAssessmentContractTests(unittest.TestCase):
             }),
         )
 
+    def test_known_state_requires_role_window_evidence(self) -> None:
+        scope = CapacityScopeRef(provider="openai", scope_id="codex")
+        with self.assertRaises(SelectionContractValidationError):
+            _ = ScarcityAssessment(
+                state="known",
+                label="normal",
+                penalty_units=2500,
+                effective_remaining_percent=50,
+                applicable_scopes=(scope,),
+                governing_window=GoverningWindowEvidence(
+                    scope=scope,
+                    resource="tokens",
+                    kind="weekly",
+                    remaining_percent=50,
+                ),
+                reason_codes=(),
+            )
+
+    def test_known_blend_must_match_role_representatives(self) -> None:
+        scope = CapacityScopeRef(provider="zai", scope_id="coding_plan")
+        tactical = GoverningWindowEvidence(
+            scope=scope, resource="tokens", kind="five_hour", remaining_percent=80
+        )
+        strategic = GoverningWindowEvidence(
+            scope=scope, resource="tokens", kind="weekly", remaining_percent=20
+        )
+        # (80 + 5*20) // 6 = 30 — the assessment must blend, not pick one.
+        valid = ScarcityAssessment(
+            state="known",
+            label="scarce",
+            penalty_units=4900,
+            effective_remaining_percent=30,
+            applicable_scopes=(scope,),
+            governing_window=strategic,
+            reason_codes=(),
+            strategic_window=strategic,
+            tactical_window=tactical,
+        )
+        self.assertEqual(ScarcityAssessment.from_dict(valid.to_dict()), valid)
+        with self.assertRaises(SelectionContractValidationError):
+            _ = ScarcityAssessment(
+                state="known",
+                label="scarce",
+                penalty_units=4900,
+                effective_remaining_percent=20,  # the strategic value alone
+                applicable_scopes=(scope,),
+                governing_window=strategic,
+                reason_codes=(),
+                strategic_window=strategic,
+                tactical_window=tactical,
+            )
+
+    def test_governing_must_equal_strategic_representative_when_present(self) -> None:
+        scope = CapacityScopeRef(provider="zai", scope_id="coding_plan")
+        tactical = GoverningWindowEvidence(
+            scope=scope, resource="tokens", kind="five_hour", remaining_percent=80
+        )
+        strategic = GoverningWindowEvidence(
+            scope=scope, resource="tokens", kind="weekly", remaining_percent=20
+        )
+        with self.assertRaises(SelectionContractValidationError):
+            _ = ScarcityAssessment(
+                state="known",
+                label="scarce",
+                penalty_units=4900,
+                effective_remaining_percent=30,
+                applicable_scopes=(scope,),
+                governing_window=tactical,  # strategic evidence exists
+                reason_codes=(),
+                strategic_window=strategic,
+                tactical_window=tactical,
+            )
+
+    def test_role_window_with_wrong_role_raises(self) -> None:
+        scope = CapacityScopeRef(provider="zai", scope_id="coding_plan")
+        five_hour = GoverningWindowEvidence(
+            scope=scope, resource="tokens", kind="five_hour", remaining_percent=80
+        )
+        weekly = GoverningWindowEvidence(
+            scope=scope, resource="tokens", kind="weekly", remaining_percent=20
+        )
+        with self.assertRaises(SelectionContractValidationError):
+            _ = ScarcityAssessment(
+                state="known",
+                label="scarce",
+                penalty_units=4900,
+                effective_remaining_percent=30,
+                applicable_scopes=(scope,),
+                governing_window=weekly,
+                reason_codes=(),
+                strategic_window=five_hour,  # tactical window in the strategic slot
+                tactical_window=weekly,
+            )
+        with self.assertRaises(SelectionContractValidationError):
+            _ = ScarcityAssessment(
+                state="known",
+                label="scarce",
+                penalty_units=4900,
+                effective_remaining_percent=30,
+                applicable_scopes=(scope,),
+                governing_window=weekly,
+                reason_codes=(),
+                strategic_window=weekly,
+                tactical_window=weekly,  # strategic window in the tactical slot
+            )
+
+    def test_unavailable_state_rejects_role_evidence(self) -> None:
+        scope = CapacityScopeRef(provider="openai", scope_id="codex")
+        with self.assertRaises(SelectionContractValidationError):
+            _ = ScarcityAssessment(
+                state="unavailable",
+                label="unavailable",
+                penalty_units=10000,
+                effective_remaining_percent=0,
+                applicable_scopes=(scope,),
+                governing_window=GoverningWindowEvidence(
+                    scope=scope,
+                    resource="tokens",
+                    kind="weekly",
+                    remaining_percent=0,
+                ),
+                reason_codes=("capacity_exhausted",),
+                tactical_window=GoverningWindowEvidence(
+                    scope=scope,
+                    resource="tokens",
+                    kind="five_hour",
+                    remaining_percent=0,
+                ),
+            )
+
+    def test_unknown_state_rejects_role_evidence(self) -> None:
+        scope = CapacityScopeRef(provider="openai", scope_id="codex")
+        with self.assertRaises(SelectionContractValidationError):
+            _ = ScarcityAssessment(
+                state="unknown",
+                label="unknown",
+                penalty_units=None,
+                effective_remaining_percent=None,
+                applicable_scopes=(scope,),
+                governing_window=None,
+                reason_codes=("missing_provider_snapshot",),
+                tactical_window=GoverningWindowEvidence(
+                    scope=scope,
+                    resource="tokens",
+                    kind="five_hour",
+                    remaining_percent=40,
+                ),
+            )
+
 
 class UnknownApplicabilityInvariantTests(unittest.TestCase):
     """The unknown state's two mutually exclusive applicability classes."""
@@ -780,7 +1021,7 @@ class UnknownApplicabilityInvariantTests(unittest.TestCase):
 
 
 class AssessScarcityTests(unittest.TestCase):
-    def test_most_restrictive_window_governs_98_over_2(self) -> None:
+    def test_blend_lets_critical_weekly_dominate_healthy_short(self) -> None:
         snapshot = _snapshot(
             "zai",
             (
@@ -790,13 +1031,20 @@ class AssessScarcityTests(unittest.TestCase):
         )
         assessment = assess_scarcity(GLM53, [snapshot])
         self.assertEqual(assessment.state, "known")
-        self.assertEqual(assessment.effective_remaining_percent, 2)
-        self.assertEqual(assessment.penalty_units, 9604)
+        # D-037 blend: (98 + 5*2) // 6 = 18 — the healthy short window can
+        # no longer hide the critical weekly one, and the weekly weight
+        # (5/6) keeps the effective near the strategic value.
+        self.assertEqual(assessment.effective_remaining_percent, 18)
+        self.assertEqual(assessment.penalty_units, 6724)
         self.assertEqual(assessment.label, "critical")
         self.assertEqual(assessment.reason_codes, ())
         assert assessment.governing_window is not None
         self.assertEqual(assessment.governing_window.kind, "weekly")
         self.assertEqual(assessment.governing_window.window_id, "weekly")
+        assert assessment.strategic_window is not None
+        self.assertEqual(assessment.strategic_window.remaining_percent, 2)
+        assert assessment.tactical_window is not None
+        self.assertEqual(assessment.tactical_window.remaining_percent, 98)
         self.assertEqual(
             assessment.applicable_scopes,
             (CapacityScopeRef(provider="zai", scope_id="coding_plan"),),
@@ -851,7 +1099,7 @@ class AssessScarcityTests(unittest.TestCase):
         self.assertEqual(assess_scarcity(LUNA, [base]), assess_scarcity(LUNA, [with_unrelated]))
         self.assertEqual(assess_scarcity(SOL, [base]), assess_scarcity(SOL, [with_unrelated]))
 
-    def test_time_window_participates_without_token_special_case(self) -> None:
+    def test_time_window_is_tactical_and_governing_stays_strategic(self) -> None:
         snapshot = _snapshot(
             "zai",
             (
@@ -860,11 +1108,17 @@ class AssessScarcityTests(unittest.TestCase):
             ),
         )
         assessment = assess_scarcity(GLM53, [snapshot])
-        self.assertEqual(assessment.effective_remaining_percent, 10)
-        self.assertEqual(assessment.penalty_units, 8100)
-        self.assertEqual(assessment.label, "critical")
+        # D-037: the time window is tactical, the weekly window strategic —
+        # (10 + 5*90) // 6 = 76.
+        self.assertEqual(assessment.effective_remaining_percent, 76)
+        self.assertEqual(assessment.penalty_units, 576)
+        self.assertEqual(assessment.label, "normal")
         assert assessment.governing_window is not None
-        self.assertEqual(assessment.governing_window.resource, "time")
+        self.assertEqual(assessment.governing_window.resource, "tokens")
+        self.assertEqual(assessment.governing_window.kind, "weekly")
+        assert assessment.tactical_window is not None
+        self.assertEqual(assessment.tactical_window.resource, "time")
+        self.assertEqual(assessment.tactical_window.remaining_percent, 10)
 
     def test_unknown_kind_window_with_pair_participates(self) -> None:
         snapshot = _snapshot(
@@ -875,8 +1129,93 @@ class AssessScarcityTests(unittest.TestCase):
             ),
         )
         assessment = assess_scarcity(GLM53, [snapshot])
+        # D-037 conservative routing: the unknown-kind token window counts as
+        # strategic, so the role min (15) is the effective — the pre-D-037
+        # most-restrictive outcome for exactly this shape.
         self.assertEqual(assessment.effective_remaining_percent, 15)
         self.assertEqual(assessment.penalty_units, 7225)
+        assert assessment.strategic_window is not None
+        self.assertEqual(assessment.strategic_window.kind, "unknown")
+        self.assertIsNone(assessment.tactical_window)
+
+    def test_owner_case_table_blends_roles(self) -> None:
+        cases = {
+            (80, 20): (30, 4900),
+            (20, 80): (70, 900),
+            (5, 95): (80, 400),
+            (95, 5): (20, 6400),
+        }
+        for (five, weekly), (effective, penalty) in cases.items():
+            with self.subTest(case=(five, weekly)):
+                snapshot = _snapshot(
+                    "zai",
+                    (
+                        _window(
+                            "tokens", "five_hour", "coding_plan", five,
+                            window_id="short",
+                        ),
+                        _window(
+                            "tokens", "weekly", "coding_plan", weekly,
+                            window_id="weekly",
+                        ),
+                    ),
+                )
+                assessment = assess_scarcity(GLM53, [snapshot])
+                self.assertEqual("known", assessment.state)
+                self.assertEqual(effective, assessment.effective_remaining_percent)
+                self.assertEqual(penalty, assessment.penalty_units)
+                assert assessment.tactical_window is not None
+                self.assertEqual(five, assessment.tactical_window.remaining_percent)
+                assert assessment.strategic_window is not None
+                self.assertEqual(weekly, assessment.strategic_window.remaining_percent)
+
+    def test_tactical_only_assessment_blends_to_tactical_value(self) -> None:
+        snapshot = _snapshot(
+            "zai",
+            (_window("tokens", "five_hour", "coding_plan", 30),),
+        )
+        assessment = assess_scarcity(GLM53, [snapshot])
+        self.assertEqual("known", assessment.state)
+        self.assertEqual(30, assessment.effective_remaining_percent)
+        self.assertEqual(4900, assessment.penalty_units)
+        self.assertIsNone(assessment.strategic_window)
+        assert assessment.tactical_window is not None
+        assert assessment.governing_window is not None
+        # The tactical representative is also the governing window.
+        self.assertEqual(
+            assessment.tactical_window, assessment.governing_window
+        )
+
+    def test_strategic_only_assessment_blends_to_strategic_value(self) -> None:
+        snapshot = _snapshot(
+            "zai",
+            (_window("tokens", "weekly", "coding_plan", 70),),
+        )
+        assessment = assess_scarcity(GLM53, [snapshot])
+        self.assertEqual("known", assessment.state)
+        self.assertEqual(70, assessment.effective_remaining_percent)
+        self.assertEqual(900, assessment.penalty_units)
+        self.assertIsNone(assessment.tactical_window)
+        assert assessment.strategic_window is not None
+        assert assessment.governing_window is not None
+        self.assertEqual(assessment.strategic_window, assessment.governing_window)
+
+    def test_exhausted_tactical_window_still_excludes(self) -> None:
+        snapshot = _snapshot(
+            "zai",
+            (
+                _window("tokens", "five_hour", "coding_plan", 0),
+                _window("tokens", "weekly", "coding_plan", 95),
+            ),
+        )
+        assessment = assess_scarcity(GLM53, [snapshot])
+        self.assertEqual("unavailable", assessment.state)
+        self.assertEqual(0, assessment.effective_remaining_percent)
+        self.assertEqual(10000, assessment.penalty_units)
+        self.assertIn("capacity_exhausted", assessment.reason_codes)
+        # Role evidence stays absent for the exhausted assessment.
+        self.assertIsNone(assessment.strategic_window)
+        self.assertIsNone(assessment.tactical_window)
 
     def test_unknown_bindings_yield_unknown_assessment(self) -> None:
         entry = _synthetic_entry("zai", "test-model", "max", None)
@@ -1181,8 +1520,9 @@ class ScenarioTests(unittest.TestCase):
             ),
         )
         assessment = assess_scarcity(GLM53, [zai])
-        self.assertEqual(assessment.effective_remaining_percent, 2)
-        self.assertEqual(assessment.penalty_units, 9604)
+        # D-037 blend: (98 + 5*2) // 6 = 18.
+        self.assertEqual(assessment.effective_remaining_percent, 18)
+        self.assertEqual(assessment.penalty_units, 6724)
         self.assertEqual(assessment.label, "critical")
 
     def test_scenario_c_shared_openai_scope_same_raw_scarcity(self) -> None:

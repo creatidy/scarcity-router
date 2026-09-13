@@ -628,10 +628,17 @@ def _scarcity_line(candidate: CandidateEvaluation) -> str:
     if scarcity is None:
         return "Scarcity: not assessed"
     if scarcity.state == "known":
+        roles: list[str] = []
+        if scarcity.tactical_window is not None:
+            roles.append(f"short {scarcity.tactical_window.remaining_percent}%")
+        if scarcity.strategic_window is not None:
+            roles.append(f"weekly {scarcity.strategic_window.remaining_percent}%")
+        detail = f" ({' / '.join(roles)})" if roles else ""
         return (
             f"Scarcity: {scarcity.label} — "
-            + f"{scarcity.effective_remaining_percent}% remaining, "
-            + f"penalty {scarcity.penalty_units}"
+            + f"{scarcity.effective_remaining_percent}% blended remaining"
+            + detail
+            + f", penalty {scarcity.penalty_units}"
         )
     if scarcity.state == "unavailable":
         return "Scarcity: unavailable — capacity exhausted (penalty 10000)"
@@ -718,11 +725,40 @@ def _replenishment_label(evaluation: ReplenishmentEvaluation) -> str:
 def _short_state(candidate: CandidateEvaluation) -> str:
     scarcity = candidate.scarcity_assessment
     if scarcity is not None and scarcity.state == "known":
-        return (
+        text = (
             f"{scarcity.label}, penalty {scarcity.penalty_units}, "
             + f"margin {candidate.capability_margin}"
         )
+        if candidate.short_window_below_floor:
+            text += ", SHORT WINDOW BELOW FLOOR"
+        return text
     return f"degraded unknown capacity, margin {candidate.capability_margin}"
+
+
+def _tactical_capacity_line(candidate: CandidateEvaluation) -> str | None:
+    """One-line tactical (short-window) evidence, or None when redundant.
+
+    Shown only when a strategic window also exists: with a tactical-only
+    assessment the tactical window *is* the governing window and the
+    governing line already carries it.
+    """
+    scarcity = candidate.scarcity_assessment
+    if (
+        scarcity is None
+        or scarcity.tactical_window is None
+        or scarcity.strategic_window is None
+    ):
+        return None
+    window = scarcity.tactical_window
+    scope = window.scope
+    detail = (
+        f"Tactical capacity: {scope.provider}/{scope.scope_id} "
+        + f"{window.resource} {window.kind} — "
+        + f"{window.remaining_percent}% remaining"
+    )
+    if candidate.short_window_below_floor:
+        detail += " (below floor — task may not fit this window)"
+    return detail
 
 
 def _happy_hour_lines(candidate: CandidateEvaluation) -> list[str]:
@@ -761,6 +797,9 @@ def _explain_sections(decision: SelectionDecision) -> list[str]:
         governing = _governing_line(selected)
         if governing is not None:
             lines.append(f"  {governing}")
+        tactical = _tactical_capacity_line(selected)
+        if tactical is not None:
+            lines.append(f"  {tactical}")
         if selected.reservation_decisions:
             lines.append("  Reservations:")
             lines.extend(
@@ -816,6 +855,9 @@ def _explain_sections(decision: SelectionDecision) -> list[str]:
             governing = _governing_line(alternative)
             if governing is not None:
                 lines.append(f"     {governing}")
+            tactical = _tactical_capacity_line(alternative)
+            if tactical is not None:
+                lines.append(f"     {tactical}")
             if alternative.reservation_decisions:
                 lines.append("     Reservations:")
                 lines.extend(
@@ -893,6 +935,20 @@ def render_select_human(decision: SelectionDecision, *, explain: bool = False) -
             unknown = selected.unknown_capacity_decision
             if unknown is not None and unknown.reason_codes:
                 lines.append("Unknown reason: " + ",".join(unknown.reason_codes))
+        if selected.short_window_below_floor:
+            scarcity = selected.scarcity_assessment
+            remaining = (
+                scarcity.tactical_window.remaining_percent
+                if scarcity is not None and scarcity.tactical_window is not None
+                else None
+            )
+            detail = (
+                f" ({remaining}% remaining)" if remaining is not None else ""
+            )
+            lines.append(
+                "WARNING: selected candidate's short window" + detail
+                + " is below the configured floor — it may not finish the task"
+            )
         lines.append(f"Selected: {_identity_label(selected)}")
         lines.append(_scarcity_line(selected))
         lines.append(f"Capability margin: {selected.capability_margin}")
