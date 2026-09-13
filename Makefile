@@ -8,8 +8,11 @@
 #   make check         -> test + typecheck; must exit 0 before every commit/PR
 #   make package-check -> build wheel/sdist, inspect artifacts, isolated
 #                         temporary tool install and installed-surface smoke
+#   make install       -> install/upgrade the console commands into the
+#                         isolated uv tool environment (idempotent: reinstalls
+#                         from the current checkout state, issue #74)
 
-.PHONY: check typecheck test package-check
+.PHONY: check install typecheck test package-check
 
 check: test typecheck
 
@@ -21,3 +24,6 @@ test:
 
 package-check:
 	uv run python tools/package_check.py
+
+install:
+	uv tool install --force .
