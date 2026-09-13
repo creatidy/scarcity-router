@@ -37,9 +37,13 @@ packages = ["scarcity_router"]
 
 # Map the two root-authoritative artifacts into the wheel as installed
 # package resources. No duplicate copies are committed in the package.
+# Map the two root-authoritative artifacts plus the default user selector
+# policy (D-036) into the wheel as installed package resources. No duplicate
+# copies are committed in the package.
 [tool.hatch.build.targets.wheel.force-include]
 "model-catalog.json" = "scarcity_router/model-catalog.json"
 "model-policy.json" = "scarcity_router/model-policy.json"
+"examples/selector-policy.json" = "scarcity_router/default-selector-policy.json"
 
 # Minimal sdist: exactly what rebuilding the wheel requires. Tests, docs,
 # tooling and local artifacts stay out of the distribution. (Hatchling
@@ -49,6 +53,7 @@ include = [
     "/scarcity_router",
     "/model-catalog.json",
     "/model-policy.json",
+    "/examples/selector-policy.json",
     "/pyproject.toml",
     "/README.md",
     "/LICENSE",

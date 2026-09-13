@@ -45,7 +45,10 @@ This exposes exactly three commands:
 The installed commands load the packaged default catalog (version 2) and
 model policy (version 6) as package resources, so they work without a
 repository checkout and independent of the current directory; explicit
-`--catalog` and `--model-policy` flags always override the defaults.
+`--catalog` and `--model-policy` flags always override the defaults. The
+default user selector policy is packaged the same way and provisioned into
+`~/.config/scarcity-router/` (see
+[Default configuration location](#default-configuration-location)).
 
 From a checkout instead, sync the repository-managed tools and run the
 module CLI:
@@ -91,37 +94,69 @@ uv run python -m scarcity_router simulate \
   --profile routine_coding --overrides simulation.json
 ```
 
+### Default configuration location
+
+All user configuration lives in one place: `~/.config/scarcity-router/`
+(honoring `XDG_CONFIG_HOME`). It holds one optional file today,
+`selector-policy.json`. Install or reset it explicitly:
+
+```bash
+scarcity-router install-config          # creates it from the example, never overwrites
+scarcity-router install-config --force  # replaces it with the shipped defaults
+```
+
+Every surface provisions the file from the checked-in
+[`examples/selector-policy.json`](examples/selector-policy.json) on first
+use when it is missing — the run that creates it prints a one-line note to
+stderr — and then uses it automatically:
+
+- CLI: an explicit `--selector-policy FILE` wins, then the default config
+  file, then the documented neutral policy; `--neutral-policy` ignores the
+  config for one run;
+- MCP and REST: a request that supplies `selector_policy` wins; a request
+  that omits it runs under the default config loaded at process start.
+
+No flags need to be added to the MCP command. The config file contains only
+selector policy data — never credentials.
+
 ### Provider Availability Policy
 
-Availability windows such as personal peak-hour blackouts are user policy, not
-telemetry. The checked-in owner policy
-[`examples/selector-policy.json`](examples/selector-policy.json) blocks all
-Z.ai models (GLM-5.3, GLM-5.3-Flash) Monday–Friday 14:00–18:00
-Asia/Singapore to preserve the plan for off-peak use; outside the window the
-neutral ranking is unchanged. Use it with the CLI:
+Availability windows such as personal peak-hour blackouts and campaign
+happy hours are user policy, not telemetry. The checked-in owner policy
+[`examples/selector-policy.json`](examples/selector-policy.json) contains
+two rules:
+
+- a **blackout** blocks all Z.ai models (GLM-5.3, GLM-5.3-Flash)
+  Monday–Friday 14:00–18:00 Asia/Singapore to preserve the plan for
+  off-peak use;
+- a **happy hour** strongly prefers GLM-5.3-Flash daily 23:00–09:00
+  Asia/Singapore between 2026-09-03 and 2026-09-20, matching the vendor's
+  zero-quota usage campaign window, so cheap-quota work is absorbed by the
+  campaign model and paid plans are conserved.
+
+Use it with the CLI:
 
 ```bash
 uv run python -m scarcity_router select \
   --profile routine_coding --selector-policy examples/selector-policy.json
 ```
 
+or install it once with `scarcity-router install-config` and omit the flag
+entirely (see [Default configuration location](#default-configuration-location)).
 REST/MCP callers pass the same document inline as the optional
 `selector_policy` object (see
-[`docs/machine-interfaces.md`](docs/machine-interfaces.md)). During a matching
-window Z.ai candidates are excluded with a `policy_blocked` result — the
-explanation says the provider is policy-blocked, never unavailable or
-incapable, and capacity telemetry is untouched.
+[`docs/machine-interfaces.md`](docs/machine-interfaces.md)). During a
+matching blackout Z.ai candidates are excluded with a `policy_blocked`
+result — the explanation says the provider is policy-blocked, never
+unavailable or incapable, and capacity telemetry is untouched. During a
+matching happy hour the targeted candidate is marked as quota-preferred in
+the explanation; the preference reorders ranking only and never bypasses
+capability or capacity eligibility.
 
-The installed wheel packages only the catalog and model policy, so `examples/`
-is not part of an installed distribution. When using the globally installed
-`scarcity-router` CLI or `scarcity-router-mcp`, reference the policy file by
-absolute path (for example the repository checkout) or copy it to a stable
-location such as `~/.config/scarcity-router/selector-policy.json`.
-
-To confirm the blackout fires without waiting for the window, `simulate` moves
+To confirm either window fires without waiting for it, `simulate` moves
 the evaluation instant through a typed override. With
 `{"evaluated_at": "2026-09-14T15:00:00+08:00"}` as `overrides.json` (a Monday
-inside the window):
+inside the blackout window):
 
 ```bash
 uv run python -m scarcity_router simulate \
@@ -132,10 +167,13 @@ uv run python -m scarcity_router simulate \
 
 both GLM models appear under the exclusion stage `policy_blackout`, each
 naming the rule: `blackout rule zai-peak-hours-sgt (preserve_zai_offpeak)`.
+With `{"evaluated_at": "2026-09-15T02:00:00+08:00"}` (inside the campaign
+window) GLM-5.3-Flash wins despite scarcer quota and names
+`happy hour rule zai-flash-campaign-night-sgt`.
 
 The mechanism is documented in
 [`docs/selection-policy.md`](docs/selection-policy.md); the example file is
-opt-in configuration, so omitting `selector_policy` keeps the neutral policy.
+opt-in configuration, so a missing config file keeps the neutral policy.
 
 ## MCP Integration
 
@@ -153,7 +191,11 @@ uv run python -m scarcity_router.mcp
 ```
 
 The installed process configuration recipe is
-[`examples/mcp-stdio.json`](examples/mcp-stdio.json). It advertises exactly:
+[`examples/mcp-stdio.json`](examples/mcp-stdio.json). It needs no flags or
+inline policy: the MCP process picks up
+`~/.config/scarcity-router/selector-policy.json` automatically (see
+[Default configuration location](#default-configuration-location)). It
+advertises exactly:
 
 - `scarcity_status` — current normalized provider capacity;
 - `scarcity_select` — a recommendation for a profile or explicit requirement;

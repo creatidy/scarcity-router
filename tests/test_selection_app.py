@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -42,6 +43,30 @@ from scarcity_router.status import StatusCollectors
 REPO = Path(__file__).resolve().parents[1]
 CATALOG_PATH = REPO / "model-catalog.json"
 POLICY_PATH = REPO / "model-policy.json"
+
+# D-036 isolation: CLI runs in this module must never read or provision the
+# host's ~/.config/scarcity-router. XDG_CONFIG_HOME points at a throwaway
+# directory whose user config is the documented neutral policy, so every
+# expectation below keeps its pre-D-036 neutral behavior; default-config
+# resolution has dedicated tests in tests/test_config.py.
+_TMP_CONFIG_HOME = Path(tempfile.mkdtemp(prefix="scarcity-router-tests-"))
+os.environ["XDG_CONFIG_HOME"] = str(_TMP_CONFIG_HOME)
+_ = (_TMP_CONFIG_HOME / "scarcity-router").mkdir(mode=0o700)
+_ = (_TMP_CONFIG_HOME / "scarcity-router" / "selector-policy.json").write_text(
+    json.dumps(
+        {
+            "mode": "balanced",
+            "resource_policy": {
+                "policy_version": 1,
+                "unknown_capacity_mode": "degraded",
+                "replenishment_mode": "advisory",
+                "reservations": [],
+                "blackouts": [],
+            },
+        }
+    ),
+    encoding="utf-8",
+)
 
 FIXED_AT = datetime(2026, 9, 6, 12, 0, tzinfo=timezone.utc)
 RETRIEVED_AT = "2026-09-06T12:00:00.000Z"
@@ -108,6 +133,9 @@ def _run(argv: list[str]) -> tuple[int, str, str]:
 
 
 def _select_args(*extra: str) -> list[str]:
+    # The module's throwaway XDG_CONFIG_HOME holds a neutral user config, so
+    # unflagged runs keep their pre-D-036 neutral behavior; explicit
+    # --selector-policy tests below pass their own file.
     return [
         "select",
         *extra,
@@ -162,7 +190,11 @@ class SelectCommandTests(unittest.TestCase):
         self.assertEqual("", err)
         self.assertIn("Selected: GLM-5.3-Flash Max (zai/glm-5.3-flash/max)", out)
         self.assertIn("Profile: routine_coding", out)
-        self.assertIn("Scarcity: plentiful — 80% remaining, penalty 400", out)
+        self.assertIn(
+            "Scarcity: plentiful — 80% blended remaining "
+            + "(short 80% / weekly 80%), penalty 400",
+            out,
+        )
         self.assertIn("Capability margin: 5", out)
         self.assertIn("Policy: balanced", out)
 
@@ -607,13 +639,18 @@ class ExplainRenderingTests(unittest.TestCase):
 
     def test_explain_shows_governing_window_98_2(self) -> None:
         text = self._select_explain()
-        # The selected Sol's governing window (openai, both windows at 40%;
-        # five_hour wins the canonical tie-break) and the GLM-5.3
-        # alternative's governing weekly window (zai 2%) are both shown.
-        self.assertIn("Governing capacity: openai/codex tokens five_hour", text)
+        # D-037: the selected Sol's governing window is the strategic
+        # weekly representative (openai, both role windows at 40%; the
+        # tactical five_hour line is shown alongside), and the GLM-5.3
+        # alternative's governing weekly window (zai 2%) is shown with its
+        # healthy tactical five_hour window.
+        self.assertIn("Governing capacity: openai/codex tokens weekly", text)
         self.assertIn("40% remaining", text)
+        self.assertIn("Tactical capacity: openai/codex tokens five_hour", text)
         self.assertIn("Governing capacity: zai/coding_plan tokens weekly", text)
         self.assertIn("2% remaining", text)
+        self.assertIn("Tactical capacity: zai/coding_plan tokens five_hour", text)
+        self.assertIn("98% remaining", text)
 
     def test_explain_shows_permitted_reservation(self) -> None:
         from scarcity_router import CapacityScopeRef, ReservationRule, UserPolicy
@@ -718,6 +755,7 @@ class StrictJsonAndRenderingTests(unittest.TestCase):
             ["status", "--help"],
             ["select", "--help"],
             ["simulate", "--help"],
+            ["install-config", "--help"],
         ):
             captured = io.StringIO()
             original_stdout = sys.stdout
@@ -730,7 +768,7 @@ class StrictJsonAndRenderingTests(unittest.TestCase):
             self.assertEqual(0, ctx.exception.code)
             self.assertIn("usage:", captured.getvalue())
         help_text = build_parser().format_help()
-        for command in ("status", "select", "simulate"):
+        for command in ("status", "select", "simulate", "install-config"):
             self.assertIn(command, help_text)
 
 

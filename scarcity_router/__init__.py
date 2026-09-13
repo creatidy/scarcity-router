@@ -26,10 +26,13 @@ Public API — selection inputs (M2b task/catalog core contracts):
     SelectionContractValidationError, SimulationOverrideApplicationError,
     SelectionContractError
 
-Public API — scarcity and resource-policy primitives (M2d, D-026):
+Public API — scarcity and resource-policy primitives (M2d, D-026; blend D-037):
     scarcity penalty and labels:
         SCARCITY_PENALTY_SCALE, SCARCITY_LABELS, SCARCITY_STATES,
         SCARCITY_REASON_CODES, scarcity_penalty_units, scarcity_label
+    window roles and blend (D-037):
+        WINDOW_ROLES, WEEKLY_TO_FIVE_HOUR_RATIO, BLEND_UNIT_COUNT,
+        window_role, blended_effective_remaining_percent
     assessment:
         GoverningWindowEvidence, ScarcityAssessment, assess_scarcity
     policy:
@@ -37,7 +40,8 @@ Public API — scarcity and resource-policy primitives (M2d, D-026):
         POLICY_REASON_CODES, UnknownCapacityDecision,
         apply_unknown_capacity_mode, ReservationRule, ReservationDecision,
         evaluate_reservation, AvailabilityTarget, WeeklyBlackoutRule,
-        BlackoutDecision, evaluate_blackouts, ReplenishmentState,
+        BlackoutDecision, evaluate_blackouts, WeeklyHappyHourRule,
+        HappyHourDecision, evaluate_happy_hours, ReplenishmentState,
         ReplenishmentDecision, apply_replenishment_mode, UserPolicy
 
 Public API — deterministic selector (M2e, D-027):
@@ -83,6 +87,7 @@ from .policy import (
     WEEKDAYS,
     AvailabilityTarget,
     BlackoutDecision,
+    HappyHourDecision,
     ReplenishmentDecision,
     ReplenishmentState,
     ReservationDecision,
@@ -90,23 +95,33 @@ from .policy import (
     UnknownCapacityDecision,
     UserPolicy,
     WeeklyBlackoutRule,
+    WeeklyHappyHourRule,
     apply_replenishment_mode,
     apply_unknown_capacity_mode,
     evaluate_blackouts,
+    evaluate_happy_hours,
     evaluate_reservation,
 )
 from .scarcity import (
+    BLEND_UNIT_COUNT,
     SCARCITY_LABELS,
     SCARCITY_PENALTY_SCALE,
     SCARCITY_REASON_CODES,
     SCARCITY_STATES,
+    WEEKLY_TO_FIVE_HOUR_RATIO,
+    WINDOW_ROLES,
+    WINDOW_ROLE_STRATEGIC,
+    WINDOW_ROLE_TACTICAL,
     GoverningWindowEvidence,
     ScarcityAssessment,
     assess_scarcity,
+    blended_effective_remaining_percent,
     scarcity_label,
     scarcity_penalty_units,
+    window_role,
 )
 from .selector import (
+    DEFAULT_SHORT_WINDOW_FLOOR_PERCENT,
     EXCLUSION_STAGES,
     SELECTION_REASON_CODES,
     SELECTOR_MODES,
@@ -154,8 +169,10 @@ from .selection_types import (
 )
 
 __all__ = [
+    "BLEND_UNIT_COUNT",
     "CAPABILITY_DIMENSIONS",
     "CONFIDENCE_VALUES",
+    "DEFAULT_SHORT_WINDOW_FLOOR_PERCENT",
     "EXCLUSION_STAGES",
     "MAX_RATING",
     "MIN_RATING",
@@ -172,6 +189,10 @@ __all__ = [
     "TASK_LEVELS",
     "UNKNOWN_CAPACITY_MODES",
     "WEEKDAYS",
+    "WEEKLY_TO_FIVE_HOUR_RATIO",
+    "WINDOW_ROLES",
+    "WINDOW_ROLE_STRATEGIC",
+    "WINDOW_ROLE_TACTICAL",
     "AvailabilityTarget",
     "BlackoutDecision",
     "CapabilityAssessment",
@@ -190,6 +211,7 @@ __all__ = [
     "GoverningWindowEvidence",
     "HardConstraintFailure",
     "HardConstraints",
+    "HappyHourDecision",
     "HumanOverride",
     "ModelCatalog",
     "ModelCatalogEntry",
@@ -213,13 +235,16 @@ __all__ = [
     "UnknownCapacityDecision",
     "UserPolicy",
     "WeeklyBlackoutRule",
+    "WeeklyHappyHourRule",
     "apply_replenishment_mode",
     "apply_unknown_capacity_mode",
     "apply_capacity_overrides",
     "assess_scarcity",
+    "blended_effective_remaining_percent",
     "capability_margin",
     "evaluate_blackouts",
     "evaluate_capability_sufficiency",
+    "evaluate_happy_hours",
     "evaluate_hard_constraints",
     "evaluate_reservation",
     "get_version",
@@ -229,6 +254,7 @@ __all__ = [
     "select_model",
     "simulate_selection",
     "tighten_requirement",
+    "window_role",
 ]
 
 # ── Distribution version ─────────────────────────────────────────────────────

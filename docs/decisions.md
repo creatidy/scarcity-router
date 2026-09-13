@@ -1681,6 +1681,224 @@ decision.
   change, no new network exposure, no credential handling change, and no
   publication.
 
+### D-035 — Happy-hour quota-preference windows
+
+- **Status:** Accepted
+- **Date:** 2026-09-12
+- **Issue:** BioMedical-IT/scarcity-router#69
+- **Decision:** Add weekly happy-hour rules to the user resource policy as
+  the preference-side counterpart of blackouts, driven by the owner's
+  GLM-5.3-Flash usage campaign (owner-provided campaign text, 2026-09-03
+  through 2026-09-20, daily 23:00-09:00 Asia/Singapore, zero quota via
+  ZCode and doubled quota via other supported agents for GLM-5.3-Flash
+  only).
+  - **Contract.** `WeeklyHappyHourRule` mirrors `WeeklyBlackoutRule`
+    exactly — exact `AvailabilityTarget` identity matching, explicit IANA
+    time zone, duplicate-free canonical `mon`-`sun` weekday vocabulary,
+    strict 24-hour `HH:MM` wall times, half-open `[start, end)` local
+    intervals with cross-midnight support, `start == end` invalid — plus
+    optional inclusive local calendar bounds `start_date`/`end_date`
+    (`YYYY-MM-DD`, `start_date <= end_date`) because vendor campaigns are
+    limited time; both absent means a standing recurring window. The
+    schedule matcher is one shared implementation so both rule kinds can
+    never drift apart at boundaries.
+  - **Semantics.** During an active window, matching candidates form a
+    preferred ranking group inserted after the capacity knowledge class
+    and before the scarcity penalty: a preferred known-capacity candidate
+    outranks a non-preferred one with healthier quota, because the
+    targeted model's marginal quota cost inside the window is zero or
+    discounted. The preference is ranking only and never an eligibility
+    bypass: blackout, hard constraints, capability sufficiency,
+    capacity exhaustion/unknown policy and reservations all still gate
+    first; unknown-capacity candidates remain separated by the knowledge
+    class; explicit exhaustion still excludes (campaign small print such
+    as weekly caps is exactly why "free" never fabricates capacity); and
+    telemetry, scarcity and capability are never rewritten. First
+    matching rule in canonical `rule_id` order decides; blackout wins
+    over an overlapping happy hour by stage order.
+  - **Serialization compatibility.** `UserPolicy` gains the additive
+    optional member `happy_hours`: documents without the key load
+    unchanged with an empty tuple, and an empty tuple is never
+    serialized, so pre-D-035 documents round-trip byte-identically. A
+    document carrying `happy_hours` fails loudly on an older reader
+    ("unknown keys") rather than being silently misread. Rule IDs remain
+    unique across reservations, blackouts and happy hours. Machine
+    envelopes and the `SelectionDecision` field set are unchanged; the
+    per-candidate `happy_hour_decision` (present only when preferred)
+    is additive inside the existing candidate payload. The decision also
+    carries the additive optional member `expired_happy_hour_rules`
+    (serialized only when non-empty): the rule ids whose weekly window
+    would cover the evaluated instant but whose inclusive date bounds do
+    not — the campaign-ended signal. It is explanation-only provenance,
+    never a ranking or eligibility input, and `--explain` lists it under
+    "Expired happy-hour rules"; the compact human output names the active
+    preference with one `Happy hour:` line.
+- **Alternatives considered:** treating a happy hour as an inverse
+  blackout (hard-blocking non-targeted models) — rejected because it
+  manufactures exclusions from pricing knowledge and can manufacture
+  no-solution results; modeling zero-quota campaigns as capacity
+  telemetry (penalty discounts or unknown rewriting) — rejected because
+  quota economics must never mutate normalized capacity or capability;
+  a ranked-only soft bonus below scarcity — rejected as too weak for the
+  stated goal ("extremely preferable") and indistinguishable from the
+  existing `preference_order` tie-break.
+- **Boundary:** `scarcity_router/policy.py`, `selector.py`,
+  `selection_app.py` explanation rendering, `examples/selector-policy.json`
+  (campaign rule added), tests and docs. No catalog ratings change, no
+  provider change, no REST/MCP schema-version change, no execution or
+  gateway behavior.
+
+### D-036 — Default user configuration location and provisioning
+
+- **Status:** Accepted
+- **Date:** 2026-09-12
+- **Issue:** BioMedical-IT/scarcity-router#69
+- **Decision:** The service has exactly one default configuration
+  location, `$(XDG_CONFIG_HOME or ~/.config)/scarcity-router/`, holding
+  the optional `selector-policy.json` user selector policy.
+  - **Provisioning.** Every surface (CLI, MCP, REST process start)
+    provisions the file from the audited `examples/selector-policy.json`
+    when it is missing — `uv tool install` has no post-install hook, so
+    first use is the effective installation step — and an existing file
+    is never silently overwritten. The explicit
+    `scarcity-router install-config [--force]` command provisions or
+    replaces it on demand. Directory mode `0o700`, file mode `0o600`;
+    the content is the checked-in example verbatim and never contains
+    credentials, tokens or provider endpoints. An installed wheel
+    packages the example as
+    `scarcity_router/default-selector-policy.json` via the D-034
+    force-include mechanism (no committed duplicate; the sdist gains
+    `/examples/selector-policy.json` so wheels rebuild). The D-034
+    package-check tripwire that forbids `examples/` wholesale gains
+    exactly one allowlisted exception,
+    `examples/selector-policy.json`, because that file is now a product
+    provisioning source by this decision — the blanket rule still keeps
+    every other example, test, doc and tooling artifact out of the
+    distribution.
+  - **Precedence.** CLI: explicit `--selector-policy FILE` wins, then
+    the default config file, then the documented neutral policy, with
+    `--neutral-policy` ignoring the config for one run. MCP/REST: a
+    request that supplies `selector_policy` wins; a request that omits
+    it runs under the server-configured default policy loaded at
+    process start (`ApplicationDependencies.default_policy`), neutral
+    when none resolves. This consciously refines the machine-interface
+    wording "missing means the neutral policy" to "missing means the
+    server default, else neutral"; envelope schemas, field sets and the
+    missing-vs-null semantics are unchanged, and the decision documents
+    which policy applied through its usual provenance fields.
+  - **Failure behavior.** Provisioning or loading failures degrade to
+    the neutral policy with one concise stderr warning and never block
+    a selection; a config file that exists but fails to load directly
+    (application loaders) is a loud configuration error, never a
+    silent fall-through. The run that implicitly provisions the file
+    announces it once on stderr
+    (`note: provisioned default user config: <path>`); an existing file
+    is never announced, `install-config` output is unchanged, and JSON
+    stdout stays clean for piping.
+- **Reason:** The owner does not want to hand-create policy files or add
+  flags to the MCP command; one XDG location provisioned from the
+  reviewed example gives every surface the same policy with zero wiring,
+  while explicit overrides and the neutral escape hatch keep the
+  previous opt-in behavior available.
+- **Security note:** This is new product write access outside the
+  package (previously none); it is bounded to one artifact, written with
+  private permissions, content-audited, and recorded in
+  `docs/security.md` ("Minimal filesystem access").
+- **Boundary:** New `scarcity_router/config.py`, `cli.py` (install-config,
+  `--neutral-policy`, default resolution), `mcp.py`/`server.py`
+  (default-policy fallback), `selection_app.ApplicationDependencies`,
+  packaging metadata, tests and docs. No selector semantics change, no
+  provider change, no new network exposure, no credential handling
+  change.
+
+### D-037 — Role-split scarcity blend and the advisory short-window floor
+
+- **Status:** Accepted
+- **Date:** 2026-09-13
+- **Issue:** BioMedical-IT/scarcity-router#71
+- **Amends:** D-026 / U-007 (the cross-window most-restrictive aggregation
+  rule only; the penalty function, label boundaries, reservation semantics
+  and unknown-capacity policy are unchanged)
+- **Decision:** Split every applicable capacity window into one of two
+  frozen roles — a code-level mapping, never user configuration — and blend
+  the two role aggregates into one scarcity penalty.
+  - **Roles.** `kind: weekly` windows are *strategic* (long-horizon
+    subscription health; exhaustion blocks for days). `kind: five_hour`
+    windows and `resource: time` windows (the Z.ai `TIME_LIMIT`
+    normalization) are *tactical* (whether work can happen right now;
+    exhaustion self-heals in hours). Unknown-kind token windows are
+    conservatively *strategic*, preserving the pre-D-037 most-restrictive
+    outcome for exactly that shape; unknown-resource windows never carry a
+    percentage pair and therefore never reach the blend.
+  - **Blend.** Within each role the pre-existing most-restrictive rule
+    governs: each role is represented by `min(remaining)` over its known
+    applicable windows across all bound scopes. With `a` the tactical and
+    `b` the strategic representative, and the owner's planning assumption
+    that weekly quota equals five × five-hour quota (`WEEKLY_TO_FIVE_HOUR_RATIO
+    = 5`, six total units):
+    `units = a + 5*b`, `effective_remaining_percent = units // 6`
+    (integer floor, 0..100). A role with no known windows defaults its slot
+    to the other role's value, so a single-role candidate keeps exactly its
+    own percentage (`only strategic b -> 6b//6 = b`; `only tactical a ->
+    6a//6 = a`) — no capacity is invented for a missing bucket. The penalty
+    and label remain the frozen pure functions of the blended effective:
+    `penalty_units = (100 - effective)^2` on scale 10000,
+    `label = scarcity_label(effective)`. Ranking compares the same integer
+    units as before; the ranking-key order (knowledge class → happy-hour
+    preference → penalty → capability margin → effort → preference order →
+    identity) is unchanged.
+  - **Evidence.** `ScarcityAssessment` gains the additive optional members
+    `strategic_window` and `tactical_window` (`GoverningWindowEvidence`,
+    serialized only when that role had a known window, role-consistent,
+    never fabricated for a missing role). For a known assessment the
+    governing window is the strategic representative when one exists, else
+    the tactical one; the old invariant "governing remaining equals
+    effective remaining" is replaced by blend consistency
+    (`effective == blended(tactical, strategic)`), so a serialized known
+    assessment without role evidence fails validation loudly on a new
+    reader. As with D-035's additive members this is accepted because
+    decision deserialization is not an input boundary in this slice: the
+    REST/MCP/CLI surfaces render `to_dict` output and never ingest stored
+    decisions. Exhaustion semantics are unchanged: any known applicable
+    window at 0% — in either role — is `unavailable` (governing exhausted
+    window, role members absent), and unknown/incomplete telemetry is
+    still never read as a number.
+  - **Advisory short-window floor.** `SelectorPolicy` gains the additive
+    optional member `short_window_floor_percent` (integer 0..100; absent
+    means the documented default 10, `0` disables). For an eligible
+    candidate with known capacity whose tactical representative is below
+    the floor, the selector sets the additive per-candidate advisory flag
+    `short_window_below_floor` (serialized only when true; eligible
+    candidates still carry no reason codes, so this is a flag, not a
+    code). The flag never demotes, excludes or rewrites ranking — the
+    answer to "the short window may not finish the task, consider another
+    provider" is the warning plus the exact ranking order, not a hidden
+    eligibility stage. `render_select_human` warns when the *selected*
+    candidate is flagged, and `--explain` shows both role representatives.
+- **Owner cases frozen by test:** tactical/strategic 80/20 → effective 30,
+  penalty 4900; 20/80 → 70, 900; 5/95 → 80, 400 (preferred); 95/5 → 20,
+  6400. A healthy short window still cannot hide a critical weekly one
+  (weekly weight 5/6), and a drained short window no longer hides a
+  healthy weekly one.
+- **Alternatives considered:** configurable per-kind weights — rejected:
+  new tuning knobs for no evidenced need and an averaging story that
+  breaks explainability; reset-proximity penalty using `resets_at` —
+  rejected: D-026 explicitly excludes reset proximity, `resets_at` is
+  honestly unknown on several provider shapes, and the duration proxy in
+  the role split achieves the intent with one frozen integer; lexicographic
+  (weekly, then 5h) ordering without a blend — rejected: cannot express
+  "5h=5/weekly=95 is strategically healthier than 5h=95/weekly=5" as a
+  strength, only as a tie; floor-as-ranking-class (demoting below-floor
+  candidates behind all feasible ones) — rejected by owner guidance: the
+  5h=5%/weekly=95% candidate must *rank first* against 5h=95%/weekly=5%,
+  so a short-window deficit must warn, not demote.
+- **Boundary:** `scarcity_router/scarcity.py`, `selector.py`
+  (`SelectorPolicy`, candidate evaluation flag), `selection_app.py`
+  rendering, `scarcity_router/__init__.py` exports, tests and docs. No
+  provider adapter changes (roles derive from already-normalized
+  `resource`/`kind`), no catalog ratings change, no REST/MCP
+  schema-version change, no execution or gateway behavior.
+
 ## Unresolved decisions
 
 ### U-001 — Codex binary discovery and compatibility
@@ -1807,7 +2025,8 @@ decision.
 - Validate `(1-r)^2`, label thresholds, reservation boundary behavior and
   unknown ordering through scenario tests before M2 acceptance.
 - Reset proximity is preserved but not included in the first formula.
-- **Status:** RESOLVED by M2d / D-026 (2026-09-06). The penalty function
+- **Status:** RESOLVED by M2d / D-026 (2026-09-06); aggregation amended by
+  D-037 (2026-09-13). The penalty function
   (`penalty_units = (100 - remaining_percent)^2` on integer scale 10000),
   the exact label boundaries, the most-restrictive multi-window/multi-scope
   aggregation, the reservation comparison semantics (strict `<` threshold,
@@ -1815,7 +2034,8 @@ decision.
   boundary (no numeric unknown penalty; `degraded`/`strict` modes) are now
   frozen and scenario-tested in `tests/test_scarcity.py` and
   `tests/test_resource_policy.py`. Profile minima were already resolved
-  separately by D-025 (resolving U-006).
+  separately by D-025 (resolving U-006). D-037 narrows the aggregation to
+  most-restrictive *within* each window role and blends the roles.
 
 ### U-008 — Package, CLI and final project name
 

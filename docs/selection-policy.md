@@ -20,6 +20,8 @@ for the selector decision sequence and scarcity behavior.
 - Current normalized capacity snapshots and freshness.
 - User policy mode, reservations and explicit overrides.
 - Optional explicit provider/model availability schedules or blackout windows.
+- Optional provider/model happy-hour windows (quota-preference schedules,
+  typically limited-time vendor campaigns).
 - Optional advisory provider/service health evidence.
 - Optional replenishment metadata (`ReplenishmentState`) such as banked quota
   reset opportunities.
@@ -50,19 +52,23 @@ failure merely to populate fields.
 1. known nonzero capacity before unknown/degraded capacity — unknown has no
    numeric sentinel and is incomparable to any known percentage, even a
    critical one (a known 1% candidate ranks ahead of a degraded unknown);
-2. integer scarcity penalty (`penalty_units`) among known-capacity
-   candidates only;
-3. capability margin, lower wins;
-4. lowest explicit catalog `reasoning_effort`, in normalized order
+2. happy-hour quota-preference group — a candidate preferred by an active
+   happy-hour window ranks ahead of one that is not (D-035; within the same
+   knowledge class only, never across it, and never against eligibility);
+3. integer scarcity penalty (`penalty_units`) among known-capacity
+   candidates only — since D-037 the penalty derives from the frozen
+   strategic/tactical role blend of the candidate's windows;
+4. capability margin, lower wins;
+5. lowest explicit catalog `reasoning_effort`, in normalized order
    `none < low < medium < high < xhigh < max`; null/absent uses an explicit
    unconfigured comparison state after known effort, not a numeric sentinel;
-5. explicit `SelectorPolicy.preference_order` (listed before unlisted, then
+6. explicit `SelectorPolicy.preference_order` (listed before unlisted, then
    index) — a late tie-break only: it cannot override capability, hard
-   constraints, blackout, capacity knowledge class, scarcity, capability margin,
-   reasoning effort or
-   reservations, and it is never inferred from model classes, profile
-   names, provider names, catalog order or display names;
-6. stable `(provider, model, variant)` identity.
+   constraints, blackout, happy-hour preference, capacity knowledge class,
+   scarcity, capability margin or reservations, and it is never inferred
+   from model classes, profile names, provider names, catalog order or
+   display names;
+7. stable `(provider, model, variant)` identity.
 
 **Independent concepts.** Model capability is not reasoning effort and neither
 is subscription scarcity. Effort is curated catalog configuration data, never
@@ -165,10 +171,15 @@ relaxed and no fallback bypasses capability.
    task level. A banked reset or similar replenishment option can make a
    candidate *recoverable* under explicit policy, but is not treated as current
    remaining quota and is never consumed by the broker.
-6. **Rank sufficient eligible candidates.** Under `balanced`, prefer lower
-   scarcity penalty, then the smallest adequate capability margin, then lowest
-   configured reasoning effort, then stable
+6. **Rank sufficient eligible candidates.** Under `balanced`, prefer the
+   happy-hour quota-preference group, then lower blended scarcity
+   penalty (D-037 role blend), then the smallest adequate capability
+   margin, then lowest configured reasoning effort, then stable
    configured preference and stable model identity as deterministic ties.
+   Independently, an eligible candidate whose tactical (short) window is
+   below the policy floor carries the advisory `short_window_below_floor`
+   flag — a finish-risk warning that never changes ranking or
+   eligibility.
 7. **Produce explanation.** Return the winner, alternatives, exclusions,
    capacity evidence, applied policy and reason codes, including schedule,
    health or replenishment reasons when relevant.
@@ -181,15 +192,17 @@ override a capability minimum.
 
 Subscription scarcity is computed only over a candidate's applicable capacity
 scopes and their windows, as defined in `capacity-model.md`. The planning
-freeze fixes these invariants:
+freeze fixes these invariants (aggregation amended by D-037):
 
 1. Only capacity scopes applicable to a candidate participate. An unrelated
    model-specific bucket must not penalize a candidate that does not consume
    it.
 2. Within an applicable scope, all relevant windows participate.
-3. Across all applicable windows and scopes, the most restrictive scarcity
-   result governs under `balanced`. A healthy short window must never hide a
-   critical weekly window.
+3. Across all applicable windows and scopes of one role, the most
+   restrictive scarcity result governs that role under `balanced`. A healthy
+   short window must never hide a critical weekly window — and since D-037,
+   a drained short window no longer hides a healthy weekly one, because the
+   two roles are blended rather than merged.
 4. Unknown applicability is explicit and policy-controlled; it is never
    resolved by choosing the most optimistic scope or window.
 
@@ -198,11 +211,66 @@ Every candidate is evaluated against the relevant provider capacity windows;
 there is no alternate API-cost or abundance score standing in for subscription
 scarcity.
 
+## Window roles and the strategic/tactical blend (D-037)
+
+Every applicable window with a usable percentage pair is classified into one
+of two frozen roles — a code-level mapping over normalized fields, never user
+configuration and never inferred from window ids or model names:
+
+- **Strategic** — `kind: weekly` windows: long-horizon subscription health;
+  exhausting them blocks the provider for days. Unknown-kind token windows
+  are conservatively strategic, preserving the pre-D-037 most-restrictive
+  outcome for exactly that shape.
+- **Tactical** — `kind: five_hour` windows and every `resource: time` window
+  (the Z.ai `TIME_LIMIT` normalization): whether work can happen right now;
+  they self-heal in hours.
+
+Each role is represented by its most restrictive known remaining across all
+applicable scopes (`min` within the role). With `a` the tactical and `b` the
+strategic representative, and the owner's frozen planning assumption that one
+weekly bucket holds as much quota as five five-hour buckets
+(`WEEKLY_TO_FIVE_HOUR_RATIO = 5`, six total units):
+
+```text
+effective_remaining_percent = (a + 5*b) // 6      # integer floor, 0..100
+penalty_units               = (100 - effective)^2  # scale 10000, unchanged
+label                       = scarcity_label(effective)
+```
+
+A role with no known windows defaults its blend slot to the other role's
+value, so a single-role candidate blends to exactly its own percentage and no
+capacity is invented for the missing bucket. The owner cases frozen by test:
+tactical/strategic 80/20 → effective 30, penalty 4900; 20/80 → 70, 900;
+5/95 → 80, 400 (preferred); 95/5 → 20, 6400. A healthy short window still
+cannot hide a critical weekly one (weekly weight 5/6), and a drained short
+window no longer hides a healthy weekly one.
+
+Exhaustion is unchanged: any known applicable window at `remaining_percent
+== 0` — in either role — makes the assessment `unavailable`. Known
+assessments carry `strategic_window` and/or `tactical_window` evidence (the
+role representative when the role had known windows, never fabricated); the
+governing window is the strategic representative when one exists, else the
+tactical one.
+
+## Advisory short-window floor (D-037)
+
+`SelectorPolicy.short_window_floor_percent` (integer 0..100; absent means the
+documented default 10, `0` disables) sets an advisory finish-risk floor: an
+eligible known-capacity candidate whose tactical representative is below the
+floor is flagged `short_window_below_floor` (serialized only when true). The
+answer to "this short window may not finish the task — consider another
+provider" is the warning plus the exact ranking order, never a hidden
+eligibility stage: the flag never demotes, excludes or rewrites ranking, and
+compact human output warns when the selected candidate is flagged while
+`--explain` shows both role representatives.
+
 ## Scarcity parameters
 
-U-007 is resolved: the D-005 concept is accepted with exact parameters.
+U-007 is resolved: the D-005 concept is accepted with exact parameters
+(aggregation amended by D-037, see the previous sections).
 
-**Continuous penalty.** For every numerically known applicable window,
+**Continuous penalty.** For every numerically known applicable window, the
+penalty function itself is unchanged:
 
 ```text
 penalty_units = (100 - remaining_percent)^2
@@ -210,12 +278,14 @@ scale         = 10000            (SCARCITY_PENALTY_SCALE)
 ```
 
 so remaining 100% costs 0 units, 80% costs 400, 50% costs 2500, 20% costs
-6400, 2% costs 9604, 1% costs 9801 and 0% costs 10000. Ranking must compare
-the integer units, never normalized floats. The penalty contains no linear
-or logarithmic term, no reset proximity, no provider price, no capability
-score, no model prestige and no provider preference. Scarcity answers only
-one question: how constrained is this applicable current subscription
-capacity?
+6400, 2% costs 9604, 1% costs 9801 and 0% costs 10000. Since D-037 the
+single number feeding this function is the blended
+`effective_remaining_percent` of the candidate's role representatives, not a
+raw per-window minimum. Ranking must compare the integer units, never
+normalized floats. The penalty contains no linear or logarithmic term, no
+reset proximity, no provider price, no capability score, no model prestige
+and no provider preference. Scarcity answers only one question: how
+constrained is this applicable current subscription capacity?
 
 **Explanatory labels.** Labels are explanation only and never replace the
 continuous penalty; two candidates both labelled `scarce` may still have
@@ -237,17 +307,18 @@ insufficient trustworthy capacity information.
 `window_id`, `limitName`, `normalModelSlug`, model names or provider
 aliases. Within every applicable scope, all windows carrying a usable
 percentage pair participate — token and provider-normalized `time`
-windows alike, so a restrictive Z.ai `TIME_LIMIT` window may govern while
-the token windows look healthy. Unrelated scopes never participate, even
-at 0%.
+windows alike, so a restrictive Z.ai `TIME_LIMIT` window governs its
+tactical role while the token windows look healthy (D-037 roles).
+Unrelated scopes never participate, even at 0%.
 
-**Aggregation.** Across all applicable windows of all bound scopes the most
-restrictive result governs: `aggregate_penalty_units = max(window
-penalties)`, equivalently `effective_remaining_percent = min(remaining
-values)`. The label derives from the effective remaining, never an average.
-Governing-window evidence is explanation-only and is tie-broken by a stable
-canonical key over normalized fields (provider, scope_id, resource, kind,
-window_id-or-empty), independent of input order.
+**Aggregation.** Across all applicable windows of all bound scopes the
+most restrictive result within each role governs that role, and the
+frozen D-037 blend of the two role representatives produces the single
+`effective_remaining_percent` (penalty and label derive from it, never an
+average across roles). Governing-window evidence is explanation-only and
+is tie-broken by a stable canonical key over normalized fields (provider,
+scope_id, resource, kind, window_id-or-empty), independent of input
+order.
 
 **Unknown versus unavailable.** Explicit exhaustion wins: any known
 applicable window at `remaining_percent == 0` makes the assessment
@@ -363,6 +434,73 @@ documentation describes off-peak benefits and dynamic resource behavior, and
 some off-peak/reset-card parameters are explicitly dynamic. The user's desired
 schedule therefore belongs in configuration and must carry an explicit timezone
 and deterministic boundary semantics.
+
+## Happy hours (quota-preference windows)
+
+Happy hours are the preference-side counterpart of blackouts (D-035). A
+vendor may make consumption of one model cheap or free for a limited period —
+for example a usage campaign in which one model's quota is not counted, or
+counted at a discount, during nightly off-peak hours. During such a window,
+the conservation question flips: the cheap model should absorb the work so
+full-price plans are preserved. A happy-hour rule states exactly that window
+and target:
+
+```yaml
+happy_hours:
+  - rule_id: zai-flash-campaign-night-sgt
+    target:
+      provider: zai
+      model: glm-5.3-flash
+    timezone: Asia/Singapore
+    weekdays: [mon, tue, wed, thu, fri, sat, sun]
+    start_local: "23:00"
+    end_local: "09:00"
+    reason_code: glm53flash_campaign_zero_quota
+    start_date: "2026-09-03"
+    end_date: "2026-09-20"
+```
+
+The schedule reuses the blackout mechanics exactly: an explicit IANA time
+zone, the duplicate-free `mon`–`sun` weekday vocabulary, strict 24-hour
+`HH:MM` local times, half-open `[start, end)` intervals with cross-midnight
+support (`start == end` is invalid), and evaluation of a caller-supplied
+timezone-aware instant converted into the rule's zone. Unlike a blackout, a
+happy hour may be limited-time: the optional inclusive local calendar bounds
+`start_date`/`end_date` restrict the window to a campaign period, and both
+absent means a standing recurring window.
+
+Semantics and boundaries:
+
+- **Preference, never eligibility.** During an active window the matching
+  candidates form a preferred ranking group after the capacity knowledge
+  class: a preferred candidate outranks a non-preferred one with healthier
+  quota, because its marginal quota cost is zero or discounted. The
+  preference can never resurrect an excluded candidate: blackout, hard
+  constraints, capability sufficiency, capacity exhaustion/unknown policy
+  and reservations all still gate first.
+- **Knowledge class still dominates.** A happy-hour candidate with
+  unknown/degraded capacity still ranks behind a known healthy sufficient
+  candidate. Unknown capacity is never ranked against a numeric scarcity
+  value, and a preference is not evidence.
+- **Exhaustion still excludes.** A candidate at 0% stays excluded even
+  inside its happy hour. "Free right now" is user-side pricing knowledge,
+  never fabricated capacity; a campaign's own small print (weekly caps,
+  client-version gates) is exactly why the broker does not pretend
+  exhaustion away.
+- **No telemetry or capability rewrite.** The decision never touches
+  capacity status, `remaining_percent`, scarcity penalties or model
+  capability; `quota never changes a capability rating` holds in both
+  directions. The explanation names the governing rule and its configured
+  reason code, never "unavailable" or "incapable".
+- **Determinism.** Rules are stored canonically sorted by `rule_id`; the
+  first matching active rule decides. Blackout always wins over an
+  overlapping happy hour because it is an eligibility stage.
+- **Expiry is visible.** When a rule's weekly window would cover the
+  evaluated instant but its inclusive date bounds do not (a campaign that
+  has ended), the decision names it under `expired_happy_hour_rules` and
+  `--explain` lists it — the "why did the preference disappear?" question
+  answers itself. A rule that is simply outside its weekly window is
+  ordinary schedule behavior and is never flagged.
 
 ## Replenishment and reset opportunities
 
@@ -645,9 +783,11 @@ move the simulated evaluated instant. Output distinguishes CURRENT and
 SIMULATED inputs and decisions. This is valuable for tests, policy
 debugging, demonstrations and documentation.
 
-Simulation should eventually cover blackout windows, replenishment
-availability and advisory health so policy behavior can be tested without
-waiting for real peak hours, outages or quota exhaustion.
+Blackout and happy-hour windows are already covered by this mechanism:
+replacing the selector policy and moving `evaluated_at` exercises any
+schedule without waiting for real peak hours or campaign nights.
+Replenishment availability and advisory health acceptance follow the same
+pattern.
 
 ## Runtime feedback (deferred)
 

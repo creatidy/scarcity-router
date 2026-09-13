@@ -17,6 +17,22 @@
         "end_local": "18:00",
         "reason_code": "preserve_zai_offpeak"
       }
+    ],
+    "happy_hours": [
+      {
+        "rule_id": "zai-flash-campaign-night-sgt",
+        "target": {
+          "provider": "zai",
+          "model": "glm-5.3-flash"
+        },
+        "timezone": "Asia/Singapore",
+        "weekdays": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"],
+        "start_local": "23:00",
+        "end_local": "09:00",
+        "reason_code": "glm53flash_campaign_zero_quota",
+        "start_date": "2026-09-03",
+        "end_date": "2026-09-20"
+      }
     ]
   }
 }

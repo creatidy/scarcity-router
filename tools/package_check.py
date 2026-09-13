@@ -80,6 +80,7 @@ REQUIRED_WHEEL_NAMES = (
     "scarcity_router/selection_app.py",
     "scarcity_router/model-catalog.json",
     "scarcity_router/model-policy.json",
+    "scarcity_router/default-selector-policy.json",
     "scarcity_router-0.1.0.dist-info/METADATA",
     "scarcity_router-0.1.0.dist-info/entry_points.txt",
     "scarcity_router-0.1.0.dist-info/licenses/LICENSE",
@@ -94,6 +95,7 @@ REQUIRED_SDIST_NAMES = (
     "scarcity_router/selection_app.py",
     "model-catalog.json",
     "model-policy.json",
+    "examples/selector-policy.json",
     "pyproject.toml",
     "README.md",
     "LICENSE",
@@ -142,9 +144,18 @@ def build_artifacts() -> None:
     print("PASS uv build --no-sources produced wheel and sdist")
 
 
+# D-036: the default user selector policy is deliberately packaged. The
+# audited examples/selector-policy.json is the provisioning source (sdist)
+# and its build-time mapping is the wheel resource; it is the single allowed
+# exception to the blanket examples/ tripwire above.
+ALLOWED_EXCEPTIONS = ("examples/selector-policy.json",)
+
+
 def _forbid_entries(names: Sequence[str], kind: str) -> None:
     for name in names:
         lowered = name.lower()
+        if lowered.endswith(ALLOWED_EXCEPTIONS):
+            continue
         for part in FORBIDDEN_NAME_PARTS:
             _check(part not in lowered, f"{kind} contains forbidden entry {name} ({part})")
 

@@ -19,6 +19,10 @@ Implements the frozen M2d resource-policy contracts (D-026, D-021):
 - timezone-aware weekly blackout rules with half-open ``[start, end)``
   local-time semantics, cross-midnight support and no hard-coded vendor
   schedule;
+- timezone-aware weekly happy-hour rules with the same schedule semantics
+  plus optional inclusive local date bounds (limited-time vendor campaigns):
+  a matching window marks candidates as quota-preferred for ranking only
+  and never changes any eligibility outcome;
 - the normalized D-021 ``ReplenishmentState`` with the ``ignore``,
   ``advisory`` and ``recoverable`` visibility modes; replenishment is never
   current capacity, never changes a scarcity assessment and is never
@@ -37,7 +41,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from typing import ClassVar, TypeVar, cast
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -125,6 +129,8 @@ _TZ_KEY_RE = re.compile(
 )
 
 _CANONICAL_TS_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
+
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 def _v_str(value: object, fld: str) -> str:
@@ -217,6 +223,22 @@ def _v_hm(value: object, fld: str) -> str:
     return s
 
 
+def _v_date(value: object, fld: str) -> str:
+    """Strict local calendar date ``YYYY-MM-DD``."""
+    s = _v_str(value, fld)
+    if not _DATE_RE.match(s):
+        raise SelectionContractValidationError(
+            f"{fld}: invalid date {s!r}; expected strict YYYY-MM-DD"
+        )
+    try:
+        _ = date.fromisoformat(s)
+    except ValueError:
+        raise SelectionContractValidationError(
+            f"{fld}: invalid calendar date in {s!r}"
+        ) from None
+    return s
+
+
 def _hm_minutes(value: str) -> int:
     match = _HM_RE.match(value)
     if match is None:  # construction-validated; guard the parse anyway
@@ -251,6 +273,36 @@ def _zone(timezone: str) -> ZoneInfo:
         raise SelectionContractValidationError(
             f"unknown or unloadable IANA time zone {timezone!r}"
         ) from exc
+
+
+def _weekly_window_contains(
+    timezone: str,
+    weekdays: tuple[str, ...],
+    start_local: str,
+    end_local: str,
+    at: datetime,
+) -> bool:
+    """Half-open ``[start, end)`` weekly local-window test for one instant.
+
+    Shared by blackout and happy-hour rules so both schedule kinds have
+    exactly the same boundary semantics: strict ``HH:MM`` wall times, the
+    explicit weekday vocabulary, and cross-midnight intervals that run from
+    start on each configured weekday through end on the following day.
+    """
+    local = at.astimezone(_zone(timezone))
+    minute_of_day = local.hour * 60 + local.minute
+    start = _hm_minutes(start_local)
+    end = _hm_minutes(end_local)
+    day = WEEKDAYS[local.weekday()]
+    previous_day = WEEKDAYS[(local.weekday() - 1) % 7]
+    configured = frozenset(weekdays)
+    if start < end:
+        return day in configured and start <= minute_of_day < end
+    # Cross-midnight: [start, 24:00) on the configured start days plus
+    # [00:00, end) on the following day.
+    if day in configured and minute_of_day >= start:
+        return True
+    return previous_day in configured and minute_of_day < end
 
 
 def _v_weekdays(value: object, fld: str) -> tuple[str, ...]:
@@ -999,20 +1051,10 @@ class WeeklyBlackoutRule:
         independently of :func:`evaluate_blackouts`.
         """
         checked_at = _v_aware_datetime(at, "weekly_blackout_rule.blocks_at.at")
-        local = checked_at.astimezone(_zone(self.timezone))
-        minute_of_day = local.hour * 60 + local.minute
-        start = _hm_minutes(self.start_local)
-        end = _hm_minutes(self.end_local)
-        day = WEEKDAYS[local.weekday()]
-        previous_day = WEEKDAYS[(local.weekday() - 1) % 7]
-        weekdays = frozenset(self.weekdays)
-        if start < end:
-            return day in weekdays and start <= minute_of_day < end
-        # Cross-midnight: [start, 24:00) on the configured start days plus
-        # [00:00, end) on the following day.
-        if day in weekdays and minute_of_day >= start:
-            return True
-        return previous_day in weekdays and minute_of_day < end
+        return _weekly_window_contains(
+            self.timezone, self.weekdays, self.start_local, self.end_local,
+            checked_at,
+        )
 
     @classmethod
     def from_dict(cls, d: object) -> "WeeklyBlackoutRule":
@@ -1170,6 +1212,279 @@ def evaluate_blackouts(
                 reason_codes=_POLICY_BLOCKED_CODES,
             )
     return BlackoutDecision(blocked=False)
+
+
+# ── Weekly happy-hour policy (D-035) ─────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class WeeklyHappyHourRule:
+    """One user-configured weekly quota-preference window (D-035).
+
+    Happy hours are the preference-side counterpart of blackouts: during a
+    matching window the targeted candidates are strongly preferred by the
+    ranking because consuming their quota is cheap or free (for example a
+    vendor usage campaign), so spending other plans' quota instead is what
+    conservation wants to avoid. The schedule reuses the blackout semantics
+    exactly: an explicit IANA ``timezone``, the duplicate-free canonical
+    ``weekdays`` vocabulary, strict 24-hour ``HH:MM`` wall times and
+    half-open ``[start, end)`` local intervals with cross-midnight support.
+    ``start == end`` is invalid — never a 24-hour window.
+
+    Unlike a blackout, a happy hour may be limited-time: the optional
+    inclusive local calendar bounds ``start_date``/``end_date`` (``YYYY-MM-DD``
+    in the rule's own zone, ``start_date <= end_date``) restrict the window
+    to a campaign period; both absent means a standing recurring window.
+    The rule never changes eligibility, capacity telemetry, scarcity or
+    capability — it contributes a ranking preference only.
+    """
+
+    rule_id: str
+    target: AvailabilityTarget
+    timezone: str
+    weekdays: tuple[str, ...]
+    start_local: str
+    end_local: str
+    reason_code: str
+    start_date: str | None = None
+    end_date: str | None = None
+
+    _REQUIRED: ClassVar[tuple[str, ...]] = (
+        "rule_id",
+        "target",
+        "timezone",
+        "weekdays",
+        "start_local",
+        "end_local",
+        "reason_code",
+    )
+    _OPTIONAL: ClassVar[tuple[str, ...]] = ("start_date", "end_date")
+
+    def __post_init__(self) -> None:
+        _ = _v_safe_id(self.rule_id, "weekly_happy_hour_rule.rule_id")
+        _ = _v_instance_of(
+            self.target, AvailabilityTarget, "weekly_happy_hour_rule.target"
+        )
+        _ = _v_timezone(self.timezone, "weekly_happy_hour_rule.timezone")
+        object.__setattr__(
+            self,
+            "weekdays",
+            _v_weekdays(self.weekdays, "weekly_happy_hour_rule.weekdays"),
+        )
+        start = _v_hm(self.start_local, "weekly_happy_hour_rule.start_local")
+        end = _v_hm(self.end_local, "weekly_happy_hour_rule.end_local")
+        if start == end:
+            raise SelectionContractValidationError(
+                "weekly_happy_hour_rule: start_local equals end_local; an "
+                + "empty interval is invalid and is never a 24-hour window"
+            )
+        _ = _v_safe_id(self.reason_code, "weekly_happy_hour_rule.reason_code")
+        if self.start_date is not None:
+            _ = _v_date(self.start_date, "weekly_happy_hour_rule.start_date")
+        if self.end_date is not None:
+            _ = _v_date(self.end_date, "weekly_happy_hour_rule.end_date")
+        if (
+            self.start_date is not None
+            and self.end_date is not None
+            and date.fromisoformat(self.start_date)
+            > date.fromisoformat(self.end_date)
+        ):
+            raise SelectionContractValidationError(
+                "weekly_happy_hour_rule: start_date "
+                + f"{self.start_date} is after end_date {self.end_date}"
+            )
+
+    def active_at(self, at: datetime) -> bool:
+        """Whether the preference window covers one timezone-aware instant.
+
+        The weekly interval uses half-open ``[start, end)`` local semantics
+        in the rule's zone; the optional campaign bounds compare the local
+        calendar date inclusively on both ends. A naive datetime is rejected
+        with the contract error, never interpreted in the host's zone.
+        """
+        checked_at = _v_aware_datetime(at, "weekly_happy_hour_rule.active_at.at")
+        if not _weekly_window_contains(
+            self.timezone, self.weekdays, self.start_local, self.end_local,
+            checked_at,
+        ):
+            return False
+        if self.start_date is None and self.end_date is None:
+            return True
+        local_date = checked_at.astimezone(_zone(self.timezone)).date()
+        if self.start_date is not None and (
+            local_date < date.fromisoformat(self.start_date)
+        ):
+            return False
+        if self.end_date is not None and (
+            local_date > date.fromisoformat(self.end_date)
+        ):
+            return False
+        return True
+
+    def is_date_expired_at(self, at: datetime) -> bool:
+        """Whether the weekly window would cover ``at`` but dates exclude it.
+
+        Explanation-only signal (D-035): a rule whose weekly interval covers
+        the instant while its inclusive ``start_date``/``end_date`` bounds
+        do not has silently gone inert — exactly the "my campaign ended,
+        why did the preference disappear?" case. A rule without date bounds
+        and a rule whose weekly window does not cover the instant are never
+        date-expired; being outside the weekly window is ordinary schedule
+        behavior, not a notable expiry.
+        """
+        checked_at = _v_aware_datetime(
+            at, "weekly_happy_hour_rule.is_date_expired_at.at"
+        )
+        if not _weekly_window_contains(
+            self.timezone, self.weekdays, self.start_local, self.end_local,
+            checked_at,
+        ):
+            return False
+        if self.start_date is None and self.end_date is None:
+            return False
+        local_date = checked_at.astimezone(_zone(self.timezone)).date()
+        if self.start_date is not None and (
+            local_date < date.fromisoformat(self.start_date)
+        ):
+            return True
+        return (
+            self.end_date is not None
+            and local_date > date.fromisoformat(self.end_date)
+        )
+
+    @classmethod
+    def from_dict(cls, d: object) -> "WeeklyHappyHourRule":
+        dd = _v_exact_shape(d, cls._REQUIRED, cls._OPTIONAL, "weekly_happy_hour_rule")
+        weekdays_raw = dd["weekdays"]
+        if not isinstance(weekdays_raw, list):
+            raise SelectionContractValidationError(
+                "weekly_happy_hour_rule.weekdays: expected list, got "
+                + f"{type(weekdays_raw).__name__}"
+            )
+        weekdays = tuple(
+            _v_enum(item, frozenset(WEEKDAYS), "weekly_happy_hour_rule.weekdays")
+            for item in cast("list[object]", weekdays_raw)
+        )
+        start_date: str | None = None
+        if dd.get("start_date") is not None:
+            start_date = _v_date(dd["start_date"], "weekly_happy_hour_rule.start_date")
+        end_date: str | None = None
+        if dd.get("end_date") is not None:
+            end_date = _v_date(dd["end_date"], "weekly_happy_hour_rule.end_date")
+        return cls(
+            rule_id=_v_safe_id(dd["rule_id"], "weekly_happy_hour_rule.rule_id"),
+            target=AvailabilityTarget.from_dict(dd["target"]),
+            timezone=_v_timezone(dd["timezone"], "weekly_happy_hour_rule.timezone"),
+            weekdays=weekdays,
+            start_local=_v_hm(dd["start_local"], "weekly_happy_hour_rule.start_local"),
+            end_local=_v_hm(dd["end_local"], "weekly_happy_hour_rule.end_local"),
+            reason_code=_v_safe_id(
+                dd["reason_code"], "weekly_happy_hour_rule.reason_code"
+            ),
+            start_date=start_date,
+            end_date=end_date,
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        out: dict[str, object] = {
+            "rule_id": self.rule_id,
+            "target": self.target.to_dict(),
+            "timezone": self.timezone,
+            "weekdays": list(self.weekdays),
+            "start_local": self.start_local,
+            "end_local": self.end_local,
+            "reason_code": self.reason_code,
+        }
+        if self.start_date is not None:
+            out["start_date"] = self.start_date
+        if self.end_date is not None:
+            out["end_date"] = self.end_date
+        return out
+
+
+@dataclass(frozen=True)
+class HappyHourDecision:
+    """The happy-hour preference evaluation for one candidate at one instant.
+
+    ``preferred=True`` names the first matching active rule and its
+    configured reason code; it is a ranking preference only and never an
+    eligibility claim. A non-preferred decision names no rule and carries no
+    extras. Capacity telemetry, scarcity and capability are never touched.
+    """
+
+    preferred: bool
+    rule_id: str | None = None
+    reason_code: str | None = None
+
+    _REQUIRED: ClassVar[tuple[str, ...]] = ("preferred",)
+    _OPTIONAL: ClassVar[tuple[str, ...]] = ("rule_id", "reason_code")
+
+    def __post_init__(self) -> None:
+        _ = _v_bool(self.preferred, "happy_hour_decision.preferred")
+        if self.preferred:
+            if self.rule_id is None or self.reason_code is None:
+                raise SelectionContractValidationError(
+                    "happy_hour_decision: a preference must name the "
+                    + "matching rule and its reason code"
+                )
+            _ = _v_safe_id(self.rule_id, "happy_hour_decision.rule_id")
+            _ = _v_safe_id(self.reason_code, "happy_hour_decision.reason_code")
+        else:
+            if self.rule_id is not None or self.reason_code is not None:
+                raise SelectionContractValidationError(
+                    "happy_hour_decision: no preference must not name a rule"
+                )
+
+    @classmethod
+    def from_dict(cls, d: object) -> "HappyHourDecision":
+        dd = _v_exact_shape(d, cls._REQUIRED, cls._OPTIONAL, "happy_hour_decision")
+        rule_id: str | None = None
+        if dd.get("rule_id") is not None:
+            rule_id = _v_safe_id(dd["rule_id"], "happy_hour_decision.rule_id")
+        reason_code: str | None = None
+        if dd.get("reason_code") is not None:
+            reason_code = _v_safe_id(
+                dd["reason_code"], "happy_hour_decision.reason_code"
+            )
+        return cls(
+            preferred=_v_bool(dd["preferred"], "happy_hour_decision.preferred"),
+            rule_id=rule_id,
+            reason_code=reason_code,
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        out: dict[str, object] = {"preferred": self.preferred}
+        if self.rule_id is not None:
+            out["rule_id"] = self.rule_id
+        if self.reason_code is not None:
+            out["reason_code"] = self.reason_code
+        return out
+
+
+def evaluate_happy_hours(
+    rules: Sequence[WeeklyHappyHourRule],
+    identity: ModelIdentity,
+    at: datetime,
+) -> HappyHourDecision:
+    """Evaluate happy-hour rules for one candidate at one aware instant.
+
+    Rules are checked in the given order and the first matching active rule
+    decides (the ``UserPolicy`` container stores them canonically sorted by
+    ``rule_id``, so evaluation is deterministic). Pure policy evaluation:
+    capacity snapshots, percentages, scarcity and capability are never
+    touched, and the decision never changes eligibility.
+    """
+    _ = _v_instance_of(identity, ModelIdentity, "evaluate_happy_hours.identity")
+    checked_at = _v_aware_datetime(at, "evaluate_happy_hours.at")
+    for rule in rules:
+        _ = _v_instance_of(rule, WeeklyHappyHourRule, "evaluate_happy_hours.rules")
+        if rule.target.matches(identity) and rule.active_at(checked_at):
+            return HappyHourDecision(
+                preferred=True,
+                rule_id=rule.rule_id,
+                reason_code=rule.reason_code,
+            )
+    return HappyHourDecision(preferred=False)
 
 
 # ── Replenishment state and visibility (D-021, D-026) ─────────────────────────
@@ -1479,11 +1794,15 @@ class UserPolicy:
     """The compact pure user-policy container.
 
     ``policy_version >= 1`` identifies the policy generation. Rule IDs must
-    be unique across the whole policy (reservations and blackouts share one
-    namespace) and both rule tuples are stored canonically sorted by
-    ``rule_id``, so equality and serialized output are deterministic and
-    independent of construction order. This is the type a later
-    CLI/application populates; M2d requires no personal policy file.
+    be unique across the whole policy (reservations, blackouts and happy
+    hours share one namespace) and all rule tuples are stored canonically
+    sorted by ``rule_id``, so equality and serialized output are
+    deterministic and independent of construction order. This is the type a
+    later CLI/application populates; M2d requires no personal policy file.
+
+    ``happy_hours`` is additive (D-035): serialized documents without the
+    key load unchanged with an empty tuple, and an empty tuple is never
+    serialized, so pre-D-035 documents round-trip byte-identically.
     """
 
     policy_version: int
@@ -1491,6 +1810,7 @@ class UserPolicy:
     replenishment_mode: str
     reservations: tuple[ReservationRule, ...]
     blackouts: tuple[WeeklyBlackoutRule, ...]
+    happy_hours: tuple[WeeklyHappyHourRule, ...] = ()
 
     _REQUIRED: ClassVar[tuple[str, ...]] = (
         "policy_version",
@@ -1499,7 +1819,7 @@ class UserPolicy:
         "reservations",
         "blackouts",
     )
-    _OPTIONAL: ClassVar[tuple[str, ...]] = ()
+    _OPTIONAL: ClassVar[tuple[str, ...]] = ("happy_hours",)
 
     def __post_init__(self) -> None:
         _ = _v_int(self.policy_version, "user_policy.policy_version", lo=1)
@@ -1519,6 +1839,9 @@ class UserPolicy:
         _ = _v_tuple_of(
             self.blackouts, WeeklyBlackoutRule, "user_policy.blackouts"
         )
+        _ = _v_tuple_of(
+            self.happy_hours, WeeklyHappyHourRule, "user_policy.happy_hours"
+        )
         seen: set[str] = set()
         for rule in self.reservations:
             if rule.rule_id in seen:
@@ -1528,6 +1851,13 @@ class UserPolicy:
                 )
             seen.add(rule.rule_id)
         for rule in self.blackouts:
+            if rule.rule_id in seen:
+                raise SelectionContractValidationError(
+                    "user_policy: duplicate rule id "
+                    + f"{rule.rule_id!r} across the policy"
+                )
+            seen.add(rule.rule_id)
+        for rule in self.happy_hours:
             if rule.rule_id in seen:
                 raise SelectionContractValidationError(
                     "user_policy: duplicate rule id "
@@ -1546,6 +1876,11 @@ class UserPolicy:
             self,
             "blackouts",
             tuple(sorted(self.blackouts, key=lambda r: r.rule_id)),
+        )
+        object.__setattr__(
+            self,
+            "happy_hours",
+            tuple(sorted(self.happy_hours, key=lambda r: r.rule_id)),
         )
 
     def apply_unknown_capacity(
@@ -1571,6 +1906,12 @@ class UserPolicy:
         """Evaluate this policy's blackout rules for one candidate."""
         return evaluate_blackouts(self.blackouts, identity, at)
 
+    def evaluate_happy_hours(
+        self, identity: ModelIdentity, at: datetime
+    ) -> HappyHourDecision:
+        """Evaluate this policy's happy-hour rules for one candidate."""
+        return evaluate_happy_hours(self.happy_hours, identity, at)
+
     @classmethod
     def from_dict(cls, d: object) -> "UserPolicy":
         dd = _v_exact_shape(d, cls._REQUIRED, cls._OPTIONAL, "user_policy")
@@ -1585,6 +1926,12 @@ class UserPolicy:
             raise SelectionContractValidationError(
                 "user_policy.blackouts: expected list, got "
                 + f"{type(blackouts_raw).__name__}"
+            )
+        happy_hours_raw = dd.get("happy_hours")
+        if happy_hours_raw is not None and not isinstance(happy_hours_raw, list):
+            raise SelectionContractValidationError(
+                "user_policy.happy_hours: expected list, got "
+                + f"{type(happy_hours_raw).__name__}"
             )
         return cls(
             policy_version=_v_int(
@@ -1608,10 +1955,14 @@ class UserPolicy:
                 WeeklyBlackoutRule.from_dict(x)
                 for x in cast("list[object]", blackouts_raw)
             ),
+            happy_hours=tuple(
+                WeeklyHappyHourRule.from_dict(x)
+                for x in cast("list[object]", happy_hours_raw or [])
+            ),
         )
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        out: dict[str, object] = {
             "policy_version": self.policy_version,
             "unknown_capacity_mode": self.unknown_capacity_mode,
             "replenishment_mode": self.replenishment_mode,
@@ -1624,3 +1975,11 @@ class UserPolicy:
                 for rule in sorted(self.blackouts, key=lambda r: r.rule_id)
             ],
         }
+        # Additive D-035 member: absent from serialized output when empty so
+        # pre-D-035 documents round-trip byte-identically.
+        if self.happy_hours:
+            out["happy_hours"] = [
+                rule.to_dict()
+                for rule in sorted(self.happy_hours, key=lambda r: r.rule_id)
+            ]
+        return out
