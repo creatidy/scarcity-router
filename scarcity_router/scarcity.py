@@ -1,11 +1,12 @@
-"""Scarcity primitives for Scarcity Router (M2d, D-026).
+"""Scarcity primitives for Scarcity Router (M2d, D-026; blend per D-037).
 
 Pure, provider-independent, standard-library only. No filesystem, network,
 environment, subprocess, clock or provider access: callers supply the model
 catalog entry and the current normalized capacity snapshots explicitly, and
 every function is deterministic over its arguments.
 
-Implements the frozen M2d scarcity parameters (D-026, finalizing D-005):
+Implements the frozen scarcity parameters (D-026, finalizing D-005;
+aggregation amended by D-037):
 
 - the continuous integer scarcity penalty
   ``penalty_units = (100 - remaining_percent)^2`` on scale
@@ -16,14 +17,20 @@ Implements the frozen M2d scarcity parameters (D-026, finalizing D-005):
 - candidate capacity applicability over explicit catalog
   ``capacity_bindings`` — never inferred from ``window_id``, ``limitName``,
   ``normalModelSlug``, model names or provider aliases;
-- most-restrictive multi-window / multi-scope aggregation across every
-  applicable scope, with unrelated scopes ignored;
+- the frozen window roles (D-037): ``kind: weekly`` windows are strategic,
+  ``kind: five_hour`` and ``resource: time`` windows are tactical, and
+  unknown-kind token windows are conservatively strategic;
+- most-restrictive aggregation within each role across every applicable
+  scope, then the frozen role blend ``effective = (a + 5*b) // 6`` —
+  weekly quota is planned as five times the five-hour quota — with
+  unrelated scopes ignored and missing roles defaulting to the other
+  role's value;
 - the explicit ``known`` / ``unknown`` / ``unavailable`` assessment states,
   including the distinction between explicit current exhaustion and
   untrustworthy telemetry.
 
 This module does not rank candidates, does not choose a model and does not
-implement ``select``; the M2e selector combines these assessments with
+implement ``select``; the selector combines these assessments with
 capability eligibility, hard constraints and deterministic ranking. Unknown
 scarcity has no numeric penalty: it is incomparable to numeric scarcity.
 """
@@ -73,7 +80,84 @@ SCARCITY_REASON_CODES: frozenset[str] = frozenset({
 _RESOURCE_VALUES: frozenset[str] = frozenset({"tokens", "time", "unknown"})
 _KIND_VALUES: frozenset[str] = frozenset({"five_hour", "weekly", "unknown"})
 
+# ── Window roles and the strategic/tactical blend (D-037) ────────────────────
+
+WINDOW_ROLE_STRATEGIC = "strategic"
+WINDOW_ROLE_TACTICAL = "tactical"
+
+WINDOW_ROLES: frozenset[str] = frozenset({
+    WINDOW_ROLE_STRATEGIC,
+    WINDOW_ROLE_TACTICAL,
+})
+
+# The owner's frozen planning assumption: one weekly bucket holds as much
+# quota as five five-hour buckets, so the blend has six total units.
+WEEKLY_TO_FIVE_HOUR_RATIO = 5
+BLEND_UNIT_COUNT = WEEKLY_TO_FIVE_HOUR_RATIO + 1
+
 _SAFE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._:-]{0,63}$")
+
+
+def window_role(resource: str, kind: str) -> str:
+    """The frozen D-037 role of one normalized window.
+
+    ``kind: weekly`` is strategic — exhausting it blocks the provider for
+    days. ``kind: five_hour`` and every ``resource: time`` window (the Z.ai
+    ``TIME_LIMIT`` normalization carries ``kind: unknown``) are tactical —
+    they gate whether work can happen right now and self-heal in hours.
+    Unknown-kind token windows are conservatively strategic so the
+    pre-D-037 most-restrictive outcome is preserved for exactly that shape.
+    The role is a ranking-relevant classification of already-normalized
+    fields; it is never inferred from window ids, model names or providers.
+    """
+    checked_kind = _v_enum(kind, _KIND_VALUES, "window_role.kind")
+    checked_resource = _v_enum(resource, _RESOURCE_VALUES, "window_role.resource")
+    if checked_kind == "weekly":
+        return WINDOW_ROLE_STRATEGIC
+    if checked_kind == "five_hour":
+        return WINDOW_ROLE_TACTICAL
+    if checked_resource == "time":
+        return WINDOW_ROLE_TACTICAL
+    return WINDOW_ROLE_STRATEGIC
+
+
+def blended_effective_remaining_percent(
+    tactical_remaining: int | None, strategic_remaining: int | None
+) -> int:
+    """The frozen D-037 blend of the two role representatives.
+
+    ``a`` is the tactical and ``b`` the strategic representative (each the
+    most restrictive known remaining of its role). With weekly quota planned
+    as five times the five-hour quota:
+    ``effective = (a + 5*b) // 6`` on integer units, 0..100, floor division.
+    A role with no known evidence defaults its slot to the other role's
+    value, so a single-role candidate blends to exactly its own percentage
+    and no capacity is invented for the missing bucket. Both arguments
+    ``None`` is a caller contract violation: a numeric assessment always has
+    at least one role representative.
+    """
+    if tactical_remaining is None:
+        if strategic_remaining is None:
+            raise SelectionContractValidationError(
+                "blended_effective_remaining_percent: at least one role "
+                + "representative is required"
+            )
+        _ = _v_pct(strategic_remaining, "strategic_remaining")
+        # Tactical-only evidence: the strategic value fills both slots.
+        a = strategic_remaining
+        b = strategic_remaining
+    else:
+        _ = _v_pct(tactical_remaining, "tactical_remaining")
+        if strategic_remaining is None:
+            # Strategic-only evidence: the tactical value fills both slots.
+            a = tactical_remaining
+            b = tactical_remaining
+        else:
+            _ = _v_pct(strategic_remaining, "strategic_remaining")
+            a = tactical_remaining
+            b = strategic_remaining
+    units = a + WEEKLY_TO_FIVE_HOUR_RATIO * b
+    return units // BLEND_UNIT_COUNT
 
 # ── Validators (single source of truth for the M2d scarcity rules) ────────────
 
@@ -334,11 +418,24 @@ class ScarcityAssessment:
     even when their telemetry cannot be completely assessed — the failure is
     in the telemetry, never in the applicability, and the two unknown classes
     never mix. A ``known`` state carries no
-    reason codes, and the governing window's scope always belongs to the
-    applicable scopes. The stored scopes and codes are canonical (sorted),
+    reason codes. The stored scopes and codes are canonical (sorted),
     so equality and serialization are deterministic and independent of
     construction order. Serialized unknown values are omitted, never
     represented as ``null``.
+
+    Role evidence (D-037): a ``known`` state carries ``strategic_window``
+    and/or ``tactical_window`` — the governing evidence of each role that
+    had a known applicable window, each remaining role-consistent and never
+    fabricated for a missing role. The ``governing_window`` is the strategic
+    representative when one exists, else the tactical one, and the numeric
+    fields must satisfy the frozen blend
+    (``effective == blended(tactical, strategic)``) instead of the
+    pre-D-037 governing-equality rule. An ``unavailable`` or ``unknown``
+    state carries no role evidence (exhaustion is carried by the governing
+    window; unknown telemetry has no numeric evidence at all). A serialized
+    known assessment without role evidence fails validation loudly on this
+    reader — accepted per D-037 because decision deserialization is not an
+    input boundary.
     """
 
     state: str
@@ -348,6 +445,10 @@ class ScarcityAssessment:
     applicable_scopes: tuple[CapacityScopeRef, ...]
     governing_window: GoverningWindowEvidence | None
     reason_codes: tuple[str, ...]
+    # D-037 additive role evidence: present exactly when that role had a
+    # known applicable window in a known assessment.
+    strategic_window: GoverningWindowEvidence | None = None
+    tactical_window: GoverningWindowEvidence | None = None
 
     _REQUIRED: ClassVar[tuple[str, ...]] = (
         "state",
@@ -359,6 +460,8 @@ class ScarcityAssessment:
         "penalty_units",
         "effective_remaining_percent",
         "governing_window",
+        "strategic_window",
+        "tactical_window",
     )
 
     def __post_init__(self) -> None:
@@ -395,6 +498,14 @@ class ScarcityAssessment:
                 raise SelectionContractValidationError(
                     "scarcity_assessment: unknown state has no governing "
                     + "window evidence"
+                )
+            if (
+                self.strategic_window is not None
+                or self.tactical_window is not None
+            ):
+                raise SelectionContractValidationError(
+                    "scarcity_assessment: unknown state has no role window "
+                    + "evidence (D-037)"
                 )
             if self.label != "unknown":
                 raise SelectionContractValidationError(
@@ -469,7 +580,79 @@ class ScarcityAssessment:
             GoverningWindowEvidence,
             "scarcity_assessment.governing_window",
         )
-        if governing.remaining_percent != effective:
+        # D-037 role evidence: shape, role consistency and (for known) blend
+        # consistency replace the pre-D-037 governing-equality rule.
+        strategic = self.strategic_window
+        if strategic is not None:
+            strategic = _v_instance_of(
+                strategic,
+                GoverningWindowEvidence,
+                "scarcity_assessment.strategic_window",
+            )
+            if window_role(strategic.resource, strategic.kind) != (
+                WINDOW_ROLE_STRATEGIC
+            ):
+                raise SelectionContractValidationError(
+                    "scarcity_assessment: strategic_window "
+                    + f"({strategic.resource}, {strategic.kind}) is not a "
+                    + "strategic-role window"
+                )
+        tactical = self.tactical_window
+        if tactical is not None:
+            tactical = _v_instance_of(
+                tactical,
+                GoverningWindowEvidence,
+                "scarcity_assessment.tactical_window",
+            )
+            if window_role(tactical.resource, tactical.kind) != (
+                WINDOW_ROLE_TACTICAL
+            ):
+                raise SelectionContractValidationError(
+                    "scarcity_assessment: tactical_window "
+                    + f"({tactical.resource}, {tactical.kind}) is not a "
+                    + "tactical-role window"
+                )
+        if self.state == "unavailable":
+            # Exhaustion evidence is carried by the governing window; role
+            # representatives would add nothing (everything is 0).
+            if strategic is not None or tactical is not None:
+                raise SelectionContractValidationError(
+                    "scarcity_assessment: the unavailable state carries no "
+                    + "role window evidence (D-037)"
+                )
+        else:  # known
+            if strategic is None and tactical is None:
+                raise SelectionContractValidationError(
+                    "scarcity_assessment: a known assessment carries the "
+                    + "D-037 role window evidence of at least one role"
+                )
+            # The both-None case is rejected above, so the strategic value
+            # fills the slot whenever it exists (blend contract D-037).
+            expected_governing = strategic if strategic is not None else tactical
+            if governing != expected_governing:
+                # Value equality: deserialization reconstructs equal but
+                # distinct evidence objects.
+                raise SelectionContractValidationError(
+                    "scarcity_assessment: governing_window must equal the "
+                    + "strategic representative when one exists, else the "
+                    + "tactical representative (D-037)"
+                )
+            expected_effective = blended_effective_remaining_percent(
+                None if tactical is None else tactical.remaining_percent,
+                None if strategic is None else strategic.remaining_percent,
+            )
+            if effective != expected_effective:
+                raise SelectionContractValidationError(
+                    "scarcity_assessment: effective remaining "
+                    + f"{effective} does not equal the frozen D-037 blend "
+                    + f"({expected_effective}) of the role representatives"
+                )
+        if self.state == "known" and strategic is not None:
+            # The governing window is the strategic representative: its
+            # remaining is the strategic role minimum, which the blend
+            # (validated above) may legitimately differ from.
+            pass
+        elif governing.remaining_percent != effective:
             raise SelectionContractValidationError(
                 "scarcity_assessment: governing window remaining "
                 + f"{governing.remaining_percent} does not "
@@ -534,6 +717,12 @@ class ScarcityAssessment:
         governing: GoverningWindowEvidence | None = None
         if dd.get("governing_window") is not None:
             governing = GoverningWindowEvidence.from_dict(dd["governing_window"])
+        strategic: GoverningWindowEvidence | None = None
+        if dd.get("strategic_window") is not None:
+            strategic = GoverningWindowEvidence.from_dict(dd["strategic_window"])
+        tactical: GoverningWindowEvidence | None = None
+        if dd.get("tactical_window") is not None:
+            tactical = GoverningWindowEvidence.from_dict(dd["tactical_window"])
         raw_penalty = dd.get("penalty_units")
         penalty: int | None = None
         if raw_penalty is not None:
@@ -557,6 +746,8 @@ class ScarcityAssessment:
             applicable_scopes=scopes,
             governing_window=governing,
             reason_codes=codes,
+            strategic_window=strategic,
+            tactical_window=tactical,
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -571,6 +762,12 @@ class ScarcityAssessment:
         out["applicable_scopes"] = [s.to_dict() for s in self.applicable_scopes]
         if self.governing_window is not None:
             out["governing_window"] = self.governing_window.to_dict()
+        # D-037 additive role evidence: absent from serialized output when
+        # the role had no known window.
+        if self.strategic_window is not None:
+            out["strategic_window"] = self.strategic_window.to_dict()
+        if self.tactical_window is not None:
+            out["tactical_window"] = self.tactical_window.to_dict()
         out["reason_codes"] = list(self.reason_codes)
         return out
 
@@ -652,7 +849,7 @@ def assess_scarcity(
     Pure and deterministic: the caller supplies the catalog entry and the
     current normalized snapshots; nothing is fetched, cached or clocked.
 
-    Rules frozen by D-026:
+    Rules frozen by D-026, aggregation amended by D-037:
 
     - Applicability comes only from the entry's explicit
       ``capacity_bindings`` (exact ``CapacityScopeRef`` pairs); unknown
@@ -665,9 +862,12 @@ def assess_scarcity(
       penalize the candidate.
     - Every applicable window with a usable percentage pair participates
       (token and provider-normalized ``time`` windows alike; the resource is
-      never reinterpreted). The most restrictive one governs:
-      ``effective_remaining_percent = min(remaining)``, penalty from the
-      same value.
+      never reinterpreted). Within each D-037 role the most restrictive
+      window represents the role: the strategic role is the ``min`` over its
+      windows, likewise the tactical role, and the frozen blend
+      ``effective = (tactical + 5 * strategic) // 6`` produces the single
+      effective remaining, penalty and label. A role without known windows
+      defaults its blend slot to the other role's value.
     - Any known applicable window at ``remaining_percent == 0`` makes the
       assessment explicitly ``unavailable`` (penalty 10000), even when
       another bound scope is unknown.
@@ -679,7 +879,10 @@ def assess_scarcity(
 
     The result carries normalized reason codes; governing-window evidence is
     explanation-only and tie-broken by a stable canonical key over
-    normalized fields, independent of input order.
+    normalized fields, independent of input order. For a known assessment
+    the governing window is the strategic representative when one exists,
+    else the tactical one (D-037), and both role representatives are
+    carried as evidence where they exist.
     """
     _ = _v_instance_of(entry, ModelCatalogEntry, "assess_scarcity.entry")
     snapshot_by_provider: dict[str, CapacitySnapshot] = {}
@@ -743,13 +946,71 @@ def assess_scarcity(
             + "incompleteness reason; internal contract violation"
         )
 
-    governing_scope, governing, effective = _pick_governing(known_windows)
+    # D-037: partition the known windows by frozen role, then let the
+    # most-restrictive window of each role represent it (canonical tie-break
+    # via the shared governing picker).
+    strategic_evidence: tuple[CapacityScopeRef, CapacityWindow, int] | None = None
+    tactical_evidence: tuple[CapacityScopeRef, CapacityWindow, int] | None = None
+    strategic_pool = [
+        triplet
+        for triplet in known_windows
+        if window_role(triplet[1].resource, triplet[1].kind)
+        == WINDOW_ROLE_STRATEGIC
+    ]
+    tactical_pool = [
+        triplet
+        for triplet in known_windows
+        if window_role(triplet[1].resource, triplet[1].kind)
+        == WINDOW_ROLE_TACTICAL
+    ]
+    if strategic_pool:
+        strategic_evidence = _pick_governing(strategic_pool)
+    if tactical_pool:
+        tactical_evidence = _pick_governing(tactical_pool)
+    strategic_remaining = (
+        strategic_evidence[2] if strategic_evidence is not None else None
+    )
+    tactical_remaining = (
+        tactical_evidence[2] if tactical_evidence is not None else None
+    )
+    effective = blended_effective_remaining_percent(
+        tactical_remaining, strategic_remaining
+    )
+    # Build each evidence object exactly once: the governing window shares
+    # the object identity of its role representative (validated by the
+    # assessment contract).
+    strategic_evidence_out = (
+        _governing_evidence(
+            strategic_evidence[0], strategic_evidence[1], strategic_evidence[2]
+        )
+        if strategic_evidence is not None
+        else None
+    )
+    tactical_evidence_out = (
+        _governing_evidence(
+            tactical_evidence[0], tactical_evidence[1], tactical_evidence[2]
+        )
+        if tactical_evidence is not None
+        else None
+    )
+    governing_evidence = (
+        strategic_evidence_out
+        if strategic_evidence_out is not None
+        else tactical_evidence_out
+    )
+    if governing_evidence is None:  # roles partition the non-empty windows
+        raise SelectionContractValidationError(
+            "assess_scarcity: no role evidence despite known windows; "
+            + "internal contract violation"
+        )
     return ScarcityAssessment(
         state="known",
         label=scarcity_label(effective),
         penalty_units=scarcity_penalty_units(effective),
         effective_remaining_percent=effective,
         applicable_scopes=bindings,
-        governing_window=_governing_evidence(governing_scope, governing, effective),
+        governing_window=governing_evidence,
         reason_codes=(),
+        strategic_window=strategic_evidence_out,
+        tactical_window=tactical_evidence_out,
     )

@@ -31,10 +31,15 @@ Implements the frozen M2e selection semantics (D-027):
 - the exact ``balanced`` ranking order: known capacity before degraded
   unknown (no numeric unknown sentinel), then an active happy-hour
   quota-preference window (D-035, ranking preference only, never an
-  eligibility bypass), then the integer scarcity penalty,
+  eligibility bypass), then the integer scarcity penalty (the D-037
+  strategic/tactical role blend),
   then the capability margin, then lowest configured reasoning effort,
   then the explicit preference order, then
   stable ``(provider, model, variant)`` identity;
+- the D-037 advisory short-window floor: an eligible known-capacity
+  candidate whose tactical representative is below the policy floor is
+  flagged ``short_window_below_floor`` — a finish-risk warning that never
+  demotes, excludes or rewrites ranking;
 - the structured ``CandidateEvaluation`` and ``SelectionDecision`` output
   contracts, including structured no-solution results with closest
   candidates (stage progress only, capped at 3) and recoverable candidates.
@@ -306,9 +311,15 @@ def canonical_instant(instant: datetime) -> str:
 # ── SelectorPolicy ────────────────────────────────────────────────────────────
 
 
+# D-037: the documented default short-window floor, applied when the
+# selector policy omits ``short_window_floor_percent``; an explicit ``0``
+# disables the advisory.
+DEFAULT_SHORT_WINDOW_FLOOR_PERCENT = 10
+
+
 @dataclass(frozen=True)
 class SelectorPolicy:
-    """The selector-level policy wrapper (D-027).
+    """The selector-level policy wrapper (D-027; floor per D-037).
 
     Separate from the frozen M2d ``UserPolicy``: ``mode`` selects the ranking
     behavior (exactly ``balanced`` in this slice), ``resource_policy`` is the
@@ -319,14 +330,25 @@ class SelectorPolicy:
     names, provider names, catalog entry order or display names, and a
     preference entry absent from a particular catalog is harmless and
     ignored for that catalog.
+
+    ``short_window_floor_percent`` is additive (D-037): the advisory
+    tactical-window floor below which an eligible known-capacity candidate
+    is flagged with a finish-risk warning. It never demotes, excludes or
+    rewrites ranking; ``None`` means the documented default
+    (:data:`DEFAULT_SHORT_WINDOW_FLOOR_PERCENT`) and an explicit ``0``
+    disables the advisory. Documents without the key load unchanged.
     """
 
     mode: str
     resource_policy: UserPolicy
     preference_order: tuple[ModelIdentity, ...] = ()
+    short_window_floor_percent: int | None = None
 
     _REQUIRED: ClassVar[tuple[str, ...]] = ("mode", "resource_policy")
-    _OPTIONAL: ClassVar[tuple[str, ...]] = ("preference_order",)
+    _OPTIONAL: ClassVar[tuple[str, ...]] = (
+        "preference_order",
+        "short_window_floor_percent",
+    )
 
     def __post_init__(self) -> None:
         _ = _v_enum(self.mode, SELECTOR_MODES, "selector_policy.mode")
@@ -336,6 +358,16 @@ class SelectorPolicy:
         _ = _v_tuple_of(
             self.preference_order, ModelIdentity, "selector_policy.preference_order"
         )
+        if self.short_window_floor_percent is not None:
+            floor = _v_int(
+                self.short_window_floor_percent,
+                "selector_policy.short_window_floor_percent",
+            )
+            if floor < 0 or floor > 100:
+                raise SelectionContractValidationError(
+                    "selector_policy.short_window_floor_percent: value "
+                    + f"{floor} outside 0..100"
+                )
         seen: set[tuple[str, str, str]] = set()
         for entry in self.preference_order:
             key = (entry.provider, entry.model, entry.variant)
@@ -345,6 +377,12 @@ class SelectorPolicy:
                     + f"{key}"
                 )
             seen.add(key)
+
+    def resolved_short_window_floor(self) -> int:
+        """The effective advisory floor (documented default when omitted)."""
+        if self.short_window_floor_percent is not None:
+            return self.short_window_floor_percent
+        return DEFAULT_SHORT_WINDOW_FLOOR_PERCENT
 
     @classmethod
     def from_dict(cls, d: object) -> "SelectorPolicy":
@@ -360,18 +398,31 @@ class SelectorPolicy:
             preference = tuple(
                 ModelIdentity.from_dict(x) for x in cast("list[object]", raw_preference)
             )
+        raw_floor = dd.get("short_window_floor_percent")
         return cls(
             mode=_v_enum(dd["mode"], SELECTOR_MODES, "selector_policy.mode"),
             resource_policy=UserPolicy.from_dict(dd["resource_policy"]),
             preference_order=preference,
+            short_window_floor_percent=(
+                None
+                if raw_floor is None
+                else _v_int(
+                    raw_floor, "selector_policy.short_window_floor_percent"
+                )
+            ),
         )
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        out: dict[str, object] = {
             "mode": self.mode,
             "resource_policy": self.resource_policy.to_dict(),
             "preference_order": [entry.to_dict() for entry in self.preference_order],
         }
+        # Additive D-037 member: absent from serialized output when omitted
+        # so pre-D-037 policy documents round-trip byte-identically.
+        if self.short_window_floor_percent is not None:
+            out["short_window_floor_percent"] = self.short_window_floor_percent
+        return out
 
 
 def neutral_selector_policy() -> SelectorPolicy:
@@ -909,6 +960,11 @@ class CandidateEvaluation:
     reservation_decisions: tuple[ReservationDecision, ...] = ()
     replenishment_evaluations: tuple[ReplenishmentEvaluation, ...] = ()
     reason_codes: tuple[str, ...] = ()
+    # D-037 additive advisory: the candidate's known tactical (short-window)
+    # representative is below the policy floor — a finish-risk warning that
+    # never demotes, excludes or rewrites ranking. Eligible candidates carry
+    # no reason codes, so this is a dedicated flag, serialized only when set.
+    short_window_below_floor: bool = False
 
     def __post_init__(self) -> None:
         _ = _v_instance_of(self.identity, ModelIdentity, "candidate_evaluation.identity")
@@ -968,6 +1024,26 @@ class CandidateEvaluation:
             ReplenishmentEvaluation,
             "candidate_evaluation.replenishment_evaluations",
         )
+        _ = _v_bool(
+            self.short_window_below_floor,
+            "candidate_evaluation.short_window_below_floor",
+        )
+        if self.short_window_below_floor:
+            if not self.eligible:
+                raise SelectionContractValidationError(
+                    "candidate_evaluation: short_window_below_floor is an "
+                    + "advisory for eligible candidates only"
+                )
+            scarcity = self.scarcity_assessment
+            if (
+                scarcity is None
+                or scarcity.state != "known"
+                or scarcity.tactical_window is None
+            ):
+                raise SelectionContractValidationError(
+                    "candidate_evaluation: short_window_below_floor "
+                    + "requires known capacity with tactical evidence"
+                )
         if self.degraded:
             decision = self.unknown_capacity_decision
             if decision is None or not decision.degraded:
@@ -1064,6 +1140,9 @@ class CandidateEvaluation:
             ]
         if self.reason_codes:
             out["reason_codes"] = list(self.reason_codes)
+        # Additive D-037 advisory: absent from serialized output when unset.
+        if self.short_window_below_floor:
+            out["short_window_below_floor"] = True
         return out
 
 
@@ -1221,6 +1300,20 @@ def _evaluate_candidate(
         if decision.preferred:
             happy_hour_decision = decision
 
+    # D-037: the advisory short-window floor. A known tactical
+    # representative below the floor flags a finish risk ("this window may
+    # not finish the task — consider another provider") without demoting,
+    # excluding or rewriting anything; 0% tactical exhaustion never reaches
+    # this point (the capacity stage already excluded it).
+    short_window_below_floor = False
+    if (
+        scarcity.state == "known"
+        and scarcity.tactical_window is not None
+        and scarcity.tactical_window.remaining_percent
+        < policy.resolved_short_window_floor()
+    ):
+        short_window_below_floor = True
+
     return CandidateEvaluation(
         identity=identity,
         display_name=entry.display_name,
@@ -1233,6 +1326,7 @@ def _evaluate_candidate(
         reservation_decisions=reservation_decisions,
         replenishment_evaluations=replenishment_evaluations,
         reason_codes=(),
+        short_window_below_floor=short_window_below_floor,
     )
 
 
@@ -1258,7 +1352,8 @@ def _ranking_key(
     preference_order: tuple[ModelIdentity, ...],
     reasoning_effort: str | None,
 ) -> tuple[int, int, int, int, tuple[_EffortState, tuple[int, ...]], int, int, str, str, str]:
-    """The exact ``balanced`` ranking key (D-027, amended by D-032 and D-035).
+    """The exact ``balanced`` ranking key (D-027, amended by D-032, D-035
+    and D-037).
 
     1. capacity knowledge class: known nonzero capacity before unknown /
        degraded capacity (no numeric unknown sentinel exists);
@@ -1266,7 +1361,10 @@ def _ranking_key(
        an active window ranks ahead of one that is not. Preference only:
        it can never move a candidate across the capacity knowledge class
        and never changes any eligibility outcome;
-    3. scarcity penalty (integer units) among known-capacity candidates only;
+    3. blended scarcity penalty (integer units) among known-capacity
+       candidates only — since D-037 the penalty derives from the frozen
+       strategic/tactical role blend, still ``(100 - effective)^2`` on
+       scale 10000;
     4. capability margin (lower wins);
     5. known effort in normalized order, then unconfigured effort;
     6. explicit preference order (listed before unlisted, then index);
