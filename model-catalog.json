@@ -1,6 +1,6 @@
 {
-  "catalog_version": 2,
-  "updated_on": "2026-09-08",
+  "catalog_version": 3,
+  "updated_on": "2026-09-15",
   "entries": [
     {
       "identity": {
@@ -641,6 +641,334 @@
       ],
       "model_version_date": "2026-07-09",
       "last_reviewed_on": "2026-09-08"
+    },
+    {
+      "identity": {
+        "provider": "zai",
+        "model": "glm-5.3",
+        "variant": "high"
+      },
+      "display_name": "GLM-5.3 High",
+      "reasoning_effort": "high",
+      "hard_properties": {
+        "input_context_tokens": 1000000,
+        "output_tokens": 128000,
+        "supports_tool_use": true,
+        "supports_vision": false,
+        "supports_reasoning_mode": true
+      },
+      "capabilities": {
+        "reasoning": {
+          "rating": 4,
+          "evidence": [
+            {
+              "source": "official_docs",
+              "identifier": "https://docs.z.ai/guides/llm/glm-5.3",
+              "date": "2026-09-15"
+            },
+            {
+              "source": "official_docs",
+              "identifier": "https://docs.z.ai/api-reference/llm/chat-completion",
+              "date": "2026-09-15"
+            },
+            {
+              "source": "owner_observation",
+              "identifier": "glm53_reasoning_variant_calibration_2026-09-15_issue_79",
+              "date": "2026-09-15"
+            }
+          ],
+          "confidence": "medium",
+          "assessed_on": "2026-09-15",
+          "rationale": "Enhanced-reasoning tier: first-party Code Bench shows High effort slightly below Max (31.4% vs 34.5%); conservative one-step downgrade from the Max calibration."
+        },
+        "coding": {
+          "rating": 4,
+          "evidence": [
+            {
+              "source": "official_docs",
+              "identifier": "https://docs.z.ai/guides/llm/glm-5.3",
+              "date": "2026-09-15"
+            },
+            {
+              "source": "official_docs",
+              "identifier": "https://docs.z.ai/api-reference/llm/chat-completion",
+              "date": "2026-09-15"
+            },
+            {
+              "source": "owner_observation",
+              "identifier": "glm53_reasoning_variant_calibration_2026-09-15_issue_79",
+              "date": "2026-09-15"
+            }
+          ],
+          "confidence": "medium",
+          "assessed_on": "2026-09-15",
+          "rationale": "Strong coding at high effort, but the effort-level gap to Max is first-party documented; conservatively below the Max rating until owner-observed calibration exists."
+        },
+        "scientific_methodological": {
+          "rating": 3,
+          "evidence": [
+            {
+              "source": "official_docs",
+              "identifier": "https://docs.z.ai/guides/llm/glm-5.3",
+              "date": "2026-09-15"
+            },
+            {
+              "source": "official_docs",
+              "identifier": "https://docs.z.ai/api-reference/llm/chat-completion",
+              "date": "2026-09-15"
+            },
+            {
+              "source": "owner_observation",
+              "identifier": "glm53_reasoning_variant_calibration_2026-09-15_issue_79",
+              "date": "2026-09-15"
+            }
+          ],
+          "confidence": "medium",
+          "assessed_on": "2026-09-15",
+          "rationale": "Unverified at high effort; conservative downgrade from the Max calibration."
+        },
+        "writing_editorial": {
+          "rating": 3,
+          "evidence": [
+            {
+              "source": "official_docs",
+              "identifier": "https://docs.z.ai/guides/llm/glm-5.3",
+              "date": "2026-09-15"
+            },
+            {
+              "source": "official_docs",
+              "identifier": "https://docs.z.ai/api-reference/llm/chat-completion",
+              "date": "2026-09-15"
+            },
+            {
+              "source": "owner_observation",
+              "identifier": "glm53_reasoning_variant_calibration_2026-09-15_issue_79",
+              "date": "2026-09-15"
+            }
+          ],
+          "confidence": "medium",
+          "assessed_on": "2026-09-15",
+          "rationale": "Unverified at high effort; conservative downgrade from the Max calibration."
+        },
+        "tool_use": {
+          "rating": 4,
+          "evidence": [
+            {
+              "source": "official_docs",
+              "identifier": "https://docs.z.ai/guides/llm/glm-5.3",
+              "date": "2026-09-15"
+            },
+            {
+              "source": "official_docs",
+              "identifier": "https://docs.z.ai/api-reference/llm/chat-completion",
+              "date": "2026-09-15"
+            },
+            {
+              "source": "owner_observation",
+              "identifier": "glm53_reasoning_variant_calibration_2026-09-15_issue_79",
+              "date": "2026-09-15"
+            }
+          ],
+          "confidence": "medium",
+          "assessed_on": "2026-09-15",
+          "rationale": "Tool use remains supported (hard property); conservative downgrade reflecting reduced reasoning depth for long-horizon tool chains."
+        },
+        "translation_multilingual": {
+          "rating": 3,
+          "evidence": [
+            {
+              "source": "official_docs",
+              "identifier": "https://docs.z.ai/guides/llm/glm-5.3",
+              "date": "2026-09-15"
+            },
+            {
+              "source": "official_docs",
+              "identifier": "https://docs.z.ai/api-reference/llm/chat-completion",
+              "date": "2026-09-15"
+            },
+            {
+              "source": "owner_observation",
+              "identifier": "glm53_reasoning_variant_calibration_2026-09-15_issue_79",
+              "date": "2026-09-15"
+            }
+          ],
+          "confidence": "medium",
+          "assessed_on": "2026-09-15",
+          "rationale": "Unverified at high effort; conservative downgrade from the Max calibration."
+        }
+      },
+      "capacity_bindings": [
+        {
+          "provider": "zai",
+          "scope_id": "coding_plan"
+        }
+      ],
+      "model_version_date": "2026-08-14",
+      "last_reviewed_on": "2026-09-15"
+    },
+    {
+      "identity": {
+        "provider": "zai",
+        "model": "glm-5.3",
+        "variant": "low"
+      },
+      "display_name": "GLM-5.3 Low",
+      "reasoning_effort": "low",
+      "hard_properties": {
+        "input_context_tokens": 1000000,
+        "output_tokens": 128000,
+        "supports_tool_use": true,
+        "supports_vision": false,
+        "supports_reasoning_mode": true
+      },
+      "capabilities": {
+        "reasoning": {
+          "rating": 2,
+          "evidence": [
+            {
+              "source": "official_docs",
+              "identifier": "https://docs.z.ai/guides/llm/glm-5.3",
+              "date": "2026-09-15"
+            },
+            {
+              "source": "official_docs",
+              "identifier": "https://docs.z.ai/api-reference/llm/chat-completion",
+              "date": "2026-09-15"
+            },
+            {
+              "source": "owner_observation",
+              "identifier": "glm53_reasoning_variant_calibration_2026-09-15_issue_79",
+              "date": "2026-09-15"
+            }
+          ],
+          "confidence": "low",
+          "assessed_on": "2026-09-15",
+          "rationale": "Lightweight-reasoning tier by first-party definition; rated conservatively low until observed."
+        },
+        "coding": {
+          "rating": 3,
+          "evidence": [
+            {
+              "source": "official_docs",
+              "identifier": "https://docs.z.ai/guides/llm/glm-5.3",
+              "date": "2026-09-15"
+            },
+            {
+              "source": "official_docs",
+              "identifier": "https://docs.z.ai/api-reference/llm/chat-completion",
+              "date": "2026-09-15"
+            },
+            {
+              "source": "owner_observation",
+              "identifier": "glm53_reasoning_variant_calibration_2026-09-15_issue_79",
+              "date": "2026-09-15"
+            }
+          ],
+          "confidence": "low",
+          "assessed_on": "2026-09-15",
+          "rationale": "Lightweight reasoning still serves simple coding; conservatively at/below flash-Max coding level until owner-observed calibration exists."
+        },
+        "scientific_methodological": {
+          "rating": 2,
+          "evidence": [
+            {
+              "source": "official_docs",
+              "identifier": "https://docs.z.ai/guides/llm/glm-5.3",
+              "date": "2026-09-15"
+            },
+            {
+              "source": "official_docs",
+              "identifier": "https://docs.z.ai/api-reference/llm/chat-completion",
+              "date": "2026-09-15"
+            },
+            {
+              "source": "owner_observation",
+              "identifier": "glm53_reasoning_variant_calibration_2026-09-15_issue_79",
+              "date": "2026-09-15"
+            }
+          ],
+          "confidence": "low",
+          "assessed_on": "2026-09-15",
+          "rationale": "Unverified at low effort; conservative minimum-adjacent rating."
+        },
+        "writing_editorial": {
+          "rating": 3,
+          "evidence": [
+            {
+              "source": "official_docs",
+              "identifier": "https://docs.z.ai/guides/llm/glm-5.3",
+              "date": "2026-09-15"
+            },
+            {
+              "source": "official_docs",
+              "identifier": "https://docs.z.ai/api-reference/llm/chat-completion",
+              "date": "2026-09-15"
+            },
+            {
+              "source": "owner_observation",
+              "identifier": "glm53_reasoning_variant_calibration_2026-09-15_issue_79",
+              "date": "2026-09-15"
+            }
+          ],
+          "confidence": "low",
+          "assessed_on": "2026-09-15",
+          "rationale": "Writing quality is less reasoning-bound; conservative downgrade from the Max calibration."
+        },
+        "tool_use": {
+          "rating": 3,
+          "evidence": [
+            {
+              "source": "official_docs",
+              "identifier": "https://docs.z.ai/guides/llm/glm-5.3",
+              "date": "2026-09-15"
+            },
+            {
+              "source": "official_docs",
+              "identifier": "https://docs.z.ai/api-reference/llm/chat-completion",
+              "date": "2026-09-15"
+            },
+            {
+              "source": "owner_observation",
+              "identifier": "glm53_reasoning_variant_calibration_2026-09-15_issue_79",
+              "date": "2026-09-15"
+            }
+          ],
+          "confidence": "low",
+          "assessed_on": "2026-09-15",
+          "rationale": "Tool use remains supported (hard property); conservative downgrade for shallow planning depth."
+        },
+        "translation_multilingual": {
+          "rating": 3,
+          "evidence": [
+            {
+              "source": "official_docs",
+              "identifier": "https://docs.z.ai/guides/llm/glm-5.3",
+              "date": "2026-09-15"
+            },
+            {
+              "source": "official_docs",
+              "identifier": "https://docs.z.ai/api-reference/llm/chat-completion",
+              "date": "2026-09-15"
+            },
+            {
+              "source": "owner_observation",
+              "identifier": "glm53_reasoning_variant_calibration_2026-09-15_issue_79",
+              "date": "2026-09-15"
+            }
+          ],
+          "confidence": "low",
+          "assessed_on": "2026-09-15",
+          "rationale": "Unverified at low effort; conservative downgrade from the Max calibration."
+        }
+      },
+      "capacity_bindings": [
+        {
+          "provider": "zai",
+          "scope_id": "coding_plan"
+        }
+      ],
+      "model_version_date": "2026-08-14",
+      "last_reviewed_on": "2026-09-15"
     },
     {
       "identity": {

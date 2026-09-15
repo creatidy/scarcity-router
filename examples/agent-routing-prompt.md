@@ -1,12 +1,12 @@
 # Dynamic model routing with Scarcity Router
 
-You have access to the local MCP server:
+You have access to the local Scarcity Router MCP server:
 
 ```text
 scarcity-router
 ```
 
-with these tools:
+with exactly three tools:
 
 ```text
 scarcity_status
@@ -14,9 +14,23 @@ scarcity_select
 scarcity_simulate
 ```
 
-Use Scarcity Router to choose the model/configuration for AI work dynamically.
+Scarcity Router answers one question: **which currently available
+subscription-backed model configuration should perform this unit of work?**
+It combines task requirements, calibrated model capabilities, current
+provider capacity and user routing policy, then recommends the least scarce
+model that is capable enough.
 
-Do not maintain or follow a static mapping such as:
+It is a recommendation service only. It never executes model calls, never
+sees your prompts and never touches credentials. You remain the executor:
+read its decision, then dispatch the work yourself.
+
+This prompt is the routing authority in this project. It replaces static
+model assignment.
+
+## Retire static model assignments
+
+Projects often carry a static mapping such as `MODEL_ASSIGNMENTS.md` or
+equivalent embedded rules:
 
 ```text
 coding -> model A
@@ -24,18 +38,62 @@ review -> model B
 translation -> model C
 ```
 
-unless the project explicitly requires a particular model as a hard constraint.
+That approach is superseded. A static table encodes yesterday's capacity and
+capability; it cannot see that a plan is exhausted, that a policy blackout is
+active, or that a better-capable model is currently plentiful.
 
-The project decides **what capability the task requires**.
+If you find such a file or rule in this project:
 
-Scarcity Router decides **which currently available model/configuration should perform it**.
+```text
+do not consult it to choose a model
+do not maintain or extend it
+do not create a new static table anywhere else
+```
 
-## When to query Scarcity Router
+When you are already editing the document that contains the mapping, replace
+the mapping with a short pointer to dynamic Scarcity Router routing instead
+of refreshing the table. Propose deleting the file outright when the project
+process allows it.
 
-Call `scarcity_select` at a **dispatch boundary**: the start of a new bounded
-unit of AI work.
+The one surviving exception is a **hard project constraint** that a specific
+task genuinely requires a particular provider, model or variant. Even then,
+do not write it into a table: express it per task as a `tightening` or an
+explicit `requirement` (see below), so the constraint is visible in the
+recorded routing decision.
 
-Examples of new dispatch boundaries:
+The division of responsibility is fixed:
+
+```text
+the project decides what capability the task requires
+Scarcity Router decides which currently available
+model configuration performs it
+```
+
+## Connection (owner setup, already done when the tools appear)
+
+The server is a stdio MCP process launched as:
+
+```text
+scarcity-router-mcp
+```
+
+and registered in the MCP configuration (recipe: `examples/mcp-stdio.json`
+in the scarcity-router repository). Agents never start, stop or reconfigure
+it.
+
+- Tools run over local stdio. No credentials, endpoints or provider keys
+  exist in the tools; you never pass secrets to them.
+- User routing policy — time-window blackouts and quota-preserving
+  preferences — is loaded automatically from
+  `~/.config/scarcity-router/selector-policy.json`. Never pass
+  `selector_policy` yourself.
+- If the tools are missing from your session, follow "MCP unavailable"
+  below.
+
+## Work intelligently: one routing decision per bounded work unit
+
+Call `scarcity_select` at a **dispatch boundary** — the start of a new
+bounded unit of AI work:
 
 ```text
 start implementation
@@ -57,15 +115,17 @@ repeatedly while the same bounded work unit is progressing normally
 ```
 
 The selected configuration is **sticky for the current bounded work unit**.
-Capacity changing while work is already progressing is not by itself a reason
-to restart or reroute the work.
+Capacity changing while work is already progressing is not by itself a
+reason to restart or reroute the work. Querying more often does not route
+better; it only burns quota on the tools' providers.
 
 ## Normal routing procedure
 
 Before starting a bounded work unit:
 
 1. Determine what kind of task this actually is.
-2. Select the smallest Scarcity Router profile that honestly describes its requirements.
+2. Select the smallest Scarcity Router profile that honestly describes its
+   requirements.
 3. Call `scarcity_select`.
 4. Read the returned decision.
 5. Dispatch the work to the selected configuration.
@@ -110,67 +170,121 @@ Do not choose `deep_coding` merely because a task is large or important.
 Do not choose `scientific_review` merely because the project is scientific.
 
 Choose according to the capability actually required by this work unit.
+Overspecifying the profile wastes scarce quota on the strong models and is
+the same mistake as a static table, just made per task.
 
 ## Calling `scarcity_select`
 
-When a calibrated profile is sufficient, call:
+When a calibrated profile is sufficient, pass only the profile id:
 
 ```text
 scarcity_select
-profile_id = <profile>
+{
+  "profile_id": "routine_coding"
+}
 ```
 
-For example:
+The full input contract (machine-interface v1) is:
 
 ```text
-scarcity_select
-profile_id = routine_coding
+profile_id           calibrated task profile id, optional
+requirement          explicit full TaskRequirement, optional
+tightening           full TaskRequirement that only strengthens a
+                     profile, optional, only with profile_id
+selector_policy      never supplied by agents; the configured default
+                     applies automatically
+replenishment_states never supplied by agents
 ```
 
-or:
+Exactly one requirement source is allowed:
 
 ```text
-scarcity_select
-profile_id = scientific_review
+profile_id XOR requirement
+tightening only with profile_id
 ```
 
-Do not call `scarcity_status` first merely to decide which model is available.
-`scarcity_select` is the routing operation and evaluates current capacity as
-part of the selection path.
+Violating that shape, or naming an unknown profile, is an `invalid_request`
+error — a bug in the call, not a routing answer. Fix the call; do not
+reinterpret the error as "no model available".
 
-Use `scarcity_status` separately when you need to diagnose or explain provider
-capacity.
+Do not call `scarcity_status` first merely to decide which model is
+available. `scarcity_select` is the routing operation and evaluates current
+capacity as part of the selection path.
 
-Use `scarcity_simulate` only for explicit what-if analysis. It is not the
-normal dispatch mechanism.
+Use `scarcity_status` separately when you need to diagnose or explain
+provider capacity.
 
-## When a profile is not sufficient
+Use `scarcity_simulate` only for explicit what-if analysis — for example,
+"would a different model win at 23:00 tonight, or with this provider
+exhausted?" It is not the normal dispatch mechanism.
 
-If the task has requirements that a standard profile does not represent, use
-an explicit requirement or a profile plus valid tightening.
+## When a profile is not enough
 
-Examples include requirements for:
+If the task has requirements that a standard profile does not represent, add
+a `tightening`: a full `TaskRequirement` that strengthens the profile — it
+may raise a minimum or add a hard constraint, never loosen one.
+
+```json
+{
+  "profile_id": "routine_coding",
+  "tightening": {
+    "task_level": "L3",
+    "capability_minima": {
+      "coding": 4,
+      "reasoning": 3
+    },
+    "hard_constraints": {
+      "requires_vision": true
+    }
+  }
+}
+```
+
+Field meanings:
 
 ```text
-vision
-tool use
-minimum context
-specific provider/model
-specific privacy property
-higher capability minimum
+task_level           "L0".."L5", task complexity class, not a capability
+                     score and never a source of minima
+capability_minima    per-dimension minima on a 1..5 scale; dimensions are
+                     never averaged; available dimensions: reasoning,
+                     coding, scientific_methodological, writing_editorial,
+                     tool_use, translation_multilingual
+hard_constraints     categorical/numeric requirements: minimum_input_
+                     context_tokens, minimum_output_tokens, requires_tool_
+                     use, requires_vision, requires_reasoning_mode,
+                     required_provider, required_model {provider, model},
+                     required_variant, privacy_constraint
 ```
 
-Never weaken an existing profile merely to obtain a cheaper or more available
-model.
+For a task unlike every profile, pass a complete explicit `requirement`
+(without `profile_id`) with the same three fields.
 
-If you cannot express a material task requirement without guessing, ask the
-human rather than inventing selector semantics.
+Typical honest reasons to tighten:
 
-## How to interpret the result
+```text
+vision input for screenshots or figures
+tool use for agentic work
+minimum context for a large known input
+a project-mandated provider/model/variant
+a privacy property the project requires
+```
 
-A normal successful decision contains a selected candidate.
+Never weaken or omit a material requirement merely to obtain a cheaper or
+more available model. If you cannot express a requirement without guessing
+at selector semantics, ask the human instead of inventing them.
 
-Use the returned:
+## How to interpret the decision
+
+A successful result returns:
+
+```json
+{
+  "schema_version": 1,
+  "decision": { }
+}
+```
+
+Use the returned identity as the selected configuration:
 
 ```text
 decision.selected.identity.provider
@@ -178,11 +292,10 @@ decision.selected.identity.model
 decision.selected.identity.variant
 ```
 
-as the selected configuration. Treat the identity as opaque configuration data.
-Do not infer capability, reasoning effort or quota semantics by parsing the
-model name or `variant`.
+Treat the identity as opaque configuration data. Do not infer capability,
+reasoning effort or quota semantics by parsing the model name or `variant`.
 
-Also preserve:
+Also preserve for compact routing provenance:
 
 ```text
 catalog_version
@@ -190,11 +303,17 @@ profile_policy_version, when present
 degraded
 ```
 
-for compact routing provenance.
+`degraded: true` means the decision rests on partially unknown capacity
+telemetry — it is still a valid decision, but say so when you report it.
 
-The decision may also contain `alternatives`, `excluded` and `reason_codes`.
-`alternatives` are eligible candidates already ordered by the selector.
-`excluded` candidates are NOT fallbacks. Do not dispatch them.
+The decision may also contain `alternatives`, `excluded` and
+`reason_codes`:
+
+```text
+alternatives  eligible candidates already ordered by the selector
+excluded      candidates that failed capability, capacity, constraint or
+              policy stages — NOT fallbacks; do not dispatch them
+```
 
 ## No-solution result
 
@@ -204,8 +323,20 @@ If:
 decision.selected = null
 ```
 
-Scarcity Router found no candidate that satisfies the active requirements and
-policy.
+Scarcity Router found no candidate that satisfies the active requirements
+and policy (`reason_codes` includes `no_eligible_candidate`). This is a
+valid answer, not a tool error.
+
+The decision then also lists:
+
+```text
+closest_candidates      the candidates that progressed furthest through
+                        the eligibility stages, for diagnosis
+recoverable_candidates  candidates excluded only by exhaustion whose
+                        replenishment needs human action (for example a
+                        reset) — never dispatch them yourself; the
+                        required action belongs to the human
+```
 
 Do NOT:
 
@@ -223,7 +354,7 @@ Report:
 SCARCITY_ROUTER_NO_SOLUTION
 ```
 
-and ask the human how to proceed.
+together with the closest candidates, and ask the human how to proceed.
 
 ## Dispatch through the execution harness
 
@@ -232,9 +363,9 @@ Scarcity Router recommends a configuration. It does not execute the task.
 If the execution harness supports the selected configuration, dispatch the
 bounded work unit using the exact returned provider/model/variant.
 
-If the current session already runs that configuration, continue in the current
-session. If a new worker session is required, create it with the selected
-configuration.
+If the current session already runs that configuration, continue in the
+current session. If a new worker session is required, create it with the
+selected configuration.
 
 Do not silently replace the result with your preferred model.
 
@@ -265,7 +396,8 @@ dispatched:
 STOP_AND_ASK_HUMAN
 ```
 
-Do not create a permanent local fallback table.
+Do not create a permanent local fallback table; re-query at the next
+dispatch boundary instead.
 
 ## MCP unavailable
 
@@ -279,14 +411,14 @@ DYNAMIC_ROUTING_AVAILABLE = NO
 SCARCITY_ROUTER_MCP = UNAVAILABLE
 ```
 
-If the project defines an explicit emergency static fallback policy, it may be
-used only under that policy and must be visibly recorded as:
+If the project defines an explicit emergency static fallback policy, it may
+be used only under that policy and must be visibly recorded as:
 
 ```text
 ROUTING_MODE = STATIC_EMERGENCY_FALLBACK
 ```
 
-Otherwise ask the human.
+Otherwise ask the human. A dead router does not resurrect `MODEL_ASSIGNMENTS.md`.
 
 ## Independent review
 
@@ -307,9 +439,9 @@ language/translation review -> translation
 The review remains a distinct session with a frozen artifact/head even if
 Scarcity Router happens to select the same model configuration.
 
-If project policy explicitly requires a different model family and the current
-selector cannot express that constraint safely, ask the human rather than
-ignoring the independence requirement.
+If project policy explicitly requires a different model family and the
+current selector cannot express that constraint safely, ask the human rather
+than ignoring the independence requirement.
 
 ## When to reroute an in-progress unit
 
@@ -325,7 +457,8 @@ material change in task requirements
 explicit human request to reconsider routing
 ```
 
-Otherwise finish the bounded unit and query again at the next dispatch boundary.
+Otherwise finish the bounded unit and query again at the next dispatch
+boundary.
 
 ## Routing provenance
 
@@ -337,6 +470,7 @@ profile: deep_coding
 selected: provider/model/variant
 catalog_version: <version>
 profile_policy_version: <version if present>
+degraded: <true|false>
 runtime_identity: DISPATCH_VERIFIED | RUNTIME_VERIFIED |
                   RUNTIME_UNOBSERVABLE | FAIL
 ```
@@ -357,9 +491,11 @@ unless the project explicitly requires them.
 When deciding which AI model should perform a new bounded unit of work:
 
 ```text
-describe the task
+describe the task honestly
         ↓
-ask Scarcity Router
+retire the static mapping, do not consult it
+        ↓
+ask Scarcity Router (one query, smallest honest profile)
         ↓
 use the selected capable configuration
         ↓

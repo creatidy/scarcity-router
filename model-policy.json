@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "policy_version": 6,
-  "updated_at": "2026-09-08",
+  "policy_version": 8,
+  "updated_at": "2026-09-15",
   "versioning": {
     "schema_version": {
       "meaning": "The machine-readable artifact shape.",
@@ -623,6 +623,38 @@
       }
     },
     {
+      "id": "repository_review",
+      "intent": "Bounded, evidence-validated, read-only repository review (creatidy-autonomy M3/M3.1): one large-context prompt producing a small strictly-validated JSON findings result. Calibrated 2026-09-15 from the M3.1 experiment (glm53_reasoning_variant_calibration_2026-09-15_issue_79): the low reasoning effort returned zero findings on a snapshot carrying five independently verified issues (twice), while high and max efforts produced valid, evidence-correct, materially useful reviews. The minima encode that effort floor; scarcity still owns the choice among qualifying identities.",
+      "selector_facing": true,
+      "indicative_capability_needs": [
+        "reasoning",
+        "coding"
+      ],
+      "hard_requirement_categories": [
+        "task-specific context and output limits"
+      ],
+      "class_affinities": [
+        {
+          "class_id": "deep_technical_reasoner",
+          "relationship": "likely"
+        },
+        {
+          "class_id": "execution_generalist",
+          "relationship": "alternative"
+        }
+      ],
+      "calibrated_requirement": {
+        "task_level": "L3",
+        "capability_minima": {
+          "reasoning": 4,
+          "coding": 4
+        },
+        "hard_constraints": {
+          "requires_reasoning_mode": true
+        }
+      }
+    },
+    {
       "id": "scientific_review",
       "intent": "Review of scientific claims, evidence and methodological correctness.",
       "selector_facing": true,
@@ -774,6 +806,59 @@
           "translation_multilingual": 5
         },
         "hard_constraints": {}
+      }
+    }
+  ],
+  "evaluation_profiles": [
+    {
+      "id": "m31-repo-review-low",
+      "evaluation_only": true,
+      "intent": "M3.1 repository-review calibration candidate: GLM-5.3 at the low reasoning effort (Infrastructure/creatidy-autonomy#11, issue #79). Evaluation handle only: resolved solely when explicitly requested by profile_id and never used by ordinary routing; pins the exact provider/model/variant under evaluation.",
+      "calibrated_requirement": {
+        "task_level": "L3",
+        "capability_minima": {},
+        "hard_constraints": {
+          "required_provider": "zai",
+          "required_model": {
+            "provider": "zai",
+            "model": "glm-5.3"
+          },
+          "required_variant": "low"
+        }
+      }
+    },
+    {
+      "id": "m31-repo-review-high",
+      "evaluation_only": true,
+      "intent": "M3.1 repository-review calibration candidate: GLM-5.3 at the high reasoning effort (Infrastructure/creatidy-autonomy#11, issue #79). Evaluation handle only: resolved solely when explicitly requested by profile_id and never used by ordinary routing; pins the exact provider/model/variant under evaluation.",
+      "calibrated_requirement": {
+        "task_level": "L3",
+        "capability_minima": {},
+        "hard_constraints": {
+          "required_provider": "zai",
+          "required_model": {
+            "provider": "zai",
+            "model": "glm-5.3"
+          },
+          "required_variant": "high"
+        }
+      }
+    },
+    {
+      "id": "m31-repo-review-max",
+      "evaluation_only": true,
+      "intent": "M3.1 repository-review calibration candidate: GLM-5.3 at the max reasoning effort (Infrastructure/creatidy-autonomy#11, issue #79). Evaluation handle only: resolved solely when explicitly requested by profile_id and never used by ordinary routing; pins the exact provider/model/variant under evaluation.",
+      "calibrated_requirement": {
+        "task_level": "L3",
+        "capability_minima": {},
+        "hard_constraints": {
+          "required_provider": "zai",
+          "required_model": {
+            "provider": "zai",
+            "model": "glm-5.3"
+          },
+          "required_variant": "max"
+        }
       }
     }
   ],

@@ -101,6 +101,8 @@ BY_IDENTITY = {
     (entry.identity.provider, entry.identity.model, entry.identity.variant): entry
     for entry in CATALOG.entries
 }
+GLM53_HIGH = BY_IDENTITY[("zai", "glm-5.3", "high")]
+GLM53_LOW = BY_IDENTITY[("zai", "glm-5.3", "low")]
 LUNA = BY_IDENTITY[("openai", "gpt-5.6-luna", "max")]
 SOL = BY_IDENTITY[("openai", "gpt-5.6-sol", "high")]
 GLM53 = BY_IDENTITY[("zai", "glm-5.3", "max")]
@@ -300,7 +302,10 @@ class ScenarioTests(unittest.TestCase):
                            [_snap("openai", 80, 50), _snap("zai", 98, 0)])
         assert decision.selected is not None
         self.assertEqual(LUNA_MEDIUM.identity, decision.selected.identity)
-        self.assertEqual({GLM53.identity, FLASH.identity}, {c.identity for c in decision.excluded})
+        self.assertEqual(
+            {GLM53.identity, GLM53_HIGH.identity, GLM53_LOW.identity, FLASH.identity},
+            {c.identity for c in decision.excluded},
+        )
         for candidate in decision.excluded:
             self.assertEqual(candidate.exclusion_stage, "capacity")
             assert candidate.scarcity_assessment is not None
@@ -313,19 +318,21 @@ class ScenarioTests(unittest.TestCase):
         )
         assert decision.selected is not None
         self.assertEqual(
-            ("zai", "glm-5.3-flash", "max"),
+            ("zai", "glm-5.3", "low"),
             (
                 decision.selected.identity.provider,
                 decision.selected.identity.model,
                 decision.selected.identity.variant,
             ),
         )
-        self.assertEqual(5, decision.selected.capability_margin)
+        self.assertEqual(0, decision.selected.capability_margin)
         self.assertEqual(("selected_balanced",), decision.reason_codes)
-        # Exact ranking: Z.ai less scarce, then smaller adequate margin.
+        # Exact ranking: Z.ai less scarce, then smaller adequate margin. The
+        # GLM-5.3 low-effort variant is the smallest adequate capable
+        # candidate since issue #79 added the effort identities.
         self.assertEqual(
-            [GLM53.identity, LUNA_MEDIUM.identity, LUNA.identity, TERRA_MEDIUM.identity,
-             SOL_MEDIUM.identity, SOL.identity],
+            [GLM53_HIGH.identity, FLASH.identity, GLM53.identity, LUNA_MEDIUM.identity,
+             LUNA.identity, TERRA_MEDIUM.identity, SOL_MEDIUM.identity, SOL.identity],
             [c.identity for c in decision.alternatives],
         )
 
@@ -377,7 +384,7 @@ class ScenarioTests(unittest.TestCase):
         assert decision.selected is not None
         self.assertEqual("gpt-5.6-sol", decision.selected.identity.model)
         self.assertEqual((), decision.alternatives)
-        self.assertEqual(6, len(decision.excluded))
+        self.assertEqual(8, len(decision.excluded))
         self.assertTrue(
             all(c.exclusion_stage == "capability" for c in decision.excluded)
         )
@@ -453,7 +460,8 @@ class ScenarioTests(unittest.TestCase):
             ("selected_balanced", "selected_degraded_capacity"),
             decision.reason_codes,
         )
-        self.assertEqual("gpt-5.6-luna", decision.selected.identity.model)
+        self.assertEqual("glm-5.3", decision.selected.identity.model)
+        self.assertEqual("low", decision.selected.identity.variant)
         # No fake percentage exists for the degraded selection.
         assert decision.selected.scarcity_assessment is not None
         self.assertIsNone(
@@ -481,7 +489,7 @@ class ScenarioTests(unittest.TestCase):
         )
         self.assertIsNone(decision.selected)
         self.assertEqual(("no_eligible_candidate",), decision.reason_codes)
-        self.assertEqual(7, len(decision.excluded))
+        self.assertEqual(9, len(decision.excluded))
         self.assertTrue(
             all(
                 c.exclusion_stage == "capacity"
@@ -682,7 +690,7 @@ class ScenarioTests(unittest.TestCase):
         )
         self.assertIsNone(decision.selected)
         self.assertEqual((), decision.alternatives)
-        self.assertEqual(7, len(decision.excluded))
+        self.assertEqual(9, len(decision.excluded))
         self.assertEqual(("no_eligible_candidate",), decision.reason_codes)
         self.assertTrue(
             all(c.exclusion_stage == "hard_constraint" for c in decision.excluded)
@@ -737,7 +745,7 @@ class ScenarioTests(unittest.TestCase):
             requirement, [_snap("openai", 40, 40), _snap("zai", 80, 80)]
         )
         self.assertIsNone(decision.selected)
-        self.assertEqual(7, len(decision.excluded))
+        self.assertEqual(9, len(decision.excluded))
         for candidate in decision.excluded:
             self.assertEqual("hard_constraint", candidate.exclusion_stage)
             failure = candidate.hard_constraint_failures[0]
@@ -1105,8 +1113,10 @@ class RankingTests(unittest.TestCase):
         self.assertIn("capability_failed", decision.excluded[0].reason_codes)
 
     def test_scarcity_before_margin(self) -> None:
-        # Full order under routine_coding: penalty dominates margin, so GLM
-        # (margin 7, penalty 400) ranks before Luna (margin 5, penalty 3600).
+        # Full order under routine_coding: penalty dominates margin, so Z.ai
+        # (penalty 400) ranks before OpenAI (penalty 3600), and within the
+        # equal-penalty Z.ai block the smaller adequate margin wins (low
+        # before high before flash before max since issue #79).
         decision = _select(
             PROFILES.resolve("routine_coding"),
             [_snap("openai", 40, 40), _snap("zai", 80, 80)],
@@ -1114,8 +1124,9 @@ class RankingTests(unittest.TestCase):
         assert decision.selected is not None
         order = [decision.selected] + list(decision.alternatives)
         self.assertEqual(
-            [FLASH.identity, GLM53.identity, LUNA_MEDIUM.identity, LUNA.identity,
-             TERRA_MEDIUM.identity, SOL_MEDIUM.identity, SOL.identity],
+            [GLM53_LOW.identity, GLM53_HIGH.identity, FLASH.identity, GLM53.identity,
+             LUNA_MEDIUM.identity, LUNA.identity, TERRA_MEDIUM.identity,
+             SOL_MEDIUM.identity, SOL.identity],
             [c.identity for c in order],
         )
 
@@ -1133,9 +1144,12 @@ class RankingTests(unittest.TestCase):
             policy=policy,
         )
         assert decision.selected is not None
-        # GLM is first preference but has a larger margin than Flash.
-        self.assertEqual("glm-5.3-flash", decision.selected.identity.model)
+        # GLM max is first preference but has a larger margin than the
+        # low/high variants and Flash.
+        self.assertEqual("glm-5.3", decision.selected.identity.model)
+        self.assertEqual("low", decision.selected.identity.variant)
         self.assertEqual("glm-5.3", decision.alternatives[0].identity.model)
+        self.assertEqual("high", decision.alternatives[0].identity.variant)
 
     def test_preference_cannot_beat_scarcity(self) -> None:
         policy = SelectorPolicy(
@@ -1151,8 +1165,10 @@ class RankingTests(unittest.TestCase):
             policy=policy,
         )
         assert decision.selected is not None
-        # Preferred Luna (penalty 3600) cannot beat less scarce Flash (400).
-        self.assertEqual("glm-5.3-flash", decision.selected.identity.model)
+        # Preferred Luna (penalty 3600) cannot beat less scarce Z.ai (400);
+        # the smallest adequate margin there is the GLM-5.3 low variant.
+        self.assertEqual("glm-5.3", decision.selected.identity.model)
+        self.assertEqual("low", decision.selected.identity.variant)
 
     def test_preference_resolves_true_tie(self) -> None:
         # Identical synthetic entries and an empty-minima requirement give a
@@ -1634,7 +1650,7 @@ class NoSolutionTests(unittest.TestCase):
         )
         self.assertIsNone(mixed.selected)
         self.assertEqual(
-            [("zai", "glm-5.3", "max"), ("zai", "glm-5.3-flash", "max")],
+            [("zai", "glm-5.3", "high"), ("zai", "glm-5.3", "low"), ("zai", "glm-5.3", "max")],
             [
                 (c.identity.provider, c.identity.model, c.identity.variant)
                 for c in mixed.closest_candidates

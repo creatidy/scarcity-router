@@ -376,7 +376,7 @@ class CliPrecedenceTests(_Quiet):
                 ]
             )
             self.assertEqual((0, ""), (code, err))
-            self.assertEqual("glm-5.3-flash", self._selected_model(out))
+            self.assertEqual("glm-5.3", self._selected_model(out))
 
     def test_explicit_flag_wins_over_the_user_config(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -394,7 +394,7 @@ class CliPrecedenceTests(_Quiet):
                     ]
                 )
                 self.assertEqual((0, ""), (code, err))
-                self.assertEqual("glm-5.3-flash", self._selected_model(out))
+                self.assertEqual("glm-5.3", self._selected_model(out))
 
     def test_selector_policy_flags_are_mutually_exclusive(self) -> None:
         with _config_home():

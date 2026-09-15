@@ -1899,6 +1899,54 @@ decision.
   `resource`/`kind`), no catalog ratings change, no REST/MCP
   schema-version change, no execution or gateway behavior.
 
+
+### D-038 — GLM-5.3 reasoning-effort identities and evaluation-only profiles
+
+- **Status:** Accepted
+- **Date:** 2026-09-15
+- **Issue:** BioMedical-IT/scarcity-router#79
+- **Related:** Infrastructure/creatidy-autonomy#11 (M3.1), D-032
+
+Z.ai documents GLM-5.3 reasoning effort as a request parameter
+(`reasoning_effort`: `low`/`high`/`max`, thinking forced enabled) on the same
+chat-completions surface the Coding Plan exposes. Representing only the
+default `max` identity made the routed variant unenforceable downstream: a
+router decision carries `provider/model/variant`, but the catalog offered no
+lower-effort identities to select.
+
+Decision:
+
+1. Catalog v3 adds `zai/glm-5.3` at `high` and `low` with conservative,
+   separately evidenced ratings (medium/low confidence; Max ratings are not
+   copied — see `docs/model-calibration.md`). No flash variants, no new
+   providers.
+2. Policy v7 adds the `evaluation_profiles` section. Evaluation profiles are
+   a distinct profile class: they MUST declare `evaluation_only: true` and
+   MUST pin the exact identity under evaluation in their hard constraints.
+   They resolve only by explicit `profile_id` and therefore cannot silently
+   affect ordinary routing, while formal `task_profiles` keep the
+   no-provider/model-name invariant (D-025 acceptance unchanged).
+3. The M3.1 calibration consumes those profiles from creatidy-autonomy
+   through the frozen REST v1 `profile_id` path only.
+
+- **Status update (2026-09-15, after the bounded calibration):** all six live
+  runs (two per variant, frozen snapshot creatidy-autonomy@f9a7d16) returned
+  structurally valid, evidence-correct results; the low effort found zero
+  issues on a snapshot with five independently verified ones (twice), while
+  high and max produced materially useful findings. Policy v8 therefore adds
+  the calibrated production profile `repository_review` (L3, minima
+  reasoning 4 + coding 4, `requires_reasoning_mode`) so bounded reviews
+  cannot silently route to the low effort after catalog v3; the choice among
+  qualifying identities stays with scarcity. The high-vs-max reliability
+  question remains open at this sample size (2/2 valid for both) and no
+  single-variant pin was introduced.
+
+Alternatives considered: pinning the model inside formal task profiles
+(rejected: violates the D-025 profile invariant); sending an explicit
+`required_model` requirement from the client (rejected: provider/model
+identity belongs to router configuration, not the task boundary); adding
+OpenAI-equivalent effort aliasing (out of scope; no evidence).
+
 ## Unresolved decisions
 
 ### U-001 — Codex binary discovery and compatibility
