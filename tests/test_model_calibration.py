@@ -35,7 +35,8 @@ POLICY_PATH = REPO / "model-policy.json"
 
 ASSESSED_ON = "2026-09-06"
 EFFORT_ASSESSED_ON = "2026-09-08"
-POLICY_UPDATED_ON = "2026-09-08"
+VARIANTS_ASSESSED_ON = "2026-09-15"
+POLICY_UPDATED_ON = "2026-09-15"
 
 LUNA = ("openai", "gpt-5.6-luna", "max")
 SOL = ("openai", "gpt-5.6-sol", "high")
@@ -44,12 +45,27 @@ FLASH = ("zai", "glm-5.3-flash", "max")
 LUNA_MEDIUM = ("openai", "gpt-5.6-luna", "medium")
 TERRA_MEDIUM = ("openai", "gpt-5.6-terra", "medium")
 SOL_MEDIUM = ("openai", "gpt-5.6-sol", "medium")
+GLM53_HIGH = ("zai", "glm-5.3", "high")
+GLM53_LOW = ("zai", "glm-5.3", "low")
 NEW_CONFIGURATIONS = frozenset({LUNA_MEDIUM, TERRA_MEDIUM, SOL_MEDIUM})
-ALL_MODELS = frozenset({LUNA, SOL, GLM53, FLASH}) | NEW_CONFIGURATIONS
+ZAI_VARIANTS = frozenset({GLM53_HIGH, GLM53_LOW})
+ALL_MODELS = frozenset({LUNA, SOL, GLM53, FLASH}) | NEW_CONFIGURATIONS | ZAI_VARIANTS
 
 # The accepted initial calibration (D-025). Ratings describe routing
 # suitability in the owner's workflow; they are not benchmark percentiles.
 ACCEPTED_RATINGS: dict[tuple[str, str, str], dict[str, int]] = {
+    # Issue #79: conservative first-party-evidence calibration for the GLM-5.3
+    # reasoning-effort identities. Max ratings are deliberately NOT copied:
+    # high is a one-step downgrade (Code Bench High 31.4% vs Max 34.5%),
+    # low is minimum-adjacent and unverified at this effort.
+    GLM53_HIGH: {
+        "reasoning": 4, "coding": 4, "scientific_methodological": 3,
+        "writing_editorial": 3, "tool_use": 4, "translation_multilingual": 3,
+    },
+    GLM53_LOW: {
+        "reasoning": 2, "coding": 3, "scientific_methodological": 2,
+        "writing_editorial": 3, "tool_use": 3, "translation_multilingual": 3,
+    },
     LUNA_MEDIUM: {
         "reasoning": 3, "coding": 4, "scientific_methodological": 3,
         "writing_editorial": 5, "tool_use": 5, "translation_multilingual": 4,
@@ -97,6 +113,20 @@ ACCEPTED_RATINGS: dict[tuple[str, str, str], dict[str, int]] = {
 }
 
 ACCEPTED_HARD_PROPERTIES: dict[tuple[str, str, str], dict[str, object]] = {
+    GLM53_HIGH: {
+        "input_context_tokens": 1_000_000,
+        "output_tokens": 128_000,
+        "supports_tool_use": True,
+        "supports_vision": False,
+        "supports_reasoning_mode": True,
+    },
+    GLM53_LOW: {
+        "input_context_tokens": 1_000_000,
+        "output_tokens": 128_000,
+        "supports_tool_use": True,
+        "supports_vision": False,
+        "supports_reasoning_mode": True,
+    },
     LUNA: {
         "input_context_tokens": 1_050_000,
         "output_tokens": 128_000,
@@ -136,6 +166,8 @@ ACCEPTED_BINDINGS: dict[tuple[str, str, str], set[tuple[str, str]]] = {
     SOL: {("openai", "codex")},
     GLM53: {("zai", "coding_plan")},
     FLASH: {("zai", "coding_plan")},
+    GLM53_HIGH: {("zai", "coding_plan")},
+    GLM53_LOW: {("zai", "coding_plan")},
 }
 
 ACCEPTED_MODEL_VERSION_DATES: dict[tuple[str, str, str], str] = {
@@ -143,6 +175,10 @@ ACCEPTED_MODEL_VERSION_DATES: dict[tuple[str, str, str], str] = {
     SOL: "2026-07-09",
     GLM53: "2026-08-14",
     FLASH: "2026-08-26",
+    # Same base model as GLM-5.3 Max; the effort identities differ only in
+    # the requested reasoning effort (issue #79).
+    GLM53_HIGH: "2026-08-14",
+    GLM53_LOW: "2026-08-14",
 }
 
 for configuration in NEW_CONFIGURATIONS:
@@ -158,11 +194,18 @@ for configuration in NEW_CONFIGURATIONS:
 # which calibrated models satisfy every profile minimum.
 ACCEPTED_ELIGIBLE_SETS: dict[str, frozenset[tuple[str, str, str]]] = {
     "mechanical": frozenset(ALL_MODELS),
+    # M3.1 production floor: excludes the low effort and Luna Medium.
+    "repository_review": frozenset(
+        {LUNA, SOL, SOL_MEDIUM, TERRA_MEDIUM, GLM53, GLM53_HIGH, FLASH}
+    ),
     "routine_coding": frozenset(ALL_MODELS),
+    # deep_coding keeps its coding-5 minimum: the conservatively rated
+    # GLM-5.3 high/low identities do NOT satisfy it (issue #79 intent).
     "deep_coding": frozenset({TERRA_MEDIUM, SOL_MEDIUM, SOL, GLM53}),
     "scientific_review": frozenset({SOL}),
     "editorial": frozenset({LUNA_MEDIUM, LUNA, SOL_MEDIUM, SOL}),
-    "general_reasoning": ALL_MODELS - {LUNA_MEDIUM},
+    # glm-5.3 high (reasoning 4) qualifies; low (reasoning 2) does not.
+    "general_reasoning": (ALL_MODELS - {LUNA_MEDIUM, GLM53_LOW}),
     "orchestration": frozenset({LUNA, SOL_MEDIUM, SOL}),
     "translation": frozenset({SOL}),
 }
@@ -272,11 +315,17 @@ _PROFILES = _policy_profile_entries()
 
 class ModelCatalogCalibration(unittest.TestCase):
     def test_catalog_parses_with_accepted_version_and_dates(self) -> None:
-        self.assertEqual(_CATALOG.catalog_version, 2)
-        self.assertEqual(_CATALOG.updated_on, EFFORT_ASSESSED_ON)
+        self.assertEqual(_CATALOG.catalog_version, 3)
+        self.assertEqual(_CATALOG.updated_on, VARIANTS_ASSESSED_ON)
         for entry in _CATALOG.entries:
             identity = (entry.identity.provider, entry.identity.model, entry.identity.variant)
-            self.assertEqual(entry.last_reviewed_on, EFFORT_ASSESSED_ON if identity in NEW_CONFIGURATIONS else ASSESSED_ON)
+            if identity in ZAI_VARIANTS:
+                expected_reviewed = VARIANTS_ASSESSED_ON
+            elif identity in NEW_CONFIGURATIONS:
+                expected_reviewed = EFFORT_ASSESSED_ON
+            else:
+                expected_reviewed = ASSESSED_ON
+            self.assertEqual(entry.last_reviewed_on, expected_reviewed)
             self.assertEqual(
                 entry.model_version_date,
                 ACCEPTED_MODEL_VERSION_DATES[
@@ -285,8 +334,8 @@ class ModelCatalogCalibration(unittest.TestCase):
             )
             self.assertIsNone(entry.model_version)
 
-    def test_exactly_seven_accepted_identities(self) -> None:
-        self.assertEqual(len(_CATALOG.entries), 7)
+    def test_exactly_nine_accepted_identities(self) -> None:
+        self.assertEqual(len(_CATALOG.entries), 9)
         self.assertEqual(set(_BY_IDENTITY), set(ALL_MODELS))
 
     def test_no_additional_model_slipped_into_catalog(self) -> None:
@@ -307,7 +356,8 @@ class ModelCatalogCalibration(unittest.TestCase):
 
     def test_explicit_efforts_and_new_configuration_provenance(self) -> None:
         efforts = {LUNA: "max", SOL: "high", GLM53: "max", FLASH: "max",
-                   LUNA_MEDIUM: "medium", TERRA_MEDIUM: "medium", SOL_MEDIUM: "medium"}
+                   LUNA_MEDIUM: "medium", TERRA_MEDIUM: "medium", SOL_MEDIUM: "medium",
+                   GLM53_HIGH: "high", GLM53_LOW: "low"}
         for identity, expected in efforts.items():
             self.assertEqual(_BY_IDENTITY[identity].reasoning_effort, expected)
         for identity in NEW_CONFIGURATIONS:
@@ -322,6 +372,36 @@ class ModelCatalogCalibration(unittest.TestCase):
                        for ref in assessment.evidence}
             self.assertIn("https://openai.com/index/gpt-5-6/", sources)
             self.assertIn("https://developers.openai.com/api/docs/models", sources)
+
+    def test_zai_variant_provenance_and_conservative_confidence(self) -> None:
+        # Issue #79: the GLM-5.3 reasoning-effort identities carry first-party
+        # Z.ai provenance, an explicit conservative-confidence policy (high:
+        # medium, low: low) and never reuse the Max calibration identifier.
+        confidences = {GLM53_HIGH: "medium", GLM53_LOW: "low"}
+        for identity in ZAI_VARIANTS:
+            entry = _BY_IDENTITY[identity]
+            for assessment in _assessments(entry.capabilities).values():
+                self.assertEqual(assessment.confidence, confidences[identity])
+                self.assertIn(
+                    "glm53_reasoning_variant_calibration_2026-09-15_issue_79",
+                    {ref.identifier for ref in assessment.evidence},
+                )
+            sources = {ref.identifier for assessment in _assessments(entry.capabilities).values()
+                       for ref in assessment.evidence}
+            self.assertIn("https://docs.z.ai/guides/llm/glm-5.3", sources)
+            self.assertIn("https://docs.z.ai/api-reference/llm/chat-completion", sources)
+        # Max ratings are not mechanically copied to lower efforts.
+        max_ratings = {
+            dimension: cast(int, assessment.effective_rating)
+            for dimension, assessment in _assessments(_BY_IDENTITY[GLM53].capabilities).items()
+        }
+        for identity in ZAI_VARIANTS:
+            for dimension, assessment in _assessments(_BY_IDENTITY[identity].capabilities).items():
+                assert assessment.effective_rating is not None
+                self.assertLessEqual(
+                    assessment.effective_rating, max_ratings[dimension],
+                    f"{identity}.{dimension} must not exceed the Max calibration",
+                )
 
     def test_exact_hard_property_matrix(self) -> None:
         for identity, expected in ACCEPTED_HARD_PROPERTIES.items():
@@ -435,14 +515,14 @@ class TaskProfileCalibration(unittest.TestCase):
     def test_policy_version_incremented_and_calibrated(self) -> None:
         policy = _load_policy()
         self.assertEqual(policy["schema_version"], 1)
-        self.assertEqual(policy["policy_version"], 6)
+        self.assertEqual(policy["policy_version"], 8)
         self.assertEqual(policy["updated_at"], POLICY_UPDATED_ON)
         task_policy = _mapping(policy["task_profile_policy"], "task_profile_policy")
         self.assertTrue(task_policy["numeric_minima_included"])
         self.assertEqual(task_policy["numeric_minima_status"], "calibrated_m2c")
 
-    def test_exactly_eight_formal_profiles_aligned_with_vocabulary(self) -> None:
-        self.assertEqual(len(_PROFILES), 8)
+    def test_exactly_nine_formal_profiles_aligned_with_vocabulary(self) -> None:
+        self.assertEqual(len(_PROFILES), 9)
         self.assertEqual(set(_PROFILES), set(FORMAL_PROFILE_IDS))
 
     def test_exact_task_requirement_expansion(self) -> None:
@@ -480,6 +560,16 @@ class TaskProfileCalibration(unittest.TestCase):
                         "requires_tool_use": True,
                         "requires_reasoning_mode": True,
                     },
+                }
+            ),
+            "repository_review": TaskRequirement.from_dict(
+                {
+                    "task_level": "L3",
+                    "capability_minima": {
+                        "reasoning": 4,
+                        "coding": 4,
+                    },
+                    "hard_constraints": {"requires_reasoning_mode": True},
                 }
             ),
             "scientific_review": TaskRequirement.from_dict(

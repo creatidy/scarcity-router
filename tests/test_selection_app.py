@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import cast
 from zoneinfo import ZoneInfo
 
+from collections.abc import Callable
 from scarcity_router import (
     CapacityDiagnostic,
     CapabilityMinima,
@@ -33,7 +34,10 @@ from scarcity_router import (
     select_model,
 )
 from scarcity_router.cli import build_parser, main
+from scarcity_router.errors import SelectionContractValidationError
 from scarcity_router.selection_app import (
+    load_configured_artifacts,
+    load_model_policy,
     load_selector_policy,
     load_strict_json,
     render_select_human,
@@ -188,14 +192,14 @@ class SelectCommandTests(unittest.TestCase):
         code, out, err = _run(_select_args("--profile", "routine_coding"))
         self.assertEqual(0, code)
         self.assertEqual("", err)
-        self.assertIn("Selected: GLM-5.3-Flash Max (zai/glm-5.3-flash/max)", out)
+        self.assertIn("Selected: GLM-5.3 Low (zai/glm-5.3/low)", out)
         self.assertIn("Profile: routine_coding", out)
         self.assertIn(
             "Scarcity: plentiful — 80% blended remaining "
             + "(short 80% / weekly 80%), penalty 400",
             out,
         )
-        self.assertIn("Capability margin: 5", out)
+        self.assertIn("Capability margin: 0", out)
         self.assertIn("Policy: balanced", out)
 
     def test_select_profile_json(self) -> None:
@@ -203,12 +207,13 @@ class SelectCommandTests(unittest.TestCase):
         self.assertEqual(0, code)
         decision = cast("dict[str, object]", json.loads(out))
         self.assertEqual("routine_coding", decision["profile_id"])
-        self.assertEqual(6, decision["profile_policy_version"])
+        self.assertEqual(8, decision["profile_policy_version"])
         self.assertEqual("balanced", decision["selector_mode"])
         self.assertEqual(["selected_balanced"], decision["reason_codes"])
         selected = cast("dict[str, object]", decision["selected"])
         identity = cast("dict[str, object]", selected["identity"])
-        self.assertEqual("glm-5.3-flash", identity["model"])
+        self.assertEqual("glm-5.3", identity["model"])
+        self.assertEqual("low", identity["variant"])
 
     def test_select_profile_explain(self) -> None:
         code, out, _ = _run(_select_args("--profile", "deep_coding", "--explain"))
@@ -217,7 +222,7 @@ class SelectCommandTests(unittest.TestCase):
         self.assertIn("Alternatives (exact ranking order):", out)
         self.assertIn("Excluded candidates:", out)
         self.assertIn("capability:", out)
-        self.assertIn("Versions: catalog 2 (2026-09-08)", out)
+        self.assertIn("Versions: catalog 3 (2026-09-15)", out)
 
     def test_select_requirement_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -372,7 +377,7 @@ class SelectCommandTests(unittest.TestCase):
         self.assertIn("WARNING: selected with unknown capacity", rendered)
         self.assertIn("Unknown reason: unknown_capacity_degraded", rendered)
         self.assertIn("Scarcity: unknown — provider_snapshot_not_ok", rendered)
-        self.assertIn("Capability margin: 4", rendered)
+        self.assertIn("Capability margin: 0", rendered)
         self.assertIn(
             "Reason: selected_balanced,selected_degraded_capacity", rendered
         )
@@ -469,6 +474,83 @@ class SimulateCommandTests(unittest.TestCase):
             percentages = cast("list[object]", applied["capacity_percentages"])
             first_override = cast("dict[str, object]", percentages[0])
             self.assertEqual(2, first_override["remaining_percent"])
+
+
+class EvaluationProfileTests(unittest.TestCase):
+    """The M3.1 evaluation_profiles section (issue #79).
+
+    Evaluation profiles are resolvable only by exact id, must declare
+    ``evaluation_only: true`` and must pin the exact identity under
+    evaluation. They never change ordinary profile routing.
+    """
+
+    def test_evaluation_profiles_resolve_and_pin_identities(self) -> None:
+        _catalog, profiles, version = load_configured_artifacts(CATALOG_PATH, POLICY_PATH)
+        self.assertEqual(8, version)
+        expected = {
+            "m31-repo-review-low": ("zai", "glm-5.3", "low"),
+            "m31-repo-review-high": ("zai", "glm-5.3", "high"),
+            "m31-repo-review-max": ("zai", "glm-5.3", "max"),
+        }
+        for profile_id, (provider, model, variant) in expected.items():
+            requirement = profiles.resolve(profile_id)
+            hard = requirement.hard_constraints
+            self.assertEqual(provider, hard.required_provider)
+            assert hard.required_model is not None
+            self.assertEqual((provider, model), (hard.required_model.provider, hard.required_model.model))
+            self.assertEqual(variant, hard.required_variant)
+        # The formal calibrated profiles are untouched by the section.
+        for formal in ("routine_coding", "deep_coding", "scientific_review"):
+            self.assertIsNone(profiles.resolve(formal).hard_constraints.required_provider)
+
+    def test_evaluation_profile_selects_pinned_identity(self) -> None:
+        code, out, err = _run(
+            _select_args("--profile", "m31-repo-review-low", "--json")
+        )
+        self.assertEqual((0, ""), (code, err))
+        decision = cast("dict[str, object]", json.loads(out))
+        selected = cast("dict[str, object]", decision["selected"])
+        identity = cast("dict[str, object]", selected["identity"])
+        self.assertEqual("zai", identity["provider"])
+        self.assertEqual("glm-5.3", identity["model"])
+        self.assertEqual("low", identity["variant"])
+
+    def _policy_without(self, tmp: str, transform: Callable[[list[object]], None]) -> str:
+        document = cast("dict[str, object]", json.loads(POLICY_PATH.read_text(encoding="utf-8")))
+        transform(cast("list[object]", document["evaluation_profiles"]))
+        path = Path(tmp) / "policy.json"
+        _ = path.write_text(json.dumps(document), encoding="utf-8")
+        return str(path)
+
+    def test_missing_evaluation_only_marker_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            def strip_marker(entries: list[object]) -> None:
+                first = cast("dict[str, object]", entries[0])
+                del first["evaluation_only"]
+
+            policy = self._policy_without(tmp, strip_marker)
+            with self.assertRaises(SelectionContractValidationError):
+                _ = load_model_policy(Path(policy))
+
+    def test_unpinned_evaluation_profile_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            def strip_variant(entries: list[object]) -> None:
+                first = cast("dict[str, object]", entries[0])
+                requirement = cast("dict[str, object]", first["calibrated_requirement"])
+                del cast("dict[str, object]", requirement["hard_constraints"])["required_variant"]
+
+            policy = self._policy_without(tmp, strip_variant)
+            with self.assertRaises(SelectionContractValidationError):
+                _ = load_model_policy(Path(policy))
+
+    def test_evaluation_section_is_optional(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            document = cast("dict[str, object]", json.loads(POLICY_PATH.read_text(encoding="utf-8")))
+            del document["evaluation_profiles"]
+            path = Path(tmp) / "policy.json"
+            _ = path.write_text(json.dumps(document), encoding="utf-8")
+            _profiles, version = load_model_policy(Path(path))
+            self.assertEqual(8, version)
 
 
 class ArtifactFailureTests(unittest.TestCase):
@@ -880,7 +962,7 @@ class SelectorPolicyExampleTests(unittest.TestCase):
         selected = cast("dict[str, object]", decision["selected"])
         identity = cast("dict[str, object]", selected["identity"])
         self.assertEqual("zai", identity["provider"])
-        self.assertEqual("glm-5.3-flash", identity["model"])
+        self.assertEqual("glm-5.3", identity["model"])
 
     def test_select_selects_zai_on_weekend_inside_wall_clock_window(self) -> None:
         # Saturday 2026-09-12 06:00 UTC is 14:00 SGT on a non-configured day.

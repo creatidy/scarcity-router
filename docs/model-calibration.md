@@ -1,5 +1,57 @@
 # Model calibration
 
+## GLM-5.3 reasoning-variant identities (issue #79, M3.1)
+
+2026-09-15 adds the two remaining officially supported GLM-5.3 reasoning
+efforts as catalog identities so the routed variant can be executed and
+calibrated by creatidy-autonomy (Infrastructure/creatidy-autonomy#11).
+Catalog version is now 3; model-policy policy_version is 7.
+
+First-party evidence (verified 2026-09-15):
+
+- `https://docs.z.ai/guides/llm/glm-5.3` — GLM-5.3 always operates with
+  reasoning enabled (`thinking.type` supports `enabled` only) and supports
+  exactly `low`/`high`/`max` via `reasoning_effort` (default `max`); the page
+  documents the Coding Plan OpenAI Chat Completions endpoint for the model.
+- `https://docs.z.ai/api-reference/llm/chat-completions` — `reasoning_effort`
+  takes effect when thinking is enabled; GLM-5.3/GLM-5.3-FLASH support only
+  `low`/`high`/`max`.
+
+Ratings are conservative and are NOT copied from Max:
+
+| Configuration | reasoning | coding | scientific_methodological | writing_editorial | tool_use | translation_multilingual | confidence |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| GLM-5.3 High | 4 | 4 | 3 | 3 | 4 | 3 | medium |
+| GLM-5.3 Low | 2 | 3 | 2 | 3 | 3 | 3 | low |
+
+Rationale: the first-party Code Bench comparison shows High slightly below
+Max (31.4% vs 34.5%), so High takes a one-step conservative downgrade with
+medium confidence; Low is the "lightweight reasoning" tier by first-party
+definition, unverified in the owner's workflow, and takes minimum-adjacent
+ratings with low confidence. Consequences in the calibrated eligible sets:
+`deep_coding` (coding minimum 5) is NOT served by the new identities, and
+`general_reasoning` (reasoning minimum 4) admits High but not Low. Hard
+properties, capacity binding (`zai/coding_plan`) and the 2026-08-14 model
+version date are shared with GLM-5.3 Max: the identities differ only in the
+requested reasoning effort.
+
+Policy v8 adds the calibrated production profile **`repository_review`**
+(L3; minima reasoning 4 + coding 4; `requires_reasoning_mode`), the smallest
+router-owned change that encodes the M3.1 evidence: without it, the catalog v3
+margin rule can route bounded repository reviews to the low effort, which the
+experiment showed returns zero findings on a snapshot carrying five
+independently verified issues (twice), while high and max produced valid,
+evidence-correct, materially useful reviews. The profile expresses the task's
+effort floor; scarcity still owns the choice among qualifying identities
+(high, max and other reasoning-4/coding-4 candidates).
+
+The same policy revision adds the `evaluation_profiles` section
+(`m31-repo-review-low|high|max`): explicitly evaluation-only profiles that
+must declare `evaluation_only: true` and must pin the exact identity under
+evaluation (`required_provider` + `required_model` + `required_variant`).
+They resolve only by explicit `profile_id`, never participate in ordinary
+routing, and keep formal `task_profiles` free of provider/model names.
+
 ## Catalog v2 correction (D-032)
 
 Issue #57 adds three separately calibrated invocation configurations on
