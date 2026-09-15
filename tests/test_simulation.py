@@ -540,7 +540,7 @@ class ReplacementTests(unittest.TestCase):
         assert result.simulated.selected is not None
         # L1 routine work is below the reservation minimum: Z.ai blocked in
         # the simulated run only; the baseline policy is untouched.
-        self.assertEqual("glm-5.3-flash", result.baseline.selected.identity.model)
+        self.assertEqual("glm-5.3", result.baseline.selected.identity.model)
         self.assertEqual(
             "gpt-5.6-luna", result.simulated.selected.identity.model
         )

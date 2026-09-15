@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "policy_version": 6,
-  "updated_at": "2026-09-08",
+  "policy_version": 7,
+  "updated_at": "2026-09-15",
   "versioning": {
     "schema_version": {
       "meaning": "The machine-readable artifact shape.",
@@ -774,6 +774,59 @@
           "translation_multilingual": 5
         },
         "hard_constraints": {}
+      }
+    }
+  ],
+  "evaluation_profiles": [
+    {
+      "id": "m31-repo-review-low",
+      "evaluation_only": true,
+      "intent": "M3.1 repository-review calibration candidate: GLM-5.3 at the low reasoning effort (Infrastructure/creatidy-autonomy#11, issue #79). Evaluation handle only: resolved solely when explicitly requested by profile_id and never used by ordinary routing; pins the exact provider/model/variant under evaluation.",
+      "calibrated_requirement": {
+        "task_level": "L3",
+        "capability_minima": {},
+        "hard_constraints": {
+          "required_provider": "zai",
+          "required_model": {
+            "provider": "zai",
+            "model": "glm-5.3"
+          },
+          "required_variant": "low"
+        }
+      }
+    },
+    {
+      "id": "m31-repo-review-high",
+      "evaluation_only": true,
+      "intent": "M3.1 repository-review calibration candidate: GLM-5.3 at the high reasoning effort (Infrastructure/creatidy-autonomy#11, issue #79). Evaluation handle only: resolved solely when explicitly requested by profile_id and never used by ordinary routing; pins the exact provider/model/variant under evaluation.",
+      "calibrated_requirement": {
+        "task_level": "L3",
+        "capability_minima": {},
+        "hard_constraints": {
+          "required_provider": "zai",
+          "required_model": {
+            "provider": "zai",
+            "model": "glm-5.3"
+          },
+          "required_variant": "high"
+        }
+      }
+    },
+    {
+      "id": "m31-repo-review-max",
+      "evaluation_only": true,
+      "intent": "M3.1 repository-review calibration candidate: GLM-5.3 at the max reasoning effort (Infrastructure/creatidy-autonomy#11, issue #79). Evaluation handle only: resolved solely when explicitly requested by profile_id and never used by ordinary routing; pins the exact provider/model/variant under evaluation.",
+      "calibrated_requirement": {
+        "task_level": "L3",
+        "capability_minima": {},
+        "hard_constraints": {
+          "required_provider": "zai",
+          "required_model": {
+            "provider": "zai",
+            "model": "glm-5.3"
+          },
+          "required_variant": "max"
+        }
       }
     }
   ],

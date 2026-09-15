@@ -40,8 +40,8 @@ from scarcity_router.server import build_parser as build_server_parser
 
 REPO = Path(__file__).resolve().parents[1]
 PACKAGE_DIR = REPO_ROOT / "scarcity_router"
-EXPECTED_CATALOG_VERSION = 2
-EXPECTED_POLICY_VERSION = 6
+EXPECTED_CATALOG_VERSION = 3
+EXPECTED_POLICY_VERSION = 7
 
 EXPECTED_SCRIPTS = {
     "scarcity-router": "scarcity_router.cli:main",
@@ -133,7 +133,7 @@ class DefaultArtifactTests(unittest.TestCase):
         self.assertTrue(DEFAULT_CATALOG_PATH.is_file())
         self.assertTrue(DEFAULT_MODEL_POLICY_PATH.is_file())
 
-    def test_source_tree_defaults_load_catalog_2_policy_6(self) -> None:
+    def test_source_tree_defaults_load_catalog_3_policy_7(self) -> None:
         catalog, _profiles, policy_version = load_configured_artifacts(
             DEFAULT_CATALOG_PATH, DEFAULT_MODEL_POLICY_PATH
         )

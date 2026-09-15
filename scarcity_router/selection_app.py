@@ -158,6 +158,16 @@ def load_model_policy(path: Path) -> tuple[TaskProfileCatalog, int]:
     feed selection; model classes, workflow exemplars, indicative capability
     needs and descriptive role text are never used. The artifact's
     ``policy_version`` is returned for decision provenance.
+
+    The optional ``evaluation_profiles`` section (M3.1, issue #79) adds
+    explicitly evaluation-only profile definitions to the same catalog so
+    they resolve by exact ``profile_id`` like any other profile. They differ
+    from formal calibrated profiles contractually: each entry MUST carry
+    ``evaluation_only: true`` and MUST pin the exact identity under evaluation
+    (``required_provider`` + ``required_model`` + ``required_variant`` in its
+    calibrated requirement's hard constraints). They never participate in
+    ordinary routing — a profile is only ever applied when a client
+    explicitly names its id.
     """
     document = _load_json_file(path, label="model policy")
     mapping = cast(Mapping[str, object] | None, document if isinstance(document, Mapping) else None)
@@ -177,7 +187,7 @@ def load_model_policy(path: Path) -> tuple[TaskProfileCatalog, int]:
             + f"{type(raw_profiles).__name__}"
         )
     definitions: list[TaskProfileDefinition] = []
-    for item in cast("list[object]", raw_profiles):
+    for item in cast(list[object], raw_profiles):
         entry = cast(Mapping[str, object] | None, item if isinstance(item, Mapping) else None)
         if entry is None:
             raise SelectionContractValidationError(
@@ -201,7 +211,66 @@ def load_model_policy(path: Path) -> tuple[TaskProfileCatalog, int]:
                 requirement=TaskRequirement.from_dict(raw_requirement),
             )
         )
+    definitions.extend(_load_evaluation_profiles(mapping))
     return TaskProfileCatalog(definitions=tuple(definitions)), raw_version
+
+
+def _load_evaluation_profiles(mapping: Mapping[str, object]) -> list[TaskProfileDefinition]:
+    """Load the optional ``evaluation_profiles`` section with its strict shape.
+
+    The section is deliberately separate from ``task_profiles``: formal
+    calibrated profiles never name providers or models, while evaluation
+    profiles MUST pin the exact identity under evaluation and MUST declare
+    ``evaluation_only: true``. Anything else fails closed as a configuration
+    error rather than degrading into an ordinary profile.
+    """
+    raw_section = mapping.get("evaluation_profiles")
+    if raw_section is None:
+        return []
+    if not isinstance(raw_section, list):
+        raise SelectionContractValidationError(
+            "model policy: evaluation_profiles must be a list, got "
+            + f"{type(raw_section).__name__}"
+        )
+    definitions: list[TaskProfileDefinition] = []
+    for item in cast(list[object], raw_section):
+        entry = cast(Mapping[str, object] | None, item if isinstance(item, Mapping) else None)
+        if entry is None:
+            raise SelectionContractValidationError(
+                "model policy: each evaluation_profiles entry must be an object"
+            )
+        profile_id = entry.get("id")
+        if not isinstance(profile_id, str) or not profile_id:
+            raise SelectionContractValidationError(
+                "model policy: evaluation_profiles[].id must be a non-empty string"
+            )
+        if entry.get("evaluation_only") is not True:
+            raise SelectionContractValidationError(
+                f"model policy: evaluation profile {profile_id!r} must declare "
+                + "evaluation_only: true; evaluation identities are never ordinary "
+                + "calibrated profiles"
+            )
+        raw_requirement = _as_str_object_mapping(entry.get("calibrated_requirement"))
+        if raw_requirement is None:
+            raise SelectionContractValidationError(
+                f"model policy: evaluation profile {profile_id!r} has no calibrated_requirement object"
+            )
+        requirement = TaskRequirement.from_dict(raw_requirement)
+        hard = requirement.hard_constraints
+        pinned = (
+            hard.required_provider is not None
+            and hard.required_model is not None
+            and hard.required_variant is not None
+            and hard.required_model.provider == hard.required_provider
+        )
+        if not pinned:
+            raise SelectionContractValidationError(
+                f"model policy: evaluation profile {profile_id!r} must pin the exact "
+                + "identity under evaluation (required_provider + required_model + "
+                + "required_variant with agreeing providers)"
+            )
+        definitions.append(TaskProfileDefinition(profile_id=profile_id, requirement=requirement))
+    return definitions
 
 
 def load_selector_policy(path: Path) -> SelectorPolicy:
