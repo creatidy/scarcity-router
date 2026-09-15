@@ -41,7 +41,7 @@ from scarcity_router.server import build_parser as build_server_parser
 REPO = Path(__file__).resolve().parents[1]
 PACKAGE_DIR = REPO_ROOT / "scarcity_router"
 EXPECTED_CATALOG_VERSION = 3
-EXPECTED_POLICY_VERSION = 7
+EXPECTED_POLICY_VERSION = 8
 
 EXPECTED_SCRIPTS = {
     "scarcity-router": "scarcity_router.cli:main",

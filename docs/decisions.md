@@ -1927,9 +1927,19 @@ Decision:
    affect ordinary routing, while formal `task_profiles` keep the
    no-provider/model-name invariant (D-025 acceptance unchanged).
 3. The M3.1 calibration consumes those profiles from creatidy-autonomy
-   through the frozen REST v1 `profile_id` path only; any production profile
-   promotion for repository-review routing is a separate future decision
-   gated on the calibration evidence.
+   through the frozen REST v1 `profile_id` path only.
+
+- **Status update (2026-09-15, after the bounded calibration):** all six live
+  runs (two per variant, frozen snapshot creatidy-autonomy@f9a7d16) returned
+  structurally valid, evidence-correct results; the low effort found zero
+  issues on a snapshot with five independently verified ones (twice), while
+  high and max produced materially useful findings. Policy v8 therefore adds
+  the calibrated production profile `repository_review` (L3, minima
+  reasoning 4 + coding 4, `requires_reasoning_mode`) so bounded reviews
+  cannot silently route to the low effort after catalog v3; the choice among
+  qualifying identities stays with scarcity. The high-vs-max reliability
+  question remains open at this sample size (2/2 valid for both) and no
+  single-variant pin was introduced.
 
 Alternatives considered: pinning the model inside formal task profiles
 (rejected: violates the D-025 profile invariant); sending an explicit

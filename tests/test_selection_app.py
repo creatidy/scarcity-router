@@ -207,7 +207,7 @@ class SelectCommandTests(unittest.TestCase):
         self.assertEqual(0, code)
         decision = cast("dict[str, object]", json.loads(out))
         self.assertEqual("routine_coding", decision["profile_id"])
-        self.assertEqual(7, decision["profile_policy_version"])
+        self.assertEqual(8, decision["profile_policy_version"])
         self.assertEqual("balanced", decision["selector_mode"])
         self.assertEqual(["selected_balanced"], decision["reason_codes"])
         selected = cast("dict[str, object]", decision["selected"])
@@ -486,7 +486,7 @@ class EvaluationProfileTests(unittest.TestCase):
 
     def test_evaluation_profiles_resolve_and_pin_identities(self) -> None:
         _catalog, profiles, version = load_configured_artifacts(CATALOG_PATH, POLICY_PATH)
-        self.assertEqual(7, version)
+        self.assertEqual(8, version)
         expected = {
             "m31-repo-review-low": ("zai", "glm-5.3", "low"),
             "m31-repo-review-high": ("zai", "glm-5.3", "high"),
@@ -550,7 +550,7 @@ class EvaluationProfileTests(unittest.TestCase):
             path = Path(tmp) / "policy.json"
             _ = path.write_text(json.dumps(document), encoding="utf-8")
             _profiles, version = load_model_policy(Path(path))
-            self.assertEqual(7, version)
+            self.assertEqual(8, version)
 
 
 class ArtifactFailureTests(unittest.TestCase):

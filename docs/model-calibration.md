@@ -35,6 +35,16 @@ properties, capacity binding (`zai/coding_plan`) and the 2026-08-14 model
 version date are shared with GLM-5.3 Max: the identities differ only in the
 requested reasoning effort.
 
+Policy v8 adds the calibrated production profile **`repository_review`**
+(L3; minima reasoning 4 + coding 4; `requires_reasoning_mode`), the smallest
+router-owned change that encodes the M3.1 evidence: without it, the catalog v3
+margin rule can route bounded repository reviews to the low effort, which the
+experiment showed returns zero findings on a snapshot carrying five
+independently verified issues (twice), while high and max produced valid,
+evidence-correct, materially useful reviews. The profile expresses the task's
+effort floor; scarcity still owns the choice among qualifying identities
+(high, max and other reasoning-4/coding-4 candidates).
+
 The same policy revision adds the `evaluation_profiles` section
 (`m31-repo-review-low|high|max`): explicitly evaluation-only profiles that
 must declare `evaluation_only: true` and must pin the exact identity under

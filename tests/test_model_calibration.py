@@ -194,6 +194,10 @@ for configuration in NEW_CONFIGURATIONS:
 # which calibrated models satisfy every profile minimum.
 ACCEPTED_ELIGIBLE_SETS: dict[str, frozenset[tuple[str, str, str]]] = {
     "mechanical": frozenset(ALL_MODELS),
+    # M3.1 production floor: excludes the low effort and Luna Medium.
+    "repository_review": frozenset(
+        {LUNA, SOL, SOL_MEDIUM, TERRA_MEDIUM, GLM53, GLM53_HIGH, FLASH}
+    ),
     "routine_coding": frozenset(ALL_MODELS),
     # deep_coding keeps its coding-5 minimum: the conservatively rated
     # GLM-5.3 high/low identities do NOT satisfy it (issue #79 intent).
@@ -511,14 +515,14 @@ class TaskProfileCalibration(unittest.TestCase):
     def test_policy_version_incremented_and_calibrated(self) -> None:
         policy = _load_policy()
         self.assertEqual(policy["schema_version"], 1)
-        self.assertEqual(policy["policy_version"], 7)
+        self.assertEqual(policy["policy_version"], 8)
         self.assertEqual(policy["updated_at"], POLICY_UPDATED_ON)
         task_policy = _mapping(policy["task_profile_policy"], "task_profile_policy")
         self.assertTrue(task_policy["numeric_minima_included"])
         self.assertEqual(task_policy["numeric_minima_status"], "calibrated_m2c")
 
-    def test_exactly_eight_formal_profiles_aligned_with_vocabulary(self) -> None:
-        self.assertEqual(len(_PROFILES), 8)
+    def test_exactly_nine_formal_profiles_aligned_with_vocabulary(self) -> None:
+        self.assertEqual(len(_PROFILES), 9)
         self.assertEqual(set(_PROFILES), set(FORMAL_PROFILE_IDS))
 
     def test_exact_task_requirement_expansion(self) -> None:
@@ -556,6 +560,16 @@ class TaskProfileCalibration(unittest.TestCase):
                         "requires_tool_use": True,
                         "requires_reasoning_mode": True,
                     },
+                }
+            ),
+            "repository_review": TaskRequirement.from_dict(
+                {
+                    "task_level": "L3",
+                    "capability_minima": {
+                        "reasoning": 4,
+                        "coding": 4,
+                    },
+                    "hard_constraints": {"requires_reasoning_mode": True},
                 }
             ),
             "scientific_review": TaskRequirement.from_dict(
