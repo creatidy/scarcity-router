@@ -3,30 +3,43 @@
 This module composes the OpenAI and Z.ai provider collectors without
 interpreting provider payloads. Each invocation creates one observation
 timestamp, calls the collectors in a fixed order, and exposes either a compact
-human view or the existing v3 snapshot dictionaries.
+human view or the existing v3 snapshot dictionaries plus — additively (D-039)
+— the OpenAI execution-eligibility report produced by the same observation.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Protocol, TextIO, cast
 
 from .capacity import CapacityDiagnostic, CapacitySnapshot, CapacityWindow
-from .providers.openai_codex_acquisition import collect_openai_codex_capacity
+from .eligibility import ExecutionEligibility
+from .providers.openai_codex_acquisition import (
+    OpenAICodexObservation,
+    collect_openai_codex_capacity,
+)
 from .providers.zai_acquisition import collect_zai_capacity
 
 _PROVIDER_ORDER = {"openai": 0, "zai": 1}
 _WINDOW_KIND_ORDER = {"five_hour": 0, "weekly": 1, "unknown": 2}
 _WINDOW_RESOURCE_ORDER = {"tokens": 0, "time": 1, "unknown": 2}
 
+# D-039: explicit standalone Codex binary for controlled production
+# configurations. When set, the default OpenAI collector skips VS Code
+# extension discovery and uses exactly this executable. The value is a path,
+# never a credential; it is read per invocation and never logged.
+CODEX_BINARY_PATH_ENV = "SCARCITY_ROUTER_CODEX_BIN"
 
-class OpenAICapacityCollector(Protocol):
-    def __call__(self, *, retrieved_at: str) -> CapacitySnapshot: ...
+
+class OpenAIObservationCollector(Protocol):
+    def __call__(self, *, retrieved_at: str) -> OpenAICodexObservation: ...
 
 
 class ZaiCapacityCollector(Protocol):
@@ -36,12 +49,34 @@ class ZaiCapacityCollector(Protocol):
 Clock = Callable[[], datetime]
 
 
+def _default_openai_collector(*, retrieved_at: str) -> OpenAICodexObservation:
+    explicit_binary = os.environ.get(CODEX_BINARY_PATH_ENV, "").strip()
+    return collect_openai_codex_capacity(
+        retrieved_at=retrieved_at,
+        binary_path=Path(explicit_binary) if explicit_binary else None,
+    )
+
+
 @dataclass(frozen=True)
 class StatusCollectors:
     """Collector dependencies, with a seam for synthetic application tests."""
 
-    openai: OpenAICapacityCollector = collect_openai_codex_capacity
+    openai: OpenAIObservationCollector = _default_openai_collector
     zai: ZaiCapacityCollector = collect_zai_capacity
+
+
+@dataclass(frozen=True)
+class StatusObservation:
+    """One unified observation: provider snapshots plus paired eligibility.
+
+    ``snapshots`` keeps the fixed provider order (openai, zai);
+    ``eligibility`` carries one report per provider that produces one (only
+    OpenAI today, D-039). Both collections share the single observation
+    timestamp.
+    """
+
+    snapshots: tuple[CapacitySnapshot, ...]
+    eligibility: tuple[ExecutionEligibility, ...]
 
 
 def _utc_now() -> datetime:
@@ -64,13 +99,15 @@ def collect_status(
     *,
     collectors: StatusCollectors | None = None,
     clock: Clock | None = None,
-) -> tuple[CapacitySnapshot, CapacitySnapshot]:
-    """Collect OpenAI and Z.ai snapshots for one observation."""
+) -> StatusObservation:
+    """Collect OpenAI and Z.ai observations for one shared instant."""
     retrieved_at = observation_timestamp(clock)
     selected = StatusCollectors() if collectors is None else collectors
-    return (
-        selected.openai(retrieved_at=retrieved_at),
-        selected.zai(retrieved_at=retrieved_at),
+    openai_observation = selected.openai(retrieved_at=retrieved_at)
+    zai_snapshot = selected.zai(retrieved_at=retrieved_at)
+    return StatusObservation(
+        snapshots=(openai_observation.snapshot, zai_snapshot),
+        eligibility=(openai_observation.eligibility,),
     )
 
 
@@ -162,6 +199,21 @@ def canonical_snapshot_documents(
     ]
 
 
+def canonical_eligibility_documents(
+    eligibility: Sequence[ExecutionEligibility],
+) -> list[dict[str, object]]:
+    """Ordered canonical eligibility documents (D-039).
+
+    Canonical provider ordering, shared by the REST ``/v1/status`` envelope
+    and the MCP status tool. The CLI ``status --json`` surface keeps its
+    released snapshot-array shape and does not include these documents.
+    """
+    return [
+        report.to_dict()
+        for report in sorted(eligibility, key=lambda report: report.provider)
+    ]
+
+
 def render_human(snapshots: Sequence[CapacitySnapshot]) -> str:
     """Render snapshots using only safe normalized contract fields."""
     ordered = _ordered_snapshots(snapshots)
@@ -219,17 +271,24 @@ def main(
     parser = build_parser()
     arguments = cast(dict[str, object], vars(parser.parse_args(argv)))
     output = sys.stdout if stdout is None else stdout
-    snapshots = collect_status(collectors=collectors, clock=clock)
+    observation = collect_status(collectors=collectors, clock=clock)
     json_output = arguments.get("json")
     if not isinstance(json_output, bool):
         raise RuntimeError("parser produced an invalid JSON output argument")
-    _ = output.write(render_json(snapshots) if json_output else render_human(snapshots))
+    _ = output.write(
+        render_json(observation.snapshots)
+        if json_output
+        else render_human(observation.snapshots)
+    )
     return 0
 
 
 __all__ = [
+    "CODEX_BINARY_PATH_ENV",
     "StatusCollectors",
+    "StatusObservation",
     "build_parser",
+    "canonical_eligibility_documents",
     "canonical_snapshot_documents",
     "collect_status",
     "main",

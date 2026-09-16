@@ -12,11 +12,12 @@ from dataclasses import dataclass
 from typing import TypeVar, cast
 
 from .capacity import CapacitySnapshot
+from .eligibility import ExecutionEligibility
 from .errors import ApplicationInputError, SelectionContractError
 from .policy import ReplenishmentState
 from .selection_types import TaskRequirement
 from .simulation import SimulationOverrides, SimulationResult
-from .status import canonical_snapshot_documents
+from .status import canonical_eligibility_documents, canonical_snapshot_documents
 from .selector import SelectionDecision, SelectorPolicy
 
 ENVELOPE_SCHEMA_VERSION = 1
@@ -163,12 +164,21 @@ def parse_status_arguments(document: object) -> None:
 
 def status_envelope(
     snapshots: Sequence[CapacitySnapshot],
+    eligibility: Sequence[ExecutionEligibility] = (),
 ) -> dict[str, object]:
-    """Build the exact machine-interface v1 status envelope."""
-    return {
+    """Build the exact machine-interface v1 status envelope.
+
+    ``eligibility`` (D-039) is an additive backwards-compatible domain field:
+    the key is present only when reports exist, so existing v1 clients see an
+    unchanged envelope whenever no report is produced.
+    """
+    envelope: dict[str, object] = {
         "schema_version": ENVELOPE_SCHEMA_VERSION,
         "snapshots": canonical_snapshot_documents(snapshots),
     }
+    if eligibility:
+        envelope["eligibility"] = canonical_eligibility_documents(eligibility)
+    return envelope
 
 
 def selection_envelope(decision: SelectionDecision) -> dict[str, object]:

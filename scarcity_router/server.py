@@ -307,10 +307,12 @@ class RestRequestHandler(BaseHTTPRequestHandler):
 
     def route_status(self) -> _Response:
         application = self._rest_application()
-        snapshots = collect_status(
+        observation = collect_status(
             collectors=application.collectors, clock=application.clock
         )
-        return HTTPStatus.OK, status_envelope(snapshots)
+        return HTTPStatus.OK, status_envelope(
+            observation.snapshots, observation.eligibility
+        )
 
     def route_select(self) -> _Response:
         document = self._read_json_object()

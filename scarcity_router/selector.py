@@ -66,6 +66,7 @@ from enum import IntEnum
 from typing import ClassVar, TypeVar, cast
 
 from .capacity import CapacitySnapshot
+from .eligibility import ExecutionEligibility
 from .errors import SelectionContractValidationError
 from .policy import (
     REPLENISHMENT_MODE_ADVISORY,
@@ -104,8 +105,11 @@ SELECTOR_MODES: frozenset[str] = frozenset({SELECTOR_MODE_BALANCED})
 
 # Closed exclusion-stage vocabulary; the tuple order is the stage-progress
 # order used by the deterministic closest-candidate rule (a later stage is
-# closer to a solution).
+# closer to a solution). The execution-eligibility stage (D-039) is the most
+# fundamental gate — a provider whose subscription execution path may not
+# start at all is furthest from runnable, so it sorts first.
 EXCLUSION_STAGES: tuple[str, ...] = (
+    "execution",
     "policy_blackout",
     "hard_constraint",
     "capability",
@@ -119,11 +123,23 @@ _STAGE_PROGRESS: dict[str, int] = {
 
 # Per-stage primary reason codes for excluded candidates.
 _STAGE_REASONS: dict[str, frozenset[str]] = {
+    "execution": frozenset({
+        "execution_allowance_unavailable",
+        "execution_policy_blocked",
+        "execution_unverified",
+    }),
     "policy_blackout": frozenset({"policy_blocked"}),
     "hard_constraint": frozenset({"hard_constraint_failed"}),
     "capability": frozenset({"capability_failed"}),
     "capacity": frozenset({"capacity_unavailable", "capacity_unknown_blocked"}),
     "reservation": frozenset({"reservation_blocked", "reservation_unknown"}),
+}
+
+# Eligibility state -> its execution-stage primary reason code (D-039).
+_ELIGIBILITY_STATE_PRIMARY: dict[str, str] = {
+    "allowance_unavailable": "execution_allowance_unavailable",
+    "policy_blocked": "execution_policy_blocked",
+    "unknown": "execution_unverified",
 }
 
 # The normalized decision/candidate reason vocabulary (D-027). Dimension and
@@ -133,6 +149,9 @@ SELECTION_REASON_CODES: frozenset[str] = frozenset({
     "selected_balanced",
     "no_eligible_candidate",
     "selected_degraded_capacity",
+    "execution_allowance_unavailable",
+    "execution_policy_blocked",
+    "execution_unverified",
     "policy_blocked",
     "hard_constraint_failed",
     "capability_failed",
@@ -946,6 +965,10 @@ class CandidateEvaluation:
     eligible: bool
     degraded: bool = False
     exclusion_stage: str | None = None
+    # D-039: the paired execution-eligibility report, carried only on
+    # candidates excluded at the execution stage (the report caused the
+    # exclusion; later stages never run to populate fields).
+    execution_eligibility: ExecutionEligibility | None = None
     hard_constraint_failures: tuple[HardConstraintFailure, ...] = ()
     capability_failures: tuple[CapabilityFailure, ...] = ()
     capability_margin: int | None = None
@@ -985,6 +1008,17 @@ class CandidateEvaluation:
             _ = _v_int(
                 self.capability_margin, "candidate_evaluation.capability_margin", lo=0
             )
+        if self.execution_eligibility is not None:
+            _ = _v_instance_of(
+                self.execution_eligibility,
+                ExecutionEligibility,
+                "candidate_evaluation.execution_eligibility",
+            )
+            if self.exclusion_stage != "execution":
+                raise SelectionContractValidationError(
+                    "candidate_evaluation: execution_eligibility is carried "
+                    + "only on execution-stage exclusions"
+                )
         if self.blackout_decision is not None:
             _ = _v_instance_of(
                 self.blackout_decision,
@@ -1111,6 +1145,8 @@ class CandidateEvaluation:
         }
         if self.exclusion_stage is not None:
             out["exclusion_stage"] = self.exclusion_stage
+        if self.execution_eligibility is not None:
+            out["execution_eligibility"] = self.execution_eligibility.to_dict()
         if self.hard_constraint_failures:
             out["hard_constraint_failures"] = [
                 failure.to_dict() for failure in self.hard_constraint_failures
@@ -1157,13 +1193,19 @@ def _evaluate_candidate(
     snapshots: Sequence[CapacitySnapshot],
     replenishment_states: Sequence[ReplenishmentState],
     evaluated_at: datetime,
+    eligibility_reports: Sequence[ExecutionEligibility] = (),
 ) -> CandidateEvaluation:
     """Run the frozen candidate pipeline for one catalog entry.
 
-    Pipeline: blackout -> hard constraints -> capability -> scarcity and
-    unknown-capacity policy -> replenishment visibility -> applicable
-    reservations -> happy-hour preference (D-035) -> eligible for ranking.
-    Replenishment is evaluated for every candidate that passes capability
+    Pipeline: execution eligibility (D-039, when the caller supplied a
+    report for this provider) -> blackout -> hard constraints -> capability
+    -> scarcity and unknown-capacity policy -> replenishment visibility ->
+    applicable reservations -> happy-hour preference (D-035) -> eligible for
+    ranking. The eligibility gate is a pre-condition on the provider's
+    subscription execution path: a non-eligible report excludes every
+    catalog entry of that provider BEFORE any other stage so the selector
+    can choose the next safe candidate. Replenishment is evaluated for every
+    candidate that passes capability
     (including capacity-excluded ones) so a currently exhausted candidate
     can still be explained as recoverable; it never changes current
     eligibility. The happy-hour decision is evaluated only for candidates
@@ -1172,6 +1214,26 @@ def _evaluate_candidate(
     """
     resource_policy = policy.resource_policy
     identity = entry.identity
+
+    eligibility_report = next(
+        (
+            report
+            for report in eligibility_reports
+            if report.provider == identity.provider
+        ),
+        None,
+    )
+    if eligibility_report is not None and eligibility_report.state != "eligible":
+        return CandidateEvaluation(
+            identity=identity,
+            display_name=entry.display_name,
+            eligible=False,
+            exclusion_stage="execution",
+            execution_eligibility=eligibility_report,
+            reason_codes=(
+                _ELIGIBILITY_STATE_PRIMARY[eligibility_report.state],
+            ),
+        )
 
     blackout = resource_policy.evaluate_blackouts(identity, evaluated_at)
     if blackout.blocked:
@@ -1682,6 +1744,7 @@ def select_model(
     snapshots: Sequence[CapacitySnapshot],
     evaluated_at: datetime,
     replenishment_states: Sequence[ReplenishmentState] = (),
+    eligibility_reports: Sequence[ExecutionEligibility] = (),
     profile_id: str | None = None,
     profile_policy_version: int | None = None,
 ) -> SelectionDecision:
@@ -1690,8 +1753,9 @@ def select_model(
     Pure: the caller supplies every input, including the single
     timezone-aware evaluation instant used for blackout evaluation. Input
     validation is explicit: at most one snapshot per provider, at most one
-    replenishment state per ``(provider, kind)``, timezone-aware instant and
-    validated catalog/requirement/policy types. Candidate evaluation always
+    replenishment state per ``(provider, kind)``, at most one eligibility
+    report per provider (D-039), timezone-aware instant and validated
+    catalog/requirement/policy types. Candidate evaluation always
     proceeds in canonical ``(provider, model, variant)`` order, so catalog
     insertion order never affects the result. A valid no-solution result is a
     legitimate outcome: requirements are never relaxed and no fallback
@@ -1713,6 +1777,24 @@ def select_model(
             )
         snapshot_by_provider[snapshot.provider] = snapshot
     snapshot_list = list(snapshots)
+
+    eligibility_providers: set[str] = set()
+    eligibility_list: list[ExecutionEligibility] = []
+    for report in eligibility_reports:
+        _ = _v_instance_of(
+            report, ExecutionEligibility, "select_model.eligibility_reports"
+        )
+        if report.provider in eligibility_providers:
+            raise SelectionContractValidationError(
+                "select_model.eligibility_reports: duplicate eligibility "
+                + f"report for provider {report.provider!r}; at most one "
+                + "report per provider is permitted per selection"
+            )
+        eligibility_providers.add(report.provider)
+        eligibility_list.append(report)
+    # Canonical provenance ordering only (provider identity); the gate is
+    # per-provider, so ordering carries no semantics.
+    eligibility_list.sort(key=lambda report: report.provider)
 
     state_keys: set[tuple[str, str]] = set()
     state_list: list[ReplenishmentState] = []
@@ -1740,7 +1822,13 @@ def select_model(
     entries = sorted(catalog.entries, key=lambda entry: _identity_key(entry.identity))
     evaluations = [
         _evaluate_candidate(
-            entry, requirement, policy, snapshot_list, state_list, evaluated_at
+            entry,
+            requirement,
+            policy,
+            snapshot_list,
+            state_list,
+            evaluated_at,
+            eligibility_reports=eligibility_list,
         )
         for entry in entries
     ]

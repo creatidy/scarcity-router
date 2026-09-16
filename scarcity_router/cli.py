@@ -268,8 +268,12 @@ def _run_status(
     json_output = args.get("json")
     if not isinstance(json_output, bool):
         raise RuntimeError("parser produced an invalid JSON output argument")
-    snapshots = collect_status(collectors=collectors, clock=clock)
-    _ = output.write(render_json(snapshots) if json_output else render_human(snapshots))
+    observation = collect_status(collectors=collectors, clock=clock)
+    _ = output.write(
+        render_json(observation.snapshots)
+        if json_output
+        else render_human(observation.snapshots)
+    )
     return 0
 
 

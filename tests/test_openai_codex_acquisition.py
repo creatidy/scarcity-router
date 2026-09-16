@@ -35,6 +35,10 @@ from scarcity_router.providers.openai_codex import (
     classify_app_server_message,
     parse_codex_rate_limits_result,
 )
+from scarcity_router.providers.openai_codex_acquisition import OpenAICodexObservation
+from scarcity_router.providers.openai_eligibility import (
+    parse_codex_execution_eligibility,
+)
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "openai-codex-appserver"
 RETRIEVED_AT = "2026-09-03T20:00:00.000Z"
@@ -373,6 +377,25 @@ class _AcquisitionCase(unittest.TestCase):
         )
         return root
 
+    def _collect_observation(
+        self,
+        *,
+        discovery_roots: Sequence[Path] | None,
+        binary_path: Path | None = None,
+        startup_timeout: float | None = 5.0,
+        session_timeout: float | None = 5.0,
+        retrieved_at: str = RETRIEVED_AT,
+    ) -> OpenAICodexObservation:
+        assert startup_timeout is not None and session_timeout is not None
+        with contextlib.redirect_stdout(self.stdout), contextlib.redirect_stderr(self.stderr):
+            return acq.collect_openai_codex_capacity(
+                retrieved_at=retrieved_at,
+                discovery_roots=discovery_roots,
+                binary_path=binary_path,
+                startup_timeout=startup_timeout,
+                session_timeout=session_timeout,
+            )
+
     def _collect(
         self,
         *,
@@ -381,14 +404,12 @@ class _AcquisitionCase(unittest.TestCase):
         session_timeout: float | None = 5.0,
         retrieved_at: str = RETRIEVED_AT,
     ) -> CapacitySnapshot:
-        assert startup_timeout is not None and session_timeout is not None
-        with contextlib.redirect_stdout(self.stdout), contextlib.redirect_stderr(self.stderr):
-            return acq.collect_openai_codex_capacity(
-                retrieved_at=retrieved_at,
-                discovery_roots=discovery_roots,
-                startup_timeout=startup_timeout,
-                session_timeout=session_timeout,
-            )
+        return self._collect_observation(
+            discovery_roots=discovery_roots,
+            startup_timeout=startup_timeout,
+            session_timeout=session_timeout,
+            retrieved_at=retrieved_at,
+        ).snapshot
 
     def _assert_no_output(self) -> None:
         self.assertEqual(self.stdout.getvalue(), "")
@@ -429,13 +450,26 @@ class SuccessfulSession(_AcquisitionCase):
             with self.subTest(fixture=fixture):
                 fake = self._install_fake(self._happy_lines(fixture))
                 roots = self._make_installation()
-                snapshot = self._collect(discovery_roots=[roots])
-                expected = parse_codex_rate_limits_result(
-                    _fixture_result(fixture), retrieved_at=RETRIEVED_AT
+                observation = self._collect_observation(discovery_roots=[roots])
+                result = _fixture_result(fixture)
+                self.assertEqual(
+                    observation.snapshot,
+                    parse_codex_rate_limits_result(result, retrieved_at=RETRIEVED_AT),
                 )
-                self.assertEqual(snapshot, expected)
-                self.assertEqual(snapshot.provider, "openai")
-                self.assertEqual(snapshot.source, "codex_app_server")
+                self.assertEqual(
+                    observation.eligibility,
+                    parse_codex_execution_eligibility(
+                        result, retrieved_at=RETRIEVED_AT
+                    ),
+                )
+                self.assertEqual(observation.snapshot.provider, "openai")
+                self.assertEqual(observation.snapshot.source, "codex_app_server")
+                self.assertEqual(observation.eligibility.provider, "openai")
+                self.assertEqual(observation.eligibility.source, "codex_app_server")
+                self.assertEqual(
+                    observation.eligibility.retrieved_at,
+                    observation.snapshot.retrieved_at,
+                )
                 self._assert_no_output()
                 _ = fake
 
