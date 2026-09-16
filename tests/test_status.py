@@ -11,8 +11,11 @@ from typing import cast
 from unittest import mock
 
 from scarcity_router import CapacityDiagnostic, CapacitySnapshot, CapacityWindow
+from tests.observation import paired_observation
+from scarcity_router.providers.openai_codex_acquisition import OpenAICodexObservation
 from scarcity_router.status import (
     StatusCollectors,
+    StatusObservation,
     build_parser,
     collect_status,
     main,
@@ -88,9 +91,9 @@ class _FakeCollectors:
         }
         self.calls: list[tuple[str, str]] = []
 
-    def openai(self, *, retrieved_at: str) -> CapacitySnapshot:
+    def openai(self, *, retrieved_at: str) -> OpenAICodexObservation:
         self.calls.append(("openai", retrieved_at))
-        return self.snapshots["openai"]
+        return paired_observation(self.snapshots["openai"])
 
     def zai(self, *, retrieved_at: str) -> CapacitySnapshot:
         self.calls.append(("zai", retrieved_at))
@@ -120,7 +123,11 @@ class StatusApplicationTests(unittest.TestCase):
 
         result = collect_status(collectors=collectors, clock=clock)
 
-        self.assertEqual(result, snapshots)
+        self.assertEqual(result.snapshots, snapshots)
+        self.assertEqual(
+            [report.provider for report in result.eligibility], ["openai"]
+        )
+        self.assertEqual(result.eligibility[0].state, "eligible")
         self.assertEqual(clock_calls, 1)
         self.assertEqual([call[0] for call in fakes.calls], ["openai", "zai"])
         self.assertEqual({call[1] for call in fakes.calls}, {RETRIEVED_AT})
@@ -137,7 +144,9 @@ class StatusApplicationTests(unittest.TestCase):
         )
         collectors, fakes = _collector_set(snapshots)
         result = collect_status(collectors=collectors)
-        self.assertEqual([snapshot.status for snapshot in result], ["unavailable", "ok"])
+        self.assertEqual(
+            [snapshot.status for snapshot in result.snapshots], ["unavailable", "ok"]
+        )
         self.assertEqual(len(fakes.calls), 2)
 
     def test_zai_failure_does_not_suppress_openai(self) -> None:
@@ -152,7 +161,9 @@ class StatusApplicationTests(unittest.TestCase):
         )
         collectors, _ = _collector_set(snapshots)
         result = collect_status(collectors=collectors)
-        self.assertEqual([snapshot.status for snapshot in result], ["ok", "auth_required"])
+        self.assertEqual(
+            [snapshot.status for snapshot in result.snapshots], ["ok", "auth_required"]
+        )
 
     def test_no_local_provider_can_be_injected_into_status_collectors(self) -> None:
         self.assertEqual(set(StatusCollectors.__dataclass_fields__), {"openai", "zai"})
@@ -295,7 +306,11 @@ class StatusRenderingTests(unittest.TestCase):
         )
         stdout = io.StringIO()
         with mock.patch(
-            "scarcity_router.status.collect_status", return_value=snapshots
+            "scarcity_router.status.collect_status",
+            return_value=StatusObservation(
+                snapshots=snapshots,
+                eligibility=(),
+            ),
         ):
             exit_code = main(["status"], stdout=stdout)
         self.assertEqual(exit_code, 0)

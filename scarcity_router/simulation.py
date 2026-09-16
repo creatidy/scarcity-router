@@ -41,6 +41,7 @@ from .errors import (
     SimulationOverrideApplicationError,
 )
 from .policy import ReplenishmentState
+from .eligibility import ExecutionEligibility
 from .selector import SelectionDecision, SelectorPolicy, select_model
 from .selection_types import SUPPORTED_PROVIDERS, ModelCatalog, TaskRequirement
 
@@ -563,6 +564,7 @@ def simulate_selection(
     evaluated_at: datetime,
     overrides: SimulationOverrides,
     replenishment_states: Sequence[ReplenishmentState] = (),
+    eligibility_reports: Sequence[ExecutionEligibility] = (),
     profile_id: str | None = None,
     profile_policy_version: int | None = None,
 ) -> SimulationResult:
@@ -571,7 +573,10 @@ def simulate_selection(
     The simulated run applies the overrides to copies of the baseline inputs
     and calls the identical :func:`selector.select_model` core — no copied
     ranking pipeline, no simulation-specific selector. Baseline inputs are
-    never mutated.
+    never mutated. Eligibility reports (D-039) are observation inputs, not
+    simulation overrides: the same reports gate both decisions (account
+    state does not change because a hypothetical capacity percentage was
+    simulated).
     """
     _ = _v_instance_of(overrides, SimulationOverrides, "simulate_selection.overrides")
 
@@ -582,6 +587,7 @@ def simulate_selection(
         snapshots=snapshots,
         evaluated_at=evaluated_at,
         replenishment_states=replenishment_states,
+        eligibility_reports=eligibility_reports,
         profile_id=profile_id,
         profile_policy_version=profile_policy_version,
     )
@@ -610,6 +616,7 @@ def simulate_selection(
         snapshots=simulated_snapshots,
         evaluated_at=simulated_at,
         replenishment_states=simulated_replenishment,
+        eligibility_reports=eligibility_reports,
         profile_id=profile_id,
         profile_policy_version=profile_policy_version,
     )

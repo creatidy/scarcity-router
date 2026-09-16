@@ -466,9 +466,10 @@ def select_from_inputs(
         catalog=catalog,
         requirement=resolved_requirement,
         policy=policy if policy is not None else neutral_selector_policy(),
-        snapshots=snapshots,
+        snapshots=snapshots.snapshots,
         evaluated_at=instant,
         replenishment_states=replenishment_states,
+        eligibility_reports=snapshots.eligibility,
         profile_id=resolved_profile_id,
         profile_policy_version=(
             profile_policy_version if resolved_profile_id is not None else None
@@ -514,10 +515,11 @@ def simulate_from_inputs(
             catalog=catalog,
             requirement=resolved_requirement,
             policy=policy if policy is not None else neutral_selector_policy(),
-            snapshots=snapshots,
+            snapshots=snapshots.snapshots,
             evaluated_at=instant,
             overrides=overrides,
             replenishment_states=replenishment_states,
+            eligibility_reports=snapshots.eligibility,
             profile_id=resolved_profile_id,
             profile_policy_version=(
                 profile_policy_version if resolved_profile_id is not None else None

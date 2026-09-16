@@ -144,6 +144,9 @@ no REST-specific capacity representation.
   "schema_version": 1,
   "snapshots": [
     { "...existing CapacitySnapshot v3 to_dict()..." }
+  ],
+  "eligibility": [
+    { "...existing ExecutionEligibility v1 to_dict()... (D-039)" }
   ]
 }
 ```
@@ -152,6 +155,16 @@ The outer envelope field `schema_version` is the machine-interface envelope
 version (integer `1` in v1). The `schema_version: 3` inside each snapshot is
 the capacity contract version (D-023). They are separate concepts and are
 never collapsed.
+
+`eligibility` (D-039) is an additive backwards-compatible v1 field: the
+execution-eligibility reports collected during the same one observation as
+the snapshots, in canonical provider order, each with its own
+`schema_version` (`1`). Providers that do not produce eligibility reports
+contribute none. The key is present only when at least one report exists, so
+existing v1 clients that ignore it remain valid; `scarcity_status` mirrors
+the same envelope. Excluded candidates in `/v1/select` decisions carry the
+paired report as `execution_eligibility` with the
+`execution_*` reason codes (D-039).
 
 Provider operational states — `unavailable`, `auth_required`,
 `unsupported`, `schema_changed`, `unknown`, exhausted windows — are DATA:
@@ -523,6 +536,7 @@ Separate contracts carry separate versions; they are never collapsed:
 | Version | Meaning | Value |
 | --- | --- | --- |
 | `CapacitySnapshot.schema_version` | Capacity contract (`docs/capacity-model.md`) | `3` |
+| `ExecutionEligibility.schema_version` | Execution-eligibility contract (D-039, `scarcity_router/eligibility.py`) | `1` |
 | REST path prefix `/v1/` + envelope `schema_version` | Machine-interface contract (this document) | `1` |
 | `catalog_version` | Model catalog content version | `2` (current artifact) |
 | `policy_version` | Model policy/profile content version | `6` (current artifact) |

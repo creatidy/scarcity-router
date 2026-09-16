@@ -1947,6 +1947,79 @@ Alternatives considered: pinning the model inside formal task profiles
 identity belongs to router configuration, not the task boundary); adding
 OpenAI-equivalent effort aliasing (out of scope; no evidence).
 
+### D-039 — Execution-eligibility contract and pre-routing provider exclusion
+
+- **Status:** Accepted
+- **Date:** 2026-09-16
+- **Issue:** BioMedical-IT/scarcity-router#82
+- **Related:** Infrastructure/creatidy-autonomy#15 (M4.1 owner policy
+  change), Infrastructure/creatidy-onprem#16, D-019, D-018
+
+M4.1 changes the owner's OpenAI policy: subscription-included allowance is
+allowed for unattended execution; purchased-credit usage and API PAYG are
+forbidden. First-party evidence re-verified 2026-09-16 (help.openai.com
+articles 12642688 and 11369540): included usage is consumed first and usage
+then draws from any credit balance, with no documented opt-out for draw-down;
+auto-reload is a UI setting; a mid-task continuation can cross the
+allowance/credit boundary and balances can go negative. Consequently the
+D-019 "validated-but-unrepresented" outcome is no longer sufficient for
+execution gating: a `credits.hasCredits=true` account still produces a
+healthy `status="ok"` snapshot, so the selector would route to a billing
+state the owner forbids, and callers would have to reject after selection
+instead of routing to the next safe provider.
+
+Decision:
+
+1. New provider-generic `ExecutionEligibility` contract (own
+   `schema_version = 1`, `scarcity_router/eligibility.py`), separate from
+   CapacitySnapshot v3 and never collapsed with it. Closed state vocabulary:
+   `eligible`, `allowance_unavailable`, `policy_blocked`, `unknown`. Closed
+   reason-code vocabulary covering the forbidden credit state
+   (`purchased_credits_present`), unestablishable mandatory account fields
+   (`credits_state_unknown`, `ordinary_usage_unknown`,
+   `spend_control_state_unknown`), allowance blockers/exhaustion
+   (`ordinary_usage_not_allowed`, `spend_control_reached`,
+   `rate_limit_reached`, `individual_limit_exhausted`, `upsell_present`,
+   `included_window_exhausted`), and unreadable telemetry
+   (`telemetry_unavailable`, `telemetry_auth_required`,
+   `telemetry_unsupported`, `telemetry_invalid`). Unknown == unsafe: missing
+   mandatory fields are never read as safe.
+2. The Codex collector parses eligibility and the capacity snapshot from the
+   SAME decoded `account/rateLimits/read` result in one app-server session
+   (`OpenAICodexObservation`); expected operational failures pair a safe
+   failure snapshot with a fail-closed `unknown` report. Auth mode is not
+   classified here (the surface carries no auth-mode member); auth
+   verification belongs to the execution side's own pre-call guard.
+3. The selector gains a first-class `execution` exclusion stage, ordered
+   first in `EXCLUSION_STAGES` (a provider whose subscription execution path
+   may not start at all is furthest from runnable), with per-state primary
+   reason codes `execution_policy_blocked`, `execution_allowance_unavailable`,
+   `execution_unverified`. `select_model` takes `eligibility_reports`
+   (at most one per provider); absence of a report for a provider means the
+   stage never applies to it — never "eligible". Excluded candidates carry
+   the paired report (`execution_eligibility`) as structured explanation.
+4. `/v1/status` and `scarcity_status` expose the reports as an additive
+   envelope field `eligibility` (present only when reports exist), which is
+   an additive backwards-compatible machine-interface v1 domain change;
+   CLI `status --json` keeps its released snapshot-array shape. Excluded
+   candidates in `/v1/select` decisions carry the same data.
+5. Discovery gains an explicit, validated `binary_path` override (env hook
+   `SCARCITY_ROUTER_CODEX_BIN` at the application's default collector) for
+   production's pinned standalone Codex install; VS Code extension discovery
+   remains the default. A misconfigured path degrades to the same safe
+   `unavailable` snapshot + `unknown` report, never an error surface.
+   Shared membership/strictness helpers of the Codex parser were made
+   module-public (`membership_valid`, `KNOWN_*_MEMBERS`) for the sibling
+   parser; parser semantics are unchanged.
+
+Alternatives considered: capacity-schema v4 with eligibility fields
+(rejected: mixes capacity observation with execution/billing policy and
+forces a major migration of a frozen contract for a provider-asymmetric
+concept); caller-side gating on raw snapshots (rejected: the credits state is
+not representable in v3 and the fallback-after-selection shape is exactly
+what M4.1 forbids); a configurable per-provider eligibility policy
+(rejected: fail-closed structural gating is not a user preference).
+
 ## Unresolved decisions
 
 ### U-001 — Codex binary discovery and compatibility

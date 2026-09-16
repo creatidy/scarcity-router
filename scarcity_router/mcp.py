@@ -186,10 +186,12 @@ async def _call_tool(
         arguments = _arguments(params)
         if params.name == "scarcity_status":
             parse_status_arguments(arguments)
-            snapshots = collect_status(
+            observation = collect_status(
                 collectors=application.collectors, clock=application.clock
             )
-            return _success_result(status_envelope(snapshots))
+            return _success_result(
+                status_envelope(observation.snapshots, observation.eligibility)
+            )
 
         if params.name == "scarcity_select":
             parsed = parse_selection_document(arguments)

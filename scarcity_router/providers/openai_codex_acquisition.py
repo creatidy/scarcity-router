@@ -10,7 +10,8 @@ binary and the pure ``parse_codex_rate_limits_result`` parser:
       -> responses matched by request identity and message structure,
          never by timing or line order
       -> existing parse_codex_rate_limits_result(...)
-      -> CapacitySnapshot
+           + parse_codex_execution_eligibility(...) (D-039)
+      -> OpenAICodexObservation (snapshot + paired eligibility report)
 
 Security contract (docs/security.md):
 
@@ -96,6 +97,7 @@ from pathlib import Path
 from typing import IO, Literal, Protocol, cast
 
 from ..capacity import SCHEMA_VERSION, CapacityDiagnostic, CapacitySnapshot
+from ..eligibility import ELIGIBILITY_SCHEMA_VERSION, ExecutionEligibility
 from .openai_codex import (
     PROVIDER,
     SOURCE,
@@ -103,6 +105,51 @@ from .openai_codex import (
     is_signed_i64,
     parse_codex_rate_limits_result,
 )
+from .openai_eligibility import parse_codex_execution_eligibility
+
+
+@dataclass(frozen=True)
+class OpenAICodexObservation:
+    """One acquisition result: the capacity snapshot plus its paired
+    execution-eligibility report (D-039).
+
+    Both documents describe the same single app-server observation
+    (identical ``provider``/``source``/``retrieved_at``). Expected
+    operational failures pair a safe failure snapshot with a fail-closed
+    ``unknown`` eligibility report instead of a fabricated healthy one.
+    """
+
+    snapshot: CapacitySnapshot
+    eligibility: ExecutionEligibility
+
+
+def _failure_eligibility(
+    status: str,
+    retrieved_at: str,
+) -> ExecutionEligibility:
+    """Fail-closed eligibility report for an operational failure snapshot.
+
+    The mandatory account conditions cannot be established from a failed
+    read, so every failure degrades to ``unknown`` with a safe reason code
+    (unknown == unsafe); no eligibility state is ever inferred from the
+    failure kind beyond this closed mapping.
+    """
+    reason_by_status: dict[str, str] = {
+        "unavailable": "telemetry_unavailable",
+        "auth_required": "telemetry_auth_required",
+        "unsupported": "telemetry_unsupported",
+        "schema_changed": "telemetry_invalid",
+        "unknown": "telemetry_invalid",
+    }
+    reason = reason_by_status.get(status, "telemetry_invalid")
+    return ExecutionEligibility(
+        schema_version=ELIGIBILITY_SCHEMA_VERSION,
+        provider=PROVIDER,
+        source=SOURCE,
+        retrieved_at=retrieved_at,
+        state="unknown",
+        reason_codes=(reason,),
+    )
 
 # ── Discovery contract (U-001 minimum defensible behavior) ───────────────────
 
@@ -494,8 +541,37 @@ def _close_discovery_candidates(candidates: Sequence[_DiscoveryCandidate]) -> No
                 pass
 
 
+def _explicit_installation(binary_path: Path) -> CodexInstallation | None:
+    """Validate an explicit, operator-supplied binary path (D-039).
+
+    Production runs a pinned standalone Codex install, not a VS Code
+    extension. The path must be a regular executable file; it is opened
+    read-only so the same fd-based exec discipline applies as for
+    discovered installations. Discovery versions are unknown here — they
+    never enter any normalized output — and the path itself is never
+    retained beyond the returned installation.
+    """
+    try:
+        stat_result = binary_path.stat()
+    except OSError:
+        return None
+    if not stat.S_ISREG(stat_result.st_mode) or not os.access(binary_path, os.X_OK):
+        return None
+    try:
+        binary_fd = os.open(binary_path, os.O_RDONLY)
+    except OSError:
+        return None
+    return CodexInstallation(
+        binary=binary_path,
+        binary_fd=binary_fd,
+        extension_version="",
+        codex_version="unknown",
+    )
+
+
 def discover_codex_installation(
     roots: Sequence[Path] | None = None,
+    binary_path: Path | None = None,
 ) -> tuple[CodexInstallation | None, DiscoveryOutcome]:
     """Discover one supported Codex app-server installation, read-only.
 
@@ -508,7 +584,18 @@ def discover_codex_installation(
     directory plus a layout-version-1 ``codex`` package file). Candidates
     are tried newest-first, so a newer unsupported layout never masks an
     older supported one.
+
+    ``binary_path`` (D-039) selects an explicit standalone installation and
+    skips extension discovery entirely: a validated regular executable file
+    returns ``(installation, "found")``; anything else returns
+    ``(None, "not_installed")`` so a misconfigured production path degrades
+    to the same safe not-installed semantics instead of an error.
     """
+    if binary_path is not None:
+        installation = _explicit_installation(binary_path)
+        if installation is None:
+            return None, "not_installed"
+        return installation, "found"
     search_roots = DEFAULT_DISCOVERY_ROOTS if roots is None else roots
     platform_directory_ = platform_directory()
     if platform_directory_ is None:
@@ -1037,6 +1124,18 @@ def _snapshot(
     )
 
 
+def _observation(
+    status: str,
+    diagnostic_code: str,
+    retrieved_at: str,
+) -> OpenAICodexObservation:
+    """Pair a safe failure snapshot with its fail-closed eligibility report."""
+    return OpenAICodexObservation(
+        snapshot=_snapshot(status, diagnostic_code, retrieved_at),
+        eligibility=_failure_eligibility(status, retrieved_at),
+    )
+
+
 def _run_session(
     proc: "subprocess.Popen[bytes]",
     reader: BoundedLineReader,
@@ -1044,48 +1143,48 @@ def _run_session(
     retrieved_at: str,
     startup_timeout: float,
     session_timeout: float,
-) -> CapacitySnapshot:
+) -> OpenAICodexObservation:
     clock: Callable[[], float] = time.monotonic
     session_deadline = clock() + session_timeout
     startup_deadline = min(clock() + startup_timeout, session_deadline)
 
     if not _send_message(proc, _initialize_request()):
-        return _snapshot("unavailable", "source_unavailable", retrieved_at)
+        return _observation("unavailable", "source_unavailable", retrieved_at)
     kind, message = _await_response(
         reader, _INITIALIZE_ID, startup_deadline, clock
     )
     if kind in ("timeout", "eof", "failed"):
-        return _snapshot("unavailable", "source_unavailable", retrieved_at)
+        return _observation("unavailable", "source_unavailable", retrieved_at)
     if kind in ("malformed", "oversized"):
-        return _snapshot("schema_changed", "schema_changed", retrieved_at)
+        return _observation("schema_changed", "schema_changed", retrieved_at)
     response = cast("Mapping[str, object]", message)
     if "error" in response:
         if not _valid_protocol_error(response["error"]):
-            return _snapshot("schema_changed", "schema_changed", retrieved_at)
+            return _observation("schema_changed", "schema_changed", retrieved_at)
         # The mechanism answered with a protocol error whose free-text body
         # is never inspected or surfaced (no validated failure evidence).
-        return _snapshot("unknown", "telemetry_unknown", retrieved_at)
+        return _observation("unknown", "telemetry_unknown", retrieved_at)
     if not _valid_initialize_result(response.get("result")):
-        return _snapshot("schema_changed", "schema_changed", retrieved_at)
+        return _observation("schema_changed", "schema_changed", retrieved_at)
     # The validated initialize fields are deliberately not retained: codexHome
   # can be a local path and the capacity contract has no field for handshake metadata.
 
     if not _send_message(proc, _initialized_notification()):
-        return _snapshot("unavailable", "source_unavailable", retrieved_at)
+        return _observation("unavailable", "source_unavailable", retrieved_at)
     if not _send_message(proc, _read_rate_limits_request()):
-        return _snapshot("unavailable", "source_unavailable", retrieved_at)
+        return _observation("unavailable", "source_unavailable", retrieved_at)
     kind, message = _await_response(
         reader, _READ_RATE_LIMITS_ID, session_deadline, clock
     )
     if kind in ("timeout", "eof", "failed"):
-        return _snapshot("unavailable", "source_unavailable", retrieved_at)
+        return _observation("unavailable", "source_unavailable", retrieved_at)
     if kind in ("malformed", "oversized"):
-        return _snapshot("schema_changed", "schema_changed", retrieved_at)
+        return _observation("schema_changed", "schema_changed", retrieved_at)
     response = cast("Mapping[str, object]", message)
     if "error" in response:
         code = _protocol_error_code(response)
         if code is None:
-            return _snapshot("schema_changed", "schema_changed", retrieved_at)
+            return _observation("schema_changed", "schema_changed", retrieved_at)
         if code == _JSONRPC_INTERNAL_ERROR_CODE:
             # Bounded provider-managed auth recovery (D-018): the app-server
             # hit its evidenced internal error while fetching quota from its
@@ -1095,44 +1194,46 @@ def _run_session(
             # protocol framing — its account payload is never inspected or
             # retained; the retry result is the recovery oracle.
             if not _send_message(proc, _refresh_account_request()):
-                return _snapshot("unavailable", "source_unavailable", retrieved_at)
+                return _observation("unavailable", "source_unavailable", retrieved_at)
             kind, message = _await_response(
                 reader, _REFRESH_ACCOUNT_ID, session_deadline, clock
             )
             if kind in ("timeout", "eof", "failed"):
-                return _snapshot("unavailable", "source_unavailable", retrieved_at)
+                return _observation("unavailable", "source_unavailable", retrieved_at)
             if kind in ("malformed", "oversized"):
-                return _snapshot("schema_changed", "schema_changed", retrieved_at)
+                return _observation("schema_changed", "schema_changed", retrieved_at)
             refresh = cast("Mapping[str, object]", message)
             if "error" in refresh:
                 if _protocol_error_code(refresh) is None:
-                    return _snapshot(
+                    return _observation(
                         "schema_changed", "schema_changed", retrieved_at
                     )
-                return _snapshot("unknown", "telemetry_unknown", retrieved_at)
+                return _observation("unknown", "telemetry_unknown", retrieved_at)
             if not _send_message(proc, _retry_rate_limits_request()):
-                return _snapshot("unavailable", "source_unavailable", retrieved_at)
+                return _observation("unavailable", "source_unavailable", retrieved_at)
             kind, message = _await_response(
                 reader, _RATE_LIMITS_RETRY_ID, session_deadline, clock
             )
             if kind in ("timeout", "eof", "failed"):
-                return _snapshot("unavailable", "source_unavailable", retrieved_at)
+                return _observation("unavailable", "source_unavailable", retrieved_at)
             if kind in ("malformed", "oversized"):
-                return _snapshot("schema_changed", "schema_changed", retrieved_at)
+                return _observation("schema_changed", "schema_changed", retrieved_at)
             response = cast("Mapping[str, object]", message)
             if "error" in response:
                 if _protocol_error_code(response) is None:
-                    return _snapshot(
+                    return _observation(
                         "schema_changed", "schema_changed", retrieved_at
                     )
-                return _snapshot("unknown", "telemetry_unknown", retrieved_at)
+                return _observation("unknown", "telemetry_unknown", retrieved_at)
         else:
             # Any other validated protocol error keeps the non-mutating
             # safe behavior: no refresh is attempted for -32600, -32601,
             # -32602, or any other code.
-            return _snapshot("unknown", "telemetry_unknown", retrieved_at)
-    return parse_codex_rate_limits_result(
-        response.get("result"), retrieved_at=retrieved_at
+            return _observation("unknown", "telemetry_unknown", retrieved_at)
+    result = response.get("result")
+    return OpenAICodexObservation(
+        snapshot=parse_codex_rate_limits_result(result, retrieved_at=retrieved_at),
+        eligibility=parse_codex_execution_eligibility(result, retrieved_at=retrieved_at),
     )
 
 
@@ -1164,21 +1265,25 @@ def collect_openai_codex_capacity(
     *,
     retrieved_at: str,
     discovery_roots: Sequence[Path] | None = None,
+    binary_path: Path | None = None,
     startup_timeout: float | None = None,
     session_timeout: float | None = None,
-) -> CapacitySnapshot:
-    """Acquire one OpenAI subscription-capacity snapshot via Codex app-server.
+) -> OpenAICodexObservation:
+    """Acquire one OpenAI subscription-capacity observation via Codex app-server.
 
     ``retrieved_at`` stays caller-supplied; this function introduces no
     freshness policy (U-003). ``discovery_roots`` defaults to the evidenced
     VS Code extension roots and exists for deterministic tests and
-    controlled local configuration. ``startup_timeout``/``session_timeout``
+    controlled local configuration. ``binary_path`` (D-039) selects an
+    explicit standalone installation (the production packaging path) and
+    overrides extension discovery. ``startup_timeout``/``session_timeout``
     default to the module bounds and must be finite positive numbers (a
     ``ValueError`` is raised before any process is spawned otherwise). The
-    discovered path and versions never enter the returned snapshot; every
+    discovered path and versions never enter the returned observation; every
     expected operational condition normalizes to a safe failure snapshot
-    instead of leaking. An invalid ``retrieved_at`` keeps failing through
-    the typed capacity-contract validation rather than being misreported as
+    paired with a fail-closed ``unknown`` eligibility report instead of
+    leaking. An invalid ``retrieved_at`` keeps failing through
+    the typed contract validation rather than being misreported as
     provider telemetry.
     """
     startup = (
@@ -1191,17 +1296,19 @@ def collect_openai_codex_capacity(
         if session_timeout is None
         else _validated_timeout(session_timeout, "session_timeout")
     )
-    installation, outcome = discover_codex_installation(discovery_roots)
+    installation, outcome = discover_codex_installation(
+        discovery_roots, binary_path=binary_path
+    )
     if outcome == "not_installed":
-        return _snapshot("unavailable", "source_unavailable", retrieved_at)
+        return _observation("unavailable", "source_unavailable", retrieved_at)
     if installation is None:
-        return _snapshot("unsupported", "unsupported_source", retrieved_at)
+        return _observation("unsupported", "unsupported_source", retrieved_at)
 
     argv: list[str] = [str(installation.binary), "app-server"]
     try:
         proc = spawn_app_server(argv, executable_fd=installation.binary_fd)
     except OSError:
-        return _snapshot("unavailable", "source_unavailable", retrieved_at)
+        return _observation("unavailable", "source_unavailable", retrieved_at)
     finally:
         installation.close()
 
@@ -1218,11 +1325,11 @@ def collect_openai_codex_capacity(
         # explicit shutdown still attempts termination and reports an
         # unproven reap conservatively; the session never began.
         _ = _shutdown(proc, reader)
-        return _snapshot("unavailable", "source_unavailable", retrieved_at)
-    snapshot: CapacitySnapshot | None = None
+        return _observation("unavailable", "source_unavailable", retrieved_at)
+    observation: OpenAICodexObservation | None = None
     reaped = False
     try:
-        snapshot = _run_session(
+        observation = _run_session(
             proc,
             reader,
             retrieved_at=retrieved_at,
@@ -1232,6 +1339,6 @@ def collect_openai_codex_capacity(
     finally:
         reaped = _shutdown(proc, reader)
     if not reaped:
-        return _snapshot("unavailable", "source_unavailable", retrieved_at)
-    assert snapshot is not None
-    return snapshot
+        return _observation("unavailable", "source_unavailable", retrieved_at)
+    assert observation is not None
+    return observation

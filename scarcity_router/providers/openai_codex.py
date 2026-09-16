@@ -199,7 +199,7 @@ _WINDOW_SLOTS: tuple[str, str] = ("primary", "secondary")
 
 # The current evidenced member set of RateLimitSnapshot (option-typed members:
 # missing and null both mean an absent state).
-_KNOWN_SNAPSHOT_MEMBERS: frozenset[str] = frozenset(
+KNOWN_SNAPSHOT_MEMBERS: frozenset[str] = frozenset(
     {
         "limitId",
         "limitName",
@@ -217,7 +217,7 @@ _KNOWN_SNAPSHOT_MEMBERS: frozenset[str] = frozenset(
 # Only `rateLimits` is required by the generated schema. The other members are
 # optional or nullable; `rateLimitUpsell` is intentionally opaque presentation
 # data and has no normalized representation.
-_KNOWN_ENVELOPE_MEMBERS: frozenset[str] = frozenset(
+KNOWN_ENVELOPE_MEMBERS: frozenset[str] = frozenset(
     {
         "rateLimits",
         "rateLimitsByLimitId",
@@ -347,7 +347,7 @@ def _is_request_id(value: object) -> bool:
     return isinstance(value, str) or _fits_i64(value)
 
 
-def _membership_valid(
+def membership_valid(
     container: Mapping[str, object],
     known: frozenset[str],
 ) -> bool:
@@ -527,7 +527,7 @@ def _parse_window(
     """
     if "usedPercent" not in entry:
         return None
-    if not _membership_valid(
+    if not membership_valid(
         entry, frozenset({"usedPercent", "windowDurationMins", "resetsAt"})
     ):
         return None
@@ -636,7 +636,7 @@ def _credits_state(value: object) -> bool | None:
     snapshot = _as_mapping(value)
     if snapshot is None:
         return None
-    if not _membership_valid(
+    if not membership_valid(
         snapshot, frozenset({"hasCredits", "unlimited", "balance"})
     ):
         return None
@@ -672,7 +672,7 @@ def _individual_limit_state(value: object) -> bool | None:
     snapshot = _as_mapping(value)
     if snapshot is None:
         return None
-    if not _membership_valid(
+    if not membership_valid(
         snapshot, frozenset({"limit", "used", "remainingPercent", "resetsAt"})
     ):
         return None
@@ -708,7 +708,7 @@ def _reset_credits_state(value: object) -> bool | None:
     summary = _as_mapping(value)
     if summary is None:
         return None
-    if not _membership_valid(summary, frozenset({"availableCount", "credits"})):
+    if not membership_valid(summary, frozenset({"availableCount", "credits"})):
         return None
     if "availableCount" not in summary or not _fits_i64(summary["availableCount"]):
         return None
@@ -743,7 +743,7 @@ def _reset_credits_state(value: object) -> bool | None:
                     return None
             elif value is not None and not isinstance(value, str):
                 return None
-        if not _membership_valid(row_map, frozenset(required)):
+        if not membership_valid(row_map, frozenset(required)):
             return None
     return True
 
@@ -771,7 +771,7 @@ def _quota_snapshot_state(
     validated ``limitId``) attached to every emitted window, independent of
     the diagnostic ``window_id`` and never derived from it.
     """
-    if not _membership_valid(snapshot, _KNOWN_SNAPSHOT_MEMBERS):
+    if not membership_valid(snapshot, KNOWN_SNAPSHOT_MEMBERS):
         return None
 
     limit_id = snapshot.get("limitId")
@@ -871,7 +871,7 @@ def parse_codex_rate_limits_result(
     envelope = _as_mapping(result)
     if envelope is None:
         return _failure("schema_changed", "schema_changed", retrieved_at)
-    if not _membership_valid(envelope, _KNOWN_ENVELOPE_MEMBERS):
+    if not membership_valid(envelope, KNOWN_ENVELOPE_MEMBERS):
         return _failure("schema_changed", "schema_changed", retrieved_at)
 
     ordinary_usage_allowed = envelope.get("ordinaryUsageAllowed")

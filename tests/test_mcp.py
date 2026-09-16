@@ -44,6 +44,8 @@ from scarcity_router.selection_app import (
 from scarcity_router.server import RestHTTPServer, make_server
 from scarcity_router.status import StatusCollectors, collect_status
 from scarcity_router.simulation import SimulationOverrides
+from scarcity_router.providers.openai_codex_acquisition import OpenAICodexObservation
+from tests.observation import paired_observation
 
 REPO = Path(__file__).resolve().parents[1]
 CATALOG_PATH = REPO / "model-catalog.json"
@@ -142,9 +144,9 @@ def _collectors(
     zai_five: int = 80,
     zai_weekly: int = 80,
 ) -> StatusCollectors:
-    def openai(*, retrieved_at: str) -> CapacitySnapshot:
+    def openai(*, retrieved_at: str) -> OpenAICodexObservation:
         _ = retrieved_at
-        return _synthetic_snap("openai", openai_five, openai_weekly)
+        return paired_observation(_synthetic_snap("openai", openai_five, openai_weekly))
 
     def zai(*, retrieved_at: str) -> CapacitySnapshot:
         _ = retrieved_at
@@ -433,12 +435,10 @@ class DiscoveryTests(McpTestCase):
 class StatusTests(McpTestCase):
     def test_status_matches_rest_and_cli_and_direct(self) -> None:
         application = self._application()
-        direct = [
-            snapshot.to_dict()
-            for snapshot in collect_status(
-                collectors=application.collectors, clock=application.clock
-            )
-        ]
+        observation = collect_status(
+            collectors=application.collectors, clock=application.clock
+        )
+        direct = [snapshot.to_dict() for snapshot in observation.snapshots]
         cli = cast(list[object], self._cli_json(application, ["status", "--json"]))
         harness = self._rest(application)
         status, rest = _rest_request(harness, "GET", "/v1/status")
@@ -456,9 +456,9 @@ class StatusTests(McpTestCase):
     def test_status_collects_once_with_one_timestamp_and_degraded_is_success(self) -> None:
         calls: list[tuple[str, str]] = []
 
-        def openai(*, retrieved_at: str) -> CapacitySnapshot:
+        def openai(*, retrieved_at: str) -> OpenAICodexObservation:
             calls.append(("openai", retrieved_at))
-            return _unknown_snap("openai")
+            return paired_observation(_unknown_snap("openai"))
 
         def zai(*, retrieved_at: str) -> CapacitySnapshot:
             calls.append(("zai", retrieved_at))
@@ -696,9 +696,9 @@ class SimulationTests(McpTestCase):
                 self.assertTrue(result.is_error)
                 self.assertEqual(invalid_request_payload(), _error_payload(result))
 
-        def failing_openai(*, retrieved_at: str) -> CapacitySnapshot:
+        def failing_openai(*, retrieved_at: str) -> OpenAICodexObservation:
             _ = retrieved_at
-            return _unknown_snap("openai")
+            return paired_observation(_unknown_snap("openai"))
 
         non_ok_application = self._application(
             collectors=StatusCollectors(
@@ -770,7 +770,7 @@ class InternalFailureTests(McpTestCase):
         self.assertNotIn("ValueError", serialized)
 
     def test_unexpected_collector_failure_is_fixed_internal_error(self) -> None:
-        def failing_openai(*, retrieved_at: str) -> CapacitySnapshot:
+        def failing_openai(*, retrieved_at: str) -> OpenAICodexObservation:
             _ = retrieved_at
             raise RuntimeError("synthetic provider payload SECRET_MARKER")
 
