@@ -42,6 +42,8 @@ from scarcity_router.config import (
 )
 from scarcity_router.selection_app import load_selector_policy
 from scarcity_router.status import StatusCollectors
+from scarcity_router.providers.openai_codex_acquisition import OpenAICodexObservation
+from tests.observation import paired_observation
 
 REPO = Path(__file__).resolve().parents[1]
 CATALOG_PATH = REPO / "model-catalog.json"
@@ -114,9 +116,9 @@ def _snapshot(provider: str, remaining: int) -> CapacitySnapshot:
 
 
 def _collectors() -> StatusCollectors:
-    def openai(*, retrieved_at: str) -> CapacitySnapshot:
+    def openai(*, retrieved_at: str) -> OpenAICodexObservation:
         _ = retrieved_at
-        return _snapshot("openai", 40)
+        return paired_observation(_snapshot("openai", 40))
 
     def zai(*, retrieved_at: str) -> CapacitySnapshot:
         _ = retrieved_at

@@ -43,6 +43,8 @@ from scarcity_router.selection_app import (
     render_select_human,
 )
 from scarcity_router.status import StatusCollectors
+from scarcity_router.providers.openai_codex_acquisition import OpenAICodexObservation
+from tests.observation import paired_observation
 
 REPO = Path(__file__).resolve().parents[1]
 CATALOG_PATH = REPO / "model-catalog.json"
@@ -109,9 +111,9 @@ def _snap(provider: str, five: int, weekly: int) -> CapacitySnapshot:
 
 
 def _collectors() -> StatusCollectors:
-    def openai(*, retrieved_at: str) -> CapacitySnapshot:
+    def openai(*, retrieved_at: str) -> OpenAICodexObservation:
         _ = retrieved_at
-        return _snap("openai", 40, 40)
+        return paired_observation(_snap("openai", 40, 40))
 
     def zai(*, retrieved_at: str) -> CapacitySnapshot:
         _ = retrieved_at
@@ -338,16 +340,18 @@ class SelectCommandTests(unittest.TestCase):
             self.assertIn("Closest candidates:", out)
 
     def test_degraded_selection_warns(self) -> None:
-        def unknown_openai(*, retrieved_at: str) -> CapacitySnapshot:
+        def unknown_openai(*, retrieved_at: str) -> OpenAICodexObservation:
             _ = retrieved_at
-            return CapacitySnapshot(
-                schema_version=3,
-                provider="openai",
-                source="synthetic_test",
-                retrieved_at=RETRIEVED_AT,
-                status="unknown",
-                windows=(),
-                diagnostics=(CapacityDiagnostic(code="telemetry_unknown"),),
+            return paired_observation(
+                CapacitySnapshot(
+                    schema_version=3,
+                    provider="openai",
+                    source="synthetic_test",
+                    retrieved_at=RETRIEVED_AT,
+                    status="unknown",
+                    windows=(),
+                    diagnostics=(CapacityDiagnostic(code="telemetry_unknown"),),
+                )
             )
 
         def unknown_zai(*, retrieved_at: str) -> CapacitySnapshot:

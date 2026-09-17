@@ -47,6 +47,8 @@ from scarcity_router.server import (
     make_server,
 )
 from scarcity_router.status import Clock, StatusCollectors, collect_status
+from scarcity_router.providers.openai_codex_acquisition import OpenAICodexObservation
+from tests.observation import paired_observation
 
 REPO = Path(__file__).resolve().parents[1]
 CATALOG_PATH = REPO / "model-catalog.json"
@@ -161,9 +163,9 @@ def _collectors(
     zai_five: int = 80,
     zai_weekly: int = 80,
 ) -> StatusCollectors:
-    def openai(*, retrieved_at: str) -> CapacitySnapshot:
+    def openai(*, retrieved_at: str) -> OpenAICodexObservation:
         _ = retrieved_at
-        return _snap("openai", openai_five, openai_weekly)
+        return paired_observation(_snap("openai", openai_five, openai_weekly))
 
     def zai(*, retrieved_at: str) -> CapacitySnapshot:
         _ = retrieved_at
@@ -333,7 +335,7 @@ class HealthTests(ServerTestCase):
         self.assertEqual({"status": "ok"}, json.loads(body))
 
     def test_healthz_invokes_no_collector_and_loads_no_artifact(self) -> None:
-        def failing_openai(*, retrieved_at: str) -> CapacitySnapshot:
+        def failing_openai(*, retrieved_at: str) -> OpenAICodexObservation:
             _ = retrieved_at
             raise AssertionError("healthz must not invoke collectors")
 
@@ -358,7 +360,12 @@ class StatusTests(ServerTestCase):
         status, _, body = self._get("/v1/status")
         self.assertEqual(200, status)
         envelope = cast("dict[str, object]", json.loads(body))
-        self.assertEqual({"schema_version", "snapshots"}, set(envelope))
+        self.assertEqual(
+            {"schema_version", "snapshots", "eligibility"}, set(envelope)
+        )
+        eligibility = cast("list[dict[str, object]]", envelope["eligibility"])
+        self.assertEqual(["openai"], [r["provider"] for r in eligibility])
+        self.assertEqual(["eligible"], [r["state"] for r in eligibility])
         self.assertEqual(1, envelope["schema_version"])
         snapshots = cast("list[object]", envelope["snapshots"])
         self.assertEqual(2, len(snapshots))
@@ -373,9 +380,9 @@ class StatusTests(ServerTestCase):
             self.assertEqual(3, document["schema_version"])
 
     def test_status_provider_degradation_remains_data(self) -> None:
-        def unknown_openai(*, retrieved_at: str) -> CapacitySnapshot:
+        def unknown_openai(*, retrieved_at: str) -> OpenAICodexObservation:
             _ = retrieved_at
-            return _unknown_snap("openai")
+            return paired_observation(_unknown_snap("openai"))
 
         collectors = StatusCollectors(openai=unknown_openai, zai=_collectors().zai)
         harness = self._serve(_application(collectors=collectors))
@@ -392,9 +399,9 @@ class StatusTests(ServerTestCase):
             _ = retrieved_at
             return _snap("zai", 80, 80)
 
-        def openai_second(*, retrieved_at: str) -> CapacitySnapshot:
+        def openai_second(*, retrieved_at: str) -> OpenAICodexObservation:
             _ = retrieved_at
-            return _snap("openai", 40, 40)
+            return paired_observation(_snap("openai", 40, 40))
 
         collectors = StatusCollectors(openai=openai_second, zai=zai_first)
         harness = self._serve(_application(collectors=collectors))
@@ -855,7 +862,7 @@ class ErrorBoundaryTests(ServerTestCase):
             self.assertNotIn("not json", rendered)
 
     def test_unexpected_internal_failure_is_internal_error(self) -> None:
-        def failing_openai(*, retrieved_at: str) -> CapacitySnapshot:
+        def failing_openai(*, retrieved_at: str) -> OpenAICodexObservation:
             _ = retrieved_at
             raise RuntimeError("synthetic collector failure")
 
@@ -868,7 +875,7 @@ class ErrorBoundaryTests(ServerTestCase):
         self.assertNotIn("synthetic collector failure", json.dumps(error))
 
     def test_simulation_collector_failure_is_internal_error(self) -> None:
-        def failing_openai(*, retrieved_at: str) -> CapacitySnapshot:
+        def failing_openai(*, retrieved_at: str) -> OpenAICodexObservation:
             _ = retrieved_at
             raise RuntimeError("synthetic simulation collector failure")
 
@@ -969,7 +976,7 @@ class SecurityRuntimeTests(ServerTestCase):
             self.assertNotIn(b"attacker.example", response)
 
     def test_host_validation_precedes_each_endpoint(self) -> None:
-        def failing_openai(*, retrieved_at: str) -> CapacitySnapshot:
+        def failing_openai(*, retrieved_at: str) -> OpenAICodexObservation:
             _ = retrieved_at
             raise RuntimeError("endpoint must not be dispatched")
 
@@ -1092,10 +1099,14 @@ class ParityTests(ServerTestCase):
         harness = self._serve(_application(collectors=collectors))
         _, _, body = _request(harness, "GET", "/v1/status")
         envelope = cast("dict[str, object]", json.loads(body))
-        snapshots = collect_status(collectors=collectors, clock=_clock)
+        direct = collect_status(collectors=collectors, clock=_clock)
         self.assertEqual(
-            [snapshot.to_dict() for snapshot in snapshots],
+            [snapshot.to_dict() for snapshot in direct.snapshots],
             envelope["snapshots"],
+        )
+        self.assertEqual(
+            [report.to_dict() for report in direct.eligibility],
+            envelope["eligibility"],
         )
 
     def test_file_based_cli_matches_typed_seam(self) -> None:
