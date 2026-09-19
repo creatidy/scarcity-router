@@ -201,18 +201,29 @@ after that is the workflow's job — or a fail-closed refusal.
 | Job | Needs | Permissions | Does |
 | --- | --- | --- | --- |
 | `verify-release-contract` | — | `contents: read` | checks out the tag with full history and enforces invariants 1–3 |
-| `build-and-verify-artifacts` | verify | `contents: read`, `id-token: write`, `attestations: write` | builds and smoke-installs the artifacts from the exact tagged commit (`make package-check`), writes `SHA256SUMS`, attests build provenance, uploads artifacts |
-| `publish-github-release` | build | `contents: write` | creates the GitHub Release and attaches the wheel, sdist and `SHA256SUMS` |
-| `publish-pypi` | build | `id-token: write` (environment `pypi`) | publishes the verified artifacts to PyPI via Trusted Publishing (OIDC) |
+| `build-and-verify-artifacts` | verify | `contents: read`, `id-token: write`, `attestations: write` | builds and smoke-installs the artifacts from the exact tagged commit (`make package-check`), writes `SHA256SUMS` (wheel and sdist entries), verifies the payload set, attests build provenance, and uploads two structurally separated artifacts: `pypi-packages` (only `*.whl`/`*.tar.gz`) and `release-bundle` (distributions plus `SHA256SUMS`) |
+| `publish-github-release` | build | `contents: write` | downloads `release-bundle` and creates the GitHub Release, attaching the wheel, the sdist and `SHA256SUMS` through an explicit asset list |
+| `publish-pypi` | build | `id-token: write` (environment `pypi`) | downloads `pypi-packages`, re-verifies with a guard step that the directory contains only `*.whl`/`*.tar.gz`, and publishes exactly those distributions to PyPI via Trusted Publishing (OIDC) |
 
 Every action is pinned to a full commit SHA with its version in a comment.
 The only credentials used are the run's own short-lived GitHub token and
 OIDC identities — **no long-lived PyPI token exists or may be introduced**.
 
+The two-artifact separation is the structural boundary that keeps release
+metadata out of the PyPI publication input: `pypa/gh-action-pypi-publish`
+receives `pypi-packages/` — a directory populated exclusively by the
+`*.whl`/`*.tar.gz` upload globs and re-checked by the guard step before
+twine runs — so checksums, attestations and any future release-metadata
+files cannot reach it without a deliberate change to both the upload globs
+and the guard.
+
 Integrity and provenance (**implemented now**):
 
-- `SHA256SUMS` over the wheel, the sdist and itself is attached to every
-  GitHub Release;
+- `SHA256SUMS` — containing SHA-256 entries for the public release payloads
+  that need checksum verification, namely the wheel and the sdist — is
+  attached to every GitHub Release. It does not contain a hash of itself;
+  a downloaded release is verified with `sha256sum -c SHA256SUMS` in the
+  directory holding the assets.
 - each artifact plus `SHA256SUMS` receives a Sigstore-backed GitHub artifact
   attestation (`actions/attest-build-provenance`) signed with the workflow
   run's short-lived OIDC identity. Consumers can verify provenance with

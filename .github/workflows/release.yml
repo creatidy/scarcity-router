@@ -11,6 +11,15 @@
 # this same run, and artifacts passing `make package-check` before any
 # publication. It never publishes from a pull-request event, and all
 # publication identities are short-lived OIDC — no long-lived tokens.
+#
+# Artifact transfer is structurally separated into two uploads: the
+# `pypi-packages` artifact carries only actual Python distributions
+# (*.whl / *.tar.gz) and is the sole directory the PyPI publisher sees,
+# while the `release-bundle` artifact carries the distributions plus
+# SHA256SUMS for the GitHub Release. Release metadata (checksums, future
+# provenance files) therefore cannot enter the PyPI publication input
+# without a deliberate, reviewable change to both the upload globs and the
+# publication guard.
 name: release
 
 on:
@@ -120,7 +129,36 @@ jobs:
       - name: Generate SHA256SUMS
         run: |
           cd dist
+          # Entries cover the release payloads that need checksum
+          # verification: the wheel and the sdist. SHA256SUMS does not hash
+          # itself; verify a downloaded release with
+          # `sha256sum -c SHA256SUMS` in the directory holding the assets.
           sha256sum scarcity_router-*.whl scarcity_router-*.tar.gz | tee SHA256SUMS
+
+      - name: Verify the release payload set (fail closed)
+        run: |
+          set -euo pipefail
+          # dist/ must hold exactly one wheel, one sdist and SHA256SUMS;
+          # nothing else may enter either publication path.
+          wheel_count="$(find dist -maxdepth 1 -type f -name 'scarcity_router-*.whl' | wc -l)"
+          sdist_count="$(find dist -maxdepth 1 -type f -name 'scarcity_router-*.tar.gz' | wc -l)"
+          if [ "${wheel_count}" -ne 1 ] || [ "${sdist_count}" -ne 1 ]; then
+            echo "FAIL: expected exactly one wheel and one sdist, found ${wheel_count}/${sdist_count}" >&2
+            exit 1
+          fi
+          if [ ! -f dist/SHA256SUMS ]; then
+            echo "FAIL: missing dist/SHA256SUMS" >&2
+            exit 1
+          fi
+          stray="$(find dist -maxdepth 1 -type f ! -name '*.whl' ! -name '*.tar.gz' ! -name 'SHA256SUMS' ! -name '.*')"
+          if [ -n "${stray}" ]; then
+            echo "FAIL: unexpected files in the release payload:" >&2
+            printf '%s\n' "${stray}" >&2
+            exit 1
+          fi
+          # Hidden files (uv writes dist/.gitignore) are tool residue:
+          # they match neither upload glob, so they cannot reach any
+          # publication path; any non-hidden stray file fails above.
 
       - name: Attest build provenance (Sigstore, short-lived identity)
         uses: actions/attest-build-provenance@db473fddc028af60658334401dc6fa3ffd8669fd # v2.3.0
@@ -130,11 +168,26 @@ jobs:
             dist/scarcity_router-*.tar.gz
             dist/SHA256SUMS
 
-      - name: Upload artifacts for the publish jobs
+      - name: Upload the PyPI payload (only actual Python distributions)
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: dist
-          path: dist
+          # The globs below are the sole whitelist for what the PyPI
+          # publisher can ever receive: checksums and future release
+          # metadata do not match them by construction.
+          name: pypi-packages
+          path: |
+            dist/scarcity_router-*.whl
+            dist/scarcity_router-*.tar.gz
+          if-no-files-found: error
+
+      - name: Upload the release bundle (distributions plus checksums)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-bundle
+          path: |
+            dist/scarcity_router-*.whl
+            dist/scarcity_router-*.tar.gz
+            dist/SHA256SUMS
           if-no-files-found: error
 
   publish-github-release:
@@ -145,22 +198,26 @@ jobs:
     permissions:
       contents: write # create the Release and attach artifacts (nothing else)
     steps:
-      - name: Download verified artifacts
+      - name: Download the release bundle
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: dist
+          name: release-bundle
           path: dist
 
       - name: Create the GitHub Release and attach artifacts
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # Explicit attachment list: bundle additions must be made
+          # deliberately, never by glob accident.
           gh release create "${GITHUB_REF_NAME}" \
             --repo "${GITHUB_REPOSITORY}" \
             --verify-tag \
             --title "scarcity-router ${GITHUB_REF_NAME}" \
             --generate-notes \
-            dist/*
+            dist/scarcity_router-*.whl \
+            dist/scarcity_router-*.tar.gz \
+            dist/SHA256SUMS
 
   publish-pypi:
     name: publish-pypi
@@ -175,14 +232,29 @@ jobs:
     permissions:
       id-token: write # PyPI Trusted Publishing (OIDC); no API token exists
     steps:
-      - name: Download verified artifacts
+      - name: Download the PyPI payload
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: dist
-          path: dist
+          name: pypi-packages
+          path: pypi-packages
+
+      - name: Guard the publication input (only Python distributions)
+        run: |
+          set -euo pipefail
+          # Final choke point before twine: the directory handed to
+          # pypa/gh-action-pypi-publish must contain only *.whl / *.tar.gz,
+          # never checksums or release metadata.
+          stray="$(find pypi-packages -type f ! -name '*.whl' ! -name '*.tar.gz')"
+          if [ -n "${stray}" ]; then
+            echo "FAIL: non-distribution files in the PyPI payload:" >&2
+            printf '%s\n' "${stray}" >&2
+            exit 1
+          fi
+          echo "PyPI payload:"
+          ls -1 pypi-packages
 
       - name: Publish to PyPI via Trusted Publishing
         uses: pypa/gh-action-pypi-publish@76f52bc884231f62b9a034ebfe128415bbaabdfc # v1.12.4
         with:
-          packages-dir: dist/
+          packages-dir: pypi-packages/
           verbose: true
