@@ -11,10 +11,11 @@ stale/never-observed/unhealthy worker state, D-039 eligibility gating with
 absence-never-means-eligible semantics, confirmed shared quota pools that
 are never independent capacity, expired promotions that never contribute
 preference, tool-calling compatibility that fails closed, the
-recommendation-to-execution admission binding without re-ranking, and
-explicit no-solution results. Deterministic and self-contained: no live
-providers, no network, no subprocess, no clock access; all fixtures are
-synthetic.
+recommendation-to-execution admission binding without re-ranking — with the
+EXACT executable-target reference (the pinned model variant is admitted as
+itself, never substituted), and explicit no-solution results. Deterministic
+and self-contained: no live providers, no network, no subprocess, no clock
+access; all fixtures are synthetic.
 """
 
 from __future__ import annotations
@@ -526,6 +527,22 @@ def _exclusion_by_id(
     return {exclusion.resource_id: exclusion for exclusion in decision.target_exclusions}
 
 
+def _pin(
+    resource_id: str,
+    provider: str,
+    model: str,
+    variant: str,
+    *,
+    decision_id: str | None = None,
+) -> PinnedTarget:
+    """One exact pinned executable-target reference (the corrected shape)."""
+    return PinnedTarget(
+        resource_id=resource_id,
+        model=ModelIdentity(provider=provider, model=model, variant=variant),
+        decision_id=decision_id,
+    )
+
+
 # ── determinism and decision identity ─────────────────────────────────────────
 
 
@@ -611,9 +628,15 @@ class DeterminismTests(unittest.TestCase):
                 maximum_output_tokens=2000,
                 explicit_model=ModelRef(provider="openai", model="gpt-5.6-luna"),
                 explicit_variant="max",
-                pinned_target=PinnedTarget(resource_id="openai-sub"),
+                pinned_target=_pin("openai-sub", "openai", "gpt-5.6-luna", "max"),
             ),
-            PinnedTarget(resource_id="openai-sub", decision_id="rd-" + "0" * 32),
+            _pin(
+                "openai-sub",
+                "openai",
+                "gpt-5.6-luna",
+                "max",
+                decision_id="rd-" + "0" * 32,
+            ),
             SpendingLimit(micro_usd_per_mtoken_max=10),
             _pass_cell("server_direct_http", "openai", "gpt-5.6-luna", "tool_calls"),
         )
@@ -1213,8 +1236,12 @@ class PinTests(unittest.TestCase):
         decision = route_request(
             _request(
                 request=RequestBinding(
-                    pinned_target=PinnedTarget(
-                        resource_id="openai-worker", decision_id=prior
+                    pinned_target=_pin(
+                        "openai-worker",
+                        "openai",
+                        "gpt-5.6-luna",
+                        "max",
+                        decision_id=prior,
                     )
                 )
             )
@@ -1236,7 +1263,9 @@ class PinTests(unittest.TestCase):
                 registry=registry,
                 evaluated_at=STALE_AT,
                 request=RequestBinding(
-                    pinned_target=PinnedTarget(resource_id="openai-worker")
+                    pinned_target=_pin(
+                        "openai-worker", "openai", "gpt-5.6-luna", "max"
+                    )
                 ),
             )
         )
@@ -1253,7 +1282,9 @@ class PinTests(unittest.TestCase):
         decision = route_request(
             _request(
                 request=RequestBinding(
-                    pinned_target=PinnedTarget(resource_id="no-such-resource")
+                    pinned_target=_pin(
+                        "no-such-resource", "openai", "gpt-5.6-luna", "max"
+                    )
                 )
             )
         )
@@ -1268,7 +1299,7 @@ class PinTests(unittest.TestCase):
                     blocked_resource_ids=("openai-sub",)
                 ),
                 request=RequestBinding(
-                    pinned_target=PinnedTarget(resource_id="openai-sub")
+                    pinned_target=_pin("openai-sub", "openai", "gpt-5.6-luna", "max")
                 ),
             )
         )
@@ -1433,8 +1464,13 @@ class AdmissionBindingTests(unittest.TestCase):
         self.assertNotEqual(winner, loser)
         admission = admit_pinned_target(
             _request(),
-            resource_id=loser,
-            decision_id=cast(str, decision.decision_id),
+            pinned_target=_pin(
+                loser,
+                "zai",
+                "glm-5.3",
+                "high",
+                decision_id=cast(str, decision.decision_id),
+            ),
         )
         self.assertTrue(admission.approved)
         assert admission.target is not None
@@ -1452,7 +1488,7 @@ class AdmissionBindingTests(unittest.TestCase):
         registry, _worker = _world_with_worker(now=T_STALE_NOW)
         admission = admit_pinned_target(
             _request(registry=registry, evaluated_at=STALE_AT),
-            resource_id="openai-worker",
+            pinned_target=_pin("openai-worker", "openai", "gpt-5.6-luna", "max"),
         )
         self.assertFalse(admission.approved)
         self.assertIsNone(admission.target)
@@ -1465,7 +1501,10 @@ class AdmissionBindingTests(unittest.TestCase):
         )
 
     def test_admission_rejects_an_unknown_reference(self) -> None:
-        admission = admit_pinned_target(_request(), resource_id="no-such-resource")
+        admission = admit_pinned_target(
+            _request(),
+            pinned_target=_pin("no-such-resource", "openai", "gpt-5.6-luna", "max"),
+        )
         self.assertFalse(admission.approved)
         self.assertIn("pin_target_not_found", admission.reason_codes)
         self.assertIsNone(admission.exclusion)
@@ -1473,7 +1512,7 @@ class AdmissionBindingTests(unittest.TestCase):
     def test_admission_enforces_authorization_and_limits(self) -> None:
         admission = admit_pinned_target(
             _request(admin=AdministratorConstraints(allowed_providers=("openai",))),
-            resource_id="zai-sub",
+            pinned_target=_pin("zai-sub", "zai", "glm-5.3", "high"),
         )
         self.assertFalse(admission.approved)
         assert admission.exclusion is not None
@@ -1481,19 +1520,221 @@ class AdmissionBindingTests(unittest.TestCase):
         self.assertIn("unauthorized_provider", admission.reason_codes)
 
     def test_admission_is_deterministic(self) -> None:
-        first = admit_pinned_target(_request(), resource_id="openai-sub")
-        second = admit_pinned_target(_request(), resource_id="openai-sub")
+        first = admit_pinned_target(
+            _request(), pinned_target=_pin("openai-sub", "openai", "gpt-5.6-luna", "max")
+        )
+        second = admit_pinned_target(
+            _request(), pinned_target=_pin("openai-sub", "openai", "gpt-5.6-luna", "max")
+        )
         self.assertEqual(first.to_dict(), second.to_dict())
 
     def test_admission_serialization_round_trips_through_json(self) -> None:
-        approved = admit_pinned_target(_request(), resource_id="openai-sub")
+        approved = admit_pinned_target(
+            _request(), pinned_target=_pin("openai-sub", "openai", "gpt-5.6-luna", "max")
+        )
         rendered = json.dumps(approved.to_dict(), sort_keys=True)
         self.assertIn("admission_approved", rendered)
-        rejected = admit_pinned_target(_request(), resource_id="no-such-resource")
+        rejected = admit_pinned_target(
+            _request(),
+            pinned_target=_pin("no-such-resource", "openai", "gpt-5.6-luna", "max"),
+        )
         self.assertIn(
             "pin_target_not_found",
             json.dumps(rejected.to_dict(), sort_keys=True),
         )
+
+
+# ── the exact executable-target reference (issue #87 correction) ─────────────
+
+
+class ExactTargetReferenceTests(unittest.TestCase):
+    """The pinned reference identifies the previously selected target EXACTLY.
+
+    A resource without a variant qualifier binds several calibrated
+    variants, so the old ``resource_id``-only reference could be admitted as
+    a different variant than the decision selected (the canonically first
+    bound identity). The corrected contract: ``PinnedTarget`` carries the
+    exact ``ModelIdentity``, admission verifies it against the identities
+    the resource currently binds and approves exactly that variant — never
+    a substitution, a repair or a re-ranking.
+    """
+
+    def _openai_medium_decision(self) -> RouteDecision:
+        """A selected decision for resource ``openai-sub``, variant ``medium``.
+
+        openai-payg is blocked so openai-sub sorts first among the remaining
+        qualified luna surfaces; the effort pin selects the medium variant.
+        """
+        return route_request(
+            _request(
+                admin=AdministratorConstraints(
+                    allowed_providers=("openai",),
+                    blocked_resource_ids=("openai-payg",),
+                ),
+                request=RequestBinding(
+                    explicit_model=ModelRef(
+                        provider="openai", model="gpt-5.6-luna"
+                    ),
+                    explicit_variant="medium",
+                ),
+            )
+        )
+
+    def test_route_decision_feeds_admission_and_returns_exactly_medium(self) -> None:
+        decision = self._openai_medium_decision()
+        self.assertEqual(decision.status, ROUTE_STATUS_SELECTED)
+        assert decision.target is not None
+        self.assertEqual(decision.target.resource.resource_id, "openai-sub")
+        self.assertEqual(decision.target.model.variant, "medium")
+        pin = PinnedTarget.from_route_target(
+            decision.target, decision_id=cast(str, decision.decision_id)
+        )
+        self.assertEqual(
+            pin,
+            _pin(
+                "openai-sub",
+                "openai",
+                "gpt-5.6-luna",
+                "medium",
+                decision_id=decision.decision_id,
+            ),
+        )
+        admission = admit_pinned_target(_request(), pinned_target=pin)
+        self.assertTrue(admission.approved)
+        assert admission.target is not None
+        self.assertEqual(admission.target.resource.resource_id, "openai-sub")
+        self.assertEqual(
+            admission.target.model,
+            ModelIdentity(provider="openai", model="gpt-5.6-luna", variant="medium"),
+        )
+        self.assertEqual(admission.bound_decision_id, decision.decision_id)
+
+    def test_serialized_selected_target_converts_into_a_valid_pin(self) -> None:
+        decision = self._openai_medium_decision()
+        # The FULL serialized decision carries every target dimension the
+        # admission pin needs — nothing comes from outside the decision.
+        payload = cast(dict[str, object], json.loads(json.dumps(decision.to_dict())))
+        pin = PinnedTarget.from_route_target_dict(payload["target"])
+        assert decision.target is not None
+        self.assertEqual(pin, PinnedTarget.from_route_target(decision.target))
+        admission = admit_pinned_target(_request(), pinned_target=pin)
+        self.assertTrue(admission.approved)
+        assert admission.target is not None
+        self.assertEqual(admission.target.resource.resource_id, "openai-sub")
+        self.assertEqual(admission.target.model.variant, "medium")
+
+    def test_from_route_target_is_pure_and_deterministic(self) -> None:
+        decision = self._openai_medium_decision()
+        assert decision.target is not None
+        self.assertEqual(
+            PinnedTarget.from_route_target(decision.target),
+            PinnedTarget.from_route_target(decision.target),
+        )
+        self.assertEqual(
+            PinnedTarget.from_route_target_dict(decision.target.to_dict()),
+            PinnedTarget.from_route_target_dict(decision.target.to_dict()),
+        )
+        # The decision itself is unchanged by the conversion.
+        self.assertEqual(
+            decision.to_dict(),
+            cast(dict[str, object], json.loads(json.dumps(decision.to_dict()))),
+        )
+
+    def test_admission_never_changes_the_pinned_variant(self) -> None:
+        # openai-sub carries no variant qualifier and binds BOTH calibrated
+        # luna variants; each pinned variant must be admitted as itself,
+        # whatever the canonically first bound identity happens to be.
+        medium = admit_pinned_target(
+            _request(), pinned_target=_pin("openai-sub", "openai", "gpt-5.6-luna", "medium")
+        )
+        maximum = admit_pinned_target(
+            _request(), pinned_target=_pin("openai-sub", "openai", "gpt-5.6-luna", "max")
+        )
+        self.assertTrue(medium.approved)
+        self.assertTrue(maximum.approved)
+        assert medium.target is not None
+        assert maximum.target is not None
+        self.assertEqual(medium.target.model.variant, "medium")
+        self.assertEqual(maximum.target.model.variant, "max")
+        self.assertNotEqual(medium.target.model, maximum.target.model)
+
+    def test_admission_rejects_a_no_longer_bound_variant_explicitly(self) -> None:
+        # The resource is re-registered with a ``max`` variant qualifier, so
+        # it now binds ONLY gpt-5.6-luna/max; the pinned medium identity is
+        # no longer bound and must be rejected, never substituted with max.
+        sub_max = _identity(
+            "openai-sub",
+            "local_app_adapter",
+            "openai",
+            "gpt-5.6-luna",
+            "subscription_included",
+            variant="max",
+        )
+        registry = _registry_snapshot(
+            [_registration(sub_max)],
+            {"openai-sub": _observation(sub_max)},
+            now=T_EVAL,
+        )
+        admission = admit_pinned_target(
+            _request(registry=registry),
+            pinned_target=_pin("openai-sub", "openai", "gpt-5.6-luna", "medium"),
+        )
+        self.assertFalse(admission.approved)
+        self.assertIsNone(admission.target)
+        self.assertIsNone(admission.exclusion)
+        self.assertEqual(
+            admission.reason_codes,
+            ("admission_rejected", "pinned_model_not_bound"),
+        )
+
+    def test_admission_rejects_a_never_bound_identity_explicitly(self) -> None:
+        # "high" is not a calibrated gpt-5.6-luna variant at all: the pin
+        # can never bind and is rejected explicitly rather than guessed.
+        admission = admit_pinned_target(
+            _request(),
+            pinned_target=_pin("openai-sub", "openai", "gpt-5.6-luna", "high"),
+        )
+        self.assertFalse(admission.approved)
+        self.assertIsNone(admission.target)
+        self.assertEqual(
+            admission.reason_codes,
+            ("admission_rejected", "pinned_model_not_bound"),
+        )
+
+    def test_incomplete_pins_are_never_guessed(self) -> None:
+        # A pin without the exact model identity is a construction-time
+        # validation error, never a silently repaired reference. (A
+        # malformed nested model payload raises the typed selection-contract
+        # validation error, exactly like every other nested-model input in
+        # this contract family; route-level shape violations raise the
+        # route-contract error.)
+        route_or_selection = (
+            RouteContractValidationError,
+            SelectionContractValidationError,
+        )
+        with self.assertRaises(route_or_selection):
+            _ = PinnedTarget.from_dict({"resource_id": "openai-sub"})
+        with self.assertRaises(route_or_selection):
+            _ = PinnedTarget.from_dict(
+                {"resource_id": "openai-sub", "model": None}
+            )
+        with self.assertRaises(RouteContractValidationError):
+            _ = PinnedTarget.from_route_target_dict(
+                {"resource_id": "openai-sub", "quota_pools": []}
+            )
+        with self.assertRaises(RouteContractValidationError):
+            _ = PinnedTarget.from_route_target_dict(
+                {
+                    "resource_id": "openai-sub",
+                    "model": {
+                        "provider": "openai",
+                        "model": "gpt-5.6-luna",
+                        "variant": "medium",
+                    },
+                    "quota_pools": [],
+                    "unexpected": True,
+                }
+            )
 
 
 if __name__ == "__main__":

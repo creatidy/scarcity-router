@@ -690,9 +690,13 @@ eligibility reports, never as hidden penalties.
 - **Pinned-target execution.** A client that first used `select` may pin the
   decision's executable-target reference in a gateway request; the gateway
   then performs admission only (authorization, limits, availability,
-  compatibility) — no second competitive ranking. Frozen alongside: a
-  recommendation is not automatically a reservation, a capacity guarantee
-  or an execution guarantee (D-042).
+  compatibility) — no second competitive ranking. The reference is exact:
+  `PinnedTarget` carries the selected target's `resource_id` plus its
+  exact `ModelIdentity` (provider, model, variant), and admission approves
+  exactly that variant — a variant that is no longer bound is an explicit
+  rejection, never a substitution. Frozen alongside: a recommendation is
+  not automatically a reservation, a capacity guarantee or an execution
+  guarantee (D-042).
 - **Quota still never changes capability.** Execution-surface availability,
   authorization and spending limits are eligibility/ranking inputs exactly
   like capacity and eligibility reports; telemetry never raises a
@@ -773,7 +777,18 @@ Pins and the binding seam:
   pinned reference through the gates only — authorization, limits,
   availability, compatibility — and never re-runs competitive ranking: a
   non-winner that passes every gate is approved, and a recommendation is
-  re-checked against current state, never treated as a reservation.
+  re-checked against current state, never treated as a reservation. The
+  pinned reference is exact: `PinnedTarget` carries `resource_id` plus the
+  selected target's exact `ModelIdentity` (provider, model, variant),
+  built from the decision itself with `PinnedTarget.from_route_target` /
+  `from_route_target_dict`, so no target dimension is reconstructed from
+  outside the decision. Admission verifies the pinned identity is one of
+  the identities the named resource currently binds and approves exactly
+  that resource and variant; a no-longer-bound identity is rejected with
+  the explicit `pinned_model_not_bound` code — there is no
+  canonically-first bound-identity fallback, no variant substitution and
+  no silent repair of an incomplete reference (an incomplete pin is a
+  construction-time validation error).
 
 ## Bounded compound workflow recommendations
 

@@ -71,6 +71,15 @@ Typed input contracts (all construction-validated, deterministic
 - :class:`RequestBinding`: the request-derived structural requirements and
   the explicit pins (profile alias, pinned executable target, explicit
   model/variant). Pins are honored or explicitly failed.
+- :class:`PinnedTarget`: the EXACT executable-target reference a client
+  pins for admission — ``resource_id`` plus the exact
+  :class:`ModelIdentity` (provider, model, variant) the prior decision
+  selected, with ``decision_id`` as audit provenance only. Built from a
+  route decision's selected target with ``from_route_target`` /
+  ``from_route_target_dict``, so no target dimension is ever supplied
+  from outside the decision; admission verifies the pinned identity is
+  still bound by the named resource and rejects explicitly
+  (``pinned_model_not_bound``) rather than substituting another variant.
 - :class:`CompatibilityCell`: the typed representation of one OpenAI
   compatibility-matrix cell (D-043) keyed by
   ``(channel, provider, model, variant, feature)`` with a frozen
@@ -102,9 +111,11 @@ Output contracts (serialize-only ``to_dict``, mirroring
 - :class:`AdmissionDecision`: the recommendation-to-execution binding
   (D-042): :func:`admit_pinned_target` evaluates exactly one pinned target
   through the gates only — authorization, limits, availability,
-  compatibility — and never re-runs competitive ranking. A recommendation
-  is not a reservation: admission re-checks current inputs and may reject
-  explicitly.
+  compatibility — and never re-runs competitive ranking. The pinned exact
+  :class:`ModelIdentity` is verified against the identities the resource
+  currently binds; a no-longer-bound identity is an explicit typed
+  rejection, never a substitution. A recommendation is not a reservation:
+  admission re-checks current inputs and may reject explicitly.
 
 Promotions are observations, never proof that an execution qualifies: an
 active, scope-matching promotion contributes a target-level routing
@@ -244,6 +255,7 @@ ADMISSION_REASON_CODES: frozenset[str] = frozenset({
     "admission_approved",
     "admission_rejected",
     "pin_target_not_found",
+    "pinned_model_not_bound",
 })
 
 # Entitlement classes with a marginal monetary spend: the only ones a
@@ -801,22 +813,32 @@ class ClientRoutingProfile:
 class PinnedTarget:
     """One pinned executable-target reference (recommendation binding).
 
-    ``resource_id`` is the registry identifier of the target to execute —
-    the reference a route decision publishes for exactly this purpose.
-    ``decision_id``, when supplied, is the prior recommendation's decision
-    id carried for audit provenance only: a recommendation is not a
-    reservation, so admission re-checks current inputs and never trusts the
-    prior decision's validity.
+    The reference is EXACT: ``resource_id`` names the registry resource and
+    ``model`` is the exact calibrated :class:`ModelIdentity` (provider,
+    model, variant) the prior decision selected for it. A resource without
+    a variant qualifier may bind several calibrated variants, so a
+    reference without the exact identity is not sufficient to identify the
+    target — such a pin is a construction-time validation error, never
+    guessed or repaired. The exact pin for a route decision's selected
+    target is built with :meth:`from_route_target` (typed) or
+    :meth:`from_route_target_dict` (over the serialized selected-target
+    data), so no target dimension is ever supplied from outside the
+    decision. ``decision_id``, when supplied, is the prior recommendation's
+    decision id carried for audit provenance only: a recommendation is not
+    a reservation, so admission re-checks current inputs and never trusts
+    the prior decision's validity.
     """
 
     resource_id: str
+    model: ModelIdentity
     decision_id: str | None = None
 
-    _REQUIRED: ClassVar[tuple[str, ...]] = ("resource_id",)
+    _REQUIRED: ClassVar[tuple[str, ...]] = ("resource_id", "model")
     _OPTIONAL: ClassVar[tuple[str, ...]] = ("decision_id",)
 
     def __post_init__(self) -> None:
         _ = _v_safe_id(self.resource_id, "pinned_target.resource_id")
+        _ = _v_instance_of(self.model, ModelIdentity, "pinned_target.model")
         if self.decision_id is not None:
             _ = _v_safe_id(self.decision_id, "pinned_target.decision_id")
 
@@ -825,6 +847,7 @@ class PinnedTarget:
         dd = _v_exact_shape(d, cls._REQUIRED, cls._OPTIONAL, "pinned_target")
         return cls(
             resource_id=_v_safe_id(dd["resource_id"], "pinned_target.resource_id"),
+            model=ModelIdentity.from_dict(dd["model"]),
             decision_id=(
                 None
                 if not _optional_present(dd, "decision_id")
@@ -832,8 +855,66 @@ class PinnedTarget:
             ),
         )
 
+    @classmethod
+    def from_route_target(
+        cls, target: RouteTarget, *, decision_id: str | None = None
+    ) -> "PinnedTarget":
+        """The exact pin for a route decision's selected (or alternative) target.
+
+        Pure and deterministic: the pin carries the target's own
+        ``resource_id`` and exact :class:`ModelIdentity` and nothing else,
+        so a decision's selected target converts into a valid pin without
+        the caller supplying any target dimension from outside the
+        decision. ``decision_id`` is carried as audit provenance only.
+        """
+        _ = _v_instance_of(target, RouteTarget, "pinned_target.from_route_target")
+        return cls(
+            resource_id=target.resource.resource_id,
+            model=target.model,
+            decision_id=decision_id,
+        )
+
+    @classmethod
+    def from_route_target_dict(
+        cls, d: object, *, decision_id: str | None = None
+    ) -> "PinnedTarget":
+        """The exact pin from one serialized route target (``to_dict`` shape).
+
+        Accepts exactly the serialized shape :meth:`RouteTarget.to_dict`
+        emits — the shape embedded in a serialized :class:`RouteDecision` —
+        reads only the executable-target reference and the exact model
+        identity, and validates them with the same construction rules. Pure
+        and deterministic.
+        """
+        dd = _v_exact_shape(
+            d,
+            ("resource", "model", "quota_pools"),
+            (
+                "routing_profile",
+                "promotion_sources",
+                "shares_quota_pool_with_selected",
+            ),
+            "route_target",
+        )
+        resource = _as_str_object_mapping(dd["resource"])
+        if resource is None:
+            raise RouteContractValidationError(
+                "route_target.resource: expected a dict-like mapping, got "
+                + f"{type(dd['resource']).__name__}"
+            )
+        return cls(
+            resource_id=_v_safe_id(
+                resource.get("resource_id"), "route_target.resource.resource_id"
+            ),
+            model=ModelIdentity.from_dict(dd["model"]),
+            decision_id=decision_id,
+        )
+
     def to_dict(self) -> dict[str, object]:
-        out: dict[str, object] = {"resource_id": self.resource_id}
+        out: dict[str, object] = {
+            "resource_id": self.resource_id,
+            "model": self.model.to_dict(),
+        }
         if self.decision_id is not None:
             out["decision_id"] = self.decision_id
         return out
@@ -1553,7 +1634,11 @@ class RouteTarget:
     backend model and the entitlement; ``resource.resource_id`` is the
     executable-target reference a client pins to execute this choice.
     ``model`` is the calibrated catalog identity (physical model/variant)
-    the target executes. ``quota_pools`` are the resource's CONFIRMED
+    the target executes. Together the pair identifies the target exactly:
+    ``PinnedTarget.from_route_target`` (or ``from_route_target_dict`` over
+    the serialized target) converts it into the pin admission re-checks,
+    so no target dimension is ever reconstructed from outside the
+    decision. ``quota_pools`` are the resource's CONFIRMED
     shared pools (D-042): pools exist only from explicit confirmed
     ``quota_pool_ids``, never inferred. ``routing_profile`` is the client
     routing profile under which the decision was made.
@@ -1975,11 +2060,14 @@ class AdmissionDecision:
     ``admit_pinned_target`` performs exactly the admission gates —
     authorization, limits, availability, compatibility — for the one named
     resource and never re-runs competitive ranking. ``approved`` carries
-    the target's five-dimension facts; a rejection carries the typed
-    exclusion (or the ``pin_target_not_found`` code when the reference
-    names no registered resource). ``bound_decision_id`` echoes the prior
-    recommendation's decision id for audit provenance; it is never a
-    reservation and never trusted as a validity proof.
+    the target's five-dimension facts at the PINNED exact model identity —
+    the identity is verified against the identities the resource currently
+    binds and is never substituted; a rejection carries the typed exclusion
+    (the ``pin_target_not_found`` code when the reference names no
+    registered resource, or ``pinned_model_not_bound`` when the pinned
+    exact model identity is no longer bound). ``bound_decision_id`` echoes
+    the prior recommendation's decision id for audit provenance; it is
+    never a reservation and never trusted as a validity proof.
     """
 
     resource_id: str
@@ -2564,31 +2652,39 @@ def route_request(request: RouteRequest) -> RouteDecision:
 def admit_pinned_target(
     request: RouteRequest,
     *,
-    resource_id: str,
-    decision_id: str | None = None,
+    pinned_target: PinnedTarget,
 ) -> AdmissionDecision:
     """Admit one pinned executable target — admission only, never re-ranking.
 
     The recommendation-to-execution binding of D-042: a client that first
-    used ``select`` pins the decision's executable-target reference (and
-    may carry its ``decision_id`` for audit provenance); the gateway runs
-    admission — authorization, limits, availability, compatibility — and
-    dispatches. This function never re-runs competitive ranking, so no
-    unexpected second routing decision can occur: the named resource is
-    evaluated alone against the current inputs, and a resource that is not
-    the ranking winner is still approved when it passes every gate. A
+    used ``select`` pins the decision's exact executable-target reference
+    (built with :meth:`PinnedTarget.from_route_target` or
+    :meth:`PinnedTarget.from_route_target_dict`, optionally carrying the
+    prior ``decision_id`` for audit provenance); the gateway runs admission
+    — authorization, limits, availability, compatibility — and dispatches.
+    This function never re-runs competitive ranking, so no unexpected
+    second routing decision can occur: the named resource is evaluated
+    alone against the current inputs, and a resource that is not the
+    ranking winner is still approved when it passes every gate. A
     recommendation is not a reservation: admission re-checks current state
     and may reject explicitly.
 
-    For a resource without a variant qualifier that binds several
-    calibrated variants of one model, the admitted target's ``model``
-    dimension is the canonically first bound identity unless the request
-    pins an explicit variant; the gateway should carry the variant pin for
-    unambiguous dispatch.
+    The pinned reference is EXACT: the pinned :class:`ModelIdentity`
+    (provider, model, variant) is verified against the identities the
+    named resource currently binds, and the approved target carries that
+    exact model variant. A pin whose identity is no longer bound — for
+    example after the variant qualifier changed or the calibration lost a
+    variant — is rejected explicitly with ``pinned_model_not_bound``; it
+    is never substituted with another bound variant, never repaired, and
+    never re-ranked. An incomplete pin (a missing model identity) cannot
+    reach this function: :class:`PinnedTarget` validation rejects it at
+    construction.
     """
-    _ = _v_safe_id(resource_id, "admit_pinned_target.resource_id")
-    if decision_id is not None:
-        _ = _v_safe_id(decision_id, "admit_pinned_target.decision_id")
+    _ = _v_instance_of(
+        pinned_target, PinnedTarget, "admit_pinned_target.pinned_target"
+    )
+    resource_id = pinned_target.resource_id
+    decision_id = pinned_target.decision_id
     requirement, profile_id = _resolve_requirement(request)
     effective = _effective_authorization(
         request.admin_constraints,
@@ -2628,20 +2724,19 @@ def admit_pinned_target(
             exclusion=_target_exclusion(gate),
             bound_decision_id=decision_id,
         )
-    pinned_variant = request.request.explicit_variant
-    identity = next(
-        (
-            bound
-            for bound in gate.bound_identities
-            if pinned_variant is None or bound.variant == pinned_variant
-        ),
-        gate.bound_identities[0],
-    )
+    bound_keys = {_identity_key(bound) for bound in gate.bound_identities}
+    if _identity_key(pinned_target.model) not in bound_keys:
+        return AdmissionDecision(
+            resource_id=resource_id,
+            approved=False,
+            reason_codes=("admission_rejected", "pinned_model_not_bound"),
+            bound_decision_id=decision_id,
+        )
     return AdmissionDecision(
         resource_id=resource_id,
         approved=True,
         reason_codes=("admission_approved",),
-        target=_route_target(gate, identity, profile_id, False),
+        target=_route_target(gate, pinned_target.model, profile_id, False),
         bound_decision_id=decision_id,
     )
 

@@ -418,7 +418,17 @@ on the gateway side. Implemented by #87 as
 `route_request` core layers requirement binding, authorization and
 execution-surface gates on top of the unmodified balanced selector, and
 `admit_pinned_target` performs the recommendation-to-execution admission
-without re-ranking.
+without re-ranking. The pinned executable-target reference is EXACT:
+`PinnedTarget` carries the selected target's `resource_id` plus its exact
+`ModelIdentity` (provider, model, variant), converted from the decision's
+selected target with `PinnedTarget.from_route_target` (or
+`from_route_target_dict` over the serialized decision), so no target
+dimension is ever reconstructed from outside the decision. Admission
+verifies the pinned identity is one of the identities the named resource
+currently binds and approves exactly that resource and variant; a
+no-longer-bound identity is an explicit typed rejection
+(`pinned_model_not_bound`), never a substitution of another bound variant
+or a canonically-first fallback.
 
 **Resource-state contract (M01).** A new versioned contract family,
 sibling to capacity v3 (which is preserved; extensions only through explicit
