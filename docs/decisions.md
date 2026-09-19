@@ -271,9 +271,14 @@ direction was chosen. Dates use UTC.
   is not proof that the token renewed (the installed response shape does not
   expose the refresh outcome); the successful subsequent rate-limits retry is
   the only proof of effective recovery. If the refresh request or the retry
-  returns a protocol error, the collector fails closed to the existing safe
-  `unknown`/`telemetry_unknown` snapshot. The initial rate-limits read remains
-  non-mutating, so healthy status calls never refresh.
+  returns a protocol error, the collector fails closed to the
+  `auth_required` snapshot — eligibility `unknown` with reason
+  `telemetry_auth_required` (amended 2026-09-20,
+  BioMedical-IT/scarcity-router#101; originally the generic
+  `unknown`/`telemetry_unknown`, which misdiagnosed the 2026-09-19
+  production credential-expiry incident and cost a manual investigation).
+  The initial rate-limits read remains non-mutating, so healthy status calls
+  never refresh.
 - **Boundary:** This is an explicit narrow exception to the previous purely
   read-only M1 collector wording (D-003/D-009 wording and the security doc's
   collector-mutation invariant are amended accordingly). Scarcity Router is

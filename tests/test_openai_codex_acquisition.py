@@ -939,28 +939,41 @@ class AuthRecovery(_AcquisitionCase):
             all(m.get("method") != "account/read" for m in messages)
         )
 
-    def test_refresh_protocol_error_fails_closed_without_retry(self) -> None:
+    def test_refresh_protocol_error_is_auth_required_without_retry(self) -> None:
         fake = self._install_fake(
             [INIT_RESPONSE, _error_line(2, -32603), _error_line(3, -32000)]
         )
         roots = self._make_installation()
-        snapshot = self._collect(discovery_roots=[roots])
-        self.assertEqual(snapshot.status, "unknown")
-        self.assertEqual([d.code for d in snapshot.diagnostics], ["telemetry_unknown"])
+        observation = self._collect_observation(discovery_roots=[roots])
+        snapshot = observation.snapshot
+        # The evidenced auth-failure trigger plus a failed provider-managed
+        # refresh classifies auth_required, not a generic telemetry unknown.
+        self.assertEqual(snapshot.status, "auth_required")
+        self.assertEqual([d.code for d in snapshot.diagnostics], ["auth_required"])
         self.assertEqual(snapshot.windows, ())
+        self.assertEqual(observation.eligibility.state, "unknown")
+        self.assertEqual(
+            observation.eligibility.reason_codes, ("telemetry_auth_required",)
+        )
         self.assertEqual(len(fake.written_messages()), 4)  # no retry sent
         self.assertNotIn(SECRET, _serialized(snapshot))
+        self.assertNotIn(SECRET, repr(observation.eligibility))
         self._assert_no_output()
 
-    def test_retry_protocol_error_is_unknown_without_second_refresh(self) -> None:
+    def test_retry_protocol_error_is_auth_required_without_second_refresh(self) -> None:
         fake = self._install_fake(
             self._recovery_lines(_error_line(4, -32603))
         )
         roots = self._make_installation()
-        snapshot = self._collect(discovery_roots=[roots])
-        self.assertEqual(snapshot.status, "unknown")
-        self.assertEqual([d.code for d in snapshot.diagnostics], ["telemetry_unknown"])
+        observation = self._collect_observation(discovery_roots=[roots])
+        snapshot = observation.snapshot
+        self.assertEqual(snapshot.status, "auth_required")
+        self.assertEqual([d.code for d in snapshot.diagnostics], ["auth_required"])
         self.assertEqual(snapshot.windows, ())
+        self.assertEqual(observation.eligibility.state, "unknown")
+        self.assertEqual(
+            observation.eligibility.reason_codes, ("telemetry_auth_required",)
+        )
         messages = fake.written_messages()
         self.assertEqual(len(messages), 5)  # refresh happened once, retry once
         self.assertEqual(
@@ -974,6 +987,7 @@ class AuthRecovery(_AcquisitionCase):
             ],
         )
         self.assertNotIn(SECRET, _serialized(snapshot))
+        self.assertNotIn(SECRET, repr(observation.eligibility))
         self._assert_no_output()
 
     def test_standard_and_arbitrary_error_codes_never_refresh(self) -> None:
