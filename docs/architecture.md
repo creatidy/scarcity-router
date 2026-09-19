@@ -430,9 +430,13 @@ never contain secrets, account identifiers or raw provider payloads.
 **Execution contract (M03, semantics frozen by D-043).** Admission →
 bounded concurrency reservation → dispatch → stream → completion/cancellation
 → usage accounting. Frozen rules: cancellation propagates to the selected
-backend where supported; the backend is never silently replaced after a
-response stream has started; retries after ambiguous execution state must
-not blindly duplicate inference consumption (exactly-once is not promised);
+backend where supported; the selected target is never silently replaced,
+before or after a response stream has started — a dispatch failure fails
+closed with an explicit error and automatic cross-target failover does not
+exist (the prompt-destination invariant of [`docs/security.md`](security.md)
+holds from admission, not from the first stream byte); retries after
+ambiguous execution state must not blindly duplicate inference consumption
+(exactly-once is not promised);
 one external request may cause multiple internal provider calls and
 usage/accounting represents this honestly; client-supplied tools return to
 the client as `tool_calls` and the router never executes them locally; an

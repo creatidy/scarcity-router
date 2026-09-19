@@ -2076,8 +2076,8 @@ what M4.1 forbids); a configurable per-provider eligibility policy
      requests served from the best available authorized resource — API
      providers, Ollama/local inference, or approved local Codex/ZCode
      adapters — under the existing least-scarce-capable discipline.
-  3. **Ollama and local inference return as execution resources** (server
-     -direct over HTTP when network-accessible, worker-bridged when
+  3. **Ollama and local inference return as execution resources**
+     (server-direct over HTTP when network-accessible, worker-bridged when
      localhost-only), superseding D-017's blanket removal. The D-017
      operational-instability rationale remains a design input for isolation,
      health handling and honest unknown states.
@@ -2448,8 +2448,8 @@ what M4.1 forbids); a configurable per-provider eligibility policy
      `POST /v1/select`, `POST /v1/simulate` on the loopback REST adapter,
      the stdio MCP tools and the CLI keep their frozen semantics, paths,
      envelopes and loopback/unauthenticated boundary (D-028/D-030/D-031).
-     Additive evolution continues only under the D-028 backwards-
-     compatibility rules.
+     Additive evolution continues only under the D-028
+     backwards-compatibility rules.
   2. **The OpenAI-compatible execution surface is a new, separately
      versioned contract** ("execution surface v1"): `GET /v1/models` and
      `POST /v1/chat/completions` (plus SSE), served by the authenticated
@@ -2564,7 +2564,9 @@ what M4.1 forbids); a configurable per-provider eligibility policy
 
 ### U-003 — Refresh and staleness policy
 
-- **Status:** Partially resolved for synchronous M1 status (2026-09-05)
+- **Status:** Partially resolved for synchronous M1 status (2026-09-05); the
+  deferred refresh/staleness remainder is assigned to M01 (#86) by D-041
+  (2026-09-19)
 - **Decision:** Every `status` invocation performs a fresh sequential collection
   and establishes one canonical UTC millisecond `retrieved_at` immediately for
   that observation attempt. The same value is passed to OpenAI and Z.ai;

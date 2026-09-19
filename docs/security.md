@@ -48,9 +48,9 @@ Never:
   analytics sink);
 - ask an LLM or agent to inspect a credential value;
 - copy unrelated browser profile or authentication contents;
-- create another long-lived credential store by default; the execution-
-  gateway server component's explicit, bounded store is the sole recorded
-  exception (D-044);
+- create another long-lived credential store by default; the
+  execution-gateway server component's explicit, bounded store is the sole
+  recorded exception (D-044);
 - attach a credential to an arbitrary user-provided URL;
 - issue model prompts as part of quota collection;
 - mutate provider quota/account state from a collector, except the single
