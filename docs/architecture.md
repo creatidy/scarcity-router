@@ -417,7 +417,8 @@ on the gateway side.
 
 **Resource-state contract (M01).** A new versioned snapshot contract
 sibling to capacity v3 (which is preserved; extensions only through explicit
-versioning per the D-023/D-028-compatible discipline). It records, per
+versioning per the D-023/D-028-compatible discipline; implemented by #86 as
+`scarcity_router/resource_state.py`, `schema_version = 1`). It records, per
 executable resource: identity, execution capabilities, health, freshness,
 bounded polling/cache metadata (the U-003 resolution scope), promotions as
 separate observations (source, observation time, execution-channel scope,
@@ -559,7 +560,7 @@ is imposed by A0; new modules land beside these as their issues require):
 
 | Existing file/module | Primary owner going forward |
 | --- | --- |
-| `capacity.py`, `eligibility.py`, `status.py`, `providers/*` (collectors) | M01 (+#86); execution adapters in `providers/` per M04/M06/M07 |
+| `capacity.py`, `eligibility.py`, `status.py`, `resource_state.py` (M01 resource-state contract, added by #86), `providers/*` (collectors) | M01 (+#86); execution adapters in `providers/` per M04/M06/M07 |
 | `selector.py`, `policy.py`, `scarcity.py`, `simulation.py`, `selection_types.py`, `selection_app.py` | M02 (+#87) |
 | `server.py` | Stays the frozen loopback REST v1 adapter (M08 guard); never becomes the execution server |
 | `machine_api.py` | M08 (+#93); gateway request parsing is new M03-owned code, not a v1 change |

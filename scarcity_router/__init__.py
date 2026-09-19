@@ -57,6 +57,20 @@ Public API — simulation over the same selector (M2e, D-027):
     CapacityPercentageOverride, SimulationOverrides, SimulationResult,
     apply_capacity_overrides, simulate_selection
 
+Public API — resource state for executable resources (M01, #86):
+    ResourceStateSnapshot -- one versioned resource-state record
+    ResourceIdentity      -- identity of one executable resource (D-042)
+    ResourceHealth        -- health in the capacity v3 status vocabulary
+    ExecutionCapabilities -- observed/configured execution-capability facts
+    QuotaFact             -- one capacity v3 window + observation class
+    ResourceCost          -- micro-USD cost facts + observation class
+    PromotionObservation  -- one promotion observation (never a qualification)
+    WorkerStateReport     -- the worker state-report contract boundary
+    ResourceRegistration  -- administrator registration of one resource
+    ResourceRegistry      -- in-memory registry/state store (U-003 resolution)
+    ResourceRegistryEntry, RegistrySnapshot, QuotaPoolGroup,
+    classify_freshness, resource_snapshot_from_capacity
+
 The selector and simulation are pure: callers supply the catalog, the
 resolved requirement, the policy, the current normalized snapshots, the
 replenishment states and one timezone-aware evaluation instant. Application
@@ -101,6 +115,32 @@ from .policy import (
     evaluate_blackouts,
     evaluate_happy_hours,
     evaluate_reservation,
+)
+from .resource_state import (
+    ENTITLEMENT_CLASSES,
+    EXECUTION_CHANNELS,
+    FRESHNESS_STATES,
+    OBSERVATION_CLASSES,
+    REGISTRY_SCHEMA_VERSION,
+    RESOURCE_HEALTH_STATUSES,
+    RESOURCE_STATE_SCHEMA_VERSION,
+    WORKER_REPORTABLE_CHANNELS,
+    WORKER_REPORT_SCHEMA_VERSION,
+    ExecutionCapabilities,
+    PromotionObservation,
+    QuotaFact,
+    QuotaPoolGroup,
+    RegistrySnapshot,
+    ResourceCost,
+    ResourceHealth,
+    ResourceIdentity,
+    ResourceRegistration,
+    ResourceRegistry,
+    ResourceRegistryEntry,
+    ResourceStateSnapshot,
+    WorkerStateReport,
+    classify_freshness,
+    resource_snapshot_from_capacity,
 )
 from .scarcity import (
     BLEND_UNIT_COUNT,
@@ -173,11 +213,18 @@ __all__ = [
     "CAPABILITY_DIMENSIONS",
     "CONFIDENCE_VALUES",
     "DEFAULT_SHORT_WINDOW_FLOOR_PERCENT",
+    "ENTITLEMENT_CLASSES",
+    "EXECUTION_CHANNELS",
     "EXCLUSION_STAGES",
+    "FRESHNESS_STATES",
     "MAX_RATING",
     "MIN_RATING",
+    "OBSERVATION_CLASSES",
     "POLICY_REASON_CODES",
+    "REGISTRY_SCHEMA_VERSION",
     "REPLENISHMENT_MODES",
+    "RESOURCE_HEALTH_STATUSES",
+    "RESOURCE_STATE_SCHEMA_VERSION",
     "SCARCITY_LABELS",
     "SCARCITY_PENALTY_SCALE",
     "SCARCITY_REASON_CODES",
@@ -193,6 +240,8 @@ __all__ = [
     "WINDOW_ROLES",
     "WINDOW_ROLE_STRATEGIC",
     "WINDOW_ROLE_TACTICAL",
+    "WORKER_REPORTABLE_CHANNELS",
+    "WORKER_REPORT_SCHEMA_VERSION",
     "AvailabilityTarget",
     "BlackoutDecision",
     "CapabilityAssessment",
@@ -208,6 +257,7 @@ __all__ = [
     "CapacityWindow",
     "CandidateEvaluation",
     "EvidenceRef",
+    "ExecutionCapabilities",
     "GoverningWindowEvidence",
     "HardConstraintFailure",
     "HardConstraints",
@@ -218,11 +268,22 @@ __all__ = [
     "ModelHardProperties",
     "ModelIdentity",
     "ModelRef",
+    "PromotionObservation",
+    "QuotaFact",
+    "QuotaPoolGroup",
     "ReplenishmentDecision",
     "ReplenishmentEvaluation",
     "ReplenishmentState",
     "ReservationDecision",
     "ReservationRule",
+    "RegistrySnapshot",
+    "ResourceCost",
+    "ResourceHealth",
+    "ResourceIdentity",
+    "ResourceRegistration",
+    "ResourceRegistry",
+    "ResourceRegistryEntry",
+    "ResourceStateSnapshot",
     "ScarcityAssessment",
     "SelectionContractError",
     "SelectionContractValidationError",
@@ -236,12 +297,14 @@ __all__ = [
     "UserPolicy",
     "WeeklyBlackoutRule",
     "WeeklyHappyHourRule",
+    "WorkerStateReport",
     "apply_replenishment_mode",
     "apply_unknown_capacity_mode",
     "apply_capacity_overrides",
     "assess_scarcity",
     "blended_effective_remaining_percent",
     "capability_margin",
+    "classify_freshness",
     "evaluate_blackouts",
     "evaluate_capability_sufficiency",
     "evaluate_happy_hours",
@@ -249,6 +312,7 @@ __all__ = [
     "evaluate_reservation",
     "get_version",
     "neutral_selector_policy",
+    "resource_snapshot_from_capacity",
     "scarcity_label",
     "scarcity_penalty_units",
     "select_model",

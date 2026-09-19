@@ -2637,18 +2637,52 @@ what M4.1 forbids); a configurable per-provider eligibility policy
 
 ### U-003 — Refresh and staleness policy
 
-- **Status:** Partially resolved for synchronous M1 status (2026-09-05); the
-  deferred refresh/staleness remainder is assigned to M01 (#86) by D-041
-  (2026-09-19)
-- **Decision:** Every `status` invocation performs a fresh sequential collection
+- **Status:** Resolved (2026-09-19, issue #86 / M01, under D-041's
+  assignment); the synchronous M1 decision below is unchanged
+- **Decision (M1, 2026-09-05, unchanged):** Every `status` invocation performs a fresh sequential collection
   and establishes one canonical UTC millisecond `retrieved_at` immediately for
   that observation attempt. The same value is passed to OpenAI and Z.ai;
   provider observations are never independently timestamped.
-- **Boundary:** This resolves the on-demand observation behavior only. No cache
-  TTL, background refresh, freshness score, stale threshold or timeout policy
-  is invented here.
-- **Evidence needed:** Real owner workflow use and observed collector
-  latency/reliability before choosing any retained-snapshot or staleness policy.
+- **Resolution (2026-09-19, issue #86):** The deferred retained-state and
+  staleness remainder is implemented as explicit, bounded per-resource
+  freshness in `scarcity_router/resource_state.py`, scoped to the server's
+  in-memory resource registry (D-041):
+  1. Every resource-state snapshot carries `observed_at` (when the
+     observation was made) and a required positive `freshness_ttl_seconds`
+     (the bounded staleness policy in effect for that record). No snapshot
+     is ever treated as unboundedly fresh; `observed_at` alone never claims
+     freshness.
+  2. `classify_freshness` evaluates each observation against an explicit,
+     injectable instant: fresh while its age is at most its TTL, stale
+     strictly beyond. Registry reads expose exactly `fresh`, `stale` or
+     `never_observed` per resource; staleness never rewrites an
+     observation's own health status, and stale or unknown state is never
+     read as usable, zero or full.
+  3. Polling is bounded and pull-driven: a resource with a configured
+     `poll_interval_seconds` is `refresh_due` when it has never been
+     observed or its last observation is at least that old; the server's
+     request loop (M03) decides when to act on it. No background threads,
+     timers or daemons exist at this boundary.
+  4. The registry is deliberately in-memory; the durable SQLite-class
+     server store remains D-041/M03/M09 scope and no external cache,
+     database or message-queue service is introduced.
+  Alternatives considered: a background refresh daemon (rejected: hidden
+  concurrency and nondeterministic behavior in a first version; the
+  pull-driven contract gives M03 the same effect explicitly); one global
+  fixed TTL (rejected: freshness policy is per-resource administrator
+  configuration, and a global default would hide real per-surface
+  differences such as local Ollama health versus provider telemetry);
+  retaining snapshots durably now (rejected: no evidenced need before the
+  M03/M09 server store exists, and persisted state would need its own
+  explicit migration story).
+- **Boundary:** This resolution is scoped to the server's resource-state
+  registry. The recommendation-only surfaces keep their synchronous
+  fresh-collection behavior (no cache, no TTL) exactly as the M1 decision
+  above defines it.
+- **Residual:** Concrete TTL/polling defaults for real deployments are
+  administrator-configuration territory (M09) and should be validated
+  against observed collector latency/reliability when the server ships
+  (M03/M10).
 
 ### U-004 — Z.ai reset metadata and schema drift
 
