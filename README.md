@@ -13,10 +13,17 @@ The broker answers **which capable model should this task consume now?** It
 considers quota windows, capability, constraints and reservations, then prefers
 the least scarce sufficient candidate.
 
-It is a recommendation service, not a model gateway. It does not receive
-prompts, proxy model traffic, read source code or repositories, execute model
-calls, dispatch fallbacks, or replace an orchestrator such as Kilo, Codex or
-Claude Code.
+Scarcity Router is two-mode. By default it is a local recommendation service,
+not a model gateway: it does not receive prompts, proxy model traffic, read
+source code or repositories, execute model calls, dispatch fallbacks, or
+replace an orchestrator such as Kilo, Codex or Claude Code. Optionally — as a
+separate, explicitly deployed server component — an execution gateway
+(specified 2026-09-19, program in progress; see
+[`docs/roadmap.md`](docs/roadmap.md)) lets OpenAI-compatible clients send
+authorized requests to one endpoint and have them served from the best
+available resource under the same discipline. This README documents the
+recommendation-only product that exists today; no execution functionality is
+implemented yet.
 
 ## Quick Start
 
@@ -230,9 +237,12 @@ tool (or the recipe adjusted to the checkout-based module command).
   and the provider's normalized usage endpoint.
 
 These adapters report subscription capacity, not generic API pricing. Local
-inference providers are not supported. See
+inference is not part of the recommendation surfaces; it returns as an
+execution resource of the optional execution-gateway program (decision D-040;
+module issues #86–#95). See
 [`docs/providers.md`](docs/providers.md) for discovery, normalization and
-provider-change behavior.
+provider-change behavior, and
+[`docs/architecture.md`](docs/architecture.md) for the gateway architecture.
 
 ## Privacy / Product Boundary
 
@@ -241,9 +251,13 @@ possible. Collectors use them transiently, never return or persist their
 values, and only emit normalized safe status. The REST adapter binds to
 `127.0.0.1` by default; MCP uses local stdio.
 
-The service does not inspect prompts, source code, repository contents or
-browser sessions. It does not proxy requests, call models, redeem reset credits
-or automatically execute a fallback. Read
+In the default recommendation-only mode, the service does not inspect prompts,
+source code, repository contents or browser sessions. It does not proxy
+requests, call models, redeem reset credits or automatically execute a
+fallback. The optional execution-gateway program (not yet implemented)
+extends this boundary only through its recorded decisions D-040 through
+D-045, with its own security architecture in
+[`docs/security.md`](docs/security.md). Read
 [`docs/security.md`](docs/security.md) for the complete credential and network
 boundary.
 

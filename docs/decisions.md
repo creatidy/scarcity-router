@@ -8,13 +8,20 @@ direction was chosen. Dates use UTC.
 
 ### D-001 — Recommend, do not proxy
 
-- **Status:** Accepted
+- **Status:** Superseded in part by D-040 (2026-09-19)
 - **Date:** 2026-09-01
 - **Decision:** The service returns a model recommendation, alternatives and an
   explanation. It does not receive prompts, proxy model traffic, execute work or
   automatically dispatch fallbacks.
 - **Reason:** This directly solves quota allocation while sharply reducing
   security exposure and integration coupling.
+- **Supersession note (2026-09-19):** The recommendation-only product remains
+  the default standalone mode with unchanged semantics. D-040 adds the optional
+  execution gateway, which may receive prompts and execute/proxy model traffic
+  when explicitly deployed and authorized. Every D-001 obligation that remains
+  true for recommendation-only mode — no prompt receipt, no model-traffic
+  proxying, no autonomous fallback execution, no orchestrator replacement —
+  continues to govern that mode and the recommendation surfaces.
 
 ### D-002 — Four independent inputs
 
@@ -83,12 +90,16 @@ direction was chosen. Dates use UTC.
 
 ### D-009 — Security defaults
 
-- **Status:** Accepted
+- **Status:** Accepted; extended by D-044 (2026-09-19)
 - **Date:** 2026-09-01
 - **Decision:** Reuse existing local authentication read-only, never expose
   credentials, validate HTTPS and exact hosts before Authorization, and bind
   REST to `127.0.0.1` by default.
 - **Reason:** Subscription credentials are the principal sensitive asset.
+- **Extension note (2026-09-19):** All D-009 defaults remain in force for every
+  recommendation-only surface and collector. D-044 is the explicit security
+  decision required for the execution-gateway server component's new network
+  exposure, credential storage and listener defaults.
 
 ### D-010 — Licensing
 
@@ -202,7 +213,7 @@ direction was chosen. Dates use UTC.
 
 ### D-017 — Local Ollama support removed
 
-- **Status:** Accepted
+- **Status:** Superseded by D-040 (2026-09-19)
 - **Date:** 2026-09-05
 - **Supersedes:** D-008's three-provider scope, D-016's three-provider status
   surface, the local-runtime portion of U-002, U-003's three-provider
@@ -221,6 +232,14 @@ direction was chosen. Dates use UTC.
 - **M1 effect:** M1 remains **NOT YET PASS**. The remaining blocker is usable
   current OpenAI subscription-capacity windows in the owner's supported
   environment. Any future restoration requires a new explicit product decision.
+- **Supersession note (2026-09-19):** D-040 is that explicit product decision:
+  Ollama and local inference return as *execution resources* of the optional
+  execution gateway (server-direct HTTP when network-accessible, worker-bridged
+  when localhost-only). The D-017 removal rationale — local-runtime operational
+  instability and system interference — remains a design input for the
+  gateway's isolation, health handling and honest unknown states; it is not
+  evidence against restoration, and it never re-enters the *recommendation*
+  collector set on its own.
 
 ### D-018 — Bounded provider-managed OpenAI auth recovery
 
@@ -1062,7 +1081,7 @@ direction was chosen. Dates use UTC.
 
 ### D-028 — M3 machine-interface contract (REST and MCP)
 
-- **Status:** Accepted
+- **Status:** Accepted; non-goals amended by D-045 (2026-09-19)
 - **Date:** 2026-09-06
 - **Decision:** M3a freezes the machine-interface semantics for REST and MCP
   in [`docs/machine-interfaces.md`](machine-interfaces.md) — the
@@ -1296,7 +1315,7 @@ direction was chosen. Dates use UTC.
 
 ### D-030 — M3b local REST implementation
 
-- **Status:** Accepted
+- **Status:** Accepted; boundary note added by D-044/D-045 (2026-09-19)
 - **Date:** 2026-09-07
 - **Decision:** M3b implements the frozen D-028 REST v1 surface as a thin,
   loopback-only adapter in `scarcity_router/server.py`, using the Python
@@ -1384,6 +1403,12 @@ direction was chosen. Dates use UTC.
   mutually exclusive argparse group), no catalog/rating/policy change, no
   MCP implementation (M3c still pending), no auth/TLS/non-loopback option,
   no dependency change.
+- **Boundary note (2026-09-19, D-044/D-045):** This decision governs the
+  loopback REST v1 adapter only, and it is preserved verbatim for that adapter.
+  The execution-gateway server component is a separate, authenticated,
+  TLS-terminated surface set defined by D-044 and D-045 — it is never created
+  by relaxing this adapter's fixed `127.0.0.1` binding, auth-free posture or
+  frozen endpoint set.
 - **Amendment (2026-09-07, single remediation):** Semantic failures while
   applying an otherwise schema-valid simulation override use the narrow
   `SimulationOverrideApplicationError` type and become the existing
@@ -1399,7 +1424,7 @@ decision.
 
 ### D-031 — M3c stdio MCP implementation
 
-- **Status:** Accepted
+- **Status:** Accepted; boundary note added by D-044/D-045 (2026-09-19)
 - **Date:** 2026-09-07
 - **Decision:** M3c implements the frozen machine-interface v1 MCP surface as
   a thin, local stdio adapter:
@@ -1473,6 +1498,13 @@ decision.
   machine-interface semantics. Sanitized evidence is recorded in
   [`docs/m3-acceptance.md`](m3-acceptance.md); this milestone acceptance does
   not create a new decision number.
+- **Boundary note (2026-09-19, D-044/D-045):** This decision governs the local
+  stdio MCP adapter only, and it is preserved verbatim for that adapter. The
+  optional remote bridge (M08) is a configured client mode against the
+  authenticated server component; it is never created by adding a network
+  listener, authentication surface or execution capability to this stdio
+  adapter. MCP remains recommendation/control only under the execution-gateway
+  program (D-040).
 
 ### D-032 - Reasoning-effort-aware model configurations
 
@@ -2020,6 +2052,453 @@ not representable in v3 and the fallback-after-selection shape is exactly
 what M4.1 forbids); a configurable per-provider eligibility policy
 (rejected: fail-closed structural gating is not a user preference).
 
+### D-040 — Two-mode product and the optional execution gateway
+
+- **Status:** Accepted (owner-approved product decision, 2026-09-19)
+- **Date:** 2026-09-19
+- **Issue:** BioMedical-IT/scarcity-router#85 (program map A0)
+- **Supersedes:** D-001 (in part — see D-001's supersession note), D-017
+- **Confidence:** High for the product boundary; module-level design carries
+  normal implementation risk delegated to M01–M10 (#86–#95).
+- **Decision:** Scarcity Router remains one independent Apache-2.0 OSS
+  repository and gains an **optional execution gateway** alongside the
+  existing **recommendation-only mode**:
+  1. **Recommendation-only mode is the default standalone mode and is
+     unchanged.** The CLI, loopback REST v1 and stdio MCP surfaces keep their
+     frozen contracts, security boundaries and semantics. Installation and
+     operation without the server component, a worker or Docker remain exactly
+     what exists today (M10 guards this).
+  2. **The optional execution gateway may receive prompts and execute/proxy
+     model traffic** when explicitly deployed and authorized. This is the
+     deliberate partial supersession of D-001. The gateway serves one
+     OpenAI-compatible endpoint so that any OpenAI-SDK client (one
+     `base_url`, one client API key, one model/profile identifier) can have
+     requests served from the best available authorized resource — API
+     providers, Ollama/local inference, or approved local Codex/ZCode
+     adapters — under the existing least-scarce-capable discipline.
+  3. **Ollama and local inference return as execution resources**
+     (server-direct over HTTP when network-accessible, worker-bridged when
+     localhost-only), superseding D-017's blanket removal. The D-017
+     operational-instability rationale remains a design input for isolation,
+     health handling and honest unknown states.
+  4. **Not authorized by this decision:** autonomous coding/agent frameworks,
+     arbitrary command execution on hosts, issue-to-PR orchestration,
+     repository management, generic agent workflow frameworks, a general task
+     scheduler, `scarcity run <task>`-style interfaces, reset-credit
+     redemption or any benefit-consuming action (those remain information
+     unless a separate explicit decision authorizes acting on them).
+     Repositories and client-side tools remain controlled by the client; SSH
+     is a way a user may reach a machine, not a router orchestration
+     protocol. An execution mode with undefined or unbounded start time must
+     not silently replace a synchronous HTTP request.
+  5. **The goal is efficient use of heterogeneous AI access** —
+     subscriptions, eligible promotions, metered APIs, prepaid APIs and
+     local models/local GPU. The same model name must never be assumed to
+     mean the same resource, entitlement, quota pool, cost model or
+     promotional eligibility (D-042).
+  6. Every existing invariant that remains true — security invariants,
+     provider-edge discipline, quota-never-changes-capability, licensing —
+     is unchanged. AGENTS.md, `docs/product.md`, `docs/security.md` and the
+     README are rewritten to the two-mode boundary; history is preserved in
+     this log.
+- **Reason:** The owner's real workflow now includes serving OpenAI-compatible
+  clients from heterogeneous subscription, API and local capacity. Proxying
+  under explicit authorization with least-scarce-capable routing delivers
+  that value without sacrificing the safe recommendation-only default for
+  every existing user.
+- **Alternatives considered:** a separate gateway product/repository
+  (rejected: duplicates the routing core and the collector set, guarantees
+  drift); silently extending machine-interface v1 with execution endpoints
+  (rejected: breaks the frozen D-028 boundary and its clients); building the
+  agent/orchestrator features clients sometimes ask for (rejected: explicit
+  non-goal, scope creep with security exposure).
+- **Boundary:** Product decision and documentation only (A0). No gateway,
+  worker, adapter, UI or packaging implementation is authorized by this entry;
+  implementation is delegated to M01–M10 under the A0 architecture (D-041
+  through D-045).
+
+### D-041 — Execution-gateway module architecture, server/worker responsibilities and durable state
+
+- **Status:** Accepted
+- **Date:** 2026-09-19
+- **Issue:** BioMedical-IT/scarcity-router#85 (A0); module issues #86–#95
+- **Confidence:** Medium-high; module boundaries are frozen, internal module
+  design belongs to each module issue.
+- **Decision:** The execution gateway is specified as **logical module
+  boundaries inside the existing Python package, not microservices**. The
+  authoritative module map, responsibility boundaries, per-module input/output
+  contracts and the existing-file-to-module mapping are
+  [`docs/architecture.md`](architecture.md) (execution-gateway section). This
+  decision freezes:
+  1. **Responsibility separation.** Resource State/Registry/Collectors own
+     observation (what exists, whether it is reachable, freshness, cost,
+     pools — never routing). The Routing Core owns the pure deterministic
+     decision (which executable target — never I/O, never provider parsing).
+     The Execution Coordinator owns one execution's lifecycle (admission,
+     concurrency reservation, dispatch, streaming, cancellation, usage
+     accounting — never routing decisions, never provider parsing; providers
+     are reached only through execution adapters). No module crosses another's
+     boundary; the routing core stays import-clean of providers, network and
+     subprocess exactly as today.
+  2. **One server component, one native worker component.** Exactly one
+     server process serves the OpenAI-compatible execution surface, the
+     control API and the lightweight web UI (M09), and terminates the worker
+     protocol. Exactly one native worker (Windows/Linux/WSL, M05) bridges
+     localhost-only resources to the server through an outbound TLS/WSS
+     connection. Module boundaries introduce **no** additional containers,
+     databases or deployed services.
+  3. **Server vs worker split.** The server holds server-side credentials
+     (administrator configuration, provider API keys, client API keys, worker
+     identities), aggregates state, makes routing decisions, coordinates
+     execution and writes audit records. The worker holds only its per-device
+     pairing identity and local allowlists; provider application credentials
+     stay local to the worker host whenever possible (Codex auth remains
+     provider-managed per D-018's boundary); the worker performs no routing
+     decisions and enforces its local adapter allowlist even against server
+     requests.
+  4. **Durable state is minimal.** The server keeps one embedded durable
+     store (SQLite-class single-file store inside its data directory) holding
+     configuration state, identities, usage accounting and the bounded audit
+     trail; no external database, cache or message-queue service is
+     introduced. The store's schema is server-internal, not a public
+     serialized contract; migrations are explicit and tested. In-memory
+     operation remains valid for slices that need no durable state; the
+     exact schema lands with the module that first needs it (M03/M09) under
+     this requirement. Worker keeps only its identity file and local
+     configuration.
+  5. **U-003 assignment.** The deferred refresh/staleness policy is resolved
+     by M01 (#86), scoped to the server's state store and its bounded
+     polling/cache with explicit freshness semantics; the synchronous
+     one-shot collection behavior of the local recommendation-only surfaces
+     is unchanged.
+  6. **Language and structure preserved.** The current implementation
+     language, core code and package structure are kept; new gateway/worker
+     modules sit beside the existing application layer. No new directory tree
+     is imposed without evidence.
+- **Reason:** The owner-approved extension must reuse the accepted routing
+  core and collector discipline rather than fork them; logical boundaries
+  inside one package keep a single deployable recommendation-only artifact
+  while making each module independently implementable and reviewable.
+- **Alternatives considered:** microservice decomposition per boundary
+  (rejected: no demonstrated need, multiplies deployment and security
+  surface); extending the existing collectors with routing knowledge
+  (rejected: violates D-003/D-002 separation that has kept provider drift
+  contained); a second selector for gateway requests (rejected: D-042 forbids
+  a second scoring system).
+- **Boundary:** Architecture and module contracts only. No runtime behavior
+  is implemented or changed by this decision.
+
+### D-042 — Route-decision contract, authorization precedence and the entitlement/quota-pool model
+
+- **Status:** Accepted
+- **Date:** 2026-09-19
+- **Issue:** BioMedical-IT/scarcity-router#85 (A0); implementation in M02 (#87)
+  with M01 (#86) inputs
+- **Confidence:** High for precedence and model semantics; field-level
+  serialization is M02's to define under the A0 contract map.
+- **Decision:** The routing core gains a **route-decision contract** for
+  executable targets, defined in [`docs/architecture.md`](architecture.md)
+  and reflected in [`docs/selection-policy.md`](selection-policy.md). This
+  decision freezes:
+  1. **Executable target, not model name.** A route decision identifies a
+     concrete executable target that separates: the physical
+     model/variant (`ModelIdentity`); the execution channel/surface
+     (server-direct HTTP adapter, worker-bridged adapter, local CLI/app
+     adapter); the entitlement in use (subscription-included, promotional,
+     PAYG metered, prepaid credits, local/ungated); the quota pool(s) the
+     entitlement draws from (confirmed shared pools referenced explicitly);
+     and the client routing profile under which the decision was made. The
+     same model name never implies any of these.
+  2. **Entitlement and quota-pool semantics** (detailed in
+     [`docs/capacity-model.md`](capacity-model.md)): every quota fact carries
+     an observation class — `direct_observation`, `provider_telemetry`,
+     `estimate`, `local_limit` or `unknown`; tokens reported by an adapter
+     are never equated with subscription quota percentages; resources
+     sharing one confirmed quota pool are never counted as independent
+     capacity, and unconfirmed sharing is never assumed in either direction
+     (the same subscription discovered through Desktop, CLI, Windows or WSL
+     is not multiple pools, nor is one pool assumed without verification).
+     A routing preference based on a promotion is distinct from proof that a
+     specific execution qualifies for it (D-039 gating remains the proof
+     path). Scarcity Router never assumes it observes all account usage
+     happening outside the router.
+  3. **Authorization precedence (frozen).**
+     `administrator constraints > client authorization > request
+     requirements > configured routing profile > explicitly selected
+     target/model > optimization preferences`.
+     Each layer may only narrow the space allowed by the layers above it; a
+     client override may narrow permissions and must never expand
+     authorization, provider access or spending limits. If the caller
+     explicitly requests a concrete model/effort/target, it is pinned and
+     **never silently replaced**: when a pinned target violates a stronger
+     layer (unauthorized, incompatible or blocked), the request fails with
+     an explicit error rather than being re-routed.
+  4. **Profiles/aliases are bindings, not a second scoring system.**
+     Administrator-defined profile aliases may occupy the `model` field of
+     OpenAI-compatible clients, but each alias resolves to the existing
+     task/profile requirement model (`model-policy.json` profiles and
+     `TaskRequirement`). There is no second simplified scoring system and no
+     mandatory LLM request classifier; capability constraints inferred from
+     request structure (tools present, structured output requested) are
+     compatibility requirements, not rankings.
+  5. **Recommendation-to-execution binding.** A gateway-era route decision
+     carries a `decision_id` and an executable-target reference for its
+     selected candidate. A client that first used MCP `select` (or REST/CLI
+     select) may pin that target reference in a subsequent gateway execution
+     request; the gateway then runs **admission only** (authorization,
+     limits, availability, compatibility) and never re-runs competitive
+     ranking, so no unexpected second routing decision occurs. Frozen
+     alongside: **a recommendation is not automatically a reservation, a
+     capacity guarantee or an execution guarantee**; no capacity is reserved
+     between select and execution unless a future explicit versioned
+     decision adds reservations. D-022's bounded compound recommendation
+     remains a contract, not an executor.
+  6. **Existing semantics preserved.** Identical inputs and evaluation time
+     still produce identical decisions (D-027/D-032/D-037); quota state
+     never raises capability ratings; `/v1/select` and `simulate`
+     semantics are preserved, and any extension flows through the additive
+     machine-interface v1 rules (D-028).
+- **Reason:** OpenAI-compatible clients supply almost no requirement
+  information; correctness therefore depends on binding their three fields
+  to the authoritative requirement/policy model and on separating the five
+  target dimensions so quota, authorization and compatibility mistakes
+  cannot hide inside a model string.
+- **Alternatives considered:** routing on bare model names with
+  provider-level entitlement lookup (rejected: the same name across
+  channels/pools is exactly the failure mode the program exists to prevent);
+  an LLM-based request classifier deriving requirements from prompt content
+  (rejected: nondeterministic, prompt-inspecting, unnecessary); treating a
+  recommendation as a reservation (rejected: no capacity guarantee can be
+  made without provider-side reservations that do not exist).
+- **Boundary:** Contract semantics only. No selector, policy or interface
+  code changes here; M02 implements under this contract and M01 supplies the
+  state inputs.
+
+### D-043 — Execution contracts: ingress request, compatibility matrix, lifecycle, worker protocol and audit metadata
+
+- **Status:** Accepted
+- **Date:** 2026-09-19
+- **Issue:** BioMedical-IT/scarcity-router#85 (A0); implementation in M03 (#88),
+  M04 (#89), M05 (#90), with matrix evidence from M06 (#91)/M07 (#92)
+- **Confidence:** Medium-high; wire-level formats are module-owned, the
+  semantic rules below are frozen.
+- **Decision:** The execution surface's contracts are defined in
+  [`docs/architecture.md`](architecture.md) and versioned per D-045. This
+  decision freezes their semantic rules:
+  1. **Request contract.** The minimum ingress is `GET /v1/models` and
+     `POST /v1/chat/completions` with SSE streaming. Requests are validated
+     for capability before any inference: unsupported capabilities are
+     rejected before inference or routed only to a backend that actually
+     supports and is authorized for them. The Responses API is a later
+     explicit sub-scope with a documented supported subset; a fake
+     `/v1/responses` that silently drops unsupported semantics is forbidden.
+  2. **OpenAI compatibility matrix.** Compatibility is recorded per
+     (adapter, adapter version, model/backend) across the dimensions:
+     roles and conversation history, streaming, `tool_calls`, tool results,
+     structured output, reasoning controls, context limits, error semantics,
+     usage reporting and cancellation — each cell `PASS`, `PARTIAL`,
+     `UNSUPPORTED` or `UNKNOWN` with dated evidence and tested version.
+     `UNKNOWN` and `UNSUPPORTED` fail closed. An agentic CLI backend is not
+     automatically an OpenAI-compatible backend; concatenating messages
+     into a text prompt is not sufficient compatibility.
+  3. **Execution lifecycle.** Admission → bounded concurrency reservation →
+     dispatch → stream → completion/cancellation → usage accounting.
+     Frozen rules: client disconnect/cancellation propagates to the selected
+     backend where supported; the backend is never silently replaced after a
+     response stream has started; retries after ambiguous execution state
+     must not blindly duplicate inference consumption (exactly-once
+     execution is not promised); one external request may cause multiple
+     internal provider calls and usage/accounting represents this honestly.
+     Client-supplied tools return to the CLIENT as `tool_calls`; the router
+     never automatically executes client-provided tools as a local shell
+     command, Codex MCP, ZCode MCP or any local tool.
+  4. **Worker protocol.** One simple versioned message protocol over a
+     single outbound TLS/WSS connection from worker to server: no inbound
+     worker port, no manual worker-IP configuration, no routine certificate
+     maintenance for ordinary users. Handshake performs protocol-version
+     negotiation (incompatible versions fail safely), per-device
+     authentication and heartbeat; message classes cover state reports,
+     execute, stream chunks, cancellation and usage reports; reconnect is
+     bounded with backoff and network loss must not automatically duplicate
+     an already-started request. There is no generic `/shell`, `/ssh` or
+     arbitrary-command message; the worker enforces its local adapter
+     allowlist even if the server requests more.
+  5. **Audit-metadata contract (minimal, frozen field set).** Each executed
+     request records: request id, decision id, client/profile identity,
+     routing-policy version, state snapshot identity/version, selected
+     target, actually-executed target, adapter version, start/end time,
+     result status, provider-reported usage, and estimated usage where
+     applicable. The default audit trail contains **no prompt or response
+     contents**; retention is bounded and administrator-configurable with a
+     bounded non-zero default. Diagnostics remain redacted and allowlisted.
+- **Reason:** These rules are the difference between an honest gateway and a
+  silent-substitution proxy: capability truth per backend, explicit
+  lifecycle limits, worker trust that never becomes remote code execution,
+  and an audit trail that explains decisions without hoarding user content.
+- **Alternatives considered:** optimistic capability normalization
+  (rejected: fail-open compatibility is the classic silent-corruption
+  failure of "OpenAI-compatible" backends); an inbound worker port with
+  mTLS both ways (rejected: breaks NAT/VPN users, certificate maintenance);
+  full prompt/response logging for debugging (rejected: privacy and
+  retention burden; redacted diagnostics suffice).
+- **Boundary:** Contract semantics only; M03/M04/M05 implement, M06/M07
+  supply matrix evidence, M10 verifies end to end.
+
+### D-044 — Security architecture of the execution-gateway server component
+
+- **Status:** Accepted (explicit security decision required by D-009's
+  extension rule and AGENTS.md for new network exposure, credential storage
+  and write access)
+- **Date:** 2026-09-19
+- **Issue:** BioMedical-IT/scarcity-router#85 (A0); distributed to M03 (#88)
+  ingress, M04 (#89) outbound provider HTTP, M05 (#90) worker transport,
+  M06 (#91)/M07 (#92) local runtime integrations, M09 (#94) administration,
+  M10 (#95) E2E verification
+- **Extends:** D-009; boundary notes added to D-030/D-031
+- **Confidence:** High for the boundary rules; mechanism details (exact key
+  formats, TLS library) are module-owned.
+- **Decision:** The execution-gateway **server component** adds authenticated
+  network surfaces with their own security decision; every
+  recommendation-only surface keeps today's boundary unchanged. The complete
+  threat model is [`docs/security.md`](security.md) (execution-gateway
+  section). Frozen rules:
+  1. **Three identity classes with separate credentials and permissions:**
+     administrator, inference client, worker. No shared default password; no
+     bearer secrets in URLs; issuance and revocation exist for each class;
+     client API keys authorize inference, never administration.
+  2. **Verified TLS everywhere; no `verify=false`.** The server's non-
+     loopback listeners require TLS with verified certificates. Workers
+     connect outbound over TLS/WSS and verify the server; the server never
+     needs to reach a worker inbound. Plain-HTTP localhost exceptions are
+     allowed only as explicit bounded administrator-configured origins
+     (e.g. a loopback or LAN Ollama endpoint), never for
+     credential-bearing requests to non-local origins.
+  3. **Pairing/trust bootstrap is simple and explicit:** the administrator
+     initiates pairing in the server UI, receives a short-lived one-time
+     pairing code, enters it (plus the server URL) on the worker, and the
+     worker receives a per-device credential with rotation and revocation.
+     No manual IP allowlists, no shared fleet secret, no certificate
+     signing ceremony for ordinary users.
+  4. **Server-side credential storage is bounded and explicit:** provider
+     endpoints and credentials come only from administrator configuration;
+     OS-native secure storage is preferred where available and a
+     permissioned file store (`0o600`, never world-readable) is the
+     recorded fallback. This is the sole, explicit exception to the
+     recommendation-mode "credentials are transient input" rule, and it
+     exists only inside the server component's store. Credentials are never
+     logged, never exported, never sourced from client request content, and
+     never sent to non-configured origins.
+  5. **Limits enforced at admission before dispatch:** request-body size,
+     context/output size, concurrency, execution time and spending limits —
+     administrator-configurable, with safe defaults.
+  6. **Router-loop protection:** the router's own endpoint (and another
+     router instance's endpoint) must not silently serve as a provider
+     backend; configuring the server's own execution origin as a provider
+     is refused, and ingress identifies gateway-originated traffic so
+     chained routers fail loudly rather than loop.
+  7. **SSRF and redirect discipline:** provider origins are fixed
+     administrator configuration (no client-supplied URLs); credentials are
+     bound to configured origins; `Authorization` is never forwarded across
+     unsafe/cross-origin redirects (reject rather than follow).
+  8. **Local-adapter isolation (M06/M07):** session, filesystem and tool
+     isolation; no automatic access to user projects, arbitrary paths,
+     shell, global MCP configuration, plugins, browser integrations or
+     unrelated conversation history; a read-only sandbox alone is not
+     presumed sufficient. No root/Administrator execution by default; no
+     Docker socket mounting; no arbitrary repository mounting; no
+     uncontrolled client-supplied subprocess flags or environment
+     variables. Provider-managed credentials stay provider-managed
+     (D-018 boundary unchanged).
+  9. **Logging and audit:** no prompt/response logging by default; no
+     secret logging; redacted diagnostics; the minimal audit metadata of
+     D-043 with bounded retention; logs created by local runtimes on
+     worker hosts are accounted for by the same hygiene rules.
+  10. **Provider terms and subscription scope:** provider subscription and
+      promotional terms are respected (U-009); several apps owned by one
+      user must not automatically imply the right to share one personal
+      subscription with multiple independent users — the server is scoped
+      to one user's own resources, not a resale or multi-tenant quota
+      pool.
+- **Reason:** The gateway moves the product onto the model-request path and
+  onto the LAN; that exposure is acceptable only with separate identities,
+  verified TLS, explicit trust bootstrap, bounded credential storage and
+  admission limits designed before implementation, not retrofitted.
+- **Alternatives considered:** unauthenticated LAN deployment with a shared
+  token (rejected: no revocation, no identity separation, breaks the
+  spending-limit guarantee); mTLS for every client (rejected: ordinary
+  OpenAI SDK clients cannot do client certificates; API keys are the client
+  convention); storing credentials in environment variables or world-
+  readable config (rejected: violates the existing storage discipline).
+- **Boundary:** Security architecture only. Implementation and verification
+  are distributed to the module issues above; M10's security acceptance
+  scenarios are program blockers.
+
+### D-045 — Machine-interface coexistence and the versioned OpenAI-compatible execution surface
+
+- **Status:** Accepted
+- **Date:** 2026-09-19
+- **Issue:** BioMedical-IT/scarcity-router#85 (A0); M03 (#88) implements,
+  M08 (#93) guards
+- **Amends:** D-028 (and the `docs/machine-interfaces.md` non-goals)
+- **Confidence:** High.
+- **Decision:** The existing machine-interface v1 and the new
+  OpenAI-compatible execution surface are **separate contracts that never
+  share a version**, and the frozen v1 surfaces are preserved:
+  1. **Machine-interface v1 is untouched.** `GET /healthz`, `GET /v1/status`,
+     `POST /v1/select`, `POST /v1/simulate` on the loopback REST adapter,
+     the stdio MCP tools and the CLI keep their frozen semantics, paths,
+     envelopes and loopback/unauthenticated boundary (D-028/D-030/D-031).
+     Additive evolution continues only under the D-028
+     backwards-compatibility rules.
+  2. **The OpenAI-compatible execution surface is a new, separately
+     versioned contract** ("execution surface v1"): `GET /v1/models` and
+     `POST /v1/chat/completions` (plus SSE), served by the authenticated
+     server component. Its `/v1/` prefix is the OpenAI client convention
+     and is **not** machine-interface v1; the two path sets are disjoint
+     (`/healthz`, `/v1/status`, `/v1/select`, `/v1/simulate` vs
+     `/v1/models`, `/v1/chat/completions`), so one listener may serve both
+     in server deployments without ambiguity, but the contracts, versions,
+     error vocabularies and security boundaries remain separate documents.
+     Execution-surface errors follow OpenAI-compatible client conventions;
+     they never reuse or extend the closed `invalid_request`/
+     `internal_error` machine-interface vocabulary.
+  3. **The loopback REST v1 adapter is never the execution server.** The
+     execution server is a distinct component with its own listener
+     defaults, TLS and authentication (D-044); it is never produced by
+     relaxing the frozen adapter's binding or endpoint set. In server
+     deployments, machine-interface-style control operations (status/
+     select/simulate equivalents and administration) are exposed through
+     the server's authenticated control API with equivalent semantics
+     under the M08 parity rules — same core, explicitly versioned.
+  4. **The parity requirement extends, not forks.** The M08 guardrail suite
+     keeps `direct == CLI == REST == MCP` green throughout the program and
+     extends it to cover gateway-era additive fields; server-mode control
+     responses remain semantically equal to local ones for equivalent
+     state/policy. The optional remote bridge (M08) is explicit
+     configuration with explicit failure — a configured remote server that
+     fails is surfaced as an error, never silently degraded to local state.
+  5. **Versioning discipline.** Execution-surface v1 evolves additively
+     within its version; any incompatible change requires a new major
+     version and an explicit migration decision, exactly like
+     machine-interface v1. The worker protocol carries its own independent
+     protocol version with negotiation (D-043).
+- **Reason:** Existing users and the M08 parity suite depend on frozen v1
+  semantics; OpenAI-compatible clients depend on standard OpenAI paths.
+  Naming the two contracts separately and keeping their path sets disjoint
+  satisfies both without compatibility serializers or silent semantic
+  mixing.
+- **Alternatives considered:** extending machine-interface v1 with
+  `/v1/chat/completions` (rejected: an execution endpoint inside an
+  unauthenticated loopback contract is a security contradiction and a
+  semantic category error); versioning the execution surface as
+  machine-interface v2 (rejected: implies a migration relationship that
+  does not exist — the contracts serve different client populations);
+  requiring a separate port or hostname for the execution surface
+  (deferred to deployment choice, not contract: the contract separation is
+  what is frozen here).
+- **Boundary:** Contract-coexistence rules only; no endpoint is implemented
+  by this decision.
+
 ## Unresolved decisions
 
 ### U-001 — Codex binary discovery and compatibility
@@ -2085,7 +2564,9 @@ what M4.1 forbids); a configurable per-provider eligibility policy
 
 ### U-003 — Refresh and staleness policy
 
-- **Status:** Partially resolved for synchronous M1 status (2026-09-05)
+- **Status:** Partially resolved for synchronous M1 status (2026-09-05); the
+  deferred refresh/staleness remainder is assigned to M01 (#86) by D-041
+  (2026-09-19)
 - **Decision:** Every `status` invocation performs a fresh sequential collection
   and establishes one canonical UTC millisecond `retrieved_at` immediately for
   that observation attempt. The same value is passed to OpenAI and Z.ai;
@@ -2334,6 +2815,56 @@ what M4.1 forbids); a configurable per-provider eligibility policy
   are recorded in `docs/poc-evidence.md`; synthetic current-shape coverage is
   in `tests/fixtures/openai-codex-appserver/` and
   `tests/test_openai_codex_parser.py`.
+
+### U-012 — Codex execution-adapter uncertainties (registered by A0)
+
+- **Status:** Open; resolution owned by M06 (#91) — Stage 1 evidence may start
+  immediately and is exempt from the A0 dependency edge; Stage 2
+  implementation waits for it.
+- **Date:** 2026-09-19
+- **Decision:** A0 deliberately does not guess the following; each is answered
+  only by dated, versioned evidence in M06 Stage 1:
+  - runtime discovery across Desktop-only, CLI and VS Code installations, and
+    Windows versus WSL profile separation;
+  - authentication prerequisites for unattended execution (the D-018 boundary
+    — Scarcity Router never touches tokens — is not in question; whether the
+    official app-server/CLI flows permit the execution path is);
+  - model selection and reasoning/effort selection through the app-server;
+  - quota scope of executed work relative to the D-039 eligibility contract;
+  - conversation roles/history support, streaming, cancellation, tool-call
+    behavior, structured output and usage reporting (compatibility-matrix
+    cells for M03);
+  - which app-server protocol fields are stable enough to depend on
+    (generation-aware parsing per D-019/U-011 remains the containment).
+- **Evidence needed:** official documentation
+  (https://developers.openai.com/codex/app-server,
+  https://developers.openai.com/codex/auth) re-verified with date and tested
+  version at implementation time; local capability probes; only credentials
+  authorized for this work.
+
+### U-013 — ZCode execution feasibility uncertainties (registered by A0)
+
+- **Status:** Open; resolution owned by M07 (#92) Stage 1 — an independent
+  research track that never blocks the program.
+- **Date:** 2026-09-19
+- **Decision:** A0 deliberately does not guess the following; each is answered
+  only by dated evidence in M07 Stage 1:
+  - whether an official, stable, headless ZCode execution path exists at all
+    (unofficial wrappers are research evidence only, never proof of API
+    support or redistribution rights);
+  - vendor terms for subscription/idle-time usage through a third-party
+    router (re-verify https://zcode.z.ai/en/terms with date);
+  - runtime discovery, authentication, output format, cancellation, tool
+    behavior, permissions and version stability;
+  - actual usage/quota accounting, kept separate from promotional-eligibility
+    questions (execution success never proves promotional eligibility);
+  - isolation of session/filesystem/tools from unrelated conversation history
+    and global plugins.
+- **Evidence needed:** vendor documentation
+  (https://zcode.z.ai/en/docs/welcome, /en/docs/idle-time-tasks, /en/docs/hooks,
+  /en/terms, https://docs.z.ai/devpack/overview) re-verified with dates;
+  prefer official documentation and local capability probes; no credentials
+  beyond those authorized for this work.
 
 ## Superseding a decision
 

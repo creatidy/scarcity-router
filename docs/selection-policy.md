@@ -657,12 +657,55 @@ same policy layer. Modes cannot fabricate capacity or bypass explicit privacy
 constraints. Provider blackout schedules are orthogonal hard policy and must
 not be weakened by a mode unless the user explicitly overrides them.
 
+## Executable targets and the route-decision contract (A0, D-042)
+
+The execution-gateway program extends the same selector to choose an
+authorized **executable target** — not merely a model name — as a pure,
+deterministic decision (M02, #87). The existing balanced pipeline, ranking
+semantics (D-027/D-032/D-037) and the D-039 execution-eligibility stage are
+preserved; execution-era inputs enter as typed inputs in the same pattern as
+eligibility reports, never as hidden penalties.
+
+- **Route-decision dimensions.** A route decision separates the physical
+  model/variant (`ModelIdentity`), the execution channel/surface
+  (server-direct HTTP, worker-bridged, local CLI/app adapter), the
+  entitlement in use, the confirmed quota pool(s) it draws from, and the
+  client routing profile. The same model name never implies any of these
+  ([`docs/capacity-model.md`](capacity-model.md)).
+- **Authorization precedence (frozen, D-042).**
+  `administrator constraints > client authorization > request requirements >
+  configured routing profile > explicitly selected target/model >
+  optimization preferences`. Each layer may only narrow the space allowed by
+  stronger layers; a client override never expands authorization, provider
+  access or spending limits. An explicitly requested model/effort/target is
+  pinned and never silently replaced — a pinned target violating a stronger
+  layer fails with an explicit error rather than being re-routed.
+- **Profiles and aliases.** Administrator-defined aliases may occupy the
+  `model` field of OpenAI-compatible clients, but each alias resolves to
+  the existing task/profile requirement model (`TaskRequirement`,
+  `model-policy.json` profiles). There is no second simplified scoring
+  system and no mandatory LLM request classifier; request structure (tools
+  present, structured output requested) yields compatibility requirements,
+  not rankings.
+- **Pinned-target execution.** A client that first used `select` may pin the
+  decision's executable-target reference in a gateway request; the gateway
+  then performs admission only (authorization, limits, availability,
+  compatibility) — no second competitive ranking. Frozen alongside: a
+  recommendation is not automatically a reservation, a capacity guarantee
+  or an execution guarantee (D-042).
+- **Quota still never changes capability.** Execution-surface availability,
+  authorization and spending limits are eligibility/ranking inputs exactly
+  like capacity and eligibility reports; telemetry never raises a
+  capability rating.
+
 ## Bounded compound workflow recommendations
 
-Scarcity Router remains a recommendation service and does not execute model
-calls. If a later selector recommends a compound workflow rather than one model,
-the workflow itself becomes part of the resource decision and must be bounded by
-construction.
+Scarcity Router remains a recommendation service at its core; the optional
+execution gateway (D-040) executes single authorized requests and does not
+turn compound recommendations into an executor. If a later selector
+recommends a compound workflow rather than one model, the workflow itself
+becomes part of the resource decision and must be bounded by construction
+(D-022 remains a contract, not an executor).
 
 A compound recommendation carries a conceptual `ExecutionBudget` with at
 least:

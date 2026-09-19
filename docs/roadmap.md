@@ -10,26 +10,51 @@ is in [`docs/m3-acceptance.md`](m3-acceptance.md).
 Scarcity Router currently provides:
 
 - normalized subscription-capacity status for OpenAI/Codex and Z.ai Coding
-  Plan;
+  Plan (with the D-039 execution-eligibility reports);
 - deterministic, explainable model selection and typed simulation;
 - a loopback-only REST interface and a local stdio MCP adapter over the same
   application/core;
-- a provenance-bearing catalog and data-driven task profiles.
+- a provenance-bearing catalog and data-driven task profiles;
+- an installable local package (D-034) with a default user configuration
+  (D-036).
 
-The module-based local entry point works from a checkout. A published
-installable package, stable executable name and release packaging are not yet
-provided.
+Recommendation-only operation is the default and remains fully supported
+throughout everything below.
+
+## Execution-Gateway Program (A0, issues #85–#95)
+
+The owner-approved optional execution gateway (D-040, 2026-09-19) is specified
+and tracked as a module program. Architecture, decisions and contracts are
+merged as A0 (#85); implementation proceeds per module:
+
+| Planning id | Issue | Scope |
+| --- | --- | --- |
+| M01 | #86 | Resource registry, state, and collectors for executable resources |
+| M02 | #87 | Routing core, policy, and client-requirement binding for executable targets |
+| M03 | #88 | OpenAI-compatible gateway and execution coordinator |
+| M04 | #89 | Generic OpenAI-compatible HTTP adapter and Ollama integration |
+| M05 | #90 | Native worker, pairing, and execution transport |
+| M06 | #91 | Codex adapter (Stage 1 evidence may run anytime) |
+| M07 | #92 | ZCode adapter feasibility (independent research track) |
+| M08 | #93 | MCP, REST, and CLI compatibility; optional remote mode |
+| M09 | #94 | Configuration, web UX, and diagnostics |
+| M10 | #95 | Distribution, installation, update, and end-to-end acceptance |
+
+The recommended order is the first useful vertical slice — M01/M02 → M03/M04
+with the minimum M09/M10 support each slice needs — so a user can route real
+API/Ollama resources through one OpenAI-compatible endpoint before all local
+CLI adapters are complete. Then M05 and M06; M07 runs independently and never
+blocks the program; M08 guards compatibility throughout.
 
 ## Future Direction
 
-- **M4:** a minimal local dashboard and integration recipes for common clients.
 - **Provider evaluation:** add another subscription provider only after its
   telemetry, authentication, security and maintenance boundary is evidenced.
 - **Release readiness:** resolve packaging, naming and distribution questions
-  after regular local use validates the core workflow.
-- **Optional product extensions:** consider provider health, runtime feedback,
-  signed catalog releases, team policy and bounded compound recommendations
-  only when a concrete use case justifies them.
+  (U-008/U-009) after regular use validates the workflows.
+- **Optional product extensions:** provider health, runtime feedback, signed
+  catalog releases, team policy and bounded compound recommendations only
+  when a concrete use case justifies them.
 
 GPT-6 Astra remains outside the active catalog until capability, hard-property
 and capacity-applicability evidence is complete and human-reviewed. This does
@@ -37,7 +62,9 @@ not change the current catalog or selector behavior.
 
 ## Scope Guard
 
-The service remains recommendation-only: it does not proxy prompts, execute
-model calls, dispatch fallbacks, inspect repositories or become a generic LLM
-gateway. New work starts from an explicitly selected Forgejo issue and must
-preserve the authoritative contracts and security boundaries.
+The product is two-mode (D-040): recommendation-only by default, plus the
+optional execution gateway exactly as authorized by D-040 through D-045. It
+does not inspect repositories, become a generic LLM gateway or agent
+framework, orchestrate issues/PRs, schedule background tasks, or execute
+client-supplied tools. New work starts from an explicitly selected Forgejo
+issue and must preserve the authoritative contracts and security boundaries.

@@ -2,10 +2,19 @@
 
 ## Security objective
 
-Scarcity Router handles access to subscription telemetry, not model traffic. Its
-small scope is a security feature: it has no reason to receive prompts, source
-code or repository contents. The main assets are existing provider credentials,
-account metadata, quota state and the integrity of routing policy.
+In its default **recommendation-only mode**, Scarcity Router handles access to
+subscription telemetry, not model traffic. Its small scope is a security
+feature: it has no reason to receive prompts, source code or repository
+contents. The main assets are existing provider credentials, account
+metadata, quota state and the integrity of routing policy.
+
+The optional **execution gateway** (D-040) deliberately moves the server
+component onto the model-request path and onto the LAN. That extension is
+governed by its own explicit security decision (D-044) and the threat model
+in [Execution-gateway security architecture](#execution-gateway-security-architecture-d-044);
+every rule in the sections above remains in force for recommendation-only
+mode and for every collector. Nothing in this document is relaxed by the
+gateway — the gateway adds boundaries, it never subtracts them.
 
 ## Trust boundaries
 
@@ -17,6 +26,13 @@ account metadata, quota state and the integrity of routing policy.
   only normalized safe output.
 - Remote provider endpoints are trusted only after scheme and exact-host
   validation.
+- Execution-gateway additions (D-044): inference clients are untrusted
+  request sources authenticated by client API keys; workers are
+  semi-trusted per-device identities that authenticate outbound and enforce
+  local allowlists; the administrator identity is the sole trust root for
+  configuration, pairing and credential issuance; the server's durable store
+  and audit trail are protected assets; prompt/response content in transit
+  and in memory is sensitive but is never persisted by default.
 
 ## Absolute invariants
 
@@ -25,10 +41,16 @@ Never:
 - print, log, serialize, return or expose an auth token, cookie or secret;
 - include real credentials in fixtures, snapshots, telemetry, analytics,
   exceptions, command arguments, process listings or commits;
-- send credentials, prompts, source code or repository data to another model;
+- send credentials, source code or repository data to any model, and never
+  send a prompt anywhere except to the one authorized execution target
+  selected for that explicitly authorized request (execution-gateway mode
+  only, D-040/D-042 — never to a different model, a telemetry path or an
+  analytics sink);
 - ask an LLM or agent to inspect a credential value;
 - copy unrelated browser profile or authentication contents;
-- create another long-lived credential store by default;
+- create another long-lived credential store by default; the
+  execution-gateway server component's explicit, bounded store is the sole
+  recorded exception (D-044);
 - attach a credential to an arbitrary user-provided URL;
 - issue model prompts as part of quota collection;
 - mutate provider quota/account state from a collector, except the single
@@ -136,6 +158,118 @@ the suspected value while reporting the incident.
 
 If a schema changes, fail closed for that collector: return `schema_changed` or
 `unknown`; do not guess a healthy quota. Other collectors and the core continue.
+
+## Execution-gateway security architecture (D-044)
+
+This section is the threat model and security boundary set for the optional
+execution gateway (D-040; program A0, issue #85). It extends — never relaxes —
+everything above. Implementation is distributed to the module issues: ingress
+limits and isolation to M03 (#88), outbound provider HTTP to M04 (#89),
+worker transport and local-adapter isolation to M05 (#90)/M06 (#91)/M07
+(#92), administration to M09 (#94), and end-to-end security acceptance to
+M10 (#95) — where security failures are program blockers, not documentation
+notes.
+
+### Identities and authentication
+
+- **Three separate identity classes** with separate credentials and
+  permissions: **administrator** (configuration, provider credentials,
+  pairing, key issuance, revocation), **inference client** (execution
+  requests only, never administration), **worker** (one per-device identity,
+  execute/state-report scope only).
+- No shared default password; credentials are issued on first-use paths with
+  per-instance randomness; **revocation** exists for every class and takes
+  effect without redeployment.
+- **No bearer secrets in URLs.** Credentials travel in headers or message
+  authentication fields, never in query strings, path segments or logs.
+- **Verified TLS everywhere; `verify=false` does not exist as an option.**
+  Non-loopback listeners require TLS with verified certificates; workers
+  verify the server identity on their outbound connection. Plain-HTTP
+  localhost is permitted only as an explicit, bounded,
+  administrator-configured exception for origins where it is justified
+  (e.g. a loopback or explicitly trusted LAN Ollama endpoint) and never for
+  credential-bearing requests to non-local origins.
+- **Simple trust bootstrap:** the administrator starts pairing in the server
+  UI, receives a short-lived one-time code, enters it plus the server URL on
+  the worker, and the worker receives a per-device credential with rotation.
+  No manual worker-IP configuration, no shared fleet secret, no certificate
+  signing ceremony for ordinary users.
+
+### Credential storage (explicit exception)
+
+The server component keeps provider endpoints and credentials **only** from
+administrator configuration — never from client request content. OS-native
+secure storage is preferred where available; a permissioned file store
+(`0o700` directory, `0o600` files, never world-readable) is the recorded
+fallback, with format and migration recorded when chosen. Stored values are
+never logged, exported (M09 exports are secret-free), returned through any
+API, or attached to requests to non-configured origins. This is the sole
+exception to the recommendation-mode transient-credential rule and exists
+only inside the server's store. Worker-side application credentials stay on
+the worker host whenever possible; Codex authentication remains entirely
+provider-managed (D-018 unchanged).
+
+### Admission limits
+
+Enforced before any dispatch: request-body size, context/output size,
+per-client concurrency, execution time and spending limits — all
+administrator-configurable with safe defaults (D-043 request contract). A
+client override may narrow its own limits, never expand authorization,
+provider access or spending ceilings (D-042).
+
+### Network and origin discipline
+
+- **SSRF protection:** provider origins are fixed administrator
+  configuration; clients never supply URLs, endpoints or credentials.
+- **Credentials bound to configured origins:** a credential is attached only
+  to its configured exact host; `Authorization` is never forwarded across
+  unsafe or cross-origin redirects — cross-origin redirects are rejected.
+- **Router-loop protection:** configuring the server's own execution origin
+  (or another router instance's endpoint) as a provider backend is refused,
+  and gateway-originated traffic is identifiable on ingress so
+  router → router → router chains fail loudly instead of looping.
+
+### Local runtime and adapter isolation
+
+- **No generic shell API:** no `/shell`, `/ssh` or arbitrary-command
+  endpoint exists in any contract (server, worker or adapter); SSH is a way
+  a user reaches a machine, not a router protocol.
+- **Session, filesystem and tool isolation** for local adapter invocation:
+  no automatic access to user projects, arbitrary filesystem paths, shell,
+  global MCP configuration, plugins, browser integrations or unrelated
+  conversation history; a read-only sandbox alone is not presumed
+  sufficient isolation. If required isolation cannot be provided, only the
+  affected adapter/mode is marked ineligible; the rest of the router keeps
+  working.
+- **No root/Administrator execution by default; no Docker socket mounting;
+  no arbitrary repository mounting; no uncontrolled client-supplied
+  subprocess flags or environment variables.**
+- The worker enforces its **local adapter allowlist even if the server
+  requests something else**.
+
+### Data, logging and audit
+
+- **No prompt/response logging by default**; no secret logging; diagnostics
+  stay redacted and allowlisted. Prompt and response content exists only in
+  transit/memory for the authorized request.
+- The **audit trail is the minimal D-043 metadata set** (request id,
+  decision id, client/profile identity, routing-policy version, state
+  snapshot identity/version, selected target, actually-executed target,
+  adapter version, start/end time, result status, provider-reported usage,
+  estimated usage where applicable) with **bounded retention** and no
+  prompt/response contents by default.
+- **Logs created by local runtimes** on worker hosts (adapters, local
+  inference servers) are accounted for by the same hygiene rules — M06/M07
+  and M10 must verify them, not only server logs.
+
+### Terms and subscription scope
+
+Provider subscription and promotional terms are respected (U-009); execution
+through an adapter is gated by the D-039 eligibility contract and never
+proves promotional eligibility. Several apps owned by one user do not
+automatically imply the right to share one personal subscription with
+multiple independent users: the server is scoped to one user's own
+resources — it is not a resale, team or multi-tenant quota pool.
 
 ## Out of scope for M1
 

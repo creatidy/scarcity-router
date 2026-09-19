@@ -152,6 +152,52 @@ The provisional status command composes this collector with the OpenAI
 normalized snapshot. The automated suite contains no live credential-dependent
 integration test; transport tests use mocked fakes and synthetic secrets.
 
+## Execution Adapters (Execution-Gateway Program)
+
+The execution-gateway program (D-040; A0 = issue #85, module issues
+M03–M07) extends the same provider-edge discipline from telemetry to
+execution. The rules below govern every execution adapter; the module map
+and contracts are in [`docs/architecture.md`](architecture.md).
+
+- **One inference implementation per provider, two transports at most.** A
+  provider's execution logic exists once in its adapter; it is reached
+  either server-direct (HTTP reachable) or worker-bridged (localhost-only).
+  There are never two Ollama implementations, and no duplicate collectors
+  for a provider/account exist merely because execution was added — the
+  existing Codex and Z.ai collectors remain the single telemetry source.
+- **Provider differences stop at the adapter edge.** The execution
+  coordinator never parses provider payloads; adapters validate schema and
+  semantics, map errors, fail closed on drift and report capabilities
+  honestly through the OpenAI compatibility matrix (D-043) — `UNKNOWN` and
+  `UNSUPPORTED` never pass. An agentic CLI backend is not automatically an
+  OpenAI-compatible backend; concatenating messages into a text prompt is
+  not sufficient compatibility.
+- **Configuration is administrator-owned.** Provider URLs and credentials
+  come from administrator configuration (M09), never from client request
+  content; outbound HTTP uses verified TLS, credentials are bound to
+  configured exact origins, cross-origin redirects carrying
+  `Authorization` are rejected, and plain-HTTP localhost is a bounded
+  explicit exception only where justified (e.g. loopback Ollama)
+  (D-044).
+- **The generic OpenAI-compatible HTTP adapter (M04)** serves configurable
+  providers with evidence-based differences — presets for at least OpenAI,
+  DeepSeek, OpenRouter and Z.ai — and never claims full compatibility where
+  features differ. PAYG and Coding-Plan/entitlement channels of the same
+  vendor stay distinct resources with distinct entitlements and pools
+  (D-042). Ollama is direct HTTP when network-accessible and
+  worker-bridged when localhost-only; no automatic model downloads, GPU
+  driver installation or GPU lifecycle management.
+- **Local CLI/app adapters (M06 Codex, M07 ZCode)** run through the worker
+  (or server where reachable), reuse the existing discovery knowledge
+  (U-001, D-019), respect the D-018 provider-managed auth boundary
+  unchanged, and are bounded by the local-adapter isolation rules of
+  D-044. Their open uncertainties are registered, not guessed: U-012
+  (Codex) and U-013 (ZCode).
+- **Contract tests:** every execution adapter ships redacted fixtures,
+  parser/protocol tests and compatibility-matrix evidence with dated
+  versions; provider drift disables the affected adapter safely while the
+  rest of the router keeps working.
+
 ## Later Providers
 
 Claude subscription is the highest-priority later collector because it would
