@@ -390,5 +390,13 @@ discipline as D-023. The semantics below are frozen by D-042 and detailed in
   reports are rejected/reported, never merged silently.
 - **Freshness.** The resource-state contract carries explicit freshness and
   bounded polling/cache metadata; this is the scope in which the deferred
-  U-003 staleness policy is resolved (M01). The synchronous fresh-collection
+  U-003 staleness policy was resolved (M01, issue #86, 2026-09-19): the
+  administrator resource registration carries a required positive
+  `freshness_ttl_seconds` (and optional `poll_interval_seconds`) as the
+  authoritative server policy; observation documents carry only
+  `observed_at`, never policy fields, and the resource registry classifies
+  `fresh`/`stale`/`never_observed` against an explicit injectable instant,
+  rejecting future-dated observations rather than treating them as fresh
+  (`scarcity_router/resource_state.py`; `docs/decisions.md` U-003). The
+  synchronous fresh-collection
   behavior of the local recommendation-only surfaces is unchanged.
