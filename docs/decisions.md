@@ -2499,6 +2499,79 @@ what M4.1 forbids); a configurable per-provider eligibility policy
 - **Boundary:** Contract-coexistence rules only; no endpoint is implemented
   by this decision.
 
+### D-046 — CI and release-engineering foundation: development CI on Forgejo, public releases from stable main
+
+- **Status:** Accepted
+- **Date:** 2026-09-19
+- **Issue:** BioMedical-IT/scarcity-router#97; consumed by M10 (#95), precedes
+  M01–M09 implementation
+- **Confidence:** High.
+- **Decision:** CI and public release engineering are governed by one
+  authority split and one trust boundary, detailed in
+  [`docs/release-engineering.md`](release-engineering.md):
+  1. **Forgejo is the only development-CI authority.** Forgejo Actions runs
+     workflow `ci`, job `check` (the stable required-status-check name for
+     `develop` branch protection) on every PR to `develop` and every push to
+     `develop`. It executes the documented validation gate plus
+     `make package-check` — the repository-authoritative build, inspection
+     and isolated-install smoke — and keeps no separate test list. GitHub
+     hosts exactly one workflow, the tag-driven public release pipeline; no
+     duplicate development CI exists there.
+  2. **The CI trust model is frozen:** pull-request code is untrusted; PR
+     jobs run with `contents: read` only, receive no provider or publishing
+     secrets, and get no privileged runner access (no Docker socket, host
+     mounts, privileged containers or broad private-network reachability).
+     Publishing never runs from pull-request events, and release authority
+     is separate from development CI. Deterministic tests never require
+     secrets.
+  3. **Public releases originate only from stable `main` through deliberate
+     human SemVer tags `vX.Y.Z`.** The release workflow fails closed unless
+     the tag is valid SemVer, the package version equals the tag version
+     (single source literal `__version__` in `scarcity_router/__init__.py`),
+     the tagged commit is reachable from `main`, the artifacts are built from
+     that exact commit in the same run, and the artifacts pass
+     `make package-check` before publication. Versions are never bumped
+     automatically and `develop` is never promoted automatically.
+  4. **Publication uses short-lived identities only:** GitHub artifact
+     attestations (Sigstore, OIDC) and PyPI Trusted Publishing; no long-lived
+     PyPI token may be introduced. Every release carries `SHA256SUMS`.
+     External configuration that cannot live in Git (PyPI trusted publisher,
+     the protected `pypi` environment, the Forgejo runner boundary, and
+     `develop` branch protection) is recorded as explicit owner actions,
+     never claimed as configured.
+  5. **Future artifact contracts are recorded, not faked:** the GHCR server
+     image (`ghcr.io/creatidy/scarcity-router`; tags `X.Y.Z`, `X.Y`,
+     `latest` = latest stable only; amd64 + arm64 when justified) and the
+     Windows worker packages (`scarcity-worker-X.Y.Z-windows-x64.msix`/
+     `.zip`; Windows runners; MSIX preferred subject to evidence; code
+     signing for release quality) have frozen contracts and insertion points
+     in the release workflow, but no artifacts, no placeholder binaries and
+     no simulated publish jobs until a real supported artifact exists.
+  6. **Linux/WSL Python installation after the first PyPI publication** is
+     `uv tool install scarcity-router` with `pipx` as the conventional
+     alternative; no custom apt/RPM/pacman repositories; a Homebrew tap is
+     deferred; Python distribution stays distinct from native Linux-worker
+     packaging.
+- **Reason:** Untrusted development input must never equal release authority,
+  and the release path must fail closed against every condition it cannot
+  verify. Landing the foundation before #86–#95 implementation keeps CI/CD
+  architecture out of the module issues, and the honest implemented/future
+  artifact split continues the U-008/U-009 discipline against documented
+  fiction.
+- **Alternatives considered:** GitHub as a second development-CI authority
+  (rejected: duplicate runs, configuration drift, wider attack surface);
+  automatic releases from `develop` or automatic version bumps (rejected:
+  `main` must stay stable and human-controlled); a long-lived PyPI API token
+  (rejected: Trusted Publishing/OIDC is available); custom Linux package
+  repositories (rejected: maintenance burden without a use case); bespoke
+  artifact signing (rejected: attestations plus checksums satisfy the
+  provenance need without new infrastructure).
+- **Boundary:** Infrastructure and contracts only. No release is performed by
+  the foundation; no runtime Scarcity Router behavior changes. The only
+  tooling change is making `tools/package_check.py` read its expected version
+  from the authoritative source literal so the same smoke check validates
+  release builds of any version.
+
 ## Unresolved decisions
 
 ### U-001 — Codex binary discovery and compatibility

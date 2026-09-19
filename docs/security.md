@@ -33,6 +33,11 @@ gateway — the gateway adds boundaries, it never subtracts them.
   configuration, pairing and credential issuance; the server's durable store
   and audit trail are protected assets; prompt/response content in transit
   and in memory is sensitive but is never persisted by default.
+- Development CI executes untrusted pull-request code under a frozen minimal
+  trust model (D-046): PR jobs receive no provider or publishing secrets,
+  publishing never runs from pull-request events, and release authority is
+  separate from development CI
+  ([`docs/release-engineering.md`](release-engineering.md)).
 
 ## Absolute invariants
 

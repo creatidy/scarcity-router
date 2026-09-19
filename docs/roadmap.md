@@ -46,6 +46,11 @@ API/Ollama resources through one OpenAI-compatible endpoint before all local
 CLI adapters are complete. Then M05 and M06; M07 runs independently and never
 blocks the program; M08 guards compatibility throughout.
 
+A CI and public release-engineering foundation (#97,
+[`docs/release-engineering.md`](release-engineering.md), D-046) lands before
+module implementation starts; M10 (#95) builds its distribution and
+acceptance work on that foundation.
+
 ## Future Direction
 
 - **Provider evaluation:** add another subscription provider only after its
