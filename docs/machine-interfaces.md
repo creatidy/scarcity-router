@@ -625,13 +625,51 @@ using fixtures, never live quota:
 11. **MCP internal failure.** Carries the logical `internal_error` error
     payload.
 
+## Coexistence with the execution surface (D-045)
+
+The optional execution gateway (D-040) adds an OpenAI-compatible execution
+surface. It is a **separate, independently versioned contract** — "execution
+surface v1" — and this document remains the authority only for
+machine-interface v1:
+
+- Machine-interface v1 is untouched: same four REST operations, same MCP
+  tools, same envelopes, error vocabulary, loopback/unauthenticated boundary
+  and additive versioning rules (D-028/D-030/D-031). The M08 guardrail suite
+  (#93) keeps the `direct == CLI == REST == MCP` parity green throughout the
+  gateway program and extends it to gateway-era additive fields.
+- The execution surface (`GET /v1/models`, `POST /v1/chat/completions` with
+  SSE) is served by the authenticated server component (D-044). Its `/v1/`
+  prefix is the OpenAI client convention and is **not** machine-interface
+  v1. The two path sets are disjoint
+  (`/healthz`, `/v1/status`, `/v1/select`, `/v1/simulate` versus
+  `/v1/models`, `/v1/chat/completions`), so one listener may serve both in
+  server deployments without ambiguity, but contracts, versions, security
+  boundaries and error vocabularies never mix: execution-surface errors
+  follow OpenAI-compatible client conventions and never reuse or extend the
+  closed `invalid_request`/`internal_error` vocabulary frozen here.
+- The loopback REST adapter defined here is never converted into the
+  execution server; the execution server is a distinct component with its
+  own listener, TLS and authentication. In server deployments, control
+  operations with equivalent semantics are exposed through the server's
+  authenticated control API under explicit versioning (M08/M09).
+- The optional remote bridge (M08) is a configured client mode against the
+  authenticated server: explicit configuration, explicit failure — a
+  configured remote server that fails surfaces an error and never silently
+  degrades to local state or local policy.
+- The worker protocol carries its own independent protocol version with
+  handshake negotiation (D-043) and is not part of either interface version.
+
 ## Non-goals
 
-The current machine interfaces do not provide remote service exposure,
-authentication or TLS termination, Docker/systemd/Windows service packaging,
-databases, caches, persistent history, dashboards, model execution, prompt
-proxying, automatic dispatch, reset-credit acquisition or redemption, provider
-health integration, Artificial Analysis runtime integration, new providers,
-new model ratings, new profiles or additional ranking modes. Any expansion of
-the local security or runtime boundary requires an explicit decision and
-corresponding contract review.
+Within machine-interface v1 itself, this document still provides no remote
+service exposure, authentication or TLS termination, Docker/systemd/Windows
+service packaging, databases, caches, persistent history, dashboards, model
+execution, prompt proxying, automatic dispatch, reset-credit acquisition or
+redemption, provider health integration, Artificial Analysis runtime
+integration, new providers, new model ratings, new profiles or additional
+ranking modes. The execution surface, its authentication and the server
+component are now authorized program scope, but they live in their own
+contracts outside this v1 document (D-040, D-044, D-045;
+[`docs/architecture.md`](architecture.md)); any change to the local security
+or runtime boundary of the surfaces defined here still requires an explicit
+decision and corresponding contract review.

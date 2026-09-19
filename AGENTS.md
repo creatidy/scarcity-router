@@ -7,7 +7,10 @@ model to use now by combining task requirements, model capabilities, current
 capacity and user policy. The governing rule is: **choose the least scarce
 model that is capable enough for the task**.
 
-The owner's real workflow takes priority over novelty, provider-count metrics,
+The product is two-mode (D-040): recommendation-only by default, plus an
+optional execution gateway that serves authorized requests from the best
+available resource through one OpenAI-compatible endpoint. The owner's real
+workflow takes priority over novelty, provider-count metrics,
 market features and abstract platform design. Read the documentation map in
 `README.md` and the relevant authoritative document before changing a topic.
 If documents conflict, record the conflict and resolve it explicitly in
@@ -39,15 +42,29 @@ scope.
 
 ## Product boundary
 
-Scarcity Router recommends; it does not execute. Do not build prompt proxying,
-model-call execution, repository ingestion, source-code inspection, autonomous
-fallback execution, client-specific business logic or a generic LLM gateway.
-CLI, REST, MCP and any dashboard must call the same authoritative core.
+The product is two-mode (D-040; see [`docs/product.md`](docs/product.md) and
+the execution-gateway architecture in
+[`docs/architecture.md`](docs/architecture.md)):
 
-Local inference providers, including Ollama, are not supported. Restoring one
-requires an explicit product decision. Keep intrinsic capability, task
-requirements, runtime capacity and user policy separate; quota never changes a
-capability rating.
+- **Recommendation-only mode (default):** Scarcity Router recommends; it does
+  not execute. No prompt proxying, model-call execution, repository
+  ingestion, source-code inspection, autonomous fallback execution,
+  client-specific business logic or generic LLM gateway in this mode.
+- **Execution gateway mode (optional, explicit deployment):** the
+  authenticated server component may receive prompts and execute/proxy model
+  traffic to authorized resources under D-040 through D-045 — including
+  Ollama and local inference as execution resources (D-017 superseded) and
+  approved local Codex/ZCode adapters. Still forbidden everywhere: autonomous
+  fallback execution, issue-to-PR orchestration, repository management,
+  generic agent workflow frameworks, general task schedulers,
+  benefit-consuming actions (reset redemption stays informational) and
+  executing client-supplied tools.
+
+CLI, REST, MCP and any dashboard must call the same authoritative core; the
+frozen recommendation-only interfaces keep their contracts. Keep intrinsic
+capability, task requirements, runtime capacity and user policy separate;
+quota never changes a capability rating. Authorization precedence and
+executable-target semantics are frozen by D-042.
 
 ## Security invariants
 
@@ -56,11 +73,19 @@ return, persist in fixtures, commit, copy unnecessarily, send to analytics,
 expose to an agent or place in an exception an authentication token, cookie or
 secret. Never ask an LLM to inspect credential values. Prefer existing
 authenticated local tools or stores and read them as narrowly as possible.
+The sole recorded exception to transient credential handling is the
+execution-gateway server component's explicit bounded store (D-044); every
+other component and mode keeps the rule above.
 
 Before attaching a credential to a request, require HTTPS and an exact
 provider-host policy. Never send credentials to arbitrary endpoint overrides.
 The REST listener binds to `127.0.0.1` by default; new network exposure,
-credential storage or write access requires an explicit security decision.
+credential storage or write access requires an explicit security decision —
+D-044 is that decision for the execution-gateway server component (separate
+administrator/inference-client/worker identities, verified TLS, no
+`verify=false`, no shared default password, no bearer secrets in URLs,
+admission limits, isolation rules; the full threat model is
+[`docs/security.md`](docs/security.md)).
 Collectors use only the bounded provider-managed OpenAI recovery exception
 documented in [`docs/security.md`](docs/security.md) and
 [`docs/capacity-model.md`](docs/capacity-model.md).
