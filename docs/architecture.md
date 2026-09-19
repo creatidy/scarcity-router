@@ -415,18 +415,38 @@ selection output flows only under the machine-interface additive rules
 (D-028) on the control side and under execution-surface versioning (D-045)
 on the gateway side.
 
-**Resource-state contract (M01).** A new versioned snapshot contract
+**Resource-state contract (M01).** A new versioned contract family,
 sibling to capacity v3 (which is preserved; extensions only through explicit
 versioning per the D-023/D-028-compatible discipline; implemented by #86 as
-`scarcity_router/resource_state.py`, `schema_version = 1`). It records, per
-executable resource: identity, execution capabilities, health, freshness,
-bounded polling/cache metadata (the U-003 resolution scope), promotions as
-separate observations (source, observation time, execution-channel scope,
-model scope, plan scope, validity period, timezone), monetary cost and cost
-estimates, and every quota fact with its observation class
-(`direct_observation`, `provider_telemetry`, `estimate`, `local_limit`,
-`unknown` — see [`docs/capacity-model.md`](capacity-model.md)). Snapshots
-never contain secrets, account identifiers or raw provider payloads.
+`scarcity_router/resource_state.py`, `schema_version = 1`), split into
+three explicit records:
+
+- `ResourceStateSnapshot` is a **pure observation** of one executable
+  resource: identity, `observed_at`, health (the capacity v3 status
+  vocabulary plus its diagnostics), every quota fact as an unchanged
+  `CapacityWindow` paired with its observation class
+  (`direct_observation`, `provider_telemetry`, `estimate`, `local_limit`,
+  `unknown` — see [`docs/capacity-model.md`](capacity-model.md)), and
+  promotions as separate observations (source, observation time,
+  execution-channel scope, model scope, plan scope, validity period,
+  timezone). It deliberately carries no freshness/polling policy, no
+  capability fields and no cost fields.
+- `ResourceRegistration` is the **administrator-owned canonical
+  configuration and policy**: the freshness TTL, the polling cadence, the
+  configured execution-capability facts and the configured cost facts. It
+  is authoritative on the server; observations — including worker reports
+  — can neither redefine it nor silently override it.
+- `ResourceRegistryEntry` is the **evaluated, self-contained server read
+  model**: the authoritative registration state combined with the latest
+  observation and the derived freshness/refresh-due state (the U-003
+  resolution scope, evaluated against an explicit injectable instant with
+  future-dated observations failing closed).
+
+Across the three records, M01 as a whole owns identity, health,
+freshness, cost, quota-pool and bounded polling state for every executable
+resource — the ownership is split across the family, not duplicated into
+the observation document. No record of this family ever contains secrets,
+account identifiers or raw provider payloads.
 
 **Execution contract (M03, semantics frozen by D-043).** Admission →
 bounded concurrency reservation → dispatch → stream → completion/cancellation

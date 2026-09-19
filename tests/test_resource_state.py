@@ -983,6 +983,32 @@ class TestFutureTimestampSemantics(unittest.TestCase):
         with self.assertRaises(CapacityValidationError):
             _ = registry.registry_snapshot(now=T_MINUS_1)
 
+    def test_refresh_due_rejects_future_observation(self) -> None:
+        # Same fail-closed time seam as freshness evaluation: an
+        # observation dated after the evaluation instant is rejected, not
+        # silently treated as "not due" via a negative age.
+        registry = ResourceRegistry(clock=lambda: T0)
+        registry.register(registration(poll=POLL))
+        registry.apply_snapshot(resource_snapshot(observed_at=T0))
+        with self.assertRaises(CapacityValidationError):
+            _ = registry.refresh_due(now=T_MINUS_1)
+
+    def test_refresh_due_boundary_behavior_is_unchanged(self) -> None:
+        registry = ResourceRegistry(clock=lambda: T0)
+        registry.register(registration(poll=POLL))
+        registry.apply_snapshot(resource_snapshot(observed_at=T0))
+        # Age 0 is a valid, non-negative age: not due, never an error.
+        self.assertEqual(registry.refresh_due(now=T0), ())
+        self.assertEqual(registry.refresh_due(now=T0_PLUS_300), ("openai-codex-sub",))
+        # A never-observed resource compares no timestamps, so it stays
+        # due at any evaluation instant.
+        fresh_registry = ResourceRegistry()
+        fresh_registry.register(registration(ollama_identity(), poll=POLL))
+        self.assertEqual(
+            fresh_registry.refresh_due(now=T_MINUS_1),
+            ("lab-worker-ollama-qwen3",),
+        )
+
     def test_boundary_now_equal_to_observed_at_is_fresh(self) -> None:
         registry = ResourceRegistry(clock=lambda: T0)
         registry.register(registration())

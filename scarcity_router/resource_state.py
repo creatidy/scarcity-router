@@ -289,6 +289,28 @@ def _age_seconds(later: str, earlier: str) -> float:
     return (_ts_to_datetime(later) - _ts_to_datetime(earlier)).total_seconds()
 
 
+def _age_or_reject(later: str, earlier: str, *, context: str) -> float:
+    """Age of ``earlier`` at instant ``later``; fail closed on future facts.
+
+    The one shared time seam for every rule that evaluates a timestamp
+    against an authoritative instant: a fact dated after its evaluation
+    instant is rejected, never silently evaluated with a negative age.
+    (Comparing two reported times to each other — a promotion's validity
+    bounds or a worker report's observed/reported pair — is a different
+    rule and deliberately does not go through here.) No clock-skew
+    tolerance exists at this boundary; producing server-comparable
+    observation times is the reporting side's responsibility (M05).
+    """
+    age = _age_seconds(later, earlier)
+    if age < 0:
+        raise CapacityValidationError(
+            f"{context}: {earlier!r} is after the evaluation instant "
+            + f"{later!r}; a future-dated fact is rejected instead of being "
+            + "silently evaluated"
+        )
+    return age
+
+
 def _as_str_object_mapping(value: object) -> Mapping[str, object] | None:
     if isinstance(value, Mapping):
         return cast(Mapping[str, object], value)
@@ -1464,13 +1486,9 @@ def classify_freshness(
     _ = _v_ts(observed_at, "observed_at")
     _ = _v_ts(now, "now")
     _ = _v_int(freshness_ttl_seconds, "freshness_ttl_seconds", lo=1)
-    if _age_seconds(now, observed_at) < 0:
-        raise CapacityValidationError(
-            "classify_freshness: observed_at "
-            + f"{observed_at!r} is after the evaluation instant {now!r}; a "
-            + "future observation must never be evaluated as fresh"
-        )
-    if _age_seconds(now, observed_at) > freshness_ttl_seconds:
+    if _age_or_reject(now, observed_at, context="classify_freshness") > (
+        freshness_ttl_seconds
+    ):
         return "stale"
     return "fresh"
 
@@ -1529,13 +1547,11 @@ class ResourceRegistry:
                 f"registry: snapshot identity for {resource_id!r} does not match "
                 + "the registered identity"
             )
-        if _age_seconds(self._clock(), snapshot.observed_at) < 0:
-            raise CapacityValidationError(
-                f"registry: observation for {resource_id!r} is dated after the "
-                + "server's current instant; future observations are rejected "
-                + "and producing server-comparable observation times is the "
-                + "reporting side's responsibility (M05)"
-            )
+        _ = _age_or_reject(
+            self._clock(),
+            snapshot.observed_at,
+            context=f"registry: observation for {resource_id!r}",
+        )
 
     def apply_snapshot(self, snapshot: ResourceStateSnapshot) -> None:
         """Record one normalized observation for a registered resource."""
@@ -1567,7 +1583,10 @@ class ResourceRegistry:
         A resource is due when polling is configured and either it has
         never been observed or its last observation is at least
         ``poll_interval_seconds`` old. Resources without a polling cadence
-        are never due. Ordering is deterministic (resource id).
+        are never due. An observation dated after ``now`` fails closed
+        with :class:`CapacityValidationError`, consistent with freshness
+        evaluation — a future observation is never silently treated as
+        not due. Ordering is deterministic (resource id).
         """
         current = self._clock() if now is None else _v_ts(now, "now")
         due: list[str] = []
@@ -1579,7 +1598,12 @@ class ResourceRegistry:
             if observation is None:
                 due.append(resource_id)
                 continue
-            if _age_seconds(current, observation.observed_at) >= registration.poll_interval_seconds:
+            age = _age_or_reject(
+                current,
+                observation.observed_at,
+                context=f"refresh_due({resource_id!r})",
+            )
+            if age >= registration.poll_interval_seconds:
                 due.append(resource_id)
         return tuple(due)
 
@@ -1650,7 +1674,11 @@ class ResourceRegistry:
         if observation is None:
             return True
         return (
-            _age_seconds(now, observation.observed_at)
+            _age_or_reject(
+                now,
+                observation.observed_at,
+                context=f"registry read of {registration.identity.resource_id!r}",
+            )
             >= registration.poll_interval_seconds
         )
 
