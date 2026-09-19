@@ -413,7 +413,12 @@ carries `decision_id`, provenance, alternatives and exclusions exactly like
 the existing `SelectionDecision` discipline, and its serialized extension of
 selection output flows only under the machine-interface additive rules
 (D-028) on the control side and under execution-surface versioning (D-045)
-on the gateway side.
+on the gateway side. Implemented by #87 as
+`scarcity_router/routing_core.py` (`schema_version = 1`): the pure
+`route_request` core layers requirement binding, authorization and
+execution-surface gates on top of the unmodified balanced selector, and
+`admit_pinned_target` performs the recommendation-to-execution admission
+without re-ranking.
 
 **Resource-state contract (M01).** A new versioned contract family,
 sibling to capacity v3 (which is preserved; extensions only through explicit
@@ -581,7 +586,7 @@ is imposed by A0; new modules land beside these as their issues require):
 | Existing file/module | Primary owner going forward |
 | --- | --- |
 | `capacity.py`, `eligibility.py`, `status.py`, `resource_state.py` (M01 resource-state contract, added by #86), `providers/*` (collectors) | M01 (+#86); execution adapters in `providers/` per M04/M06/M07 |
-| `selector.py`, `policy.py`, `scarcity.py`, `simulation.py`, `selection_types.py`, `selection_app.py` | M02 (+#87) |
+| `selector.py`, `policy.py`, `scarcity.py`, `simulation.py`, `selection_types.py`, `selection_app.py`, `routing_core.py` (M02 route-decision contract, added by #87) | M02 (+#87) |
 | `server.py` | Stays the frozen loopback REST v1 adapter (M08 guard); never becomes the execution server |
 | `machine_api.py` | M08 (+#93); gateway request parsing is new M03-owned code, not a v1 change |
 | `mcp.py`, `cli.py` | M08 (+#93); `doctor` realization and config UX extend via M09 |
