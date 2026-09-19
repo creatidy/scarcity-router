@@ -57,6 +57,18 @@ Public API — simulation over the same selector (M2e, D-027):
     CapacityPercentageOverride, SimulationOverrides, SimulationResult,
     apply_capacity_overrides, simulate_selection
 
+Public API — route decisions for executable targets (M02, #87, D-042):
+    RouteRequest         -- every typed input one route decision consumes
+    route_request        -- the deterministic route decision for executable targets
+    RouteDecision        -- decision with decision_id, target, provenance, exclusions
+    RouteTarget          -- one executable target (five D-042 dimensions)
+    TargetExclusion      -- one typed per-resource exclusion record
+    AdmissionDecision    -- admission-only outcome for one pinned target
+    admit_pinned_target  -- recommendation-to-execution binding (never re-ranks)
+    AdministratorConstraints, ClientAuthorization, ClientRoutingProfile,
+    RequestBinding, PinnedTarget, SpendingLimit, CompatibilityCell,
+    RouteContractValidationError
+
 Public API — resource state for executable resources (M01, #86):
     ResourceStateSnapshot -- one versioned resource-state record
     ResourceIdentity      -- identity of one executable resource (D-042)
@@ -90,6 +102,7 @@ from .capacity import (
 from .errors import (
     CapacityError,
     CapacityValidationError,
+    RouteContractValidationError,
     SelectionContractError,
     SelectionContractValidationError,
     SimulationOverrideApplicationError,
@@ -141,6 +154,32 @@ from .resource_state import (
     WorkerStateReport,
     classify_freshness,
     resource_snapshot_from_capacity,
+)
+from .routing_core import (
+    ADMISSION_REASON_CODES,
+    COMPAT_CELL_VALUES,
+    COMPAT_FEATURES,
+    ROUTE_DECISION_SCHEMA_VERSION,
+    ROUTE_EXCLUSION_STAGES,
+    ROUTE_REASON_CODES,
+    ROUTE_STATUSES,
+    ROUTE_STATUS_NO_SOLUTION,
+    ROUTE_STATUS_SELECTED,
+    TARGET_EXCLUSION_REASON_CODES,
+    AdministratorConstraints,
+    AdmissionDecision,
+    ClientAuthorization,
+    ClientRoutingProfile,
+    CompatibilityCell,
+    PinnedTarget,
+    RequestBinding,
+    RouteDecision,
+    RouteRequest,
+    RouteTarget,
+    SpendingLimit,
+    TargetExclusion,
+    admit_pinned_target,
+    route_request,
 )
 from .scarcity import (
     BLEND_UNIT_COUNT,
@@ -209,7 +248,10 @@ from .selection_types import (
 )
 
 __all__ = [
+    "ADMISSION_REASON_CODES",
     "BLEND_UNIT_COUNT",
+    "COMPAT_CELL_VALUES",
+    "COMPAT_FEATURES",
     "CAPABILITY_DIMENSIONS",
     "CONFIDENCE_VALUES",
     "DEFAULT_SHORT_WINDOW_FLOOR_PERCENT",
@@ -225,6 +267,12 @@ __all__ = [
     "REPLENISHMENT_MODES",
     "RESOURCE_HEALTH_STATUSES",
     "RESOURCE_STATE_SCHEMA_VERSION",
+    "ROUTE_DECISION_SCHEMA_VERSION",
+    "ROUTE_EXCLUSION_STAGES",
+    "ROUTE_REASON_CODES",
+    "ROUTE_STATUSES",
+    "ROUTE_STATUS_NO_SOLUTION",
+    "ROUTE_STATUS_SELECTED",
     "SCARCITY_LABELS",
     "SCARCITY_PENALTY_SCALE",
     "SCARCITY_REASON_CODES",
@@ -233,6 +281,7 @@ __all__ = [
     "SELECTOR_MODES",
     "SELECTOR_MODE_BALANCED",
     "SUPPORTED_PROVIDERS",
+    "TARGET_EXCLUSION_REASON_CODES",
     "TASK_LEVELS",
     "UNKNOWN_CAPACITY_MODES",
     "WEEKDAYS",
@@ -242,8 +291,13 @@ __all__ = [
     "WINDOW_ROLE_TACTICAL",
     "WORKER_REPORTABLE_CHANNELS",
     "WORKER_REPORT_SCHEMA_VERSION",
+    "AdministratorConstraints",
+    "AdmissionDecision",
     "AvailabilityTarget",
     "BlackoutDecision",
+    "ClientAuthorization",
+    "ClientRoutingProfile",
+    "CompatibilityCell",
     "CapabilityAssessment",
     "CapabilityAssessments",
     "CapabilityFailure",
@@ -256,7 +310,9 @@ __all__ = [
     "CapacityValidationError",
     "CapacityWindow",
     "CandidateEvaluation",
+    "RouteContractValidationError",
     "EvidenceRef",
+    "PinnedTarget",
     "ExecutionCapabilities",
     "GoverningWindowEvidence",
     "HardConstraintFailure",
@@ -274,6 +330,7 @@ __all__ = [
     "ReplenishmentDecision",
     "ReplenishmentEvaluation",
     "ReplenishmentState",
+    "RequestBinding",
     "ReservationDecision",
     "ReservationRule",
     "RegistrySnapshot",
@@ -284,6 +341,9 @@ __all__ = [
     "ResourceRegistry",
     "ResourceRegistryEntry",
     "ResourceStateSnapshot",
+    "RouteDecision",
+    "RouteRequest",
+    "RouteTarget",
     "ScarcityAssessment",
     "SelectionContractError",
     "SelectionContractValidationError",
@@ -292,6 +352,8 @@ __all__ = [
     "SelectorPolicy",
     "SimulationOverrides",
     "SimulationResult",
+    "SpendingLimit",
+    "TargetExclusion",
     "TaskRequirement",
     "UnknownCapacityDecision",
     "UserPolicy",
@@ -301,6 +363,7 @@ __all__ = [
     "apply_replenishment_mode",
     "apply_unknown_capacity_mode",
     "apply_capacity_overrides",
+    "admit_pinned_target",
     "assess_scarcity",
     "blended_effective_remaining_percent",
     "capability_margin",
@@ -313,6 +376,7 @@ __all__ = [
     "get_version",
     "neutral_selector_policy",
     "resource_snapshot_from_capacity",
+    "route_request",
     "scarcity_label",
     "scarcity_penalty_units",
     "select_model",
