@@ -13,25 +13,37 @@ Ollama instance or a CLI/app adapter surface — so the later routing core
 
 - identity: execution channel/surface, backend provider, physical model and
   variant, entitlement class, confirmed quota-pool membership;
-- execution capabilities as observed/configured facts (never ratings, never
-  telemetry-derived; the evidence-based OpenAI compatibility matrix remains
-  an M03-owned contract and is not represented here);
+- execution capabilities and monetary cost as administrator-CONFIGURED
+  facts (never ratings, never telemetry-derived; the evidence-based OpenAI
+  compatibility matrix remains an M03-owned contract and is not represented
+  here). They live on the administrator registration and are composed into
+  registry reads; observations deliberately do not carry them, so there is
+  exactly one canonical value per resource and no silent observation
+  override. Observed (as opposed to configured) capability/cost facts
+  would require an explicit future contract extension;
 - health with the same six-status vocabulary as capacity v3 (1:1 mapping,
   zero information loss) plus its allowlisted diagnostics;
 - freshness and bounded polling/cache metadata — this is the U-003
-  resolution (D-041 assigns it to M01): every snapshot carries an explicit
-  ``freshness_ttl_seconds`` and the registry classifies each resource as
-  ``fresh``, ``stale`` or ``never_observed`` against an injected instant.
-  There is no background refresh here; the server's request loop (M03) calls
-  :meth:`ResourceRegistry.refresh_due`;
+  resolution (D-041 assigns it to M01): the administrator registration
+  carries an explicit positive ``freshness_ttl_seconds`` and an optional
+  ``poll_interval_seconds``, and that server-side policy is AUTHORITATIVE.
+  Observations carry no policy fields at all, so an accepted observation —
+  including a worker-reported one — can never enlarge its own freshness
+  window or change its polling cadence. The registry classifies each
+  resource as ``fresh``, ``stale`` or ``never_observed`` against an
+  injected instant, and a future-dated observation is rejected rather than
+  treated as fresh (producing server-comparable observation times is the
+  reporting side's responsibility, M05; no clock-skew tolerance protocol is
+  invented here). There is no background refresh; the server's request loop
+  (M03) calls :meth:`ResourceRegistry.refresh_due`;
 - promotions as separate observations (source, observation time,
   execution-channel/provider/model/plan scopes, validity period, timezone).
   A promotion record never asserts that an execution qualifies for it;
   D-039 eligibility gating remains the proof path and is deliberately NOT
   embedded here (two contract versions in one document is exactly the shape
   D-039 rejected for capacity v4);
-- monetary cost and cost estimates as fixed-point micro-USD per million
-  tokens with an observation class;
+- monetary cost facts are registration-owned configured data, never
+  duplicated onto observations;
 - every quota fact as an existing capacity v3 ``CapacityWindow`` paired with
   an observation class: ``direct_observation``, ``provider_telemetry``,
   ``estimate``, ``local_limit`` or ``unknown`` (D-042). Tokens reported by
@@ -49,14 +61,17 @@ is never assumed in either direction: quota pools exist only as explicit
 confirmed ``quota_pool_ids``.
 
 Worker reports: when telemetry is only available locally, the native worker
-(M05) reports :class:`ResourceStateSnapshot` documents produced by this same
-module — one shared normalization, never a second collector implementation
-for the same provider/account. :class:`WorkerStateReport` is the M01
-contract boundary for that input; the M05 transport, pairing and
+(M05) reports :class:`ResourceStateSnapshot` observation documents produced
+by this same module — one shared normalization, never a second collector
+implementation for the same provider/account. :class:`WorkerStateReport` is
+the M01 contract boundary for that input; the M05 transport, pairing and
 authentication wrap it. Reports are validated fail-closed: wrong report
 version, malformed entries, server-direct channels, duplicate resources or
 future observation times reject the whole report; nothing is merged
-silently.
+silently. Because observation documents carry no policy fields, a worker
+cannot enlarge the freshness window, change the polling cadence or override
+the configured capabilities/cost of the resource it reports for — the
+server's administrator registration stays authoritative.
 
 Security: snapshots never contain secrets, account identifiers or raw
 provider payloads. Every identifier is a safe opaque ASCII token validated
@@ -834,52 +849,49 @@ class ResourceHealth:
 
 @dataclass(frozen=True)
 class ResourceStateSnapshot:
-    """One versioned resource-state record (``schema_version = 1``).
+    """One versioned resource-state observation (``schema_version = 1``).
 
-    The full observable state of one executable resource at one observation
-    instant: identity, health, freshness/polling policy, execution
-    capabilities, quota facts with observation classes, cost facts and
-    promotion observations. Self-contained by construction so it can travel
-    unchanged inside a worker report, a registry read or (later, M03+) an
-    audit record's state-snapshot reference.
+    The OBSERVED facts for one executable resource at one observation
+    instant: identity, health, quota facts with observation classes and
+    promotion observations. It is deliberately ONLY an observation record:
+    freshness/polling policy, execution capabilities and cost facts are
+    administrator-owned registration state and are composed into registry
+    reads (:class:`ResourceRegistryEntry`), never carried by observations.
+    This is the single-canonical-truth rule behind the U-003 resolution: a
+    worker-reported observation is structurally unable to enlarge its own
+    freshness window, change its polling cadence or override configured
+    capabilities/cost, because the observation document has no such fields.
+    The observation document still travels unchanged inside a worker report
+    or a registry read, and its ``observed_at`` plus the registry revision
+    identify it for audit provenance.
 
-    Freshness semantics (U-003 resolution): ``observed_at`` states WHEN the
-    observation was made and never claims freshness by itself;
-    ``freshness_ttl_seconds`` is the bounded staleness policy in effect for
-    this record, and the registry classifies ``fresh``/``stale`` against an
-    explicit evaluation instant. ``poll_interval_seconds`` is the bounded
-    refresh cadence configured for the resource, when polling applies.
+    ``observed_at`` states WHEN the observation was made and never claims
+    freshness by itself; the registry evaluates it against the
+    registration's TTL at an explicit evaluation instant. An observation
+    dated after the evaluation (or application) instant is rejected, never
+    silently treated as fresh.
 
-    Collections serialize canonically (quota facts, promotions and
-    diagnostics in their deterministic sort order) and unsorted input is
-    rejected at construction, mirroring ``ExecutionEligibility.reason_codes``.
+    Collections serialize canonically (quota facts and promotions in their
+    deterministic sort order) and unsorted input is rejected at
+    construction, mirroring ``ExecutionEligibility.reason_codes``.
     """
 
     schema_version: int
     identity: ResourceIdentity
     observed_at: str
     health: ResourceHealth
-    freshness_ttl_seconds: int
     quota_facts: tuple[QuotaFact, ...] = ()
     promotions: tuple[PromotionObservation, ...] = ()
-    poll_interval_seconds: int | None = None
-    capabilities: ExecutionCapabilities = field(default_factory=ExecutionCapabilities)
-    cost: ResourceCost | None = None
 
     _REQUIRED: ClassVar[tuple[str, ...]] = (
         "schema_version",
         "identity",
         "observed_at",
         "health",
-        "freshness_ttl_seconds",
         "quota_facts",
         "promotions",
     )
-    _OPTIONAL: ClassVar[tuple[str, ...]] = (
-        "poll_interval_seconds",
-        "capabilities",
-        "cost",
-    )
+    _OPTIONAL: ClassVar[tuple[str, ...]] = ()
 
     def __post_init__(self) -> None:
         sv = _v_int(self.schema_version, "schema_version")
@@ -890,11 +902,6 @@ class ResourceStateSnapshot:
         _v_instance_of(self.identity, ResourceIdentity, "snapshot.identity")
         _ = _v_ts(self.observed_at, "snapshot.observed_at")
         _v_instance_of(self.health, ResourceHealth, "snapshot.health")
-        _ = _v_int(self.freshness_ttl_seconds, "snapshot.freshness_ttl_seconds", lo=1)
-        _ = _v_opt_int(self.poll_interval_seconds, "snapshot.poll_interval_seconds", lo=1)
-        _v_instance_of(self.capabilities, ExecutionCapabilities, "snapshot.capabilities")
-        if self.cost is not None:
-            _v_instance_of(self.cost, ResourceCost, "snapshot.cost")
 
         _v_tuple_of(self.quota_facts, QuotaFact, "snapshot.quota_facts")
         if tuple(sorted(self.quota_facts, key=_quota_fact_sort_key)) != self.quota_facts:
@@ -920,19 +927,11 @@ class ResourceStateSnapshot:
             raise CapacityValidationError(
                 f"snapshot.promotions: expected list, got {type(raw_promotions).__name__}"
             )
-        raw_capabilities = dd.get("capabilities")
-        capabilities = (
-            ExecutionCapabilities()
-            if raw_capabilities is None
-            else ExecutionCapabilities.from_dict(raw_capabilities)
-        )
-        raw_cost = dd.get("cost")
         return cls(
             schema_version=cast(int, dd["schema_version"]),
             identity=ResourceIdentity.from_dict(dd["identity"]),
             observed_at=_v_ts(dd["observed_at"], "snapshot.observed_at"),
             health=ResourceHealth.from_dict(dd["health"]),
-            freshness_ttl_seconds=cast(int, dd["freshness_ttl_seconds"]),
             quota_facts=tuple(
                 QuotaFact.from_dict(x) for x in cast("list[object]", raw_facts)
             ),
@@ -940,30 +939,17 @@ class ResourceStateSnapshot:
                 PromotionObservation.from_dict(x)
                 for x in cast("list[object]", raw_promotions)
             ),
-            poll_interval_seconds=_v_opt_int(
-                dd.get("poll_interval_seconds"), "snapshot.poll_interval_seconds", lo=1
-            ),
-            capabilities=capabilities,
-            cost=None if raw_cost is None else ResourceCost.from_dict(raw_cost),
         )
 
     def to_dict(self) -> dict[str, object]:
-        out: dict[str, object] = {
+        return {
             "schema_version": self.schema_version,
             "identity": self.identity.to_dict(),
             "observed_at": self.observed_at,
             "health": self.health.to_dict(),
-            "freshness_ttl_seconds": self.freshness_ttl_seconds,
             "quota_facts": [fact.to_dict() for fact in self.quota_facts],
             "promotions": [promotion.to_dict() for promotion in self.promotions],
         }
-        if self.poll_interval_seconds is not None:
-            out["poll_interval_seconds"] = self.poll_interval_seconds
-        if self.capabilities.to_dict():
-            out["capabilities"] = self.capabilities.to_dict()
-        if self.cost is not None:
-            out["cost"] = self.cost.to_dict()
-        return out
 
     def validate(self) -> "ResourceStateSnapshot":
         """Re-validate an already-constructed snapshot; returns self or raises."""
@@ -977,14 +963,10 @@ def resource_snapshot_from_capacity(
     snapshot: CapacitySnapshot,
     *,
     identity: ResourceIdentity,
-    freshness_ttl_seconds: int,
-    poll_interval_seconds: int | None = None,
-    capabilities: ExecutionCapabilities | None = None,
-    cost: ResourceCost | None = None,
     promotions: Sequence[PromotionObservation] = (),
     quota_observation_class: str = "provider_telemetry",
 ) -> ResourceStateSnapshot:
-    """Normalize one capacity v3 snapshot into a resource-state snapshot.
+    """Normalize one capacity v3 snapshot into a resource-state observation.
 
     This is the single shared normalization used by server-side collection
     and by worker-side reporting alike (M01/M05): provider telemetry enters
@@ -999,7 +981,9 @@ def resource_snapshot_from_capacity(
     ``quota_observation_class`` (default ``provider_telemetry``). The
     informational ``plan`` label is deliberately not carried into resource
     state; it stays a capacity/status concern and an explicit promotion
-    scope.
+    scope. Freshness/polling policy, capabilities and cost are NOT inputs
+    here: they are administrator registration state and are composed at the
+    registry boundary, never onto observations.
 
     Raises :class:`CapacityValidationError` when the snapshot's provider
     differs from the resource identity's provider: normalizing telemetry
@@ -1032,12 +1016,8 @@ def resource_snapshot_from_capacity(
         health=ResourceHealth(
             status=snapshot.status, diagnostics=snapshot.diagnostics
         ),
-        freshness_ttl_seconds=freshness_ttl_seconds,
         quota_facts=facts,
         promotions=ordered_promotions,
-        poll_interval_seconds=poll_interval_seconds,
-        capabilities=capabilities if capabilities is not None else ExecutionCapabilities(),
-        cost=cost,
     )
 
 
@@ -1139,34 +1119,76 @@ class WorkerStateReport:
 
 @dataclass(frozen=True)
 class ResourceRegistryEntry:
-    """One registry read entry: identity plus its latest evaluated state.
+    """One registry read entry: administrator policy plus evaluated state.
+
+    ``freshness_ttl_seconds`` and ``poll_interval_seconds`` are the
+    administrator registration's authoritative server policy, and
+    ``capabilities``/``cost`` are its configured facts; all four are
+    composed here FROM THE REGISTRATION, never from the observation, so the
+    read model is self-contained while observations stay pure observation
+    records. An accepted observation can therefore never enlarge its own
+    freshness window, change its polling cadence or override configured
+    facts.
+
+    Cross-resource invariance (fail-closed, including on deserialization):
+    whenever ``observation`` is present, ``observation.identity`` must
+    equal this entry's ``identity`` exactly.
 
     ``observation`` is ``None`` exactly when the resource is registered but
     never observed; that state is ``freshness == "never_observed"`` — an
     honest unknown, never a healthy or usable reading. ``freshness`` is
-    evaluated against the registry snapshot's ``generated_at`` instant:
-    ``stale`` means a real last observation exists but its
-    ``freshness_ttl_seconds`` have elapsed. The observation's own health is
-    never rewritten by staleness.
+    evaluated against the registry snapshot's ``generated_at`` instant
+    using the registration's TTL: ``stale`` means a real last observation
+    exists but its freshness window has elapsed. The observation's own
+    health is never rewritten by staleness.
     """
 
     identity: ResourceIdentity
+    freshness_ttl_seconds: int
+    poll_interval_seconds: int | None
+    capabilities: ExecutionCapabilities
+    cost: ResourceCost | None
     observation: ResourceStateSnapshot | None
     freshness: str
     refresh_due: bool
 
     _REQUIRED: ClassVar[tuple[str, ...]] = (
         "identity",
+        "freshness_ttl_seconds",
         "observation",
         "freshness",
         "refresh_due",
     )
-    _OPTIONAL: ClassVar[tuple[str, ...]] = ()
+    _OPTIONAL: ClassVar[tuple[str, ...]] = (
+        "poll_interval_seconds",
+        "capabilities",
+        "cost",
+    )
 
     def __post_init__(self) -> None:
         _v_instance_of(self.identity, ResourceIdentity, "registry_entry.identity")
+        _ = _v_int(
+            self.freshness_ttl_seconds, "registry_entry.freshness_ttl_seconds", lo=1
+        )
+        _ = _v_opt_int(
+            self.poll_interval_seconds, "registry_entry.poll_interval_seconds", lo=1
+        )
+        _v_instance_of(
+            self.capabilities, ExecutionCapabilities, "registry_entry.capabilities"
+        )
+        if self.cost is not None:
+            _v_instance_of(self.cost, ResourceCost, "registry_entry.cost")
         if self.observation is not None:
-            _v_instance_of(self.observation, ResourceStateSnapshot, "registry_entry.observation")
+            _v_instance_of(
+                self.observation, ResourceStateSnapshot, "registry_entry.observation"
+            )
+            if self.observation.identity != self.identity:
+                raise CapacityValidationError(
+                    "registry_entry: observation identity for "
+                    + f"{self.observation.identity.resource_id!r} does not match "
+                    + f"the entry identity {self.identity.resource_id!r}; "
+                    + "cross-resource registry state fails closed"
+                )
         freshness = _v_enum(self.freshness, FRESHNESS_STATES, "registry_entry.freshness")
         _ = _v_bool(self.refresh_due, "registry_entry.refresh_due")
         if self.observation is None and freshness != "never_observed":
@@ -1183,8 +1205,25 @@ class ResourceRegistryEntry:
     def from_dict(cls, d: object) -> "ResourceRegistryEntry":
         dd = _v_exact_shape(d, cls._REQUIRED, cls._OPTIONAL, "registry_entry")
         raw_observation = dd["observation"]
+        raw_capabilities = dd.get("capabilities")
         return cls(
             identity=ResourceIdentity.from_dict(dd["identity"]),
+            freshness_ttl_seconds=cast(int, dd["freshness_ttl_seconds"]),
+            poll_interval_seconds=_v_opt_int(
+                dd.get("poll_interval_seconds"),
+                "registry_entry.poll_interval_seconds",
+                lo=1,
+            ),
+            capabilities=(
+                ExecutionCapabilities()
+                if raw_capabilities is None
+                else ExecutionCapabilities.from_dict(raw_capabilities)
+            ),
+            cost=(
+                None
+                if dd.get("cost") is None
+                else ResourceCost.from_dict(dd.get("cost"))
+            ),
             observation=(
                 None
                 if raw_observation is None
@@ -1195,14 +1234,22 @@ class ResourceRegistryEntry:
         )
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        out: dict[str, object] = {
             "identity": self.identity.to_dict(),
-            "observation": (
-                None if self.observation is None else self.observation.to_dict()
-            ),
-            "freshness": self.freshness,
-            "refresh_due": self.refresh_due,
+            "freshness_ttl_seconds": self.freshness_ttl_seconds,
         }
+        if self.poll_interval_seconds is not None:
+            out["poll_interval_seconds"] = self.poll_interval_seconds
+        if self.capabilities.to_dict():
+            out["capabilities"] = self.capabilities.to_dict()
+        if self.cost is not None:
+            out["cost"] = self.cost.to_dict()
+        out["observation"] = (
+            None if self.observation is None else self.observation.to_dict()
+        )
+        out["freshness"] = self.freshness
+        out["refresh_due"] = self.refresh_due
+        return out
 
 
 @dataclass(frozen=True)
@@ -1404,11 +1451,25 @@ def classify_freshness(
     The U-003 staleness rule, scoped to the server's state store: an
     observation is fresh while its age is at most ``freshness_ttl_seconds``
     and stale strictly beyond it. There is no default TTL, no score and no
-    partial freshness: every snapshot carries its own explicit bound.
+    partial freshness: the TTL is always the administrator registration's
+    explicit bound.
+
+    A future observation (``observed_at`` after ``now``) is rejected with
+    :class:`CapacityValidationError` — it is never silently treated as
+    fresh. This is the smallest fail-closed rule at the M01 evaluation
+    boundary; producing server-comparable observation times (including any
+    clock-skew tolerance protocol) is the reporting side's responsibility
+    and belongs to the worker transport (M05), not here.
     """
     _ = _v_ts(observed_at, "observed_at")
     _ = _v_ts(now, "now")
     _ = _v_int(freshness_ttl_seconds, "freshness_ttl_seconds", lo=1)
+    if _age_seconds(now, observed_at) < 0:
+        raise CapacityValidationError(
+            "classify_freshness: observed_at "
+            + f"{observed_at!r} is after the evaluation instant {now!r}; a "
+            + "future observation must never be evaluated as fresh"
+        )
     if _age_seconds(now, observed_at) > freshness_ttl_seconds:
         return "stale"
     return "fresh"
@@ -1418,18 +1479,24 @@ class ResourceRegistry:
     """In-memory registry of executable resources and their latest state.
 
     One server-side state store for M01: registrations from administrator
-    configuration, latest snapshots from the shared normalization (direct
-    collection or authenticated worker reports), and evaluated reads for
-    the routing core (M02). Deliberately in-memory per D-041 — the durable
-    SQLite-class store lands with M03/M09 and is not introduced here; a
-    restart reconstructs from configuration plus fresh collection.
+    configuration, latest observations from the shared normalization
+    (direct collection or authenticated worker reports), and evaluated
+    reads for the routing core (M02). Deliberately in-memory per D-041 —
+    the durable SQLite-class store lands with M03/M09 and is not introduced
+    here; a restart reconstructs from configuration plus fresh collection.
 
-    Mutation is fail-closed: snapshots are accepted only for registered
+    Mutation is fail-closed: observations are accepted only for registered
     resources with an exactly matching identity (a report can never
-    redefine a resource); worker reports are applied atomically, so a
-    report with any invalid entry changes nothing. Every accepted mutation
-    bumps the monotonic ``revision``. Clock is injectable and every read
-    accepts an explicit ``now`` for deterministic evaluation.
+    redefine a resource), and only when they are not dated after the
+    server's current instant (a future observation is rejected, never
+    stored as fresh). Freshness and polling policy are taken from the
+    registration, never from the observation: an accepted observation —
+    including a worker report — cannot change the server's freshness or
+    polling behavior, and configured capabilities/cost stay
+    registration-owned. Worker reports are applied atomically, so a report
+    with any invalid entry changes nothing. Every accepted mutation bumps
+    the monotonic ``revision``. Clock is injectable and every read accepts
+    an explicit ``now`` for deterministic evaluation.
     """
 
     def __init__(self, *, clock: Clock | None = None) -> None:
@@ -1462,6 +1529,13 @@ class ResourceRegistry:
                 f"registry: snapshot identity for {resource_id!r} does not match "
                 + "the registered identity"
             )
+        if _age_seconds(self._clock(), snapshot.observed_at) < 0:
+            raise CapacityValidationError(
+                f"registry: observation for {resource_id!r} is dated after the "
+                + "server's current instant; future observations are rejected "
+                + "and producing server-comparable observation times is the "
+                + "reporting side's responsibility (M05)"
+            )
 
     def apply_snapshot(self, snapshot: ResourceStateSnapshot) -> None:
         """Record one normalized observation for a registered resource."""
@@ -1472,10 +1546,13 @@ class ResourceRegistry:
     def apply_worker_report(self, report: WorkerStateReport) -> None:
         """Apply one worker report atomically, or change nothing.
 
-        Every entry is checked against the registrations first; any
-        unregistered or mismatched resource rejects the whole report
-        (fail-closed, never merged silently). Unrelated resources are never
-        affected either way.
+        Every entry is checked against the registrations and the server's
+        current instant first; any unregistered, mismatched or
+        future-dated resource rejects the whole report (fail-closed, never
+        merged silently). Unrelated resources are never affected either
+        way, and a report cannot change any resource's registered
+        freshness/polling policy or configured facts because observation
+        documents carry none.
         """
         _v_instance_of(report, WorkerStateReport, "worker_report")
         for snapshot in report.resources:
@@ -1507,7 +1584,15 @@ class ResourceRegistry:
         return tuple(due)
 
     def registry_snapshot(self, *, now: str | None = None) -> RegistrySnapshot:
-        """One evaluated, versioned read of the whole registry."""
+        """One evaluated, versioned read of the whole registry.
+
+        Freshness is evaluated per resource against this read's instant
+        using the registration's authoritative TTL. Evaluating with an
+        instant earlier than a stored observation (a backwards-moving
+        clock or an incoherent explicit ``now``) fails closed with
+        :class:`CapacityValidationError` instead of classifying a future
+        observation as fresh.
+        """
         generated_at = self._clock() if now is None else _v_ts(now, "now")
         entries: list[ResourceRegistryEntry] = []
         pool_members: dict[str, list[str]] = {}
@@ -1520,7 +1605,7 @@ class ResourceRegistry:
                 freshness = classify_freshness(
                     observed_at=observation.observed_at,
                     now=generated_at,
-                    freshness_ttl_seconds=observation.freshness_ttl_seconds,
+                    freshness_ttl_seconds=registration.freshness_ttl_seconds,
                 )
             refresh_due = self._entry_refresh_due(
                 registration=registration,
@@ -1530,6 +1615,10 @@ class ResourceRegistry:
             entries.append(
                 ResourceRegistryEntry(
                     identity=registration.identity,
+                    freshness_ttl_seconds=registration.freshness_ttl_seconds,
+                    poll_interval_seconds=registration.poll_interval_seconds,
+                    capabilities=registration.capabilities,
+                    cost=registration.cost,
                     observation=observation,
                     freshness=freshness,
                     refresh_due=refresh_due,

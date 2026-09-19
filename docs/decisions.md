@@ -2647,15 +2647,25 @@ what M4.1 forbids); a configurable per-provider eligibility policy
   staleness remainder is implemented as explicit, bounded per-resource
   freshness in `scarcity_router/resource_state.py`, scoped to the server's
   in-memory resource registry (D-041):
-  1. Every resource-state snapshot carries `observed_at` (when the
-     observation was made) and a required positive `freshness_ttl_seconds`
-     (the bounded staleness policy in effect for that record). No snapshot
-     is ever treated as unboundedly fresh; `observed_at` alone never claims
-     freshness.
+  1. **Administrator policy is authoritative.** Every resource's
+     administrator registration carries a required positive
+     `freshness_ttl_seconds` and an optional `poll_interval_seconds`; that
+     registration policy is the server's freshness/polling authority.
+     Observation documents (including worker reports) carry only
+     `observed_at` — no policy fields — so an accepted observation can
+     never enlarge its own freshness window or change its polling cadence.
+     The registry evaluates every observation against its registration's
+     TTL, and configured capabilities/cost are registration-owned the same
+     way: one canonical value per resource, no silent observation
+     override.
   2. `classify_freshness` evaluates each observation against an explicit,
-     injectable instant: fresh while its age is at most its TTL, stale
-     strictly beyond. Registry reads expose exactly `fresh`, `stale` or
-     `never_observed` per resource; staleness never rewrites an
+     injectable instant: fresh while its age is at most the registration
+     TTL, stale strictly beyond. A future-dated observation is rejected at
+     application time and fails closed at evaluation instead of being
+     treated as fresh; producing server-comparable observation times (and
+     any clock-skew tolerance protocol) is the reporting side's
+     responsibility (M05). Registry reads expose exactly `fresh`, `stale`
+     or `never_observed` per resource; staleness never rewrites an
      observation's own health status, and stale or unknown state is never
      read as usable, zero or full.
   3. Polling is bounded and pull-driven: a resource with a configured
@@ -2672,9 +2682,12 @@ what M4.1 forbids); a configurable per-provider eligibility policy
   fixed TTL (rejected: freshness policy is per-resource administrator
   configuration, and a global default would hide real per-surface
   differences such as local Ollama health versus provider telemetry);
-  retaining snapshots durably now (rejected: no evidenced need before the
-  M03/M09 server store exists, and persisted state would need its own
-  explicit migration story).
+  retention of freshness/polling policy on observation documents (rejected
+  in review: it let a worker-reported observation redefine how long its
+  own state is treated as fresh — policy belongs to the administrator
+  registration alone); retaining snapshots durably now (rejected: no
+  evidenced need before the M03/M09 server store exists, and persisted
+  state would need its own explicit migration story).
 - **Boundary:** This resolution is scoped to the server's resource-state
   registry. The recommendation-only surfaces keep their synchronous
   fresh-collection behavior (no cache, no TTL) exactly as the M1 decision

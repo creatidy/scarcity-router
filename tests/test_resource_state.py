@@ -6,8 +6,12 @@ and assert the invariants issue #86 requires: distinguished unknown/stale/
 zero-exhausted/unavailable/unsupported states, collector failure isolation,
 telemetry never changing capability facts, no secrets or account identity in
 snapshots, explicit confirmed-only quota pools, and fail-closed handling of
-wrong-version or malformed documents. They do NOT touch live providers, the
-network or credentials; all fixtures are synthetic.
+wrong-version or malformed documents. They also pin the bounded corrections
+of the contract: administrator registration policy is authoritative over
+observations, registry read state is cross-resource consistent (an entry's
+observation must carry the entry's identity), and future-dated observations
+are never evaluated as fresh. They do NOT touch live providers, the network
+or credentials; all fixtures are synthetic.
 
 Run with either:
 
@@ -42,6 +46,7 @@ from scarcity_router.resource_state import (
     ResourceIdentity,
     ResourceRegistration,
     ResourceRegistry,
+    ResourceRegistryEntry,
     ResourceStateSnapshot,
     RegistrySnapshot,
     WorkerStateReport,
@@ -55,6 +60,7 @@ T0 = "2026-09-15T12:00:00.000Z"
 T0_PLUS_59 = "2026-09-15T12:00:59.000Z"
 T0_PLUS_300 = "2026-09-15T12:05:00.000Z"
 T0_PLUS_301 = "2026-09-15T12:05:01.000Z"
+T_MINUS_1 = "2026-09-15T11:59:59.000Z"
 
 TTL = 300
 POLL = 60
@@ -160,10 +166,10 @@ def resource_snapshot(
     *,
     observed_at: str = T0,
     status: str = "ok",
-    ttl: int = TTL,
     quota_facts: tuple[QuotaFact, ...] = (),
     promotions: tuple[PromotionObservation, ...] = (),
 ) -> ResourceStateSnapshot:
+    """An observation record: identity, health and observed facts only."""
     diagnostics: tuple[CapacityDiagnostic, ...] = ()
     if status != "ok":
         diagnostics = (CapacityDiagnostic(code=_HEALTH_REQUIRED_CODE[status]),)
@@ -172,7 +178,6 @@ def resource_snapshot(
         identity=identity or codex_identity(),
         observed_at=observed_at,
         health=ResourceHealth(status=status, diagnostics=diagnostics),
-        freshness_ttl_seconds=ttl,
         quota_facts=quota_facts,
         promotions=promotions,
     )
@@ -184,10 +189,12 @@ def registration(
     capabilities: ExecutionCapabilities | None = None,
     cost: ResourceCost | None = None,
     poll: int | None = POLL,
+    ttl: int = TTL,
 ) -> ResourceRegistration:
+    """Administrator-owned policy and configured facts for one resource."""
     return ResourceRegistration(
         identity=identity or codex_identity(),
-        freshness_ttl_seconds=TTL,
+        freshness_ttl_seconds=ttl,
         poll_interval_seconds=poll,
         capabilities=capabilities if capabilities is not None else ExecutionCapabilities(),
         cost=cost,
@@ -457,9 +464,23 @@ class TestResourceStateSnapshot(unittest.TestCase):
         with self.assertRaises(CapacityValidationError):
             _ = ResourceStateSnapshot.from_dict(payload)
 
-    def test_rejects_nonpositive_freshness_ttl(self) -> None:
-        with self.assertRaises(CapacityValidationError):
-            _ = resource_snapshot(ttl=0)
+    def test_observation_documents_cannot_carry_server_policy(self) -> None:
+        # The single-canonical-truth rule: policy and configured facts are
+        # registration-owned. An observation document carrying any of them
+        # is malformed and fails closed, so no reporting side (including a
+        # worker) can even express a TTL/poll/capability/cost override.
+        payload = resource_snapshot().to_dict()
+        for forbidden in (
+            "freshness_ttl_seconds",
+            "poll_interval_seconds",
+            "capabilities",
+            "cost",
+        ):
+            with self.subTest(forbidden=forbidden):
+                tampered = dict(payload)
+                tampered[forbidden] = 1 if forbidden.endswith("seconds") else {}
+                with self.assertRaises(CapacityValidationError):
+                    _ = ResourceStateSnapshot.from_dict(tampered)
 
     def test_rejects_unsorted_quota_facts(self) -> None:
         late = QuotaFact(
@@ -481,7 +502,6 @@ class TestResourceStateSnapshot(unittest.TestCase):
                 capacity_payload(plan="plus", windows=[window()])
             ),
             identity=codex_identity(),
-            freshness_ttl_seconds=TTL,
         )
         serialized = json.dumps(snapshot.to_dict())
         self.assertNotIn("plan", serialized)
@@ -504,7 +524,6 @@ class TestCapacityNormalization(unittest.TestCase):
                 capacity_payload(windows=[window(used=6, remaining=94)])
             ),
             identity=codex_identity(),
-            freshness_ttl_seconds=TTL,
         )
         self.assertEqual(snapshot.health.status, "ok")
         self.assertEqual(snapshot.observed_at, T0)
@@ -532,7 +551,6 @@ class TestCapacityNormalization(unittest.TestCase):
                 snapshot = resource_snapshot_from_capacity(
                     CapacitySnapshot.from_dict(payload),
                     identity=codex_identity(),
-                    freshness_ttl_seconds=TTL,
                 )
                 self.assertEqual(snapshot.health.status, capacity_status)
                 self.assertEqual(
@@ -546,7 +564,6 @@ class TestCapacityNormalization(unittest.TestCase):
                 failed_capacity("auth_required", "auth_required")
             ),
             identity=codex_identity(),
-            freshness_ttl_seconds=TTL,
         )
         self.assertEqual(snapshot.quota_facts, ())
 
@@ -558,7 +575,6 @@ class TestCapacityNormalization(unittest.TestCase):
                 capacity_payload(windows=[window(used=100, remaining=0)])
             ),
             identity=codex_identity(),
-            freshness_ttl_seconds=TTL,
         )
         self.assertEqual(snapshot.health.status, "ok")
         self.assertEqual(snapshot.quota_facts[0].window.remaining_percent, 0)
@@ -568,32 +584,7 @@ class TestCapacityNormalization(unittest.TestCase):
             _ = resource_snapshot_from_capacity(
                 CapacitySnapshot.from_dict(capacity_payload(provider="zai")),
                 identity=codex_identity(),
-                freshness_ttl_seconds=TTL,
             )
-
-    def test_capabilities_come_from_configuration_not_telemetry(self) -> None:
-        # Even fully exhausted telemetry cannot change a capability fact.
-        capabilities = ExecutionCapabilities(
-            tool_calls=True, context_limit_tokens=128_000
-        )
-        snapshot = resource_snapshot_from_capacity(
-            CapacitySnapshot.from_dict(
-                capacity_payload(windows=[window(used=100, remaining=0)])
-            ),
-            identity=codex_identity(),
-            freshness_ttl_seconds=TTL,
-            capabilities=capabilities,
-        )
-        self.assertEqual(snapshot.capabilities, capabilities)
-
-    def test_local_limit_class_for_worker_reported_windows(self) -> None:
-        snapshot = resource_snapshot_from_capacity(
-            CapacitySnapshot.from_dict(capacity_payload(windows=[window()])),
-            identity=codex_identity(),
-            freshness_ttl_seconds=TTL,
-            quota_observation_class="local_limit",
-        )
-        self.assertEqual(snapshot.quota_facts[0].observation_class, "local_limit")
 
 
 # ── worker state reports ──────────────────────────────────────────────────────
@@ -675,7 +666,14 @@ class TestWorkerStateReport(unittest.TestCase):
 class TestResourceRegistry(unittest.TestCase):
     def test_register_and_read_never_observed(self) -> None:
         registry = ResourceRegistry()
-        registry.register(registration(poll=POLL))
+        configured = registration(
+            capabilities=ExecutionCapabilities(streaming=True),
+            cost=ResourceCost(
+                observation_class="estimate", input_micro_usd_per_mtoken=1
+            ),
+            poll=POLL,
+        )
+        registry.register(configured)
         read = registry.registry_snapshot(now=T0)
         self.assertEqual(read.revision, 1)
         self.assertEqual(len(read.entries), 1)
@@ -683,6 +681,12 @@ class TestResourceRegistry(unittest.TestCase):
         self.assertIsNone(entry.observation)
         self.assertEqual(entry.freshness, "never_observed")
         self.assertTrue(entry.refresh_due)
+        # The read model composes the registration's authoritative policy
+        # and configured facts.
+        self.assertEqual(entry.freshness_ttl_seconds, TTL)
+        self.assertEqual(entry.poll_interval_seconds, POLL)
+        self.assertEqual(entry.capabilities, configured.capabilities)
+        self.assertEqual(entry.cost, configured.cost)
 
     def test_register_rejects_duplicates(self) -> None:
         registry = ResourceRegistry()
@@ -702,14 +706,19 @@ class TestResourceRegistry(unittest.TestCase):
         with self.assertRaises(CapacityValidationError):
             registry.apply_snapshot(drifted)
 
-    def test_freshness_is_fresh_then_stale_then_fresh_again(self) -> None:
-        registry = ResourceRegistry(clock=lambda: T0)
-        registry.register(registration())
+    def test_registration_policy_is_authoritative_for_freshness(self) -> None:
+        # The TTL comes from the administrator registration. Observations
+        # carry no TTL at all, so no reporting side can enlarge how long
+        # its state is treated as fresh.
+        clock_state = {"now": T0}
+        registry = ResourceRegistry(clock=lambda: clock_state["now"])
+        registry.register(registration(ttl=TTL))
         registry.apply_snapshot(resource_snapshot())
         self.assertEqual(
             registry.registry_snapshot(now=T0).entries[0].freshness, "fresh"
         )
-        # Age exactly at the TTL is still fresh; one second beyond is stale.
+        # Age exactly at the registration TTL is still fresh; one second
+        # beyond is stale.
         self.assertEqual(
             registry.registry_snapshot(now=T0_PLUS_300).entries[0].freshness,
             "fresh",
@@ -718,16 +727,19 @@ class TestResourceRegistry(unittest.TestCase):
         stale_entry = stale_read.entries[0]
         assert stale_entry.observation is not None
         self.assertEqual(stale_entry.freshness, "stale")
+        self.assertEqual(stale_entry.freshness_ttl_seconds, TTL)
         # Staleness never rewrites the observation's own health.
         self.assertEqual(stale_entry.observation.health.status, "ok")
-        # A new observation restores freshness.
+        # A new observation restores freshness once the server clock has
+        # reached its observation time.
+        clock_state["now"] = T0_PLUS_301
         registry.apply_snapshot(resource_snapshot(observed_at=T0_PLUS_301))
         self.assertEqual(
             registry.registry_snapshot(now=T0_PLUS_301).entries[0].freshness,
             "fresh",
         )
 
-    def test_refresh_due_follows_polling_cadence(self) -> None:
+    def test_refresh_due_follows_registered_polling_cadence(self) -> None:
         registry = ResourceRegistry()
         registry.register(registration(poll=POLL))
         registry.apply_snapshot(resource_snapshot())
@@ -741,13 +753,14 @@ class TestResourceRegistry(unittest.TestCase):
         registry.register(registration(poll=None))
         self.assertEqual(registry.refresh_due(now=T0), ())
 
-    def test_snapshot_without_poll_interval_is_never_due(self) -> None:
+    def test_stale_observation_is_never_due_without_polling(self) -> None:
         registry = ResourceRegistry()
         registry.register(registration(poll=None))
         registry.apply_snapshot(resource_snapshot())
         read = registry.registry_snapshot(now=T0_PLUS_301)
         self.assertEqual(read.entries[0].freshness, "stale")
         self.assertFalse(read.entries[0].refresh_due)
+        self.assertIsNone(read.entries[0].poll_interval_seconds)
 
     def test_confirmed_pool_groups_members_and_excludes_unrelated(self) -> None:
         registry = ResourceRegistry()
@@ -840,8 +853,150 @@ class TestResourceRegistry(unittest.TestCase):
         self.assertEqual(REGISTRY_SCHEMA_VERSION, 1)
 
 
+# ── cross-resource registry-state invariants ──────────────────────────────────
+
+
+class TestRegistryCrossResourceInvariants(unittest.TestCase):
+    """Registry read state must never mix one resource with another's data."""
+
+    def test_entry_rejects_mismatched_observation_identity(self) -> None:
+        entry_identity = codex_identity()
+        foreign_observation = resource_snapshot(ollama_identity())
+        with self.assertRaises(CapacityValidationError):
+            _ = ResourceRegistryEntry(
+                identity=entry_identity,
+                freshness_ttl_seconds=TTL,
+                poll_interval_seconds=None,
+                capabilities=ExecutionCapabilities(),
+                cost=None,
+                observation=foreign_observation,
+                freshness="fresh",
+                refresh_due=False,
+            )
+
+    def test_entry_from_dict_rejects_mismatched_observation_identity(self) -> None:
+        payload = ResourceRegistryEntry(
+            identity=codex_identity(),
+            freshness_ttl_seconds=TTL,
+            poll_interval_seconds=POLL,
+            capabilities=ExecutionCapabilities(),
+            cost=None,
+            observation=resource_snapshot(codex_identity()),
+            freshness="fresh",
+            refresh_due=False,
+        ).to_dict()
+        # Swap in another resource's observation under this entry's read.
+        payload["observation"] = resource_snapshot(ollama_identity()).to_dict()
+        with self.assertRaises(CapacityValidationError):
+            _ = ResourceRegistryEntry.from_dict(payload)
+
+    def test_registry_snapshot_from_dict_rejects_cross_resource_state(self) -> None:
+        registry = ResourceRegistry(clock=lambda: T0)
+        registry.register(registration(codex_identity()))
+        registry.register(registration(ollama_identity()))
+        registry.apply_snapshot(resource_snapshot(codex_identity()))
+        read_payload = registry.registry_snapshot(now=T0).to_dict()
+        entries = cast("list[dict[str, object]]", read_payload["entries"])
+        codex_entry = next(
+            entry
+            for entry in entries
+            if cast("dict[str, object]", entry["identity"])["resource_id"]
+            == "openai-codex-sub"
+        )
+        # Tamper: the codex entry now carries the (absent) ollama slot's
+        # observation identity — a different resource's state.
+        codex_entry["observation"] = resource_snapshot(
+            ollama_identity(), status="unavailable"
+        ).to_dict()
+        with self.assertRaises(CapacityValidationError):
+            _ = RegistrySnapshot.from_dict(read_payload)
+
+    def test_matching_identity_still_round_trips(self) -> None:
+        entry = ResourceRegistryEntry(
+            identity=codex_identity(),
+            freshness_ttl_seconds=TTL,
+            poll_interval_seconds=POLL,
+            capabilities=ExecutionCapabilities(streaming=True),
+            cost=ResourceCost(observation_class="estimate", input_micro_usd_per_mtoken=1),
+            observation=resource_snapshot(codex_identity()),
+            freshness="fresh",
+            refresh_due=False,
+        )
+        self.assertEqual(ResourceRegistryEntry.from_dict(entry.to_dict()), entry)
+
+
+# ── future timestamps ─────────────────────────────────────────────────────────
+
+
+class TestFutureTimestampSemantics(unittest.TestCase):
+    """A future observation is never silently treated as fresh."""
+
+    def test_classify_freshness_rejects_future_observation(self) -> None:
+        with self.assertRaises(CapacityValidationError):
+            _ = classify_freshness(
+                observed_at=T0_PLUS_301, now=T0, freshness_ttl_seconds=TTL
+            )
+
+    def test_apply_rejects_future_dated_observation(self) -> None:
+        registry = ResourceRegistry(clock=lambda: T0)
+        registry.register(registration())
+        with self.assertRaises(CapacityValidationError):
+            registry.apply_snapshot(
+                resource_snapshot(observed_at=T0_PLUS_301)
+            )
+        # Nothing was stored: the resource stays never-observed and the
+        # revision is unchanged.
+        read = registry.registry_snapshot(now=T0)
+        self.assertEqual(read.revision, 1)
+        self.assertIsNone(read.entries[0].observation)
+        self.assertEqual(read.entries[0].freshness, "never_observed")
+
+    def test_worker_report_with_future_dated_entry_is_rejected_atomically(
+        self,
+    ) -> None:
+        registry = ResourceRegistry(clock=lambda: T0)
+        registry.register(registration(codex_identity()))
+        registry.register(registration(ollama_identity()))
+        registry.apply_snapshot(resource_snapshot(codex_identity()))
+        baseline = registry.registry_snapshot(now=T0)
+        bad_report = WorkerStateReport(
+            schema_version=WORKER_REPORT_SCHEMA_VERSION,
+            worker_id="lab-worker-01",
+            reported_at=T0_PLUS_301,
+            resources=(
+                resource_snapshot(ollama_identity(), observed_at=T0_PLUS_301),
+            ),
+        )
+        with self.assertRaises(CapacityValidationError):
+            registry.apply_worker_report(bad_report)
+        after = registry.registry_snapshot(now=T0)
+        self.assertEqual(after.revision, baseline.revision)
+        by_id = {entry.identity.resource_id: entry for entry in after.entries}
+        self.assertEqual(by_id["lab-worker-ollama-qwen3"].freshness, "never_observed")
+
+    def test_backwards_evaluation_instant_fails_closed(self) -> None:
+        # Applied against a clock at T0, a read evaluated before T0 refuses
+        # to classify the stored observation instead of calling it fresh.
+        registry = ResourceRegistry(clock=lambda: T0)
+        registry.register(registration())
+        registry.apply_snapshot(resource_snapshot(observed_at=T0))
+        with self.assertRaises(CapacityValidationError):
+            _ = registry.registry_snapshot(now=T_MINUS_1)
+
+    def test_boundary_now_equal_to_observed_at_is_fresh(self) -> None:
+        registry = ResourceRegistry(clock=lambda: T0)
+        registry.register(registration())
+        registry.apply_snapshot(resource_snapshot(observed_at=T0))
+        self.assertEqual(
+            registry.registry_snapshot(now=T0).entries[0].freshness, "fresh"
+        )
+
+
+# ── worker report application ─────────────────────────────────────────────────
+
+
 class TestWorkerReportApplication(unittest.TestCase):
-    """Worker reports apply atomically or not at all."""
+    """Worker reports apply atomically or not at all — and never touch policy."""
 
     def _registry_with_baseline(self) -> tuple[ResourceRegistry, int]:
         registry = ResourceRegistry(clock=lambda: T0)
@@ -898,6 +1053,27 @@ class TestWorkerReportApplication(unittest.TestCase):
         )
         # The server-observed resource is untouched by the worker report.
         self.assertEqual(codex_entry.observation.health.status, "ok")
+
+    def test_report_cannot_change_registered_policy_or_configured_facts(
+        self,
+    ) -> None:
+        registry, _ = self._registry_with_baseline()
+        before = registry.registry_snapshot(now=T0)
+        registry.apply_worker_report(
+            self._report((resource_snapshot(ollama_identity()),))
+        )
+        after = registry.registry_snapshot(now=T0)
+        for before_entry, after_entry in zip(before.entries, after.entries):
+            self.assertEqual(
+                before_entry.freshness_ttl_seconds,
+                after_entry.freshness_ttl_seconds,
+            )
+            self.assertEqual(
+                before_entry.poll_interval_seconds,
+                after_entry.poll_interval_seconds,
+            )
+            self.assertEqual(before_entry.capabilities, after_entry.capabilities)
+            self.assertEqual(before_entry.cost, after_entry.cost)
 
     def test_report_with_one_bad_entry_changes_nothing(self) -> None:
         registry, baseline_revision = self._registry_with_baseline()
