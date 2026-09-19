@@ -2938,9 +2938,10 @@ what M4.1 forbids); a configurable per-provider eligibility policy
 
 ### U-012 — Codex execution-adapter uncertainties (registered by A0)
 
-- **Status:** Open; resolution owned by M06 (#91) — Stage 1 evidence may start
-  immediately and is exempt from the A0 dependency edge; Stage 2
-  implementation waits for it.
+- **Status:** Stage 1 evidence recorded (2026-09-19, M06 #91); per-bullet
+  statuses below. Stage 2 implementation waits for A0 (#85) and M05 and must
+  re-verify official documentation with date and tested version at
+  implementation time, per the issue's own evidence rule.
 - **Date:** 2026-09-19
 - **Decision:** A0 deliberately does not guess the following; each is answered
   only by dated, versioned evidence in M06 Stage 1:
@@ -2956,6 +2957,67 @@ what M4.1 forbids); a configurable per-provider eligibility policy
     cells for M03);
   - which app-server protocol fields are stable enough to depend on
     (generation-aware parsing per D-019/U-011 remains the containment).
+- **Stage 1 answers (2026-09-19; full evidence, sources and confidence in
+  `docs/codex-adapter-stage1-evidence.md`):**
+  - *Runtime discovery / Windows vs WSL profiles* — **answered (narrowed)**.
+    U-001's VS Code extension layout re-confirmed on a current installation
+    (extension `26.908.40401`, `codex-cli 0.154.0-alpha.6.2`); official CLI
+    install channels documented (installer, npm, brew); Windows-native vs
+    WSL2 are separate profiles with separate default CODEX_HOME stores and
+    distinct sandbox mechanisms (elevated/unelevated vs bubblewrap; WSL1
+    unsupported since 0.115). Narrowed residual: driving the Desktop app's
+    bundled binary externally is undocumented (UNKNOWN); PATH/CLI discovery
+    is still unimplemented in the collector (U-001 residual (b);
+    `SCARCITY_ROUTER_CODEX_BIN` covers pinned installs).
+  - *Authentication prerequisites for unattended execution* — **answered**.
+    Official flows: ChatGPT-managed (browser + device-code) with Codex-side
+    automatic refresh and cached-credential reuse; API-key auth is
+    usage-billed PAYG (policy-forbidden for execution under D-039/M4.1);
+    enterprise Codex access tokens are Business/Enterprise only and are
+    delivered via stdin (`codex login --with-access-token`);
+    `chatgptAuthTokens` (host-supplied tokens) is experimental and excluded
+    by D-018 (the router would become a token holder); the official
+    `auth.json` copy fallback is excluded by issue policy. D-018's
+    `account/read {"refreshToken": true}` is the documented managed-refresh
+    mechanism; `account/read`'s `account.type`/`requiresOpenaiAuth` is the
+    official pre-call auth-mode signal for the execution-side guard.
+  - *Model and reasoning/effort selection* — **answered**. `model/list`
+    (per-model `supportedReasoningEfforts`, `defaultReasoningEffort`),
+    `thread/start {model}`, per-turn `turn/start {model, effort, summary}`;
+    live handshake + `model/list` probe on `0.154.0-alpha.6.2`.
+  - *Quota scope of executed work* — **answered**. ChatGPT-managed auth
+    draws the ChatGPT plan quota (documented `account/rateLimits/read`
+    envelope matches the U-010/U-011/D-019 validated mapping;
+    `account/usage/read` requires ChatGPT-backed auth); API-key auth is
+    PAYG. Quota-scope evidence only; promotional eligibility is never
+    inferred and D-039 gating is unchanged.
+  - *Roles/history, streaming, cancellation, tool calls, structured output,
+    usage reporting* — **answered as draft matrix cells** (M03 input), with
+    honest tested-version limits: handshake/model-list probed live; all
+    turn-level cells are official-documentation evidence against the
+    `rust-v0.155.1` schemas and stay subject to Stage 2 re-verification.
+    Headlines: streaming PASS (stdio JSONL; WebSocket transport
+    experimental/unsupported — excluded), cancellation PASS
+    (`turn/interrupt`), structured output PASS (`turn/start.outputSchema`),
+    tool results PASS (`toolOutput`), usage reporting PASS
+    (`thread/tokenUsage/updated`, `account/usage/read`), roles/history
+    PARTIAL (Responses-API item mapping; `baseInstructions`/
+    `developerInstructions`), tool_calls PARTIAL only via the experimental
+    dynamic-tools gate — UNSUPPORTED on the stable surface, so Stage 2 must
+    choose explicitly.
+  - *Stable vs experimental protocol fields* — **narrowed**. The app-server
+    protocol now has an official stability contract: experimental
+    methods/fields are gated behind `capabilities.experimentalApi` and the
+    server rejects them (`<descriptor> requires experimentalApi
+    capability`; machinery verified in `codex-rs/app-server-protocol/src/
+    experimental_api.rs` at `rust-v0.155.1`); version-pinned
+    `generate-ts`/`generate-json-schema` artifacts exist. The stable
+    surface relevant to Stage 2 is enumerated in the evidence document.
+    Residuals: the `codex app-server` subcommand still self-labels
+    `[experimental]` in CLI help (0.154.0-alpha.6.2), the WebSocket
+    transport is documented as experimental and unsupported, and
+    generation-aware parsing per D-019/U-011 with fail-closed disable
+    remains the containment.
 - **Evidence needed:** official documentation
   (https://developers.openai.com/codex/app-server,
   https://developers.openai.com/codex/auth) re-verified with date and tested
@@ -2985,6 +3047,56 @@ what M4.1 forbids); a configurable per-provider eligibility policy
   /en/terms, https://docs.z.ai/devpack/overview) re-verified with dates;
   prefer official documentation and local capability probes; no credentials
   beyond those authorized for this work.
+- **Stage 1 evidence (M07, 2026-09-19):** recorded in
+  [`docs/zcode-adapter-stage1-evidence.md`](zcode-adapter-stage1-evidence.md)
+  (all sources retrieved 2026-09-19; local runtime 3.14.0; no live
+  inference probes). Per-bullet status:
+  - *official stable headless path* — **answered: NO.** The product is a
+    desktop Electron ADE; install docs and the full sidebar document no
+    CLI/headless/SDK surface; every unattended channel (Automations,
+    idle-time tasks, Bot Channel, Remote Control/Development) is UI- or
+    chat-driven with no external trigger API. The local
+    `zcode-cli`/`zcode-server.cjs` runtime executes agents internally over
+    undocumented Unix-socket IPC in `desktop-attached-remote` mode — an
+    internal mechanism, not a supported interface (evidence doc sections
+    2.4–2.6).
+  - *vendor terms for subscription/idle-time use through a third-party
+    router* — **narrowed, still open on consent.** Terms effective
+    2026-06-15 re-verified 2026-09-19: account exclusivity (III.3), no
+    lending/renting (III.4), and the prohibition on using ZCode as an
+    "unauthorized proxy server" (IV.3) leave the gateway use case
+    unresolved without explicit vendor consent; no redistribution right in
+    the bundled runtime exists (evidence doc section 5).
+  - *runtime discovery, authentication, output format, cancellation, tool
+    behavior, permissions, version stability* — **answered for Stage 1.**
+    Discovery signals and desktop-attached authentication documented;
+    output format/cancellation UNKNOWN (no surface); `tool_calls`
+    UNSUPPORTED (client tools must never execute locally, D-043); four
+    permission modes mapped with auto-connect MCP and auto-enable plugin
+    trust behavior; version churn high (eight releases 2026-08-20 through
+    2026-09-19) — any future integration must pin 3.14.0 exactly and fail
+    closed on drift (evidence doc sections 2, 3).
+  - *usage/quota accounting vs promotional eligibility* — **answered as
+    separated.** Account-level 5-hour/weekly/MCP pools are observable and
+    already collected by the existing `zai_usage_endpoint` collector;
+    per-session local records exist; idle-time runs are vendor-documented
+    as free and non-consuming. Promotional eligibility (off-peak rates,
+    reset cards, time-boxed promos) stays UNKNOWN for router-executed work
+    per D-039 (evidence doc sections 2.12, 4).
+  - *isolation of session/filesystem/tools from unrelated history and
+    global plugins* — **answered: NOT met by the product.** Sessions
+    inherit history; project MCP auto-connects without approval; plugins
+    auto-enable with code-execution trust; D-044 isolation is achievable
+    only via full external containment (dedicated OS identity, dedicated
+    `HOME`, sanitized workspace) (evidence doc section 6).
+  - **Bottom line (M07 Stage 1, 2026-09-19): NO-GO for a supported
+    adapter; Stage 2 not recommended to start.** Experimental-only remains
+    possible under written vendor consent, full D-044 containment, exact
+    version pinning with fail-closed disable, honest account-level
+    accounting, and no runtime redistribution. The supported
+    subscription-backed execution channel is the GLM Coding Plan
+    OpenAI/Anthropic-compatible API through M04 (distinct resource per
+    D-042; terms under U-009), not a ZCode runtime wrapper.
 
 ## Superseding a decision
 
