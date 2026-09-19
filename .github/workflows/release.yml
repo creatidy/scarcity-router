@@ -1,0 +1,260 @@
+# Public release pipeline (issue #97). This is the only GitHub Actions
+# workflow in this repository: GitHub is the public distribution surface, not
+# a second development-CI authority. Development CI runs on canonical Forgejo
+# (.forgejo/workflows/ci.yml); no pull-request CI exists here by design.
+#
+# Triggered solely by deliberate human-created SemVer release tags on stable
+# main. It fails closed unless every release invariant in
+# docs/release-engineering.md holds: strict SemVer tag, package version equal
+# to the tag (single source: scarcity_router/__init__.py), tagged commit
+# reachable from stable main, artifacts built from the exact tagged commit in
+# this same run, and artifacts passing `make package-check` before any
+# publication. It never publishes from a pull-request event, and all
+# publication identities are short-lived OIDC — no long-lived tokens.
+#
+# Artifact transfer is structurally separated into two uploads: the
+# `pypi-packages` artifact carries only actual Python distributions
+# (*.whl / *.tar.gz) and is the sole directory the PyPI publisher sees,
+# while the `release-bundle` artifact carries the distributions plus
+# SHA256SUMS for the GitHub Release. Release metadata (checksums, future
+# provenance files) therefore cannot enter the PyPI publication input
+# without a deliberate, reviewable change to both the upload globs and the
+# publication guard.
+name: release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: verify-release-contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the tagged commit with full history
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify release invariants (fail closed)
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+
+          # Invariant 1: the ref is a supported SemVer release tag vX.Y.Z.
+          if ! printf '%s' "${TAG}" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
+            echo "FAIL: '${TAG}' is not a supported release tag (expected vX.Y.Z)" >&2
+            exit 1
+          fi
+          VERSION="${TAG#v}"
+
+          # Invariant 2: package version equals the release tag version. The
+          # single authoritative source literal is __version__ in
+          # scarcity_router/__init__.py; there is no second committed copy.
+          PKG_VERSION="$(python3 -c '
+          import pathlib
+          import re
+          text = pathlib.Path("scarcity_router/__init__.py").read_text(encoding="utf-8")
+          match = re.search(r"^__version__ = \"([^\"]+)\"$", text, re.MULTILINE)
+          if match is None:
+              raise SystemExit("FAIL: cannot read __version__ from scarcity_router/__init__.py")
+          print(match.group(1))
+          ')"
+          if [ "${PKG_VERSION}" != "${VERSION}" ]; then
+            echo "FAIL: package version ${PKG_VERSION} != release tag version ${VERSION}" >&2
+            exit 1
+          fi
+
+          # Invariant 3: the tagged commit belongs to stable main.
+          TAG_COMMIT="$(git rev-parse "${TAG}^{commit}")"
+          if [ "${TAG_COMMIT}" != "${GITHUB_SHA}" ]; then
+            echo "FAIL: event commit ${GITHUB_SHA} is not the tagged commit ${TAG_COMMIT}" >&2
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "${TAG_COMMIT}" origin/main; then
+            echo "FAIL: tagged commit ${TAG_COMMIT} is not reachable from stable main" >&2
+            exit 1
+          fi
+
+          # Invariants 4 and 5 are structural: every later job of this run
+          # checks out and builds exactly ${GITHUB_SHA}, and the artifacts
+          # must pass `make package-check` before any publish job starts.
+          echo "release contract verified: tag ${TAG} == package ${PKG_VERSION} == commit ${TAG_COMMIT} on stable main"
+
+  build:
+    name: build-and-verify-artifacts
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      # Short-lived OIDC identity for Sigstore-backed build provenance; no
+      # persistent signing secret exists anywhere in this workflow.
+      id-token: write
+      attestations: write
+    steps:
+      - name: Check out the exact tagged commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Install pinned uv
+        uses: astral-sh/setup-uv@22695119d769bdb6f7032ad67b9bca0ef8c4a174 # v5.4.0
+        with:
+          python-version: "3.12"
+          enable-cache: false
+
+      - name: Sync the repository-managed environment
+        run: uv sync --only-dev
+
+      # Builds wheel + sdist from this checkout of the tagged commit, inspects
+      # contents and metadata, then smoke-installs the wheel into a throwaway
+      # uv tool environment (console scripts, packaged resources, MCP
+      # discovery, loopback REST healthz). Nothing is published here.
+      - name: Build, inspect and smoke-install the release artifacts
+        run: make package-check
+
+      - name: Generate SHA256SUMS
+        run: |
+          cd dist
+          # Entries cover the release payloads that need checksum
+          # verification: the wheel and the sdist. SHA256SUMS does not hash
+          # itself; verify a downloaded release with
+          # `sha256sum -c SHA256SUMS` in the directory holding the assets.
+          sha256sum scarcity_router-*.whl scarcity_router-*.tar.gz | tee SHA256SUMS
+
+      - name: Verify the release payload set (fail closed)
+        run: |
+          set -euo pipefail
+          # dist/ must hold exactly one wheel, one sdist and SHA256SUMS;
+          # nothing else may enter either publication path.
+          wheel_count="$(find dist -maxdepth 1 -type f -name 'scarcity_router-*.whl' | wc -l)"
+          sdist_count="$(find dist -maxdepth 1 -type f -name 'scarcity_router-*.tar.gz' | wc -l)"
+          if [ "${wheel_count}" -ne 1 ] || [ "${sdist_count}" -ne 1 ]; then
+            echo "FAIL: expected exactly one wheel and one sdist, found ${wheel_count}/${sdist_count}" >&2
+            exit 1
+          fi
+          if [ ! -f dist/SHA256SUMS ]; then
+            echo "FAIL: missing dist/SHA256SUMS" >&2
+            exit 1
+          fi
+          stray="$(find dist -maxdepth 1 -type f ! -name '*.whl' ! -name '*.tar.gz' ! -name 'SHA256SUMS' ! -name '.*')"
+          if [ -n "${stray}" ]; then
+            echo "FAIL: unexpected files in the release payload:" >&2
+            printf '%s\n' "${stray}" >&2
+            exit 1
+          fi
+          # Hidden files (uv writes dist/.gitignore) are tool residue:
+          # they match neither upload glob, so they cannot reach any
+          # publication path; any non-hidden stray file fails above.
+
+      - name: Attest build provenance (Sigstore, short-lived identity)
+        uses: actions/attest-build-provenance@db473fddc028af60658334401dc6fa3ffd8669fd # v2.3.0
+        with:
+          subject-path: |
+            dist/scarcity_router-*.whl
+            dist/scarcity_router-*.tar.gz
+            dist/SHA256SUMS
+
+      - name: Upload the PyPI payload (only actual Python distributions)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          # The globs below are the sole whitelist for what the PyPI
+          # publisher can ever receive: checksums and future release
+          # metadata do not match them by construction.
+          name: pypi-packages
+          path: |
+            dist/scarcity_router-*.whl
+            dist/scarcity_router-*.tar.gz
+          if-no-files-found: error
+
+      - name: Upload the release bundle (distributions plus checksums)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-bundle
+          path: |
+            dist/scarcity_router-*.whl
+            dist/scarcity_router-*.tar.gz
+            dist/SHA256SUMS
+          if-no-files-found: error
+
+  publish-github-release:
+    name: publish-github-release
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # create the Release and attach artifacts (nothing else)
+    steps:
+      - name: Download the release bundle
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-bundle
+          path: dist
+
+      - name: Create the GitHub Release and attach artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Explicit attachment list: bundle additions must be made
+          # deliberately, never by glob accident.
+          gh release create "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --verify-tag \
+            --title "scarcity-router ${GITHUB_REF_NAME}" \
+            --generate-notes \
+            dist/scarcity_router-*.whl \
+            dist/scarcity_router-*.tar.gz \
+            dist/SHA256SUMS
+
+  publish-pypi:
+    name: publish-pypi
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # External gate (owner action, docs/release-engineering.md): the PyPI
+    # project must list this repository/workflow/environment as a Trusted
+    # Publisher, and the `pypi` environment should carry required reviewers.
+    # Until configured, PyPI rejects the OIDC claim and this job fails closed.
+    environment: pypi
+    permissions:
+      id-token: write # PyPI Trusted Publishing (OIDC); no API token exists
+    steps:
+      - name: Download the PyPI payload
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: pypi-packages
+          path: pypi-packages
+
+      - name: Guard the publication input (only Python distributions)
+        run: |
+          set -euo pipefail
+          # Final choke point before twine: the directory handed to
+          # pypa/gh-action-pypi-publish must contain only *.whl / *.tar.gz,
+          # never checksums or release metadata.
+          stray="$(find pypi-packages -type f ! -name '*.whl' ! -name '*.tar.gz')"
+          if [ -n "${stray}" ]; then
+            echo "FAIL: non-distribution files in the PyPI payload:" >&2
+            printf '%s\n' "${stray}" >&2
+            exit 1
+          fi
+          echo "PyPI payload:"
+          ls -1 pypi-packages
+
+      - name: Publish to PyPI via Trusted Publishing
+        uses: pypa/gh-action-pypi-publish@76f52bc884231f62b9a034ebfe128415bbaabdfc # v1.12.4
+        with:
+          packages-dir: pypi-packages/
+          verbose: true

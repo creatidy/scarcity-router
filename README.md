@@ -34,8 +34,11 @@ Requirements:
 
 Provider access is described in [Supported Providers](#supported-providers).
 
-The package is not published to any index; install it locally from a
-checkout (or a built wheel) into an isolated `uv` tool environment:
+The package is not published to any index yet (the public install path that
+activates with the first PyPI release is contracted in
+[`docs/release-engineering.md`](docs/release-engineering.md)); install it
+locally from a checkout (or a built wheel) into an isolated `uv` tool
+environment:
 
 ```bash
 uv tool install /path/to/scarcity-router-checkout
@@ -51,8 +54,8 @@ This exposes exactly three commands:
 - `scarcity-router-mcp` — the stdio MCP adapter;
 - `scarcity-router-server` — the loopback REST adapter.
 
-The installed commands load the packaged default catalog (version 2) and
-model policy (version 6) as package resources, so they work without a
+The installed commands load the packaged default catalog and model policy
+as package resources, so they work without a
 repository checkout and independent of the current directory; explicit
 `--catalog` and `--model-policy` flags always override the defaults. The
 default user selector policy is packaged the same way and provisioned into
@@ -290,6 +293,8 @@ rules and historical evidence remain available without being part of onboarding.
 - [`AGENTS.md`](AGENTS.md) — durable repository and agent rules.
 - [`docs/llm-operating-policy.md`](docs/llm-operating-policy.md) — bounded
   multi-model execution and review governance.
+- [`docs/release-engineering.md`](docs/release-engineering.md) — CI, release
+  integrity and public distribution contracts.
 - [`Makefile`](Makefile) — the reproducible test and type-check gate.
 
 ### AUDIT / HISTORY
@@ -322,6 +327,14 @@ Package artifact and isolated-install checks:
 ```bash
 make package-check
 ```
+
+Development CI runs the same gate plus `make package-check` on every pull
+request to `develop` and every push to `develop` (workflow `ci`, job
+`check` — the stable required check for `develop` branch protection). Public
+releases are deliberate SemVer tags on stable `main`, published through the
+tag-driven GitHub workflow. The CI/release authority split, trust model and
+owner-action checklist live in
+[`docs/release-engineering.md`](docs/release-engineering.md).
 
 Forgejo is canonical for issues, branches, pull requests and reviews; `develop`
 is the integration branch. GitHub is an automatic read-only mirror for public
