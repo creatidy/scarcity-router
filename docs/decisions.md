@@ -2985,6 +2985,56 @@ what M4.1 forbids); a configurable per-provider eligibility policy
   /en/terms, https://docs.z.ai/devpack/overview) re-verified with dates;
   prefer official documentation and local capability probes; no credentials
   beyond those authorized for this work.
+- **Stage 1 evidence (M07, 2026-09-19):** recorded in
+  [`docs/zcode-adapter-stage1-evidence.md`](zcode-adapter-stage1-evidence.md)
+  (all sources retrieved 2026-09-19; local runtime 3.14.0; no live
+  inference probes). Per-bullet status:
+  - *official stable headless path* — **answered: NO.** The product is a
+    desktop Electron ADE; install docs and the full sidebar document no
+    CLI/headless/SDK surface; every unattended channel (Automations,
+    idle-time tasks, Bot Channel, Remote Control/Development) is UI- or
+    chat-driven with no external trigger API. The local
+    `zcode-cli`/`zcode-server.cjs` runtime executes agents internally over
+    undocumented Unix-socket IPC in `desktop-attached-remote` mode — an
+    internal mechanism, not a supported interface (evidence doc sections
+    2.4–2.6).
+  - *vendor terms for subscription/idle-time use through a third-party
+    router* — **narrowed, still open on consent.** Terms effective
+    2026-06-15 re-verified 2026-09-19: account exclusivity (III.3), no
+    lending/renting (III.4), and the prohibition on using ZCode as an
+    "unauthorized proxy server" (IV.3) leave the gateway use case
+    unresolved without explicit vendor consent; no redistribution right in
+    the bundled runtime exists (evidence doc section 5).
+  - *runtime discovery, authentication, output format, cancellation, tool
+    behavior, permissions, version stability* — **answered for Stage 1.**
+    Discovery signals and desktop-attached authentication documented;
+    output format/cancellation UNKNOWN (no surface); `tool_calls`
+    UNSUPPORTED (client tools must never execute locally, D-043); four
+    permission modes mapped with auto-connect MCP and auto-enable plugin
+    trust behavior; version churn high (eight releases 2026-08-20 through
+    2026-09-19) — any future integration must pin 3.14.0 exactly and fail
+    closed on drift (evidence doc sections 2, 3).
+  - *usage/quota accounting vs promotional eligibility* — **answered as
+    separated.** Account-level 5-hour/weekly/MCP pools are observable and
+    already collected by the existing `zai_usage_endpoint` collector;
+    per-session local records exist; idle-time runs are vendor-documented
+    as free and non-consuming. Promotional eligibility (off-peak rates,
+    reset cards, time-boxed promos) stays UNKNOWN for router-executed work
+    per D-039 (evidence doc sections 2.12, 4).
+  - *isolation of session/filesystem/tools from unrelated history and
+    global plugins* — **answered: NOT met by the product.** Sessions
+    inherit history; project MCP auto-connects without approval; plugins
+    auto-enable with code-execution trust; D-044 isolation is achievable
+    only via full external containment (dedicated OS identity, dedicated
+    `HOME`, sanitized workspace) (evidence doc section 6).
+  - **Bottom line (M07 Stage 1, 2026-09-19): NO-GO for a supported
+    adapter; Stage 2 not recommended to start.** Experimental-only remains
+    possible under written vendor consent, full D-044 containment, exact
+    version pinning with fail-closed disable, honest account-level
+    accounting, and no runtime redistribution. The supported
+    subscription-backed execution channel is the GLM Coding Plan
+    OpenAI/Anthropic-compatible API through M04 (distinct resource per
+    D-042; terms under U-009), not a ZCode runtime wrapper.
 
 ## Superseding a decision
 
