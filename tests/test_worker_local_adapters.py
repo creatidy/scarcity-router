@@ -253,6 +253,17 @@ class TranslationUnitTests(unittest.TestCase):
                 LoopbackHTTPResponse(status=200, body=b"[" * 60000)
             )
 
+    def test_stream_session_deeply_nested_frame_fails_closed(self) -> None:
+        # The shared core's SSE json.loads raises a BARE RecursionError on
+        # a deeply nested frame; the streaming adaptation layer must
+        # re-type it exactly like the whole-document direction (wave
+        # audit blocker) — never an untyped escape.
+        translation = OpenAICompatibleLoopbackTranslation()
+        session = translation.open_stream_session()
+        with self.assertRaises(WorkerProtocolError):
+            _ = session.feed_line("data: " + "[" * 60000)
+            _ = session.feed_line("")
+
     def test_adapter_reports_failed_result_for_unparsable_response(self) -> None:
         adapter = LoopbackOllamaAdapter(
             resource=_resource(),
@@ -262,6 +273,29 @@ class TranslationUnitTests(unittest.TestCase):
         )
         result = adapter.invoke(
             _call(),
+            cancel_event=threading.Event(),
+            deadline=T_NOW,
+            emit=lambda chunk: None,
+        )
+        self.assertEqual("failed", result.status)
+        assert result.calls[0].note is not None
+
+    def test_adapter_streaming_deeply_nested_frame_yields_failed_result(self) -> None:
+        # The streaming direction of the same hardening: a deep-nested SSE
+        # data line through a REAL LoopbackOllamaAdapter invoke must yield
+        # a typed failed AdapterResult — never a raised RecursionError
+        # that would kill the worker's per-attempt execution thread (wave
+        # audit MERGE_BLOCKER).
+        adapter = LoopbackOllamaAdapter(
+            resource=_resource(),
+            transport=lambda _request: LoopbackHTTPResponse(
+                status=200,
+                body=('data: ' + "[" * 60000 + "\n\n").encode("utf-8"),
+                content_type="text/event-stream",
+            ),
+        )
+        result = adapter.invoke(
+            _call(stream=True),
             cancel_event=threading.Event(),
             deadline=T_NOW,
             emit=lambda chunk: None,

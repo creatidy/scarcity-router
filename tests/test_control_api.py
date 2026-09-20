@@ -430,6 +430,35 @@ class WorkerPairingTests(ServerHarness):
         status, _payload = self.admin_post("/control/workers/no-such/rotate", {})
         self.assertEqual(404, status)
 
+    def test_pairing_label_validation_is_a_client_error(self) -> None:
+        self.onboard()
+        # A label beyond the store's bounded length is a 400 with a safe
+        # structural message, never a bare 500 (the store's ValueError).
+        status, payload = self.admin_post(
+            "/control/workers/pairing-codes", {"label": "x" * 500}
+        )
+        self.assertEqual(400, status)
+        error = cast("dict[str, object]", payload)["error"]
+        self.assertEqual("invalid_request", cast("dict[str, object]", error)["code"])
+
+    def test_malformed_worker_id_is_not_found_never_a_500(self) -> None:
+        self.onboard()
+        # "Bad.Id" is a URL-safe path segment that FAILS the safe-id
+        # grammar (uppercase): it must answer 404, never a bare 500 from
+        # the store's ValueError.
+        for method, path in (
+            ("POST", "/control/workers/Bad.Id/rotate"),
+            ("DELETE", "/control/workers/Bad.Id"),
+        ):
+            with self.subTest(path=path):
+                status, _payload, _headers = self.exchange(
+                    method,
+                    path,
+                    {} if method == "POST" else None,
+                    headers=_csrf_headers(self.plane, self.cookie),
+                )
+                self.assertEqual(404, status, path)
+
 
 def _provider_document(**overrides: object) -> dict[str, object]:
     document: dict[str, object] = {
