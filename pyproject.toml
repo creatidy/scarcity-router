@@ -76,6 +76,10 @@ include = [
 dev = [
     "basedpyright>=1.0.0",
     "mcp>=2,<3",
+    # M10 (issue #95): test-only real-TLS acceptance certificates. Never a
+    # runtime dependency; the product code paths create only verified,
+    # default TLS contexts.
+    "trustme>=1,<2",
 ]
 
 [tool.basedpyright]
