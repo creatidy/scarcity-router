@@ -944,12 +944,20 @@ class AuthRecovery(_AcquisitionCase):
             [INIT_RESPONSE, _error_line(2, -32603), _error_line(3, -32000)]
         )
         roots = self._make_installation()
-        snapshot = self._collect(discovery_roots=[roots])
+        observation = self._collect_observation(discovery_roots=[roots])
+        snapshot = observation.snapshot
+        # codex 0.154.0 maps EVERY rate-limits backend failure (auth or
+        # outage) to the generic internal error with no structured data, so
+        # a failed refresh does not prove an auth condition: the generic
+        # fail-closed classification stands (issue #101 audit).
         self.assertEqual(snapshot.status, "unknown")
         self.assertEqual([d.code for d in snapshot.diagnostics], ["telemetry_unknown"])
+        self.assertEqual(observation.eligibility.state, "unknown")
+        self.assertEqual(observation.eligibility.reason_codes, ("telemetry_invalid",))
         self.assertEqual(snapshot.windows, ())
         self.assertEqual(len(fake.written_messages()), 4)  # no retry sent
         self.assertNotIn(SECRET, _serialized(snapshot))
+        self.assertNotIn(SECRET, repr(observation.eligibility))
         self._assert_no_output()
 
     def test_retry_protocol_error_is_unknown_without_second_refresh(self) -> None:
@@ -957,10 +965,15 @@ class AuthRecovery(_AcquisitionCase):
             self._recovery_lines(_error_line(4, -32603))
         )
         roots = self._make_installation()
-        snapshot = self._collect(discovery_roots=[roots])
+        observation = self._collect_observation(discovery_roots=[roots])
+        snapshot = observation.snapshot
+        # The retry remains the recovery oracle, but its failure is not
+        # evidence of authentication failure: generic classification.
         self.assertEqual(snapshot.status, "unknown")
         self.assertEqual([d.code for d in snapshot.diagnostics], ["telemetry_unknown"])
         self.assertEqual(snapshot.windows, ())
+        self.assertEqual(observation.eligibility.state, "unknown")
+        self.assertEqual(observation.eligibility.reason_codes, ("telemetry_invalid",))
         messages = fake.written_messages()
         self.assertEqual(len(messages), 5)  # refresh happened once, retry once
         self.assertEqual(
@@ -974,6 +987,7 @@ class AuthRecovery(_AcquisitionCase):
             ],
         )
         self.assertNotIn(SECRET, _serialized(snapshot))
+        self.assertNotIn(SECRET, repr(observation.eligibility))
         self._assert_no_output()
 
     def test_standard_and_arbitrary_error_codes_never_refresh(self) -> None:
