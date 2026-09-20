@@ -2572,6 +2572,65 @@ what M4.1 forbids); a configurable per-provider eligibility policy
   from the authoritative source literal so the same smoke check validates
   release builds of any version.
 
+### D-047 — M07 closeout: no ZCode execution adapter; Stage 2 NO-GO
+
+- **Status:** Accepted (owner product decision)
+- **Date:** 2026-09-20
+- **Issue:** BioMedical-IT/scarcity-router#92 (M07); resolves U-013
+- **Confidence:** High.
+- **Decision:** M07 Stage 1 is complete — the dated feasibility evidence is
+  [`docs/zcode-adapter-stage1-evidence.md`](zcode-adapter-stage1-evidence.md)
+  (sources retrieved 2026-09-19; local runtime 3.14.0; no live inference
+  probes) — and, after reviewing that evidence, the owner decided **NO-GO /
+  cancelled for M07 Stage 2**: no ZCode execution adapter is planned.
+  1. **No supported programmatic surface.** Stage 1 found no official,
+     supported ZCode CLI, public execution API, SDK, headless execution
+     surface or other stable programmatic trigger suitable for Scarcity
+     Router (evidence doc sections 2, 8).
+  2. **Undocumented internals are explicitly not an acceptable
+     implementation path.** Integrating through the runtime's internal
+     IPC/private mechanisms (the `desktop-attached-remote` Unix-socket path)
+     or through unofficial wrappers is out of bounds for this Apache-2.0 OSS
+     project; reverse engineering the IPC would also violate vendor terms.
+  3. **Vendor terms.** Proxy-style automation of the ZCode runtime is not
+     sufficiently supported by the vendor terms without explicit written
+     authorization (terms effective 2026-06-15, re-verified 2026-09-19;
+     evidence doc section 5).
+  4. **Reopen condition.** M07 may be reconsidered only when ZCode ships an
+     official supported programmatic interface (CLI, API, SDK or headless
+     automation surface) — or another official supported integration surface
+     becomes available — AND the applicable vendor terms permit the intended
+     use. There is no repository-side polling or monitoring code; this
+     trigger is evaluated from external vendor observation, and any reopening
+     goes through a new superseding decision.
+  5. **ZCode Desktop is not Z.ai API access.** This decision concerns only
+     the ZCode desktop application as an execution backend. Z.ai Coding Plan
+     execution remains part of the generic supported HTTP-provider path owned
+     by M04 (#89) through the vendor-documented OpenAI-compatible endpoint —
+     distinct resource and entitlement per D-042, terms suitability under
+     U-009. The M07 NO-GO does not remove Z.ai HTTP/API support.
+  6. **History preserved.** The Stage-1 evidence document, U-013's question
+     list and answer provenance, and all prior decisions remain unchanged
+     historical records; no milestone is renumbered.
+- **Reason:** The Stage-1 bottom line was a research recommendation; this
+  entry records the owner's subsequent product decision, which is
+  authoritative. Wrapping an undocumented desktop runtime would couple a
+  public repository to an unstable internal mechanism the vendor neither
+  supports nor licenses for this use, while the supported
+  subscription-backed Z.ai execution channel already exists through the M04
+  generic adapter path.
+- **Alternatives considered:** an experimental-only ZCode track under
+  written vendor consent, full D-044 containment, exact version pinning and
+  honest accounting (not taken: it still requires vendor authorization the
+  owner has not obtained, and the evidence bottom line recommends against
+  it); continuing through the unofficial `zcode-cli` wrapper (rejected:
+  terms exposure, no redistribution rights, silent version drift); leaving
+  #92 open (rejected: it would misrepresent cancelled Stage 2 as active
+  implementation work).
+- **Boundary:** Program closeout only — documentation, decision records and
+  Forgejo issue state. No runtime behavior, no adapter code, no contract
+  change; recommendation-only and execution-gateway contracts are untouched.
+
 ## Unresolved decisions
 
 ### U-001 — Codex binary discovery and compatibility
@@ -3026,8 +3085,9 @@ what M4.1 forbids); a configurable per-provider eligibility policy
 
 ### U-013 — ZCode execution feasibility uncertainties (registered by A0)
 
-- **Status:** Open; resolution owned by M07 (#92) Stage 1 — an independent
-  research track that never blocks the program.
+- **Status:** Resolved (2026-09-20) by the M07 Stage-1 evidence plus owner
+  decision D-047; Stage 2 is NO-GO/cancelled (#92 closed). The question list
+  and Stage-1 answers below are retained as provenance.
 - **Date:** 2026-09-19
 - **Decision:** A0 deliberately does not guess the following; each is answered
   only by dated evidence in M07 Stage 1:
@@ -3097,6 +3157,14 @@ what M4.1 forbids); a configurable per-provider eligibility policy
     subscription-backed execution channel is the GLM Coding Plan
     OpenAI/Anthropic-compatible API through M04 (distinct resource per
     D-042; terms under U-009), not a ZCode runtime wrapper.
+- **Resolution (2026-09-20, D-047):** The owner accepted the Stage-1 bottom
+  line as a product decision: Stage 1 is complete and Stage 2 is cancelled;
+  no ZCode execution adapter is planned and #92 is closed as completed
+  research. Reopening requires an official supported ZCode programmatic
+  interface (or another official supported integration surface) AND
+  applicable vendor terms permitting the intended use, recorded through a
+  new superseding decision; no repository-side monitoring exists. The
+  bullets above are historical question/answer provenance and are unchanged.
 
 ## Superseding a decision
 
