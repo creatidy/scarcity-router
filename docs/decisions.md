@@ -271,14 +271,25 @@ direction was chosen. Dates use UTC.
   is not proof that the token renewed (the installed response shape does not
   expose the refresh outcome); the successful subsequent rate-limits retry is
   the only proof of effective recovery. If the refresh request or the retry
-  returns a protocol error, the collector fails closed to the
-  `auth_required` snapshot — eligibility `unknown` with reason
-  `telemetry_auth_required` (amended 2026-09-20,
-  BioMedical-IT/scarcity-router#101; originally the generic
-  `unknown`/`telemetry_unknown`, which misdiagnosed the 2026-09-19
-  production credential-expiry incident and cost a manual investigation).
-  The initial rate-limits read remains non-mutating, so healthy status calls
-  never refresh.
+  returns a protocol error, the collector fails closed to the existing safe
+  `unknown`/`telemetry_unknown` snapshot. The initial rate-limits read remains
+  non-mutating, so healthy status calls never refresh.
+- **Amendment (2026-09-20, issue #101 audit):** the `auth_required` snapshot
+  status and the `telemetry_auth_required` eligibility reason are deliberately
+  left UNREACHABLE on this surface. Source audit of pinned codex 0.154.0
+  (`codex-rs/app-server/src/error_code.rs`,
+  `request_processors/account_processor.rs`): every `account/rateLimits/read`
+  backend failure — expired-token 401 and outage alike — is flattened into
+  the generic internal error `-32603` with the cause only in the free-text
+  message; the JSON-RPC `data` member is always absent; the `account/read`
+  refresh outcome is discarded by its handler and never surfaces as an
+  error. A failed bounded refresh/retry therefore does not prove an
+  authentication condition, and free-text error parsing is forbidden by the
+  security contract. Mislabeling a backend outage as auth-required would send
+  operators into pointless device-auth re-logins. The vocabulary becomes
+  reachable only if a future codex generation exposes a bounded, structured,
+  non-secret auth-failure signal (for example typed error data or a dedicated
+  error code).
 - **Boundary:** This is an explicit narrow exception to the previous purely
   read-only M1 collector wording (D-003/D-009 wording and the security doc's
   collector-mutation invariant are amended accordingly). Scarcity Router is

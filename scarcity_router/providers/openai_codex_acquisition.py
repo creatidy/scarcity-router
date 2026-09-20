@@ -38,11 +38,11 @@ Security contract (docs/security.md):
   rate-limits retry — the bounded recovery sequence of docs/decisions.md
   D-018. There is no loop, no prompt and no other method call, so collection
   can never issue a model request; every other protocol error keeps the
-  non-mutating behavior. When that recovery fails (the refresh response or
-  the retry carries a validated protocol error), the session classifies the
-  evidenced authentication-required condition as ``auth_required`` — the
-  retry is the recovery oracle, and only the integer error code is ever
-  read, never an error body;
+  non-mutating behavior. Note that a failed recovery stays classified as the
+  generic ``unknown``: in codex 0.154.0 every rate-limits backend failure —
+  authentication or outage alike — collapses into ``-32603`` with the cause
+  only in free text, so a failed refresh/retry does not prove an
+  authentication condition (issue #101 audit);
 - every failure path attempts bounded termination and reap — including a
   reader startup failure before the session begins: stdin is closed, the
   process is terminated (then killed if it refuses to exit) and the reader
@@ -77,10 +77,12 @@ validated maps to ``unsupported``; malformed or incompatible JSONL
 (including budget violations) maps to ``schema_changed``; a protocol error
 response for one of our requests maps to ``unknown`` — except the evidenced
 rate-limits ``-32603`` internal-error condition, which triggers the bounded
-D-018 recovery sequence above; when that recovery cannot restore a working
-rate-limits read, the condition is reported as ``auth_required``
-(``telemetry_auth_required`` on the eligibility report) instead of a
-generic unknown.
+D-018 recovery sequence above. A failed recovery stays ``unknown``:
+codex 0.154.0 exposes no structured, code-level discriminator between
+authentication failure and any other backend failure (error ``data`` is
+always absent; ``-32603`` conflates both), so ``telemetry_auth_required``
+is deliberately left unreachable rather than risk false auth diagnoses
+(issue #101 audit).
 Programmer errors are not disguised as telemetry failures and raise
 ``RuntimeError`` with credential-free, path-free messages.
 """
@@ -1215,12 +1217,13 @@ def _run_session(
                     return _observation(
                         "schema_changed", "schema_changed", retrieved_at
                     )
-                # The provider-managed refresh itself failed inside the
-                # evidenced auth-failure condition (-32603): the persisted
-                # credential is no longer usable and reauthentication is
-                # required. Bounded code-only classification; never the
-                # error body (issue Infrastructure/creatidy-autonomy#50).
-                return _observation("auth_required", "auth_required", retrieved_at)
+                # -32603 is codex 0.154.0's generic internal error: EVERY
+                # rate-limits backend failure (auth or outage) maps to it,
+                # with the cause only in free text (verified in source;
+                # error data is always absent). A failed refresh therefore
+                # does not PROVE an auth condition — keep the generic
+                # fail-closed classification (issue #101 audit).
+                return _observation("unknown", "telemetry_unknown", retrieved_at)
             if not _send_message(proc, _retry_rate_limits_request()):
                 return _observation("unavailable", "source_unavailable", retrieved_at)
             kind, message = _await_response(
@@ -1236,12 +1239,11 @@ def _run_session(
                     return _observation(
                         "schema_changed", "schema_changed", retrieved_at
                     )
-                # The retry is the recovery oracle: a validated protocol
-                # error after the provider-managed refresh means the
-                # credential could not be restored in this bounded session —
-                # the evidenced authentication-required condition, still
-                # classified only from the integer code (never the body).
-                return _observation("auth_required", "auth_required", retrieved_at)
+                # The retry failing after the refresh attempt does not prove
+                # an auth condition (-32603 conflates auth and outage; see
+                # the refresh-error branch above and docs/decisions.md
+                # D-018). Generic fail-closed classification stands.
+                return _observation("unknown", "telemetry_unknown", retrieved_at)
         else:
             # Any other validated protocol error keeps the non-mutating
             # safe behavior: no refresh is attempted for -32600, -32601,
