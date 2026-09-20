@@ -25,12 +25,11 @@ local resource. Its invariants are absolute (D-044, issue #90):
   performs the thin transport invocation for a localhost OpenAI-compatible
   endpoint (the bounded D-044 plain-HTTP localhost exception; no TLS is
   terminated or bypassed, no credential is attached). Its OpenAI-compat-
-  ible translation semantics live behind the replaceable
-  :class:`~scarcity_router.worker_local_translation.LoopbackTranslation`
-  seam — the M04 shared translation core slots in there (see the
-  translation module's cross-workstream note). This module owns the
-  transport invocation only, never a second Ollama semantic
-  implementation.
+  ible translation semantics are the SHARED M04 translation core, adapted
+  to this seam by
+  :class:`~scarcity_router.worker_local_translation.OpenAICompatibleLoopbackTranslation`
+  (the default) — there is one OpenAI-compatible implementation for both
+  transports, never a worker-side second one.
 
 Isolation posture: a local adapter receives no filesystem root, no
 environment variables, no shell and no client-supplied flags; it can
@@ -56,6 +55,7 @@ from .gateway_adapters import (
     AdapterToolCall,
     CallObservation,
     CHUNK_FINISH,
+    CHUNK_TEXT_DELTA,
     CHUNK_TOOL_CALL,
     CHUNK_USAGE,
 )
@@ -71,7 +71,7 @@ from .worker_local_translation import (
     LoopbackHTTPRequest,
     LoopbackHTTPResponse,
     LoopbackTranslation,
-    ProvisionalOpenAITranslation,
+    OpenAICompatibleLoopbackTranslation,
 )
 
 # The id of the worker-side adapter for loopback Ollama-style endpoints.
@@ -188,13 +188,14 @@ class LoopbackOllamaAdapter:
     """Local adapter for a localhost OpenAI-compatible inference endpoint.
 
     Thin transport invocation only: build the request through the
-    injected :class:`LoopbackTranslation` (the M04 shared core slots in
-    here), deliver it over loopback HTTP with
-    :meth:`http.client.HTTPConnection`, parse the response through the
-    same translation. Defaults are the clearly-marked provisional
-    translation (see ``worker_local_translation``). The endpoint host is
-    validated against the loopback allowlist at construction — this
-    adapter cannot be pointed at a remote origin.
+    injected :class:`LoopbackTranslation` (by default the shared M04
+    translation core adapted in
+    :class:`~scarcity_router.worker_local_translation.OpenAICompatibleLoopbackTranslation`
+    on the ``ollama`` preset's evidenced policy), deliver it over loopback
+    HTTP with :meth:`http.client.HTTPConnection`, and parse the response
+    through the same translation. The endpoint host is validated against
+    the loopback allowlist at construction — this adapter cannot be
+    pointed at a remote origin.
     """
 
     adapter_id: str = OLLAMA_ADAPTER_ID
@@ -219,7 +220,9 @@ class LoopbackOllamaAdapter:
         self._host: str = host
         self._port: int = port
         self._translation: LoopbackTranslation = (
-            translation if translation is not None else ProvisionalOpenAITranslation()
+            translation
+            if translation is not None
+            else OpenAICompatibleLoopbackTranslation()
         )
         self._transport: LoopbackTransport = (
             transport if transport is not None else self._default_transport
@@ -290,39 +293,40 @@ class LoopbackOllamaAdapter:
                 "internal_error",
                 f"the loopback endpoint answered HTTP {response.status}",
             )
-        usage: UsageTokens | None = None
         text_parts: list[str] = []
         tool_calls: list[AdapterToolCall] = []
-        finish_reason: str | None = None
-        for line in response.text.splitlines():
-            if cancel_event.is_set():
-                return AdapterResult(
-                    status="cancelled",
-                    calls=(
-                        CallObservation(
-                            call_index=0,
-                            started_at=started,
-                            ended_at=_canonical_now(),
-                            status="cancelled",
-                        ),
-                    ),
-                )
-            chunk = self._translation.parse_stream_line(line)
-            if chunk is None:
-                continue
+        # Usage and the terminal reason are collected in lists because the
+        # absorbing helper runs before the terminal checks below.
+        usages: list[UsageTokens] = []
+        finish_reasons: list[str] = []
+
+        def absorb(chunk: AdapterStreamChunk) -> None:
             if chunk.kind == CHUNK_USAGE and chunk.usage is not None:
-                usage = chunk.usage
-                continue
+                usages.append(chunk.usage)
+                return
             if chunk.kind == CHUNK_FINISH:
-                finish_reason = chunk.finish_reason
+                if chunk.finish_reason is not None:
+                    finish_reasons.append(chunk.finish_reason)
                 emit(chunk)
-                continue
+                return
             if chunk.kind == CHUNK_TOOL_CALL and chunk.tool_call is not None:
                 tool_calls.append(chunk.tool_call)
-            elif chunk.kind == "text_delta" and chunk.text is not None:
+            elif chunk.kind == CHUNK_TEXT_DELTA and chunk.text is not None:
                 text_parts.append(chunk.text)
             emit(chunk)
-        if finish_reason is None:
+
+        session = self._translation.open_stream_session()
+        for line in response.text.splitlines():
+            if cancel_event.is_set():
+                return self._cancelled_result(started)
+            for chunk in session.feed_line(line):
+                absorb(chunk)
+        if cancel_event.is_set():
+            # The client went away while the final frames were processed.
+            return self._cancelled_result(started)
+        for chunk in session.close():
+            absorb(chunk)
+        if not finish_reasons:
             # The stream ended without a terminal frame: fail closed
             # rather than fabricate a finish reason.
             raise WorkerProtocolError(
@@ -337,7 +341,7 @@ class LoopbackOllamaAdapter:
                     started_at=started,
                     ended_at=ended,
                     status="completed",
-                    provider_reported_usage=usage,
+                    provider_reported_usage=usages[-1] if usages else None,
                 ),
             ),
             message=AdapterMessage(
@@ -345,7 +349,20 @@ class LoopbackOllamaAdapter:
                 content="".join(text_parts) or None,
                 tool_calls=tuple(tool_calls),
             ),
-            finish_reason=finish_reason,
+            finish_reason=finish_reasons[-1],
+        )
+
+    def _cancelled_result(self, started: str) -> AdapterResult:
+        return AdapterResult(
+            status="cancelled",
+            calls=(
+                CallObservation(
+                    call_index=0,
+                    started_at=started,
+                    ended_at=_canonical_now(),
+                    status="cancelled",
+                ),
+            ),
         )
 
     def resource_snapshots(self, observed_at: str) -> tuple[ResourceStateSnapshot, ...]:

@@ -32,7 +32,7 @@ from scarcity_router.worker_local_adapters import (  # noqa: E402
 from scarcity_router.worker_local_translation import (  # noqa: E402
     LoopbackHTTPRequest,
     LoopbackHTTPResponse,
-    ProvisionalOpenAITranslation,
+    OpenAICompatibleLoopbackTranslation,
 )
 
 
@@ -197,7 +197,9 @@ class LoopbackAdapterTests(unittest.TestCase):
         )
         self.assertEqual("failed", result.status)
         assert result.calls[0].note is not None
-        self.assertIn("structured output", result.calls[0].note)
+        # The refusal comes from the M04 core's evidence-backed policy:
+        # json_schema has no evidenced mapping for the ollama preset.
+        self.assertIn("response_format", result.calls[0].note)
 
     def test_probe_failure_reports_unavailable_health(self) -> None:
         def transport(_request: LoopbackHTTPRequest) -> LoopbackHTTPResponse:
@@ -221,23 +223,31 @@ class LoopbackAdapterTests(unittest.TestCase):
 
 
 class TranslationUnitTests(unittest.TestCase):
-    def test_stream_line_parser_handles_keepalive_and_done(self) -> None:
-        translation = ProvisionalOpenAITranslation()
-        self.assertIsNone(translation.parse_stream_line(": keep-alive"))
-        self.assertIsNone(translation.parse_stream_line("data: [DONE]"))
+    """The production translation is the shared M04 core (one implementation)."""
 
-    def test_stream_line_parser_rejects_malformed_frames(self) -> None:
+    def test_stream_session_handles_keepalive_and_done(self) -> None:
+        translation = OpenAICompatibleLoopbackTranslation()
+        session = translation.open_stream_session()
+        self.assertEqual((), session.feed_line(": keep-alive"))
+        self.assertEqual((), session.feed_line("data: [DONE]"))
+        self.assertEqual((), session.close())
+
+    def test_stream_session_rejects_malformed_frames(self) -> None:
         from scarcity_router.worker_protocol import WorkerProtocolError
 
-        translation = ProvisionalOpenAITranslation()
+        translation = OpenAICompatibleLoopbackTranslation()
+        session = translation.open_stream_session()
+        # The adapter feeds every line of the SSE body, blank separators
+        # included; the malformed event fails on its terminating blank line.
         with self.assertRaises(WorkerProtocolError):
-            _ = translation.parse_stream_line("data: {not json")
+            _ = session.feed_line("data: {not json")
+            _ = session.feed_line("")
 
     def test_deeply_nested_response_fails_closed(self) -> None:
         # json.loads raises RecursionError (not ValueError) on deeply
         # nested input; the translation must turn it into a typed failure
         # so the worker's execution thread survives (M05 review 1).
-        translation = ProvisionalOpenAITranslation()
+        translation = OpenAICompatibleLoopbackTranslation()
         with self.assertRaises(WorkerProtocolError):
             _ = translation.parse_response(
                 LoopbackHTTPResponse(status=200, body=b"[" * 60000)
@@ -259,20 +269,45 @@ class TranslationUnitTests(unittest.TestCase):
         self.assertEqual("failed", result.status)
         assert result.calls[0].note is not None
 
-    def test_tool_call_delta_parses_to_tool_chunk(self) -> None:
-        translation = ProvisionalOpenAITranslation()
-        line = (
-            'data: {"choices": [{"delta": {"tool_calls": [{"id": "c1", '
-            '"function": {"name": "t", "arguments": "{}"}}]}}]}'
+    def test_tool_call_fragments_accumulate_to_a_complete_call(self) -> None:
+        translation = OpenAICompatibleLoopbackTranslation()
+        session = translation.open_stream_session()
+        chunks: tuple[AdapterStreamChunk, ...] = ()
+        fragment_one = (
+            'data: {"choices": [{"delta": {"tool_calls": [{"index": 0, '
+            '"id": "c1", "function": {"name": "lookup", '
+            '"arguments": "{\\"q\\""}}]}}]}'
         )
-        chunk = translation.parse_stream_line(line)
-        # The provisional translation ignores tool-call deltas it cannot
-        # fully honor rather than guessing semantics.
-        self.assertIsNone(chunk)
-        _ = chunk
+        fragment_two = (
+            'data: {"choices": [{"delta": {"tool_calls": [{"index": 0, '
+            '"function": {"arguments": ": 1}"}}]}}]}'
+        )
+        finish_frame = (
+            'data: {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}'
+        )
+        for line in (
+            fragment_one,
+            "",
+            fragment_two,
+            "",
+            finish_frame,
+            "",
+            "data: [DONE]",
+            "",
+        ):
+            chunks = chunks + session.feed_line(line)
+        chunks = chunks + session.close()
+        # The core accumulates fragments; the normalized chunk carries one
+        # COMPLETE tool call, never a fragment.
+        tool_chunks = [chunk for chunk in chunks if chunk.kind == "tool_call"]
+        self.assertEqual(1, len(tool_chunks))
+        call = tool_chunks[0].tool_call
+        assert call is not None
+        self.assertEqual("lookup", call.name)
+        self.assertEqual('{"q": 1}', call.arguments)
 
     def test_whole_response_tool_calls_parse(self) -> None:
-        translation = ProvisionalOpenAITranslation()
+        translation = OpenAICompatibleLoopbackTranslation()
         message, reason, _usage = translation.parse_response(
             LoopbackHTTPResponse(
                 status=200,
@@ -289,6 +324,20 @@ class TranslationUnitTests(unittest.TestCase):
         call: AdapterToolCall = message.tool_calls[0]
         self.assertEqual("lookup", call.name)
         _ = AdapterStreamChunk, AdapterMessage
+
+    def test_streaming_request_carries_evidenced_usage_request(self) -> None:
+        # The ollama preset evidences stream_options.include_usage; the
+        # shared core adds it exactly as the server-direct adapter does.
+        translation = OpenAICompatibleLoopbackTranslation()
+        request = translation.build_stream_request(_call(stream=True))
+        assert request.body is not None
+        self.assertIn(b"stream_options", request.body)
+
+    def test_default_policy_is_the_ollama_preset(self) -> None:
+        from scarcity_router.providers.openai_http_presets import OLLAMA_PRESET
+
+        translation = OpenAICompatibleLoopbackTranslation()
+        self.assertEqual(OLLAMA_PRESET.policy, translation.policy)
 
 
 if __name__ == "__main__":
