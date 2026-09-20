@@ -26,9 +26,13 @@ owned by their existing authoritative documents
   (`scarcity_router/providers/openai_http_adapter.py`, M04 #89); since
   the M04/M05/M09 integration the `worker_bridged` channel is served by
   the M05 adapter when administrator configuration binds a worker
-  resource (`scarcity_router/server_composition.py`), the
-  `local_app_adapter` channel remains unregistered until M06 lands, and
-  API-only operation works without a worker.
+  resource (`scarcity_router/server_composition.py`), and M06's Codex
+  execution adapter (issue #91 Stage 2) is delivered through that same
+  `worker_bridged` channel as a worker-local adapter
+  (`scarcity_router/worker_codex_adapter.py`, allowlist id `codex`,
+  composed via the resource's `local_adapter_id` per D-049) — no second
+  execution channel exists for it, and the `local_app_adapter` channel
+  itself remains unregistered. API-only operation works without a worker.
 
 ## Versioning and coexistence (D-045)
 
@@ -292,11 +296,12 @@ implementation (D-041 leaves the embedded store to M09 if needed).
   allowlist above.
 - Client-key issuance/rotation UX and the durable D-044 store (M09)
   have since landed, as have the real execution adapters for
-  `server_direct_http` (M04) and `worker_bridged` (M05), composed only
-  from administrator configuration; `local_app_adapter` (M06) remains
-  deferred. The default deployment still starts empty and answers
-  honestly (empty model list, explicit no-target errors) until that
-  configuration lands.
+  `server_direct_http` (M04), `worker_bridged` (M05) and the M06 Codex
+  worker-local adapter (reached through `worker_bridged`), composed only
+  from administrator configuration; the `local_app_adapter` channel
+  itself remains unregistered. The default deployment still starts
+  empty and answers honestly (empty model list, explicit no-target
+  errors) until that configuration lands.
 - Representative-client (OpenAI SDK, IDE) acceptance evidence and
   backend capability-matrix evidence are tracked under issue #88's
   evidence requirements and M10 (#95) end-to-end acceptance.

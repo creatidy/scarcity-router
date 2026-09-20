@@ -731,3 +731,143 @@ extraction or `auth.json` copying.
 - **Long-idle credential survival** (how long a cached ChatGPT credential
   lasts without refresh in unattended operation) — operational question,
   deferred to Stage 2/M10.
+
+## Stage 2 implementation (2026-09-20, UTC)
+
+Stage 2 implemented the verified supported subset as ONE worker-local
+execution adapter for the M05 worker seam:
+
+- `scarcity_router/worker_codex_adapter.py` — the adapter (allowlist id
+  `codex`); channel semantics unchanged server-side (`worker_bridged` with
+  resource `local_adapter_id: "codex"`, D-049; no new channel, no second
+  worker protocol, no server-to-local-Codex path).
+- `scarcity_router/worker_client.py` — worker registration flags
+  `--allow-codex`, `--resource` / `--codex-resource`, `--codex-bin`.
+- `tests/codex_fake_appserver.py` + `tests/test_worker_codex_adapter.py` —
+  a deterministic fake App Server (spawned through the adapter's injected
+  process seam) and 70+ behavior tests; no test executes a real binary, and
+  every scripted string is synthetic.
+- `tests/test_interfaces_guardrails.py` — the package-write guardrail now
+  names the adapter's bounded controlled-home provisioning as the second
+  allowed provisioning path (worker state directory only, `0o700`/`0o600`),
+  alongside the D-036 `config.py` provisioning.
+
+### What was re-verified live (local-probe, 2026-09-20)
+
+Host unchanged (WSL2 Linux x86_64). Probes were bounded, read-only and
+sanitized to structure before recording; NO turn was executed, NO
+`account/read` or `account/rateLimits/read` was sent, and no credential or
+user `~/.codex` content was touched. The probe ran against a FRESH empty
+`CODEX_HOME` created for the probe (never the user's home):
+
+- `codex --version` on the extension binary
+  (`openai.chatgpt-26.908.40401-linux-x64`) → `codex-cli 0.154.0-alpha.6.2`
+  (unchanged from Stage 1's P4).
+- `initialize` → `initialized` over stdio JSONL: the result object carries
+  exactly the four required string members (`userAgent`, `codexHome`,
+  `platformFamily`, `platformOs`), and `codexHome` echoed the probe's
+  controlled `CODEX_HOME` — the exact structure the adapter's handshake
+  validates (including its adoption check). Unsolicited notifications were
+  interleaved between responses (`configWarning`-shaped,
+  `remoteControl/status/changed` — method + params keys only recorded),
+  re-confirming the structural classification/tolerant-handling design.
+- `model/list` (sent after `initialize` on the fresh, unsigned-in
+  controlled home) answered with a JSON-RPC error object (integer `code` +
+  string `message`; the message text was not parsed or recorded) instead of
+  the Stage 1 P5 success envelope. This is consistent with an auth-gated
+  model listing and motivates the implemented order: the adapter verifies
+  auth (`account/read`) BEFORE `model/list`. The SUCCESS envelope therefore
+  still rests on Stage 1 P5 (2026-09-19) plus the version-pinned schema —
+  recorded honestly as not re-verified live against a signed-in home.
+
+Protocol wire shapes implemented in Stage 2 were pinned against the
+generated JSON schemas at tag `rust-v0.155.1` (inspected 2026-09-20):
+`ThreadStartParams` (`ephemeral`, `cwd`, `approvalPolicy`
+(`"untrusted"|"on-request"|"never"`), `sandbox` mode string,
+`baseInstructions`, `developerInstructions`), `TurnStartParams` (`input`
+text items, `model`, `effort` (open string), `outputSchema`,
+`cwd`, detailed `sandboxPolicy`), the `SandboxPolicy` tagged union
+(`workspaceWrite` with `writableRoots` + boolean `networkAccess`, default
+false), `ThreadInjectItemsParams` (`threadId`, `items`), `TurnStartResponse`
+(`turn.id`), `TurnCompletedNotification` (`turn.status` =
+`completed|interrupted|failed|inProgress`, `turn.error.message` +
+`turn.error.codexErrorInfo`), the protocol-level `codexErrorInfo`
+camelCase vocabulary (`contextWindowExceeded`, `usageLimitExceeded`,
+`unauthorized`, `sandboxError`, `httpConnectionFailed{…}`, …),
+`ThreadTokenUsageUpdatedNotification` (`tokenUsage.last/total` with
+`inputTokens`/`outputTokens`), `AgentMessageDeltaNotification` (`delta`),
+`ModelListResponse` (`data[].model`/`id`,
+`data[].supportedReasoningEfforts[].reasoningEffort`), `GetAccountResponse`
+(`requiresOpenaiAuth`, `account.type` = `apiKey|chatgpt|amazonBedrock`),
+and the approval server-request pair
+(`item/commandExecution/requestApproval` /
+`item/fileChange/requestApproval` answered with
+`{"decision": "cancel"}` — the documented deny-AND-interrupt decision;
+`source: codex-rs/app-server-protocol/src/protocol/v2/item.rs` at the same
+tag).
+
+### The implemented isolation profile (design now code, not a fact claim)
+
+Every knob Stage 1 listed is implemented and behavior-tested (via the
+recorded spawn specification and a protocol trace the fake server writes):
+controlled `CODEX_HOME` (`0o700`, minimal generated `config.toml`,
+handshake-verified adoption), ephemeral threads, per-attempt scratch `cwd`
+(`0o700`, removed after the call), `workspaceWrite` with
+`writableRoots=[<scratch>]` and `networkAccess: false` pinned per turn,
+`approvalPolicy: "never"` plus the defensive `cancel` answer for any
+arriving approval request, minimal child environment
+(`CODEX_HOME`/`PATH`/`HOME`), process-group-owned child with bounded
+terminate/kill/reap, strict JSONL budgets (line, cumulative bytes, event
+count, unknown-notification count, per-delta and cumulative message chars),
+and bounded stderr capture (never forwarded). What Stage 1 left UNVERIFIED
+remains honestly unverified: the *sufficiency* of the composed sandbox
+against a real agent workload (no real command execution was exercised —
+the fake server models the protocol, and live verification requires a
+signed-in subscription home, which is an M10 acceptance concern).
+
+### Stage 2 compatibility-matrix cells (D-043)
+
+Keyed by (`codex worker-local adapter`, `1.0.0`, `codex-cli
+0.154.0-alpha.6.2` / schemas `rust-v0.155.1`). Evidence classes:
+`local-probe` (2026-09-20, structure-only), `official-source` (pinned
+schemas), `official-doc`, and `test-evidence` (the deterministic fake-based
+suite, which verifies THIS adapter's mapping, never the live backend).
+Live turn-level behavior against a signed-in subscription remains
+M10 acceptance work; cells that only that work can prove are marked
+accordingly and fail closed until then.
+
+| Dimension | Value | Tested version | Evidence (dated 2026-09-20) | Notes |
+|---|---|---|---|---|
+| Roles and conversation history | PASS (adapter mapping) / PARTIAL (live fidelity) | `0.154.0-alpha.6.2` (handshake only); mapping test-verified | test-evidence + official-source (`ThreadStartParams`, `ThreadInjectItemsParams`) + local-probe | system→`baseInstructions` (joined), developer→`developerInstructions`, prior user/assistant→`inject_items` Responses items, final user→turn input; conversations not ending with a user message rejected before execution; assistant-side `tool` history replay unsupported (rejected) |
+| Streaming | PASS (adapter mapping) / PARTIAL (live delta semantics) | mapping test-verified; notification behavior local-probe (2026-09-19/20) | test-evidence + official-doc | `item/agentMessage/delta` → `text_delta` (bounded per-delta and cumulative); assembled final message; stdio only |
+| `tool_calls` | UNSUPPORTED (stable surface) | — | official-doc (Stage 1 §14); enforced in code | requests carrying `tool` role, `tool_calls` or `tools` are rejected BEFORE execution; `dynamicTools` is never enabled (client tools stay client-side, D-043) |
+| Tool results | UNSUPPORTED (not mapped in Stage 2) | — | — | `turn/start {toolOutput}` is documented stable, but mapping tool-result round trips is deferred; fail closed |
+| Structured output | PASS (adapter mapping) / PARTIAL (live) | mapping test-verified | test-evidence + official-source (`TurnStartParams.outputSchema`) | `json_schema` → `outputSchema` after object/size(64 KiB)/depth(32) validation; `json_object` explicitly rejected; per-turn only |
+| Reasoning controls | PASS (adapter mapping) / PARTIAL (live) | mapping test-verified; `model/list` effort field local-probe (2026-09-19) | test-evidence + official-source + local-probe | exact binding: slug must be listed, effort must be in `supportedReasoningEfforts`, both pinned per turn; mismatches rejected before execution |
+| Context limits | PARTIAL | docs-only | official-doc (Stage 1 §10 draft) | `codexErrorInfo: contextWindowExceeded` maps to a safe failure note; no per-model context-window discovery implemented |
+| Error semantics | PASS (safe mapping) / PARTIAL (client-code parity) | mapping test-verified | test-evidence + official-source (`codexErrorInfo` camelCase vocabulary) | `turn/completed {failed}` → typed failure with a note from the closed vocabulary only; free-text error bodies never read; unknown status fails closed |
+| Usage reporting | PASS (adapter mapping) | mapping test-verified | test-evidence + official-source (`ThreadTokenUsageUpdatedNotification`) | `inputTokens`→`prompt_tokens`, `outputTokens`→`completion_tokens` from `tokenUsage.last` (fallback `total`); absent usage stays absent; cached/reasoning components not represented |
+| Cancellation | PASS (adapter mapping) / PARTIAL (live propagation timing) | mapping test-verified | test-evidence + official-doc | cancel event or deadline → exactly one bounded `turn/interrupt` (bounded ack wait) → cancelled result; never completed after confirmed cancellation; approval requests answered `cancel` |
+
+### Not tested / honest gaps after Stage 2
+
+- **No live turn execution** (no inference, no quota consumption): all
+  turn-level PASS cells above are adapter-mapping PASSes against the
+  pinned protocol; live backend confirmation for a signed-in subscription
+  home (delta semantics, interrupt timing, `inject_items` on ephemeral
+  threads, structured-output enforcement) is M10 end-to-end acceptance
+  work.
+- **`model/list` success envelope** was not re-verified live on
+  2026-09-20 (the fresh probe home is unsigned-in and the probe set is
+  forbidden from auth actions); it rests on Stage 1 P5 + the pinned
+  schema. The adapter fails closed on any structural drift.
+- **Long-idle credential survival** in the controlled home, and the
+  operational cadence of the D-018 refresh under execution load, remain
+  M10/M09 operational questions.
+- **Windows-native and macOS profiles** are coded as honest
+  `platform_not_evidenced` ineligibility; behaviorally verifying the
+  Windows elevated/unelevated sandbox profile (or macOS Seatbelt) is
+  future work on appropriate hardware.
+- **Desktop-bundled Codex** remains UNKNOWN and undiscovered.
+- The guardrail extension (package-write scan) is the only existing-test
+  change; it is documented in the guardrail docstring itself.
