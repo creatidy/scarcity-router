@@ -47,6 +47,7 @@ from scarcity_router.worker_client import (  # noqa: E402
 from scarcity_router.worker_endpoint import (  # noqa: E402
     AttemptOutcome,
     PendingAttempt,
+    WorkerDispatchError,
     WorkerEndpoint,
 )
 from scarcity_router.worker_identity_store import WorkerIdentityStore  # noqa: E402
@@ -58,6 +59,7 @@ from scarcity_router.worker_local_store import (  # noqa: E402
     WorkerLocalStore,
 )
 from scarcity_router.worker_protocol import (  # noqa: E402
+    ExecuteChunkMessage,
     ExecuteMessage,
     FrameReader,
     FrameWriter,
@@ -482,17 +484,23 @@ class RunLoopTests(unittest.TestCase):
             call=_synthetic_call(),
         )
         first = session.submit_execute(message)
-        # The second dispatch with the SAME attempt id is refused by the
-        # worker with a definitive failed result; the first execution's
-        # tracking is untouched.
-        duplicate = session.submit_execute(message)
-        _ = first.take(5.0)
-        kind, payload = duplicate.take(5.0)
+        # The second dispatch with the SAME attempt id is refused BEFORE
+        # anything is sent (one response can only ever resolve ONE
+        # tracker): definitive, and the first execution is untouched.
+        with self.assertRaises(WorkerDispatchError) as caught:
+            _ = session.submit_execute(message)
+        self.assertEqual("duplicate_attempt", caught.exception.code)
+        # The first attempt completes normally.
+        kind: str = "timeout"
+        taken: tuple[str, ExecuteChunkMessage | AttemptOutcome | None] = ("timeout", None)
+        for _ in range(16):
+            taken = first.take(5.0)
+            if taken[0] == "outcome":
+                break
+        kind = taken[0]
         self.assertEqual("outcome", kind)
-        outcome = cast(AttemptOutcome, payload)
-        self.assertEqual("failed", outcome.status)
-        assert outcome.result is not None
-        self.assertIn("duplicate attempt id", outcome.result.note or "")
+        outcome = cast(AttemptOutcome, taken[1])
+        self.assertEqual("completed", outcome.status)
         # Exactly ONE local execution ran.
         self.assertEqual(1, len(self.adapter.invocations))
         runtime.request_stop()

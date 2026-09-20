@@ -260,6 +260,16 @@ class WorkerSession:
                     "worker_overloaded",
                     "the worker session is at its pending-attempt bound",
                 )
+            if message.attempt_id in self._state.pending:
+                # Attempt ids are unique per dispatch by contract; a
+                # duplicate would make one response resolve the OTHER
+                # execution's tracker. Refuse before anything is sent
+                # (definitive -- the first execution is untouched).
+                raise WorkerDispatchError(
+                    "duplicate_attempt",
+                    "an attempt with this id is already in flight on this "
+                    + "session",
+                )
             attempt = PendingAttempt(message.attempt_id)
             self._state.pending[message.attempt_id] = attempt
         try:

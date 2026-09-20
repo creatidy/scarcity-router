@@ -643,16 +643,15 @@ class _ActiveSession:
                 )
                 return
             if message.attempt_id in self._attempts:
-                # Never overwrite a live tracker: a duplicate attempt id
-                # would orphan the first execution's cancellation and
-                # result routing. Definitively refuse the duplicate.
-                self._send_result(
-                    ExecuteResultMessage(
-                        attempt_id=message.attempt_id,
-                        status="failed",
-                        calls=(),
-                        note="a duplicate attempt id is already in flight",
-                    )
+                # Never overwrite a live tracker, and never ANSWER the
+                # duplicate: a result keyed by this attempt id would be
+                # misattributed to the first execution's tracker on the
+                # server. Refuse silently -- the duplicate dispatch stays
+                # bounded by the coordinator's own deadline, and the
+                # first execution's cancellation and result routing stay
+                # intact.
+                self._runtime.note(
+                    "warn", "refused a duplicate in-flight attempt id"
                 )
                 return
             attempt = _WorkerAttempt(message.attempt_id)

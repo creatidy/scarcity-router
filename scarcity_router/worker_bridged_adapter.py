@@ -146,6 +146,10 @@ class WorkerBridgedAdapter:
                 raise AdapterAmbiguousError(
                     "the execute request could not be delivered deterministically"
                 ) from None
+            if exc.code == "duplicate_attempt":
+                raise AdapterPermanentError(
+                    "an attempt with this id is already in flight"
+                ) from None
             raise AdapterPermanentError(
                 "no connected worker can execute the selected resource"
             ) from None
