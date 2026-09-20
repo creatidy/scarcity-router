@@ -54,7 +54,8 @@ the execution-gateway architecture in
   authenticated server component may receive prompts and execute/proxy model
   traffic to authorized resources under D-040 through D-045 — including
   Ollama and local inference as execution resources (D-017 superseded) and
-  approved local Codex/ZCode adapters. Still forbidden everywhere: autonomous
+  the approved local Codex adapter (a ZCode execution adapter is not
+  planned — owner decision D-047). Still forbidden everywhere: autonomous
   fallback execution, issue-to-PR orchestration, repository management,
   generic agent workflow frameworks, general task schedulers,
   benefit-consuming actions (reset redemption stays informational) and

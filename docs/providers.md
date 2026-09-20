@@ -182,17 +182,24 @@ and contracts are in [`docs/architecture.md`](architecture.md).
 - **The generic OpenAI-compatible HTTP adapter (M04)** serves configurable
   providers with evidence-based differences — presets for at least OpenAI,
   DeepSeek, OpenRouter and Z.ai — and never claims full compatibility where
-  features differ. PAYG and Coding-Plan/entitlement channels of the same
-  vendor stay distinct resources with distinct entitlements and pools
+  features differ. The Z.ai preset is the vendor-documented
+  OpenAI-compatible Coding Plan endpoint and is the supported
+  subscription-backed Z.ai execution channel (D-047): the ZCode desktop
+  application is not an M04 backend, and the M07 NO-GO does not remove
+  Z.ai HTTP/API support. PAYG and Coding-Plan/entitlement channels of the
+  same vendor stay distinct resources with distinct entitlements and pools
   (D-042). Ollama is direct HTTP when network-accessible and
   worker-bridged when localhost-only; no automatic model downloads, GPU
   driver installation or GPU lifecycle management.
-- **Local CLI/app adapters (M06 Codex, M07 ZCode)** run through the worker
+- **Local CLI/app adapters (M06 Codex)** run through the worker
   (or server where reachable), reuse the existing discovery knowledge
   (U-001, D-019), respect the D-018 provider-managed auth boundary
   unchanged, and are bounded by the local-adapter isolation rules of
-  D-044. Their open uncertainties are registered, not guessed: U-012
-  (Codex) and U-013 (ZCode).
+  D-044. Open uncertainties are registered, not guessed: U-012 (Codex).
+  The M07 ZCode execution adapter was cancelled by owner decision (D-047)
+  after Stage-1 evidence found no official supported programmatic surface;
+  U-013 is resolved and the evidence is preserved in
+  [`docs/zcode-adapter-stage1-evidence.md`](zcode-adapter-stage1-evidence.md).
 - **Contract tests:** every execution adapter ships redacted fixtures,
   parser/protocol tests and compatibility-matrix evidence with dated
   versions; provider drift disables the affected adapter safely while the
