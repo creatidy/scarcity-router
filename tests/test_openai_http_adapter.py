@@ -509,6 +509,33 @@ class TimeoutAndCancellationTest(AdapterTestCase):
         self.assertIn("expired", str(caught.exception))
         self.assertEqual(self.server.request_count, 0)
 
+    def test_cancellation_with_fully_coalesced_stream_is_cancelled(self) -> None:
+        # The race F1 closed: every frame plus [DONE] is available in one
+        # read and cancellation is set before the dispatch runs. The adapter
+        # must never render a completed result for a cancelled context.
+        self.server.enqueue_stream(
+            [
+                completion_frame(text="all"),
+                completion_frame(finish_reason="stop"),
+            ]
+        )
+        adapter = make_adapter(self.openai_binding())
+        context = make_context()
+        context.cancel_event.set()
+        result = adapter.execute(make_call(stream=True), context)
+        self.assertEqual(result.status, "cancelled")
+        self.assertEqual(result.calls[0].status, "cancelled")
+
+    def test_nonstreaming_cancellation_returns_cancelled_result(self) -> None:
+        # F3 symmetry: the non-streaming body loop checks cancellation too.
+        self.server.enqueue_completion(content="unused")
+        adapter = make_adapter(self.openai_binding())
+        context = make_context()
+        context.cancel_event.set()
+        result = adapter.execute(make_call(), context)
+        self.assertEqual(result.status, "cancelled")
+        self.assertEqual(result.calls[0].status, "cancelled")
+
     def test_cancellation_mid_stream_returns_cancelled_result(self) -> None:
         gate = threading.Event()
         frames = [
@@ -745,6 +772,22 @@ class OllamaDirectTest(AdapterTestCase):
         result = adapter.discover_models("openai-http")
         self.assertEqual(result.status, "unsupported_preset")
         self.assertEqual(self.server.request_count, 0)
+
+    def test_unrepresentable_version_never_enters_a_note(self) -> None:
+        from scarcity_router.providers.openai_http_adapter import (
+            HealthProbeResult,
+        )
+
+        self.server.enqueue_json(200, {"version": "0.13.3 <script>x" * 20})
+        adapter = self._ollama_adapter()
+        probe = adapter.probe_health("ollama-local")
+        self.assertEqual(probe.status, "ok")
+        assert probe.note is not None
+        self.assertIn("unrepresentable", probe.note)
+        self.assertNotIn("<script>", probe.note)
+        self.assertLessEqual(len(probe.note), 200)
+        with self.assertRaises(ValueError):
+            _ = HealthProbeResult(status="ok", note="x" * 201)
 
     def test_health_probe_reads_version_without_inference(self) -> None:
         self.server.enqueue_json(200, {"version": "0.13.3"})

@@ -249,6 +249,24 @@ class RequestBuildTest(unittest.TestCase):
         self.assertIs(wire["stream"], False)
         self.assertNotIn("stream_options", wire)
 
+    def test_generation_params_cannot_overwrite_structural_fields(self) -> None:
+        # F5 defense in depth: a structural key inside generation_params
+        # must never open an overwrite path onto fields the core builds.
+        from scarcity_router.providers.openai_http_core import (
+            RESERVED_REQUEST_KEYS,
+        )
+
+        for name in ("model", "messages", "stream", "reasoning", "thinking",
+                     "max_tokens", "tool_choice"):
+            with self.subTest(name=name):
+                call = make_call(generation_params={name: "injected"})
+                with self.assertRaises(TranslationError):
+                    _ = build_chat_completion_request(
+                        call, preset("openai-api").policy
+                    )
+        self.assertIn("response_format", RESERVED_REQUEST_KEYS)
+        self.assertIn("stream_options", RESERVED_REQUEST_KEYS)
+
 
 class ResponseParseTest(unittest.TestCase):
     """Strict chat.completion parsing; drift fails closed."""
@@ -531,6 +549,28 @@ class ToolCallAccumulatorTest(unittest.TestCase):
         accumulator.add_fragment({"index": 0, "id": "a"})
         with self.assertRaises(TranslationError):
             accumulator.add_fragment({"index": 0, "id": "b"})
+
+    def test_mixed_indexed_and_unindexed_fragments_are_drift(self) -> None:
+        # An absent index cannot be assigned once explicit indexes exist:
+        # call boundaries are ambiguous, so the mix is drift (conservative).
+        accumulator = ToolCallAccumulator()
+        accumulator.add_fragment(
+            {"index": 0, "id": "call-1", "function": {"name": "f"}}
+        )
+        accumulator.add_fragment({"function": {"arguments": "{}"}})
+        with self.assertRaises(TranslationError):
+            _ = accumulator.complete()
+
+    def test_all_unindexed_single_call_still_completes(self) -> None:
+        accumulator = ToolCallAccumulator()
+        accumulator.add_fragment(
+            {"id": "call-1", "function": {"name": "f", "arguments": "{}"}}
+        )
+        calls = accumulator.complete()
+        self.assertEqual(
+            [(c.id, c.name, c.arguments) for c in calls],
+            [("call-1", "f", "{}")],
+        )
 
 
 class ErrorNoteTest(unittest.TestCase):
