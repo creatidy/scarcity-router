@@ -916,6 +916,29 @@ def _open_store(state_dir: str | None) -> WorkerLocalStore:
     return WorkerLocalStore(Path(directory) / "worker-state.db")
 
 
+def open_worker_store(state_dir: str | None = None) -> WorkerLocalStore:
+    """Open the worker's local state store (the public seam).
+
+    The packaged worker's tray entry point shares this exact opening
+    path with the CLI so identity state can never diverge between the
+    two surfaces (M10, issue #95).
+    """
+    return _open_store(state_dir)
+
+
+def build_local_adapter_registry(
+    arguments: Mapping[str, object],
+) -> LocalAdapterRegistry | None:
+    """Build the local-adapter registry from ``run``-style flags (seam).
+
+    The public form of :func:`_build_registry`, used by the packaged
+    worker's tray entry point so flag names and the local-adapter
+    allowlist semantics are identical to ``scarcity-router-worker run``
+    by construction (M10, issue #95).
+    """
+    return _build_registry(arguments)
+
+
 def _build_registry(arguments: Mapping[str, object]) -> LocalAdapterRegistry | None:
     if not arguments.get("allow_ollama"):
         return None
@@ -1000,8 +1023,10 @@ __all__ = [
     "WorkerRuntime",
     "WorkerRuntimeError",
     "build_parser",
+    "build_local_adapter_registry",
     "default_connect_factory",
     "main",
+    "open_worker_store",
     "tls_context_for_worker",
 ]
 

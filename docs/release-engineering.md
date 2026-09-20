@@ -41,7 +41,8 @@ Every capability in this document carries exactly one status:
 | PyPI publication | Trusted Publishing (OIDC) via the release workflow | Configured externally |
 | Build provenance | Sigstore-backed GitHub artifact attestations | Implemented now |
 | Server OCI images on GHCR | Future job in `.github/workflows/release.yml` | Future contract |
-| Windows worker packages (MSIX/ZIP) | Future job in `.github/workflows/release.yml` | Future contract |
+| Windows worker package (portable ZIP) | `build-windows-worker` job in `.github/workflows/release.yml` | Implemented now (workflow; live runner acceptance is a recorded gate) |
+| Windows worker MSIX (signed) | MSIX seam in the same job | External gate (`WINDOWS_CODE_SIGNING`) |
 | Custom Linux package repositories (apt/RPM/pacman), second CI platform, other registries | — | Not yet supported (deliberately) |
 
 GitHub ([`creatidy/scarcity-router`](https://github.com/creatidy/scarcity-router))
@@ -281,24 +282,28 @@ Insertion point: one additional publish job in `.github/workflows/release.yml`
 that actually introduces the supported server image. Adding the image without
 extending this contract first is a contract violation.
 
-### Future contract: Windows worker packages
+### Windows worker packages
 
-The native worker (M05, #90) does not exist yet. Its eventual public
-artifact contract is recorded only:
+The native worker (M05, #90) is packaged by the release workflow's
+`build-windows-worker` job (added by M10, issue #95):
 
-- `scarcity-worker-X.Y.Z-windows-x64.msix` — the preferred main installation
-  direction, subject to implementation evidence;
-- `scarcity-worker-X.Y.Z-windows-x64.zip` — optional portable artifact for
-  testing and diagnostics;
-- built on Windows runners, from the exact tagged commit;
-- code signing is part of reaching professional public-release quality and
-  will need its own short-lived-identity or documented owner decision;
-- installer/update/uninstall UX belongs to #95, not to this foundation.
+- `scarcity-worker-X.Y.Z-windows-x64.zip` — the portable one-dir
+  PyInstaller build (bundled interpreter; no Python install required for
+  the normal Windows worker path), built on a Windows runner from the
+  exact tagged commit, checksummed in `SHA256SUMS` and attached to the
+  GitHub Release;
+- `scarcity-worker-X.Y.Z-windows-x64.msix` — the preferred main
+  installation direction, structured as a fail-closed seam: the job's
+  MSIX step activates only when the owner configures a code-signing
+  secret AND refuses to produce a package until the MSIX manifest/assets
+  work is implemented with dated evidence. No unsigned MSIX is ever
+  published and no signature is fabricated.
 
-Insertion point: additional jobs in `.github/workflows/release.yml`, added by
-the issue that produces a real, supported worker artifact. No placeholder
-binaries, no claimed MSIX support and no simulated publish job may exist
-before then.
+Live end-user acceptance of the produced package is recorded as
+`EXTERNAL_ACCEPTANCE_GATE: LIVE_WINDOWS_ACCEPTANCE` in
+[`docs/m10-acceptance.md`](m10-acceptance.md); the packaging shape itself
+(spec structure, tray module, launcher) is verified by the deterministic
+`tests/test_windows_packaging.py` / `tests/test_windows_tray.py` suites.
 
 ## Installation contract (Linux/WSL, Python component)
 

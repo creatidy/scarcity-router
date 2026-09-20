@@ -220,6 +220,31 @@ def inspect_wheel() -> None:
         parser.read_string(entry_points)
         sections = {section: dict(parser.items(section)) for section in parser.sections()}
         _check(sections == EXPECTED_ENTRY_POINTS, f"wheel entry points mismatch: {sections}")
+        # The optional Windows tray extra (M10) is metadata only: the core
+        # wheel's runtime dependency set is still exactly mcp — the extra's
+        # packages are extra-conditional Requires-Dist entries, never core.
+        extra_requires = sorted(
+            line.split(":", 1)[1].strip()
+            for line in metadata.splitlines()
+            if line.startswith("Requires-Dist:")
+        )
+        conditional = sorted(
+            requirement
+            for requirement in extra_requires
+            if "extra ==" in requirement
+        )
+        core = [requirement for requirement in extra_requires if "extra ==" not in requirement]
+        _check(
+            core in (["mcp>=2,<3"], ["mcp<3,>=2"]),
+            f"core runtime dependencies changed: {core}",
+        )
+        joined_conditionals = "\n".join(conditional)
+        _check(
+            len(conditional) == 2
+            and "pystray" in joined_conditionals
+            and "Pillow" in joined_conditionals,
+            f"unexpected conditional extra dependencies: {conditional}",
+        )
     print("PASS wheel contents and metadata verified")
 
 
