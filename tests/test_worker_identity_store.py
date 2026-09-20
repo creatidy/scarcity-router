@@ -116,6 +116,47 @@ class PairingLifecycleTests(unittest.TestCase):
             _ = self.store.redeem_pairing_code("SYNTHETIC-NOT-ISSUED")
         self.assertEqual(ERR_PAIRING_INVALID, caught.exception.code)
 
+    def test_credentials_and_codes_survive_store_reopen(self) -> None:
+        path = f"{self._tmp.name}/identity/identities.db"
+        outstanding = self.store.begin_pairing(label="outstanding")
+        code = self.store.begin_pairing(label="persist")
+        worker_id, credential = self.store.redeem_pairing_code(code.pairing_code)
+        _ = self.store.authenticate(worker_id, credential)
+        self.store.close()
+        # A server restart reopens the SAME database file: the pepper salt
+        # must come back from store_meta so stored hashes stay verifiable
+        # and outstanding admin-issued codes stay redeemable.
+        reopened = WorkerIdentityStore(path, clock=self.clock)
+        self.addCleanup(reopened.close)
+        _ = reopened.authenticate(worker_id, credential)
+        second_id, second_credential = reopened.redeem_pairing_code(
+            outstanding.pairing_code
+        )
+        _ = reopened.authenticate(second_id, second_credential)
+        # Still hashes only: the raw credential never gained a plaintext copy.
+        with open(path, "rb") as handle:
+            raw = handle.read()
+        self.assertNotIn(credential.encode("utf-8"), raw)
+        self.assertNotIn(second_credential.encode("utf-8"), raw)
+
+    def test_corrupt_salt_row_fails_closed(self) -> None:
+        path = f"{self._tmp.name}/identity/identities.db"
+        code = self.store.begin_pairing()
+        _ = self.store.redeem_pairing_code(code.pairing_code)
+        self.store.close()
+        import sqlite3
+
+        connection = sqlite3.connect(path)
+        try:
+            _ = connection.execute(
+                "UPDATE store_meta SET value = 'not-hex' WHERE key = 'salt'"
+            )
+            connection.commit()
+        finally:
+            connection.close()
+        with self.assertRaises(WorkerIdentityError):
+            _ = WorkerIdentityStore(path, clock=self.clock)
+
     def test_pairing_backlog_is_bounded(self) -> None:
         for _ in range(MAX_OUTSTANDING_PAIRING_CODES):
             _ = self.store.begin_pairing()

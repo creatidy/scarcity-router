@@ -158,7 +158,12 @@ class WorkerIdentityStore:
         self._clock: Callable[[], datetime] = clock if clock is not None else _utcnow
         self._pairing_code_ttl: int = pairing_code_ttl_seconds
         self._lock: threading.Lock = threading.Lock()
-        self._salt: bytes = secrets.token_bytes(32)
+        # The pepper salt is PERSISTED in store_meta on first init and read
+        # back on every load: credential and pairing-code hashes must stay
+        # verifiable across server restarts (a per-process salt would brick
+        # every stored credential and void every outstanding code).
+        self._salt: bytes = b""
+        self._closed: bool = False
         self._path: str = os.fspath(path)
         parent = os.path.dirname(os.path.abspath(self._path))
         if parent:
@@ -179,6 +184,9 @@ class WorkerIdentityStore:
 
     def close(self) -> None:
         with self._lock:
+            if self._closed:
+                return
+            self._closed = True
             self._connection.close()
 
     def _migrate(self) -> None:
@@ -211,6 +219,7 @@ class WorkerIdentityStore:
                         + f"{WORKER_IDENTITY_STORE_SCHEMA_VERSION}; an explicit "
                         + "migration is required",
                     )
+            self._load_or_create_salt()
             _ = self._connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS pairing_codes (
@@ -234,6 +243,46 @@ class WorkerIdentityStore:
                     credential_rotated_at TEXT
                 )
                 """
+            )
+
+    def _load_or_create_salt(self) -> None:
+        """Read the persisted pepper salt, creating it on first init.
+
+        The salt lives in ``store_meta`` beside the schema version: a
+        store reopened after a server restart must hash presented
+        credentials with the SAME pepper the stored hashes used. A
+        corrupt salt row fails closed (no store) rather than silently
+        re-peppering with a fresh value that would invalidate every
+        stored hash.
+        """
+        row = cast(
+            "tuple[object] | None",
+            self._connection.execute(
+                "SELECT value FROM store_meta WHERE key = 'salt'"
+            ).fetchone(),
+        )
+        if row is None:
+            salt_hex = secrets.token_bytes(32).hex()
+            _ = self._connection.execute(
+                "INSERT INTO store_meta (key, value) VALUES ('salt', ?)",
+                (salt_hex,),
+            )
+        else:
+            salt_hex = str(row[0])
+        try:
+            self._salt = bytes.fromhex(salt_hex)
+        except ValueError:
+            raise WorkerIdentityError(
+                "internal_error",
+                "the worker identity store's pepper salt is corrupt; refusing "
+                + "to open the store rather than invalidating every stored "
+                + "hash",
+            ) from None
+        if len(self._salt) != 32:
+            raise WorkerIdentityError(
+                "internal_error",
+                "the worker identity store's pepper salt has an unexpected "
+                + "length; refusing to open the store",
             )
 
     # ── Credential hashing ───────────────────────────────────────────
@@ -343,13 +392,6 @@ class WorkerIdentityStore:
             return None
         value = row[0]
         return None if value is None else cast("str", value)
-
-    def _replace_credential_hash(self, worker_id: str, credential_hash: str) -> None:
-        with self._lock:
-            _ = self._connection.execute(
-                "UPDATE worker_identities SET credential_hash = ? WHERE worker_id = ?",
-                (credential_hash, worker_id),
-            )
 
     def authenticate(self, worker_id: str, credential: str) -> None:
         """Verify one device identity or raise a typed auth failure.
