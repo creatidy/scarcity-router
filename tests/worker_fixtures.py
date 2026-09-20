@@ -306,6 +306,10 @@ class ScriptedWorker:
     def send_raw(self, payload: dict[str, object]) -> None:
         self._writer.write_message(payload)
 
+    def send_raw_frame(self, frame: bytes) -> None:
+        """Write pre-encoded frame bytes (malformed-input tests)."""
+        self.transport.send_all(frame)
+
     def next_execute(self, timeout: float = 10.0) -> ExecuteMessage:
         """The next execute, from the reader queue or by reading directly."""
         if self._reader_thread is not None:

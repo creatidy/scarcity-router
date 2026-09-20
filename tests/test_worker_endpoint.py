@@ -7,6 +7,7 @@ started). Clocks are injected or frozen.
 
 from __future__ import annotations
 
+import socket
 import threading
 import tempfile
 import time
@@ -25,6 +26,7 @@ from tests.worker_fixtures import (
 from scarcity_router.gateway_adapters import AdapterCall
 from scarcity_router.worker_identity_store import WorkerIdentityStore
 from scarcity_router.resource_state import ResourceRegistry
+from scarcity_router.worker_protocol import SocketTransport
 from scarcity_router.worker_endpoint import (
     AttemptOutcome,
     DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
@@ -262,6 +264,26 @@ class SessionTests(EndpointTestCase):
         self.assertEqual(ERR_MALFORMED, answer.code)
         self.assertTrue(answer.fatal)
 
+    def test_json_depth_bomb_is_rejected_without_leaking_the_session(self) -> None:
+        worker = self.connect_worker()
+        worker_id, _credential = self.pair_worker(worker)
+        self.assertIn(worker_id, self.endpoint.connected_worker_ids())
+        # A 60 KB frame of bare "[" cannot traverse the JSON parser:
+        # json.loads raises RecursionError, which the framing layer must
+        # turn into a typed fatal error followed by a CLEAN close --
+        # session row removed, transport closed, no leaked thread.
+        bomb = b"[" * 60000
+        worker.send_raw_frame(len(bomb).to_bytes(4, "big") + bomb)
+        answer = worker.read_server_message()
+        assert isinstance(answer, ErrorMessage)
+        self.assertEqual(ERR_MALFORMED, answer.code)
+        self.assertTrue(answer.fatal)
+        self.assertTrue(
+            wait_until(lambda: () == self.endpoint.connected_worker_ids())
+        )
+        # The transport is closed after the error frame.
+        self.assertIsNone(worker.read_server_message())
+
     def test_unknown_arbitrary_command_message_is_rejected(self) -> None:
         worker = self.connect_worker()
         worker_id, credential = self.pair_worker(worker)
@@ -370,6 +392,51 @@ class ExecuteDispatchTests(EndpointTestCase):
         logged_worker, attempt_id = self.endpoint.interrupted_attempt_log()[0]
         self.assertEqual(worker_id, logged_worker)
         self.assertEqual("wa-lost0001", attempt_id)
+
+
+class ListenerTests(EndpointTestCase):
+    """The real TCP listener path: pairing through execution, loopback."""
+
+    @override
+    def setUp(self) -> None:
+        super().setUp()
+
+    def test_loopback_listener_serves_pairing_and_execution(self) -> None:
+        listener = self.endpoint.attach_listener(host="127.0.0.1", port=0)
+        self.addCleanup(listener.shutdown)
+        listener.serve_in_background()
+        raw = socket.create_connection(("127.0.0.1", listener.bound_port), timeout=10)
+        self.addCleanup(raw.close)
+        worker = ScriptedWorker(SocketTransport(raw, recv_timeout_seconds=10))
+        # Pairing over the real listener yields a working identity...
+        code = self.store.begin_pairing(label="listener-test")
+        answer = worker.send_pair(code.pairing_code)
+        assert isinstance(answer, PairResultMessage), answer
+        self.assertEqual((answer.worker_id,), self.endpoint.connected_worker_ids())
+        # ...the state report binds the resource...
+        report_answer = worker.send_state_report(
+            build_worker_report(worker_id=answer.worker_id, resource_id=RESOURCE_ID)
+        )
+        assert isinstance(report_answer, StateReportAckMessage), report_answer
+        # ...and a server-side dispatch reaches the worker end to end.
+        call: AdapterCall = _worker_call()
+        message = ExecuteMessage(
+            request_id="chatcmpl-listen1",
+            attempt_id="wa-listener01",
+            adapter_id="synthetic",
+            deadline="2030-01-01T00:00:00.000Z",
+            call=call,
+        )
+        session = self.endpoint.session_for_resource(RESOURCE_ID)
+        pending = session.submit_execute(message)
+        execute = worker.next_execute()
+        self.assertEqual("wa-listener01", execute.attempt_id)
+        worker.complete(execute, stream=False)
+        kind, payload = pending.take(5.0)
+        self.assertEqual("outcome", kind)
+        outcome = cast(AttemptOutcome, payload)
+        self.assertEqual("completed", outcome.status)
+        worker.transport.close()
 
 
 # ── Helpers shared with the adapter tests ─────────────────────────────────────
