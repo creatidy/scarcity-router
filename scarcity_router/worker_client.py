@@ -576,6 +576,12 @@ class _ActiveSession:
             except (WorkerProtocolError, ConnectionError, TimeoutError, OSError) as exc:
                 self._runtime.note("warn", f"connection lost: {type(exc).__name__}")
                 return "retry"
+            except RecursionError:
+                # A frame the parser could not traverse (depth bomb): the
+                # typed path already covers it; this guard guarantees the
+                # session still unwinds cleanly and reconnects.
+                self._runtime.note("warn", "connection lost: RecursionError")
+                return "retry"
             if payload is None:
                 self._runtime.note("info", "server closed the connection")
                 return "stop" if self._runtime.stop_requested else "retry"
@@ -636,6 +642,19 @@ class _ActiveSession:
                     )
                 )
                 return
+            if message.attempt_id in self._attempts:
+                # Never overwrite a live tracker: a duplicate attempt id
+                # would orphan the first execution's cancellation and
+                # result routing. Definitively refuse the duplicate.
+                self._send_result(
+                    ExecuteResultMessage(
+                        attempt_id=message.attempt_id,
+                        status="failed",
+                        calls=(),
+                        note="a duplicate attempt id is already in flight",
+                    )
+                )
+                return
             attempt = _WorkerAttempt(message.attempt_id)
             self._attempts[message.attempt_id] = attempt
         thread = threading.Thread(
@@ -650,7 +669,25 @@ class _ActiveSession:
     def _execute_task(self, message: ExecuteMessage, attempt: _WorkerAttempt) -> None:
         deadline_timer: threading.Timer | None = None
         try:
-            deadline_timer = self._arm_deadline(message.deadline, attempt.cancel_event)
+            # Fail closed on an unparseable deadline: the worker never
+            # runs a local execution without an enforceable bound.
+            remaining = self._deadline_seconds(message.deadline)
+            if remaining is None:
+                self._send_result(
+                    ExecuteResultMessage(
+                        attempt_id=message.attempt_id,
+                        status="failed",
+                        calls=(),
+                        note="the execute deadline was malformed",
+                    )
+                )
+                return
+            if remaining <= 0:
+                attempt.cancel_event.set()
+            else:
+                deadline_timer = threading.Timer(remaining, attempt.cancel_event.set)
+                deadline_timer.daemon = True
+                deadline_timer.start()
             result = run_allowlisted(
                 self._runtime.local_adapters,
                 adapter_id=message.adapter_id,
@@ -694,22 +731,14 @@ class _ActiveSession:
                 _ = self._attempts.pop(message.attempt_id, None)
         self._send_result(self._result_message(message.attempt_id, result))
 
-    def _arm_deadline(
-        self, deadline: str, cancel_event: threading.Event
-    ) -> threading.Timer | None:
-        """Enforce the admission deadline worker-side (cancel at expiry)."""
+    def _deadline_seconds(self, deadline: str) -> float | None:
+        """Remaining seconds to the admission deadline, or ``None`` when
+        the deadline string is malformed (the caller fails closed)."""
         try:
             parsed = datetime.fromisoformat(deadline[:-1] + "+00:00")
-        except (ValueError, IndexError):
+        except (ValueError, IndexError, TypeError):
             return None
-        remaining = (parsed - self._runtime.current_time()).total_seconds()
-        if remaining <= 0:
-            cancel_event.set()
-            return None
-        timer = threading.Timer(remaining, cancel_event.set)
-        timer.daemon = True
-        timer.start()
-        return timer
+        return (parsed - self._runtime.current_time()).total_seconds()
 
     def _make_emitter(self, attempt_id: str) -> Callable[[AdapterStreamChunk], None]:
         def emit(chunk: AdapterStreamChunk) -> None:

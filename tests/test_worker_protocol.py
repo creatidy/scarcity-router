@@ -132,6 +132,15 @@ class FramingTests(unittest.TestCase):
     def test_clean_eof_returns_none(self) -> None:
         self.assertIsNone(FrameReader(_BytesTransport()).read_message())
 
+    def test_json_depth_bomb_is_a_typed_protocol_error(self) -> None:
+        # json.loads raises RecursionError (not ValueError) on deeply
+        # nested input; the framing layer must translate it into a typed
+        # protocol failure so sessions close cleanly (M05 review 1).
+        payload = b"[" * 60000
+        with self.assertRaises(WorkerProtocolError) as caught:
+            _ = decode_frame(payload)
+        self.assertEqual(ERR_MALFORMED, caught.exception.code)
+
 
 class NegotiationTests(unittest.TestCase):
     def test_common_version_is_selected(self) -> None:

@@ -281,6 +281,13 @@ def _parse_object(text: str, message: str) -> dict[str, object]:
         parsed = cast("object", json.loads(text))
     except json.JSONDecodeError:
         raise WorkerProtocolError("internal_error", message) from None
+    except RecursionError:
+        # A deeply nested local-endpoint response raises RecursionError,
+        # not ValueError: it must become a typed translation failure so
+        # the execution thread returns a failed result instead of dying.
+        raise WorkerProtocolError(
+            "internal_error", "the loopback response exceeds the JSON nesting bound"
+        ) from None
     if not isinstance(parsed, dict):
         raise WorkerProtocolError("internal_error", message)
     return cast("dict[str, object]", parsed)

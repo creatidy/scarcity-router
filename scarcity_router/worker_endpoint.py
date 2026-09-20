@@ -322,6 +322,14 @@ class WorkerSession:
         except WorkerProtocolError as exc:
             self._send_error(ErrorMessage(code=exc.code, message=exc.message, fatal=True))
             self.close(note=f"protocol error: {exc.code}")
+        except RecursionError:
+            # Defense in depth: a parse failure that surfaced as a bare
+            # RecursionError must still end in a CLEAN close -- the
+            # session row removed and every pending attempt resolved --
+            # never a leaked thread, socket or session (the depth-bomb
+            # wedging scenario). The error frame is skipped: the stack
+            # may be nearly exhausted, so answer nothing and just close.
+            self.close(note="unparseable frame")
         except (OSError, ConnectionError, TimeoutError):
             self.close(note="connection error")
 

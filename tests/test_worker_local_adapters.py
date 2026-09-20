@@ -21,6 +21,7 @@ from scarcity_router.gateway_adapters import (  # noqa: E402
 )
 from scarcity_router.resource_state import ResourceIdentity  # noqa: E402
 from scarcity_router.selection_types import ModelIdentity  # noqa: E402
+from scarcity_router.worker_protocol import WorkerProtocolError  # noqa: E402
 from scarcity_router.worker_local_adapters import (  # noqa: E402
     OLLAMA_ADAPTER_ID,
     AdapterNotAllowedError,
@@ -231,6 +232,32 @@ class TranslationUnitTests(unittest.TestCase):
         translation = ProvisionalOpenAITranslation()
         with self.assertRaises(WorkerProtocolError):
             _ = translation.parse_stream_line("data: {not json")
+
+    def test_deeply_nested_response_fails_closed(self) -> None:
+        # json.loads raises RecursionError (not ValueError) on deeply
+        # nested input; the translation must turn it into a typed failure
+        # so the worker's execution thread survives (M05 review 1).
+        translation = ProvisionalOpenAITranslation()
+        with self.assertRaises(WorkerProtocolError):
+            _ = translation.parse_response(
+                LoopbackHTTPResponse(status=200, body=b"[" * 60000)
+            )
+
+    def test_adapter_reports_failed_result_for_unparsable_response(self) -> None:
+        adapter = LoopbackOllamaAdapter(
+            resource=_resource(),
+            transport=lambda _request: LoopbackHTTPResponse(
+                status=200, body=b"[" * 60000
+            ),
+        )
+        result = adapter.invoke(
+            _call(),
+            cancel_event=threading.Event(),
+            deadline=T_NOW,
+            emit=lambda chunk: None,
+        )
+        self.assertEqual("failed", result.status)
+        assert result.calls[0].note is not None
 
     def test_tool_call_delta_parses_to_tool_chunk(self) -> None:
         translation = ProvisionalOpenAITranslation()

@@ -208,9 +208,13 @@ def encode_frame(payload: Mapping[str, object]) -> bytes:
         encoded = json.dumps(
             payload, sort_keys=True, allow_nan=False, separators=(",", ":")
         ).encode("utf-8")
-    except (ValueError, TypeError) as exc:
+    except (ValueError, TypeError, RecursionError):
+        # RecursionError: a payload nested too deeply for the JSON encoder
+        # (e.g. unbounded client-supplied structures). A frame that cannot
+        # be encoded must become a typed protocol failure, never a thread
+        # crash.
         raise WorkerProtocolError(
-            ERR_MALFORMED, f"frame encoding failed: {exc}"
+            ERR_MALFORMED, "frame encoding failed"
         ) from None
     if len(encoded) > MAX_FRAME_BYTES:
         raise WorkerProtocolError(
@@ -237,6 +241,15 @@ def decode_frame(payload: bytes) -> dict[str, object]:
         document = load_strict_json(text, label="worker frame")
     except ValueError as exc:
         raise WorkerProtocolError(ERR_MALFORMED, f"frame payload rejected: {exc}") from None
+    except RecursionError:
+        # json.loads raises RecursionError (not ValueError) on deeply
+        # nested input. The frame must fail as a typed protocol error so
+        # the session loop can answer and close cleanly instead of dying
+        # with the transport open and attempts unresolved (a depth bomb
+        # must never leak sessions or threads).
+        raise WorkerProtocolError(
+            ERR_MALFORMED, "frame payload exceeds the JSON nesting bound"
+        ) from None
     if not isinstance(document, dict):
         raise WorkerProtocolError(ERR_MALFORMED, "frame payload must be a JSON object")
     return cast("dict[str, object]", document)

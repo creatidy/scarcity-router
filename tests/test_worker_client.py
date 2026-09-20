@@ -148,6 +148,20 @@ class RuntimeWorld:
         return worker_side
 
 
+def _synthetic_call() -> AdapterCall:
+    return AdapterCall(
+        resource=ResourceIdentity(
+            resource_id=RESOURCE_ID,
+            channel="worker_bridged",
+            provider="synthetic",
+            model="syn-model",
+            entitlement="local_ungated",
+        ),
+        model=ModelIdentity(provider="openai", model="syn-model", variant="max"),
+        messages=(),
+    )
+
+
 def dispatch_synthetic_execute(
     endpoint: WorkerEndpoint,
 ) -> tuple[str, object]:
@@ -447,6 +461,73 @@ class RunLoopTests(unittest.TestCase):
             runtime.request_stop()
             thread.join(timeout=5)
         self.assertEqual([], listened)
+
+    def test_duplicate_attempt_id_is_refused_not_overwritten(self) -> None:
+        _ = self.world.new_transport()
+        runtime = self._runtime()
+        thread = threading.Thread(target=runtime.run, daemon=True)
+        thread.start()
+        self.addCleanup(runtime.request_stop)
+        self.assertTrue(
+            wait_until(
+                lambda: RESOURCE_ID in self.world.endpoint.resource_worker_bindings()
+            )
+        )
+        session = self.world.endpoint.session_for_resource(RESOURCE_ID)
+        message = ExecuteMessage(
+            request_id="chatcmpl-run1",
+            attempt_id="wa-duplicate",
+            adapter_id="synthetic",
+            deadline=FAR_DEADLINE,
+            call=_synthetic_call(),
+        )
+        first = session.submit_execute(message)
+        # The second dispatch with the SAME attempt id is refused by the
+        # worker with a definitive failed result; the first execution's
+        # tracking is untouched.
+        duplicate = session.submit_execute(message)
+        _ = first.take(5.0)
+        kind, payload = duplicate.take(5.0)
+        self.assertEqual("outcome", kind)
+        outcome = cast(AttemptOutcome, payload)
+        self.assertEqual("failed", outcome.status)
+        assert outcome.result is not None
+        self.assertIn("duplicate attempt id", outcome.result.note or "")
+        # Exactly ONE local execution ran.
+        self.assertEqual(1, len(self.adapter.invocations))
+        runtime.request_stop()
+        thread.join(timeout=5)
+
+    def test_malformed_deadline_fails_closed_before_invocation(self) -> None:
+        _ = self.world.new_transport()
+        runtime = self._runtime()
+        thread = threading.Thread(target=runtime.run, daemon=True)
+        thread.start()
+        self.addCleanup(runtime.request_stop)
+        self.assertTrue(
+            wait_until(
+                lambda: RESOURCE_ID in self.world.endpoint.resource_worker_bindings()
+            )
+        )
+        session = self.world.endpoint.session_for_resource(RESOURCE_ID)
+        message = ExecuteMessage(
+            request_id="chatcmpl-run2",
+            attempt_id="wa-baddeadline",
+            adapter_id="synthetic",
+            deadline="not-a-timestamp",
+            call=_synthetic_call(),
+        )
+        pending = session.submit_execute(message)
+        kind, payload = pending.take(5.0)
+        self.assertEqual("outcome", kind)
+        outcome = cast(AttemptOutcome, payload)
+        self.assertEqual("failed", outcome.status)
+        assert outcome.result is not None
+        self.assertIn("malformed", outcome.result.note or "")
+        # The local adapter was NEVER invoked without an enforceable bound.
+        self.assertEqual(0, len(self.adapter.invocations))
+        runtime.request_stop()
+        thread.join(timeout=5)
 
     def test_source_never_binds_or_listens(self) -> None:
         source = (
