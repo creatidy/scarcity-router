@@ -42,10 +42,18 @@ line-at-a-time function cannot express it).
 Failure typing: every failure is a
 :class:`~scarcity_router.worker_protocol.WorkerProtocolError` — a typed
 translation failure the loopback adapter and the worker runtime turn
-into a failed execution result, never a dead execution thread
-(including the deep-nesting ``RecursionError`` hardening, which stays
-here because the response body is parsed on this side of the core's
-document boundary).
+into a failed execution result, never a dead execution thread — in BOTH
+directions:
+
+- **Non-streaming**, the response body is parsed on this side of the
+  core's document boundary, so the deep-nesting ``RecursionError``
+  hardening lives here (:func:`_parse_object`).
+- **Streaming**, the shared core's SSE parser raises a BARE
+  ``RecursionError`` from its ``json.loads`` on deeply nested frames
+  (``TranslationError`` does not cover it: ``RecursionError`` is not a
+  ``ValueError``). The adaptation layer re-types it into the same typed
+  translation failure — the approved core module stays byte-identical,
+  so the re-typing belongs to this layer.
 """
 
 from __future__ import annotations
@@ -156,6 +164,14 @@ class _CoreStreamSession:
     accumulate in a :class:`ToolCallAccumulator` and are flushed as
     COMPLETE calls at ``close()``, followed by the finish chunk and the
     usage chunk — the same order the server-direct adapter emits.
+
+    Failure typing: the shared core signals protocol drift with
+    :class:`TranslationError`, but its SSE ``json.loads`` raises a BARE
+    ``RecursionError`` on a deeply nested frame. This layer catches both
+    and re-types them into
+    :class:`~scarcity_router.worker_protocol.WorkerProtocolError`, so a
+    hostile or drifted local endpoint can never kill the worker's
+    per-attempt execution thread with an untyped exception.
     """
 
     def __init__(self, policy: TranslationPolicy) -> None:
@@ -168,7 +184,7 @@ class _CoreStreamSession:
     def feed_line(self, line: str) -> tuple[AdapterStreamChunk, ...]:
         try:
             frames = self._parser.feed((line + "\n").encode("utf-8"))
-        except TranslationError as exc:
+        except (TranslationError, RecursionError) as exc:
             raise WorkerProtocolError("internal_error", str(exc)) from None
         return self._chunks_for(frames)
 
@@ -176,7 +192,7 @@ class _CoreStreamSession:
         try:
             frames = self._parser.close()
             tool_calls = self._accumulator.complete()
-        except TranslationError as exc:
+        except (TranslationError, RecursionError) as exc:
             raise WorkerProtocolError("internal_error", str(exc)) from None
         chunks = list(self._chunks_for(frames))
         for tool_call in tool_calls:
@@ -190,17 +206,14 @@ class _CoreStreamSession:
         for frame in frames:
             try:
                 view = interpret_stream_frame(frame)
-            except TranslationError as exc:
+                for fragment in view.tool_fragments:
+                    self._accumulator.add_fragment(fragment)
+            except (TranslationError, RecursionError) as exc:
                 raise WorkerProtocolError("internal_error", str(exc)) from None
             if view.text_delta:
                 chunks.append(
                     AdapterStreamChunk(kind=CHUNK_TEXT_DELTA, text=view.text_delta)
                 )
-            for fragment in view.tool_fragments:
-                try:
-                    self._accumulator.add_fragment(fragment)
-                except TranslationError as exc:
-                    raise WorkerProtocolError("internal_error", str(exc)) from None
             if view.finish_reason is not None:
                 chunks.append(
                     AdapterStreamChunk(

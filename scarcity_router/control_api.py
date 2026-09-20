@@ -1221,6 +1221,10 @@ class ControlPlane:
             if exc.code == "pairing_unavailable":
                 raise ControlHTTPError.conflict(exc.message) from None
             raise ControlHTTPError.invalid_request(exc.message) from None
+        except ValueError as exc:
+            # The store's bounded-label validation: a client-classifiable
+            # administrator error, never a bare 500.
+            raise ControlHTTPError.invalid_request(str(exc)) from None
         expires_at = format_utc(
             datetime.fromisoformat(pairing.expires_at[:-1] + "+00:00")
         )
@@ -1240,7 +1244,9 @@ class ControlPlane:
         """Rotate one worker's per-device credential (shown once, here)."""
         try:
             credential = self._worker_admin.rotate_worker_credential(worker_id)
-        except WorkerIdentityError:
+        except (WorkerIdentityError, ValueError):
+            # ValueError: the store rejected the id as malformed (unknown
+            # or malformed worker ids are both a plain 404, never a 500).
             raise ControlHTTPError.not_found("unknown worker") from None
         return {
             "status": "ok",
@@ -1256,7 +1262,9 @@ class ControlPlane:
         """Revoke via the M05 endpoint: identity revoked, sessions closed."""
         try:
             self._worker_endpoint.revoke_worker(worker_id)
-        except WorkerIdentityError:
+        except (WorkerIdentityError, ValueError):
+            # ValueError: the store rejected the id as malformed (same
+            # mapping as rotation — a plain 404, never a 500).
             raise ControlHTTPError.not_found("unknown worker") from None
 
     # ── Views ────────────────────────────────────────────────────────────
