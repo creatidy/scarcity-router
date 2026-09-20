@@ -2647,6 +2647,84 @@ what M4.1 forbids); a configurable per-provider eligibility policy
   Forgejo issue state. No runtime behavior, no adapter code, no contract
   change; recommendation-only and execution-gateway contracts are untouched.
 
+### D-048 — M09 implementation choices: control/UI stack, durable store format and administrator authentication
+
+- **Status:** Accepted (implementation-level choices delegated by
+  D-013/D-041/D-044; issue BioMedical-IT/scarcity-router#94)
+- **Date:** 2026-09-20
+- **Issue:** BioMedical-IT/scarcity-router#94 (M09)
+- **Confidence:** High for the store and auth mechanisms; the minimal-UI
+  decision is a deliberate D-013 non-choice, recorded with the evidence
+  the issue required.
+- **Decision:** M09 lands the server component's administration surface
+  with these concrete choices (full contract:
+  [`docs/control-surface.md`](control-surface.md)):
+  1. **One server process, injected control plane.** The M03 execution
+     server accepts an optional control-plane attachment
+     (`GatewayControlSurface` protocol) and dispatches the control paths
+     to it; the composition entry point is
+     `python -m scarcity_router.control_server`. No second deployed
+     administration service exists, and without an attached control plane
+     the server behaves exactly as M03 defined it.
+  2. **Web UI stack: none.** Server-rendered standard-library HTML with
+     one inline stylesheet; no frontend framework, no client-side build,
+     no JavaScript requirement, zero new runtime dependencies. Evidence
+     (the D-013 justification the issue required): every administrator
+     flow is one form plus one table over an authenticated JSON core;
+     interactive richness (drag-drop, live charts, optimistic editing)
+     appears in no flow; a framework would add a build toolchain, a
+     shipping bundle and a CSP/script surface to a security-sensitive
+     admin boundary for no demonstrated need. The stdlib `http.server`
+     already serves the M03 surface, so the marginal cost of
+     server-rendered pages is a few pure functions.
+  3. **Durable store: stdlib `sqlite3` single file** (D-041's
+     SQLite-class embedded store, no new dependency), one connection
+     guarded by a lock, `synchronous=FULL` transactional writes,
+     explicit `schema_migrations` table with ordered one-transaction
+     migrations and fail-closed refusal of future versions, directory
+     `0o700` / file `0o600` permissioned storage (the recorded D-044
+     fallback; OS-native storage remains the preferred alternative where
+     a deployment provides it). Administrator passwords are PBKDF2
+     (HAMC-SHA256, per-instance salt) verifiers; session tokens, CSRF
+     tokens, client keys, worker tokens and pairing codes are stored
+     only as SHA-256 hashes with constant-time comparison; provider
+     credentials are the sole plaintext values and live in one dedicated
+     table read only by the dispatch seam — never by export, listing or
+     diagnostics.
+  4. **Single source of truth.** The store's configuration document is
+     the only authoritative copy of administrator configuration; the
+     secret-free export is a projection of that row. The M03-style
+     client-keys FILE remains a valid headless input for the M03-only
+     entry point, and `--import-client-keys` performs a one-time,
+     never-overwriting migration of its hashes into the store.
+  5. **Diagnostics are shared and offline.** One module produces the
+     report for both the `/control/diagnostics` endpoint and the new
+     additive `scarcity-router doctor` CLI command (realizing the
+     deferred D-016 doctor concept); it reads stored state only — never
+     a collector, adapter dispatch or inference request — reports each
+     resource through the closed detected/authenticated/
+     protocol-compatible/available/eligible/promotion-confirmed ladder
+     with per-stage remediation, and redacts by construction.
+- **Reason:** The issue's goal is install-and-operate without
+  understanding internal topology or hand-editing files, under A0's
+  security architecture; the smallest mechanism that satisfies each
+  domain was chosen so the audit surface (one SQL file, no framework,
+  no JS) stays reviewable by one person.
+- **Alternatives considered:** a JavaScript frontend framework or
+  htmX-style layer (rejected: no demonstrated need, D-013; adds a build
+  and script surface to the admin boundary); JSON/flat-file
+  configuration instead of SQLite (rejected: no transactional
+  crash-safety, no bounded audit retention, concurrent admin/session
+  writes need locking anyway); OS keyring as the primary credential
+  store (deferred: correct D-044 preference where available, but no
+  portable stdlib access exists; the permissioned file is the recorded
+  fallback and the retrieval seam is injectable); admin bearer tokens in
+  URL query for CLI convenience (rejected outright: D-044 forbids bearer
+  secrets in URLs).
+- **Boundary:** Implementation choices for issue #94 only. No selector,
+  routing, provider or frozen-interface change; M10 owns packaging,
+  installers and end-to-end acceptance.
+
 ## Unresolved decisions
 
 ### U-001 — Codex binary discovery and compatibility
