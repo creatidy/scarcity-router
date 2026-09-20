@@ -2647,6 +2647,163 @@ what M4.1 forbids); a configurable per-provider eligibility policy
   Forgejo issue state. No runtime behavior, no adapter code, no contract
   change; recommendation-only and execution-gateway contracts are untouched.
 
+### D-048 — M09 implementation choices: control/UI stack, durable store format and administrator authentication
+
+- **Status:** Accepted (implementation-level choices delegated by
+  D-013/D-041/D-044; issue BioMedical-IT/scarcity-router#94)
+- **Date:** 2026-09-20
+- **Issue:** BioMedical-IT/scarcity-router#94 (M09)
+- **Confidence:** High for the store and auth mechanisms; the minimal-UI
+  decision is a deliberate D-013 non-choice, recorded with the evidence
+  the issue required.
+- **Decision:** M09 lands the server component's administration surface
+  with these concrete choices (full contract:
+  [`docs/control-surface.md`](control-surface.md)):
+  1. **One server process, injected control plane.** The M03 execution
+     server accepts an optional control-plane attachment
+     (`GatewayControlSurface` protocol) and dispatches the control paths
+     to it; the composition entry point is
+     `python -m scarcity_router.control_server`. No second deployed
+     administration service exists, and without an attached control plane
+     the server behaves exactly as M03 defined it.
+  2. **Web UI stack: none.** Server-rendered standard-library HTML with
+     one inline stylesheet; no frontend framework, no client-side build,
+     no JavaScript requirement, zero new runtime dependencies. Evidence
+     (the D-013 justification the issue required): every administrator
+     flow is one form plus one table over an authenticated JSON core;
+     interactive richness (drag-drop, live charts, optimistic editing)
+     appears in no flow; a framework would add a build toolchain, a
+     shipping bundle and a CSP/script surface to a security-sensitive
+     admin boundary for no demonstrated need. The stdlib `http.server`
+     already serves the M03 surface, so the marginal cost of
+     server-rendered pages is a few pure functions.
+  3. **Durable store: stdlib `sqlite3` single file** (D-041's
+     SQLite-class embedded store, no new dependency), one connection
+     guarded by a lock, `synchronous=FULL` transactional writes,
+     explicit `schema_migrations` table with ordered one-transaction
+     migrations and fail-closed refusal of future versions, directory
+     `0o700` / file `0o600` permissioned storage (the recorded D-044
+     fallback; OS-native storage remains the preferred alternative where
+     a deployment provides it). Administrator passwords are PBKDF2
+     (HMAC-SHA256, per-instance salt) verifiers; session tokens, CSRF
+     tokens, client keys, worker tokens and pairing codes are stored
+     only as SHA-256 hashes with constant-time comparison; provider
+     credentials are the sole plaintext values and live in one dedicated
+     table read only by the dispatch seam — never by export, listing or
+     diagnostics.
+  4. **Single source of truth.** The store's configuration document is
+     the only authoritative copy of administrator configuration; the
+     secret-free export is a projection of that row. The M03-style
+     client-keys FILE remains a valid headless input for the M03-only
+     entry point, and `--import-client-keys` performs a one-time,
+     never-overwriting migration of its hashes into the store.
+  5. **Diagnostics are shared and offline.** One module produces the
+     report for both the `/control/diagnostics` endpoint and the new
+     additive `scarcity-router doctor` CLI command (realizing the
+     deferred D-016 doctor concept); it reads stored state only — never
+     a collector, adapter dispatch or inference request — reports each
+     resource through the closed detected/authenticated/
+     protocol-compatible/available/eligible/promotion-confirmed ladder
+     with per-stage remediation, and redacts by construction.
+- **Reason:** The issue's goal is install-and-operate without
+  understanding internal topology or hand-editing files, under A0's
+  security architecture; the smallest mechanism that satisfies each
+  domain was chosen so the audit surface (one SQL file, no framework,
+  no JS) stays reviewable by one person.
+- **Alternatives considered:** a JavaScript frontend framework or
+  htmX-style layer (rejected: no demonstrated need, D-013; adds a build
+  and script surface to the admin boundary); JSON/flat-file
+  configuration instead of SQLite (rejected: no transactional
+  crash-safety, no bounded audit retention, concurrent admin/session
+  writes need locking anyway); OS keyring as the primary credential
+  store (deferred: correct D-044 preference where available, but no
+  portable stdlib access exists; the permissioned file is the recorded
+  fallback and the retrieval seam is injectable); admin bearer tokens in
+  URL query for CLI convenience (rejected outright: D-044 forbids bearer
+  secrets in URLs).
+- **Boundary:** Implementation choices for issue #94 only. No selector,
+  routing, provider or frozen-interface change; M10 owns packaging,
+  installers and end-to-end acceptance.
+
+### D-049 — Wave integration: ONE pairing system (M05 mechanics) and configuration-composed execution adapters
+
+- **Status:** Accepted (M04/M05/M09 integration wave,
+  `program/m04-m05-m09-parallel`; resolves the cross-workstream conflict
+  the parallel merges created)
+- **Date:** 2026-09-20
+- **Issue:** the M04 x M05 x M09 integration wave (issues #89/#90/#94)
+- **Confidence:** High — the conflict was structural (two independently
+  built pairing systems), the reconciled design keeps every frozen
+  contract intact, and the migration is explicit and tested.
+- **Conflict:** M09 shipped an administration-facing worker-pairing
+  surface (its own `worker_pairings` tables, pairing-code issuance AND
+  an HTTP redemption endpoint) built on the assumption M05's transport
+  would consume it later; M05, unable to see M09, built its own complete
+  pairing system (code redemption inside the verified-TLS protocol
+  handshake, `WorkerIdentityStore` + `WorkerAdminService` +
+  `WorkerEndpoint`). The wave forbids two pairing systems; a choice was
+  forced.
+- **Decision:**
+  1. **M05's mechanics are the sole pairing system.** M09's
+     `/control/workers` endpoints and the workers UI page delegate to
+     `WorkerAdminService`/`WorkerEndpoint` (issue, list, revoke,
+     rotate). Redemption is ONLY the protocol handshake — the HTTP
+     `/control/worker-pairing/redeem` endpoint is removed; admin code
+     ISSUANCE stays in the control API/UI. Liveness display comes from
+     the endpoint's real session table and authentication stamps, not
+     from a second bookkeeping table.
+  2. **The superseded M09 `worker_pairings` table is DROPPED by store
+     schema version 2** (explicit, tested migration). No data conversion
+     exists or is meaningful: that table held only M09-format code/token
+     HASHES whose redemption path is retired, and M05 hashes with a
+     per-store pepper salt that cannot reproduce them; pending codes and
+     revoked rows carry no convertible state. Every unrelated table
+     (configuration, administrator identity, sessions, client keys,
+     provider secrets, audit) is untouched.
+  3. **ONE Ollama translation.** M05's provisional worker-side
+     translation is replaced by an adaptation of the shared M04
+     translation core on the `ollama` preset's evidenced policy
+     (`worker_local_translation.OpenAICompatibleLoopbackTranslation`);
+     the M05 `LoopbackTranslation` protocol remains as the test seam.
+  4. **Execution adapters are composed only from M09 administrator
+     configuration** (`server_composition.py`): the M04 HTTP adapter
+     from provider endpoints plus store-held credentials (dispatch-only
+     reader), the M05 worker-bridged adapter from resource→worker
+     bindings plus the declared worker-local adapter id; validation
+     fail-closed (preset resolvable, origin parseable, worker known);
+     the default deployment composes nothing. The composed server runs
+     the optional M05 worker-protocol listener (off by default, TLS
+     beyond loopback) with heartbeat liveness reaping. Resource→worker
+     ownership comes only from M09 administrator configuration.
+     Authenticated state reports establish observations/liveness but
+     never execution ownership.
+- **Reason:** D-041 assigns worker identity to the server's durable
+  state and D-044 defines the pairing bootstrap as a one-time code
+  redeemed over verified TLS — M05 implemented exactly that contract,
+  while M09's HTTP redemption reduced the trust bootstrap to a
+  bearer-style HTTP POST. Keeping M05's mechanics preserves the
+  security design; keeping M09's admin surface (issuance, listing,
+  revocation, rotation) preserves the operability M09 delivered. The
+  migration drops only data whose consuming protocol no longer exists.
+- **Alternatives considered:** keeping both systems (rejected outright:
+  two pairing systems violate the wave's one-system requirement and
+  would allow pairing-code redemption over plain HTTP); embedding M05's
+  tables inside the M09 `ServerStore` (rejected: M05's store is a
+  reviewed, permissioned, peppered unit shared with the standalone
+  endpoint entrypoint; merging would touch its reviewed hash discipline
+  for no functional gain); one-time conversion of M09 pairing rows into
+  M05 identities (rejected: impossible without storing or cracking
+  hashes — M09 rows hold unsalted SHA-256 of tokens whose presentation
+  path is retired; re-pairing is a one-form operation); making the M09
+  store schema absorb a version-less table ignore (rejected: fail-closed
+  migration discipline requires an explicit version bump with a tested
+  migration).
+- **Boundary:** Integration of the three merged workstreams only. No
+  selector, routing-core or coordinator change; frozen surfaces
+  (`server.py`, `machine_api.py`, `mcp.py`) byte-identical; `cli.py`
+  additive doctor behavior only re-pointed at the surviving pairing
+  store; no M10 packaging work.
+
 ## Unresolved decisions
 
 ### U-001 — Codex binary discovery and compatibility

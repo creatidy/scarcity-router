@@ -489,7 +489,9 @@ safely), per-device authentication and heartbeat; message classes cover
 state reports, execute, stream chunks, cancellation and usage; reconnect is
 bounded with backoff and network loss never automatically duplicates an
 already-started request. No generic shell/ssh/arbitrary-command message
-exists in the protocol vocabulary.
+exists in the protocol vocabulary. Implemented as worker protocol v1 —
+transport, framing, message vocabulary, pairing and reconnect semantics are
+specified in [`docs/worker-protocol.md`](worker-protocol.md).
 
 **Entitlement and quota-pool model (M01/M02, frozen by D-042).** The same
 model name never implies the same resource, entitlement, quota pool, cost

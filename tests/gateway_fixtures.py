@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import threading
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timedelta, timezone
 from typing import override
 
@@ -25,6 +25,7 @@ from scarcity_router.gateway_adapters import (
     CHUNK_FINISH,
     CHUNK_TEXT_DELTA,
     CHUNK_USAGE,
+    ExecutionAdapter,
     AdapterAmbiguousError,
     AdapterCall,
     AdapterMessage,
@@ -664,7 +665,7 @@ def make_application(
     registry: ResourceRegistry | None = None,
     cells: tuple[CompatibilityCell, ...] | None = None,
     aliases: RoutingAliasTable | None = None,
-    adapters: list[ScriptedAdapter] | None = None,
+    adapters: Sequence[ExecutionAdapter] | None = None,
     limits: GatewayLimits | None = None,
     clock: Callable[[], datetime] | None = None,
     request_id_factory: Callable[[], str] | None = None,
@@ -676,7 +677,9 @@ def make_application(
 ) -> GatewayApplication:
     """Assemble a fully injected GatewayApplication for tests."""
     adapter_registry = AdapterRegistry()
-    for adapter in adapters if adapters is not None else [ScriptedAdapter()]:
+    for adapter in (
+        tuple(adapters) if adapters is not None else (ScriptedAdapter(),)
+    ):
         adapter_registry.register(adapter)
     snapshots = (
         capacity_snapshots

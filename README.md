@@ -23,9 +23,17 @@ separate, explicitly deployed server component — an execution gateway
 authorized requests to one endpoint and have them served from the best
 available resource under the same discipline. The gateway's authenticated
 OpenAI-compatible execution surface is now implemented
-(`python -m scarcity_router.gateway_server`; contract:
-[`docs/execution-surface.md`](docs/execution-surface.md)); adapter,
-configuration and distribution work is still in progress. This README
+(`python -m scarcity_router.control_server`, the one composed server;
+contract:
+[`docs/execution-surface.md`](docs/execution-surface.md)); native workers
+bridge localhost-only resources to it over outbound TLS
+(`python -m scarcity_router.worker_client pair|run`; contract:
+[`docs/worker-protocol.md`](docs/worker-protocol.md)); the server's
+administration surface (control API, web UI, diagnostics) and the
+OpenAI-compatible provider adapters are implemented, with configuration,
+adapters and the worker transport composed in one process
+([`docs/control-surface.md`](docs/control-surface.md)); distribution and
+acceptance work (M10) is still in progress. This README
 documents the recommendation-only product, whose behavior is unchanged by
 the gateway.
 
@@ -261,9 +269,9 @@ values, and only emit normalized safe status. The REST adapter binds to
 In the default recommendation-only mode, the service does not inspect prompts,
 source code, repository contents or browser sessions. It does not proxy
 requests, call models, redeem reset credits or automatically execute a
-fallback. The optional execution-gateway program (not yet implemented)
-extends this boundary only through its recorded decisions D-040 through
-D-045, with its own security architecture in
+fallback. The optional execution-gateway program extends this boundary only
+through its recorded decisions D-040 through
+D-049, with its own security architecture in
 [`docs/security.md`](docs/security.md). Read
 [`docs/security.md`](docs/security.md) for the complete credential and network
 boundary.
@@ -289,8 +297,13 @@ rules and historical evidence remain available without being part of onboarding.
 - [`docs/capability-model.md`](docs/capability-model.md) — requirements and capabilities.
 - [`docs/selection-policy.md`](docs/selection-policy.md) — eligibility and ranking.
 - [`docs/machine-interfaces.md`](docs/machine-interfaces.md) — REST and MCP.
+- [`docs/execution-surface.md`](docs/execution-surface.md) — OpenAI-compatible execution surface.
+- [`docs/control-surface.md`](docs/control-surface.md) — server control API, web UI and diagnostics.
 - [`docs/providers.md`](docs/providers.md) — provider adapters.
 - [`docs/security.md`](docs/security.md) — secrets and network boundaries.
+- [`docs/worker-protocol.md`](docs/worker-protocol.md) — the versioned
+  native-worker transport, pairing and execution-bridging contract of the
+  optional execution gateway.
 
 ### DEVELOP IT
 

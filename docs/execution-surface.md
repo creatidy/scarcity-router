@@ -21,6 +21,14 @@ owned by their existing authoritative documents
   `scarcity_router/gateway_contracts.py` (limits, errors, client
   identity). The loopback REST v1 adapter (`scarcity_router/server.py`)
   is untouched and never becomes the execution server (D-030/D-045).
+  The `server_direct_http` channel's production adapter is the generic
+  OpenAI-compatible HTTP adapter with evidence-based presets
+  (`scarcity_router/providers/openai_http_adapter.py`, M04 #89); since
+  the M04/M05/M09 integration the `worker_bridged` channel is served by
+  the M05 adapter when administrator configuration binds a worker
+  resource (`scarcity_router/server_composition.py`), the
+  `local_app_adapter` channel remains unregistered until M06 lands, and
+  API-only operation works without a worker.
 
 ## Versioning and coexistence (D-045)
 
@@ -282,12 +290,13 @@ implementation (D-041 leaves the embedded store to M09 if needed).
 - `n > 1` per-choice sampling; `logprobs`/`top_logprobs`/`logit_bias`;
   multimodal content parts; provider-passthrough parameters beyond the
   allowlist above.
-- Client-key issuance/rotation UX and the durable D-044 store (M09);
-  real execution adapters for `server_direct_http`, `worker_bridged` and
-  `local_app_adapter` channels (M04/M05/M06); administrator
-  configuration of resources, aliases, matrix cells and capacity sources
-  (M09). The default deployment starts empty and answers honestly (empty
-  model list, explicit no-target errors) until that configuration lands.
+- Client-key issuance/rotation UX and the durable D-044 store (M09)
+  have since landed, as have the real execution adapters for
+  `server_direct_http` (M04) and `worker_bridged` (M05), composed only
+  from administrator configuration; `local_app_adapter` (M06) remains
+  deferred. The default deployment still starts empty and answers
+  honestly (empty model list, explicit no-target errors) until that
+  configuration lands.
 - Representative-client (OpenAI SDK, IDE) acceptance evidence and
   backend capability-matrix evidence are tracked under issue #88's
   evidence requirements and M10 (#95) end-to-end acceptance.
