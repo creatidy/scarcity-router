@@ -55,3 +55,19 @@ class RouteContractValidationError(SelectionContractError):
     type while remaining inside the selection-contract error hierarchy that
     application adapters already classify as invalid input.
     """
+
+
+class RemoteBridgeError(Exception):
+    """Raised for every configured-remote-server bridge failure (M08, #93).
+
+    The optional remote mode (D-045 topology 4) is explicit configuration
+    with explicit failure: when a configured remote Scarcity Router server
+    is unreachable, rejects the client credential, returns an unexpected
+    status or a response that violates the expected contract, this error is
+    raised and surfaced — it is never silently converted into local state,
+    local policy or a local re-selection. The client module holds no
+    collectors, artifacts or policy, so no fallback path exists.
+
+    Messages are safe and structural: they carry the origin, endpoint and a
+    failure class only — never a credential, never a raw response body.
+    """
