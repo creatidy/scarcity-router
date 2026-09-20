@@ -1,0 +1,57 @@
+# systemd USER service for the Scarcity Router native worker (M10, issue #95).
+#
+# Install (per user, no root):
+#   1. Install the package so the `scarcity-router-worker` command exists:
+#      uv tool install scarcity-router        (after the first PyPI release)
+#      pipx install scarcity-router           (conventional alternative)
+#   2. Pair once against your server (administrator issues the one-time code
+#      in the server web UI, Workers page):
+#      scarcity-router-worker pair --server srws://SERVER-HOST:8790 --code CODE
+#   3. Copy this file:
+#      mkdir -p ~/.config/systemd/user
+#      cp examples/scarcity-router-worker.service ~/.config/systemd/user/
+#      systemctl --user daemon-reload
+#   4. Enable and start (see ExecStart below for the Ollama flags):
+#      systemctl --user enable --now scarcity-router-worker.service
+#
+# Background operation without an active login session:
+#   loginctl enable-linger "$USER"      (once, per user)
+#
+# Operation:
+#   systemctl --user start scarcity-router-worker     start
+#   systemctl --user stop scarcity-router-worker      stop
+#   systemctl --user restart scarcity-router-worker   restart (also reconnects)
+#   systemctl --user status scarcity-router-worker    status
+#   journalctl --user -u scarcity-router-worker -f    follow logs
+#
+# Updates: `uv tool upgrade scarcity-router` (or `pipx upgrade ...`), then
+# `systemctl --user restart scarcity-router-worker`. There is no background
+# auto-update by design.
+
+[Unit]
+Description=Scarcity Router native worker (outbound bridge to the router server)
+Documentation=https://github.com/creatidy/scarcity-router
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=%h/.local/bin/scarcity-router-worker run
+# To serve the loopback Ollama adapter, run the paired worker with its
+# allowlist flags instead (the resource id is yours, configured in the
+# server web UI as a worker_bridged resource):
+# ExecStart=%h/.local/bin/scarcity-router-worker run --allow-ollama --resource my-ollama --ollama-host 127.0.0.1 --ollama-port 11434
+Restart=on-failure
+# The worker's own reconnect policy is bounded with backoff; this restarts
+# the unit only if the process itself exits (e.g. reconnect budget exhausted).
+RestartSec=5s
+
+# Hardening: the worker only needs its own state directory and outbound TCP.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/share/scarcity-router
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=default.target

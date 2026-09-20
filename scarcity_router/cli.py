@@ -68,12 +68,23 @@ def _default_prog() -> str:
 
 def build_parser() -> argparse.ArgumentParser:
     """Build the top-level ``status`` / ``select`` / ``simulate`` parser."""
+    from . import get_version
+
     parser = argparse.ArgumentParser(
         prog=_default_prog(),
         description=(
             "Read-only normalized AI provider capacity status and "
             "deterministic least-scarce model selection."
         ),
+    )
+    # M10 (issue #95): the version/about surface the update path documents.
+    # Read from the single authoritative source literal (installed metadata
+    # preferred, source fallback), never a second committed copy.
+    _ = parser.add_argument(
+        "--version",
+        action="version",
+        version=f"scarcity-router {get_version()}",
+        help="show the program version and exit",
     )
     commands = parser.add_subparsers(dest="command", required=True)
 

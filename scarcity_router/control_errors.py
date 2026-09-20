@@ -12,6 +12,12 @@ MACHINE_STATUS_PATH = "/v1/status"
 MACHINE_SELECT_PATH = "/v1/select"
 MACHINE_SIMULATE_PATH = "/v1/simulate"
 
+# M10 (issue #95): deployment liveness for container orchestrators. The
+# path is the frozen machine-interface v1 liveness path (D-028) served with
+# identical liveness-only semantics; D-045 explicitly records that the two
+# path sets stay disjoint and may share one listener in server deployments.
+LIVENESS_PATH = "/healthz"
+
 CONTROL_PREFIX = "/control"
 ADMIN_PREFIX = "/admin"
 ROOT_PATH = "/"
@@ -72,6 +78,7 @@ __all__ = [
     "CSRF_FORM_FIELD",
     "CSRF_HEADER_NAME",
     "ControlHTTPError",
+    "LIVENESS_PATH",
     "MACHINE_SELECT_PATH",
     "MACHINE_SIMULATE_PATH",
     "MACHINE_STATUS_PATH",

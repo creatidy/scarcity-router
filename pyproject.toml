@@ -26,6 +26,10 @@ dynamic = ["version"]
 scarcity-router = "scarcity_router.cli:main"
 scarcity-router-mcp = "scarcity_router.mcp:main"
 scarcity-router-server = "scarcity_router.server:main"
+# M10 (issue #95): the M05 native worker's console entry point. The parser
+# already anticipated this invoked name; the frozen three scripts above keep
+# their names and semantics untouched.
+scarcity-router-worker = "scarcity_router.worker_client:main"
 
 # The version lives only in scarcity_router/__init__.py; metadata reads it
 # from there instead of committing a second copy in this file.

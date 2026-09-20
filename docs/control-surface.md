@@ -38,6 +38,7 @@ administration service:
 | --- | --- | --- |
 | OpenAI-compatible execution (M03) | `GET /v1/models`, `POST /v1/chat/completions` | inference client (bearer key) |
 | Machine-interface control (M08 parity) | `GET /v1/status`, `POST /v1/select`, `POST /v1/simulate` | inference client (bearer key) |
+| Liveness (M10; D-028 semantics) | `GET /healthz` | none (liveness only, no data) |
 | Control API (this document) | `/control/**` | administrator session (+ CSRF on mutations) |
 | Web UI (this document) | `/`, `/admin/**` | administrator session (cookie) |
 | Worker endpoint (M05, optional listener) | worker transport (own protocol, not HTTP) | worker (per-device credential) |
@@ -50,6 +51,14 @@ API answers `401`), and an administrator session authorizes nothing under
 administrator ISSUES the one-time code here, and the code is redeemed
 inside the M05 worker protocol's verified-TLS handshake (the D-044 trust
 bootstrap is the protocol handshake itself).
+
+The one unauthenticated path is `GET /healthz` (M10, issue #95): the
+machine-interface v1 liveness path served with exactly its frozen D-028
+semantics — `{"status": "ok"}`, no collector, no store read, no auth
+data — so container orchestrators and service managers have an honest
+liveness probe. D-045 records that the machine-interface v1 and
+execution-surface path sets are disjoint and may share one listener;
+liveness reveals nothing beyond "the process is serving".
 
 ## First-run state and administrator onboarding
 

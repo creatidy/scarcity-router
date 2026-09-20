@@ -77,6 +77,7 @@ EXPECTED_ENTRY_POINTS = {
         "scarcity-router": "scarcity_router.cli:main",
         "scarcity-router-mcp": "scarcity_router.mcp:main",
         "scarcity-router-server": "scarcity_router.server:main",
+        "scarcity-router-worker": "scarcity_router.worker_client:main",
     }
 }
 
@@ -320,11 +321,14 @@ def check_installed_resources(tool_python: Path, home: Path) -> None:
 
 
 def check_cli_scripts(bin_dir: Path, home: Path) -> None:
-    for script in ("scarcity-router", "scarcity-router-server"):
+    for script in ("scarcity-router", "scarcity-router-server", "scarcity-router-worker"):
         result = _run([str(bin_dir / script), "--help"], cwd=home, env=_clean_env(home))
         _check(result.returncode == 0, f"{script} --help failed:\n{result.stderr}")
         _check("usage:" in result.stdout, f"{script} --help lacks usage output")
-    print("PASS installed console-script help for scarcity-router and scarcity-router-server")
+    print(
+        "PASS installed console-script help for scarcity-router, "
+        + "scarcity-router-server and scarcity-router-worker"
+    )
 
 
 def check_rest(bin_dir: Path, home: Path) -> None:
@@ -381,7 +385,14 @@ def isolated_install_checks() -> None:
         result = _run(["uv", "tool", "install", str(DIST / WHEEL_NAME)], env=install_env)
         _check(result.returncode == 0, f"isolated uv tool install failed:\n{result.stderr}")
         scripts = sorted(entry.name for entry in bin_dir.iterdir())
-        expected = sorted(["scarcity-router", "scarcity-router-mcp", "scarcity-router-server"])
+        expected = sorted(
+            [
+                "scarcity-router",
+                "scarcity-router-mcp",
+                "scarcity-router-server",
+                "scarcity-router-worker",
+            ]
+        )
         _check(scripts == expected, f"installed scripts {scripts} != {expected}")
         print(f"PASS isolated temporary uv tool install exposes exactly {expected}")
         tool_python = tool_dir / "scarcity-router" / "bin" / "python"

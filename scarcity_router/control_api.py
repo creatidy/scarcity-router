@@ -66,6 +66,7 @@ from .control_errors import (
     CONTROL_PREFIX,
     CSRF_FORM_FIELD,
     CSRF_HEADER_NAME,
+    LIVENESS_PATH,
     ROOT_PATH,
     SESSION_COOKIE_NAME,
     ControlHTTPError,
@@ -443,6 +444,8 @@ class ControlPlane:
 
     def handles(self, method: str, path: str) -> bool:
         _ = method
+        if path == LIVENESS_PATH:
+            return True
         if path in (MACHINE_STATUS_PATH, MACHINE_SELECT_PATH, MACHINE_SIMULATE_PATH):
             return True
         if path == ROOT_PATH or path.startswith(ADMIN_PREFIX):
@@ -454,6 +457,15 @@ class ControlPlane:
         self._request_state.form = None
         try:
             self._check_router_loop_marker(handler)
+            if path == LIVENESS_PATH:
+                # Liveness only, exactly like the frozen loopback adapter's
+                # /healthz (D-028, GET-only): no collector, no store, no
+                # auth data — the one unauthenticated path, so container
+                # health probes work without credentials (M10, issue #95).
+                if method != "GET":
+                    raise ControlHTTPError.method_not_allowed()
+                self._send_json(handler, 200, {"status": "ok"})
+                return
             if path in (MACHINE_STATUS_PATH, MACHINE_SELECT_PATH, MACHINE_SIMULATE_PATH):
                 self._route_machine(method, path, handler)
                 return
