@@ -144,7 +144,11 @@ Server → Worker: `hello_ack`, `pair_result`, `heartbeat_ack`,
 - `heartbeat{seq}` / `heartbeat_ack{seq}` implement liveness. The server
   advertises its expected interval in the handshake ack and closes
   sessions silent for more than 3 intervals; the worker adopts the
-  advertised cadence.
+  advertised cadence. **Composition note:** the endpoint's automatic
+  `enforce_liveness()` wiring awaits M09/M10 server composition — the
+  capability exists and is tested deterministically (including the
+  frozen-monotonic session-reaping path), but the current standalone
+  entrypoint does not yet run a liveness monitor loop.
 - `state_report{report}` carries ONE complete M01
   `WorkerStateReport` document (validated by the M01 contract, applied
   through `ResourceRegistry.apply_worker_report` — the single shared
