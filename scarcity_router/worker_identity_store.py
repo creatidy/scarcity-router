@@ -180,7 +180,13 @@ class WorkerIdentityStore:
             raise
         _ = self._connection.execute("PRAGMA journal_mode=WAL")
         _ = self._connection.execute("PRAGMA synchronous=FULL")
-        self._migrate()
+        try:
+            self._migrate()
+        except BaseException:
+            # Fail closed without leaking the connection (the corrupt
+            # salt path raises from inside _migrate).
+            self.close()
+            raise
 
     def close(self) -> None:
         with self._lock:
