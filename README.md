@@ -24,7 +24,10 @@ authorized requests to one endpoint and have them served from the best
 available resource under the same discipline. The gateway's authenticated
 OpenAI-compatible execution surface is now implemented
 (`python -m scarcity_router.gateway_server`; contract:
-[`docs/execution-surface.md`](docs/execution-surface.md)); adapter,
+[`docs/execution-surface.md`](docs/execution-surface.md)); native workers
+bridge localhost-only resources to it over outbound TLS
+(`python -m scarcity_router.worker_client pair|run`; contract:
+[`docs/worker-protocol.md`](docs/worker-protocol.md)); adapter,
 configuration and distribution work is still in progress. This README
 documents the recommendation-only product, whose behavior is unchanged by
 the gateway.
@@ -291,6 +294,9 @@ rules and historical evidence remain available without being part of onboarding.
 - [`docs/machine-interfaces.md`](docs/machine-interfaces.md) — REST and MCP.
 - [`docs/providers.md`](docs/providers.md) — provider adapters.
 - [`docs/security.md`](docs/security.md) — secrets and network boundaries.
+- [`docs/worker-protocol.md`](docs/worker-protocol.md) — the versioned
+  native-worker transport, pairing and execution-bridging contract of the
+  optional execution gateway.
 
 ### DEVELOP IT
 
