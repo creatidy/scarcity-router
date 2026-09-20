@@ -297,15 +297,24 @@ class WorkerSession:
             self.close(note="cancel delivery failed")
 
     def close(self, *, note: str) -> None:
-        """Close the session and resolve every pending attempt as interrupted."""
+        """Close the session and resolve every pending attempt as interrupted.
+
+        The session row is removed UNCONDITIONALLY: the listener path
+        registers every accepted connection before authentication, so a
+        pre-auth failure (malformed frame, depth bomb, plain disconnect)
+        must still release its row -- otherwise pre-auth connections pin
+        the bounded session table until the endpoint refuses every
+        legitimate connection. Popping an id that was never registered
+        (in-process ``attach_transport`` sessions that never
+        authenticated) is a no-op by ``dict.pop`` semantics.
+        """
         with self._endpoint._lock:  # pyright: ignore[reportPrivateUsage] - same-program endpoint seam
             if self._state.closed:
                 return
             self._state.closed = True
             pending = list(self._state.pending.values())
             self._state.pending.clear()
-            if self._state.worker_id is not None:
-                _ = self._endpoint._sessions.pop(id(self), None)  # pyright: ignore[reportPrivateUsage] - same-program endpoint seam
+            _ = self._endpoint._sessions.pop(id(self), None)  # pyright: ignore[reportPrivateUsage] - same-program endpoint seam
         for attempt in pending:
             attempt.resolve_interrupted(note or "session closed")
         try:
@@ -642,6 +651,13 @@ class WorkerEndpoint:
         raise WorkerDispatchError(
             "worker_offline", "the worker for this resource is not connected"
         )
+
+    def session_count(self) -> int:
+        """How many live session rows the bounded table currently holds
+        (authenticated or not -- every accepted connection holds a row
+        until its session closes)."""
+        with self._lock:
+            return len(self._sessions)
 
     def connected_worker_ids(self) -> tuple[str, ...]:
         with self._lock:
