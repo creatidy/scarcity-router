@@ -438,6 +438,47 @@ class ListenerTests(EndpointTestCase):
         self.assertEqual("completed", outcome.status)
         worker.transport.close()
 
+    def test_pre_auth_failures_do_not_wedge_the_listener(self) -> None:
+        # Round-2 review: every ACCEPTED connection holds a session row
+        # from before authentication; a pre-auth failure that failed to
+        # release its row pinned the bounded table until the endpoint
+        # refused every legitimate connection with endpoint_busy.
+        listener = self.endpoint.attach_listener(host="127.0.0.1", port=0)
+        self.addCleanup(listener.shutdown)
+        listener.serve_in_background()
+        address = ("127.0.0.1", listener.bound_port)
+
+        def pre_auth_connection(frame: bytes | None) -> None:
+            raw = socket.create_connection(address, timeout=10)
+            try:
+                if frame is not None:
+                    _ = raw.sendall(len(frame).to_bytes(4, "big") + frame)
+            finally:
+                raw.close()
+
+        # Depth bombs and plain pre-auth disconnects: each must end in a
+        # clean close that RELEASES its session row.
+        bomb = b"[" * 60000
+        for _ in range(80):
+            pre_auth_connection(bomb)
+        for _ in range(20):
+            pre_auth_connection(None)
+        # The bounded table drains back to empty...
+        self.assertTrue(
+            wait_until(lambda: self.endpoint.session_count() == 0, timeout=30)
+        )
+        # ...and the endpoint still serves legitimate connections.
+        raw = socket.create_connection(address, timeout=10)
+        self.addCleanup(raw.close)
+        worker = ScriptedWorker(SocketTransport(raw, recv_timeout_seconds=10))
+        code = self.store.begin_pairing(label="after-storm")
+        answer = worker.send_pair(code.pairing_code)
+        assert isinstance(answer, PairResultMessage), answer
+        self.assertEqual(
+            (answer.worker_id,), self.endpoint.connected_worker_ids()
+        )
+        worker.transport.close()
+
 
 # ── Helpers shared with the adapter tests ─────────────────────────────────────
 
