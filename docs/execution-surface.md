@@ -32,8 +32,11 @@ owned by their existing authoritative documents
 - Path sets are disjoint: machine-interface v1 is exactly
   `/healthz`, `/v1/status`, `/v1/select`, `/v1/simulate` on the loopback
   REST adapter; the execution surface is exactly `GET /v1/models` and
-  `POST /v1/chat/completions` on the authenticated execution server. One
-  listener process never serves both contracts' semantics.
+  `POST /v1/chat/completions` on the authenticated execution server.
+  Because the path sets are disjoint, one listener process MAY serve both
+  in server deployments (D-045); what never mixes is the contracts'
+  semantics -- versions, error vocabularies and security boundaries stay
+  separate documents and separate boundaries in one process.
 - Execution-surface errors follow OpenAI-compatible client conventions.
   They never reuse or extend the closed machine-interface
   `invalid_request`/`internal_error` vocabulary.

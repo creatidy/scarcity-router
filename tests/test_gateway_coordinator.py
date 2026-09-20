@@ -654,6 +654,62 @@ class UsageAndAuditTests(unittest.TestCase):
         self.assertIsNone(audit[-1].executed_target)
 
 
+class ApplicationDefaultsTests(unittest.TestCase):
+    def test_limits_default_path_is_a_real_safe_default(self) -> None:
+        """Constructing without ``limits`` uses GatewayLimits() (D-044)."""
+        from scarcity_router.capacity import CapacitySnapshot
+        from scarcity_router.eligibility import ExecutionEligibility
+        from scarcity_router.gateway_adapters import AdapterRegistry
+        from scarcity_router.gateway_audit import BoundedAuditTrail
+        from scarcity_router.gateway_contracts import GatewayLimits
+        from scarcity_router.gateway_coordinator import GatewayApplication
+        from scarcity_router.routing_core import AdministratorConstraints
+        from scarcity_router.selector import neutral_selector_policy
+        from tests.gateway_fixtures import (
+            build_aliases,
+            build_capacity_snapshots,
+            build_catalog,
+            build_cells,
+            build_profiles,
+            build_registry,
+            fixed_clock,
+        )
+        _ = ExecutionEligibility  # imported for the capacity_source annotation
+
+
+        snapshots = build_capacity_snapshots()
+
+        def capacity_source(
+            now: str,
+        ) -> tuple[tuple["CapacitySnapshot", ...], tuple["ExecutionEligibility", ...]]:
+            _ = now
+            return (snapshots, ())
+
+        adapters = AdapterRegistry()
+        adapters.register(ScriptedAdapter())
+        application = GatewayApplication(
+            catalog=build_catalog(),
+            profiles=build_profiles(),
+            profile_policy_version=1,
+            policy=neutral_selector_policy(),
+            registry=build_registry(),
+            capacity_source=capacity_source,
+            compatibility_cells=build_cells(),
+            admin_constraints=AdministratorConstraints(),
+            aliases=build_aliases(),
+            adapters=adapters,
+            audit=BoundedAuditTrail(),
+            clock=fixed_clock(),
+        )
+        self.assertEqual(application.limits, GatewayLimits())
+        # The default limits are live: one execution runs end to end.
+        request = parse_chat_request(
+            {"model": "deep-coding", "messages": [_USER_ONLY]}
+        )
+        _ = application.execute(client_id=CLIENT_ID, request=request)  # type: ignore[arg-type]
+        self.assertEqual(audit_records(application)[-1].result_status, RESULT_COMPLETED)
+
+
 class ModelResolutionTests(unittest.TestCase):
     def test_resolve_model_string_kinds(self) -> None:
         from tests.gateway_fixtures import build_aliases

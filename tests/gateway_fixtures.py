@@ -476,6 +476,41 @@ def echo_behavior(
     return behavior
 
 
+def chunkless_behavior(
+    *,
+    content: str = "synthetic reply",
+    reported_usage: tuple[int, int] | None = (11, 7),
+) -> Callable[[AdapterCall, ExecutionContext], AdapterResult]:
+    """A completed whole-message result for a streaming call: no chunks.
+
+    This is the honest first-adapter shape the surface must tolerate: the
+    dispatch completes without ever calling the streaming emitter, so the
+    wire layer must synthesize the promised chunk sequence (review 1,
+    finding B1).
+    """
+
+    def behavior(call: AdapterCall, context: ExecutionContext) -> AdapterResult:
+        _ = call, context
+        return AdapterResult(
+            status="completed",
+            calls=(
+                CallObservation(
+                    call_index=0,
+                    started_at=_ts(0),
+                    ended_at=_ts(1),
+                    status="completed",
+                    provider_reported_usage=(
+                        None if reported_usage is None else UsageTokens(*reported_usage)
+                    ),
+                ),
+            ),
+            message=AdapterMessage(role="assistant", content=content),
+            finish_reason="stop",
+        )
+
+    return behavior
+
+
 def permanent_failure_behavior(
     note: str = "synthetic backend refused",
 ) -> Callable[[AdapterCall, ExecutionContext], AdapterResult]:
@@ -736,6 +771,7 @@ __all__ = [
     "audit_records",
     "build_registry",
     "canonical",
+    "chunkless_behavior",
     "echo_behavior",
     "fixed_clock",
     "make_application",

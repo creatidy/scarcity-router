@@ -75,10 +75,13 @@ from typing import cast, override
 
 from .config import resolve_default_selector_policy
 from .gateway_adapters import (
+    CHUNK_FINISH,
+    CHUNK_TEXT_DELTA,
     CHUNK_TOOL_CALL,
     CHUNK_USAGE,
     AdapterStreamChunk,
     ClientDisconnectedError,
+    CompletionOutcome,
 )
 from .gateway_contracts import (
     EXECUTION_SURFACE_VERSION,
@@ -389,15 +392,20 @@ class GatewayRequestHandler(BaseHTTPRequestHandler):
         request: ChatCompletionRequest,
     ) -> None:
         state = _StreamState(handler=self, request=request)
+        outcome: CompletionOutcome | None = None
         try:
-            _ = application.execute(
+            outcome = application.execute(
                 client_id=client_id,
                 request=request,
                 emit_chunk=state.emit,
                 request_id=state.request_id,
             )
         finally:
-            state.finish()
+            # On success without a single adapter chunk the promised
+            # synthesized sequence is rendered here; on failure the stream
+            # either never started (clean HTTP error) or is already
+            # terminated in-band by the error path.
+            state.finish(outcome)
 
     def mark_sse_committed(self) -> None:
         """Record that a 200 SSE stream has started on this connection."""
@@ -576,9 +584,13 @@ class _StreamState:
         if chunk.kind == CHUNK_USAGE and not self._request.include_usage:
             return
         self._begin()
+        self._render_chunk(chunk, created=self._created)
+
+    def _render_chunk(self, chunk: AdapterStreamChunk, *, created: int) -> None:
+        """Render one normalized chunk as an SSE frame (with bookkeeping)."""
         payload = chunk_payload(
             request_id=self.request_id,
-            created=self._created,
+            created=created,
             model_echo=self._request.model,
             chunk=chunk,
             tool_call_index=self._tool_call_index,
@@ -587,7 +599,7 @@ class _StreamState:
             self._tool_call_index += 1
         self._write_frame(payload)
 
-    def _begin(self) -> None:
+    def _begin(self, *, created: int | None = None) -> None:
         if self._started:
             return
         self._started = True
@@ -598,12 +610,13 @@ class _StreamState:
         handler.send_header("Cache-Control", "no-cache")
         handler.send_header("Connection", "close")
         handler.end_headers()
-        # OpenAI clients expect the assistant role in the first delta.
+        # OpenAI clients expect the assistant role in the first delta, and
+        # every frame of one response shares one created stamp.
         self._write_frame(
             {
                 "id": self.request_id,
                 "object": "chat.completion.chunk",
-                "created": self._created,
+                "created": created if created is not None else self._created,
                 "model": self._request.model,
                 "choices": [
                     {
@@ -654,10 +667,57 @@ class _StreamState:
         except (BrokenPipeError, ConnectionResetError, OSError) as exc:
             raise ClientDisconnectedError() from exc
 
-    def finish(self) -> None:
-        """Close the stream; synthesize framing for a chunkless completion."""
+    def finish(self, outcome: CompletionOutcome | None = None) -> None:
+        """Close the stream; synthesize framing for a chunkless completion.
+
+        A completed result that never emitted a chunk (a whole-message
+        response from a streaming call) is rendered here as the promised
+        synthesized sequence -- headers, role chunk, content/tool-call
+        deltas, the finish chunk and, when requested and available, the
+        usage chunk -- followed by ``[DONE]``. The client therefore always
+        receives well-formed event framing; a silent zero-byte completion
+        cannot happen. With no outcome (the execution failed before any
+        chunk), an unstarted stream stays unstarted so the failure
+        surfaces as a clean HTTP error instead.
+        """
         if not self._started:
+            if outcome is not None:
+                self._synthesize(outcome)
             return
+        self._write_done()
+
+    def _synthesize(self, outcome: CompletionOutcome) -> None:
+        """Render a completed whole-message result as a chunk sequence."""
+        self._begin(created=outcome.created)
+        message = outcome.message
+        if message.content:
+            self._render_chunk(
+                AdapterStreamChunk(kind=CHUNK_TEXT_DELTA, text=message.content),
+                created=outcome.created,
+            )
+        for call in message.tool_calls:
+            self._render_chunk(
+                AdapterStreamChunk(kind=CHUNK_TOOL_CALL, tool_call=call),
+                created=outcome.created,
+            )
+        self._render_chunk(
+            AdapterStreamChunk(kind=CHUNK_FINISH, finish_reason=outcome.finish_reason),
+            created=outcome.created,
+        )
+        if self._request.include_usage:
+            usage = (
+                outcome.usage.provider_reported_usage
+                if outcome.usage.provider_reported_usage is not None
+                else outcome.usage.estimated_usage
+            )
+            if usage is not None:
+                self._render_chunk(
+                    AdapterStreamChunk(kind=CHUNK_USAGE, usage=usage),
+                    created=outcome.created,
+                )
+        self._write_done()
+
+    def _write_done(self) -> None:
         try:
             _ = self._handler.wfile.write(b"data: [DONE]\n\n")
             self._handler.wfile.flush()

@@ -42,6 +42,7 @@ from tests.gateway_fixtures import (
     GatewayApplication,
     ScriptedAdapter,
     audit_records,
+    chunkless_behavior,
     make_application,
     tool_call_behavior,
 )
@@ -292,6 +293,57 @@ class SurfaceTests(ServerHarness):
         self.assertEqual(len(usage_chunks), 1)
         final_usage = as_dict(usage_chunks[0])
         self.assertEqual(as_dict(final_usage["usage"])["prompt_tokens"], 11)
+
+    def test_chunkless_completed_stream_is_synthesized_never_silent(self) -> None:
+        """A whole-message result for stream:true still yields full SSE.
+
+        An adapter may answer a streaming call with a completed result and
+        no chunks (exactly what a first whole-message adapter does). The
+        promised synthesized sequence must go out -- headers, role chunk,
+        content, finish, usage when requested, ``[DONE]`` -- so the client
+        can never hang on a zero-byte 200 (review 1, finding B1).
+        """
+        adapter = ScriptedAdapter(behavior=chunkless_behavior())
+        port = self.make_server(adapters=[adapter])
+        response = self.post_chat(
+            port,
+            {
+                "model": "deep-coding",
+                "messages": [{"role": "user", "content": "hi"}],
+                "stream": True,
+                "stream_options": {"include_usage": True},
+            },
+        )
+        self.assertEqual(response.status, 200)
+        frames = self.read_sse_frames(response)
+        self.assertTrue(frames, "the stream must not be empty")
+        self.assertEqual(frames[-1], "[DONE]")
+        chunks = [cast("dict[str, object]", json.loads(frame)) for frame in frames[:-1]]
+        first_choices = as_list(chunks[0]["choices"])
+        first_delta = as_dict(as_dict(first_choices[0])["delta"])
+        self.assertEqual(first_delta.get("role"), "assistant")
+        text = ""
+        for chunk in chunks[1:-1]:
+            chunk_choices = as_list(chunk["choices"])
+            if not chunk_choices:
+                continue
+            delta = as_dict(as_dict(chunk_choices[0])["delta"])
+            content = delta.get("content")
+            text += content if isinstance(content, str) else ""
+        self.assertEqual(text, "synthetic reply")
+        finish_frames = [
+            c
+            for c in chunks
+            if as_list(c["choices"])
+            and as_dict(as_list(c["choices"])[0])["finish_reason"]
+        ]
+        self.assertTrue(finish_frames)
+        self.assertEqual(
+            as_dict(as_list(finish_frames[-1]["choices"])[0])["finish_reason"], "stop"
+        )
+        usage_chunks = [c for c in chunks if not as_list(c["choices"])]
+        self.assertEqual(len(usage_chunks), 1)
+        self.assertEqual(as_dict(usage_chunks[0]["usage"])["prompt_tokens"], 11)
 
     def test_streaming_without_include_usage_has_no_usage_chunk(self) -> None:
         port = self.make_server()

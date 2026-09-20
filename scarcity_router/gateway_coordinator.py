@@ -309,7 +309,9 @@ class GatewayApplication:
         )
         _ = v_instance(aliases, RoutingAliasTable, "gateway_application.aliases")
         _ = v_instance(adapters, AdapterRegistry, "gateway_application.adapters")
-        _ = v_instance(limits, GatewayLimits, "gateway_application.limits")
+        if limits is not None:
+            # ``None`` selects the documented safe-default limits (D-044).
+            _ = v_instance(limits, GatewayLimits, "gateway_application.limits")
         if client_authorizations is not None:
             for client_id, grant in client_authorizations.items():
                 _ = v_safe_id(client_id, "gateway_application.client_authorizations")
