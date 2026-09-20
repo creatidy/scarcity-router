@@ -21,6 +21,11 @@ owned by their existing authoritative documents
   `scarcity_router/gateway_contracts.py` (limits, errors, client
   identity). The loopback REST v1 adapter (`scarcity_router/server.py`)
   is untouched and never becomes the execution server (D-030/D-045).
+  The `server_direct_http` channel's production adapter is the generic
+  OpenAI-compatible HTTP adapter with evidence-based presets
+  (`scarcity_router/providers/openai_http_adapter.py`, M04 #89); the
+  `worker_bridged` and `local_app_adapter` channels remain unregistered
+  until M05/M06 land, and API-only operation works without a worker.
 
 ## Versioning and coexistence (D-045)
 

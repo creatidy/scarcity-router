@@ -205,6 +205,56 @@ and contracts are in [`docs/architecture.md`](architecture.md).
   versions; provider drift disables the affected adapter safely while the
   rest of the router keeps working.
 
+### M04 status: generic OpenAI-compatible HTTP adapter (issue #89, 2026-09-20)
+
+Implemented as ONE generic adapter (`scarcity_router/providers/openai_http_adapter.py`)
+serving the `server_direct_http` channel through evidence-based presets
+(`scarcity_router/providers/openai_http_presets.py`): OpenAI API,
+DeepSeek, OpenRouter, Z.ai Coding Plan, Ollama (network-reachable) and a
+generic administrator-configured OpenAI-compatible endpoint. There are no
+per-provider gateways: provider differences live only in the typed
+translation policies of each preset, and every unevidenced request feature
+is explicitly refused (never silently dropped or forwarded on a guess).
+
+- **One implementation, two transports.** The wire translation core
+  (`scarcity_router/providers/openai_http_core.py`) is the single
+  OpenAI-compatible semantic implementation and is import-clean of the
+  coordinator and of any transport. The worker-bridged path (M05) invokes
+  the same core worker-side (`build_chat_completion_request`,
+  `SseStreamParser`, `interpret_stream_frame`,
+  `parse_chat_completion_response`) and relays the normalized chunks and
+  call observations through the worker protocol; the server registers no
+  `worker_bridged` adapter until M05 lands, and API-only operation works
+  without a worker.
+- **Administrator configuration.** Provider origins and credentials come
+  only from typed `ResourceBinding` configuration keyed by registry
+  `resource_id` (storage/UX is M09); request content can never supply or
+  alter an origin, a path or a credential. The Z.ai Coding Plan preset is
+  subscription-backed (`subscription_included`) and stays distinct from
+  the vendor's PAYG platform API (a generic configuration,
+  `payg_metered`) — matching model names never merge access classes
+  (D-042).
+- **Ollama.** Reached through the same generic adapter; model discovery
+  (`GET /api/tags`) and health/readiness (`GET /api/version`) are native,
+  read-only endpoints that never consume inference quota; explicit
+  administrator capability configuration applies (default matrix cells
+  are the documented-evidence defaults, narrowed or raised only with the
+  administrator's own dated evidence via M09). No automatic model
+  downloads, no GPU driver installation, no GPU lifecycle management.
+- **Outbound security (D-044).** Verified TLS only (`verify=false` does
+  not exist); plain HTTP only for explicit loopback origins; redirects
+  never followed (Authorization never crosses origins); bounded response
+  bodies and streams under the dispatch deadline; the
+  `X-Scarcity-Router-Gateway` marker is stamped on every outbound request
+  and any response carrying it is refused (router → router is forbidden).
+- **Evidence.** Dated compatibility evidence and per-preset default
+  matrix cells live in `scarcity_router/providers/openai_http_evidence.py`
+  (provider documentation retrieved 2026-09-20; see the preset evidence
+  records for the exact URLs and retrieval caveats). Facts that could not
+  be re-verified stay `PARTIAL`/`UNKNOWN`, and the generic preset is
+  `UNKNOWN` in every cell (fail closed) until the administrator supplies
+  evidence.
+
 ## Later Providers
 
 Claude subscription is the highest-priority later collector because it would
