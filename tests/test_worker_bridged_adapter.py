@@ -83,9 +83,13 @@ class AdapterWorld:
         self.store = WorkerIdentityStore(
             f"{tmp.name}/identity/identities.db", clock=self.clock
         )
+        # Administrator-simulated ownership (configuration is the only
+        # source; the world assigns each bound device explicitly).
+        self.owners: dict[str, str | None] = {}
         self.endpoint = WorkerEndpoint(
             identity_store=self.store,
             registry=build_registry(with_worker=True),
+            configured_owner=self.owners.get,
             heartbeat_interval_seconds=15,
         )
         self.workers = []
@@ -108,6 +112,9 @@ class AdapterWorld:
         code = self.store.begin_pairing(label="adapter-test")
         answer = scripted.send_pair(code.pairing_code)
         assert isinstance(answer, PairResultMessage), answer
+        # The administrator binds this device to the world's resource
+        # before its report (configuration is the only ownership source).
+        self.owners[RESOURCE_ID] = answer.worker_id
         report_answer = scripted.send_state_report(
             build_worker_report(
                 worker_id=answer.worker_id,
@@ -289,6 +296,7 @@ class AdapterDispatchRejectionTests(unittest.TestCase):
         endpoint = WorkerEndpoint(
             identity_store=self.world.store,
             registry=build_registry(with_worker=True),
+            configured_owner=lambda _resource_id: None,
             heartbeat_interval_seconds=15,
         )
         adapter = WorkerBridgedAdapter(

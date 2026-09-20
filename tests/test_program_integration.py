@@ -1017,7 +1017,9 @@ class CompositionUnitTests(unittest.TestCase):
             worker_store = WorkerIdentityStore(Path(parent) / "w" / "w.sqlite3")
             self.addCleanup(worker_store.close)
             endpoint = WorkerEndpoint(
-                identity_store=worker_store, registry=ResourceRegistry()
+                identity_store=worker_store,
+                registry=ResourceRegistry(),
+                configured_owner=lambda _resource_id: None,
             )
             registry = build_adapter_registry(
                 ServerConfiguration.neutral(),

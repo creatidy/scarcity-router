@@ -105,6 +105,7 @@ class RuntimeWorld:
     store: WorkerIdentityStore
     local_store: WorkerLocalStore
     endpoint: WorkerEndpoint
+    owners: dict[str, str | None]
     pending_transports: deque[MemoryTransport]
     connect_count: int
     factory_calls: int
@@ -117,11 +118,15 @@ class RuntimeWorld:
             f"{tmp.name}/identity/identities.db", clock=self.clock
         )
         self.local_store = WorkerLocalStore(f"{tmp.name}/local/worker-state.db")
+        # Administrator-simulated ownership (configuration is the only
+        # source); RunLoopTests assigns the pre-paired device explicitly.
+        self.owners = {}
         self.endpoint = WorkerEndpoint(
             identity_store=self.store,
             registry=build_registry_with_resource(
                 RESOURCE_ID, clock=realtime_canonical
             ),
+            configured_owner=self.owners.get,
             heartbeat_interval_seconds=15,
         )
         self.pending_transports = deque()
@@ -298,6 +303,8 @@ class RunLoopTests(unittest.TestCase):
                 server_origin="srws://gateway.local:8790",
             )
         )
+        # The administrator binds the pre-paired device to the resource.
+        self.world.owners[RESOURCE_ID] = self.worker_id
 
     def _runtime(self) -> WorkerRuntime:
         return WorkerRuntime(
@@ -320,7 +327,7 @@ class RunLoopTests(unittest.TestCase):
         self.addCleanup(runtime.request_stop)
         self.assertTrue(
             wait_until(
-                lambda: RESOURCE_ID in self.world.endpoint.resource_worker_bindings()
+                lambda: RESOURCE_ID in self.world.endpoint.observed_worker_bindings()
             )
         )
         # The report sink is the world's real registry (see RuntimeWorld);
@@ -342,7 +349,7 @@ class RunLoopTests(unittest.TestCase):
         self.addCleanup(runtime.request_stop)
         self.assertTrue(
             wait_until(
-                lambda: RESOURCE_ID in self.world.endpoint.resource_worker_bindings()
+                lambda: RESOURCE_ID in self.world.endpoint.observed_worker_bindings()
             )
         )
         attempt_id, raw_pending = dispatch_synthetic_execute(self.world.endpoint)
@@ -367,7 +374,7 @@ class RunLoopTests(unittest.TestCase):
         self.addCleanup(runtime.request_stop)
         self.assertTrue(
             wait_until(
-                lambda: RESOURCE_ID in self.world.endpoint.resource_worker_bindings()
+                lambda: RESOURCE_ID in self.world.endpoint.observed_worker_bindings()
             )
         )
         # Block the synthetic adapter mid-flight until the network loss
@@ -465,7 +472,7 @@ class RunLoopTests(unittest.TestCase):
             self.assertTrue(
                 wait_until(
                     lambda: RESOURCE_ID
-                    in self.world.endpoint.resource_worker_bindings()
+                    in self.world.endpoint.observed_worker_bindings()
                 )
             )
             runtime.request_stop()
@@ -480,7 +487,7 @@ class RunLoopTests(unittest.TestCase):
         self.addCleanup(runtime.request_stop)
         self.assertTrue(
             wait_until(
-                lambda: RESOURCE_ID in self.world.endpoint.resource_worker_bindings()
+                lambda: RESOURCE_ID in self.world.endpoint.observed_worker_bindings()
             )
         )
         session = self.world.endpoint.session_for_resource(RESOURCE_ID)
@@ -522,7 +529,7 @@ class RunLoopTests(unittest.TestCase):
         self.addCleanup(runtime.request_stop)
         self.assertTrue(
             wait_until(
-                lambda: RESOURCE_ID in self.world.endpoint.resource_worker_bindings()
+                lambda: RESOURCE_ID in self.world.endpoint.observed_worker_bindings()
             )
         )
         session = self.world.endpoint.session_for_resource(RESOURCE_ID)

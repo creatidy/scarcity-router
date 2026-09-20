@@ -73,10 +73,12 @@ class EndpointTestCase(unittest.TestCase):
     registry: ResourceRegistry
     monotonic: FrozenMonotonic
     endpoint: WorkerEndpoint
+    owners: dict[str, str | None]
     threads: list[threading.Thread]
 
     def __init__(self, method_name: str = "runTest") -> None:
         super().__init__(method_name)
+        self.owners = cast("dict[str, str | None]", object())
         # Placeholders; setUp replaces them before each test body runs.
         self._tmp = cast("tempfile.TemporaryDirectory[str]", object())
         self.clock = cast("MutableClock", object())
@@ -97,13 +99,22 @@ class EndpointTestCase(unittest.TestCase):
         self.addCleanup(self.store.close)
         self.registry = build_registry_with_resource(RESOURCE_ID)
         self.monotonic = FrozenMonotonic()
+        # Administrator-simulated ownership: the test assigns the paired
+        # device to the test resource explicitly (configuration is the
+        # only ownership source — see OwnerResolver).
+        self.owners = {}
         self.endpoint = WorkerEndpoint(
             identity_store=self.store,
             registry=self.registry,
+            configured_owner=self.owners.get,
             heartbeat_interval_seconds=DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
             monotonic=self.monotonic,
         )
         self.threads = []
+
+    def assign(self, resource_id: str, worker_id: str | None) -> None:
+        """Simulate the administrator binding (or unbinding) a resource."""
+        self.owners[resource_id] = worker_id
 
     def connect_worker(self) -> ScriptedWorker:
         worker_side, server_side = MemoryTransport.pair()
@@ -200,6 +211,7 @@ class SessionTests(EndpointTestCase):
     def test_state_report_is_applied_through_the_m01_registry(self) -> None:
         worker = self.connect_worker()
         worker_id, _ = self.pair_worker(worker)
+        self.assign(RESOURCE_ID, worker_id)
         answer = worker.send_state_report(
             build_worker_report(worker_id=worker_id, resource_id=RESOURCE_ID)
         )
@@ -209,7 +221,7 @@ class SessionTests(EndpointTestCase):
         entry = next(e for e in snapshot.entries if e.identity.resource_id == RESOURCE_ID)
         self.assertIsNotNone(entry.observation)
         self.assertEqual(
-            (worker_id,), (self.endpoint.resource_worker_bindings()[RESOURCE_ID],)
+            (worker_id,), (self.endpoint.observed_worker_bindings()[RESOURCE_ID],)
         )
         self.assertEqual((worker_id,), self.endpoint.connected_worker_ids())
 
@@ -221,7 +233,7 @@ class SessionTests(EndpointTestCase):
         )
         assert isinstance(answer, ErrorMessage)
         self.assertFalse(answer.fatal)
-        self.assertEqual({}, self.endpoint.resource_worker_bindings())
+        self.assertEqual({}, self.endpoint.observed_worker_bindings())
 
     def test_state_report_with_mismatched_worker_id_is_rejected(self) -> None:
         worker = self.connect_worker()
@@ -231,7 +243,7 @@ class SessionTests(EndpointTestCase):
         )
         assert isinstance(answer, ErrorMessage)
         self.assertFalse(answer.fatal)
-        self.assertEqual({}, self.endpoint.resource_worker_bindings())
+        self.assertEqual({}, self.endpoint.observed_worker_bindings())
 
     def test_malformed_report_is_a_nonfatal_error(self) -> None:
         worker = self.connect_worker()
@@ -314,6 +326,7 @@ class ExecuteDispatchTests(EndpointTestCase):
         worker = self.connect_worker()
         worker_id, credential = self.pair_worker(worker)
         _ = credential
+        self.assign(RESOURCE_ID, worker_id)
         report_answer = worker.send_state_report(
             build_worker_report(worker_id=worker_id, resource_id=RESOURCE_ID)
         )
@@ -342,6 +355,7 @@ class ExecuteDispatchTests(EndpointTestCase):
         worker = self.connect_worker()
         worker_id, credential = self.pair_worker(worker)
         _ = credential
+        self.assign(RESOURCE_ID, worker_id)
         _ = worker.send_state_report(
             build_worker_report(worker_id=worker_id, resource_id=RESOURCE_ID)
         )
@@ -359,6 +373,7 @@ class ExecuteDispatchTests(EndpointTestCase):
         worker = self.connect_worker()
         worker_id, credential = self.pair_worker(worker)
         _ = credential
+        self.assign(RESOURCE_ID, worker_id)
         _ = worker.send_state_report(
             build_worker_report(worker_id=worker_id, resource_id=RESOURCE_ID)
         )
@@ -384,6 +399,7 @@ class ExecuteDispatchTests(EndpointTestCase):
         worker = self.connect_worker()
         worker_id, credential = self.pair_worker(worker)
         _ = credential
+        self.assign(RESOURCE_ID, worker_id)
         _ = worker.send_state_report(
             build_worker_report(worker_id=worker_id, resource_id=RESOURCE_ID)
         )
@@ -413,7 +429,9 @@ class ListenerTests(EndpointTestCase):
         answer = worker.send_pair(code.pairing_code)
         assert isinstance(answer, PairResultMessage), answer
         self.assertEqual((answer.worker_id,), self.endpoint.connected_worker_ids())
-        # ...the state report binds the resource...
+        # ...the administrator assigns the device; the state report is
+        # observed as availability evidence...
+        self.assign(RESOURCE_ID, answer.worker_id)
         report_answer = worker.send_state_report(
             build_worker_report(worker_id=answer.worker_id, resource_id=RESOURCE_ID)
         )
