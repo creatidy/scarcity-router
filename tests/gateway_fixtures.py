@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import threading
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timedelta, timezone
 from typing import override
 
@@ -22,6 +22,7 @@ from scarcity_router.capacity import (
 )
 from scarcity_router.eligibility import ExecutionEligibility
 from scarcity_router.gateway_adapters import (
+    ExecutionAdapter,
     CHUNK_FINISH,
     CHUNK_TEXT_DELTA,
     CHUNK_USAGE,
@@ -664,7 +665,7 @@ def make_application(
     registry: ResourceRegistry | None = None,
     cells: tuple[CompatibilityCell, ...] | None = None,
     aliases: RoutingAliasTable | None = None,
-    adapters: list[ScriptedAdapter] | None = None,
+    adapters: Sequence[ExecutionAdapter] | None = None,
     limits: GatewayLimits | None = None,
     clock: Callable[[], datetime] | None = None,
     request_id_factory: Callable[[], str] | None = None,
