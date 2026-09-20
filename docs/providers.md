@@ -219,21 +219,23 @@ is explicitly refused (never silently dropped or forwarded on a guess).
 - **One implementation, two transports.** The wire translation core
   (`scarcity_router/providers/openai_http_core.py`) is the single
   OpenAI-compatible semantic implementation and is import-clean of the
-  coordinator and of any transport. The worker-bridged path (M05) invokes
-  the same core worker-side (`build_chat_completion_request`,
-  `SseStreamParser`, `interpret_stream_frame`,
-  `parse_chat_completion_response`) and relays the normalized chunks and
-  call observations through the worker protocol; the server registers no
-  `worker_bridged` adapter until M05 lands, and API-only operation works
-  without a worker.
+  coordinator and of any transport. The worker-bridged path (M05,
+  integrated) invokes the same core worker-side through the narrow
+  loopback adaptation (`scarcity_router/worker_local_translation.py`)
+  and relays the normalized chunks and call observations through the
+  worker protocol; the server composes execution adapters only from
+  administrator configuration (`scarcity_router/server_composition.py`),
+  and API-only operation works without a worker (the honest empty
+  default registers no adapters at all).
 - **Administrator configuration.** Provider origins and credentials come
   only from typed `ResourceBinding` configuration keyed by registry
-  `resource_id` (storage/UX is M09); request content can never supply or
-  alter an origin, a path or a credential. The Z.ai Coding Plan preset is
-  subscription-backed (`subscription_included`) and stays distinct from
-  the vendor's PAYG platform API (a generic configuration,
-  `payg_metered`) — matching model names never merge access classes
-  (D-042).
+  `resource_id` (built by the M09 composition seam; credentials flow
+  only from the server store's dispatch-only reader); request content
+  can never supply or alter an origin, a path or a credential. The Z.ai
+  Coding Plan preset is subscription-backed (`subscription_included`)
+  and stays distinct from the vendor's PAYG platform API (a generic
+  configuration, `payg_metered`) — matching model names never merge
+  access classes (D-042).
 - **Ollama.** Reached through the same generic adapter; model discovery
   (`GET /api/tags`) and health/readiness (`GET /api/version`) are native,
   read-only endpoints that never consume inference quota; explicit

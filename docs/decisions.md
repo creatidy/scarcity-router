@@ -2685,7 +2685,7 @@ what M4.1 forbids); a configurable per-provider eligibility policy
      `0o700` / file `0o600` permissioned storage (the recorded D-044
      fallback; OS-native storage remains the preferred alternative where
      a deployment provides it). Administrator passwords are PBKDF2
-     (HAMC-SHA256, per-instance salt) verifiers; session tokens, CSRF
+     (HMAC-SHA256, per-instance salt) verifiers; session tokens, CSRF
      tokens, client keys, worker tokens and pairing codes are stored
      only as SHA-256 hashes with constant-time comparison; provider
      credentials are the sole plaintext values and live in one dedicated
@@ -2724,6 +2724,82 @@ what M4.1 forbids); a configurable per-provider eligibility policy
 - **Boundary:** Implementation choices for issue #94 only. No selector,
   routing, provider or frozen-interface change; M10 owns packaging,
   installers and end-to-end acceptance.
+
+### D-049 — Wave integration: ONE pairing system (M05 mechanics) and configuration-composed execution adapters
+
+- **Status:** Accepted (M04/M05/M09 integration wave,
+  `program/m04-m05-m09-parallel`; resolves the cross-workstream conflict
+  the parallel merges created)
+- **Date:** 2026-09-20
+- **Issue:** the M04 x M05 x M09 integration wave (issues #89/#90/#94)
+- **Confidence:** High — the conflict was structural (two independently
+  built pairing systems), the reconciled design keeps every frozen
+  contract intact, and the migration is explicit and tested.
+- **Conflict:** M09 shipped an administration-facing worker-pairing
+  surface (its own `worker_pairings` tables, pairing-code issuance AND
+  an HTTP redemption endpoint) built on the assumption M05's transport
+  would consume it later; M05, unable to see M09, built its own complete
+  pairing system (code redemption inside the verified-TLS protocol
+  handshake, `WorkerIdentityStore` + `WorkerAdminService` +
+  `WorkerEndpoint`). The wave forbids two pairing systems; a choice was
+  forced.
+- **Decision:**
+  1. **M05's mechanics are the sole pairing system.** M09's
+     `/control/workers` endpoints and the workers UI page delegate to
+     `WorkerAdminService`/`WorkerEndpoint` (issue, list, revoke,
+     rotate). Redemption is ONLY the protocol handshake — the HTTP
+     `/control/worker-pairing/redeem` endpoint is removed; admin code
+     ISSUANCE stays in the control API/UI. Liveness display comes from
+     the endpoint's real session table and authentication stamps, not
+     from a second bookkeeping table.
+  2. **The superseded M09 `worker_pairings` table is DROPPED by store
+     schema version 2** (explicit, tested migration). No data conversion
+     exists or is meaningful: that table held only M09-format code/token
+     HASHES whose redemption path is retired, and M05 hashes with a
+     per-store pepper salt that cannot reproduce them; pending codes and
+     revoked rows carry no convertible state. Every unrelated table
+     (configuration, administrator identity, sessions, client keys,
+     provider secrets, audit) is untouched.
+  3. **ONE Ollama translation.** M05's provisional worker-side
+     translation is replaced by an adaptation of the shared M04
+     translation core on the `ollama` preset's evidenced policy
+     (`worker_local_translation.OpenAICompatibleLoopbackTranslation`);
+     the M05 `LoopbackTranslation` protocol remains as the test seam.
+  4. **Execution adapters are composed only from M09 administrator
+     configuration** (`server_composition.py`): the M04 HTTP adapter
+     from provider endpoints plus store-held credentials (dispatch-only
+     reader), the M05 worker-bridged adapter from resource→worker
+     bindings plus the declared worker-local adapter id; validation
+     fail-closed (preset resolvable, origin parseable, worker known);
+     the default deployment composes nothing. The composed server runs
+     the optional M05 worker-protocol listener (off by default, TLS
+     beyond loopback) with heartbeat liveness reaping.
+- **Reason:** D-041 assigns worker identity to the server's durable
+  state and D-044 defines the pairing bootstrap as a one-time code
+  redeemed over verified TLS — M05 implemented exactly that contract,
+  while M09's HTTP redemption reduced the trust bootstrap to a
+  bearer-style HTTP POST. Keeping M05's mechanics preserves the
+  security design; keeping M09's admin surface (issuance, listing,
+  revocation, rotation) preserves the operability M09 delivered. The
+  migration drops only data whose consuming protocol no longer exists.
+- **Alternatives considered:** keeping both systems (rejected outright:
+  two pairing systems violate the wave's one-system requirement and
+  would allow pairing-code redemption over plain HTTP); embedding M05's
+  tables inside the M09 `ServerStore` (rejected: M05's store is a
+  reviewed, permissioned, peppered unit shared with the standalone
+  endpoint entrypoint; merging would touch its reviewed hash discipline
+  for no functional gain); one-time conversion of M09 pairing rows into
+  M05 identities (rejected: impossible without storing or cracking
+  hashes — M09 rows hold unsalted SHA-256 of tokens whose presentation
+  path is retired; re-pairing is a one-form operation); making the M09
+  store schema absorb a version-less table ignore (rejected: fail-closed
+  migration discipline requires an explicit version bump with a tested
+  migration).
+- **Boundary:** Integration of the three merged workstreams only. No
+  selector, routing-core or coordinator change; frozen surfaces
+  (`server.py`, `machine_api.py`, `mcp.py`) byte-identical; `cli.py`
+  additive doctor behavior only re-pointed at the surviving pairing
+  store; no M10 packaging work.
 
 ## Unresolved decisions
 

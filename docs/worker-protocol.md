@@ -23,8 +23,9 @@ remain owned by their existing authoritative documents.
   `scarcity_router/worker_local_store.py` (worker-side bounded state),
   `scarcity_router/worker_local_adapters.py` (worker-side allowlist and
   local adapter seam), `scarcity_router/worker_local_translation.py`
-  (provisional loopback translation; the M04 shared translation core
-  replaces it at the construction site).
+  (the loopback adaptation of the shared M04 translation core — the
+  production default of `LoopbackOllamaAdapter`; tests may inject
+  synthetic translations).
 
 ## Topology and transport
 
@@ -87,13 +88,18 @@ Scarcity Router Server  <── outbound TLS ──  Native Worker  ──  loca
 ## Pairing, identity, rotation, revocation (D-044)
 
 - **Bootstrap.** The administrator initiates pairing server-side
-  (`WorkerIdentityStore.begin_pairing`, the seam M09's UI will drive) and
+  (the M09 control API/UI drives
+  `WorkerIdentityStore.begin_pairing` — code issuance is a control-API
+  endpoint; there is deliberately no HTTP REDEMPTION endpoint) and
   receives a short-lived ONE-TIME code (default TTL 600 s, bounded
   backlog). The worker presents the code plus the server URL over a
   verified TLS connection (`pair_request`); on success it receives its
   PER-DEVICE identity — `worker_id` + credential — in `pair_result`, and
   persists it locally. No shared fleet secret, no manual PKI, no
-  worker-IP configuration.
+  worker-IP configuration. There is exactly ONE pairing system: this
+  store and protocol; the M09 server store holds no worker pairing
+  state (its superseded duplicate tables were dropped by the explicit
+  store schema version 2 migration).
 - **Codes are single-use and expiring.** Redemption is an atomic
   conditional update: a replayed or raced code is rejected with
   `pairing_code_used`; an old code with `pairing_code_expired`; an
@@ -144,11 +150,12 @@ Server → Worker: `hello_ack`, `pair_result`, `heartbeat_ack`,
 - `heartbeat{seq}` / `heartbeat_ack{seq}` implement liveness. The server
   advertises its expected interval in the handshake ack and closes
   sessions silent for more than 3 intervals; the worker adopts the
-  advertised cadence. **Composition note:** the endpoint's automatic
-  `enforce_liveness()` wiring awaits M09/M10 server composition — the
-  capability exists and is tested deterministically (including the
-  frozen-monotonic session-reaping path), but the current standalone
-  entrypoint does not yet run a liveness monitor loop.
+  advertised cadence. **Composition note:** in the composed server
+  (`python -m scarcity_router.control_server --worker-listen-port ...`)
+  a liveness reaper runs beside the listener, and the endpoint's
+  real connection state (live sessions plus authentication liveness
+  stamps) is what the control API, web UI and diagnostics display; the
+  standalone dev entrypoint still runs no reaper loop.
 - `state_report{report}` carries ONE complete M01
   `WorkerStateReport` document (validated by the M01 contract, applied
   through `ResourceRegistry.apply_worker_report` — the single shared
@@ -230,11 +237,12 @@ Server → Worker: `hello_ack`, `pair_result`, `heartbeat_ack`,
   localhost-only OpenAI-compatible endpoints over plain loopback HTTP
   (the bounded D-044 localhost exception; no credentials attached, no
   TLS bypass — remote origins are refused at construction). Its
-  OpenAI-compatible translation is behind the replaceable
-  `LoopbackTranslation` seam: the M04 shared translation core slots in
-  at the construction site (see the cross-workstream note in
-  `worker_local_translation.py`). M05 ships only the thin transport
-  invocation and a clearly-labelled provisional default.
+  OpenAI-compatible translation IS the shared M04 translation core,
+  adapted to this seam by
+  `worker_local_translation.OpenAICompatibleLoopbackTranslation` on the
+  `ollama` preset's evidenced policy (the default since the M04/M05/M09
+  integration): complete tool calls, honest usage, and explicit refusal
+  of unevidenced features, exactly as the server-direct adapter behaves.
 - **Diagnostics hygiene.** Worker diagnostics are bounded, structured
   and redacted: exception TYPE names, safe reason codes and counts —
   never credential values, prompts, provider payloads or local paths.
@@ -244,13 +252,20 @@ Server → Worker: `hello_ack`, `pair_result`, `heartbeat_ack`,
 ## Server composition
 
 The endpoint is one composed surface of the single server component
-(D-041): `WorkerEndpoint` binds the identity store, the M01 registry,
-the session table and (optionally) the TCP/TLS listener;
-`WorkerBridgedAdapter` registers into the M03 `AdapterRegistry` for the
-`worker_bridged` channel and dispatches admitted calls through the
-endpoint. A standalone/dev entrypoint
+(D-041): `WorkerEndpoint` binds the identity store, the report sink
+(the M09 control plane, so worker-reported observations survive
+configuration rebuilds and feed routing, UI and diagnostics through the
+one M01 normalization path), the session table and — when the
+administrator enables it (`--worker-listen-port`, off by default) — the
+TCP/TLS listener with heartbeat liveness reaping. `WorkerBridgedAdapter`
+registers into the M03 `AdapterRegistry` for the `worker_bridged`
+channel (composed from administrator configuration through
+`scarcity_router/server_composition.py`) and dispatches admitted calls
+through the endpoint. A standalone/dev entrypoint
 (`python -m scarcity_router.worker_endpoint --store ... [--tls-certfile
-... --tls-keyfile ...]`) runs the endpoint alone; M09 provides the
-administration UX over the typed seams
+... --tls-keyfile ...]`) runs the endpoint alone. The M09 control
+API/UI is the only administration surface over the typed seams
 (`WorkerIdentityStore`, `WorkerAdminService`,
-`WorkerEndpoint.revoke_worker`).
+`WorkerEndpoint.revoke_worker`): it issues and lists pairing codes and
+revokes or rotates identities, while redemption stays inside the
+protocol handshake.
