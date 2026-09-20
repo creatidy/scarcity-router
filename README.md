@@ -21,9 +21,13 @@ separate, explicitly deployed server component — an execution gateway
 (specified 2026-09-19, program in progress; see
 [`docs/roadmap.md`](docs/roadmap.md)) lets OpenAI-compatible clients send
 authorized requests to one endpoint and have them served from the best
-available resource under the same discipline. This README documents the
-recommendation-only product that exists today; no execution functionality is
-implemented yet.
+available resource under the same discipline. The gateway's authenticated
+OpenAI-compatible execution surface is now implemented
+(`python -m scarcity_router.gateway_server`; contract:
+[`docs/execution-surface.md`](docs/execution-surface.md)); adapter,
+configuration and distribution work is still in progress. This README
+documents the recommendation-only product, whose behavior is unchanged by
+the gateway.
 
 ## Quick Start
 
