@@ -103,6 +103,7 @@ from .openai_http_core import (
     interpret_stream_frame,
     parse_chat_completion_response,
     provider_error_note,
+    safe_diagnostic_token,
 )
 from .openai_http_presets import ProviderPreset
 
@@ -197,19 +198,38 @@ class ResourceBinding:
 
 @dataclass(frozen=True)
 class DiscoveryResult:
-    """One model-discovery outcome (read-only, never a model download)."""
+    """One model-discovery outcome (read-only, never a model download).
+
+    ``note`` is a safe structural diagnostic (like
+    :class:`~scarcity_router.gateway_adapters.CallObservation.note`):
+    bounded, never a payload excerpt, never credential-shaped.
+    """
 
     status: str  # ok | unsupported_preset | unreachable | schema_drift | refused
     models: tuple[str, ...]
     note: str | None = None
 
+    def __post_init__(self) -> None:
+        if self.note is not None:
+            _ = v_text(self.note, "discovery_result.note", max_len=200)
+
 
 @dataclass(frozen=True)
 class HealthProbeResult:
-    """One health-probe outcome (read-only, consumes no inference quota)."""
+    """One health-probe outcome (read-only, consumes no inference quota).
+
+    ``note`` is a safe structural diagnostic (like
+    :class:`~scarcity_router.gateway_adapters.CallObservation.note`):
+    bounded, never a payload excerpt, never credential-shaped; any
+    provider-supplied version text is token-sanitized before inclusion.
+    """
 
     status: str  # ok | unsupported_preset | unreachable | schema_drift | refused
     note: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.note is not None:
+            _ = v_text(self.note, "health_probe_result.note", max_len=200)
 
 
 # ── The adapter ───────────────────────────────────────────────────────────────
@@ -354,7 +374,9 @@ class OpenAICompatibleHttpAdapter:
                 note="the discovery endpoint could not be read",
             )
         except AdapterPermanentError as exc:
-            return DiscoveryResult(status="refused", models=(), note=str(exc))
+            return DiscoveryResult(
+                status="refused", models=(), note=str(exc)[:200]
+            )
         parsed_document = self._parse_json_body(body)
         if not isinstance(parsed_document, Mapping):
             return DiscoveryResult(
@@ -416,7 +438,7 @@ class OpenAICompatibleHttpAdapter:
                 note="the health endpoint could not be read",
             )
         except AdapterPermanentError as exc:
-            return HealthProbeResult(status="refused", note=str(exc))
+            return HealthProbeResult(status="refused", note=str(exc)[:200])
         parsed_document = self._parse_json_body(body)
         if not isinstance(parsed_document, Mapping):
             return HealthProbeResult(
@@ -425,7 +447,16 @@ class OpenAICompatibleHttpAdapter:
         document = cast("Mapping[str, object]", parsed_document)
         version = document.get("version")
         if isinstance(version, str) and version:
-            return HealthProbeResult(status="ok", note=f"backend version {version}")
+            version_token = safe_diagnostic_token(version)
+            if version_token is not None:
+                return HealthProbeResult(
+                    status="ok", note=f"backend version {version_token}"
+                )
+            # Provider-controlled text that fails the diagnostic-token
+            # discipline is never copied verbatim into a note.
+            return HealthProbeResult(
+                status="ok", note="backend reachable; version unrepresentable"
+            )
         return HealthProbeResult(
             status="schema_drift", note="health body carries no version"
         )
@@ -439,23 +470,36 @@ class OpenAICompatibleHttpAdapter:
         response: http.client.HTTPResponse,
         started_at: str,
     ) -> AdapterResult:
-        _ = context  # read bounds are transport-enforced on this path
-        try:
-            raw = response.read(MAX_RESPONSE_BODY_BYTES + 1)
-        except TimeoutError:
-            raise AdapterTimeoutError(
-                "the provider response exceeded the connection timeout"
-            ) from None
-        except (OSError, http.client.HTTPException):
-            # The response had started; its consumption is definitive.
-            raise AdapterPermanentError(
-                "the provider response was cut off before it completed"
-            ) from None
-        if len(raw) > MAX_RESPONSE_BODY_BYTES:
-            raise AdapterPermanentError(
-                "the provider response exceeds the bounded size"
-            )
-        document = self._parse_json_body(raw)
+        # The body read mirrors the streaming path: incremental read1 with
+        # cancellation and deadline checks between reads (never one
+        # unbounded blocking read), bounded accumulation.
+        body = bytearray()
+        while True:
+            if context.cancelled:
+                return self._cancelled_result(started_at)
+            self._check_deadline(context)
+            try:
+                chunk = response.read1(_STREAM_READ_CHUNK)
+            except TimeoutError:
+                raise AdapterTimeoutError(
+                    "the provider response stalled past the connection timeout"
+                ) from None
+            except (OSError, http.client.HTTPException):
+                # The response had started; its consumption is definitive.
+                raise AdapterPermanentError(
+                    "the provider response was cut off before it completed"
+                ) from None
+            if not chunk:
+                break
+            body.extend(chunk)
+            if len(body) > MAX_RESPONSE_BODY_BYTES:
+                raise AdapterPermanentError(
+                    "the provider response exceeds the bounded size"
+                )
+        if context.cancelled:
+            # A cancelled context never yields a completed result.
+            return self._cancelled_result(started_at)
+        document = self._parse_json_body(bytes(body))
         if document is None:
             raise AdapterPermanentError(
                 "the provider response is not a JSON document"
@@ -550,6 +594,11 @@ class OpenAICompatibleHttpAdapter:
                     usage = view.usage
         except TranslationError as exc:
             raise AdapterPermanentError(str(exc)) from None
+        if context.cancelled:
+            # The client went away mid-stream (the event may have been set
+            # while the final frames coalesced into one read): never render
+            # a completed result for a cancelled dispatch.
+            return self._cancelled_result(started_at)
         if finish_reason is None:
             raise AdapterPermanentError(
                 "the provider stream ended without a finish reason"

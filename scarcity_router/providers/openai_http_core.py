@@ -87,6 +87,26 @@ MAX_SSE_FRAME_BYTES = 8 * 1024 * 1024
 #: contract requires non-empty arguments text.
 EMPTY_ARGUMENTS = "{}"
 
+#: Structural request fields the translation core itself owns. A
+#: ``generation_params`` entry carrying one of these names would overwrite
+#: a field this module sets (or will set after future ingress extensions),
+#: so it is rejected before anything is built — defense in depth, never a
+#: silent overwrite path.
+RESERVED_REQUEST_KEYS: frozenset[str] = frozenset({
+    "model",
+    "messages",
+    "stream",
+    "stream_options",
+    "tools",
+    "tool_choice",
+    "response_format",
+    "reasoning_effort",
+    "reasoning",
+    "thinking",
+    "max_tokens",
+    "max_completion_tokens",
+})
+
 
 class TranslationError(Exception):
     """A request-shape refusal or protocol-drift failure (fail closed).
@@ -337,6 +357,11 @@ def build_chat_completion_request(
     if call.max_output_tokens is not None:
         wire[policy.max_tokens_field] = call.max_output_tokens
     for name, value in call.generation_params.items():
+        if name in RESERVED_REQUEST_KEYS:
+            raise TranslationError(
+                f"generation parameter {name!r} collides with a structural "
+                + "request field; refused rather than overwritten"
+            )
         if name in policy.unevidenced_generation_params:
             raise TranslationError(
                 f"generation parameter {name!r} is not evidenced for preset "
@@ -371,8 +396,14 @@ def _as_str(value: object) -> str | None:
     return None
 
 
-def _safe_error_token(value: object) -> str | None:
-    """A bounded, vocabulary-checked provider error token (never free text)."""
+def safe_diagnostic_token(value: object, *, max_len: int = _MAX_ERROR_TOKEN_LENGTH) -> str | None:
+    """A bounded, vocabulary-checked provider-supplied token (never free text).
+
+    Used for every provider-controlled string that may enter a diagnostic
+    note: error codes and backend version strings. Free text, overlong
+    values and unsafe characters yield ``None`` — callers substitute a
+    structural note instead of copying the provider's bytes.
+    """
     token: str | None
     if isinstance(value, str):
         token = value
@@ -380,7 +411,7 @@ def _safe_error_token(value: object) -> str | None:
         token = str(value)
     else:
         return None
-    if not token or len(token) > _MAX_ERROR_TOKEN_LENGTH:
+    if not token or len(token) > max_len:
         return None
     if not set(token) <= _SAFE_TOKEN_CHARACTERS:
         return None
@@ -665,11 +696,13 @@ class ToolCallAccumulator:
     _calls: dict[int, dict[str, str]]
     _order: list[int]
     _saw_explicit_index: bool
+    _saw_implicit_index: bool
 
     def __init__(self) -> None:
         self._calls = {}
         self._order = []
         self._saw_explicit_index = False
+        self._saw_implicit_index = False
 
     def add_fragment(self, raw_fragment: object) -> None:
         fragment = _as_mapping(raw_fragment)
@@ -678,6 +711,7 @@ class ToolCallAccumulator:
         raw_index = fragment.get("index")
         if raw_index is None:
             index = 0
+            self._saw_implicit_index = True
         else:
             if isinstance(raw_index, bool) or not isinstance(raw_index, int):
                 raise TranslationError("provider tool_call index is not an integer")
@@ -717,6 +751,11 @@ class ToolCallAccumulator:
                 call["arguments"] += arguments_text
 
     def complete(self) -> tuple[AdapterToolCall, ...]:
+        if self._saw_explicit_index and self._saw_implicit_index:
+            raise TranslationError(
+                "provider tool_call fragments mix indexed and unindexed "
+                + "deltas; call boundaries are ambiguous"
+            )
         calls: list[AdapterToolCall] = []
         for index in sorted(self._order):
             call = self._calls[index]
@@ -728,7 +767,6 @@ class ToolCallAccumulator:
             calls.append(
                 AdapterToolCall(id=call["id"], name=call["name"], arguments=arguments)
             )
-        _ = self._saw_explicit_index
         return tuple(calls)
 
 
@@ -801,11 +839,11 @@ def provider_error_note(status: int, document: object) -> str:
     if body is not None:
         error = _as_mapping(body.get("error"))
         if error is not None:
-            token = _safe_error_token(error.get("code")) or _safe_error_token(
+            token = safe_diagnostic_token(error.get("code")) or safe_diagnostic_token(
                 error.get("type")
             )
         if token is None:
-            token = _safe_error_token(body.get("code"))
+            token = safe_diagnostic_token(body.get("code"))
     if token is not None:
         return f"provider returned HTTP {status} (provider error code: {token})"
     return f"provider returned HTTP {status}"
@@ -815,6 +853,7 @@ __all__ = [
     "EMPTY_ARGUMENTS",
     "MAX_SSE_FRAME_BYTES",
     "REQUEST_EFFORTS",
+    "RESERVED_REQUEST_KEYS",
     "ParsedCompletion",
     "SseStreamParser",
     "StreamFrameView",
@@ -827,4 +866,5 @@ __all__ = [
     "normalize_finish_reason",
     "parse_chat_completion_response",
     "provider_error_note",
+    "safe_diagnostic_token",
 ]
