@@ -577,6 +577,43 @@ execution server (D-044/D-045). Versioning rules, error-vocabulary
 separation and the extended parity requirement are
 [`docs/machine-interfaces.md`](machine-interfaces.md).
 
+### Remote bridge client (M08, #93)
+
+The remote recommendation bridge (topology 4 above) is a configured CLIENT
+mode. M08 ships the client, `scarcity_router/remote.py`; the server-side
+authenticated control API it calls is owned by M03/M09 and did not exist
+when the client landed. The smallest interface-side expectation is
+therefore frozen in the client module and exercised against a synthetic
+in-process server in the M08 guardrail suite (`make guardrails`):
+
+- **Endpoints:** the machine-interface v1 logical contract on the
+  configured server origin — `GET /v1/status`, `POST /v1/select`,
+  `POST /v1/simulate`. No `/healthz`: liveness is a local-surface concern.
+- **Envelopes:** exactly the machine-interface v1 envelopes (outer
+  `schema_version` integer `1` plus `snapshots` / `decision` / `result`),
+  so equivalent state and policy produce responses semantically equal to
+  the local surfaces (the D-045 parity rule). Responses are parsed with
+  the shared strict JSON parser.
+- **Authentication:** `Authorization: Bearer <client API key>` — the D-044
+  client identity class. The key is transient client input: header-only,
+  never in a URL, never logged, redacted from the configuration repr.
+- **Transport:** verified TLS for every non-loopback origin; no
+  verification bypass option exists. Plain HTTP is accepted only for
+  explicit loopback origins (the bounded D-044 exception). Redirects are
+  never followed.
+- **Failure:** every transport, authentication, status, envelope or
+  validation failure raises the typed `RemoteBridgeError`. The client
+  holds no collectors, artifacts or policy, so a silent fallback to local
+  state or local policy is structurally impossible. Structural request
+  violations are rejected client-side through the same shared
+  `machine_api` parsers the frozen adapters use; catalog-dependent
+  validation (for example an unknown profile id) belongs to the remote
+  server and surfaces as an explicit error.
+
+If M03/M09 land different control-API paths or envelope versioning, the
+reconciliation is confined to `scarcity_router/remote.py` (endpoint
+constants plus envelope validation) and the synthetic-server tests.
+
 ### Migration plan
 
 - No rewrite: the existing package, language and module structure are
