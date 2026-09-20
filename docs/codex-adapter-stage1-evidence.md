@@ -832,31 +832,43 @@ Keyed by (`codex worker-local adapter`, `1.0.0`, `codex-cli
 `local-probe` (2026-09-20, structure-only), `official-source` (pinned
 schemas), `official-doc`, and `test-evidence` (the deterministic fake-based
 suite, which verifies THIS adapter's mapping, never the live backend).
-Live turn-level behavior against a signed-in subscription remains
-M10 acceptance work; cells that only that work can prove are marked
-accordingly and fail closed until then.
+Cell values use exactly the closed D-043 vocabulary (`PASS`, `PARTIAL`,
+`UNSUPPORTED`, `UNKNOWN`) — one value per cell. Where a cell's behavior is
+test-verified in THIS adapter's mapping but live turn-level confirmation
+against a signed-in subscription is still pending (M10 acceptance work),
+the single conservative cell value is `PARTIAL` and the mapping evidence
+lives in the notes; `UNKNOWN` and `UNSUPPORTED` fail closed.
 
 | Dimension | Value | Tested version | Evidence (dated 2026-09-20) | Notes |
 |---|---|---|---|---|
-| Roles and conversation history | PASS (adapter mapping) / PARTIAL (live fidelity) | `0.154.0-alpha.6.2` (handshake only); mapping test-verified | test-evidence + official-source (`ThreadStartParams`, `ThreadInjectItemsParams`) + local-probe | system→`baseInstructions` (joined), developer→`developerInstructions`, prior user/assistant→`inject_items` Responses items, final user→turn input; conversations not ending with a user message rejected before execution; assistant-side `tool` history replay unsupported (rejected) |
-| Streaming | PASS (adapter mapping) / PARTIAL (live delta semantics) | mapping test-verified; notification behavior local-probe (2026-09-19/20) | test-evidence + official-doc | `item/agentMessage/delta` → `text_delta` (bounded per-delta and cumulative); assembled final message; stdio only |
+| Roles and conversation history | PARTIAL | `0.154.0-alpha.6.2` (handshake only) | test-evidence (adapter mapping verified) + official-source (`ThreadStartParams`, `ThreadInjectItemsParams`) + local-probe | mapping test-verified: system→`baseInstructions` (joined), developer→`developerInstructions`, prior user/assistant→`inject_items` Responses items, final user→turn input; conversations not ending with a user message rejected before execution; assistant-side `tool` history replay unsupported (rejected); live fidelity of the full mapping pending M10 |
+| Streaming | PARTIAL | notification behavior local-probe (2026-09-19/20) | test-evidence (adapter mapping verified) + official-doc | adapter mapping test-verified: `item/agentMessage/delta` → `text_delta` (bounded per-delta and cumulative); assembled final message; stdio only; live delta semantics pending M10 |
 | `tool_calls` | UNSUPPORTED (stable surface) | — | official-doc (Stage 1 §14); enforced in code | requests carrying `tool` role, `tool_calls` or `tools` are rejected BEFORE execution; `dynamicTools` is never enabled (client tools stay client-side, D-043) |
 | Tool results | UNSUPPORTED (not mapped in Stage 2) | — | — | `turn/start {toolOutput}` is documented stable, but mapping tool-result round trips is deferred; fail closed |
-| Structured output | PASS (adapter mapping) / PARTIAL (live) | mapping test-verified | test-evidence + official-source (`TurnStartParams.outputSchema`) | `json_schema` → `outputSchema` after object/size(64 KiB)/depth(32) validation; `json_object` explicitly rejected; per-turn only |
-| Reasoning controls | PASS (adapter mapping) / PARTIAL (live) | mapping test-verified; `model/list` effort field local-probe (2026-09-19) | test-evidence + official-source + local-probe | exact binding: slug must be listed, effort must be in `supportedReasoningEfforts`, both pinned per turn; mismatches rejected before execution |
+| Structured output | PARTIAL | schemas `rust-v0.155.1` | test-evidence (adapter mapping verified) + official-source (`TurnStartParams.outputSchema`) | adapter mapping test-verified: `json_schema` → `outputSchema` after object/size(64 KiB)/depth(32) validation; `json_object` explicitly rejected; per-turn only; live schema enforcement pending M10 |
+| Reasoning controls | PARTIAL | `model/list` effort field local-probe (2026-09-19) | test-evidence (adapter mapping verified) + official-source + local-probe | adapter mapping test-verified: exact binding — slug must be listed, effort must be in `supportedReasoningEfforts`, both pinned per turn; mismatches rejected before execution; live acceptance of pinned turns pending M10 |
 | Context limits | PARTIAL | docs-only | official-doc (Stage 1 §10 draft) | `codexErrorInfo: contextWindowExceeded` maps to a safe failure note; no per-model context-window discovery implemented |
-| Error semantics | PASS (safe mapping) / PARTIAL (client-code parity) | mapping test-verified | test-evidence + official-source (`codexErrorInfo` camelCase vocabulary) | `turn/completed {failed}` → typed failure with a note from the closed vocabulary only; free-text error bodies never read; unknown status fails closed |
-| Usage reporting | PASS (adapter mapping) | mapping test-verified | test-evidence + official-source (`ThreadTokenUsageUpdatedNotification`) | `inputTokens`→`prompt_tokens`, `outputTokens`→`completion_tokens` from `tokenUsage.last` (fallback `total`); absent usage stays absent; cached/reasoning components not represented |
-| Cancellation | PASS (adapter mapping) / PARTIAL (live propagation timing) | mapping test-verified | test-evidence + official-doc | cancel event or deadline → exactly one bounded `turn/interrupt` (bounded ack wait) → cancelled result; never completed after confirmed cancellation; approval requests answered `cancel` |
+| Error semantics | PARTIAL | schemas `rust-v0.155.1` | test-evidence (adapter mapping verified) + official-source (`codexErrorInfo` camelCase vocabulary) | adapter mapping test-verified: `turn/completed {failed}` → typed failure with a note from the closed vocabulary only; free-text error bodies never read; unknown status fails closed; exact OpenAI-client error-code parity pending M10 |
+| Usage reporting | PARTIAL | schemas `rust-v0.155.1` | test-evidence (adapter mapping verified) + official-source (`ThreadTokenUsageUpdatedNotification`) | adapter mapping test-verified: `inputTokens`→`prompt_tokens`, `outputTokens`→`completion_tokens` from `tokenUsage.last` (fallback `total`); absent usage stays absent; cached/reasoning components not represented; live field parity pending M10 |
+| Cancellation | PARTIAL | official-doc | test-evidence (adapter mapping verified) + official-doc | adapter mapping test-verified: cancel event or deadline → exactly one bounded `turn/interrupt` (bounded ack wait) → cancelled result; never completed after confirmed cancellation; approval requests answered `cancel`; live propagation timing pending M10 |
 
 ### Not tested / honest gaps after Stage 2
 
-- **No live turn execution** (no inference, no quota consumption): all
-  turn-level PASS cells above are adapter-mapping PASSes against the
-  pinned protocol; live backend confirmation for a signed-in subscription
-  home (delta semantics, interrupt timing, `inject_items` on ephemeral
+- **No live turn execution** (no inference, no quota consumption): every
+  turn-level cell above is therefore `PARTIAL` — the adapter-mapping half
+  is test-verified against the pinned protocol, the live half is not
+  proven; live backend confirmation for a signed-in subscription home
+  (delta semantics, interrupt timing, `inject_items` on ephemeral
   threads, structured-output enforcement) is M10 end-to-end acceptance
   work.
+- **The execution adapter is strictly read-only against the provider**
+  (remediation-round 1 correction of an earlier draft claim): it performs
+  NO provider-state mutation — the bounded D-018 managed-auth refresh
+  remains collector-only (D-018, unamended), and an `account/read`
+  protocol error fails closed to `auth_unverified` with the official
+  sign-in remediation. `max_output_tokens` and non-empty
+  `generation_params` are likewise rejected before execution
+  (`request_parameters_unsupported`, refuse-not-drop).
 - **`model/list` success envelope** was not re-verified live on
   2026-09-20 (the fresh probe home is unsigned-in and the probe set is
   forbidden from auth actions); it rests on Stage 1 P5 + the pinned

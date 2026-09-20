@@ -288,11 +288,16 @@ follow the version-pinned generated schemas at tag `rust-v0.155.1`.
   for execution. API-key auth is explicitly NOT an execution resource
   (PAYG conversion is forbidden by owner policy); the remediation is
   always the official `codex login` — never token extraction or
-  `auth.json` copying. On the evidenced `-32603` trigger exactly one
-  `account/read {"refreshToken": true}` plus one retry is issued in the
-  same bounded session (the D-018 recovery, unchanged); a failed recovery
-  stays `auth_unverified` (never a guessed auth diagnosis, issue #101
-  audit).
+  `auth.json` copying. The execution adapter is STRICTLY READ-ONLY against
+  the provider: it performs NO provider-state mutation of any kind. The
+  single owner-approved mutation exception (the bounded managed-auth
+  refresh after the evidenced `-32603` shape) belongs to the OpenAI
+  capacity collector alone, in its `account/rateLimits/read` phase
+  (docs/decisions.md D-018, unamended) — it is deliberately NOT extended
+  to this adapter. On any `account/read` protocol error the adapter fails
+  closed to `auth_unverified` with the official interactive sign-in
+  remediation (browser or device code); the error's free text is never
+  read (issue #101 audit: it cannot prove an auth condition anyway).
 - **Isolation profile (all official mechanisms, adapter-composed, never
   client-influenced).** A dedicated controlled `CODEX_HOME` is created
   and owned by the adapter under the worker's state directory (tree
@@ -335,7 +340,10 @@ follow the version-pinned generated schemas at tag `rust-v0.155.1`.
   execution). `response_format: json_schema` →
   `turn/start {outputSchema}` after object/size/depth validation;
   schema-less `json_object` is explicitly rejected, never silently
-  dropped. The requested model slug and `reasoning_effort` are verified
+  dropped. `max_output_tokens` and non-empty `generation_params` are
+  likewise REJECTED before execution (`request_parameters_unsupported`):
+  no evidenced stable-surface mapping exists, and silently dropping
+  requested semantics is forbidden (the M04 refuse-not-drop precedent). The requested model slug and `reasoning_effort` are verified
   against `model/list` (`supportedReasoningEfforts`) BEFORE execution
   and pinned per turn — the runtime can never silently choose another
   model or effort. An unknown `turn/completed` status fails closed;
@@ -383,8 +391,10 @@ follow the version-pinned generated schemas at tag `rust-v0.155.1`.
     `CODEX_HOME` starts empty by design (no user `~/.codex` reuse).
     Sign in ONCE against it with the official flow:
     `CODEX_HOME=<worker state dir>/codex/codex-home codex login`.
-    Thereafter Codex refreshes its own provider-managed credential; the
-    D-018 bounded refresh covers stale sessions.
+    Thereafter Codex refreshes its own provider-managed credential during
+    use; the adapter itself never triggers or performs a refresh (strictly
+    read-only), so a stale session surfaces as the typed `auth_unverified`
+    rejection whose remediation is re-running the official login.
   - **Windows:** prefer the native Windows agent profile with the
     `elevated` sandbox; the adapter currently reports Windows-native
     hosts ineligible (`platform_not_evidenced`) until that profile is

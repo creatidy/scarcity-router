@@ -116,6 +116,10 @@ class _Fake:
         return {"requiresOpenaiAuth": True, "account": None}
 
     def _models_page(self) -> dict[str, object]:
+        if self._scenario.get("modelCursorLoop"):
+            # Pagination that never ends: the adapter's bounded page budget
+            # must fail closed with the explicit budget reason.
+            return {"data": [], "nextCursor": "synthetic-next-page"}
         models = self._scenario.get("models")
         if models is None:
             models = [
@@ -212,6 +216,16 @@ class _Fake:
             if request is None:
                 return
             method = request.get("method")
+            # Every protocol message the adapter puts on the wire is traced
+            # exactly once, here at the dispatch point, so tests can pin the
+            # complete method surface against the stable-surface allowlist.
+            _trace(
+                {
+                    "event": "request",
+                    "method": method,
+                    "params": request.get("params"),
+                }
+            )
             if method == "initialize":
                 if self._scenario.get("init") == "refuse":
                     self._respond_error(request.get("id"), -32601)
@@ -226,22 +240,8 @@ class _Fake:
             elif method == "account/read":
                 self._answer_account(request)
             elif method == "model/list":
-                _trace(
-                    {
-                        "event": "request",
-                        "method": method,
-                        "params": request.get("params"),
-                    }
-                )
                 self._respond(request.get("id"), self._models_page())
             elif method == "thread/start":
-                _trace(
-                    {
-                        "event": "request",
-                        "method": method,
-                        "params": request.get("params"),
-                    }
-                )
                 if self._scenario.get("thread") == "drift":
                     self._respond(request.get("id"), {"unexpected": True})
                     return
@@ -249,25 +249,11 @@ class _Fake:
                 if behavior == "exit-after-thread":
                     os._exit(3)
             elif method == "thread/inject_items":
-                _trace(
-                    {
-                        "event": "request",
-                        "method": method,
-                        "params": request.get("params"),
-                    }
-                )
                 if self._scenario.get("inject") == "drift":
                     self._respond(request.get("id"), None)
                 else:
                     self._respond(request.get("id"), {})
             elif method == "turn/start":
-                _trace(
-                    {
-                        "event": "request",
-                        "method": method,
-                        "params": request.get("params"),
-                    }
-                )
                 if self._scenario.get("turnStart") == "drift":
                     self._respond(request.get("id"), {})
                     return
@@ -277,13 +263,6 @@ class _Fake:
                 )
                 self._stream_turn()
             elif method == "turn/interrupt":
-                _trace(
-                    {
-                        "event": "request",
-                        "method": method,
-                        "params": request.get("params"),
-                    }
-                )
                 self._respond(request.get("id"), {})
                 self._finish_turn("interrupted")
                 return
@@ -293,13 +272,6 @@ class _Fake:
     def _answer_account(self, request: dict[str, object]) -> None:
         params_raw = request.get("params")
         params = _as_object(params_raw) if params_raw is not None else {}
-        _trace(
-            {
-                "event": "request",
-                "method": request.get("method"),
-                "params": params or {},
-            }
-        )
         kind = self._scenario.get("account", "chatgpt")
         if (params or {}).get("refreshToken") is True:
             # The bounded D-018 refresh: outcome only visible to the retry.

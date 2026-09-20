@@ -90,6 +90,58 @@ def _scenario(**kwargs: object) -> dict[str, object]:
     return kwargs
 
 
+#: The ONLY protocol methods the adapter may ever put on the wire (the
+#: documented stable surface it implements; `initialized` rides as the
+#: handshake notification, the rest are client requests).
+ADAPTER_ALLOWED_WIRE_METHODS: frozenset[str] = frozenset(
+    {
+        "initialize",
+        "initialized",
+        "account/read",
+        "model/list",
+        "thread/start",
+        "thread/inject_items",
+        "turn/start",
+        "turn/interrupt",
+    }
+)
+
+#: Forbidden surfaces that must NEVER appear on the wire in any form
+#: (docs/security.md local-adapter rules; issue #91 Stage 2).
+FORBIDDEN_WIRE_METHODS: tuple[str, ...] = (
+    "thread/shellCommand",
+    "thread/resume",
+    "thread/fork",
+    "thread/read",
+    "thread/list",
+    "thread/compact/start",
+    "process/start",
+    "process/write",
+    "process/resize",
+    "process/terminate",
+    "fs/readFile",
+    "fs/writeFile",
+    "fs/readDirectory",
+    "fs/watch",
+    "item/tool/call",
+    "config/value/write",
+    "config/batchWrite",
+    "config/read",
+    "marketplace/add",
+    "marketplace/remove",
+    "skills/config/write",
+    "externalAgentConfig/import",
+    "account/login/start",
+    "account/logout",
+    "account/rateLimits/read",
+    "account/usage/read",
+    "account/rateLimitResetCredit/consume",
+    "command/exec",
+    "windowsSandbox/setupStart",
+    "experimentalFeature/list",
+)
+
+
 def _resource(resource_id: str = "codex-local") -> ResourceIdentity:
     return ResourceIdentity(
         resource_id=resource_id,
@@ -554,49 +606,65 @@ class CodexAdapterTests(unittest.TestCase):
         # Remediation is the official login, never token copying.
         self.assertIn("codex login", result.calls[0].note)
 
-    def test_bounded_d018_refresh_recovers_then_executes(self) -> None:
-        harness = self._harness(
-            _scenario(account="internal-error-then-chatgpt", turn={"status": "completed"})
-        )
-        result = harness.adapter.invoke(
-            _call(),
-            cancel_event=threading.Event(),
-            deadline=_future_deadline(),
-            emit=lambda chunk: None,
-        )
-        self.assertEqual("completed", result.status)
-        account_reads = [
-            record
-            for record in harness.trace()
-            if record.get("event") == "request"
-            and record.get("method") == "account/read"
-        ]
-        # Exactly: initial read, one refresh, one retry — no loops.
-        self.assertEqual(3, len(account_reads))
-        params = cast("dict[str, object]", account_reads[1].get("params") or {})
-        self.assertEqual(True, params.get("refreshToken"))
+    def test_account_read_protocol_error_fails_closed_read_only(self) -> None:
+        # The collector-only D-018 refresh is deliberately NOT extended to
+        # the execution adapter: on the -32603 shape the adapter fails
+        # closed to auth_unverified with the official sign-in remediation,
+        # and NO refreshToken request ever appears on the wire (read-only
+        # against the provider, both on dispatch and on the snapshot probe).
+        for scenario in (
+            _scenario(account="internal-error", turn={"status": "completed"}),
+            _scenario(account="refresh-still-error", turn={"status": "completed"}),
+        ):
+            harness = self._harness(scenario)
+            result = harness.adapter.invoke(
+                _call(),
+                cancel_event=threading.Event(),
+                deadline=_future_deadline(),
+                emit=lambda chunk: None,
+            )
+            self.assertEqual("failed", result.status)
+            assert result.calls[0].note is not None
+            self.assertIn("auth_unverified", result.calls[0].note)
+            self.assertIn("codex login", result.calls[0].note)
+            account_reads = [
+                record
+                for record in harness.trace()
+                if record.get("event") == "request"
+                and record.get("method") == "account/read"
+            ]
+            # Exactly ONE read-only account/read: no refresh, no retry.
+            self.assertEqual(1, len(account_reads))
+            for record in account_reads:
+                params = cast(
+                    "dict[str, object]", record.get("params") or {}
+                )
+                self.assertIsNone(params.get("refreshToken"))
+            self.assertEqual(
+                1, len(harness.spawner.app_server_specs)
+            )
 
-    def test_failed_recovery_stays_unverified_without_loops(self) -> None:
+    def test_snapshot_auth_probe_is_read_only(self) -> None:
+        # The periodic snapshot path walks the same gates and must likewise
+        # never mutate provider state.
         harness = self._harness(
-            _scenario(account="refresh-still-error", turn={"status": "completed"})
+            _scenario(account="internal-error", turn={"status": "completed"})
         )
-        result = harness.adapter.invoke(
-            _call(),
-            cancel_event=threading.Event(),
-            deadline=_future_deadline(),
-            emit=lambda chunk: None,
+        snapshots = harness.adapter.resource_snapshots(T_NOW)
+        self.assertEqual("unknown", snapshots[0].health.status)
+        self.assertEqual(
+            "telemetry_unknown", snapshots[0].health.diagnostics[0].code
         )
-        self.assertEqual("failed", result.status)
-        self.assertEqual("auth_unverified", result.calls[0].note)
         account_reads = [
             record
             for record in harness.trace()
             if record.get("event") == "request"
             and record.get("method") == "account/read"
         ]
-        # Initial read + one refresh; a FAILED refresh is not retried (the
-        # same bounded sequence as the D-018 collector implementation).
-        self.assertEqual(2, len(account_reads))
+        self.assertEqual(1, len(account_reads))
+        for record in account_reads:
+            params = cast("dict[str, object]", record.get("params") or {})
+            self.assertIsNone(params.get("refreshToken"))
 
     # ── (6)+(19) model/effort binding ──────────────────────────────────
 
@@ -672,7 +740,7 @@ class CodexAdapterTests(unittest.TestCase):
         self.assertEqual("user", items[0]["role"])
         content = cast("list[dict[str, object]]", items[0]["content"])
         self.assertEqual(
-            ({"type": "input_text", "text": "first question"},), 
+            ({"type": "input_text", "text": "first question"},),
             tuple(content),
         )
         self.assertEqual("assistant", items[1]["role"])
@@ -770,6 +838,116 @@ class CodexAdapterTests(unittest.TestCase):
         self.assertEqual("failed", result.status)
         self.assertEqual("tool_calls_unsupported", result.calls[0].note)
         self.assertEqual([], harness.spawner.specs)
+
+    def test_max_output_tokens_is_rejected_before_any_execution(self) -> None:
+        # No evidenced stable-surface mapping exists for an output ceiling:
+        # refuse-not-drop (the M04 precedent), before anything executes.
+        harness = self._harness()
+        call = AdapterCall(
+            resource=_resource(),
+            model=ModelIdentity(provider="openai", model=SLUG, variant="codex"),
+            messages=(AdapterMessage(role="user", content="hi"),),
+            max_output_tokens=1024,
+        )
+        result = harness.adapter.invoke(
+            call,
+            cancel_event=threading.Event(),
+            deadline=_future_deadline(),
+            emit=lambda chunk: None,
+        )
+        self.assertEqual("failed", result.status)
+        self.assertEqual("request_parameters_unsupported", result.calls[0].note)
+        self.assertEqual([], harness.spawner.specs)
+
+    def test_generation_params_are_rejected_before_any_execution(self) -> None:
+        harness = self._harness()
+        call = AdapterCall(
+            resource=_resource(),
+            model=ModelIdentity(provider="openai", model=SLUG, variant="codex"),
+            messages=(AdapterMessage(role="user", content="hi"),),
+            generation_params={"temperature": 0.5},
+        )
+        result = harness.adapter.invoke(
+            call,
+            cancel_event=threading.Event(),
+            deadline=_future_deadline(),
+            emit=lambda chunk: None,
+        )
+        self.assertEqual("failed", result.status)
+        self.assertEqual("request_parameters_unsupported", result.calls[0].note)
+        self.assertEqual([], harness.spawner.specs)
+
+    def test_wire_methods_stay_within_the_stable_allowlist(self) -> None:
+        # Across a completed call AND a cancellation (which adds the
+        # interrupt), the observed wire surface is exactly the allowlisted
+        # stable methods, and no forbidden method name ever appears.
+        observed: set[str] = set()
+        happy = self._harness()
+        # A two-turn conversation exercises thread/inject_items too, so the
+        # final equality below covers the ENTIRE allowlist.
+        _ = happy.adapter.invoke(
+            _call(
+                reasoning_effort="low",
+                messages=(
+                    AdapterMessage(role="system", content="be brief"),
+                    AdapterMessage(role="user", content="first"),
+                    AdapterMessage(role="assistant", content="first answer"),
+                    AdapterMessage(role="user", content="second"),
+                ),
+            ),
+            cancel_event=threading.Event(),
+            deadline=_future_deadline(),
+            emit=lambda chunk: None,
+        )
+        observed.update(happy.trace_methods())
+        cancelled = self._harness()
+        stop = threading.Event()
+
+        def emit(chunk: AdapterStreamChunk) -> None:
+            if chunk.kind == "text_delta":
+                stop.set()
+
+        _ = cancelled.adapter.invoke(
+            _call(stream=True),
+            cancel_event=stop,
+            deadline=_future_deadline(30.0),
+            emit=emit,
+        )
+        observed.update(cancelled.trace_methods())
+        self.assertEqual(
+            frozenset(),
+            observed - ADAPTER_ALLOWED_WIRE_METHODS,
+            msg=f"unexpected wire methods: {sorted(observed)}",
+        )
+        for forbidden in FORBIDDEN_WIRE_METHODS:
+            self.assertNotIn(forbidden, observed)
+        # The two runs exercise the COMPLETE allowlist (the two-turn
+        # conversation covers thread/inject_items; the cancellation covers
+        # turn/interrupt), so the subset assertion above is load-bearing:
+        # any new wire method the adapter starts sending fails here.
+        self.assertEqual(ADAPTER_ALLOWED_WIRE_METHODS, observed)
+
+    def test_model_listing_pagination_budget_fails_closed_explicitly(self) -> None:
+        harness = self._harness(_scenario(modelCursorLoop=True))
+        result = harness.adapter.invoke(
+            _call(),
+            cancel_event=threading.Event(),
+            deadline=_future_deadline(),
+            emit=lambda chunk: None,
+        )
+        self.assertEqual("failed", result.status)
+        # The explicit budget reason, never a generic model_not_listed.
+        self.assertEqual(
+            "model_listing_budget_exceeded", result.calls[0].note
+        )
+        self.assertIsNone(harness.trace_request("turn/start"))
+        model_lists = [
+            record
+            for record in harness.trace()
+            if record.get("event") == "request"
+            and record.get("method") == "model/list"
+        ]
+        self.assertEqual(10, len(model_lists))
 
     # ── (10) streaming ─────────────────────────────────────────────────
 

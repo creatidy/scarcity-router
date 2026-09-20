@@ -18,10 +18,16 @@ Security boundary (docs/security.md, D-018/D-044, issue #91):
 - **Credentials stay provider-managed.** This module never reads, copies,
   serializes, persists or logs any Codex token or ``auth.json``. Authentication
   state is verified through the official ``account/read`` method and reduced to
-  a typed verdict; account emails and plan labels are never retained. The
-  bounded D-018 recovery (one ``account/read`` with ``refreshToken: true`` after
-  the evidenced ``-32603`` trigger, then one retry) is supported with the same
-  boundary.
+  a typed verdict; account emails and plan labels are never retained.
+- **Strictly read-only against the provider.** This adapter performs NO
+  provider-state mutation of any kind — no login, logout, refresh, redemption
+  or config write, and no retry loop that could imply one. The program's
+  single owner-approved mutation exception (the bounded managed-auth refresh
+  after the evidenced rate-limits ``-32603`` shape) belongs to the OpenAI
+  capacity collector alone, in its ``account/rateLimits/read`` phase
+  (docs/decisions.md D-018, unamended); on any ``account/read`` protocol
+  error this adapter fails closed to the typed ``auth_unverified`` verdict
+  with the official interactive sign-in remediation.
 - **Client content controls nothing.** Subprocess argv, environment, working
   directory, sandbox policy and approval policy are built entirely by this
   adapter. No request field can set an environment variable, a flag or a path.
@@ -185,10 +191,6 @@ _NOTIFICATION_AGENT_DELTA = "item/agentMessage/delta"
 _NOTIFICATION_TOKEN_USAGE = "thread/tokenUsage/updated"
 _SERVER_REQUEST_COMMAND_APPROVAL = "item/commandExecution/requestApproval"
 _SERVER_REQUEST_FILE_APPROVAL = "item/fileChange/requestApproval"
-
-#: The evidenced JSON-RPC internal-error discriminator for the bounded D-018
-#: auth refresh (docs/decisions.md D-018; only the numeric code is read).
-_JSONRPC_INTERNAL_ERROR_CODE = -32603
 
 _INITIALIZE_RESPONSE_FIELDS = ("userAgent", "codexHome", "platformFamily", "platformOs")
 
@@ -1216,36 +1218,47 @@ class AuthVerdict:
 def verify_account_auth(session: CodexSession, deadline: float) -> AuthVerdict:
     """Verify subscription auth via the official ``account/read`` method.
 
+    This is a READ-ONLY verification: the execution adapter performs NO
+    provider-state mutation of any kind. The program's single owner-approved
+    mutation exception (the bounded managed-auth refresh) belongs to the
+    OpenAI capacity collector alone, in its ``account/rateLimits/read``
+    phase (docs/decisions.md D-018, unamended) — it is deliberately NOT
+    extended to this adapter.
+
     Requires ``account.type == "chatgpt"``. API-key auth is NOT eligible for
     execution (PAYG conversion is forbidden by owner policy, D-039/M4.1):
     the remediation is the official ``codex login``, never token copying.
-    Missing/absent auth is ``auth_missing`` with the same remediation. On the
-    evidenced ``-32603`` trigger exactly one bounded D-018 refresh
-    (``account/read {"refreshToken": true}``) followed by one retry is issued,
-    inside this same bounded session; a failed recovery cannot prove an auth
-    condition (issue #101 audit) and stays the generic ``auth_unverified``.
-    Email/plan content is never retained.
+    Missing/absent auth is ``auth_missing`` with the same remediation. A
+    protocol error — including the collector's evidenced ``-32603``
+    internal-error shape, whose free text this adapter never reads — cannot
+    establish an auth state and fails closed to ``auth_unverified`` with the
+    official sign-in remediation. Email/plan content is never retained.
     """
     try:
         result = session.request(_METHOD_ACCOUNT_READ, None, deadline)
-    except _ProtocolError as exc:
-        if exc.code != _JSONRPC_INTERNAL_ERROR_CODE:
-            return AuthVerdict(False, "auth_unverified", "")
-        # The bounded D-018 recovery: one refresh, one retry, same session.
-        try:
-            _ = session.request(
-                _METHOD_ACCOUNT_READ, {"refreshToken": True}, deadline
-            )
-            result = session.request(_METHOD_ACCOUNT_READ, None, deadline)
-        except _ProtocolError:
-            return AuthVerdict(False, "auth_unverified", "")
+    except _ProtocolError:
+        # Fail closed, read-only: no refresh, no retry, no mutation. The
+        # error's free text is never inspected (it may carry sensitive
+        # content and cannot prove an auth condition anyway).
+        return AuthVerdict(
+            False,
+            "auth_unverified",
+            "could not verify sign-in; run the official codex login "
+            + "(browser or device code) against the controlled home",
+        )
     return _auth_verdict_from(result)
 
 
 def _auth_verdict_from(result: object) -> AuthVerdict:
+    unverifiable = AuthVerdict(
+        False,
+        "auth_unverified",
+        "could not verify sign-in; run the official codex login "
+        + "(browser or device code) against the controlled home",
+    )
     envelope = _as_object(result)
     if envelope is None or not isinstance(envelope.get("requiresOpenaiAuth"), bool):
-        return AuthVerdict(False, "auth_unverified", "")
+        return unverifiable
     account = envelope.get("account")
     account_map = _as_object(account) if account is not None else None
     if account_map is None:
@@ -1264,7 +1277,7 @@ def _auth_verdict_from(result: object) -> AuthVerdict:
             "API-key auth is not an execution resource; run the official "
             + "codex login for the ChatGPT subscription path",
         )
-    return AuthVerdict(False, "auth_unverified", "")
+    return unverifiable
 
 
 # ── The adapter ───────────────────────────────────────────────────────────────
@@ -1439,6 +1452,12 @@ class CodexLocalAdapter:
             # are not client tool calls, and the experimental dynamic-tools
             # surface is never enabled. Fail closed before execution.
             raise CodexIneligible("tool_calls_unsupported")
+        if call.max_output_tokens is not None or call.generation_params:
+            # No evidenced stable-surface mapping exists for an output token
+            # ceiling or extra generation parameters; silently dropping
+            # requested semantics is forbidden (the M04 refuse-not-drop
+            # precedent). Fail closed before execution.
+            raise CodexIneligible("request_parameters_unsupported")
         conversation = map_conversation(call.messages)
         output_schema = validate_structured_schema(call.response_format)
         slug = call.model.model
@@ -1607,7 +1626,11 @@ class CodexLocalAdapter:
             cursor = next_model_cursor(result)
             if cursor is None:
                 return models
-        return models
+        # The listing still advertises more pages after the bounded page
+        # budget: the catalog is incomplete, so the exact-binding decision
+        # would rest on partial evidence. Fail closed with the explicit
+        # budget reason (never a generic model-not-listed verdict).
+        raise CodexIneligible("model_listing_budget_exceeded")
 
     def _start_thread(
         self,
@@ -1719,6 +1742,7 @@ class CodexLocalAdapter:
         started: str,
     ) -> AdapterResult:
         parts: list[str] = []
+        message_chars = 0
         usage: UsageTokens | None = None
         try:
             while True:
@@ -1773,8 +1797,9 @@ class CodexLocalAdapter:
                         raise CodexProtocolFailure("protocol_malformed")
                     if len(delta) > MAX_DELTA_CHARS:
                         raise CodexProtocolFailure("protocol_budget_exceeded")
-                    if sum(len(part) for part in parts) + len(delta) > MAX_MESSAGE_CHARS:
+                    if message_chars + len(delta) > MAX_MESSAGE_CHARS:
                         raise CodexProtocolFailure("message_budget_exceeded")
+                    message_chars += len(delta)
                     parts.append(delta)
                     if emit is not None and not cancel_event.is_set():
                         emit(AdapterStreamChunk(kind=CHUNK_TEXT_DELTA, text=delta))
