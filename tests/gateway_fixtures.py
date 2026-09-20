@@ -22,7 +22,6 @@ from scarcity_router.capacity import (
 )
 from scarcity_router.eligibility import ExecutionEligibility
 from scarcity_router.gateway_adapters import (
-    ExecutionAdapter,
     CHUNK_FINISH,
     CHUNK_TEXT_DELTA,
     CHUNK_USAGE,
