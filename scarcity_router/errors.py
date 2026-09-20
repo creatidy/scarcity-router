@@ -43,3 +43,15 @@ class ApplicationInputError(SelectionContractError):
     :class:`SelectionContractError` keeps the CLI's single invalid-input
     failure class unchanged.
     """
+
+
+class RouteContractValidationError(SelectionContractError):
+    """Raised when a routing-core input violates a route-decision invariant.
+
+    Deliberately separate from :class:`CapacityValidationError` (M01 resource
+    state) and from the selector's own
+    :class:`SelectionContractValidationError`: the route-decision contract is
+    its own versioned family (D-042), so its violations fail as their own
+    type while remaining inside the selection-contract error hierarchy that
+    application adapters already classify as invalid input.
+    """

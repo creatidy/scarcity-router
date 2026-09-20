@@ -35,7 +35,7 @@ merged as A0 (#85); implementation proceeds per module:
 | M04 | #89 | Generic OpenAI-compatible HTTP adapter and Ollama integration |
 | M05 | #90 | Native worker, pairing, and execution transport |
 | M06 | #91 | Codex adapter (Stage 1 evidence may run anytime) |
-| M07 | #92 | ZCode adapter feasibility (independent research track) |
+| M07 | #92 | ZCode adapter feasibility — Stage 1 complete; Stage 2 cancelled (D-047) |
 | M08 | #93 | MCP, REST, and CLI compatibility; optional remote mode |
 | M09 | #94 | Configuration, web UX, and diagnostics |
 | M10 | #95 | Distribution, installation, update, and end-to-end acceptance |
@@ -43,8 +43,16 @@ merged as A0 (#85); implementation proceeds per module:
 The recommended order is the first useful vertical slice — M01/M02 → M03/M04
 with the minimum M09/M10 support each slice needs — so a user can route real
 API/Ollama resources through one OpenAI-compatible endpoint before all local
-CLI adapters are complete. Then M05 and M06; M07 runs independently and never
-blocks the program; M08 guards compatibility throughout.
+CLI adapters are complete. Then M05 and M06; M08 guards compatibility
+throughout. M07 ran as an independent research track and never blocked the
+program: its Stage-1 feasibility evidence is complete
+([`docs/zcode-adapter-stage1-evidence.md`](zcode-adapter-stage1-evidence.md))
+and Stage 2 was cancelled by owner decision (D-047) — no ZCode execution
+adapter is planned. Reopening requires an official supported ZCode
+programmatic interface and applicable vendor terms. That decision concerns
+the ZCode desktop application only: Z.ai Coding Plan execution remains in
+scope through M04's generic OpenAI-compatible HTTP adapter, which is a
+different access path from the ZCode runtime.
 
 A CI and public release-engineering foundation (#97,
 [`docs/release-engineering.md`](release-engineering.md), D-046) lands before

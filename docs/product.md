@@ -36,7 +36,7 @@ structured explanation.
 Optionally (D-040, program A0 / issues #85–#95), the execution gateway lets a
 user point any OpenAI-compatible client at one Scarcity Router endpoint and
 have requests served from the best available authorized resource — API
-providers, Ollama/local inference, or approved local Codex/ZCode adapters —
+providers, Ollama/local inference, or the approved local Codex adapter —
 under the same least-scarce-capable discipline. The goal is efficient use of
 heterogeneous AI access: subscriptions, eligible promotions, metered APIs,
 prepaid APIs and local models/local GPU.
@@ -76,9 +76,12 @@ traffic to the Scarcity Router endpoint itself.
 - CLI, REST and MCP over the same authoritative core;
 - a minimal local dashboard and integration recipes after the core is useful;
 - the optional execution gateway program (A0, issues #85–#95): OpenAI-
-  compatible execution, generic HTTP/Ollama adapters, a native worker,
-  Codex/ZCode adapters where evidence supports them, configuration/web UX,
-  distribution — each behind its own module issue and validation gate.
+  compatible execution, generic HTTP/Ollama adapters, a native worker, the
+  Codex adapter where evidence supports it, configuration/web UX,
+  distribution — each behind its own module issue and validation gate. The
+  proposed ZCode execution adapter was cancelled by owner decision (D-047)
+  after M07 Stage-1 evidence; Z.ai Coding Plan execution itself stays in
+  scope through the generic HTTP adapter (M04).
 
 ## Explicit non-goals
 
