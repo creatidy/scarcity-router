@@ -289,6 +289,8 @@ rules and historical evidence remain available without being part of onboarding.
 - [`docs/capability-model.md`](docs/capability-model.md) — requirements and capabilities.
 - [`docs/selection-policy.md`](docs/selection-policy.md) — eligibility and ranking.
 - [`docs/machine-interfaces.md`](docs/machine-interfaces.md) — REST and MCP.
+- [`docs/execution-surface.md`](docs/execution-surface.md) — OpenAI-compatible execution surface.
+- [`docs/control-surface.md`](docs/control-surface.md) — server control API, web UI and diagnostics.
 - [`docs/providers.md`](docs/providers.md) — provider adapters.
 - [`docs/security.md`](docs/security.md) — secrets and network boundaries.
 
