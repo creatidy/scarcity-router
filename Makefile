@@ -7,13 +7,16 @@
 # `##` markers on each target are the single source of that listing.
 
 .DEFAULT_GOAL := help
-.PHONY: check help install typecheck test package-check
+.PHONY: check help install guardrails typecheck test package-check
 
 help: ## list available targets
 	@awk 'BEGIN { FS = ":.*?## " } \
 		/^[a-zA-Z_-]+:.*?## / { printf "  make %-16s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
 
 check: test typecheck ## run the full gate (test + typecheck); must exit 0 before every commit/PR
+
+guardrails: ## M08 per-module gate (issue #93): frozen-interface guardrail + parity suite only
+	uv run python -m unittest discover -s tests -p "test_interfaces_guardrails.py"
 
 typecheck: ## repo-managed basedpyright (default "recommended" gate)
 	uv run basedpyright
