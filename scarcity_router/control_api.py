@@ -359,9 +359,14 @@ class ControlPlane:
             )
             self._owns_worker_store = True
         self._worker_admin = WorkerAdminService(self._worker_identity_store)
+        # Ownership resolver: a live read over the CURRENT configuration
+        # document. The resolver is re-read on every call, so each
+        # configuration change (add/remove/enable/unassign) is
+        # authoritative immediately — no pushed-copy staleness window.
         self._worker_endpoint = WorkerEndpoint(
             identity_store=self._worker_identity_store,
             registry=self,
+            configured_owner=self._configured_worker_owner,
         )
         document = store.load_configuration_document()
         self._config = (
@@ -406,6 +411,21 @@ class ControlPlane:
         """Close the worker identity store when this plane created it."""
         if self._owns_worker_store:
             self._worker_identity_store.close()
+
+    def _configured_worker_owner(self, resource_id: str) -> str | None:
+        """The configured owner of one resource, or ``None``.
+
+        The ONLY ownership source: the live administrator configuration.
+        Unknown, disabled, non-worker-bridged, or unassigned resources
+        have no owner — nothing is reportable or executable (D-049
+        amendment).
+        """
+        resource = self._config.resource_by_id(resource_id)
+        if resource is None or not resource.enabled:
+            return None
+        if resource.registration.identity.channel != "worker_bridged":
+            return None
+        return resource.worker_id
 
     def apply_worker_report(self, report: WorkerStateReport) -> None:
         """The M05 endpoint's report sink (the one normalization path).

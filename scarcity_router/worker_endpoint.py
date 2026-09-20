@@ -150,6 +150,21 @@ class WorkerReportSink(Protocol):
     def apply_worker_report(self, report: WorkerStateReport) -> None: ...
 
 
+OwnerResolver = Callable[[str], "str | None"]
+"""Resource-id -> configured-owner worker-id resolver (authorization seam).
+
+CURRENT administrator configuration is the only source of resource-to-
+worker ownership (D-049 amendment): for a resource id the resolver
+returns the worker identity the administrator assigned it to, or
+``None`` when the resource is unknown, disabled, not worker-bridged, or
+unassigned. Worker telemetry can never appear here. The integrated
+server supplies a live resolver over M09's configuration document, so
+every configuration change is authoritative immediately; a deployment
+without administrator configuration supplies a deny-all resolver —
+nothing is reportable or executable there.
+"""
+
+
 @dataclass(frozen=True)
 class WorkerConnectionState:
     """One worker device's real connection state (M09 display seam).
@@ -523,6 +538,27 @@ class WorkerSession:
                 )
             )
             return
+        # AUTHORIZATION (D-049 amendment): current administrator
+        # configuration is the only source of resource-to-worker
+        # ownership. Every reported resource must be configured to THIS
+        # authenticated worker; otherwise the ENTIRE report is rejected
+        # fail-closed — the M01 registry and the observed/live bindings
+        # change nothing (atomic, matching apply_worker_report), so an
+        # unauthorized report can never overwrite a previously valid one.
+        for snapshot in report.resources:
+            configured = endpoint.configured_owner(snapshot.identity.resource_id)
+            if configured != worker_id:
+                self._send_error(
+                    ErrorMessage(
+                        code=ERR_MALFORMED,
+                        message="resource "
+                        + repr(snapshot.identity.resource_id)
+                        + " is not configured for this worker; the report "
+                        + "was rejected",
+                        fatal=False,
+                    )
+                )
+                return
         try:
             endpoint.registry.apply_worker_report(report)
         except (CapacityValidationError, ValueError) as exc:
@@ -534,10 +570,12 @@ class WorkerSession:
                 )
             )
             return
-        # Bind the reported resources to THIS worker for execution dispatch.
+        # OBSERVED/LIVE state only: record which worker reported each
+        # resource (availability evidence, NOT authorization — dispatch
+        # authorization always re-reads the configured owner).
         with endpoint._lock:  # pyright: ignore[reportPrivateUsage] - same-program endpoint seam
             for snapshot in report.resources:
-                endpoint._resource_bindings[snapshot.identity.resource_id] = worker_id  # pyright: ignore[reportPrivateUsage] - same-program endpoint seam
+                endpoint._observed_bindings[snapshot.identity.resource_id] = worker_id  # pyright: ignore[reportPrivateUsage] - same-program endpoint seam
         self._state.writer.write_message(StateReportAckMessage().to_payload())
 
     def _route_to_attempt(self, attempt_id: str, message: ExecuteChunkMessage) -> None:
@@ -635,6 +673,7 @@ class WorkerEndpoint:
         *,
         identity_store: WorkerIdentityStore,
         registry: WorkerReportSink,
+        configured_owner: OwnerResolver,
         heartbeat_interval_seconds: int = DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
         monotonic: Callable[[], float] = time.monotonic,
         wall_clock: Callable[[], datetime] | None = None,
@@ -642,6 +681,11 @@ class WorkerEndpoint:
         _ = v_int(heartbeat_interval_seconds, "heartbeat_interval_seconds", lo=1)
         self.identity_store: WorkerIdentityStore = identity_store
         self.registry: WorkerReportSink = registry
+        # Authorization seam: the CURRENT administrator configuration is
+        # the only source of resource-to-worker ownership. Kept as a
+        # callable so the supplier (the M09 control plane) can rebind its
+        # configuration atomically — the endpoint never caches ownership.
+        self.configured_owner: OwnerResolver = configured_owner
         self.heartbeat_interval_seconds: int = heartbeat_interval_seconds
         self._monotonic: Callable[[], float] = monotonic
         self._wall_clock: Callable[[], datetime] = (
@@ -649,7 +693,9 @@ class WorkerEndpoint:
         )
         self._lock: threading.Lock = threading.Lock()
         self._sessions: dict[int, WorkerSession] = {}
-        self._resource_bindings: dict[str, str] = {}
+        # OBSERVED/LIVE state only: which worker last successfully
+        # reported each resource. Never consulted for authorization.
+        self._observed_bindings: dict[str, str] = {}
         self._last_connected_at: dict[str, str] = {}
         self._interrupted_attempts: deque[tuple[str | None, str]] = deque()
         self._listener: "_EndpointListener | None" = None
@@ -680,21 +726,40 @@ class WorkerEndpoint:
             self._sessions[id(session)] = session
 
     def session_for_resource(self, resource_id: str) -> WorkerSession:
-        """The live authenticated session bound to one resource."""
-        with self._lock:
-            worker_id = self._resource_bindings.get(resource_id)
-        if worker_id is None:
+        """The one session that may execute ``resource_id`` — the CONFIGURED
+        owner's live authenticated session, with the owner's own valid
+        report as availability evidence.
+
+        Authorization comes only from the configured owner resolver
+        (administrator configuration, D-049 amendment); the observed
+        bindings gate availability only. There is no fallback: an
+        offline or unreported configured owner is an explicit failure,
+        never a route to another worker.
+        """
+        configured = self.configured_owner(resource_id)
+        if configured is None:
             raise WorkerDispatchError(
                 "resource_unbound",
-                "no worker has reported state for this resource",
+                "no worker is configured to execute this resource",
             )
         with self._lock:
-            sessions = [s for s in self._sessions.values() if s.worker_id == worker_id]
+            reported_by = self._observed_bindings.get(resource_id)
+            sessions = [
+                s for s in self._sessions.values() if s.worker_id == configured
+            ]
+        if reported_by != configured:
+            # The configured owner exists but has not (yet) reported this
+            # resource: no availability evidence, and telemetry from any
+            # OTHER worker can never substitute.
+            raise WorkerDispatchError(
+                "resource_unbound",
+                "the configured worker has not reported this resource",
+            )
         for session in sessions:
             if session.authenticated:
                 return session
         raise WorkerDispatchError(
-            "worker_offline", "the worker for this resource is not connected"
+            "worker_offline", "the configured worker for this resource is not connected"
         )
 
     def session_count(self) -> int:
@@ -736,9 +801,14 @@ class WorkerEndpoint:
             )
         )
 
-    def resource_worker_bindings(self) -> dict[str, str]:
+    def observed_worker_bindings(self) -> dict[str, str]:
+        """OBSERVED/LIVE state: resource id -> last reporting worker.
+
+        Telemetry bookkeeping for diagnostics and availability evidence —
+        never authorization (see ``configured_owner``).
+        """
         with self._lock:
-            return dict(self._resource_bindings)
+            return dict(self._observed_bindings)
 
     def interrupted_attempt_log(self) -> tuple[tuple[str | None, str], ...]:
         with self._lock:
@@ -996,9 +1066,15 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("a non-loopback bind requires --tls-certfile/--tls-keyfile")
     try:
         store = WorkerIdentityStore(store_value)
+        # The dev entrypoint has no administrator configuration, and
+        # configuration is the ONLY ownership source (D-049 amendment):
+        # deny everything — no resource is reportable or executable here.
+        # The composed server supplies the real resolver; tests construct
+        # endpoints with explicit in-memory resolvers.
         endpoint = WorkerEndpoint(
             identity_store=store,
             registry=ResourceRegistry(),
+            configured_owner=_unconfigured_owner,
             heartbeat_interval_seconds=heartbeat,
         )
         tls_context = (
@@ -1030,6 +1106,11 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+def _unconfigured_owner(_resource_id: str) -> "str | None":
+    """Deny-all ownership resolver (deployments without M09 configuration)."""
+    return None
+
+
 __all__ = [
     "BIND_HOST",
     "DEFAULT_HEARTBEAT_INTERVAL_SECONDS",
@@ -1042,6 +1123,7 @@ __all__ = [
     "PendingAttempt",
     "WorkerConnectionState",
     "WorkerDispatchError",
+    "OwnerResolver",
     "WorkerEndpoint",
     "WorkerReportSink",
     "WorkerSession",

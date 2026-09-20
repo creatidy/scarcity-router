@@ -169,13 +169,17 @@ def build_adapter_registry(
     )
     worker_adapter_map: dict[str, str] = {}
     for resource in configuration.resources:
-        if (
-            resource.registration.identity.channel == "worker_bridged"
-            and resource.local_adapter_id is not None
-        ):
-            worker_adapter_map[resource.registration.identity.resource_id] = (
-                resource.local_adapter_id
-            )
+        if resource.registration.identity.channel != "worker_bridged":
+            continue
+        # BOTH dimensions must be administrator-configured: the owning
+        # worker AND the worker-local adapter. A resource missing either
+        # is never dispatchable — ownership is never invented, and
+        # telemetry cannot fill either dimension (D-049 amendment).
+        if resource.worker_id is None or resource.local_adapter_id is None:
+            continue
+        worker_adapter_map[resource.registration.identity.resource_id] = (
+            resource.local_adapter_id
+        )
     registry = AdapterRegistry()
     if bindings:
         registry.register(OpenAICompatibleHttpAdapter(bindings))
