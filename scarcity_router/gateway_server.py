@@ -56,6 +56,15 @@ capacity/eligibility supply is an injected callable. The default
 deployment starts with an empty registry, an empty alias table and no
 adapters — an honest empty ``/v1/models`` and explicit no-target errors
 until the administrator configures resources (M04/M09).
+
+M09 addition (issue #94): an optional
+:class:`GatewayControlSurface` — the control plane owning the
+authenticated control API, the machine-interface control endpoints
+(``/v1/status``, ``/v1/select``, ``/v1/simulate``) and the web UI — is
+attached at construction and dispatches the paths it owns before the
+execution-surface routing. Without one, behavior is exactly the M03
+surface; the loopback REST v1 adapter stays a different, frozen
+component (D-030/D-045).
 """
 
 from __future__ import annotations
@@ -71,7 +80,7 @@ from collections.abc import Mapping
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import cast, override
+from typing import Protocol, cast, override
 
 from .config import resolve_default_selector_policy
 from .gateway_adapters import (
@@ -169,6 +178,25 @@ def load_client_key_directory(path: Path) -> ClientKeyDirectory:
 # ── The HTTP server ───────────────────────────────────────────────────────────
 
 
+class GatewayControlSurface(Protocol):
+    """The M09 control-plane seam this server may serve beside execution.
+
+    One server component (D-041) serves the execution surface plus the
+    authenticated control API, web UI and machine-interface control
+    endpoints. The control plane (implemented by
+    :class:`scarcity_router.control_api.ControlPlane`) is attached at
+    construction and dispatches the paths it owns; without one, the
+    server behaves exactly as the M03 execution server. This protocol
+    lives here so the execution server never imports the control modules.
+    """
+
+    def handles(self, method: str, path: str) -> bool: ...
+
+    def handle(self, method: str, path: str, handler: "GatewayRequestHandler") -> None: ...
+
+    def current_application(self) -> GatewayApplication: ...
+
+
 class GatewayHTTPServer(ThreadingHTTPServer):
     """Threaded, daemon-mode server for the execution surface.
 
@@ -182,6 +210,7 @@ class GatewayHTTPServer(ThreadingHTTPServer):
     allow_reuse_address: bool = True
 
     application: GatewayApplication
+    control_plane: GatewayControlSurface | None
 
     def __init__(
         self,
@@ -190,9 +219,11 @@ class GatewayHTTPServer(ThreadingHTTPServer):
         port: int,
         application: GatewayApplication,
         tls_context: ssl.SSLContext | None = None,
+        control_plane: GatewayControlSurface | None = None,
     ) -> None:
         super().__init__((host, port), GatewayRequestHandler)
         self.application = application
+        self.control_plane = control_plane
         if tls_context is not None:
             self.socket: socket.socket = tls_context.wrap_socket(
                 self.socket, server_side=True
@@ -235,7 +266,16 @@ class GatewayRequestHandler(BaseHTTPRequestHandler):
 
     def _application(self) -> GatewayApplication:
         server = cast(GatewayHTTPServer, self.server)
+        control = server.control_plane
+        if control is not None:
+            # The control plane owns the live application and rebuilds it
+            # on administrator configuration changes.
+            return control.current_application()
         return server.application
+
+    def _control_plane(self) -> GatewayControlSurface | None:
+        server = cast(GatewayHTTPServer, self.server)
+        return server.control_plane
 
     @override
     def log_message(self, format: str, *args: object) -> None:
@@ -280,6 +320,13 @@ class GatewayRequestHandler(BaseHTTPRequestHandler):
     def _dispatch(self, method: str) -> None:
         try:
             self._require_single_host()
+            control = self._control_plane()
+            if control is not None:
+                control_path = self.path.split("?", 1)[0].split("#", 1)[0]
+                if control.handles(method, control_path):
+                    self._refuse_router_loops()
+                    control.handle(method, control_path, self)
+                    return
             client_id = self._authenticate()
             self._refuse_router_loops()
             path = self.path.split("?", 1)[0].split("#", 1)[0]
@@ -800,6 +847,7 @@ def make_gateway_server(
     host: str = BIND_HOST,
     port: int = DEFAULT_PORT,
     tls_context: ssl.SSLContext | None = None,
+    control_plane: GatewayControlSurface | None = None,
 ) -> GatewayHTTPServer:
     """Bind the execution server; non-loopback binds require TLS (D-044)."""
     if not _loopback(host) and tls_context is None:
@@ -808,7 +856,11 @@ def make_gateway_server(
             + "key files); the gateway never serves plaintext off localhost"
         )
     return GatewayHTTPServer(
-        host=host, port=port, application=application, tls_context=tls_context
+        host=host,
+        port=port,
+        application=application,
+        tls_context=tls_context,
+        control_plane=control_plane,
     )
 
 
@@ -924,6 +976,7 @@ __all__ = [
     "DEFAULT_PORT",
     "EXECUTION_SURFACE_VERSION",
     "GATEWAY_ORIGIN_HEADER",
+    "GatewayControlSurface",
     "GatewayHTTPServer",
     "GatewayRequestHandler",
     "build_default_application",

@@ -472,6 +472,18 @@ class ClientKeyDirectory:
                 return client_id
         return None
 
+    def hash_for(self, client_id: str) -> str:
+        """The stored SHA-256 hash for one client id (migration seam).
+
+        Exists for the M09 one-time ``--import-client-keys`` migration
+        (``scarcity_router.control_server``), which copies hashes — never
+        key material — into the durable store. Raises for unknown ids.
+        """
+        try:
+            return self._hashes[client_id]
+        except KeyError:
+            raise ValueError(f"unknown client id {client_id!r}") from None
+
 
 __all__ = [
     "ERROR_TYPES",
