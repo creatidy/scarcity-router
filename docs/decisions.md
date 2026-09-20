@@ -2773,7 +2773,10 @@ what M4.1 forbids); a configurable per-provider eligibility policy
      fail-closed (preset resolvable, origin parseable, worker known);
      the default deployment composes nothing. The composed server runs
      the optional M05 worker-protocol listener (off by default, TLS
-     beyond loopback) with heartbeat liveness reaping.
+     beyond loopback) with heartbeat liveness reaping. Resource→worker
+     ownership comes only from M09 administrator configuration.
+     Authenticated state reports establish observations/liveness but
+     never execution ownership.
 - **Reason:** D-041 assigns worker identity to the server's durable
   state and D-044 defines the pairing bootstrap as a one-time code
   redeemed over verified TLS — M05 implemented exactly that contract,
