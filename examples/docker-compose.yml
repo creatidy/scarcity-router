@@ -1,0 +1,62 @@
+# Minimal Docker Compose for the Scarcity Router server component
+# (M10, issue #95). Configuration matches the server's real command-line
+# surface exactly (`python -m scarcity_router.control_server --help`);
+# the server reads no other environment variables, so everything below
+# passes real flags. Do not invent flags.
+#
+#   Flags that exist: --host, --port, --data-dir, --import-client-keys,
+#   --tls-certfile, --tls-keyfile, --worker-listen-host,
+#   --worker-listen-port, --worker-tls-certfile, --worker-tls-keyfile.
+#
+# Deployments (pick ONE `command:` block):
+#
+# 1. LOOPBACK-ONLY (default; Linux hosts). The server binds 127.0.0.1
+#    inside the host network namespace, so exactly the host itself can
+#    reach it — the same discipline as a bare-metal loopback install.
+#    Open http://127.0.0.1:8787/admin and complete onboarding.
+#
+# 2. LAN / VPN EXPOSURE (any host). Any non-loopback bind REQUIRES
+#    verified TLS (D-044); the server refuses to start otherwise. Mount
+#    your certificate and key read-only and bind 0.0.0.0:
+#      volumes: add ./tls/server.crt:/certs/server.crt:ro and
+#               ./tls/server.key:/certs/server.key:ro
+#      command: --host 0.0.0.0 --port 8787 --data-dir /data
+#               --tls-certfile /certs/server.crt --tls-keyfile /certs/server.key
+#               --worker-listen-port 8790 --worker-listen-host 0.0.0.0
+#               --worker-tls-certfile /certs/server.crt --worker-tls-keyfile /certs/server.key
+#    Port mapping variant (instead of host networking):
+#      network_mode: remove; ports: "8787:8787" and "8790:8790"
+#    Restrict exposure at your firewall — the server's own boundary is
+#    authentication and TLS, not IP filtering.
+#
+# Updates: pull the new image tag (once released, the GHCR contract is
+# ghcr.io/creatidy/scarcity-router:X.Y.Z / X.Y / latest), then
+# `docker compose up -d`. The named volume persists identities,
+# configuration, keys and audit state; the store's schema migrations are
+# explicit, tested and refuse future versions (never downgrade across a
+# store-schema change).
+
+services:
+  scarcity-router:
+    build: .
+    # image: ghcr.io/creatidy/scarcity-router:X.Y.Z   # once released
+    container_name: scarcity-router
+    # Loopback-only deployment: share the host network namespace so the
+    # server's 127.0.0.1 bind is the HOST's loopback (Linux; on Docker
+    # Desktop use the TLS variant with an explicit ports: mapping).
+    network_mode: host
+    command:
+      - --host=127.0.0.1
+      - --port=8787
+      - --data-dir=/data
+    volumes:
+      # Durable state: configuration document, administrator identity,
+      # client key hashes, provider credentials (the bounded D-044 store),
+      # the bounded audit trail and the paired-worker identity store.
+      - scarcity-router-data:/data
+    restart: unless-stopped
+    # The image already drops to a non-root user (uid/gid 10001) and adds
+    # a HEALTHCHECK against GET /healthz; nothing to override here.
+
+volumes:
+  scarcity-router-data:
