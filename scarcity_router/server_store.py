@@ -3,10 +3,15 @@
 One embedded SQLite-class single-file store inside the server's data
 directory holds exactly the durable state D-041 assigns to the server:
 administrator configuration state, identities (administrator, inference
-client keys, worker pairings), provider credentials (the bounded D-044
-exception) and the bounded audit trail. No external database, cache or
-message-queue service is introduced; recommendation-only mode keeps
-today's zero-durable-state behavior.
+client keys), provider credentials (the bounded D-044 exception) and the
+bounded audit trail. Worker pairing/identity state is NOT stored here:
+since the M04/M05/M09 integration there is exactly ONE pairing system —
+the M05 worker identity store (`worker_identity_store.py`, a separate
+permissioned database beside this file) — and this store's superseded
+duplicate worker-pairing tables were dropped by the explicit schema
+version 2 migration. No external database, cache or message-queue
+service is introduced; recommendation-only mode keeps today's
+zero-durable-state behavior.
 
 Discipline:
 
@@ -49,7 +54,7 @@ from typing import cast
 
 from .gateway_validation import v_safe_id, v_str
 
-STORE_SCHEMA_VERSION = 1
+STORE_SCHEMA_VERSION = 2
 
 STORE_FILE_NAME = "server-state.sqlite3"
 DATA_DIR_NAME = "scarcity-router"
@@ -58,6 +63,17 @@ SERVER_DATA_DIR_NAME = "server"
 # Each migration is (version, statements). Versions are applied in order
 # inside one transaction each; the recorded version advances only when the
 # whole migration succeeded (crash-safe by construction).
+#
+# Version 2 (M04/M05/M09 integration): the superseded M09-side
+# ``worker_pairings`` table is DROPPED. M09 built an administration-facing
+# pairing store before M05's transport existed; the wave integrates on M05
+# as the SOLE pairing system (its own store in ``worker_identity_store.py``
+# beside this file), and no data conversion exists: that table held only
+# M09-format code/token HASHES whose redemption path is retired, while M05
+# identities hash with a per-store pepper salt that cannot reproduce them.
+# Pending codes and revoked rows carry no convertible state. Every
+# UNRELATED table (configuration, administrator identity, sessions, client
+# keys, provider secrets, audit) is untouched by the migration.
 MIGRATIONS: tuple[tuple[int, tuple[str, ...]], ...] = (
     (
         1,
@@ -131,9 +147,17 @@ MIGRATIONS: tuple[tuple[int, tuple[str, ...]], ...] = (
             """,
         ),
     ),
+    # Version 2: retire the superseded duplicate pairing surface (the M05
+    # worker identity store is the single pairing system). See the
+    # migration-list comment above for why the rows are dropped, not
+    # converted, and why no unrelated data is affected.
+    (
+        2,
+        (
+            "DROP TABLE IF EXISTS worker_pairings",
+        ),
+    ),
 )
-
-WORKER_STATUSES: frozenset[str] = frozenset({"pending", "paired", "revoked"})
 
 _AUDIT_HARD_CAP = 100_000
 
@@ -161,18 +185,6 @@ class ClientKeyRecord:
     label: str
     created_at: str
     revoked_at: str | None
-
-
-@dataclass(frozen=True)
-class WorkerPairingRecord:
-    """One worker pairing entry (code/token stored as hashes only)."""
-
-    worker_id: str
-    label: str
-    status: str
-    created_at: str
-    expires_at: str | None
-    last_connected_at: str | None
 
 
 def default_server_data_dir(env: Mapping[str, str] | None = None) -> Path:
@@ -582,138 +594,6 @@ class ServerStore:
             )
             return int(cursor.rowcount) > 0
 
-    # ── Worker pairing administration (M05 seam) ──────────────────────────
-
-    def create_pairing(
-        self,
-        *,
-        worker_id: str,
-        label: str,
-        code_hash: str,
-        created_at: str,
-        expires_at: str,
-    ) -> None:
-        _ = v_safe_id(worker_id, "store.worker_id")
-        _ = v_str(label, "store.worker_label")
-        with self._lock:
-            try:
-                _ = self._connection.execute(
-                    "INSERT INTO worker_pairings (worker_id, label, status, "
-                    + "code_hash, token_hash, created_at, expires_at, "
-                    + "last_connected_at) VALUES (?, ?, 'pending', ?, NULL, ?, ?, "
-                    + "NULL)",
-                    (worker_id, label, code_hash, created_at, expires_at),
-                )
-            except sqlite3.IntegrityError as exc:
-                raise ServerStoreError(
-                    f"worker id {worker_id!r} already exists"
-                ) from exc
-            except sqlite3.Error as exc:
-                raise ServerStoreError(
-                    f"server store worker pairing write failed: {exc}"
-                ) from None
-
-    def list_pairings(self) -> tuple[WorkerPairingRecord, ...]:
-        with self._lock:
-            rows = _fetch_rows(self._connection,
-                "SELECT worker_id, label, status, created_at, expires_at, "
-                + "last_connected_at FROM worker_pairings ORDER BY worker_id"
-            )
-        return tuple(
-            WorkerPairingRecord(
-                worker_id=cast(str, row["worker_id"]),
-                label=cast(str, row["label"]),
-                status=cast(str, row["status"]),
-                created_at=cast(str, row["created_at"]),
-                expires_at=(
-                    cast("str | None", row["expires_at"])
-                    if row["expires_at"] is not None
-                    else None
-                ),
-                last_connected_at=(
-                    cast("str | None", row["last_connected_at"])
-                    if row["last_connected_at"] is not None
-                    else None
-                ),
-            )
-            for row in rows
-        )
-
-    def redeem_pairing(
-        self, *, code_hash: str, token_hash: str, at: str
-    ) -> str | None:
-        """Atomically redeem one pending pairing code (single use).
-
-        Expires stale pending pairings first; matches the presented code
-        hash against pending rows and, on exactly one match, marks the
-        pairing ``paired`` and stores the per-device token hash. Returns
-        the ``worker_id`` or ``None`` (unknown, expired or already used).
-        """
-        with self._lock:
-            try:
-                _ = self._connection.execute("BEGIN IMMEDIATE")
-                _ = self._connection.execute(
-                    "UPDATE worker_pairings SET status = 'revoked' "
-                    + "WHERE status = 'pending' AND expires_at IS NOT NULL "
-                    + "AND expires_at <= ?",
-                    (at,),
-                )
-                row = _fetch_row(self._connection,
-                    "SELECT worker_id FROM worker_pairings "
-                    + "WHERE status = 'pending' AND code_hash = ?",
-                    (code_hash,),
-                )
-                if row is None:
-                    # Expiry bookkeeping persists even when nothing matched.
-                    _ = self._connection.execute("COMMIT")
-                    return None
-                worker_id = cast(str, row["worker_id"])
-                _ = self._connection.execute(
-                    "UPDATE worker_pairings SET status = 'paired', "
-                    + "code_hash = NULL, token_hash = ?, last_connected_at = ? "
-                    + "WHERE worker_id = ? AND status = 'pending'",
-                    (token_hash, at, worker_id),
-                )
-                _ = self._connection.execute("COMMIT")
-                return worker_id
-            except sqlite3.Error as exc:
-                _ = self._connection.execute("ROLLBACK")
-                raise ServerStoreError(
-                    f"server store pairing redemption failed: {exc}"
-                ) from None
-
-    def revoke_pairing(self, *, worker_id: str, at: str) -> bool:
-        """Revoke a pending or paired worker identity."""
-        with self._lock:
-            cursor = self._connection.execute(
-                "UPDATE worker_pairings SET status = 'revoked', token_hash = NULL, "
-                + "code_hash = NULL WHERE worker_id = ? AND status != 'revoked'",
-                (worker_id,),
-            )
-            _ = at
-            return int(cursor.rowcount) > 0
-
-    def record_worker_connection(self, *, worker_id: str, at: str) -> bool:
-        """The M05 transport seam: stamp one live worker connection."""
-        with self._lock:
-            cursor = self._connection.execute(
-                "UPDATE worker_pairings SET last_connected_at = ? "
-                + "WHERE worker_id = ? AND status = 'paired'",
-                (at, worker_id),
-            )
-            return int(cursor.rowcount) > 0
-
-    def active_worker_token_hashes(self) -> dict[str, str]:
-        """Paired worker id -> SHA-256 token hash (M05 transport seam)."""
-        with self._lock:
-            rows = _fetch_rows(self._connection,
-                "SELECT worker_id, token_hash FROM worker_pairings "
-                + "WHERE status = 'paired' AND token_hash IS NOT NULL"
-            )
-        return {
-            cast(str, row["worker_id"]): cast(str, row["token_hash"]) for row in rows
-        }
-
     # ── Bounded audit trail (D-043 metadata only) ─────────────────────────
 
     def append_audit_record(
@@ -808,12 +688,10 @@ __all__ = [
     "SERVER_DATA_DIR_NAME",
     "STORE_FILE_NAME",
     "STORE_SCHEMA_VERSION",
-    "WORKER_STATUSES",
     "AdminIdentityRecord",
     "ClientKeyRecord",
     "ServerStore",
     "ServerStoreError",
-    "WorkerPairingRecord",
     "canonical_store_path",
     "default_server_data_dir",
 ]

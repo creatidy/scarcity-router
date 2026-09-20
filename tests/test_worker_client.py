@@ -37,7 +37,10 @@ from scarcity_router.gateway_adapters import (  # noqa: E402
     AdapterCall,
     AdapterResult,
 )
-from scarcity_router.resource_state import ResourceIdentity  # noqa: E402
+from scarcity_router.resource_state import (  # noqa: E402
+    ResourceIdentity,
+    ResourceRegistry,
+)
 from scarcity_router.selection_types import ModelIdentity  # noqa: E402
 from scarcity_router.worker_client import (  # noqa: E402
     ReconnectPolicy,
@@ -320,7 +323,12 @@ class RunLoopTests(unittest.TestCase):
                 lambda: RESOURCE_ID in self.world.endpoint.resource_worker_bindings()
             )
         )
-        snapshot = self.world.endpoint.registry.registry_snapshot()
+        # The report sink is the world's real registry (see RuntimeWorld);
+        # read it through its concrete type.
+        registry = cast(
+            "ResourceRegistry", self.world.endpoint.registry
+        )
+        snapshot = registry.registry_snapshot()
         entry = next(
             e for e in snapshot.entries if e.identity.resource_id == RESOURCE_ID
         )

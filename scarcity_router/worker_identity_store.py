@@ -300,9 +300,18 @@ class WorkerIdentityStore:
     # ── Pairing lifecycle ────────────────────────────────────────────
 
     def begin_pairing(self, *, label: str | None = None) -> PairingCode:
-        """Issue one short-lived one-time pairing code (administrator act)."""
+        """Issue one short-lived one-time pairing code (administrator act).
+
+        ``label`` is human-readable display text (which machine is this?),
+        never an identifier: it is bounded free text so the M09
+        administration surface can label a device the way the operator
+        speaks about it. It is stored only beside the code's hash and is
+        never used for authentication.
+        """
         checked_label = (
-            None if label is None else v_safe_id(label, "pairing.label")
+            None
+            if label is None
+            else (v_text(label.strip(), "pairing.label", max_len=200) or None)
         )
         now = self._clock()
         expires_at = now + timedelta(seconds=self._pairing_code_ttl)
@@ -526,6 +535,23 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+#: Canonical file name of the worker identity store beside the server's
+#: main store in the server data directory (one pairing system, one place).
+WORKERS_STORE_FILE_NAME = "workers.sqlite3"
+
+
+def default_worker_store_path(data_dir: str | os.PathLike[str]) -> str:
+    """The worker identity store path inside a server data directory.
+
+    The M04/M05/M09 integration keeps exactly ONE pairing system: the M05
+    identity store, placed beside the server store in the same ``0o700``
+    server data directory. The composition root, the control plane's
+    default and the ``doctor`` command all resolve the location through
+    this helper.
+    """
+    return os.path.join(os.fspath(data_dir), WORKERS_STORE_FILE_NAME)
+
+
 
 
 def ensure_private_tree(path: str) -> None:
@@ -587,9 +613,11 @@ __all__ = [
     "MAX_OUTSTANDING_PAIRING_CODES",
     "MAX_PAIRING_CODE_TTL_SECONDS",
     "WORKER_IDENTITY_STORE_SCHEMA_VERSION",
+    "WORKERS_STORE_FILE_NAME",
     "PairingCode",
     "WorkerAdminService",
     "WorkerIdentityError",
     "WorkerIdentityRecord",
     "WorkerIdentityStore",
+    "default_worker_store_path",
 ]

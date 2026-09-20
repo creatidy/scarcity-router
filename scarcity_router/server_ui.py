@@ -160,6 +160,7 @@ def _route(
         "/admin/clients/revoke": _clients_revoke,
         "/admin/workers/initiate": _workers_initiate,
         "/admin/workers/revoke": _workers_revoke,
+        "/admin/workers/rotate": _workers_rotate,
         "/admin/logout": _logout,
     }
     target = routes.get(path)
@@ -437,7 +438,7 @@ def _providers(
         )
     if not rows:
         rows = "<tr><td colspan=\"5\" class=\"muted\">No provider endpoints configured.</td></tr>"
-    adapter_hint = "openai_http"
+    adapter_hint = "zai-coding-plan"
     body = (
         f"<div class=\"notice\">Provider credentials are stored in the "
         + "server's bounded credential store and are never displayed, "
@@ -572,7 +573,7 @@ def _resources(
         f"<option value=\"{_esc(worker['worker_id'])}\">"
         + f"{_esc(worker['worker_id'])} ({_esc(worker['status'])})</option>"
         for worker in plane.workers_view()
-        if worker.get("status") == "paired"
+        if worker.get("status") == "active"
     )
     body = (
         "<div class=\"notice\">The ladder shows, for each resource: detected, "
@@ -618,6 +619,8 @@ def _resources(
         + f"<select name=\"endpoint_id\"><option value=\"\">(none)</option>{endpoint_options}</select>"
         + "<label>Worker</label>"
         + f"<select name=\"worker_id\"><option value=\"\">(none)</option>{worker_options}</select>"
+        + "<label>Worker-local adapter id (worker_bridged only, e.g. <code>ollama</code>)</label>"
+        + "<input type=\"text\" name=\"local_adapter_id\" placeholder=\"ollama\">"
         + "<label><input type=\"checkbox\" name=\"enabled\" value=\"yes\" checked> enabled</label>"
         + "<button type=\"submit\">Add resource</button></form></fieldset>"
     )
@@ -689,6 +692,9 @@ def _resource_document_from_form(form: dict[str, str]) -> dict[str, object]:
     worker = (form.get("worker_id") or "").strip()
     if worker:
         document["worker_id"] = worker
+    local_adapter = (form.get("local_adapter_id") or "").strip()
+    if local_adapter:
+        document["local_adapter_id"] = local_adapter
     document["enabled"] = form.get("enabled") == "yes"
     return document
 
@@ -988,12 +994,19 @@ def _workers(
     rows = ""
     for worker in plane.workers_view():
         status = str(worker.get("status", "unknown"))
-        badge_class = {"paired": "on", "pending": "na"}.get(status, "off")
+        badge_class = {"active": "on", "revoked": "off"}.get(status, "na")
+        connected = bool(worker.get("connected"))
         rows += (
             "<tr>"
             + f"<td><code>{_esc(worker['worker_id'])}</code><br>"
-            + f"<span class=\"muted\">{_esc(worker['label'])}</span></td>"
-            + f"<td><span class=\"badge {badge_class}\">{_esc(status)}</span></td>"
+            + f"<span class=\"muted\">{_esc(worker.get('label') or '')}</span></td>"
+            + f"<td><span class=\"badge {badge_class}\">{_esc(status)}</span>"
+            + (
+                " <span class=\"badge on\">connected</span>"
+                if connected
+                else ""
+            )
+            + "</td>"
             + f"<td>{_esc(worker.get('last_connected_at') or 'never')}</td>"
             + "<td>"
             + (
@@ -1002,7 +1015,11 @@ def _workers(
                 else "<form class=\"inline\" method=\"post\" action=\"/admin/workers/revoke\">"
                 + f"<input type=\"hidden\" name=\"csrf\" value=\"{_esc(csrf)}\">"
                 + f"<input type=\"hidden\" name=\"worker_id\" value=\"{_esc(worker['worker_id'])}\">"
-                + "<button class=\"secondary\" type=\"submit\">Revoke</button></form>"
+                + "<button class=\"secondary\" type=\"submit\">Revoke</button></form> "
+                + "<form class=\"inline\" method=\"post\" action=\"/admin/workers/rotate\">"
+                + f"<input type=\"hidden\" name=\"csrf\" value=\"{_esc(csrf)}\">"
+                + f"<input type=\"hidden\" name=\"worker_id\" value=\"{_esc(worker['worker_id'])}\">"
+                + "<button class=\"secondary\" type=\"submit\">Rotate credential</button></form>"
             )
             + "</td></tr>"
         )
@@ -1013,9 +1030,10 @@ def _workers(
         )
     body = (
         "<div class=\"notice\">Pairing: start it here, then enter the one-time "
-        + "code and the server URL on the worker device. The code expires and "
-        + "is shown once; the worker receives a per-device credential that "
-        + "only the server stores as a hash (D-044).</div>"
+        + "code on the worker device together with this server's worker-protocol "
+        + "URL. The worker redeems the code inside the verified-TLS protocol "
+        + "handshake and receives its per-device credential there; the code "
+        + "expires and is shown once (D-044).</div>"
         + "<table><tr><th>Worker</th><th>Status</th><th>Last connection</th><th></th></tr>"
         + rows
         + "</table>"
@@ -1050,10 +1068,10 @@ def _workers_initiate(
             + "once, expires "
             + f"{_esc(result.get('expires_at'))}.</strong><br><pre>"
             + _esc(result.get("pairing_code"))
-            + "</pre>Worker id: <code>"
-            + _esc(result.get("worker_id"))
-            + "</code><br>On the worker, enter this code together with the "
-            + "server URL shown on the client-configuration page.</div>"
+            + "</pre>On the worker device, run the worker's <code>pair</code> "
+            + "command with this code and this server's worker-protocol URL; "
+            + "the handshake over verified TLS creates the device identity "
+            + "(the worker id is assigned at pairing time).</div>"
         )
     elif error:
         body = f"<div class=\"error\">{_esc(error)}</div>"
@@ -1077,6 +1095,39 @@ def _workers_revoke(
         _render_banner_page(plane, handler, "Workers and pairing", "/admin/workers", exc.message, error=True, status=exc.status)
         return
     _redirect(plane, handler, "/admin/workers")
+
+
+def _workers_rotate(
+    plane: "ControlPlane", method: str, handler: "GatewayRequestHandler"
+) -> None:
+    _ = method
+    result: dict[str, object] | None = None
+    error = ""
+    error_status = 200
+    try:
+        _ = plane.require_admin_session(handler, mutating=True)
+        form = plane.read_form(handler)
+        result = plane.service_rotate_worker_credential(form.get("worker_id") or "")
+    except ControlHTTPError as exc:
+        error = exc.message
+        error_status = exc.status
+    body = ""
+    if result is not None:
+        body = (
+            "<div class=\"once\"><strong>New worker credential — shown "
+            + "once.</strong><br><pre>"
+            + _esc(result.get("worker_credential"))
+            + "</pre>Deliver it to the device now; the old credential stopped "
+            + "working immediately and only the salted hash is kept.</div>"
+        )
+    elif error:
+        body = f"<div class=\"error\">{_esc(error)}</div>"
+    body += "<p><a href=\"/admin/workers\">Back to workers</a></p>"
+    plane.send_html(
+        handler,
+        error_status if error else 200,
+        _page(plane, handler, "Credential rotated", body),
+    )
 
 
 def _diagnostics(

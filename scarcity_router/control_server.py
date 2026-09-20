@@ -1,6 +1,6 @@
 """Composition entry point for the full server component (M09, issue #94).
 
-One server process (D-041) serves all four surfaces:
+One server process (D-041) serves all surfaces:
 
 - the OpenAI-compatible execution surface v1 (M03): ``GET /v1/models``,
   ``POST /v1/chat/completions``;
@@ -8,14 +8,25 @@ One server process (D-041) serves all four surfaces:
   ``GET /v1/status``, ``POST /v1/select``, ``POST /v1/simulate``;
 - the authenticated control API and lightweight web UI (M09):
   ``/control/**`` and ``/admin/**``;
-- the worker endpoint seam (M05 transport attaches to the same control
-  plane's pairing store).
+- the execution adapters composed from administrator configuration
+  (``scarcity_router.server_composition``): the M04 generic
+  OpenAI-compatible HTTP adapter from provider endpoints and store-held
+  credentials, and the M05 worker-bridged adapter from resource→worker
+  bindings;
+- the OPTIONAL M05 worker-protocol listener (``--worker-listen-port``):
+  off by default, verified TLS required for any non-loopback bind (D-044).
 
-This module is composition only: it opens the durable store, builds the
-:class:`~scarcity_router.control_api.ControlPlane` over it and binds the
-M03 execution server with the control plane attached. There is no second
-deployed administration service. The frozen loopback REST v1 adapter
-(:mod:`scarcity_router.server`) is untouched and remains its own surface.
+This module is composition only: it opens the durable stores, builds the
+:class:`~scarcity_router.control_api.ControlPlane` over them (the plane
+owns the ONE pairing system and composes the adapters from
+configuration) and binds the M03 execution server with the control plane
+attached. There is no second deployed administration service. The
+default deployment is honestly empty: no adapters, no worker listener,
+no clients — exactly as M03 shipped. ``python -m
+scarcity_router.worker_endpoint`` remains the standalone WORKER-side
+entrypoint; it is not a second server. The frozen loopback REST v1
+adapter (:mod:`scarcity_router.server`) is untouched and remains its own
+surface.
 
 Security posture (D-044): the default bind is loopback; a non-loopback
 bind requires explicit TLS. First-run operation starts with NO
@@ -28,6 +39,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import threading
 from pathlib import Path
 from typing import cast
 
@@ -45,6 +57,7 @@ from .server_store import (
     ServerStoreError,
     default_server_data_dir,
 )
+from .worker_endpoint import build_tls_context as build_worker_tls_context
 
 DEFAULT_DATA_DIR = default_server_data_dir()
 
@@ -108,6 +121,37 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="FILE",
         help="TLS private key (required for non-loopback binds)",
     )
+    _ = parser.add_argument(
+        "--worker-listen-host",
+        default=BIND_HOST,
+        metavar="HOST",
+        help=(
+            "worker-protocol listener bind address "
+            + f"(default: {BIND_HOST}; non-loopback requires worker TLS)"
+        ),
+    )
+    _ = parser.add_argument(
+        "--worker-listen-port",
+        default=None,
+        type=int,
+        metavar="PORT",
+        help=(
+            "worker-protocol listener port; OMITTED by default, which runs "
+            + "no worker listener (workers cannot connect until it is on)"
+        ),
+    )
+    _ = parser.add_argument(
+        "--worker-tls-certfile",
+        default=None,
+        metavar="FILE",
+        help="worker-listener TLS certificate chain (required for non-loopback)",
+    )
+    _ = parser.add_argument(
+        "--worker-tls-keyfile",
+        default=None,
+        metavar="FILE",
+        help="worker-listener TLS private key (required for non-loopback)",
+    )
     return parser
 
 
@@ -161,9 +205,40 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--tls-certfile and --tls-keyfile must be used together")
     if not _loopback(host) and certfile is None:
         parser.error("a non-loopback bind requires --tls-certfile/--tls-keyfile")
+    worker_host = arguments["worker_listen_host"]
+    if not isinstance(worker_host, str) or not worker_host:
+        parser.error("--worker-listen-host must be a non-empty string")
+    worker_port = arguments["worker_listen_port"]
+    if worker_port is not None:
+        if (
+            not isinstance(worker_port, int)
+            or isinstance(worker_port, bool)
+            or not 0 <= worker_port <= 65535
+        ):
+            parser.error("--worker-listen-port must be an integer between 0 and 65535")
+    worker_certfile = arguments["worker_tls_certfile"]
+    worker_keyfile = arguments["worker_tls_keyfile"]
+    if (worker_certfile is None) != (worker_keyfile is None):
+        parser.error(
+            "--worker-tls-certfile and --worker-tls-keyfile must be used together"
+        )
+    if worker_port is not None and not _loopback(worker_host) and worker_certfile is None:
+        parser.error(
+            "a non-loopback worker-protocol listener requires "
+            + "--worker-tls-certfile/--worker-tls-keyfile"
+        )
     import_client_keys = arguments["import_client_keys"]
     if import_client_keys is not None and not isinstance(import_client_keys, str):
         parser.error("--import-client-keys must be a path")
+    worker_tls_context = None
+    if worker_port is not None and worker_certfile is not None and worker_keyfile is not None:
+        try:
+            worker_tls_context = build_worker_tls_context(
+                str(worker_certfile), str(worker_keyfile)
+            )
+        except ValueError as exc:
+            print(f"server: {exc}", file=sys.stderr)
+            return 2
     try:
         data_dir = Path(data_dir_value)
         store = ServerStore.open(data_dir)
@@ -188,6 +263,31 @@ def main(argv: list[str] | None = None) -> int:
             tls_context=tls_context,
             control_plane=plane,
         )
+        worker_listener = None
+        worker_reaper: threading.Thread | None = None
+        worker_reaper_stop = threading.Event()
+        if worker_port is not None:
+            # The OPTIONAL worker-protocol listener: same process, its own
+            # authenticated transport, off unless asked for.
+            worker_listener = plane.worker_endpoint.attach_listener(
+                host=worker_host,
+                port=worker_port,
+                tls_context=worker_tls_context,
+            )
+            worker_listener.serve_in_background()
+            # Heartbeat liveness reaping runs with the listener: silent
+            # sessions are closed after the grace window (D-044 bounds).
+            worker_reaper = threading.Thread(
+                target=_reap_liveness,
+                args=(
+                    plane.worker_endpoint,
+                    plane.worker_endpoint.heartbeat_interval_seconds,
+                    worker_reaper_stop,
+                ),
+                name="worker-endpoint-liveness",
+                daemon=True,
+            )
+            worker_reaper.start()
     except (ValueError, OSError, ServerStoreError) as exc:
         print(f"server: {exc}", file=sys.stderr)
         return 2
@@ -205,14 +305,48 @@ def main(argv: list[str] | None = None) -> int:
             + f"{origin}/admin to complete onboarding",
             flush=True,
         )
+    if worker_listener is not None:
+        worker_scheme = "srws" if worker_tls_context is not None else "srw"
+        print(
+            "worker-protocol listener on "
+            + f"{worker_scheme}://{worker_host}:{worker_listener.bound_port} "
+            + f"(protocol v1; pairing codes are issued at {origin}/admin/workers)",
+            flush=True,
+        )
+    else:
+        print(
+            "worker-protocol listener: off (workers cannot connect; pass "
+            + "--worker-listen-port to enable it)",
+            flush=True,
+        )
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
+        worker_reaper_stop.set()
+        if worker_reaper is not None:
+            _ = worker_reaper.join(timeout=5)
+        if worker_listener is not None:
+            worker_listener.shutdown()
         server.server_close()
+        plane.worker_endpoint.close_all_sessions()
+        plane.close_worker_store()
         store.close()
     return 0
+
+
+def _reap_liveness(
+    endpoint: object,
+    interval_seconds: int,
+    stop: threading.Event,
+) -> None:
+    """Close heartbeat-silent worker sessions (bounded liveness reaping)."""
+    from .worker_endpoint import WorkerEndpoint
+
+    assert isinstance(endpoint, WorkerEndpoint)
+    while not stop.wait(timeout=max(1, interval_seconds)):
+        _ = endpoint.enforce_liveness()
 
 
 def _loopback(host: str) -> bool:

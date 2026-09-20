@@ -13,7 +13,6 @@ import http.client
 import re
 import unittest
 import urllib.parse
-from typing import cast
 
 from tests.server_fixtures import (
     FAKE_ADMIN_PASSWORD,
@@ -154,7 +153,7 @@ class UiMutationFlowTests(ServerHarness):
             {
                 "csrf": csrf,
                 "provider_id": "zai-http",
-                "adapter_id": "openai_http",
+                "adapter_id": "zai-coding-plan",
                 "base_url": "https://api.z.ai",
                 "label": "Z.ai",
                 "secret": FAKE_PROVIDER_SECRET,
@@ -176,7 +175,7 @@ class UiMutationFlowTests(ServerHarness):
             {
                 "csrf": csrf,
                 "provider_id": "zai-http",
-                "adapter_id": "openai_http",
+                "adapter_id": "zai-coding-plan",
                 "base_url": "https://api.z.ai",
                 "secret": FAKE_PROVIDER_SECRET,
             },
@@ -229,24 +228,42 @@ class UiMutationFlowTests(ServerHarness):
         self.assertEqual(200, status)
 
     def test_worker_pairing_shows_code_once(self) -> None:
+        import threading
+
+        from scarcity_router.worker_protocol import PairResultMessage
+        from tests.worker_fixtures import MemoryTransport, ScriptedWorker
+
         cookie, csrf = self._session()
         status, html, _headers = _form(
             self.port, "/admin/workers/initiate", {"csrf": csrf, "label": "rig"}, cookie
         )
         self.assertEqual(200, status)
-        match = re.search(r"<pre>([0-9A-F]{4}-[0-9A-F]{4})</pre>", html)
+        match = re.search(r"<pre>([A-Za-z0-9_\-]{16,})</pre>", html)
         assert match is not None, "pairing page did not render the code"
         code = match.group(1)
         status, html, _headers = _get(self.port, "/admin/workers", cookie)
         self.assertEqual(200, status)
+        # The code is never shown again anywhere in the UI.
         self.assertNotIn(code, html)
-        self.assertIn("pending", html)
-        # The code redeems over the worker seam (no session).
-        status, payload, _headers = self.exchange(
-            "POST", "/control/worker-pairing/redeem", {"code": code}
-        )
+        self.assertIn("No workers configured", html)
+        # The code redeems over the M05 worker protocol handshake, not HTTP.
+        server_side, worker_side = MemoryTransport.pair()
+        endpoint = self.plane.worker_endpoint
+        session = endpoint.attach_transport(server_side)
+        endpoint.register_attached(session)
+        thread = threading.Thread(target=session.run, daemon=True)
+        thread.start()
+        worker = ScriptedWorker(worker_side)
+        result = worker.send_pair(code)
+        self.assertTrue(hasattr(result, "worker_id"), f"pairing failed: {result!r}")
+        worker.transport.close()
+        _ = thread.join(timeout=5)
+        # The workers page now shows the paired device from the M05 store.
+        assert isinstance(result, PairResultMessage), result
+        status, html, _headers = _get(self.port, "/admin/workers", cookie)
         self.assertEqual(200, status)
-        self.assertIn("worker_token", cast("dict[str, object]", payload))
+        self.assertIn(result.worker_id, html)
+        self.assertIn("active", html)
 
     def test_missing_csrf_renders_a_forbidden_error(self) -> None:
         cookie, _csrf = self._session()

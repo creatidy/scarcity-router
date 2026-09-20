@@ -112,9 +112,10 @@ class StoreLifecycleTests(unittest.TestCase):
         "admin_sessions",
         "client_keys",
         "provider_secrets",
-        "worker_pairings",
         "audit_records",
     )
+
+    _RETIRED_TABLES: tuple[str, ...] = ("worker_pairings",)
 
     def _migration_versions(self, store: ServerStore) -> list[int]:
         return list(store.applied_migration_versions())
@@ -133,6 +134,13 @@ class StoreLifecycleTests(unittest.TestCase):
                         (table,),
                     ).fetchall()
                     self.assertEqual(1, len(rows), table)
+                for table in self._RETIRED_TABLES:
+                    rows = connection.execute(
+                        "SELECT name FROM sqlite_master WHERE type = 'table' "
+                        + "AND name = ?",
+                        (table,),
+                    ).fetchall()
+                    self.assertEqual(0, len(rows), table)
             finally:
                 connection.close()
 
@@ -240,72 +248,27 @@ class ClientKeyAndSecretTests(unittest.TestCase):
             self.assertFalse(store.has_provider_secret("zai-http"))
 
 
-class PairingTests(unittest.TestCase):
-    def test_pairing_lifecycle_single_use_redemption(self) -> None:
-        with tempfile.TemporaryDirectory() as parent:
-            store = ServerStore.open(Path(parent) / "server")
-            self.addCleanup(store.close)
-            store.create_pairing(
-                worker_id="worker-a",
-                label="lab rig",
-                code_hash="c" * 64,
-                created_at=T0,
-                expires_at=T1,
-            )
-            records = store.list_pairings()
-            self.assertEqual(("worker-a",), (records[0].worker_id,))
-            self.assertEqual("pending", records[0].status)
-            worker_id = store.redeem_pairing(
-                code_hash="c" * 64, token_hash="t" * 64, at=T0
-            )
-            self.assertEqual("worker-a", worker_id)
-            # A code redeems exactly once.
-            self.assertIsNone(
-                store.redeem_pairing(code_hash="c" * 64, token_hash="x" * 64, at=T0)
-            )
-            self.assertEqual({"worker-a": "t" * 64}, store.active_worker_token_hashes())
-            self.assertTrue(
-                store.record_worker_connection(worker_id="worker-a", at=T1)
-            )
-            self.assertTrue(store.revoke_pairing(worker_id="worker-a", at=T1))
-            self.assertEqual({}, store.active_worker_token_hashes())
-            self.assertEqual("revoked", store.list_pairings()[0].status)
+class RetiredPairingSurfaceTests(unittest.TestCase):
+    """The M09-side duplicate pairing surface is gone (M05 is the ONE system).
 
-    def test_expired_code_is_never_redeemable(self) -> None:
-        with tempfile.TemporaryDirectory() as parent:
-            store = ServerStore.open(Path(parent) / "server")
-            self.addCleanup(store.close)
-            store.create_pairing(
-                worker_id="worker-a",
-                label="lab rig",
-                code_hash="c" * 64,
-                created_at=T0,
-                expires_at=T1,
-            )
-            self.assertIsNone(
-                store.redeem_pairing(code_hash="c" * 64, token_hash="t" * 64, at=T1)
-            )
-            self.assertEqual("revoked", store.list_pairings()[0].status)
+    Since schema version 2 the store holds no worker pairing tables and
+    exposes no pairing API; worker identities live in the M05 worker
+    identity store beside this file.
+    """
 
-    def test_duplicate_worker_id_refused(self) -> None:
-        with tempfile.TemporaryDirectory() as parent:
-            store = ServerStore.open(Path(parent) / "server")
-            self.addCleanup(store.close)
-            store.create_pairing(
-                worker_id="worker-a",
-                label="one",
-                code_hash="c" * 64,
-                created_at=T0,
-                expires_at=T1,
+    def test_pairing_api_is_absent_from_the_store(self) -> None:
+        for name in (
+            "create_pairing",
+            "list_pairings",
+            "redeem_pairing",
+            "revoke_pairing",
+            "record_worker_connection",
+            "active_worker_token_hashes",
+        ):
+            self.assertFalse(
+                hasattr(ServerStore, name),
+                f"ServerStore.{name} must stay retired",
             )
-            with self.assertRaises(ServerStoreError):
-                store.create_pairing(
-                    worker_id="worker-a",
-                    label="two",
-                    code_hash="d" * 64,
-                    created_at=T0,
-                    expires_at=T1,
-                )
 
 
 class AuditRetentionTests(unittest.TestCase):

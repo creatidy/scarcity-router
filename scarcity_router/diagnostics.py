@@ -671,9 +671,17 @@ def render_report_human(report: DiagnosticsReport) -> str:
         if check.remediation:
             lines.append(f"       remediation: {check.remediation}")
     for worker in report.workers:
+        connection = (
+            "connected"
+            if worker.get("connected") is True
+            else "not connected"
+            if "connected" in worker
+            else "connection state unknown (server not running)"
+        )
         lines.append(
             f"[info] worker {worker.get('worker_id', '?')} "
             + f"({worker.get('label', '')}): {worker.get('status', '?')}"
+            + f" [{connection}]"
         )
     for resource in report.resources:
         reached = [

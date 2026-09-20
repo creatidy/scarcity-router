@@ -2,8 +2,8 @@
 
 One server component serves all four surfaces (D-041): the OpenAI-
 compatible execution surface (M03), the authenticated control API (this
-module), the lightweight web UI (:mod:`scarcity_router.server_ui`) and —
-through the M05 seam — the worker endpoint. This module owns the control
+module), the lightweight web UI (:mod:`scarcity_router.server_ui`) and
+the M05 worker-protocol endpoint. This module owns the control
 plane that the execution server dispatches to:
 
 - **Machine-interface control endpoints** ``GET /v1/status``,
@@ -22,19 +22,24 @@ plane that the execution server dispatches to:
   (validated against the task-profile catalog, D-042), client key
   issuance/revocation (SHA-256 hash storage, constant-time comparison
   through :class:`~scarcity_router.gateway_contracts.ClientKeyDirectory`),
-  worker pairing administration (the M05 seam), diagnostics, and a
+  worker pairing administration (delegated to the ONE pairing system,
+  M05's :class:`~scarcity_router.worker_identity_store.WorkerAdminService`
+  and :class:`~scarcity_router.worker_endpoint.WorkerEndpoint`), the
+  M04-backed execution-adapter composition
+  (:mod:`scarcity_router.server_composition`), diagnostics, and a
   secret-free configuration export.
 
 Security posture (D-044): three separate identity classes (administrator
-sessions, inference client keys, worker pairing/token credentials) never
+sessions, inference client keys, worker per-device credentials) never
 collapsed; no bearer secret ever appears in a URL; client keys never
 authorize administration and administrator sessions never authorize the
 machine-interface endpoints; mutations require an authenticated
-administrator session plus a per-session CSRF token; the only
-session-free mutation is the worker pairing redemption, which
-authenticates with a single-use, short-lived, hash-stored one-time code.
-Every response is ``Cache-Control: no-store`` and every error message is
-a safe structural message.
+administrator session plus a per-session CSRF token. Worker pairing
+redemption is NOT an HTTP endpoint: the pairing code is redeemed inside
+the M05 worker protocol's verified-TLS handshake (the trust bootstrap is
+the protocol handshake itself), while code ISSUANCE stays here. Every
+response is ``Cache-Control: no-store`` and every error message is a
+safe structural message.
 """
 
 from __future__ import annotations
@@ -89,7 +94,12 @@ from .machine_api import (
 )
 from .capacity import CapacitySnapshot
 from .eligibility import ExecutionEligibility
-from .resource_state import ResourceRegistration, ResourceRegistry, ResourceStateSnapshot
+from .resource_state import (
+    ResourceRegistration,
+    ResourceRegistry,
+    ResourceStateSnapshot,
+    WorkerStateReport,
+)
 from .routing_core import (
     AdministratorConstraints,
     ClientAuthorization,
@@ -107,6 +117,10 @@ from .selection_app import (
     select_from_inputs,
     simulate_from_inputs,
 )
+from .server_composition import (
+    build_adapter_registry,
+    validate_execution_configuration,
+)
 from .server_config import (
     AuditRetention,
     ProviderEndpointConfig,
@@ -115,7 +129,15 @@ from .server_config import (
     ServerConfiguration,
 )
 from .server_store import ServerStore, ServerStoreError
+from .providers.openai_http_adapter import OpenAICompatibleHttpAdapter
 from .status import StatusCollectors, collect_status
+from .worker_endpoint import WorkerEndpoint
+from .worker_identity_store import (
+    WorkerAdminService,
+    WorkerIdentityError,
+    WorkerIdentityStore,
+    default_worker_store_path,
+)
 
 #: The injected web-UI dispatcher (see ``scarcity_router.server_ui``).
 UiDispatcher = Callable[
@@ -129,7 +151,6 @@ _MAX_PASSWORD_LENGTH = 128
 _DEFAULT_PBKDF2_ITERATIONS = 240_000
 
 _CLIENT_KEY_PREFIX = "sk-sr-"
-_WORKER_TOKEN_PREFIX = "srw-"
 
 
 # ── Credential primitives ─────────────────────────────────────────────────────
@@ -184,17 +205,6 @@ def hash_token(token: str) -> str:
 def new_client_key() -> str:
     """A fresh inference-client API key (returned exactly once)."""
     return _CLIENT_KEY_PREFIX + secrets.token_urlsafe(24)
-
-
-def new_worker_token() -> str:
-    """A fresh per-device worker credential (returned exactly once)."""
-    return _WORKER_TOKEN_PREFIX + secrets.token_urlsafe(24)
-
-
-def new_pairing_code() -> str:
-    """A short human-typeable one-time pairing code (returned once)."""
-    raw = secrets.token_hex(4)
-    return f"{raw[:4]}-{raw[4:]}".upper()
 
 
 def validate_admin_password(password: object) -> str:
@@ -293,6 +303,10 @@ class ControlPlane:
     _ui_dispatcher: UiDispatcher | None
     _generation_tester: GenerationTester | None
     _registry_clock: Callable[[], str]
+    _worker_identity_store: WorkerIdentityStore
+    _owns_worker_store: bool
+    _worker_admin: WorkerAdminService
+    _worker_endpoint: WorkerEndpoint
 
     def __init__(
         self,
@@ -309,6 +323,7 @@ class ControlPlane:
         generation_tester: GenerationTester | None = None,
         ui_dispatcher: UiDispatcher | None = None,
         version: str | None = None,
+        worker_identity_store: WorkerIdentityStore | None = None,
     ) -> None:
         self._ui_dispatcher = ui_dispatcher
         self._store = store
@@ -328,6 +343,25 @@ class ControlPlane:
         self._request_state = threading.local()
         self._registry_clock = lambda: format_utc(
             datetime.now(timezone.utc)
+        )
+        # ONE pairing system (M05): the control plane owns the worker
+        # identity store (its own permissioned database beside the server
+        # store) and the worker endpoint; the administration endpoints
+        # below delegate to them. An injected store lets deployments place
+        # it explicitly; the default is the canonical server-data location.
+        if worker_identity_store is not None:
+            self._worker_identity_store = worker_identity_store
+            self._owns_worker_store = False
+        else:
+            self._worker_identity_store = WorkerIdentityStore(
+                default_worker_store_path(store.path.parent),
+                clock=self._clock,
+            )
+            self._owns_worker_store = True
+        self._worker_admin = WorkerAdminService(self._worker_identity_store)
+        self._worker_endpoint = WorkerEndpoint(
+            identity_store=self._worker_identity_store,
+            registry=self,
         )
         document = store.load_configuration_document()
         self._config = (
@@ -357,6 +391,35 @@ class ControlPlane:
         if application is None:  # pragma: no cover - construction invariant
             raise RuntimeError("control plane has no application")
         return application
+
+    @property
+    def worker_endpoint(self) -> WorkerEndpoint:
+        """The M05 worker-protocol endpoint of this process (composition)."""
+        return self._worker_endpoint
+
+    @property
+    def worker_admin(self) -> WorkerAdminService:
+        """The M05 administration seam over the one identity store."""
+        return self._worker_admin
+
+    def close_worker_store(self) -> None:
+        """Close the worker identity store when this plane created it."""
+        if self._owns_worker_store:
+            self._worker_identity_store.close()
+
+    def apply_worker_report(self, report: WorkerStateReport) -> None:
+        """The M05 endpoint's report sink (the one normalization path).
+
+        Reports are applied atomically through the live registry (M01
+        fail-closed semantics: an unregistered or future-dated entry
+        changes nothing) and recorded so configuration rebuilds re-apply
+        them — worker-reported state never silently evaporates because an
+        administrator edited another resource.
+        """
+        registry = self.current_application().registry
+        registry.apply_worker_report(report)
+        for snapshot in report.resources:
+            self._observations[snapshot.identity.resource_id] = snapshot
 
     def handles(self, method: str, path: str) -> bool:
         _ = method
@@ -755,8 +818,10 @@ class ControlPlane:
         self, method: str, path: str, handler: GatewayRequestHandler
     ) -> None:
         parts = [part for part in path[len(CONTROL_PREFIX) :].split("/") if part]
-        # The bootstrap and pairing-redemption endpoints authenticate with
-        # their own one-time credentials; everything else needs a session.
+        # The bootstrap endpoint authenticates with the first-run password;
+        # everything else needs a session. Worker pairing redemption is not
+        # an HTTP endpoint at all: the M05 worker protocol's TLS handshake
+        # is the redemption path.
         if parts == ["bootstrap", "admin"] and method == "POST":
             document = self._require_json_body(handler)
             self.service_bootstrap_admin(
@@ -769,10 +834,6 @@ class ControlPlane:
                 {"status": "ok", "administrator": "configured"},
                 cookies=(cookie,),
             )
-            return
-        if parts == ["worker-pairing", "redeem"] and method == "POST":
-            document = self._require_json_body(handler)
-            self._send_json(handler, HTTPStatus.OK, self.service_redeem_pairing(document))
             return
         if parts == ["session"] and method == "POST":
             document = self._require_json_body(handler)
@@ -883,6 +944,18 @@ class ControlPlane:
         if parts == ["workers", "pairing-codes"] and method == "POST":
             document = self._require_json_body(handler)
             self._send_json(handler, HTTPStatus.OK, self.service_initiate_pairing(document))
+            return
+        if (
+            len(parts) == 3
+            and parts[0] == "workers"
+            and parts[2] == "rotate"
+            and method == "POST"
+        ):
+            self._send_json(
+                handler,
+                HTTPStatus.OK,
+                self.service_rotate_worker_credential(parts[1]),
+            )
             return
         if len(parts) == 2 and parts[0] == "workers" and method == "DELETE":
             self.service_revoke_worker(parts[1])
@@ -1010,13 +1083,17 @@ class ControlPlane:
             raise ControlHTTPError.invalid_request(
                 "resource references an unknown provider endpoint"
             )
-        if resource.worker_id is not None and not any(
-            pairing.worker_id == resource.worker_id
-            for pairing in self._store.list_pairings()
-        ):
-            raise ControlHTTPError.invalid_request(
-                "resource references an unknown worker"
-            )
+        if resource.worker_id is not None:
+            worker = self._worker_identity_store.get_identity(resource.worker_id)
+            if worker is None:
+                raise ControlHTTPError.invalid_request(
+                    "resource references an unknown worker; pair the worker "
+                    + "first (workers page)"
+                )
+            if worker.status != "active":
+                raise ControlHTTPError.invalid_request(
+                    "resource references a revoked worker"
+                )
         self._save_config(self._updated(resources=self._config.resources + (resource,)))
         return resource_id
 
@@ -1127,63 +1204,60 @@ class ControlPlane:
         self._rebuild_application()
 
     def service_initiate_pairing(self, document: Mapping[str, object]) -> dict[str, object]:
+        """Issue one pairing code through the ONE pairing system (M05).
+
+        The code is redeemed inside the worker protocol's verified-TLS
+        handshake, which is also when the worker's per-device identity
+        (``worker_id`` + credential) is created — so this response names
+        no worker id; the workers view shows the device once it has
+        paired.
+        """
         label = document.get("label")
         if not isinstance(label, str) or not label.strip():
             raise ControlHTTPError.invalid_request("label is required")
-        label = label.strip()
-        if len(label) > 200:
-            raise ControlHTTPError.invalid_request("label is too long")
-        worker_id = f"worker-{secrets.token_hex(4)}"
-        code = new_pairing_code()
-        now = self._clock()
-        expires = now + timedelta(seconds=self._config.pairing_code_ttl_seconds)
-        self._store.create_pairing(
-            worker_id=worker_id,
-            label=label,
-            code_hash=hash_token(code),
-            created_at=format_utc(now),
-            expires_at=format_utc(expires),
+        try:
+            pairing = self._worker_admin.begin_pairing(label=label.strip())
+        except WorkerIdentityError as exc:
+            if exc.code == "pairing_unavailable":
+                raise ControlHTTPError.conflict(exc.message) from None
+            raise ControlHTTPError.invalid_request(exc.message) from None
+        expires_at = format_utc(
+            datetime.fromisoformat(pairing.expires_at[:-1] + "+00:00")
         )
         return {
             "status": "ok",
-            "worker_id": worker_id,
-            "pairing_code": code,
-            "expires_at": format_utc(expires),
+            "pairing_code": pairing.pairing_code,
+            "expires_at": expires_at,
             "note": (
                 "enter this one-time code on the worker device together with "
-                + "the server URL; the code expires and is shown once"
+                + "the server's worker-protocol URL; the worker pairs over "
+                + "the verified-TLS protocol handshake and receives its "
+                + "per-device credential there"
             ),
         }
 
-    def service_redeem_pairing(self, document: Mapping[str, object]) -> dict[str, object]:
-        code = document.get("code")
-        if not isinstance(code, str) or not code.strip():
-            raise ControlHTTPError.unauthenticated("invalid pairing code")
-        token = new_worker_token()
-        worker_id = self._store.redeem_pairing(
-            code_hash=hash_token(code.strip()),
-            token_hash=hash_token(token),
-            at=format_utc(self._clock()),
-        )
-        if worker_id is None:
-            raise ControlHTTPError.unauthenticated(
-                "invalid, expired or already-used pairing code"
-            )
+    def service_rotate_worker_credential(self, worker_id: str) -> dict[str, object]:
+        """Rotate one worker's per-device credential (shown once, here)."""
+        try:
+            credential = self._worker_admin.rotate_worker_credential(worker_id)
+        except WorkerIdentityError:
+            raise ControlHTTPError.not_found("unknown worker") from None
         return {
             "status": "ok",
             "worker_id": worker_id,
-            "worker_token": token,
+            "worker_credential": credential,
             "note": (
-                "store this worker credential now; it is shown once and only "
-                + "its SHA-256 hash is kept"
+                "deliver this new credential to the device now; it is shown "
+                + "once and only its salted hash is kept"
             ),
         }
 
     def service_revoke_worker(self, worker_id: str) -> None:
-        if not self._store.revoke_pairing(
-            worker_id=worker_id, at=format_utc(self._clock())
-        ):
-            raise ControlHTTPError.not_found("unknown worker")
+        """Revoke via the M05 endpoint: identity revoked, sessions closed."""
+        try:
+            self._worker_endpoint.revoke_worker(worker_id)
+        except WorkerIdentityError:
+            raise ControlHTTPError.not_found("unknown worker") from None
 
     # ── Views ────────────────────────────────────────────────────────────
 
@@ -1202,7 +1276,7 @@ class ControlPlane:
             "aliases": len(self._config.aliases),
             "client_keys_active": active,
             "client_keys_revoked": len(store_records) - active,
-            "workers": len(self._store.list_pairings()),
+            "workers": len(self._worker_admin.list_workers()),
             "adapters_ready": list(self._adapters.registered_channels()),
             "versions": self._versions(),
             "quota_safety": "control and diagnostic reads never consume inference quota",
@@ -1283,17 +1357,35 @@ class ControlPlane:
         ]
 
     def _workers_view(self) -> list[dict[str, object]]:
-        return [
-            {
-                "worker_id": record.worker_id,
-                "label": record.label,
-                "status": record.status,
-                "created_at": record.created_at,
-                "expires_at": record.expires_at,
-                "last_connected_at": record.last_connected_at,
-            }
-            for record in self._store.list_pairings()
-        ]
+        """The M05 pairing store's state plus the endpoint's live state.
+
+        ``status``/``created_at``/``credential_rotated_at`` come from the
+        ONE pairing system (M05's identity store); ``connected`` and
+        ``last_connected_at`` come from the worker endpoint's real
+        session table and authentication liveness stamps — never from a
+        second connection bookkeeping.
+        """
+        endpoint_state = {
+            state.worker_id: state
+            for state in self._worker_endpoint.worker_connection_state()
+        }
+        view: list[dict[str, object]] = []
+        for record in self._worker_admin.list_workers():
+            state = endpoint_state.get(record.worker_id)
+            view.append(
+                {
+                    "worker_id": record.worker_id,
+                    "label": record.label,
+                    "status": record.status,
+                    "created_at": record.created_at,
+                    "credential_rotated_at": record.credential_rotated_at,
+                    "connected": state.connected if state is not None else False,
+                    "last_connected_at": (
+                        state.last_connected_at if state is not None else None
+                    ),
+                }
+            )
+        return view
 
     # ── Public accessors used by the web UI ──────────────────────────────
 
@@ -1364,6 +1456,15 @@ class ControlPlane:
     # ── Connection and generation tests ──────────────────────────────────
 
     def _connection_test_document(self, resource_id: str) -> dict[str, object]:
+        """The quota-free connection test over real seam data.
+
+        Configuration checks come from the store and the ONE pairing
+        system; when an M04 provider binding exists and its preset
+        evidences a health endpoint, the test additionally probes it
+        through the adapter's read-only ``probe_health`` (never an
+        inference request, never quota). Anything not wired here stays
+        honestly absent from the checks rather than reported fake-green.
+        """
         resource = self._config.resource_by_id(resource_id)
         if resource is None:
             raise ControlHTTPError.not_found("unknown resource")
@@ -1386,17 +1487,35 @@ class ControlPlane:
             "resource is enabled" if resource.enabled else "resource is disabled",
             "enable the resource before testing",
         )
+        probed = False
         if identity.channel in ("worker_bridged", "local_app_adapter"):
-            paired = resource.worker_id is not None and any(
-                pairing.worker_id == resource.worker_id
-                and pairing.status == "paired"
-                for pairing in self._store.list_pairings()
+            worker = (
+                self._worker_identity_store.get_identity(resource.worker_id)
+                if resource.worker_id is not None
+                else None
             )
+            paired = worker is not None and worker.status == "active"
             record(
                 "worker_paired",
                 paired,
-                "a paired worker is bound" if paired else "no paired worker is bound",
+                "an active worker identity is bound"
+                if paired
+                else "no active worker identity is bound",
                 "pair a worker and bind it to this resource",
+            )
+            connected = resource.worker_id is not None and any(
+                state.worker_id == resource.worker_id
+                for state in self._worker_endpoint.worker_connection_state()
+                if state.connected
+            )
+            record(
+                "worker_connected",
+                connected,
+                "the bound worker is connected"
+                if connected
+                else "the bound worker is not connected",
+                "start the worker runtime; it connects out to this server "
+                + "(worker-protocol listener)",
             )
         else:
             bound = resource.endpoint_id is not None
@@ -1406,18 +1525,33 @@ class ControlPlane:
                 "a provider endpoint is bound" if bound else "no endpoint is bound",
                 "add a provider endpoint and bind it to this resource",
             )
+            credential_required = True
+            if bound and resource.endpoint_id is not None:
+                provider = self._config.provider_by_id(resource.endpoint_id)
+                from .providers.openai_http_presets import preset_by_id
+
+                preset = (
+                    preset_by_id(provider.adapter_id)
+                    if provider is not None
+                    else None
+                )
+                if preset is not None:
+                    credential_required = preset.policy.requires_credential
             stored = (
                 resource.endpoint_id is not None
                 and self._store.has_provider_secret(resource.endpoint_id)
             )
-            record(
-                "credential_present",
-                stored,
-                "a credential is stored for the endpoint"
-                if stored
-                else "no credential is stored for the endpoint",
-                "set the provider credential through the providers page",
-            )
+            if credential_required or stored:
+                record(
+                    "credential_present",
+                    stored,
+                    "a credential is stored for the endpoint"
+                    if stored
+                    else "no credential is stored for the endpoint",
+                    "set the provider credential through the providers page",
+                )
+            if bound and identity.channel == "server_direct_http":
+                probed = self._probe_provider_health(resource, record)
         passed = all(bool(check["passed"]) for check in checks)
         return {
             "resource_id": resource_id,
@@ -1425,10 +1559,60 @@ class ControlPlane:
             "checks": checks,
             "quota_consumed": False,
             "note": (
-                "configuration-level test only: no provider request was made "
-                + "and no inference quota was consumed"
+                "quota-free test over the configured seams (the M05 worker "
+                + "endpoint or the M04 adapter's read-only health probe); "
+                + "never an inference request"
+                if probed
+                else (
+                    "quota-free test; this preset evidences no health "
+                    + "endpoint, so no provider request was made"
+                    if identity.channel == "server_direct_http"
+                    and resource.endpoint_id is not None
+                    else (
+                        "configuration-level test only: no provider request "
+                        + "was made and no inference quota was consumed"
+                    )
+                )
             ),
         }
+
+    def _probe_provider_health(
+        self,
+        resource: ResourceConfig,
+        record: Callable[[str, bool, str, str], None],
+    ) -> bool:
+        """Run the M04 adapter's quota-free health probe when possible.
+
+        Returns ``True`` when a probe actually ran (its check is appended);
+        ``False`` when the resource is unbound, no adapter is composed for
+        the channel, or the preset evidences no health endpoint — states
+        that stay honestly absent from the check list.
+        """
+        adapter = self._adapters.resolve("server_direct_http")
+        if not isinstance(adapter, OpenAICompatibleHttpAdapter):
+            return False
+        result = adapter.probe_health(
+            resource.registration.identity.resource_id
+        )
+        if result.status == "unsupported_preset":
+            return False
+        if result.status == "refused":
+            record(
+                "provider_health",
+                False,
+                result.note or "no provider binding is configured",
+                "bind a provider endpoint (with the M04 preset) to this "
+                + "resource",
+            )
+            return True
+        passed = result.status == "ok"
+        record(
+            "provider_health",
+            passed,
+            result.note or f"health probe status: {result.status}",
+            "verify the endpoint's origin, credential and reachability",
+        )
+        return True
 
     def _run_generation_test(self, resource_id: str) -> dict[str, object]:
         resource = self._config.resource_by_id(resource_id)
@@ -1453,6 +1637,10 @@ class ControlPlane:
             for record in self._store.list_client_keys()
             if record.revoked_at is None
         ]
+        connection_state = {
+            state.worker_id: state
+            for state in self._worker_endpoint.worker_connection_state()
+        }
         return collect_server_diagnostics(
             ServerDiagnosticsInputs(
                 configuration=self._config,
@@ -1460,7 +1648,11 @@ class ControlPlane:
                     self.current_application().registry.registry_snapshot()
                 ),
                 constraints=self._config.admin_constraints,
-                paired_worker_ids=frozenset(self._store.active_worker_token_hashes()),
+                paired_worker_ids=frozenset(
+                    record.worker_id
+                    for record in self._worker_admin.list_workers()
+                    if record.status == "active"
+                ),
                 channels_with_adapters=frozenset(self._adapters.registered_channels()),
                 endpoints_with_credentials=frozenset(
                     provider.provider_id
@@ -1472,9 +1664,18 @@ class ControlPlane:
                         "worker_id": record.worker_id,
                         "label": record.label,
                         "status": record.status,
-                        "last_connected_at": record.last_connected_at,
+                        "connected": (
+                            connection_state[record.worker_id].connected
+                            if record.worker_id in connection_state
+                            else False
+                        ),
+                        "last_connected_at": (
+                            connection_state[record.worker_id].last_connected_at
+                            if record.worker_id in connection_state
+                            else None
+                        ),
                     }
-                    for record in self._store.list_pairings()
+                    for record in self._worker_admin.list_workers()
                 ),
                 store_schema_version=self._store.schema_version(),
                 store_error=None,
@@ -1560,14 +1761,29 @@ class ControlPlane:
         )
 
     def _save_config(self, config: ServerConfiguration) -> None:
-        """Persist one configuration version and apply it (fail closed)."""
+        """Validate, apply, then persist one configuration version.
+
+        The rebuild runs BEFORE the write so a configuration the adapters
+        cannot compose (unknown preset, unparseable origin, unknown
+        worker) is rejected as a client-classifiable error and never
+        reaches the durable store: what passed composition here will pass
+        again on restart.
+        """
         config.validate_no_router_loop(self._own_origins)
-        self._store.save_configuration_document(
-            config.to_document(), at=format_utc(self._clock())
+        validate_execution_configuration(
+            config,
+            worker_id_exists=self._worker_id_exists,
         )
         self._config = config
         self._sink.update_retention(config.audit_retention)
         self._rebuild_application()
+        self._store.save_configuration_document(
+            config.to_document(), at=format_utc(self._clock())
+        )
+
+    def _worker_id_exists(self, worker_id: str) -> bool:
+        """Whether the M05 pairing store knows this worker device."""
+        return self._worker_identity_store.get_identity(worker_id) is not None
 
     def _rebuild_application(self) -> None:
         """Rebuild the GatewayApplication from the current configuration.
@@ -1575,9 +1791,14 @@ class ControlPlane:
         This is the seam between administrator configuration and the M03
         coordinator: routing artifacts load through the shared application
         loader, enabled resources are (re-)registered, observations for
-        still-registered resources are re-applied, and both authorization
+        still-registered resources are re-applied, both authorization
         layers plus the client-key directory come from the authoritative
-        configuration. No selection or routing logic exists here.
+        configuration, and the execution adapters are composed from that
+        same configuration through
+        :mod:`scarcity_router.server_composition` (M04 HTTP adapter from
+        provider endpoints plus store-held credentials; M05 worker-bridged
+        adapter from resource→worker bindings). No selection or routing
+        logic exists here.
         """
         catalog, profiles, profile_policy_version = load_configured_artifacts(
             self._catalog_path, self._model_policy_path
@@ -1591,6 +1812,11 @@ class ControlPlane:
                 registry.apply_snapshot(observation)
         directory = ClientKeyDirectory(self._store.active_client_key_hashes())
         policy = self._default_policy()
+        self._adapters = build_adapter_registry(
+            self._config,
+            provider_secret_reader=self._store.get_provider_secret,
+            worker_endpoint=self._worker_endpoint,
+        )
         self._application = GatewayApplication(
             catalog=catalog,
             profiles=profiles,
@@ -1635,12 +1861,6 @@ class ControlPlane:
         """
         self._observations[snapshot.identity.resource_id] = snapshot
         self.current_application().registry.apply_snapshot(snapshot)
-
-    def record_worker_connection(self, worker_id: str) -> bool:
-        """The M05 transport seam: stamp one live worker connection."""
-        return self._store.record_worker_connection(
-            worker_id=worker_id, at=format_utc(self._clock())
-        )
 
 
 # ── Small configuration-record helpers ────────────────────────────────────────
@@ -1734,9 +1954,7 @@ __all__ = [
     "hash_admin_password",
     "hash_token",
     "new_client_key",
-    "new_pairing_code",
     "new_session_token",
-    "new_worker_token",
     "validate_admin_password",
     "verify_admin_password",
 ]

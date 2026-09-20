@@ -375,7 +375,7 @@ class DoctorCliTests(unittest.TestCase):
             _ = plane.service_add_provider(
                 {
                     "provider_id": "zai-http",
-                    "adapter_id": "openai_http",
+                    "adapter_id": "zai-coding-plan",
                     "base_url": "https://api.z.ai",
                 }
             )
@@ -386,7 +386,7 @@ class DoctorCliTests(unittest.TestCase):
             self.assertEqual(0, code)
             self.assertIn("Administrator identity", output)
             self.assertIn("provider endpoint(s)", output)
-            self.assertIn("store schema version 1", output)
+            self.assertIn("store schema version 2", output)
 
     def test_server_mode_json_and_missing_directory(self) -> None:
         with tempfile.TemporaryDirectory() as parent:

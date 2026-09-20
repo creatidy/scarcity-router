@@ -358,12 +358,38 @@ def _run_doctor(args: dict[str, object], output: TextIO) -> int:
                 if record.revoked_at is None
             ]
             total = len(store.list_client_keys())
+            # Worker pairing state lives in the ONE pairing system (M05's
+            # identity store beside the server store); the server's live
+            # connection state is in-process and therefore not visible to
+            # an offline doctor — rows honestly carry no connection claim.
+            worker_records: tuple[WorkerIdentityRecord, ...] = ()
+            from .worker_identity_store import (
+                WorkerIdentityError,
+                WorkerIdentityRecord,
+                WorkerIdentityStore,
+                default_worker_store_path,
+            )
+
+            worker_path = _Path(default_worker_store_path(server_dir_value))
+            if worker_path.is_file():
+                try:
+                    worker_store = WorkerIdentityStore(worker_path)
+                    try:
+                        worker_records = worker_store.list_identities()
+                    finally:
+                        worker_store.close()
+                except (WorkerIdentityError, OSError, ValueError):
+                    worker_records = ()
             report = collect_server_diagnostics(
                 ServerDiagnosticsInputs(
                     configuration=configuration,
                     registry_snapshot=None,
                     constraints=configuration.admin_constraints,
-                    paired_worker_ids=frozenset(store.active_worker_token_hashes()),
+                    paired_worker_ids=frozenset(
+                        record.worker_id
+                        for record in worker_records
+                        if record.status == "active"
+                    ),
                     channels_with_adapters=frozenset(),
                     endpoints_with_credentials=frozenset(
                         provider.provider_id
@@ -375,9 +401,8 @@ def _run_doctor(args: dict[str, object], output: TextIO) -> int:
                             "worker_id": record.worker_id,
                             "label": record.label,
                             "status": record.status,
-                            "last_connected_at": record.last_connected_at,
                         }
-                        for record in store.list_pairings()
+                        for record in worker_records
                     ),
                     store_schema_version=store.schema_version(),
                     store_error=None,

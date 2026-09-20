@@ -80,10 +80,12 @@ def default_attempt_id() -> str:
 class WorkerBridgedAdapter:
     """The M03 execution adapter for the ``worker_bridged`` channel.
 
-    ``resource_adapter_map`` is administrator configuration (M09 owns its
-    UX): it binds each ``worker_bridged`` resource id to the worker-local
-    adapter id that must execute it. A resource without a configured local
-    adapter fails closed here, before anything is dispatched.
+    ``resource_adapter_map`` is administrator configuration (composed
+    from M09's resource ``local_adapter_id`` bindings by
+    :mod:`scarcity_router.server_composition`): it binds each
+    ``worker_bridged`` resource id to the worker-local adapter id that
+    must execute it. A resource without a configured local adapter fails
+    closed here, before anything is dispatched.
     """
 
     channel: str = "worker_bridged"

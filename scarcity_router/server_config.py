@@ -156,19 +156,25 @@ class ResourceConfig:
     bindings consumed by the execution path (M04 adapter / M05 worker
     transport respectively); both are optional so a resource can be
     reviewed and prepared before its channel exists.
+    ``local_adapter_id`` names the worker-local adapter (the worker's own
+    allowlist key, e.g. ``ollama``) that a ``worker_bridged`` resource's
+    executions are dispatched to; the worker still enforces its own
+    allowlist against the name at dispatch, so this can only ever name an
+    adapter the worker itself configured.
     """
 
     registration: ResourceRegistration
     enabled: bool = True
     endpoint_id: str | None = None
     worker_id: str | None = None
+    local_adapter_id: str | None = None
 
     @classmethod
     def from_dict(cls, d: object) -> "ResourceConfig":
         dd = exact_shape(
             d,
             ("registration",),
-            ("enabled", "endpoint_id", "worker_id"),
+            ("enabled", "endpoint_id", "worker_id", "local_adapter_id"),
             "resource_config",
         )
         registration_document = v_str_object_mapping(
@@ -185,11 +191,17 @@ class ResourceConfig:
             if "worker_id" in dd
             else None
         )
+        local_adapter_id = (
+            v_safe_id(dd["local_adapter_id"], "resource_config.local_adapter_id")
+            if "local_adapter_id" in dd
+            else None
+        )
         return cls(
             registration=registration,
             enabled=(v_bool(dd["enabled"], "resource_config.enabled") if "enabled" in dd else True),
             endpoint_id=endpoint_id,
             worker_id=worker_id,
+            local_adapter_id=local_adapter_id,
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -209,6 +221,8 @@ class ResourceConfig:
             out["endpoint_id"] = self.endpoint_id
         if self.worker_id is not None:
             out["worker_id"] = self.worker_id
+        if self.local_adapter_id is not None:
+            out["local_adapter_id"] = self.local_adapter_id
         return out
 
 

@@ -58,8 +58,9 @@ import argparse
 from collections import deque
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import cast
+from typing import Protocol, cast
 
 from .errors import CapacityValidationError
 from .gateway_validation import v_int
@@ -133,6 +134,43 @@ class WorkerDispatchError(Exception):
         super().__init__(message)
         self.code: str = code
         self.message: str = message
+
+
+class WorkerReportSink(Protocol):
+    """Where authenticated state reports are applied (composition seam).
+
+    :class:`~scarcity_router.resource_state.ResourceRegistry` satisfies
+    this structurally (the standalone entrypoint passes one). The
+    integrated server component passes the M09 control plane instead, so
+    worker-reported observations survive the control plane's
+    configuration rebuilds and every surface (routing, diagnostics) sees
+    the same state — there is no second collector for worker reports.
+    """
+
+    def apply_worker_report(self, report: WorkerStateReport) -> None: ...
+
+
+@dataclass(frozen=True)
+class WorkerConnectionState:
+    """One worker device's real connection state (M09 display seam).
+
+    ``connected`` is derived from the live authenticated session table;
+    ``last_connected_at`` is the wall-clock stamp of the device's most
+    recent successful authentication (pairing or hello) in this endpoint
+    process's lifetime. Nothing here is fabricated: a stamp that was
+    never made (device not yet seen, or lost to a restart) reads ``None``.
+    """
+
+    worker_id: str
+    connected: bool
+    last_connected_at: str | None
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "worker_id": self.worker_id,
+            "connected": self.connected,
+            "last_connected_at": self.last_connected_at,
+        }
 
 
 @dataclass
@@ -400,6 +438,7 @@ class WorkerSession:
             self._state.worker_id = worker_id
             self._state.authenticated = True
             endpoint._sessions[id(self)] = self  # pyright: ignore[reportPrivateUsage] - same-program endpoint seam
+        endpoint.record_connected(worker_id)
         self._state.writer.write_message(
             PairResultMessage(
                 negotiated_version=self._state.negotiated_version or WORKER_PROTOCOL_VERSION,
@@ -422,6 +461,7 @@ class WorkerSession:
             self._state.worker_id = hello.worker_id
             self._state.authenticated = True
             endpoint._sessions[id(self)] = self  # pyright: ignore[reportPrivateUsage] - same-program endpoint seam
+        endpoint.record_connected(hello.worker_id)
         self._state.writer.write_message(
             HelloAckMessage(
                 negotiated_version=self._state.negotiated_version or WORKER_PROTOCOL_VERSION,
@@ -594,18 +634,23 @@ class WorkerEndpoint:
         self,
         *,
         identity_store: WorkerIdentityStore,
-        registry: ResourceRegistry,
+        registry: WorkerReportSink,
         heartbeat_interval_seconds: int = DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
         monotonic: Callable[[], float] = time.monotonic,
+        wall_clock: Callable[[], datetime] | None = None,
     ) -> None:
         _ = v_int(heartbeat_interval_seconds, "heartbeat_interval_seconds", lo=1)
         self.identity_store: WorkerIdentityStore = identity_store
-        self.registry: ResourceRegistry = registry
+        self.registry: WorkerReportSink = registry
         self.heartbeat_interval_seconds: int = heartbeat_interval_seconds
         self._monotonic: Callable[[], float] = monotonic
+        self._wall_clock: Callable[[], datetime] = (
+            wall_clock if wall_clock is not None else _utc_wall_now
+        )
         self._lock: threading.Lock = threading.Lock()
         self._sessions: dict[int, WorkerSession] = {}
         self._resource_bindings: dict[str, str] = {}
+        self._last_connected_at: dict[str, str] = {}
         self._interrupted_attempts: deque[tuple[str | None, str]] = deque()
         self._listener: "_EndpointListener | None" = None
 
@@ -663,6 +708,34 @@ class WorkerEndpoint:
         with self._lock:
             return tuple(sorted({s.worker_id for s in self._sessions.values() if s.worker_id}))
 
+    def worker_connection_state(self) -> tuple[WorkerConnectionState, ...]:
+        """The real connection state of every worker this endpoint knows.
+
+        Workers with a liveness stamp or a live session appear; unknown
+        devices do not. This is the display seam M09's workers view and
+        diagnostics render (liveness stamps recorded at successful
+        authentication), replacing any second connection bookkeeping.
+        """
+        with self._lock:
+            connected = {
+                s.worker_id for s in self._sessions.values() if s.worker_id
+            }
+            stamps = dict(self._last_connected_at)
+        known: set[str] = set(connected) | set(stamps)
+        return tuple(
+            sorted(
+                (
+                    WorkerConnectionState(
+                        worker_id=worker_id,
+                        connected=worker_id in connected,
+                        last_connected_at=stamps.get(worker_id),
+                    )
+                    for worker_id in known
+                ),
+                key=lambda state: state.worker_id,
+            )
+        )
+
     def resource_worker_bindings(self) -> dict[str, str]:
         with self._lock:
             return dict(self._resource_bindings)
@@ -672,6 +745,13 @@ class WorkerEndpoint:
             return tuple(self._interrupted_attempts)
 
     # ── Execution dispatch (used by the worker_bridged adapter) ──────
+
+    def record_connected(self, worker_id: str) -> None:
+        """Stamp a successful authentication (liveness display seam)."""
+        moment = self._wall_clock()
+        stamp = moment.astimezone(timezone.utc).isoformat(timespec="milliseconds")
+        with self._lock:
+            self._last_connected_at[worker_id] = stamp.replace("+00:00", "Z")
 
     def submit_execute_for_resource(self, message: ExecuteMessage, resource_id: str) -> PendingAttempt:
         """Route one execute message to the session bound to ``resource_id``."""
@@ -832,6 +912,10 @@ class _EndpointListener:
             self._accept_thread = None
 
 
+def _utc_wall_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
 def build_tls_context(certfile: str, keyfile: str) -> ssl.SSLContext:
     """A server-authenticated TLS context (no ``verify=false`` exists)."""
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
@@ -956,8 +1040,10 @@ __all__ = [
     "MAX_SESSIONS",
     "AttemptOutcome",
     "PendingAttempt",
+    "WorkerConnectionState",
     "WorkerDispatchError",
     "WorkerEndpoint",
+    "WorkerReportSink",
     "WorkerSession",
     "build_parser",
     "build_tls_context",

@@ -316,7 +316,36 @@ class ClientKeyAdministrationTests(ServerHarness):
 
 
 class WorkerPairingTests(ServerHarness):
-    def test_pairing_initiate_redeem_once_and_revoke(self) -> None:
+    """Pairing admin over the ONE pairing system: M09 issues, M05 redeems.
+
+    The control API ISSUES the pairing code; REDEMPTION happens inside
+    the M05 worker protocol's TLS handshake — there is no HTTP redeem
+    endpoint. These tests drive the same in-process endpoint the
+    composed server uses through an injected in-memory transport.
+    """
+
+    def _pair_worker_over_protocol(self, code: str) -> tuple[str, str]:
+        import threading
+
+        from scarcity_router.worker_protocol import PairResultMessage
+        from tests.worker_fixtures import MemoryTransport, ScriptedWorker
+
+        server_side, worker_side = MemoryTransport.pair()
+        endpoint = self.plane.worker_endpoint
+        session = endpoint.attach_transport(server_side)
+        endpoint.register_attached(session)
+        thread = threading.Thread(target=session.run, daemon=True)
+        thread.start()
+        worker = ScriptedWorker(worker_side)
+        result = worker.send_pair(code)
+        assert isinstance(result, PairResultMessage), result
+        identity_worker_id = result.worker_id
+        credential = result.credential
+        worker.transport.close()
+        _ = thread.join(timeout=5)
+        return identity_worker_id, credential
+
+    def test_issue_then_protocol_pair_hello_and_revoke(self) -> None:
         self.onboard()
         status, payload = self.admin_post(
             "/control/workers/pairing-codes", {"label": "lab rig"}
@@ -324,47 +353,88 @@ class WorkerPairingTests(ServerHarness):
         self.assertEqual(200, status)
         pairing = cast("dict[str, object]", payload)
         code = cast(str, pairing["pairing_code"])
-        worker_id = cast(str, pairing["worker_id"])
-        # Redemption authenticates with the code alone, exactly once.
-        status, payload, _headers = self.exchange(
-            "POST", "/control/worker-pairing/redeem", {"code": code}
-        )
-        self.assertEqual(200, status)
-        redeemed = cast("dict[str, object]", payload)
-        self.assertEqual(worker_id, redeemed["worker_id"])
-        self.assertTrue(cast(str, redeemed["worker_token"]).startswith("srw-"))
-        status, _payload, _headers = self.exchange(
-            "POST", "/control/worker-pairing/redeem", {"code": code}
-        )
-        self.assertEqual(401, status)
-        # Neither the code nor the worker token ever reaches the disk in
-        # plaintext.
-        raw_store = self.plane.store.path.read_bytes()
+        # No worker id exists yet: identity is created at protocol pairing.
+        self.assertNotIn("worker_id", pairing)
+        # The code never reaches any disk in plaintext.
+        from scarcity_router.worker_identity_store import default_worker_store_path
+
+        raw_store = self.plane.store.path.read_bytes() + Path(
+            default_worker_store_path(self.data_dir)
+        ).read_bytes()
         self.assertNotIn(code.encode("utf-8"), raw_store)
-        self.assertNotIn(cast(str, redeemed["worker_token"]).encode("utf-8"), raw_store)
-        # Revocation is immediate.
+
+        worker_id, credential = self._pair_worker_over_protocol(code)
+        self.assertTrue(worker_id.startswith("w-"))
+        # The M05 store now holds the identity; the workers view shows it.
+        status, payload = self.admin_get("/control/workers")
+        self.assertEqual(200, status)
+        workers = cast("list[object]", cast("dict[str, object]", payload)["workers"])
+        self.assertEqual(
+            (worker_id,),
+            tuple(
+                cast("dict[str, object]", entry)["worker_id"]
+                for entry in workers
+            ),
+        )
+
+        # Revocation takes effect on the NEXT connection.
         status, _payload, _headers = self.exchange(
             "DELETE",
             f"/control/workers/{worker_id}",
             headers=_csrf_headers(self.plane, self.cookie),
         )
         self.assertEqual(200, status)
-        status, payload = self.admin_get("/control/workers")
-        workers = cast("list[object]", cast("dict[str, object]", payload)["workers"])
-        self.assertEqual("revoked", cast("dict[str, object]", workers[0])["status"])
+        import threading
 
-    def test_redeem_with_unknown_code_is_unauthenticated(self) -> None:
+        from scarcity_router.worker_protocol import ErrorMessage
+        from tests.worker_fixtures import MemoryTransport, ScriptedWorker
+
+        server_side, worker_side = MemoryTransport.pair()
+        endpoint = self.plane.worker_endpoint
+        session = endpoint.attach_transport(server_side)
+        endpoint.register_attached(session)
+        thread = threading.Thread(target=session.run, daemon=True)
+        thread.start()
+        rejected = ScriptedWorker(worker_side)
+        answer = rejected.send_hello(worker_id, credential)
+        assert isinstance(answer, ErrorMessage), answer
+        self.assertEqual("credential_revoked", answer.code)
+        rejected.transport.close()
+        _ = thread.join(timeout=5)
+
+    def test_http_redeem_endpoint_is_retired(self) -> None:
         self.onboard()
-        status, _payload, _headers = self.exchange(
-            "POST", "/control/worker-pairing/redeem", {"code": "0000-0000"}
+        status, payload, _headers = self.exchange(
+            "POST",
+            "/control/worker-pairing/redeem",
+            {"code": "0000-0000"},
+            headers=_csrf_headers(self.plane, self.cookie),
         )
-        self.assertEqual(401, status)
+        self.assertEqual(404, status)
+        error = cast("dict[str, object]", payload)["error"]
+        self.assertIn("unknown control endpoint", str(error))
+
+    def test_rotate_returns_a_new_credential_once(self) -> None:
+        self.onboard()
+        status, payload = self.admin_post(
+            "/control/workers/pairing-codes", {"label": "rot"}
+        )
+        self.assertEqual(200, status)
+        code = cast("dict[str, object]", payload)["pairing_code"]
+        worker_id, credential = self._pair_worker_over_protocol(cast(str, code))
+        status, payload = self.admin_post(f"/control/workers/{worker_id}/rotate", {})
+        self.assertEqual(200, status)
+        rotated = cast("dict[str, object]", payload)
+        new_credential = cast(str, rotated["worker_credential"])
+        self.assertNotEqual(credential, new_credential)
+        status, _payload = self.admin_post("/control/workers/no-such/rotate", {})
+        self.assertEqual(404, status)
 
 
 def _provider_document(**overrides: object) -> dict[str, object]:
     document: dict[str, object] = {
         "provider_id": "zai-http",
-        "adapter_id": "openai_http",
+        "adapter_id": "zai-coding-plan",
         "base_url": "https://api.z.ai",
     }
     document.update(overrides)
@@ -641,9 +711,13 @@ class DiagnosticsRedactionAndExportTests(ServerHarness):
         ladder = cast("dict[str, object]", resources[0])
         self.assertTrue(ladder["detected"])
         self.assertTrue(ladder["authenticated"])
-        # No execution adapter exists in this deployment: honest stop.
-        self.assertFalse(ladder["protocol_compatible"])
-        self.assertEqual("protocol_compatible", ladder["first_blocked_stage"])
+        # The server_direct_http adapter is composed from configuration
+        # (provider preset + stored credential), so the ladder reflects
+        # that the channel is runnable — then honestly stops at
+        # "available": no observation exists yet.
+        self.assertTrue(ladder["protocol_compatible"])
+        self.assertFalse(ladder["available"])
+        self.assertEqual("available", ladder["first_blocked_stage"])
         self.assertIsNotNone(ladder["remediation"])
 
     def test_export_matches_the_single_stored_configuration(self) -> None:
