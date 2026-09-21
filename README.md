@@ -18,11 +18,11 @@ not a model gateway: it does not receive prompts, proxy model traffic, read
 source code or repositories, execute model calls, dispatch fallbacks, or
 replace an orchestrator such as Kilo, Codex or Claude Code. Optionally — as a
 separate, explicitly deployed server component — an execution gateway
-(specified 2026-09-19, program in progress; see
+(decisions D-040 through D-049, implemented; see
 [`docs/roadmap.md`](docs/roadmap.md)) lets OpenAI-compatible clients send
 authorized requests to one endpoint and have them served from the best
 available resource under the same discipline. The gateway's authenticated
-OpenAI-compatible execution surface is now implemented
+OpenAI-compatible execution surface is implemented
 (`python -m scarcity_router.control_server`, the one composed server;
 contract:
 [`docs/execution-surface.md`](docs/execution-surface.md)); native workers
@@ -33,7 +33,8 @@ administration surface (control API, web UI, diagnostics) and the
 OpenAI-compatible provider adapters are implemented, with configuration,
 adapters and the worker transport composed in one process
 ([`docs/control-surface.md`](docs/control-surface.md)); distribution and
-acceptance work (M10) is still in progress. This README
+acceptance are complete subject to the explicit external gates recorded in
+[`docs/m10-acceptance.md`](docs/m10-acceptance.md). This README
 documents the recommendation-only product, whose behavior is unchanged by
 the gateway.
 
