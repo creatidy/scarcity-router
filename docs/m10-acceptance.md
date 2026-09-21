@@ -153,7 +153,11 @@ no code was changed to soften them):
   inference (D-043); the composed deployment registers no cells by
   default, so streaming requires evidenced configuration;
 - a pinned reference naming a provider outside the model catalog fails
-  closed (the gateway answers a structural error, never routes);
+  closed (the gateway answers a structural error, never routes); the
+  shipped catalog carries no Codex binding, so a composed Codex resource
+  is unadmittable until an administrator supplies an entry — tracked as
+  Forgejo issue BioMedical-IT/scarcity-router#107 (curated, provenance-
+  carrying catalog calibration), not silently assumed by M10;
 - recording compatibility-matrix evidence through the administration
   surface is NOT implemented — deployments that need streaming on the
   composed path need that capability; tracked as Forgejo issue
