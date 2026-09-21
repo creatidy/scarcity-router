@@ -243,6 +243,17 @@ is explicitly refused (never silently dropped or forwarded on a guess).
   are the documented-evidence defaults, narrowed or raised only with the
   administrator's own dated evidence via M09). No automatic model
   downloads, no GPU driver installation, no GPU lifecycle management.
+- **Readiness probing (D-050).** Presets with an evidenced native health
+  endpoint (Ollama: `GET /api/version`) probe it. Every other preset is
+  probed with a GET on its DOCUMENTED chat endpoint path — no
+  undocumented provider endpoint is invented and no inference quota is
+  consumed. Any well-formed HTTP answer records health `ok` with the
+  exact status in the note (availability is the fact being observed);
+  credential rejection records `auth_required`, a missing documented
+  path records `schema_changed`, and transport failures record
+  `unavailable`. The composed server probes due server-direct resources
+  on its request loop and the control connection test records its probe
+  result (see `docs/control-surface.md`).
 - **Outbound security (D-044).** Verified TLS only (`verify=false` does
   not exist); plain HTTP only for explicit loopback origins; redirects
   never followed (Authorization never crosses origins); bounded response

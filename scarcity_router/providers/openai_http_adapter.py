@@ -224,7 +224,7 @@ class HealthProbeResult:
     provider-supplied version text is token-sanitized before inclusion.
     """
 
-    status: str  # ok | unsupported_preset | unreachable | schema_drift | refused
+    status: str  # ok | auth_rejected | unreachable | schema_drift | refused | unsupported_preset
     note: str | None = None
 
     def __post_init__(self) -> None:
@@ -413,7 +413,9 @@ class OpenAICompatibleHttpAdapter:
         """Probe backend readiness (Ollama: ``GET /api/version``).
 
         Read-only and quota-free: no inference is executed, no model is
-        loaded, nothing is downloaded.
+        loaded, nothing is downloaded. Presets without an evidenced
+        native health endpoint are probed against their DOCUMENTED chat
+        endpoint path — see :meth:`_probe_reachability`.
         """
         binding = self._bindings.get(resource_id)
         if binding is None:
@@ -423,13 +425,7 @@ class OpenAICompatibleHttpAdapter:
             )
         path = binding.preset.policy.health_path
         if path is None:
-            return HealthProbeResult(
-                status="unsupported_preset",
-                note=(
-                    f"preset '{binding.preset.preset_id}' evidences no health "
-                    + "endpoint"
-                ),
-            )
+            return self._probe_reachability(binding)
         try:
             body = self._read_native_get(binding, path)
         except (AdapterAmbiguousError, AdapterTimeoutError):
@@ -459,6 +455,101 @@ class OpenAICompatibleHttpAdapter:
             )
         return HealthProbeResult(
             status="schema_drift", note="health body carries no version"
+        )
+
+    def _probe_reachability(self, binding: ResourceBinding) -> HealthProbeResult:
+        """Reachability probe against the preset's DOCUMENTED endpoint.
+
+        Presets without an evidenced native health endpoint (every API
+        preset; only Ollama documents one) are probed with a GET on the
+        documented chat endpoint path. This invents no undocumented
+        provider endpoint and consumes no inference quota: whatever
+        well-formed HTTP answer comes back IS the observation.
+
+        - ``2xx-429`` (including the expected 405/400/422 method/body
+          rejections for a GET on a POST endpoint) → ``ok``: the
+          configured origin serves the documented path.
+        - ``401/403`` → ``auth_rejected``: the endpoint is alive but
+          rejects the configured credential.
+        - ``404/410`` → ``schema_drift``: the configured origin does not
+          serve the documented path (the surface differs from the
+          preset's evidence).
+        - Any other well-formed HTTP answer (``500`` from a strict
+          handler that rejects any GET included) → ``ok`` with the exact
+          status in the note: the origin answered on the documented
+          path, which is the availability fact the probe exists for.
+        - Transport/TLS/timeout failures and a refused cross-origin
+          redirect → ``unreachable``/``schema_drift``.
+        """
+        context = ExecutionContext(
+            request_id="native-read",
+            deadline=_canonical_now_plus(seconds=60),
+        )
+        try:
+            connection = self._connect(binding, context)
+        except (AdapterAmbiguousError, AdapterTimeoutError):
+            return HealthProbeResult(
+                status="unreachable",
+                note="the endpoint could not be reached",
+            )
+        except AdapterPermanentError as exc:
+            return HealthProbeResult(status="schema_drift", note=str(exc)[:200])
+        try:
+            headers = self._headers(binding, "application/json")
+            _ = headers.pop("Content-Type", None)
+            connection.request(
+                "GET",
+                binding.preset.policy.endpoint_path,
+                body=None,
+                headers=headers,
+            )
+            response = connection.getresponse()
+            self._refuse_router_backends(response)
+            status = response.status
+            _ = response.read(MAX_RESPONSE_BODY_BYTES)
+        except TimeoutError:
+            return HealthProbeResult(
+                status="unreachable",
+                note="the endpoint read timed out",
+            )
+        except (OSError, http.client.HTTPException):
+            return HealthProbeResult(
+                status="unreachable",
+                note="the endpoint could not be read",
+            )
+        except AdapterPermanentError as exc:
+            return HealthProbeResult(status="schema_drift", note=str(exc)[:200])
+        finally:
+            connection.close()
+        if status in (401, 403):
+            return HealthProbeResult(
+                status="auth_rejected",
+                note="the endpoint rejected the configured credential",
+            )
+        if status in (404, 410):
+            return HealthProbeResult(
+                status="schema_drift",
+                note="the configured origin does not serve the documented endpoint path",
+            )
+        if status in (401, 403):
+            return HealthProbeResult(
+                status="auth_rejected",
+                note="the endpoint rejected the configured credential",
+            )
+        if status in (404, 410):
+            return HealthProbeResult(
+                status="schema_drift",
+                note="the configured origin does not serve the documented endpoint path",
+            )
+        # Every other well-formed HTTP answer — the expected 405/400/422
+        # method/body rejections for a GET on a POST endpoint, and 5xx
+        # bodies from strict handlers that reject any GET — proves the
+        # documented path is served on the configured origin. The exact
+        # status rides along in the note; capability, quota and usage
+        # facts are untouched by a probe.
+        return HealthProbeResult(
+            status="ok",
+            note=f"the documented endpoint answered HTTP {status} on the configured origin",
         )
 
     # ── Response paths ────────────────────────────────────────────────────

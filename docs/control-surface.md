@@ -100,7 +100,7 @@ required, CSRF on mutations):
 | `/control/resources` | GET / POST | list (with ladder) / add execution resources |
 | `/control/resources/{id}` | DELETE | remove a resource |
 | `/control/resources/{id}/enabled` | POST | enable/disable (configuration kept, registry updated) |
-| `/control/resources/{id}/connection-test` | POST | quota-free test over real seam data (configuration, worker connection state, M04 health probe when evidenced); never an inference request |
+| `/control/resources/{id}/connection-test` | POST | quota-free test over real seam data (configuration, worker connection state, the M04 readiness probe); the probe outcome is recorded as the resource's observation; never an inference request |
 | `/control/resources/{id}/generation-test` | POST | real generation probe; requires `{"confirm": true}` AND a configured tester |
 | `/control/aliases` | GET | list routing aliases |
 | `/control/aliases/{alias}` | PUT / DELETE | bind/unbind an alias to an EXISTING task profile (D-042) |
@@ -136,6 +136,19 @@ whose credential is missing stays honestly unbound (diagnostics report
 a remediation, dispatch refuses definitively). The default deployment
 composes NOTHING — no adapters, no worker listener — exactly as M03
 shipped.
+
+Server-direct availability follows the M01 refresh contract (D-050):
+there is no background poller. The execution ingress asks the registry
+which resources are due (`refresh_due`) and probes each due
+`server_direct_http` resource through the M04 adapter's quota-free
+readiness probe (documented health endpoint where evidenced, otherwise a
+GET on the preset's documented endpoint path), recording the outcome as
+the resource's observation. Server-direct registrations carry a default
+300 s polling cadence unless the administrator sets one; the
+connection test records its probe result the same way, so the
+diagnostics remediation is a real action. A resource that was never
+observed stays honestly `available: false` on the acceptance ladder and
+is refused with `target_unavailable` at admission.
 
 ## Durable store (D-041/D-044)
 

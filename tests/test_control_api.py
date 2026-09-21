@@ -29,6 +29,7 @@ from scarcity_router.remote import RemoteScarcityClient, RemoteServerConfig
 from scarcity_router.server_config import ResourceConfig
 from scarcity_router.status import collect_status
 
+from tests.openai_http_fixtures import ScriptedProviderServer
 from tests.server_fixtures import (
     FAKE_ADMIN_PASSWORD,
     FAKE_PROVIDER_SECRET,
@@ -613,8 +614,28 @@ class AliasTests(ServerHarness):
 
 
 class ConnectionAndGenerationTests(ServerHarness):
+    """The quota-free connection test over a LOCAL, deterministic origin.
+
+    The M04 readiness probe (D-050) really reaches the configured origin,
+    so these tests bind it to an in-thread scripted provider — never to an
+    external host (offline determinism).
+    """
+
+    provider: ScriptedProviderServer
+
+    def __init__(self, method_name: str = "runTest") -> None:
+        super().__init__(method_name)
+        self.provider = cast(ScriptedProviderServer, object())
+
+    @override
+    def setUp(self) -> None:
+        super().setUp()
+        self.provider = ScriptedProviderServer()
+        self.provider.start()
+        self.addCleanup(self.provider.stop)
+
     def _configure_resource(self, *, with_secret: bool) -> None:
-        document = _provider_document()
+        document = _provider_document(base_url=self.provider.origin)
         if with_secret:
             document["secret"] = FAKE_PROVIDER_SECRET
         status, _payload = self.admin_post("/control/providers", document)

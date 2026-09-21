@@ -13,6 +13,7 @@ API-only operation with no worker through the real M03 coordinator.
 
 from __future__ import annotations
 
+import socket
 import sys
 import threading
 import unittest
@@ -37,9 +38,14 @@ from scarcity_router.providers.openai_http_adapter import (
     ADAPTER_NAME,
     ADAPTER_VERSION,
     GATEWAY_MARKER_HEADER,
+    HealthProbeResult,
     OpenAICompatibleHttpAdapter,
+    ResourceBinding,
 )
-from scarcity_router.providers.http_origin import ProviderOrigin
+from scarcity_router.providers.http_origin import (
+    ProviderCredential,
+    ProviderOrigin,
+)
 from scarcity_router.providers.openai_http_presets import (
     GENERIC_PRESET,
     OLLAMA_PRESET,
@@ -822,6 +828,79 @@ class OllamaDirectTest(AdapterTestCase):
         self.assertEqual(body["model"], "llama3-8b")
 
 
+class ProbeHealthReachabilityTest(AdapterTestCase):
+    """probe_health for presets without a native health endpoint.
+
+    The availability-observation path (release-readiness fix): presets
+    without an evidenced health endpoint are probed with a GET on their
+    DOCUMENTED chat endpoint path — no undocumented provider endpoint is
+    invented, no inference quota is consumed, and any well-formed HTTP
+    answer is an honest reachability observation.
+    """
+
+    def _probe(self, *, resource_id: str = "openai-http") -> HealthProbeResult:
+        binding = make_binding(
+            self.server, preset("openai-api"), resource_id=resource_id
+        )
+        adapter = make_adapter(binding)
+        return adapter.probe_health(resource_id)
+
+    def test_method_rejection_on_documented_path_is_ok(self) -> None:
+        self.server.enqueue(lambda _request: ScriptedResponse(405, {}, b""))
+        probe = self._probe()
+        self.assertEqual(probe.status, "ok")
+        assert probe.note is not None
+        self.assertIn("405", probe.note)
+
+    def test_server_side_answer_is_still_reachability(self) -> None:
+        self.server.enqueue(lambda _request: ScriptedResponse(500, {}, b""))
+        probe = self._probe()
+        self.assertEqual(probe.status, "ok")
+
+    def test_credential_rejection_is_auth_rejected(self) -> None:
+        self.server.enqueue(lambda _request: ScriptedResponse(401, {}, b""))
+        probe = self._probe()
+        self.assertEqual(probe.status, "auth_rejected")
+
+    def test_missing_documented_path_is_schema_drift(self) -> None:
+        self.server.enqueue(lambda _request: ScriptedResponse(404, {}, b""))
+        probe = self._probe()
+        self.assertEqual(probe.status, "schema_drift")
+
+    def test_dead_origin_is_unreachable(self) -> None:
+        sock = socket.socket()
+        sock.bind(("127.0.0.1", 0))
+        port = cast("int", sock.getsockname()[1])
+        sock.close()
+        binding = ResourceBinding(
+            resource_id="openai-http",
+            preset=preset("openai-api"),
+            origin=ProviderOrigin.parse(f"http://127.0.0.1:{port}"),
+            credential=ProviderCredential(FAKE_PROVIDER_KEY),
+        )
+        adapter = make_adapter(binding)
+        probe = adapter.probe_health("openai-http")
+        self.assertEqual(probe.status, "unreachable")
+
+    def test_zai_preset_serves_the_documented_coding_path(self) -> None:
+        binding = make_binding(
+            self.server, preset("zai-coding-plan"), resource_id="zai-http"
+        )
+        adapter = make_adapter(binding)
+        self.server.enqueue_completion(content="zai reply")
+        result = adapter.execute(
+            make_call(resource_id="zai-http", provider="zai", model="glm-5.3"),
+            make_context(),
+        )
+        self.assertEqual(result.status, "completed")
+        # The documented Coding Plan chat endpoint (docs.z.ai devpack
+        # quick-start): the bare configured origin carries the base path.
+        self.assertEqual(
+            self.server.last_request.path,
+            "/api/coding/paas/v4/chat/completions",
+        )
+
+
 class WorkerBridgedSeamTest(unittest.TestCase):
     """The documented M04/M05 seam: one translation core, two transports."""
 
@@ -890,7 +969,8 @@ class ZaiWithoutZcodeTest(AdapterTestCase):
         )
         self.assertEqual(result.status, "completed")
         request = self.server.last_request
-        self.assertEqual(request.path, "/chat/completions")
+        # The documented Coding Plan base path rides on the preset (D-050).
+        self.assertEqual(request.path, "/api/coding/paas/v4/chat/completions")
         body = request.json
         assert isinstance(body, dict)
         self.assertEqual(body["thinking"], {"type": "enabled"})

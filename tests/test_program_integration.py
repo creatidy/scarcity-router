@@ -745,10 +745,13 @@ class RealGatewayDispatchTests(ServerHarness):
         self.assertEqual(
             "composed reply", cast("dict[str, object]", message)["content"]
         )
-        # The request followed configuration exactly: preset endpoint path,
-        # configured origin, store-held credential, router-loop marker.
+        # The request followed configuration exactly: preset endpoint path
+        # (the documented Coding Plan base path, D-050), configured origin,
+        # store-held credential, router-loop marker.
         request = provider.last_request
-        self.assertEqual("/chat/completions", request.path)
+        self.assertEqual(
+            "/api/coding/paas/v4/chat/completions", request.path
+        )
         self.assertEqual(f"Bearer {FAKE_PROVIDER_SECRET}", request.headers["authorization"])
         self.assertNotIn(FAKE_PROVIDER_SECRET, json.dumps(payload))
 

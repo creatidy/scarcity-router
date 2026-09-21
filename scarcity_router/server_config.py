@@ -62,6 +62,12 @@ _DEFAULT_PAIRING_CODE_TTL_SECONDS = 900
 _DEFAULT_SESSION_TTL_SECONDS = 8 * 3600
 _DEFAULT_AUDIT_MAX_RECORDS = 10_000
 _DEFAULT_AUDIT_MAX_AGE_SECONDS = 30 * 24 * 3600
+#: Default readiness-probe cadence for server-direct HTTP resources when
+#: the administrator does not set one (server-side policy is
+#: authoritative, M01/U-003): the server observes each such resource at
+#: most every five minutes, and never more often than its polling
+#: cadence requires.
+SERVER_DIRECT_DEFAULT_POLL_INTERVAL_SECONDS = 300
 
 
 class ServerConfigError(ValueError):
@@ -249,8 +255,20 @@ def _registration_from_document(d: object) -> ResourceRegistration:
         "resource_registration",
     )
     try:
+        identity = ResourceIdentity.from_dict(dd["identity"])
+        # Server-side availability policy is AUTHORITATIVE (M01/U-003):
+        # server-direct HTTP resources get a bounded default polling
+        # cadence so the server's readiness probes can observe them and
+        # pinned execution is reachable on the documented first-run
+        # path. Workers report their own observations (M05 transport);
+        # their cadence stays unset unless the administrator sets one.
+        default_poll = (
+            SERVER_DIRECT_DEFAULT_POLL_INTERVAL_SECONDS
+            if identity.channel == "server_direct_http"
+            else None
+        )
         return ResourceRegistration(
-            identity=ResourceIdentity.from_dict(dd["identity"]),
+            identity=identity,
             freshness_ttl_seconds=v_int(
                 dd["freshness_ttl_seconds"],
                 "resource_registration.freshness_ttl_seconds",
@@ -263,7 +281,7 @@ def _registration_from_document(d: object) -> ResourceRegistration:
                     lo=1,
                 )
                 if "poll_interval_seconds" in dd
-                else None
+                else default_poll
             ),
             capabilities=(
                 ExecutionCapabilities.from_dict(dd["capabilities"])
@@ -557,6 +575,7 @@ __all__ = [
     "AuditRetention",
     "CONFIG_SCHEMA_VERSION",
     "ProviderEndpointConfig",
+    "SERVER_DIRECT_DEFAULT_POLL_INTERVAL_SECONDS",
     "ResourceConfig",
     "ServerConfigError",
     "ServerConfiguration",

@@ -196,6 +196,18 @@ class GatewayControlSurface(Protocol):
 
     def current_application(self) -> GatewayApplication: ...
 
+    def prepare_execution_admission(self) -> None:
+        """Observe due resources before admission (M01 refresh seam).
+
+        The control plane implements this as the request-loop half of the
+        M01 bounded-polling contract: due ``server_direct_http`` resources
+        get their quota-free readiness probe recorded as an observation so
+        a configured resource is reachable on the documented first-run
+        path instead of being permanently ``never_observed``. Best-effort,
+        quota-free and non-raising; the implementation is
+        control-plane-owned.
+        """
+
 
 class GatewayHTTPServer(ThreadingHTTPServer):
     """Threaded, daemon-mode server for the execution surface.
@@ -410,6 +422,9 @@ class GatewayRequestHandler(BaseHTTPRequestHandler):
         self._send_json(HTTPStatus.OK, payload)
 
     def _route_chat_completions(self, client_id: str) -> None:
+        control = self._control_plane()
+        if control is not None:
+            control.prepare_execution_admission()
         application = self._application()
         document = self._read_json_object(application.limits.max_request_body_bytes)
         request = parse_chat_completion_request(document)

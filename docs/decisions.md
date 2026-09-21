@@ -2804,6 +2804,89 @@ what M4.1 forbids); a configurable per-provider eligibility policy
   additive doctor behavior only re-pointed at the surviving pairing
   store; no M10 packaging work.
 
+### D-050 — Server-direct availability observations: readiness probing wired to the M01 refresh contract
+
+- **Status:** Accepted (v0.1.0 release-readiness program,
+  `release/v0.1.0-readiness`; fixes the first-run execution blocker the
+  program's audit found)
+- **Date:** 2026-09-21
+- **Issue:** release-readiness audit of `develop` @ `9d6192e` (Phase 4
+  first-run acceptance; follow-through of the M01 (#86)/M03 (#88)
+  availability design)
+- **Confidence:** High — the composed server shipped with no production
+  path that ever observes a `server_direct_http` resource, so every
+  such resource was permanently `resource_never_observed` and every
+  pinned execution failed `503 target_unavailable`; the M10 e2e masked
+  this by injecting healthy observations through the test seam. The fix
+  uses only seams and contracts that already existed (the M01
+  `refresh_due` request-loop contract, the M04 adapter's quota-free
+  readiness probe, `apply_resource_observation`) and is pinned by new
+  no-injection e2e tests.
+- **Decision:**
+  1. **The request loop observes due server-direct resources.** Per the
+     M01 contract ("there is no background refresh; the server's
+     request loop calls `refresh_due`"), the composed server's execution
+     ingress calls the control plane's `prepare_execution_admission`
+     before admission: every enabled, bound, composed
+     `server_direct_http` resource whose polling cadence is due is
+     probed once through the M04 adapter's quota-free readiness probe,
+     and the outcome is recorded through `apply_resource_observation`.
+     No background poller thread exists.
+  2. **Default polling cadence for server-direct registrations.** A
+     registration without an explicit `poll_interval_seconds` gets
+     300 s at the configuration boundary (server-side policy is
+     authoritative per M01); an explicit administrator value always
+     wins. Worker-reported resources are unaffected (the M05 transport
+     observes them).
+  3. **Reachability probing on the DOCUMENTED endpoint path.** Presets
+     with an evidenced native health endpoint (Ollama: `GET /api/version`)
+     keep probing it. Presets without one are probed with a GET on
+     their documented chat endpoint path — no undocumented provider
+     endpoint is invented and no inference quota is consumed. Any
+     well-formed HTTP answer records health `ok` with the exact status
+     in the probe note (availability is the fact being observed;
+     capability, quota and usage facts are untouched); `401/403` record
+     `auth_required`; `404/410` record `schema_changed` (the configured
+     origin does not serve the documented path); transport/TLS/timeout
+     failures record `unavailable`. Nothing observed (no binding, no
+     composed adapter) leaves the resource honestly unobserved.
+  4. **The connection test records its probe result** as the resource's
+     observation, so the diagnostics remediation ("run the connection
+     test to probe now") is a real action, and the acceptance ladder
+     reflects what the probe saw.
+  5. **Z.ai Coding Plan preset endpoint path corrected** to the
+     documented base URL path (`/api/coding/paas/v4/chat/completions`):
+     administrators configure a bare origin, so the preset path must
+     carry the documented base path — the rule the OpenRouter preset
+     already followed. The evidence reference (docs.z.ai devpack
+     quick-start, retrieved 2026-09-20) is unchanged and now actually
+     honored end to end.
+- **Reason:** A release-blocking first-run defect: the documented
+  onboarding flow (configure provider → configure resource → issue
+  client key → execute) dead-ended in a permanent `503
+  target_unavailable` with a remediation ("wait for its collection
+  cadence or trigger a health check") that no action could satisfy.
+  Recording observed reachability is honest telemetry — it fabricates
+  no capacity and changes no capability rating — and it completes the
+  designed-but-unwired M01 refresh seam instead of weakening the
+  fail-closed availability gate.
+- **Alternatives considered:** synthesizing "healthy" observations from
+  configuration alone (rejected: fabricates health telemetry the server
+  never observed — violates the fail-closed collector discipline);
+  dropping the availability gate for pinned execution (rejected: a
+  routing-semantics change forbidden at this stage and it hides real
+  outages); probing provider-documented `GET /models` endpoints on API
+  presets (rejected for now: adds provider-edge evidence obligations
+  without unblocking the preset that has no documented models endpoint
+  — the bare-endpoint GET achieves the same reachability fact uniformly);
+  deriving observations from real executions (rejected: circular — the
+  first execution is exactly what the never-observed gate blocks).
+- **Boundary:** Availability-observation plumbing only. No routing-core,
+  coordinator, contract-version or serialized-contract change; the
+  frozen recommendation-only surfaces are untouched; worker-bridged
+  observation (M05 reports) untouched; compatibility-matrix cells and
+  their evidence untouched.
+
 ## Unresolved decisions
 
 ### U-001 — Codex binary discovery and compatibility
