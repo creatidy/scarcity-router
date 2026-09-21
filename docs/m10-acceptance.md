@@ -148,20 +148,31 @@ test exists and none is added (explicit opt-in remains the only path).
 Notable fail-closed behaviors verified along the way (documents reality;
 no code was changed to soften them):
 
-- a streaming request against a deployment whose compatibility matrix
-  carries no evidence is refused with `compatibility_unknown` before any
-  inference (D-043); the composed deployment registers no cells by
-  default, so streaming requires evidenced configuration;
-- a pinned reference naming a provider outside the model catalog fails
-  closed (the gateway answers a structural error, never routes); the
-  shipped catalog carries no Codex binding, so a composed Codex resource
-  is unadmittable until an administrator supplies an entry — tracked as
-  Forgejo issue BioMedical-IT/scarcity-router#107 (curated, provenance-
-  carrying catalog calibration), not silently assumed by M10;
-- recording compatibility-matrix evidence through the administration
-  surface is NOT implemented — deployments that need streaming on the
-  composed path need that capability; tracked as Forgejo issue
-  BioMedical-IT/scarcity-router#106, not silently assumed by M10.
+- a streaming request against a backend whose compatibility cells carry
+  no evidence is refused with `compatibility_unknown` before any
+  inference (D-043); the composed deployment builds its matrix from
+  configuration through the existing evidence modules (M04 preset
+  evidence; the reviewed M06 Codex evidence cells), so an un-evidenced
+  preset (e.g. `generic-openai`, all-UNKNOWN) still fails closed;
+- a pinned reference naming a physical model the configured resource
+  does not represent fails closed — Codex resources bind the SHIPPED
+  catalog through their physical model identity
+  (`openai`/`gpt-5.6-sol` with the calibrated variants; `codex` is the
+  execution surface, never a model), so a composed Codex resource is
+  admittable for every calibrated model in the shipped catalog with NO
+  administrator catalog invention. Curated capability calibration for
+  NEW Codex models remains D-025 governance; the earlier gap tracked as
+  Forgejo issue BioMedical-IT/scarcity-router#107 (an `(openai,
+  "codex")` catalog entry) is resolved by this physical-identity
+  binding rather than by inventing entries;
+- recording administrator compatibility-matrix evidence through the
+  control surface (narrowing or elevating a built-in evidenced cell
+  with the administrator's own dated evidence) is NOT implemented —
+  built-in adapter evidence is the default ceiling on the composed path
+  (M04 preset cells and the reviewed M06 Codex cells are wired in
+  `server_composition`); the administrative recording surface itself
+  remains tracked as Forgejo issue BioMedical-IT/scarcity-router#106,
+  not silently assumed by M10.
 
 ## M10-B: Codex end-to-end acceptance
 
@@ -171,23 +182,47 @@ both merged). It exercises Codex through the FULL composed stacks —
 OpenAI-compatible client → server coordinator → real worker protocol →
 ``CodexLocalAdapter`` → fake App Server — deterministically and without
 any live Codex backend. The fake App Server
-(``tests/codex_fake_appserver.py``) remains the ONLY Codex backend in
+(`tests/codex_fake_appserver.py`) remains the ONLY Codex backend in
 CI-reachable tests; every scripted string is synthetic.
+
+Integration-blocker dispositions recorded here (2026-09-21):
+
+- **Physical model identity (D-042).** The Codex resource binds the
+  SHIPPED catalog by its physical model: the worker requires
+  `--codex-model <slug>` with `--allow-codex`, the registration names
+  the same slug, and the adapter rejects any selected model outside its
+  configured resource BEFORE any process spawn. The fake App Server
+  advertises the real slug `gpt-5.6-sol` with the shipped calibrated
+  efforts (`medium`/`high`), and every suite uses the SHIPPED
+  `model-catalog.json` — the synthetic `(openai, "codex")` catalog entry
+  and the `model="codex"` resource identity are gone (issue #107
+  resolved by binding, not by catalog invention).
+- **Production compatibility matrix.** The composed server builds its
+  matrix from administrator configuration through
+  `server_composition`: M04 `default_cells_for` for each bound
+  server-direct resource, and the reviewed M06 Codex evidence cells
+  (`scarcity_router/codex_worker_evidence.py`, Stage-2 values, dated
+  2026-09-20, adapter `codex-worker-local` `1.0.0`) for each configured
+  Codex resource, keyed to its physical model. Streaming on the Codex
+  composed path now works on BUILT-IN evidence (streaming cell
+  `PARTIAL`), tools still fail closed (`UNSUPPORTED`), and no synthetic
+  cell injection exists in any test. Built-in evidence is the ceiling;
+  administrator narrowing/elevation remains issue #106.
 
 Deterministic suites added (all green, `tests/test_e2e_codex_acceptance.py`,
 `tests/test_codex_real_binary_probe.py`):
 
 | # | Area | Test |
 | --- | --- | --- |
-| 1 | Packaged-style worker path: console-script pair/run `--allow-codex`, fake `codex` discovered on a tmpdir PATH, real verified TLS (trustme CA via `SSL_CERT_FILE`), resource lands in server registry/state, executes | `PackagedWorkerPathTests.test_console_script_worker_discovers_codex_pairs_and_serves` |
+| 1 | Packaged-style worker path: console-script pair/run `--allow-codex --codex-model <physical-slug>`, fake `codex` discovered on a tmpdir PATH, real verified TLS (trustme CA via `SSL_CERT_FILE`), resource lands in server registry/state with its physical-model identity, executes | `PackagedWorkerPathTests.test_console_script_worker_discovers_codex_pairs_and_serves` |
 | 2 | Codex resource composition (`worker_bridged` + `local_adapter_id: "codex"`); exact configured ownership (worker B can neither report nor serve worker A's Codex resource) | `CodexCompositionTests.test_exact_configured_ownership_for_the_codex_resource` |
 | 3 | Honest auth verdicts through the full snapshot path (`auth_unverified` → `unknown`/`telemetry_unknown` → admission refuses; `chatgpt` → `ok` → executes) | `CodexCompositionTests.test_auth_verdicts_drive_eligibility_through_snapshots` |
-| 4 | Full execution round trips: non-streaming through the composed server; streaming through the bare M03 gateway + real `WorkerBridgedAdapter` + real worker runtime with synthetic compatibility cells supplied programmatically (the evidenced-streaming seam; the fail-closed empty default is never weakened — issue #106) | `CodexExecutionTests.test_nonstreaming_execution_reports_provider_usage_honestly`, `CodexStreamingExecutionTests.test_streaming_roles_and_history_end_to_end` |
+| 4 | Full execution round trips, streaming AND non-streaming, through the ACTUAL composed server — the production compatibility matrix (M04 preset cells + the reviewed M06 Codex cells built from configuration in `server_composition`) serves the gates; no synthetic cell injection anywhere | `CodexExecutionTests.test_nonstreaming_execution_reports_provider_usage_honestly`, `CodexStreamingExecutionTests.test_streaming_roles_and_history_end_to_end`, `ProductionCompatibilityMatrixTests` |
 | 5 | Real installed Codex smoke probe (local-only, skip-safe): discovery + `--version` + `initialize` handshake with controlled-home adoption + `account/read` verdict; NO turn, NO quota read, no user-home contact | `tests/test_codex_real_binary_probe.py` (see the probe record below) |
 | 6 | Cancellation through the full stack: client FIN → gateway EOF check → worker cancel → `turn/interrupt` → interrupted; never completed-after-cancel; exactly one turn, no second session | `CodexStreamingExecutionTests.test_client_disconnect_interrupts_the_codex_turn` |
 | 7 | Reasoning-effort binding: pinned model + `reasoning_effort` forwarded verbatim; a surface-valid effort the runtime listing lacks is rejected before any thread/turn exists (the binding verdict needs the runtime's own `model/list`) | `CodexStreamingExecutionTests.test_reasoning_effort_forwarded_verbatim`, `..._rejected_before_the_turn` |
 | 8 | Structured output: `response_format` `json_schema` → `outputSchema` forwarded verbatim through the stack | `CodexStreamingExecutionTests.test_structured_output_schema_forwarded` |
-| 9 | Unsupported client tools: a tools-bearing request is refused 400 `compatibility_unsupported` at admission (the synthetic cells record the honest stable-surface `UNSUPPORTED`) — no execute message, no dispatch session | `CodexStreamingExecutionTests.test_tools_bearing_request_rejected_before_dispatch` |
+| 9 | Unsupported client tools: a tools-bearing request is refused 400 `compatibility_unsupported` at admission (the REAL M06 evidence cell records the stable-surface `UNSUPPORTED`) — no execute message, no dispatch session | `CodexStreamingExecutionTests.test_tools_bearing_request_rejected_before_dispatch` |
 | 10 | Mid-execution worker loss through the real protocol: 500 `ambiguous_execution_state`, audited, worker-side attempt cancelled (`turn/interrupt` traced), reconnect never re-dispatches (exactly one turn ever) | `CodexWorkerLossTests.test_midexecution_worker_loss_is_ambiguous_and_never_retried` |
 | 11 | Usage honesty: fake-reported usage lands in the audit trail as provider-reported (`{11, 7}`); absent usage stays absent (no zeros fabricated) | `CodexExecutionTests.test_nonstreaming_..._honestly`, `test_absent_provider_usage_stays_absent` |
 | 12 | No token extraction / no leakage: closed wire surface (reviewed allowlist, no forbidden methods), minimal child environment (`PATH`/`HOME`/`CODEX_HOME`), no `auth.json` in the controlled home, prompt/response content and client key absent from audit, export, diagnostics and worker diagnostics | `CodexExecutionTests.test_stack_holds_the_leakage_line` |

@@ -891,6 +891,24 @@ against the real binary (2026-09-20: handshake + controlled-home
 adoption pass, unsigned-in `account/read` fails closed) is recorded
 there as supplementary evidence and never substitutes for a live turn.
 
+**Stage-2 matrix keys into the production composition (2026-09-21,
+integration branch).** The matrix above is now carried verbatim as a
+static, module-level cell table
+(`scarcity_router/codex_worker_evidence.py`) and the composed server
+builds its compatibility matrix from it: for every
+administrator-configured `worker_bridged` Codex resource,
+`server_composition` emits these exact cells keyed to that resource's
+PHYSICAL model (exact `worker_bridged`/`openai`/<slug> keys,
+backend-level, adapter `codex-worker-local` `1.0.0`, dated provenance
+`codex_adapter_stage2`/2026-09-20). Values are neither derived at
+runtime nor upgraded by configuration — built-in evidence stays the
+ceiling (issue #106 territory covers administrator narrowing/elevation
+with dated evidence). Cells rebuild whenever the application is
+re-composed from configuration, and Codex resources bind the shipped
+catalog by physical model identity (`--codex-model`, D-042), so the
+earlier programmatic synthetic-cell test seam is gone from the Codex
+suites entirely.
+
 ### Not tested / honest gaps after Stage 2
 
 - **No live turn execution** (no inference, no quota consumption): every

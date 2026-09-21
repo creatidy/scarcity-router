@@ -343,10 +343,12 @@ follow the version-pinned generated schemas at tag `rust-v0.155.1`.
   dropped. `max_output_tokens` and non-empty `generation_params` are
   likewise REJECTED before execution (`request_parameters_unsupported`):
   no evidenced stable-surface mapping exists, and silently dropping
-  requested semantics is forbidden (the M04 refuse-not-drop precedent). The requested model slug and `reasoning_effort` are verified
-  against `model/list` (`supportedReasoningEfforts`) BEFORE execution
-  and pinned per turn — the runtime can never silently choose another
-  model or effort. An unknown `turn/completed` status fails closed;
+  requested semantics is forbidden (the M04 refuse-not-drop precedent).
+  Within the resource's configured physical model, the selected slug and
+  `reasoning_effort` are verified against `model/list`
+  (`supportedReasoningEfforts`) BEFORE execution and pinned per turn —
+  the runtime can never silently choose another model or effort. An
+  unknown `turn/completed` status fails closed;
   `failed` turns map to SAFE notes derived only from the documented
   `codexErrorInfo` vocabulary (free-text error bodies, which can carry
   prompt content, are never read). Streaming maps
@@ -363,6 +365,25 @@ follow the version-pinned generated schemas at tag `rust-v0.155.1`.
   `unknown` call-observation status so the ambiguity survives to the
   audit trail — never retried, never a second process, never a
   fallback.
+- **Physical model identity (D-042).** The configured resource represents
+  ONE physical model: the worker requires an explicit `--codex-model
+  SLUG` with `--allow-codex` (validated as a safe id; never guessed from
+  the installed Codex default, the account state or `model/list`'s
+  first/default entry — `model/list` is only runtime verification).
+  `codex` is the execution SURFACE (`local_adapter_id: "codex"`), never
+  a model. Before any execution — before any thread, turn or even
+  process spawn — the adapter rejects a call whose selected
+  `ModelIdentity` provider/model does not match the physical model its
+  configured resource represents (typed `model_not_served` rejection; no
+  substitution, no silent mapping). Resource-level identity is
+  variant-less: the routing core's binding rule (exact
+  `(provider, model)`) binds every calibrated variant of the physical
+  model, so a `gpt-5.6-sol` resource serves the shipped calibrated
+  `medium`/`high` identities directly. Server-side, the composition
+  builds the compatibility-matrix cells for each configured Codex
+  resource from the reviewed M06 evidence
+  (`scarcity_router/codex_worker_evidence.py`; dated Stage-2 matrix) —
+  built-in evidence is the ceiling; configuration cannot raise it.
 - **Resource snapshots.** The worker reports an honest eligibility
   observation per codex resource (discovery → version → sandbox →
   controlled home → bounded `account/read` verdict) in the closed
@@ -406,13 +427,17 @@ follow the version-pinned generated schemas at tag `rust-v0.155.1`.
     the Windows `%USERPROFILE%\.codex` and the WSL `~/.codex` are
     separate devices and never assumed shared.
 - **Worker registration.** `python -m scarcity_router.worker_client run
-  --allow-codex --resource <registry-resource-id> [--codex-bin PATH]`
-  (`--codex-resource` when it runs alongside `--allow-ollama`). The
-  resource is registered with provider `openai`, model `codex`,
-  entitlement `subscription_included`, channel `worker_bridged`; the
-  server binds it through the resource's `local_adapter_id: "codex"`.
-  A worker may register codex alongside ollama; both are gated by the
-  worker's unconditional allowlist.
+  --allow-codex --codex-model <physical-model-slug> --resource
+  <registry-resource-id> [--codex-bin PATH]` (`--codex-resource` when it
+  runs alongside `--allow-ollama`; `--codex-model` is REQUIRED with
+  `--allow-codex`). The resource is registered with provider `openai`,
+  the configured physical model slug (e.g. `gpt-5.6-sol`), entitlement
+  `subscription_included`, channel `worker_bridged`; the server binds it
+  through the resource's `local_adapter_id: "codex"` and the
+  administrator's resource registration must name the SAME physical
+  model (a mismatch is rejected fail-closed on either side). A worker
+  may register codex alongside ollama; both are gated by the worker's
+  unconditional allowlist.
 
 ## Later Providers
 
