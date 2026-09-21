@@ -861,7 +861,13 @@ class CancellationTests(EvidencedWorkerWorld):
             execute = worker.next_execute(timeout=15)
             worker.send_chunk(execute.attempt_id, {"kind": "text_delta", "text": "par"})
             _head = self.read_until_headers(raw)
-            _ = raw.recv(4096)
+            _ = raw.settimeout(2.0)
+            try:
+                first = raw.recv(4096)
+            except (TimeoutError, OSError):
+                first = b""  # already consumed with the headers
+            self.assertTrue(first or b"chunk" in _head)
+            _ = raw.settimeout(0.5)
             _ = raw.shutdown(socket.SHUT_WR)
             worker.start_reader()
             worker.send_chunk(execute.attempt_id, {"kind": "text_delta", "text": "tial"})
