@@ -1391,6 +1391,11 @@ class CodexLocalAdapter:
         self._platform_name: str = platform_name
         self._platform_release: str | None = platform_release
 
+    @property
+    def resource(self) -> ResourceIdentity:
+        """The resource identity this adapter serves (its physical model)."""
+        return self._resource
+
     # ── The LocalAdapter entry point ──────────────────────────────────
 
     def invoke(
@@ -1440,6 +1445,17 @@ class CodexLocalAdapter:
             # The adapter serves only its configured resource id (M05/M09
             # ownership stays authoritative in the server composition).
             raise CodexIneligible("resource_not_served")
+        if (
+            call.model.provider != self._resource.provider
+            or call.model.model != self._resource.model
+        ):
+            # D-042: this adapter's resource represents ONE physical model
+            # (its ResourceIdentity). A selected identity outside it is
+            # never mapped or substituted — typed rejection BEFORE any
+            # turn (and before any thread): the runtime's model/list
+            # verification below stays the exact-binding check for the
+            # effort within that model, never a model selector.
+            raise CodexIneligible("model_not_served")
         remaining = self._deadline_remaining(deadline)
         if remaining is None or remaining <= 0.0:
             return self._cancelled_result(started)

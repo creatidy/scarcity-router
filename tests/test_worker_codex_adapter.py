@@ -143,11 +143,17 @@ FORBIDDEN_WIRE_METHODS: tuple[str, ...] = (
 
 
 def _resource(resource_id: str = "codex-local") -> ResourceIdentity:
+    """The configured resource identity: the PHYSICAL model (D-042).
+
+    ``codex`` is the execution surface (the adapter id), never a model —
+    the resource carries the physical slug the worker's ``--codex-model``
+    names, exactly as ``worker_client.build_registry`` builds it.
+    """
     return ResourceIdentity(
         resource_id=resource_id,
         channel="worker_bridged",
         provider="openai",
-        model="codex",
+        model=SLUG,
         entitlement="subscription_included",
     )
 
@@ -160,10 +166,15 @@ def _call(
     reasoning_effort: str | None = None,
     tools: tuple[dict[str, object], ...] = (),
     resource: ResourceIdentity | None = None,
+    model: ModelIdentity | None = None,
 ) -> AdapterCall:
     return AdapterCall(
         resource=resource if resource is not None else _resource(),
-        model=ModelIdentity(provider="openai", model=SLUG, variant="codex"),
+        model=(
+            model
+            if model is not None
+            else ModelIdentity(provider="openai", model=SLUG, variant="high")
+        ),
         messages=messages
         if messages is not None
         else (AdapterMessage(role="user", content="hi"),),
@@ -683,14 +694,26 @@ class CodexAdapterTests(unittest.TestCase):
         self.assertEqual("low", params.get("effort"))
 
     def test_unlisted_model_is_rejected_before_execution(self) -> None:
-        harness = self._harness()
-        call = AdapterCall(
-            resource=_resource(),
-            model=ModelIdentity(provider="openai", model="gpt-nope", variant="codex"),
-            messages=(AdapterMessage(role="user", content="hi"),),
+        # The runtime's own model/list is the exact-binding authority for
+        # the CONFIGURED slug: the resource's physical model is selected,
+        # but THIS runtime's listing does not carry it — rejected before
+        # any thread/turn (the model/list handshake precedes as designed).
+        harness = self._harness(
+            _scenario(
+                init="ok",
+                account="chatgpt",
+                models=[
+                    {
+                        "id": "gpt-5.6-other",
+                        "model": "gpt-5.6-other",
+                        "supportedReasoningEfforts": ["high"],
+                    }
+                ],
+            )
         )
+        self._harnesses.append(harness)
         result = harness.adapter.invoke(
-            call,
+            _call(),
             cancel_event=threading.Event(),
             deadline=_future_deadline(),
             emit=lambda chunk: None,
@@ -698,6 +721,50 @@ class CodexAdapterTests(unittest.TestCase):
         self.assertEqual("failed", result.status)
         self.assertEqual("model_not_listed", result.calls[0].note)
         self.assertIsNone(harness.trace_request("turn/start"))
+
+    def test_selected_model_outside_the_resource_is_rejected_before_spawn(self) -> None:
+        """D-042 invariant: the resource represents ONE physical model.
+
+        A selected identity outside it (here ``gpt-5.6-luna`` while the
+        configured resource is ``gpt-5.6-sol``) is a typed rejection
+        BEFORE anything runs — no thread, no turn, and no app-server
+        process spawn at all. No substitution, no silent mapping.
+        """
+        harness = self._harness()
+        self._harnesses.append(harness)
+        result = harness.adapter.invoke(
+            _call(
+                model=ModelIdentity(
+                    provider="openai", model="gpt-5.6-luna", variant="high"
+                )
+            ),
+            cancel_event=threading.Event(),
+            deadline=_future_deadline(),
+            emit=lambda chunk: None,
+        )
+        self.assertEqual("failed", result.status)
+        self.assertEqual("model_not_served", result.calls[0].note)
+        # Nothing was spawned and nothing was sent: the mismatch is a
+        # configuration-shape failure, not a runtime discovery problem.
+        self.assertEqual([], harness.spawner.specs)
+        self.assertEqual([], harness.trace_methods())
+
+    def test_selected_provider_outside_the_resource_is_rejected_before_spawn(
+        self,
+    ) -> None:
+        harness = self._harness()
+        self._harnesses.append(harness)
+        result = harness.adapter.invoke(
+            _call(
+                model=ModelIdentity(provider="zai", model=SLUG, variant="high")
+            ),
+            cancel_event=threading.Event(),
+            deadline=_future_deadline(),
+            emit=lambda chunk: None,
+        )
+        self.assertEqual("failed", result.status)
+        self.assertEqual("model_not_served", result.calls[0].note)
+        self.assertEqual([], harness.spawner.specs)
 
     def test_unsupported_effort_is_rejected_before_execution(self) -> None:
         harness = self._harness()
@@ -1598,7 +1665,11 @@ class WorkerWiringTests(unittest.TestCase):
     def test_allow_codex_registers_the_codex_adapter(self) -> None:
         with TemporaryDirectory() as tmp:
             registry = build_registry(
-                {"allow_codex": True, "resource": "codex-res"},
+                {
+                    "allow_codex": True,
+                    "resource": "codex-res",
+                    "codex_model": "gpt-5.6-sol",
+                },
                 state_dir=tmp,
             )
             assert registry is not None
@@ -1614,6 +1685,7 @@ class WorkerWiringTests(unittest.TestCase):
                     "resource": "ollama-res",
                     "allow_codex": True,
                     "codex_resource": "codex-res",
+                    "codex_model": "gpt-5.6-sol",
                 },
                 state_dir=tmp,
             )
@@ -1623,7 +1695,11 @@ class WorkerWiringTests(unittest.TestCase):
     def test_codex_only_accepts_the_shared_resource_flag(self) -> None:
         with TemporaryDirectory() as tmp:
             registry = build_registry(
-                {"allow_codex": True, "resource": "shared-res"},
+                {
+                    "allow_codex": True,
+                    "resource": "shared-res",
+                    "codex_model": "gpt-5.6-sol",
+                },
                 state_dir=tmp,
             )
             assert registry is not None
@@ -1633,12 +1709,79 @@ class WorkerWiringTests(unittest.TestCase):
 
     def test_missing_resource_fails_closed(self) -> None:
         with self.assertRaises(WorkerConfigError):
-            _ = build_registry({"allow_codex": True}, state_dir=".")
+            _ = build_registry(
+                {"allow_codex": True, "codex_model": "gpt-5.6-sol"}, state_dir="."
+            )
         with self.assertRaises(WorkerConfigError):
             _ = build_registry(
-                {"allow_ollama": True, "resource": "a", "allow_codex": True},
+                {
+                    "allow_ollama": True,
+                    "resource": "a",
+                    "allow_codex": True,
+                    "codex_model": "gpt-5.6-sol",
+                },
                 state_dir=".",
             )
+
+    def test_missing_codex_model_fails_closed(self) -> None:
+        """D-042: the physical model slug is REQUIRED configuration.
+
+        ``codex`` is the execution surface; the resource identity must
+        name a physical model, and the worker never guesses one from the
+        installed runtime, the account state or model/list's default.
+        """
+        with self.assertRaises(WorkerConfigError):
+            _ = build_registry(
+                {"allow_codex": True, "resource": "codex-res"}, state_dir="."
+            )
+        with self.assertRaises(WorkerConfigError):
+            _ = build_registry(
+                {"allow_codex": True, "resource": "codex-res", "codex_model": ""},
+                state_dir=".",
+            )
+
+    def test_codex_model_becomes_the_resource_identity(self) -> None:
+        """The configured slug IS the resource's physical model identity."""
+        with TemporaryDirectory() as tmp:
+            registry = build_registry(
+                {
+                    "allow_codex": True,
+                    "resource": "codex-res",
+                    "codex_model": "gpt-5.6-sol",
+                },
+                state_dir=tmp,
+            )
+            assert registry is not None
+            adapter = registry.resolve(CODEX_ADAPTER_ID)
+            assert adapter is not None
+            assert isinstance(adapter, CodexLocalAdapter)
+            identity = adapter.resource
+            self.assertEqual("openai", identity.provider)
+            self.assertEqual("gpt-5.6-sol", identity.model)
+            self.assertEqual("subscription_included", identity.entitlement)
+            self.assertEqual("worker_bridged", identity.channel)
+            self.assertIsNone(identity.variant)
+
+    def test_codex_model_is_validated_as_a_safe_id(self) -> None:
+        with TemporaryDirectory() as tmp:
+            with self.assertRaises(WorkerConfigError):
+                _ = build_registry(
+                    {
+                        "allow_codex": True,
+                        "resource": "codex-res",
+                        "codex_model": "../escape",
+                    },
+                    state_dir=tmp,
+                )
+            with self.assertRaises(WorkerConfigError):
+                _ = build_registry(
+                    {
+                        "allow_codex": True,
+                        "resource": "codex-res",
+                        "codex_model": "GPT-5.6-SOL",
+                    },
+                    state_dir=tmp,
+                )
 
     def test_flags_parse(self) -> None:
         arguments = cast(
@@ -1650,6 +1793,8 @@ class WorkerWiringTests(unittest.TestCase):
                         "--allow-codex",
                         "--resource",
                         "res-1",
+                        "--codex-model",
+                        "gpt-5.6-sol",
                         "--codex-bin",
                         "/usr/local/bin/codex",
                     ]
@@ -1657,6 +1802,7 @@ class WorkerWiringTests(unittest.TestCase):
             ),
         )
         self.assertTrue(arguments["allow_codex"])
+        self.assertEqual("gpt-5.6-sol", arguments["codex_model"])
         self.assertEqual("/usr/local/bin/codex", arguments["codex_bin"])
         self.assertFalse(bool(arguments.get("allow_ollama")))
 

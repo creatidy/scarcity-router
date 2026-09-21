@@ -911,6 +911,11 @@ def build_parser() -> argparse.ArgumentParser:
     _ = run.add_argument("--ollama-port", type=int, default=11434, metavar="PORT")
     _ = run.add_argument("--allow-codex", action="store_true",
                          help="allow the Codex local adapter (official app-server)")
+    _ = run.add_argument("--codex-model", default=None, metavar="SLUG",
+                         help="the physical model slug the Codex resource "
+                              + "represents (required with --allow-codex; must "
+                              + "match a calibrated catalog model, e.g. "
+                              + "gpt-5.6-sol)")
     _ = run.add_argument("--codex-resource", default=None, metavar="ID",
                          help="the registry resource id the Codex adapter serves "
                               + "(required with --resource when both adapters are "
@@ -1008,6 +1013,18 @@ def build_registry(
             if not isinstance(resource_id, str) or not resource_id:
                 raise WorkerConfigError("--resource is required with --allow-codex")
             codex_resource_id = resource_id
+        # D-042: the resource identity names ONE physical model. ``codex``
+        # is the execution SURFACE (the local adapter id), never a model;
+        # the slug is administrator configuration, never guessed from the
+        # installed runtime, the account state or model/list's default —
+        # model/list is only runtime verification.
+        codex_model = arguments.get("codex_model")
+        if not isinstance(codex_model, str) or not codex_model:
+            raise WorkerConfigError("--codex-model is required with --allow-codex")
+        try:
+            model_slug = v_safe_id(codex_model, "codex_model")
+        except ValueError as exc:
+            raise WorkerConfigError(str(exc)) from None
         if state_dir is None:
             from .worker_local_store import default_worker_state_dir
 
@@ -1017,7 +1034,7 @@ def build_registry(
             resource_id=v_safe_id(codex_resource_id, "resource"),
             channel="worker_bridged",
             provider=CODEX_PROVIDER,
-            model="codex",
+            model=model_slug,
             entitlement="subscription_included",
         )
         adapter = CodexLocalAdapter(
