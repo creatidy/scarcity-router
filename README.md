@@ -60,11 +60,19 @@ uv tool install dist/scarcity_router-0.1.0-py3-none-any.whl
 make install
 ```
 
-This exposes exactly three commands:
+After the first PyPI publication, the supported path becomes
+`uv tool install scarcity-router` (`pipx install scarcity-router` as the
+conventional alternative) — it is deliberately not documented as working
+before that release exists.
 
-- `scarcity-router` — the `status` / `select` / `simulate` CLI;
+This exposes exactly four commands:
+
+- `scarcity-router` — the `status` / `select` / `simulate` CLI (plus
+  `install-config` and the offline `doctor`);
 - `scarcity-router-mcp` — the stdio MCP adapter;
-- `scarcity-router-server` — the loopback REST adapter.
+- `scarcity-router-server` — the loopback REST adapter;
+- `scarcity-router-worker` — the native worker of the optional execution
+  gateway (`pair` / `run`).
 
 The installed commands load the packaged default catalog and model policy
 as package resources, so they work without a
@@ -259,6 +267,71 @@ module issues #86–#95). See
 provider-change behavior, and
 [`docs/architecture.md`](docs/architecture.md) for the gateway architecture.
 
+## Deploying The Optional Execution Gateway
+
+The recommendation-only product above needs none of this. If you want one
+OpenAI-compatible endpoint served from your own heterogeneous resources
+(subscription plans, APIs, local inference), the execution gateway is a
+separate, explicitly deployed server plus — where local resources need
+bridging — a small worker. The honest acceptance record, platform support
+table and measured first-run steps live in
+[`docs/m10-acceptance.md`](docs/m10-acceptance.md); the security matrix is
+[`docs/m10-security-acceptance.md`](docs/m10-security-acceptance.md).
+
+### Server (one container)
+
+```bash
+docker build -t scarcity-router .
+docker compose up -d          # examples/docker-compose.yml, loopback default
+# open http://127.0.0.1:8787/admin and complete first-run onboarding:
+# create the administrator password -> add a provider endpoint ->
+# add a resource -> issue a client key (shown exactly once)
+```
+
+Defaults are loopback-only. LAN/VPN exposure requires verified TLS
+certificates (`--host 0.0.0.0 --tls-certfile ... --tls-keyfile ...`) — the
+server refuses a non-loopback plaintext bind by design (D-044). The compose
+example documents the real flag surface, volume and update discipline;
+nothing is invented. The image is not published to any registry yet (the
+GHCR contract is recorded in
+[`docs/release-engineering.md`](docs/release-engineering.md)).
+
+### Worker (bridges localhost-only resources)
+
+One-time pairing: the administrator issues a short-lived one-time code in
+the web UI (Workers page); the worker redeems it over verified TLS:
+
+```bash
+scarcity-router-worker pair --server srws://SERVER-HOST:8790 --code CODE
+scarcity-router-worker run --allow-ollama --resource my-ollama
+```
+
+The worker connects outbound only (no inbound port), holds no provider
+credentials and enforces its local adapter allowlist even against server
+requests. Background operation on Linux is a systemd **user** service —
+`examples/scarcity-router-worker.service` documents install, enable,
+start/stop/status/logs and lingering. The Windows worker ships as a release
+package (`scarcity-worker-X.Y.Z-windows-x64.zip`) with a minimal tray UX;
+live Windows acceptance is a recorded external gate — see the acceptance
+document for exactly what is and is not verified.
+
+### Updates and uninstall
+
+- Linux/WSL package: `uv tool upgrade scarcity-router` (or `pipx upgrade`);
+  restart any server/worker processes.
+- Container: pull the new image tag, `docker compose up -d`; the named
+  volume keeps identities, configuration and keys (store schema migrations
+  are explicit and refuse future versions — never downgrade across one).
+- Windows worker: reinstall the new release package; restart the worker.
+- Uninstall: `uv tool uninstall scarcity-router` (or remove the container
+  and volume); user state lives in `~/.config/scarcity-router/` (user
+  policy), `~/.local/share/scarcity-router/` (server store + worker state,
+  `%LOCALAPPDATA%\scarcity-router` on Windows) — delete it only when you
+  mean to lose keys and configuration.
+
+There is deliberately no background auto-update and no remote code
+execution in any update path.
+
 ## Privacy / Product Boundary
 
 Credentials stay in their existing local provider-managed source whenever
@@ -304,6 +377,11 @@ rules and historical evidence remain available without being part of onboarding.
 - [`docs/worker-protocol.md`](docs/worker-protocol.md) — the versioned
   native-worker transport, pairing and execution-bridging contract of the
   optional execution gateway.
+- [`docs/m10-acceptance.md`](docs/m10-acceptance.md) — distribution and
+  end-to-end acceptance record: platform support table, measured first-run
+  steps, external gates.
+- [`docs/m10-security-acceptance.md`](docs/m10-security-acceptance.md) —
+  the security acceptance matrix mapped to the D-044 threat model.
 
 ### DEVELOP IT
 

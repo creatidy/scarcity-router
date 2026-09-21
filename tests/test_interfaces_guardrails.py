@@ -1405,18 +1405,29 @@ class NoExecutionAndNoIdeMutationTests(GuardrailTestCase):
             self.assertNotIn("chat/completions", source)
             self.assertNotIn("/v1/models", source)
 
-    def test_package_filesystem_writes_are_confined_to_config_provisioning(
+    def test_package_filesystem_writes_are_confined_to_known_provisioning(
         self,
     ) -> None:
-        """The only product write path is the D-036 selector-policy file.
+        """Filesystem writes exist only in known bounded provisioning paths.
 
         AST scan of every package module: filesystem-write operations
         (``write_text``/``write_bytes``/``os.fdopen``/write-mode ``open``/
-        write-flag ``os.open``) may exist only in ``config.py``. This is the
-        structural guarantee behind "Scarcity Router does not automatically
-        modify a user's global IDE configuration".
+        write-flag ``os.open``) may exist only in:
+
+        - ``config.py`` — the D-036 selector-policy provisioning (the one
+          product-owned write outside the package);
+        - ``worker_codex_adapter.py`` — the M06 adapter-owned controlled
+          ``CODEX_HOME`` provisioning under the worker's own state directory
+          (issue #91 Stage 2): one generated minimal ``config.toml`` inside a
+          ``0o700`` adapter-owned tree, never the user's ``~/.codex``. (The
+          M05 worker store's sqlite file is created through the sqlite
+          library and is confined to the same state directory.)
+
+        This is the structural guarantee behind "Scarcity Router does not
+        automatically modify a user's global IDE configuration".
         """
         package_dir = REPO / "scarcity_router"
+        provisioning_modules = {"config.py", "worker_codex_adapter.py"}
         offenders: list[str] = []
         write_call_names = {"write_text", "write_bytes", "fdopen"}
         write_flag_markers = ("WRONLY", "RDWR", "CREAT", "TRUNC", "APPEND")
@@ -1431,9 +1442,12 @@ class NoExecutionAndNoIdeMutationTests(GuardrailTestCase):
                     if isinstance(func, ast.Attribute)
                     else (func.id if isinstance(func, ast.Name) else "")
                 )
-                if name in write_call_names and path.name != "config.py":
+                if (
+                    name in write_call_names
+                    and path.name not in provisioning_modules
+                ):
                     offenders.append(f"{path.name}: {name} call")
-                if name == "open" and path.name != "config.py":
+                if name == "open" and path.name not in provisioning_modules:
                     mode = _mode_argument(node)
                     if mode is not None and any(marker in mode for marker in "wax+"):
                         offenders.append(f"{path.name}: write-mode open")

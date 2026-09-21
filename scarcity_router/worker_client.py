@@ -905,9 +905,25 @@ def build_parser() -> argparse.ArgumentParser:
     _ = run.add_argument("--allow-ollama", action="store_true",
                          help="allow the loopback Ollama local adapter")
     _ = run.add_argument("--resource", default=None, metavar="ID",
-                         help="the registry resource id the loopback adapter serves")
+                         help="the registry resource id the enabled adapter serves "
+                              + "(the Ollama adapter's resource when both are enabled)")
     _ = run.add_argument("--ollama-host", default="127.0.0.1", metavar="HOST")
     _ = run.add_argument("--ollama-port", type=int, default=11434, metavar="PORT")
+    _ = run.add_argument("--allow-codex", action="store_true",
+                         help="allow the Codex local adapter (official app-server)")
+    _ = run.add_argument("--codex-model", default=None, metavar="SLUG",
+                         help="the physical model slug the Codex resource "
+                              + "represents (required with --allow-codex; must "
+                              + "match a calibrated catalog model, e.g. "
+                              + "gpt-5.6-sol)")
+    _ = run.add_argument("--codex-resource", default=None, metavar="ID",
+                         help="the registry resource id the Codex adapter serves "
+                              + "(required with --resource when both adapters are "
+                              + "enabled)")
+    _ = run.add_argument("--codex-bin", default=None, metavar="PATH",
+                         help="pin the Codex binary path (regular executable "
+                              + "file; discovery falls back to PATH and the "
+                              + "VS Code extension layout)")
     return parser
 
 
@@ -916,31 +932,117 @@ def _open_store(state_dir: str | None) -> WorkerLocalStore:
     return WorkerLocalStore(Path(directory) / "worker-state.db")
 
 
-def _build_registry(arguments: Mapping[str, object]) -> LocalAdapterRegistry | None:
-    if not arguments.get("allow_ollama"):
+def open_worker_store(state_dir: str | None = None) -> WorkerLocalStore:
+    """Open the worker's local state store (the public seam).
+
+    The packaged worker's tray entry point shares this exact opening
+    path with the CLI so identity state can never diverge between the
+    two surfaces (M10, issue #95).
+    """
+    return _open_store(state_dir)
+
+
+def build_local_adapter_registry(
+    arguments: Mapping[str, object],
+    state_dir: str | None = None,
+) -> LocalAdapterRegistry | None:
+    """Build the local-adapter registry from ``run``-style flags (seam).
+
+    The public form of :func:`build_registry`, used by the packaged
+    worker's tray entry point so flag names and the local-adapter
+    allowlist semantics are identical to ``scarcity-router-worker run``
+    by construction (M10, issue #95). The state directory resolves from
+    the explicit argument first, then the ``state_dir`` flag, so the
+    adapters' state (including the Codex controlled home) lands in the
+    same directory as the identity store opened through
+    :func:`open_worker_store`.
+    """
+    resolved = state_dir
+    if resolved is None:
+        candidate = arguments.get("state_dir")
+        if isinstance(candidate, str) and candidate:
+            resolved = candidate
+    return build_registry(arguments, state_dir=resolved)
+
+
+def build_registry(
+    arguments: Mapping[str, object],
+    *,
+    state_dir: str | None = None,
+) -> LocalAdapterRegistry | None:
+    allow_ollama = bool(arguments.get("allow_ollama"))
+    allow_codex = bool(arguments.get("allow_codex"))
+    if not allow_ollama and not allow_codex:
         return None
     from .resource_state import ResourceIdentity
-    from .worker_local_adapters import LoopbackOllamaAdapter
 
-    resource_id = arguments.get("resource")
-    if not isinstance(resource_id, str) or not resource_id:
-        raise WorkerConfigError("--resource is required with --allow-ollama")
-    host = arguments.get("ollama_host")
-    port = arguments.get("ollama_port")
-    resource = ResourceIdentity(
-        resource_id=v_safe_id(resource_id, "resource"),
-        channel="worker_bridged",
-        provider="ollama",
-        model="local",
-        entitlement="local_ungated",
-    )
-    adapter = LoopbackOllamaAdapter(
-        resource=resource,
-        host=str(host) if isinstance(host, str) else "127.0.0.1",
-        port=int(port) if isinstance(port, int) and not isinstance(port, bool) else 11434,
-    )
     registry = LocalAdapterRegistry()
-    registry.register(adapter)
+    resource_id = arguments.get("resource")
+    if allow_ollama:
+        from .worker_local_adapters import LoopbackOllamaAdapter
+
+        if not isinstance(resource_id, str) or not resource_id:
+            raise WorkerConfigError("--resource is required with --allow-ollama")
+        host = arguments.get("ollama_host")
+        port = arguments.get("ollama_port")
+        resource = ResourceIdentity(
+            resource_id=v_safe_id(resource_id, "resource"),
+            channel="worker_bridged",
+            provider="ollama",
+            model="local",
+            entitlement="local_ungated",
+        )
+        adapter = LoopbackOllamaAdapter(
+            resource=resource,
+            host=str(host) if isinstance(host, str) else "127.0.0.1",
+            port=int(port) if isinstance(port, int) and not isinstance(port, bool) else 11434,
+        )
+        registry.register(adapter)
+    if allow_codex:
+        from pathlib import Path
+
+        from .worker_codex_adapter import CODEX_PROVIDER, CodexLocalAdapter
+
+        codex_resource_id = arguments.get("codex_resource")
+        if not isinstance(codex_resource_id, str) or not codex_resource_id:
+            if allow_ollama:
+                raise WorkerConfigError(
+                    "--codex-resource is required with --allow-codex when "
+                    + "--allow-ollama also names --resource"
+                )
+            if not isinstance(resource_id, str) or not resource_id:
+                raise WorkerConfigError("--resource is required with --allow-codex")
+            codex_resource_id = resource_id
+        # D-042: the resource identity names ONE physical model. ``codex``
+        # is the execution SURFACE (the local adapter id), never a model;
+        # the slug is administrator configuration, never guessed from the
+        # installed runtime, the account state or model/list's default —
+        # model/list is only runtime verification.
+        codex_model = arguments.get("codex_model")
+        if not isinstance(codex_model, str) or not codex_model:
+            raise WorkerConfigError("--codex-model is required with --allow-codex")
+        try:
+            model_slug = v_safe_id(codex_model, "codex_model")
+        except ValueError as exc:
+            raise WorkerConfigError(str(exc)) from None
+        if state_dir is None:
+            from .worker_local_store import default_worker_state_dir
+
+            state_dir = default_worker_state_dir()
+        pinned = arguments.get("codex_bin")
+        resource = ResourceIdentity(
+            resource_id=v_safe_id(codex_resource_id, "resource"),
+            channel="worker_bridged",
+            provider=CODEX_PROVIDER,
+            model=model_slug,
+            entitlement="subscription_included",
+        )
+        adapter = CodexLocalAdapter(
+            resource=resource,
+            state_dir=state_dir,
+            pinned_binary=Path(str(pinned)) if isinstance(pinned, str) and pinned else None,
+        )
+        registry.register(adapter)
     return registry
 
 
@@ -970,7 +1072,10 @@ def main(argv: list[str] | None = None) -> int:
                     store.close()
                     return 2
                 origin = WorkerOrigin.parse(stored.server_origin)
-            registry = _build_registry(arguments)
+            state_dir = (
+                str(arguments["state_dir"]) if arguments.get("state_dir") else None
+            )
+            registry = build_registry(arguments, state_dir=state_dir)
             runtime = WorkerRuntime(origin=origin, store=store, local_adapters=registry)
             try:
                 reason = runtime.run()
@@ -1000,8 +1105,10 @@ __all__ = [
     "WorkerRuntime",
     "WorkerRuntimeError",
     "build_parser",
+    "build_local_adapter_registry",
     "default_connect_factory",
     "main",
+    "open_worker_store",
     "tls_context_for_worker",
 ]
 

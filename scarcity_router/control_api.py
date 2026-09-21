@@ -66,6 +66,7 @@ from .control_errors import (
     CONTROL_PREFIX,
     CSRF_FORM_FIELD,
     CSRF_HEADER_NAME,
+    LIVENESS_PATH,
     ROOT_PATH,
     SESSION_COOKIE_NAME,
     ControlHTTPError,
@@ -119,6 +120,7 @@ from .selection_app import (
 )
 from .server_composition import (
     build_adapter_registry,
+    build_compatibility_cells,
     validate_execution_configuration,
 )
 from .server_config import (
@@ -443,6 +445,8 @@ class ControlPlane:
 
     def handles(self, method: str, path: str) -> bool:
         _ = method
+        if path == LIVENESS_PATH:
+            return True
         if path in (MACHINE_STATUS_PATH, MACHINE_SELECT_PATH, MACHINE_SIMULATE_PATH):
             return True
         if path == ROOT_PATH or path.startswith(ADMIN_PREFIX):
@@ -454,6 +458,15 @@ class ControlPlane:
         self._request_state.form = None
         try:
             self._check_router_loop_marker(handler)
+            if path == LIVENESS_PATH:
+                # Liveness only, exactly like the frozen loopback adapter's
+                # /healthz (D-028, GET-only): no collector, no store, no
+                # auth data — the one unauthenticated path, so container
+                # health probes work without credentials (M10, issue #95).
+                if method != "GET":
+                    raise ControlHTTPError.method_not_allowed()
+                self._send_json(handler, 200, {"status": "ok"})
+                return
             if path in (MACHINE_STATUS_PATH, MACHINE_SELECT_PATH, MACHINE_SIMULATE_PATH):
                 self._route_machine(method, path, handler)
                 return
@@ -1114,7 +1127,18 @@ class ControlPlane:
                 raise ControlHTTPError.invalid_request(
                     "resource references a revoked worker"
                 )
-        self._save_config(self._updated(resources=self._config.resources + (resource,)))
+        try:
+            self._save_config(
+                self._updated(resources=self._config.resources + (resource,))
+            )
+        except (ServerConfigError, ServerStoreError):
+            raise
+        except ValueError as exc:
+            # Composition failures (including the compatibility matrix's
+            # typed conflicting-evidence CompositionError) are
+            # client-classifiable administrator errors with a safe
+            # remediation-bearing message — never a bare 500.
+            raise ControlHTTPError.invalid_request(str(exc)) from None
         return resource_id
 
     def service_remove_resource(self, resource_id: str) -> None:
@@ -1138,7 +1162,17 @@ class ControlPlane:
             )
             for resource in self._config.resources
         )
-        self._save_config(self._updated(resources=resources))
+        try:
+            self._save_config(self._updated(resources=resources))
+        except (ServerConfigError, ServerStoreError):
+            raise
+        except ValueError as exc:
+            # Same classification as service_add_resource: a configuration
+            # the composition cannot build (e.g. conflicting matrix
+            # evidence re-enabled by this change) is a client-classifiable
+            # administrator error, and the stored configuration keeps the
+            # previously composed state.
+            raise ControlHTTPError.invalid_request(str(exc)) from None
 
     def service_put_alias(self, alias: str, document: Mapping[str, object]) -> None:
         try:
@@ -1791,16 +1825,26 @@ class ControlPlane:
     def _save_config(self, config: ServerConfiguration) -> None:
         """Validate, apply, then persist one configuration version.
 
-        The rebuild runs BEFORE the write so a configuration the adapters
-        cannot compose (unknown preset, unparseable origin, unknown
-        worker) is rejected as a client-classifiable error and never
-        reaches the durable store: what passed composition here will pass
-        again on restart.
+        Every check runs BEFORE any state mutation so a configuration the
+        composition cannot build (unknown preset, unparseable origin,
+        unknown worker, conflicting compatibility evidence for one frozen
+        D-043 key) is rejected as a client-classifiable error, never
+        reaches the durable store and never half-applies in memory: what
+        passed composition here will pass again on restart, and the
+        previously composed application keeps serving untouched.
         """
         config.validate_no_router_loop(self._own_origins)
         validate_execution_configuration(
             config,
             worker_id_exists=self._worker_id_exists,
+        )
+        # The compatibility matrix is composed from the candidate
+        # configuration ahead of the rebuild: its typed
+        # CompositionError (conflicting evidence for one D-043 key)
+        # must abort the save before self._config changes, or a
+        # rejected configuration would poison every later save.
+        _ = build_compatibility_cells(
+            config, provider_secret_reader=self._store.get_provider_secret
         )
         self._config = config
         self._sink.update_retention(config.audit_retention)
@@ -1821,12 +1865,14 @@ class ControlPlane:
         loader, enabled resources are (re-)registered, observations for
         still-registered resources are re-applied, both authorization
         layers plus the client-key directory come from the authoritative
-        configuration, and the execution adapters are composed from that
-        same configuration through
+        configuration, and the execution adapters AND the compatibility
+        matrix are composed from that same configuration through
         :mod:`scarcity_router.server_composition` (M04 HTTP adapter from
-        provider endpoints plus store-held credentials; M05 worker-bridged
-        adapter from resource→worker bindings). No selection or routing
-        logic exists here.
+        provider endpoints plus store-held credentials, with each bound
+        resource's evidenced preset cells; M05 worker-bridged adapter
+        from resource→worker bindings, with the reviewed M06 Codex
+        evidence cells keyed to each Codex resource's physical model). No
+        selection or routing logic exists here.
         """
         catalog, profiles, profile_policy_version = load_configured_artifacts(
             self._catalog_path, self._model_policy_path
@@ -1852,7 +1898,10 @@ class ControlPlane:
             policy=policy,
             registry=registry,
             capacity_source=self._capacity_source,
-            compatibility_cells=(),
+            compatibility_cells=build_compatibility_cells(
+                self._config,
+                provider_secret_reader=self._store.get_provider_secret,
+            ),
             admin_constraints=self._config.admin_constraints,
             aliases=RoutingAliasTable(dict(self._config.aliases)),
             adapters=self._adapters,
