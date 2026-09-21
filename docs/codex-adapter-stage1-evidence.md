@@ -852,6 +852,45 @@ lives in the notes; `UNKNOWN` and `UNSUPPORTED` fail closed.
 | Usage reporting | PARTIAL | schemas `rust-v0.155.1` | test-evidence (adapter mapping verified) + official-source (`ThreadTokenUsageUpdatedNotification`) | adapter mapping test-verified: `inputTokens`→`prompt_tokens`, `outputTokens`→`completion_tokens` from `tokenUsage.last` (fallback `total`); absent usage stays absent; cached/reasoning components not represented; live field parity pending M10 |
 | Cancellation | PARTIAL | official-doc | test-evidence (adapter mapping verified) + official-doc | adapter mapping test-verified: cancel event or deadline → exactly one bounded `turn/interrupt` (bounded ack wait) → cancelled result; never completed after confirmed cancellation; approval requests answered `cancel`; live propagation timing pending M10 |
 
+**M10-B end-to-end evidence note (2026-09-20, integration branch).** The
+M10-B acceptance suite (`tests/test_e2e_codex_acceptance.py`) re-verified
+the mapping half of the following cells through the FULL composed stacks
+(OpenAI-compatible client → server coordinator → real worker protocol →
+this adapter → the deterministic fake App Server), with synthetic
+compatibility-matrix cells supplied programmatically as test evidence:
+
+- *Roles and conversation history*: system→`baseInstructions`,
+  developer→`developerInstructions`, prior user/assistant turns via
+  `thread/inject_items` (roles verified in order), final user message as
+  turn input — verified through the HTTP surface end to end.
+- *Streaming*: deltas delivered as SSE text chunks through the gateway
+  and worker bridge, assembled in order; `[DONE]` terminator; observed
+  surface shape: no explicit terminal `finish_reason` frame on this path
+  (the adapter emits text deltas only).
+- *Structured output*: `response_format` `json_schema` forwarded verbatim
+  as `turn/start {outputSchema}` through the stack.
+- *Reasoning controls*: pinned model slug + `reasoning_effort` forwarded
+  verbatim per turn; an effort absent from the runtime's own listing is
+  rejected before any thread/turn exists (verified through the stack).
+- *Usage reporting*: fake-reported usage lands in the audit trail as
+  provider-reported through the composed server; absent usage stays
+  absent (never zero).
+- *Cancellation*: client disconnect → gateway → worker cancel → exactly
+  one `turn/interrupt` while the turn is open; outcome audited as
+  cancelled; never completed after the cancellation.
+- *Error semantics*: worker-side typed failures surface as explicit
+  client errors (`backend_failure`, `ambiguous_execution_state` with the
+  audit record) — the closed-note mapping verified end to end.
+
+Every cell VALUE above is unchanged: all turn-level cells remain
+`PARTIAL` because the live half — confirmation against a signed-in
+subscription home — is still pending. That live half is recorded as
+`EXTERNAL_ACCEPTANCE_GATE: LIVE_CODEX_SUBSCRIPTION` in
+[`docs/m10-acceptance.md`](m10-acceptance.md); a structure-only probe
+against the real binary (2026-09-20: handshake + controlled-home
+adoption pass, unsigned-in `account/read` fails closed) is recorded
+there as supplementary evidence and never substitutes for a live turn.
+
 ### Not tested / honest gaps after Stage 2
 
 - **No live turn execution** (no inference, no quota consumption): every

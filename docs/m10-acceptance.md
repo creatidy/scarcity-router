@@ -25,6 +25,7 @@ built or tested.
 | Windows tray UX | built/tested (logic), adapter Windows-gated | state machine/run-loop/log unit-tested everywhere (`tests/test_windows_tray.py`); pystray adapter lazy-imports and refuses off-Windows (`tests/test_windows_packaging.py::TrayViewAdapterTests`); `EXTERNAL_ACCEPTANCE_GATE: LIVE_WINDOWS_ACCEPTANCE` |
 | Update path | built/documented | `uv tool upgrade scarcity-router` / container tag pull + `docker compose up -d` / reinstall the worker package; no background auto-update, no remote code execution |
 | Version surface | built/tested | `scarcity-router --version`; server startup banner; `get_version()` single-source literal |
+| Codex execution path (worker-local adapter, subscription-included) | built/tested (deterministic e2e; live subscription gated) | `tests/test_e2e_codex_acceptance.py` + `tests/test_codex_real_binary_probe.py` (M10-B section below); `EXTERNAL_ACCEPTANCE_GATE: LIVE_CODEX_SUBSCRIPTION`; Windows-native Codex unevidenced (`platform_not_evidenced` by design) |
 
 ## Issue #95 acceptance-criteria mapping
 
@@ -62,6 +63,7 @@ make; **gate** — requires an environment this repository does not have;
 | --- | --- | --- |
 | `EXTERNAL_RELEASE_GATE: WINDOWS_CODE_SIGNING` | MSIX packaging/signing stays a fail-closed seam in the release workflow until a certificate and implementation evidence exist | configure the signing secret only together with the evidenced MSIX work |
 | `EXTERNAL_ACCEPTANCE_GATE: LIVE_WINDOWS_ACCEPTANCE` | the produced Windows worker package (installer UX, tray icon, autostart, uninstall) has NOT been exercised on a real Windows 11 host | run the release-built package on Windows 11 and record evidence |
+| `EXTERNAL_ACCEPTANCE_GATE: LIVE_CODEX_SUBSCRIPTION` | live, turn-level Codex execution against a provider-managed login in a dedicated controlled `CODEX_HOME` has NOT been run (see the M10-B section) | run one official `codex login` against the controlled home, then re-run the live smoke and record the evidence here |
 | `PYPI_TRUSTED_PUBLISHER` | PyPI publication stays workflow-gated and NOT executed; the owner actions (PyPI Trusted Publisher entry, protected `pypi` environment, Forgejo runner, `develop` branch protection) are recorded in `docs/release-engineering.md` — never claimed configured | complete the owner checklist before the first release; until then `publish-pypi` fails closed by design |
 
 ## First-run sequences (measured, matching the implemented commands)
@@ -119,7 +121,10 @@ server does not use default ports.
 
 ## What M10 verified end to end
 
-Sixty acceptance tests (`tests/test_e2e_acceptance.py`,
+Sixty acceptance tests plus the M10-B Codex suites
+(`tests/test_e2e_codex_acceptance.py`,
+`tests/test_codex_real_binary_probe.py`;
+`tests/test_e2e_acceptance.py`,
 `tests/test_e2e_execution.py`, `tests/test_tls_acceptance.py`,
 `tests/test_security_acceptance.py`) cover the sixteen mission
 scenarios — recommendation-only surface, server startup/liveness,
@@ -129,7 +134,13 @@ pairing over verified TLS, worker-bridged Ollama execution, exact
 resource ownership, cancellation propagation, ambiguous-disconnect
 no-duplicate semantics, restart/persistence with schema discipline,
 remote M08 bridge, diagnostics/doctor, and secret-free export — plus
-the TLS and security matrices in
+the Codex end-to-end layer (packaged-style worker path, Codex resource
+composition and ownership, auth-verdict eligibility, Codex execution
+streaming and non-streaming, disconnect→`turn/interrupt`, effort and
+structured-output binding, pre-dispatch tool rejection, mid-execution
+worker-loss ambiguity, usage honesty, leakage and isolation asserts,
+and the structure-only real-binary probe) and the TLS and security
+matrices in
 [`docs/m10-security-acceptance.md`](m10-security-acceptance.md). All
 deterministic, synthetic, loopback-only, quota-free; no paid provider
 test exists and none is added (explicit opt-in remains the only path).
@@ -148,6 +159,100 @@ no code was changed to soften them):
   composed path need that capability; tracked as Forgejo issue
   BioMedical-IT/scarcity-router#106, not silently assumed by M10.
 
+## M10-B: Codex end-to-end acceptance
+
+M10-B adds the Codex-dependent acceptance layer on the integration
+branch (M06 Codex worker-local adapter + M10-A distribution/acceptance
+both merged). It exercises Codex through the FULL composed stacks —
+OpenAI-compatible client → server coordinator → real worker protocol →
+``CodexLocalAdapter`` → fake App Server — deterministically and without
+any live Codex backend. The fake App Server
+(``tests/codex_fake_appserver.py``) remains the ONLY Codex backend in
+CI-reachable tests; every scripted string is synthetic.
+
+Deterministic suites added (all green, `tests/test_e2e_codex_acceptance.py`,
+`tests/test_codex_real_binary_probe.py`):
+
+| # | Area | Test |
+| --- | --- | --- |
+| 1 | Packaged-style worker path: console-script pair/run `--allow-codex`, fake `codex` discovered on a tmpdir PATH, real verified TLS (trustme CA via `SSL_CERT_FILE`), resource lands in server registry/state, executes | `PackagedWorkerPathTests.test_console_script_worker_discovers_codex_pairs_and_serves` |
+| 2 | Codex resource composition (`worker_bridged` + `local_adapter_id: "codex"`); exact configured ownership (worker B can neither report nor serve worker A's Codex resource) | `CodexCompositionTests.test_exact_configured_ownership_for_the_codex_resource` |
+| 3 | Honest auth verdicts through the full snapshot path (`auth_unverified` → `unknown`/`telemetry_unknown` → admission refuses; `chatgpt` → `ok` → executes) | `CodexCompositionTests.test_auth_verdicts_drive_eligibility_through_snapshots` |
+| 4 | Full execution round trips: non-streaming through the composed server; streaming through the bare M03 gateway + real `WorkerBridgedAdapter` + real worker runtime with synthetic compatibility cells supplied programmatically (the evidenced-streaming seam; the fail-closed empty default is never weakened — issue #106) | `CodexExecutionTests.test_nonstreaming_execution_reports_provider_usage_honestly`, `CodexStreamingExecutionTests.test_streaming_roles_and_history_end_to_end` |
+| 5 | Real installed Codex smoke probe (local-only, skip-safe): discovery + `--version` + `initialize` handshake with controlled-home adoption + `account/read` verdict; NO turn, NO quota read, no user-home contact | `tests/test_codex_real_binary_probe.py` (see the probe record below) |
+| 6 | Cancellation through the full stack: client FIN → gateway EOF check → worker cancel → `turn/interrupt` → interrupted; never completed-after-cancel; exactly one turn, no second session | `CodexStreamingExecutionTests.test_client_disconnect_interrupts_the_codex_turn` |
+| 7 | Reasoning-effort binding: pinned model + `reasoning_effort` forwarded verbatim; a surface-valid effort the runtime listing lacks is rejected before any thread/turn exists (the binding verdict needs the runtime's own `model/list`) | `CodexStreamingExecutionTests.test_reasoning_effort_forwarded_verbatim`, `..._rejected_before_the_turn` |
+| 8 | Structured output: `response_format` `json_schema` → `outputSchema` forwarded verbatim through the stack | `CodexStreamingExecutionTests.test_structured_output_schema_forwarded` |
+| 9 | Unsupported client tools: a tools-bearing request is refused 400 `compatibility_unsupported` at admission (the synthetic cells record the honest stable-surface `UNSUPPORTED`) — no execute message, no dispatch session | `CodexStreamingExecutionTests.test_tools_bearing_request_rejected_before_dispatch` |
+| 10 | Mid-execution worker loss through the real protocol: 500 `ambiguous_execution_state`, audited, worker-side attempt cancelled (`turn/interrupt` traced), reconnect never re-dispatches (exactly one turn ever) | `CodexWorkerLossTests.test_midexecution_worker_loss_is_ambiguous_and_never_retried` |
+| 11 | Usage honesty: fake-reported usage lands in the audit trail as provider-reported (`{11, 7}`); absent usage stays absent (no zeros fabricated) | `CodexExecutionTests.test_nonstreaming_..._honestly`, `test_absent_provider_usage_stays_absent` |
+| 12 | No token extraction / no leakage: closed wire surface (reviewed allowlist, no forbidden methods), minimal child environment (`PATH`/`HOME`/`CODEX_HOME`), no `auth.json` in the controlled home, prompt/response content and client key absent from audit, export, diagnostics and worker diagnostics | `CodexExecutionTests.test_stack_holds_the_leakage_line` |
+| 13 | Isolation visible end to end: controlled `CODEX_HOME` (0o700, generated config without `mcp_servers`, handshake-verified adoption), scratch cwd under the worker state dir, `workspaceWrite` + `networkAccess: false` + `approvalPolicy: never`, ephemeral thread, roles mapped (`baseInstructions`/`developerInstructions`/`inject_items`), scratch removed after the call | `CodexStreamingExecutionTests.test_isolation_profile_end_to_end` |
+
+Recorded composed behavior worth knowing (documents reality; no code was
+changed to alter it): for a streaming request served by the Codex
+adapter, the SSE stream is the role frame, the text-delta frames and
+`data: [DONE]` — the explicit `finish_reason` frame appears only when the
+adapter itself emits a finish chunk, and the Codex adapter does not.
+OpenAI-compatible clients treat `[DONE]` as the terminator; the shape is
+well-formed but has no terminal finish frame on this path.
+
+### Local real-binary probe record (supplementary, opt-in)
+
+- **Date:** 2026-09-20 (UTC), host WSL2 Linux x86_64 (the Stage-1/2
+  evidence host).
+- **Binary:** the U-001 VS Code ChatGPT extension layout
+  (`openai.chatgpt-26.908.40401-linux-x64`,
+  `bin/linux-x86_64/codex`), located read-only.
+- **Version:** `codex --version` parses to `0.154.0`
+  (`codex-cli 0.154.0-alpha.6.2`; the pre-release segment after the
+  numeric triple is tolerated by the adapter's version contract).
+- **Observed verdict (structure only, sanitized):** the REAL runtime's
+  `initialize` handshake SUCCEEDED against the adapter's controlled home
+  under a tmpdir state dir — the runtime echoed the controlled
+  `CODEX_HOME`, so the adoption check passed against the real binary —
+  and the official `account/read` on the fresh, UNSIGNED-IN controlled
+  home failed CLOSED: verdict `auth_unverified`, snapshot status
+  `unknown` with the closed `telemetry_unknown` diagnostic. Honestly
+  ineligible, exactly as designed. NO turn was started, NO quota read was
+  sent, no user-home `~/.codex` content was touched, and no credential
+  material existed in the controlled home.
+- The probe skips when the binary is absent, so CI stays deterministic;
+  the deterministic layer never depends on it.
+
+### External gate
+
+`EXTERNAL_ACCEPTANCE_GATE: LIVE_CODEX_SUBSCRIPTION`
+
+- **What is missing:** a live, turn-level execution against a
+  provider-managed login inside a dedicated controlled `CODEX_HOME`. That
+  login can be obtained only by an interactive official
+  `codex login` (browser or device code) performed by the owner against
+  the controlled home. The adapter's isolation design deliberately
+  forbids pointing it at the user's real `~/.codex` (D-044: the execution
+  runtime gets its own home), and manual token extraction or
+  `auth.json` copying is forbidden (issue #91 acceptance criteria;
+  AGENTS.md security invariants) — so this gate cannot be completed
+  autonomously by this repository's agents.
+- **What is already implemented and tested:** deterministic full-stack
+  execution against the fake App Server (all areas above), and
+  structure-only real-binary probes (handshake, controlled-home
+  adoption, honest unsigned-in verdict).
+- **Owner action later:** create/sign in once against the dedicated
+  controlled home (`CODEX_HOME=<controlled home> codex login`), then
+  re-run the live smoke — the bounded eligibility probe
+  (`resource_snapshots`) must report the `chatgpt` verdict (status `ok`)
+  and one real pinned execution must complete end to end. Record the
+  date, binary version and observed quota scope here. The deterministic
+  layer must never depend on it.
+
+Platform honesty: Windows-native Codex remains UNEVIDENCED — the
+adapter reports `platform_not_evidenced` there by design, no Windows
+host exists in this environment, and no Windows evidence is claimed.
+The live-subscription confirmation above is the single recorded gate for
+the Codex path; every deterministic cell value below stays conservative
+until it closes.
+
 ## Validation
 
 ```bash
@@ -158,5 +263,7 @@ git diff --check
 make package-check
 ```
 
-Full-suite runtime at time of writing: 1756 tests, ~6 minutes
-wall clock on the development host; the acceptance suites add ~140 s.
+Full-suite runtime at time of writing (M10-B included): ~1772 tests,
+~9 minutes wall clock on the development host; the M10-B Codex
+acceptance suites add ~150 s (of which the packaged-style subprocess
+worker path is ~35 s).
