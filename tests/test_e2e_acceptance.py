@@ -34,11 +34,9 @@ import threading
 import sys
 import tempfile
 import unittest
-import urllib.request
 from pathlib import Path
 from typing import cast, override
 
-from scarcity_router.control_api import SESSION_COOKIE_NAME
 from scarcity_router.gateway_server import load_client_key_directory
 from scarcity_router.resource_state import ResourceStateSnapshot
 from scarcity_router.server_store import (
@@ -47,7 +45,6 @@ from scarcity_router.server_store import (
     ServerStore,
     ServerStoreError,
 )
-from scarcity_router.status import StatusCollectors
 
 from tests.m10_fixtures import (
     PROMPT_MARKER,
@@ -150,27 +147,36 @@ class RecommendationOnlySurfaceTests(unittest.TestCase):
                 self.assertTrue(hasattr(module, "main"))
 
 
-def _rest_get(
-    port: int, path: str, host_header: str
-) -> tuple[int, object]:
-    request = urllib.request.Request(
-        f"http://127.0.0.1:{port}{path}", headers={"Host": host_header}
-    )
-    with urllib.request.urlopen(request, timeout=10) as response:
-        return response.status, json.loads(response.read().decode("utf-8"))
+def _rest_get(port: int, path: str, host_header: str) -> tuple[int, object]:
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+    try:
+        connection.request("GET", path, headers={"Host": host_header})
+        response = connection.getresponse()
+        raw = response.read()
+        status = response.status
+    finally:
+        connection.close()
+    return status, json.loads(raw.decode("utf-8"))
 
 
 def _rest_post(
     port: int, path: str, payload: object, host_header: str
 ) -> tuple[int, object]:
-    request = urllib.request.Request(
-        f"http://127.0.0.1:{port}{path}",
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Host": host_header, "Content-Type": "application/json"},
-        method="POST",
-    )
-    with urllib.request.urlopen(request, timeout=30) as response:
-        return response.status, json.loads(response.read().decode("utf-8"))
+    body = json.dumps(payload).encode("utf-8")
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
+    try:
+        connection.request(
+            "POST",
+            path,
+            body=body,
+            headers={"Host": host_header, "Content-Type": "application/json"},
+        )
+        response = connection.getresponse()
+        raw = response.read()
+        status = response.status
+    finally:
+        connection.close()
+    return status, json.loads(raw.decode("utf-8"))
 
 
 # ── Scenarios 2-5: the composed server ────────────────────────────────────────
@@ -232,6 +238,7 @@ class ServerStartupTests(RealTimeServerHarness):
 
 
 class OnboardingTests(RealTimeServerHarness):
+    cookie: str
     def test_scenario_03_onboarding_login_session(self) -> None:
         # First run: forced onboarding; bootstrap works exactly once.
         status, _payload, headers = self.exchange(
@@ -280,6 +287,9 @@ class OnboardingTests(RealTimeServerHarness):
 
 
 class ClientKeyTests(RealTimeServerHarness):
+    cookie: str
+    client_key: str
+    client_id: str
     @override
     def setUp(self) -> None:
         super().setUp()
@@ -319,6 +329,9 @@ class ClientKeyTests(RealTimeServerHarness):
 
 
 class ExecutionIngressTests(RealTimeServerHarness):
+    cookie: str
+    client_key: str
+    client_id: str
     @override
     def setUp(self) -> None:
         super().setUp()
@@ -395,9 +408,11 @@ class ExecutionIngressTests(RealTimeServerHarness):
             payloads: list[dict[str, object]] = []
             for line in response.read().decode("utf-8").splitlines():
                 if line.startswith("data: ") and line != "data: [DONE]":
-                    document = json.loads(line[len("data: ") :])
+                    document: object = cast(
+                        "object", json.loads(line[len("data: ") :])
+                    )
                     if isinstance(document, dict):
-                        payloads.append(document)
+                        payloads.append(cast("dict[str, object]", document))
             connection.close()
             # Role frame, deltas, finish and usage: well-formed framing.
             self.assertGreaterEqual(len(payloads), 4)
@@ -441,7 +456,7 @@ class RestartPersistenceTests(unittest.TestCase):
             _ = plane.service_bootstrap_admin(
                 password=FAKE_ADMIN_PASSWORD, confirm=True
             )
-            plane.service_add_provider(
+            _ = plane.service_add_provider(
                 {
                     "provider_id": "zai-http",
                     "adapter_id": "zai-coding-plan",
@@ -488,8 +503,7 @@ class RestartPersistenceTests(unittest.TestCase):
             connection = sqlite3.connect(database)
             try:
                 _ = connection.execute(
-                    "INSERT OR REPLACE INTO schema_migrations (version, applied_at) "
-                    "VALUES (?, '2026-09-20T00:00:00.000Z')",
+                    "INSERT OR REPLACE INTO schema_migrations (version, applied_at) VALUES (?, '2026-09-20T00:00:00.000Z')",
                     (STORE_SCHEMA_VERSION + 1,),
                 )
                 _ = connection.execute(
@@ -532,6 +546,9 @@ class RestartPersistenceTests(unittest.TestCase):
 
 
 class RemoteBridgeTests(RealTimeServerHarness):
+    cookie: str
+    client_key: str
+    client_id: str
     @override
     def setUp(self) -> None:
         super().setUp()
@@ -563,6 +580,9 @@ class RemoteBridgeTests(RealTimeServerHarness):
 
 
 class DiagnosticsAndExportTests(RealTimeServerHarness):
+    cookie: str
+    client_key: str
+    client_id: str
     @override
     def setUp(self) -> None:
         super().setUp()
@@ -607,7 +627,7 @@ class DiagnosticsAndExportTests(RealTimeServerHarness):
             cwd=str(REPO),
         )
         self.assertEqual(0, result.returncode, result.stderr)
-        report = json.loads(result.stdout)
+        report = cast("object", json.loads(result.stdout))
         rendered = json.dumps(report)
         self.assertNotIn(FAKE_PROVIDER_SECRET, rendered)
 
@@ -683,7 +703,10 @@ def _audit_payloads(data_dir: Path) -> list[str]:
     database = data_dir / STORE_FILE_NAME
     connection = sqlite3.connect(database)
     try:
-        rows = connection.execute("SELECT payload FROM audit_records").fetchall()
+        rows = cast(
+            "list[tuple[object]]",
+            connection.execute("SELECT payload FROM audit_records").fetchall(),
+        )
     finally:
         connection.close()
     return [str(row[0]) for row in rows]

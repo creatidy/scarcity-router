@@ -238,11 +238,11 @@ def inspect_wheel() -> None:
             core in (["mcp>=2,<3"], ["mcp<3,>=2"]),
             f"core runtime dependencies changed: {core}",
         )
-        joined_conditionals = "\n".join(conditional)
+        joined_conditionals = "\n".join(conditional).lower()
         _check(
             len(conditional) == 2
             and "pystray" in joined_conditionals
-            and "Pillow" in joined_conditionals,
+            and "pillow" in joined_conditionals,
             f"unexpected conditional extra dependencies: {conditional}",
         )
     print("PASS wheel contents and metadata verified")

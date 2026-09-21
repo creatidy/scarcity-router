@@ -23,7 +23,6 @@ from __future__ import annotations
 import http.client
 import json
 import socket
-from collections.abc import Callable
 import ssl
 import tempfile
 import threading
@@ -50,7 +49,7 @@ from scarcity_router.worker_local_adapters import (
     LocalAdapterRegistry,
     LoopbackOllamaAdapter,
 )
-from scarcity_router.worker_local_store import WorkerLocalIdentity, WorkerLocalStore
+from scarcity_router.worker_local_store import WorkerLocalStore
 from scarcity_router.worker_protocol import SocketTransport, StateReportAckMessage
 
 if TYPE_CHECKING:  # pragma: no cover - type-only import
@@ -115,34 +114,6 @@ def _bridged_resource_document(worker_id: str) -> dict[str, object]:
         "worker_id": worker_id,
         "local_adapter_id": "ollama",
     }
-
-
-def _observation_for(
-    resource_id: str, provider: str, model: str
-) -> ResourceStateSnapshot:
-    from datetime import datetime, timezone
-
-    from scarcity_router.resource_state import (
-        ResourceHealth,
-    )
-
-    identity = ResourceIdentity(
-        resource_id=resource_id,
-        channel="worker_bridged",
-        provider=provider,
-        model=model,
-        entitlement="subscription_included",
-    )
-    return ResourceStateSnapshot(
-        schema_version=1,
-        identity=identity,
-        observed_at=datetime.now(timezone.utc)
-        .isoformat(timespec="milliseconds")
-        .replace("+00:00", "Z"),
-        health=ResourceHealth(status="ok", diagnostics=()),
-        quota_facts=(),
-        promotions=(),
-    )
 
 
 def _server_observation(
@@ -340,10 +311,6 @@ class WorkerWorld(RealTimeServerHarness):
         self.addCleanup(listener.shutdown)
         self.worker_port = listener.bound_port
         return self.worker_port
-        listener.serve_in_background()
-        self.addCleanup(listener.shutdown)
-        self.worker_port = listener.bound_port
-        return self.worker_port
 
     def worker_origin(self) -> WorkerOrigin:
         return WorkerOrigin.parse(f"srws://127.0.0.1:{self.worker_port}")
@@ -418,7 +385,7 @@ class WorkerPairingTests(WorkerWorld):
     def setUp(self) -> None:
         super().setUp()
         self.onboard()
-        self.attach_worker_listener()
+        _ = self.attach_worker_listener()
 
     def test_scenario_08_pairing_over_real_tls(self) -> None:
         store = self.open_worker_store("pair")
@@ -466,7 +433,7 @@ class WorkerBridgedExecutionTests(WorkerWorld):
     def setUp(self) -> None:
         super().setUp()
         self.onboard()
-        self.attach_worker_listener()
+        _ = self.attach_worker_listener()
 
     def _ollama_registry(self, provider_port: int) -> LocalAdapterRegistry:
         identity = ResourceIdentity(
@@ -654,16 +621,6 @@ class WorkerBridgedExecutionTests(WorkerWorld):
             return 0, "ack"
         finally:
             transport.close()
-
-
-def _now() -> str:
-    from datetime import datetime, timezone
-
-    return (
-        datetime.now(timezone.utc)
-        .isoformat(timespec="milliseconds")
-        .replace("+00:00", "Z")
-    )
 
 
 
@@ -872,6 +829,7 @@ class CancellationTests(EvidencedWorkerWorld):
                 first = raw.recv(4096)
             except (TimeoutError, OSError):
                 first = b""  # already consumed with the headers
+            self.assertTrue(first or b"chunk" in head)
             _ = raw.settimeout(0.5)
             # The client disconnects: a clean FIN on the request socket.
             _ = raw.shutdown(socket.SHUT_WR)

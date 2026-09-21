@@ -50,9 +50,9 @@ def _https_request(
     connection.close()
     parsed: dict[str, object] = {}
     if body:
-        document = json.loads(body.decode("utf-8"))
-        if isinstance(document, dict):
-            parsed = document
+        raw_document: object = cast("object", json.loads(body.decode("utf-8")))
+        if isinstance(raw_document, dict):
+            parsed = cast("dict[str, object]", raw_document)
     return response.status, parsed
 
 
@@ -61,6 +61,7 @@ class ComposedServerTlsTests(RealTimeServerHarness):
 
     tls: TlsMaterials
     tls_port: int
+    tls_materials: TlsMaterials | None
 
     def __init__(self, method_name: str = "runTest") -> None:
         super().__init__(method_name)
@@ -69,37 +70,11 @@ class ComposedServerTlsTests(RealTimeServerHarness):
 
     @override
     def setUp(self) -> None:
-        from scarcity_router.gateway_server import make_gateway_server
-        from scarcity_router.worker_endpoint import build_tls_context
-
-        self.tls = TlsMaterials()
-        self.addCleanup(self.tls.cleanup)
-        self.data_dir = Path(tempfile.mkdtemp(prefix="scarcity-router-tls-store-"))
-        self.plane = self.make_plane(self.data_dir)
-        tls_context = build_tls_context(
-            str(self.tls.server_cert), str(self.tls.server_key)
-        )
-        self.server = make_gateway_server(
-            self.plane.current_application(),
-            host="127.0.0.1",
-            port=0,
-            tls_context=tls_context,
-            control_plane=self.plane,
-        )
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
-        self.thread.start()
-        self.addCleanup(self._teardown_plain)
-        self.tls_port = cast("tuple[str, int]", self.server.server_address)[1]
-
-    def _teardown_plain(self) -> None:
-        import shutil
-
-        self.server.shutdown()
-        self.server.server_close()
-        _ = self.thread.join(timeout=10)
-        self.plane.store.close()
-        self.plane.close_worker_store()
-        _ = shutil.rmtree(self.data_dir, ignore_errors=True)
+        self.tls_materials = TlsMaterials()
+        self.addCleanup(self.tls_materials.cleanup)
+        super().setUp()
+        self.tls = self.tls_materials
+        self.tls_port = self.port
 
     def test_verified_tls_serves_liveness(self) -> None:
         context = self.tls.client_context()

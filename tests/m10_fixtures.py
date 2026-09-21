@@ -23,7 +23,6 @@ from typing import TYPE_CHECKING, cast, override
 from scarcity_router.control_api import ControlPlane
 from scarcity_router.gateway_server import GatewayHTTPServer, make_gateway_server
 from scarcity_router.server_store import ServerStore
-from scarcity_router.status import StatusCollectors
 
 if TYPE_CHECKING:  # pragma: no cover - type-only import
     import trustme
@@ -57,6 +56,9 @@ class RealTimeServerHarness(unittest.TestCase):
     client_key: str
     client_id: str
     cookie: str
+    #: Subclasses may set this before ``super().setUp()`` to serve the
+    #: whole composition behind verified TLS with these materials.
+    tls_materials: "TlsMaterials | None"
 
     def __init__(self, method_name: str = "runTest") -> None:
         super().__init__(method_name)
@@ -67,6 +69,7 @@ class RealTimeServerHarness(unittest.TestCase):
         self.client_key = ""
         self.client_id = ""
         self.cookie = ""
+        self.tls_materials = None
 
     @override
     def setUp(self) -> None:
@@ -100,10 +103,19 @@ class RealTimeServerHarness(unittest.TestCase):
         )
 
     def _start_server(self) -> None:
+        tls_context = None
+        if self.tls_materials is not None:
+            from scarcity_router.worker_endpoint import build_tls_context
+
+            tls_context = build_tls_context(
+                str(self.tls_materials.server_cert),
+                str(self.tls_materials.server_key),
+            )
         self.server = make_gateway_server(
             self.plane.current_application(),
             host="127.0.0.1",
             port=0,
+            tls_context=tls_context,
             control_plane=self.plane,
         )
         self.thread = threading.Thread(
@@ -129,6 +141,15 @@ class RealTimeServerHarness(unittest.TestCase):
             issued = self.plane.service_issue_client_key({"label": "e2e client"})
             self.client_key = cast(str, issued["api_key"])
             self.client_id = cast(str, issued["client_id"])
+
+    @staticmethod
+    def _parse_body(raw: bytes) -> object:
+        document: object
+        try:
+            document = cast("object", json.loads(raw))
+        except json.JSONDecodeError:
+            document = raw.decode("utf-8", errors="replace")
+        return document
 
     def exchange(
         self,
@@ -166,10 +187,7 @@ class RealTimeServerHarness(unittest.TestCase):
             connection.close()
         parsed: object = None
         if raw:
-            try:
-                parsed = json.loads(raw)
-            except json.JSONDecodeError:
-                parsed = raw.decode("utf-8", errors="replace")
+            parsed = self._parse_body(raw)
         return status, parsed, response_headers
 
     def admin_post(self, path: str, payload: object | None = None) -> tuple[int, object]:
@@ -213,23 +231,21 @@ class RealTimeServerHarness(unittest.TestCase):
         raw = response.read().decode("utf-8")
         for line in raw.splitlines():
             if line.startswith("data: ") and line != "data: [DONE]":
-                payload = json.loads(line[len("data: ") :])
+                payload: object = cast("object", json.loads(line[len("data: ") :]))
                 if isinstance(payload, dict):
-                    payloads.append(payload)
+                    payloads.append(cast("dict[str, object]", payload))
         return payloads
 
 
+def bytes_blob(blob: object) -> bytes:
+    """``bytes()`` of a trustme ``Blob`` (untyped module, narrow call)."""
+    reader: object = getattr(blob, "bytes")  # pyright: ignore[reportAny]
+    callable_reader = cast("Callable[[], bytes]", reader)
+    return callable_reader()
+
+
 def _temp_dir(prefix: str) -> str:
-    import shutil
-
-    directory = tempfile.mkdtemp(prefix=prefix)
-
-    def cleanup() -> None:
-        _ = shutil.rmtree(directory, ignore_errors=True)
-
-    # Registered per-test by callers via addCleanup where needed; the
-    # harness removes its own directory in tearDown.
-    return directory
+    return tempfile.mkdtemp(prefix=prefix)
 
 
 def wait_until(
@@ -259,6 +275,24 @@ class TlsMaterials:
     fail). PEM files are written to a throwaway directory.
     """
 
+    _ca: "trustme.CA"
+    _wrong_ca: "trustme.CA"
+    _expired_ca: "trustme.CA"
+    # trustme is untyped; the leaf objects are used only through
+    # cert_chain_pems / private_key_pem, extracted to bytes below.
+    _server_leaf: object
+    _other_host_leaf: object
+    _expired_leaf: object
+    _directory: Path
+    server_cert: Path
+    server_key: Path
+    other_host_cert: Path
+    other_host_key: Path
+    expired_cert: Path
+    expired_key: Path
+    ca_file: Path
+    wrong_ca_file: Path
+
     def __init__(self) -> None:
         import trustme
 
@@ -272,29 +306,47 @@ class TlsMaterials:
             "localhost", "127.0.0.1", not_after=datetime(2020, 1, 1, tzinfo=timezone.utc)
         )
         self._directory = Path(tempfile.mkdtemp(prefix="scarcity-router-m10-tls-"))
-        # trustme exposes the PEM material as properties (lists of Pem
-        # objects), not methods.
-        self.server_cert = self._write("server.crt", self._server_leaf.cert_chain_pems)
-        self.server_key = self._write("server.key", [self._server_leaf.private_key_pem])
-        self.other_host_cert = self._write(
-            "other.crt", self._other_host_leaf.cert_chain_pems
+        # trustme exposes the PEM material as properties (Blob objects);
+        # the module ships no type information, hence the two narrow,
+        # justified suppressions on the extraction helper.
+        server_leaf_pems = self._cert_pems(self._server_leaf)
+        self.server_cert = self._write("server.crt", server_leaf_pems)
+        self.server_key = self._write(
+            "server.key", [self._private_key_pem(self._server_leaf)]
         )
+        other_leaf_pems = self._cert_pems(self._other_host_leaf)
+        self.other_host_cert = self._write("other.crt", other_leaf_pems)
         self.other_host_key = self._write(
-            "other.key", [self._other_host_leaf.private_key_pem]
+            "other.key", [self._private_key_pem(self._other_host_leaf)]
         )
-        self.expired_cert = self._write("expired.crt", self._expired_leaf.cert_chain_pems)
+        expired_leaf_pems = self._cert_pems(self._expired_leaf)
+        self.expired_cert = self._write("expired.crt", expired_leaf_pems)
         self.expired_key = self._write(
-            "expired.key", [self._expired_leaf.private_key_pem]
+            "expired.key", [self._private_key_pem(self._expired_leaf)]
         )
-        self.ca_file = self._write("ca.crt", [self._ca.cert_pem])
-        self.wrong_ca_file = self._write("wrong-ca.crt", [self._wrong_ca.cert_pem])
+        self.ca_file = self._write("ca.crt", [bytes_blob(self._ca.cert_pem)])
+        self.wrong_ca_file = self._write(
+            "wrong-ca.crt", [bytes_blob(self._wrong_ca.cert_pem)]
+        )
 
-    def _write(self, name: str, pems: "list[trustme.Blob]") -> Path:
+    def _write(self, name: str, pems: "list[bytes]") -> Path:
         path = self._directory / name
-        text = b"".join(pem.bytes() for pem in pems)
+        text = b"".join(pems)
         _ = path.write_bytes(text)
         _ = path.chmod(0o600)
         return path
+
+    @staticmethod
+    def _cert_pems(leaf: object) -> "list[bytes]":
+        # trustme.Certificate.cert_chain_pems -> list[Blob]; untyped module.
+        chain: object = getattr(leaf, "cert_chain_pems")  # pyright: ignore[reportAny]
+        pems = cast("list[object]", chain)
+        return [bytes_blob(pem) for pem in pems]
+
+    @staticmethod
+    def _private_key_pem(leaf: object) -> bytes:
+        key: object = getattr(leaf, "private_key_pem")  # pyright: ignore[reportAny]
+        return bytes_blob(key)
 
     def client_context(self) -> ssl.SSLContext:
         """A verifying client context trusting ONLY the test CA."""
