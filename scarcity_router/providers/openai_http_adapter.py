@@ -531,16 +531,6 @@ class OpenAICompatibleHttpAdapter:
                 status="schema_drift",
                 note="the configured origin does not serve the documented endpoint path",
             )
-        if status in (401, 403):
-            return HealthProbeResult(
-                status="auth_rejected",
-                note="the endpoint rejected the configured credential",
-            )
-        if status in (404, 410):
-            return HealthProbeResult(
-                status="schema_drift",
-                note="the configured origin does not serve the documented endpoint path",
-            )
         # Every other well-formed HTTP answer — the expected 405/400/422
         # method/body rejections for a GET on a POST endpoint, and 5xx
         # bodies from strict handlers that reject any GET — proves the

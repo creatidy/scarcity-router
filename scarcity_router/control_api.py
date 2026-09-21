@@ -2015,6 +2015,9 @@ class ControlPlane:
             due = registry.refresh_due(now=now)
         except Exception:
             return
+        adapter = self._adapters.resolve("server_direct_http")
+        if not isinstance(adapter, OpenAICompatibleHttpAdapter):
+            return
         for resource_id in due:
             resource = self._config.resource_by_id(resource_id)
             if (
@@ -2023,9 +2026,6 @@ class ControlPlane:
                 or resource.registration.identity.channel != "server_direct_http"
             ):
                 continue
-            adapter = self._adapters.resolve("server_direct_http")
-            if not isinstance(adapter, OpenAICompatibleHttpAdapter):
-                return
             try:
                 result = adapter.probe_health(resource_id)
             except Exception:

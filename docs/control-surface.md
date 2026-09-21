@@ -148,7 +148,12 @@ the resource's observation. Server-direct registrations carry a default
 connection test records its probe result the same way, so the
 diagnostics remediation is a real action. A resource that was never
 observed stays honestly `available: false` on the acceptance ladder and
-is refused with `target_unavailable` at admission.
+is refused with `target_unavailable` at admission. Probes run
+synchronously in the request path under the adapter's deadline, so a
+resource whose origin drops packets (rather than refusing) can stall
+one execution request by up to that deadline once per polling cadence;
+a refused or dead origin resolves immediately and is recorded
+`unavailable`.
 
 ## Durable store (D-041/D-044)
 
