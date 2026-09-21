@@ -170,9 +170,13 @@ no code was changed to soften them):
   with the administrator's own dated evidence) is NOT implemented —
   built-in adapter evidence is the default ceiling on the composed path
   (M04 preset cells and the reviewed M06 Codex cells are wired in
-  `server_composition`); the administrative recording surface itself
-  remains tracked as Forgejo issue BioMedical-IT/scarcity-router#106,
-  not silently assumed by M10.
+  `server_composition`). The composed-matrix wiring itself was
+  delivered and closed under Forgejo issue
+  BioMedical-IT/scarcity-router#106 (2026-09-21, with the authority
+  model recorded: nothing in configuration can elevate above built-in
+  evidence); administrator-supplied elevation above built-in evidence
+  remains a possible future enhancement, not needed for any currently
+  evidenced adapter.
 
 ## M10-B: Codex end-to-end acceptance
 
@@ -207,7 +211,9 @@ Integration-blocker dispositions recorded here (2026-09-21):
   composed path now works on BUILT-IN evidence (streaming cell
   `PARTIAL`), tools still fail closed (`UNSUPPORTED`), and no synthetic
   cell injection exists in any test. Built-in evidence is the ceiling;
-  administrator narrowing/elevation remains issue #106.
+  administrator narrowing/elevation above it was recorded when issue
+  #106 closed (2026-09-21) as a possible future enhancement, not
+  needed for any currently evidenced adapter.
 
 Deterministic suites added (all green, `tests/test_e2e_codex_acceptance.py`,
 `tests/test_codex_real_binary_probe.py`):
