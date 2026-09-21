@@ -822,6 +822,8 @@ class CancellationTests(EvidencedWorkerWorld):
             # frames may arrive together with the headers (single TCP
             # segment), so this read tolerates a short timeout.
             worker.send_chunk(execute.attempt_id, {"kind": "text_delta", "text": "par"})
+            # Generous read window: CI machines can pause processes.
+            _ = raw.settimeout(60.0)
             head = self.read_until_headers(raw)
             self.assertIn(" 200 ", head.decode("ascii", errors="replace"))
             _ = raw.settimeout(2.0)
