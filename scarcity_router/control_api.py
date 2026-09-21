@@ -1127,7 +1127,18 @@ class ControlPlane:
                 raise ControlHTTPError.invalid_request(
                     "resource references a revoked worker"
                 )
-        self._save_config(self._updated(resources=self._config.resources + (resource,)))
+        try:
+            self._save_config(
+                self._updated(resources=self._config.resources + (resource,))
+            )
+        except (ServerConfigError, ServerStoreError):
+            raise
+        except ValueError as exc:
+            # Composition failures (including the compatibility matrix's
+            # typed conflicting-evidence CompositionError) are
+            # client-classifiable administrator errors with a safe
+            # remediation-bearing message — never a bare 500.
+            raise ControlHTTPError.invalid_request(str(exc)) from None
         return resource_id
 
     def service_remove_resource(self, resource_id: str) -> None:
@@ -1151,7 +1162,17 @@ class ControlPlane:
             )
             for resource in self._config.resources
         )
-        self._save_config(self._updated(resources=resources))
+        try:
+            self._save_config(self._updated(resources=resources))
+        except (ServerConfigError, ServerStoreError):
+            raise
+        except ValueError as exc:
+            # Same classification as service_add_resource: a configuration
+            # the composition cannot build (e.g. conflicting matrix
+            # evidence re-enabled by this change) is a client-classifiable
+            # administrator error, and the stored configuration keeps the
+            # previously composed state.
+            raise ControlHTTPError.invalid_request(str(exc)) from None
 
     def service_put_alias(self, alias: str, document: Mapping[str, object]) -> None:
         try:
@@ -1804,16 +1825,26 @@ class ControlPlane:
     def _save_config(self, config: ServerConfiguration) -> None:
         """Validate, apply, then persist one configuration version.
 
-        The rebuild runs BEFORE the write so a configuration the adapters
-        cannot compose (unknown preset, unparseable origin, unknown
-        worker) is rejected as a client-classifiable error and never
-        reaches the durable store: what passed composition here will pass
-        again on restart.
+        Every check runs BEFORE any state mutation so a configuration the
+        composition cannot build (unknown preset, unparseable origin,
+        unknown worker, conflicting compatibility evidence for one frozen
+        D-043 key) is rejected as a client-classifiable error, never
+        reaches the durable store and never half-applies in memory: what
+        passed composition here will pass again on restart, and the
+        previously composed application keeps serving untouched.
         """
         config.validate_no_router_loop(self._own_origins)
         validate_execution_configuration(
             config,
             worker_id_exists=self._worker_id_exists,
+        )
+        # The compatibility matrix is composed from the candidate
+        # configuration ahead of the rebuild: its typed
+        # CompositionError (conflicting evidence for one D-043 key)
+        # must abort the save before self._config changes, or a
+        # rejected configuration would poison every later save.
+        _ = build_compatibility_cells(
+            config, provider_secret_reader=self._store.get_provider_secret
         )
         self._config = config
         self._sink.update_retention(config.audit_retention)
