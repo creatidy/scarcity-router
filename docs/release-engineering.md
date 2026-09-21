@@ -175,9 +175,9 @@ Invariants enforced fail-closed by `.github/workflows/release.yml`
    (there is no second committed version copy);
 3. the tagged commit is reachable from stable `main`
    (`git merge-base --is-ancestor`);
-4. the artifacts are built from the exact tagged commit — every later job of
-   the run checks out that same commit, and artifacts travel to the publish
-   jobs only through this run's upload;
+4. the artifacts are built from the exact tagged commit — every build job
+   of the run checks out that same commit, and later stages receive bytes
+   only through this run's artifact uploads (they perform no checkout);
 5. the artifacts pass their applicable verification (`make package-check`)
    before any publication job starts.
 
