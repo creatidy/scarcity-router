@@ -40,7 +40,7 @@ Every capability in this document carries exactly one status:
 | Public releases, downloadable artifacts | GitHub Releases via the mirror | Configured externally (workflow is implemented; requires owner actions to fire) |
 | PyPI publication | Trusted Publishing (OIDC) via the release workflow | Configured externally |
 | Build provenance | Sigstore-backed GitHub artifact attestations | Implemented now |
-| Server OCI images on GHCR | Future job in `.github/workflows/release.yml` | Future contract |
+| Server OCI images on GHCR | Future publish job in `.github/workflows/release.yml` (the image definition is in-tree, unpublished) | Future contract |
 | Windows worker package (portable ZIP) | `build-windows-worker` job in `.github/workflows/release.yml` | Implemented now (workflow; live runner acceptance is a recorded gate) |
 | Windows worker MSIX (signed) | MSIX seam in the same job | External gate (`WINDOWS_CODE_SIGNING`) |
 | Custom Linux package repositories (apt/RPM/pacman), second CI platform, other registries | — | Not yet supported (deliberately) |
@@ -197,13 +197,15 @@ after that is the workflow's job — or a fail-closed refusal.
 
 **Implemented now**; activation requires the owner actions below.
 
-`.github/workflows/release.yml` on the GitHub mirror, four jobs:
+`.github/workflows/release.yml` on the GitHub mirror, six jobs:
 
 | Job | Needs | Permissions | Does |
 | --- | --- | --- | --- |
-| `verify-release-contract` | — | `contents: read` | checks out the tag with full history and enforces invariants 1–3 |
-| `build-and-verify-artifacts` | verify | `contents: read`, `id-token: write`, `attestations: write` | builds and smoke-installs the artifacts from the exact tagged commit (`make package-check`), writes `SHA256SUMS` (wheel and sdist entries), verifies the payload set, attests build provenance, and uploads two structurally separated artifacts: `pypi-packages` (only `*.whl`/`*.tar.gz`) and `release-bundle` (distributions plus `SHA256SUMS`) |
-| `publish-github-release` | build | `contents: write` | downloads `release-bundle` and creates the GitHub Release, attaching the wheel, the sdist and `SHA256SUMS` through an explicit asset list |
+| `verify` | — | `contents: read` | checks out the tag with full history and enforces invariants 1–3 |
+| `build` | verify | `contents: read`, `id-token: write`, `attestations: write` | builds and smoke-installs the artifacts from the exact tagged commit (`make package-check`), writes the PARTIAL `SHA256SUMS` (wheel and sdist entries), verifies the payload set, attests the wheel and the sdist (artifacts whose bytes are final at this stage), and uploads two structurally separated artifacts: `pypi-packages` (only `*.whl`/`*.tar.gz`) and `release-bundle` (distributions plus the partial `SHA256SUMS`) |
+| `build-windows-worker` | build | `contents: read` | on a Windows runner, from the exact tagged commit: builds the one-dir PyInstaller worker (`packaging/windows/worker.spec`, a committed source file), stages `scarcity-worker-X.Y.Z-windows-x64.zip` and uploads the `windows-worker` artifact. The MSIX direction is a fail-closed seam behind the owner's signing secret (`EXTERNAL_RELEASE_GATE: WINDOWS_CODE_SIGNING`) |
+| `finalize-release-bundle` | build, build-windows-worker | `contents: read`, `id-token: write`, `attestations: write` | the only stage that knows every public payload: completes `SHA256SUMS` (the worker zip entry joins the wheel and the sdist), verifies every entry against the actual bytes (`sha256sum -c`), enforces the exact final asset set, attests the worker zip and the FINAL `SHA256SUMS`, and uploads `release-bundle-final` — the exact asset set the GitHub Release attaches |
+| `publish-github-release` | finalize-release-bundle | `contents: write` | downloads `release-bundle-final` and creates the GitHub Release, attaching the wheel, the sdist, the worker zip and `SHA256SUMS` through an explicit asset list |
 | `publish-pypi` | build | `id-token: write` (environment `pypi`) | downloads `pypi-packages`, re-verifies with a guard step that the directory contains only `*.whl`/`*.tar.gz`, and publishes exactly those distributions to PyPI via Trusted Publishing (OIDC) |
 
 Every action is pinned to a full commit SHA with its version in a comment.
@@ -220,15 +222,23 @@ and the guard.
 
 Integrity and provenance (**implemented now**):
 
-- `SHA256SUMS` — containing SHA-256 entries for the public release payloads
-  that need checksum verification, namely the wheel and the sdist — is
-  attached to every GitHub Release. It does not contain a hash of itself;
-  a downloaded release is verified with `sha256sum -c SHA256SUMS` in the
-  directory holding the assets.
-- each artifact plus `SHA256SUMS` receives a Sigstore-backed GitHub artifact
-  attestation (`actions/attest-build-provenance`) signed with the workflow
-  run's short-lived OIDC identity. Consumers can verify provenance with
-  `gh attestation verify`. No bespoke signing infrastructure exists.
+- `SHA256SUMS` — containing SHA-256 entries for every public release
+  payload that needs checksum verification: the wheel, the sdist and the
+  Windows worker zip. It is generated in `build` (wheel and sdist),
+  completed in `finalize-release-bundle` (zip entry appended), and
+  verified there against the actual bytes with `sha256sum -c` before
+  anything is attested or attached. It does not contain a hash of
+  itself; a downloaded release is verified with `sha256sum -c
+  SHA256SUMS` in the directory holding the assets.
+- each artifact receives exactly one Sigstore-backed GitHub artifact
+  attestation (`actions/attest-build-provenance`) signed with the
+  workflow run's short-lived OIDC identity, covering its FINAL bytes:
+  `build` attests the wheel and the sdist; `finalize-release-bundle`
+  attests the worker zip and the finalized `SHA256SUMS` (so the
+  attested digest is exactly the file attached to the release — the
+  checksum file is never modified after it is attested). Consumers can
+  verify provenance with `gh attestation verify`. No bespoke signing
+  infrastructure exists.
 
 ## Artifact inventory
 
@@ -238,8 +248,9 @@ Integrity and provenance (**implemented now**):
 | --- | --- | --- |
 | `scarcity_router-X.Y.Z-py3-none-any.whl` | release workflow (`make package-check`) | GitHub Release, PyPI |
 | `scarcity_router-X.Y.Z.tar.gz` | release workflow | GitHub Release, PyPI |
-| `SHA256SUMS` | release workflow | GitHub Release |
-| Sigstore build attestations | release workflow | GitHub attestation store |
+| `scarcity-worker-X.Y.Z-windows-x64.zip` | release workflow (`build-windows-worker` + `finalize-release-bundle`) | GitHub Release |
+| `SHA256SUMS` (wheel, sdist, worker zip) | release workflow (`build` + `finalize-release-bundle`) | GitHub Release |
+| Sigstore build attestations | release workflow (`build`: wheel + sdist; `finalize-release-bundle`: worker zip + final `SHA256SUMS`) | GitHub attestation store |
 
 No release exists yet: creating this foundation publishes nothing. The first
 actual release is a separate, human decision.
@@ -263,9 +274,11 @@ the designed behavior, not an error to work around.
 
 ### Future contract: GHCR server image
 
-The execution-gateway server (M03, #88) is expected to produce one
-production OCI image eventually. Its release contract is frozen now; **no
-such image exists today and no image job is present in the workflow**:
+The execution-gateway server's image definition exists in-tree (M10,
+issue #95): the committed `Dockerfile` builds one production OCI image
+from the repository and was built and smoke-verified locally — but **no
+image artifact is published anywhere and no image job is present in the
+workflow**. The publication contract is frozen now:
 
 - namespace `ghcr.io/creatidy/scarcity-router`;
 - tags `X.Y.Z`, `X.Y`, and `latest` — where `latest` means the latest stable
@@ -278,8 +291,8 @@ such image exists today and no image job is present in the workflow**:
   verify-before-publish discipline as the Python artifacts.
 
 Insertion point: one additional publish job in `.github/workflows/release.yml`
-(`needs: build`, gated on the same verified artifacts), added by the issue
-that actually introduces the supported server image. Adding the image without
+(`needs: build`, gated on the same verified artifacts), owned by the first
+release / M10-B under this frozen contract. Publishing the image without
 extending this contract first is a contract violation.
 
 ### Windows worker packages
@@ -290,8 +303,9 @@ The native worker (M05, #90) is packaged by the release workflow's
 - `scarcity-worker-X.Y.Z-windows-x64.zip` — the portable one-dir
   PyInstaller build (bundled interpreter; no Python install required for
   the normal Windows worker path), built on a Windows runner from the
-  exact tagged commit, checksummed in `SHA256SUMS` and attached to the
-  GitHub Release;
+  exact tagged commit, checksummed in `SHA256SUMS`, attested (with the
+  finalized `SHA256SUMS`) by `finalize-release-bundle`, and attached to
+  the GitHub Release;
 - `scarcity-worker-X.Y.Z-windows-x64.msix` — the preferred main
   installation direction, structured as a fail-closed seam: the job's
   MSIX step activates only when the owner configures a code-signing

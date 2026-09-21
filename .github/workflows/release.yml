@@ -12,14 +12,19 @@
 # publication. It never publishes from a pull-request event, and all
 # publication identities are short-lived OIDC — no long-lived tokens.
 #
-# Artifact transfer is structurally separated into two uploads: the
+# Artifact transfer is structurally separated into three stages: the
 # `pypi-packages` artifact carries only actual Python distributions
-# (*.whl / *.tar.gz) and is the sole directory the PyPI publisher sees,
-# while the `release-bundle` artifact carries the distributions plus
-# SHA256SUMS for the GitHub Release. Release metadata (checksums, future
-# provenance files) therefore cannot enter the PyPI publication input
-# without a deliberate, reviewable change to both the upload globs and the
-# publication guard.
+# (*.whl / *.tar.gz) and is the sole directory the PyPI publisher sees;
+# the `release-bundle` artifact carries the distributions plus the
+# partial SHA256SUMS; and the `finalize-release-bundle` job — the only
+# stage that knows every public payload — completes SHA256SUMS (adding
+# the windows worker zip entry), re-verifies every entry against the
+# actual bytes, attests the zip and the FINAL SHA256SUMS, and uploads
+# `release-bundle-final`, the exact asset set the GitHub Release
+# attaches. An attestation therefore always covers the exact bytes a
+# consumer downloads. Release metadata (checksums, future provenance
+# files) cannot enter the PyPI publication input without a deliberate,
+# reviewable change to both the upload globs and the publication guard.
 name: release
 
 on:
@@ -163,10 +168,14 @@ jobs:
       - name: Attest build provenance (Sigstore, short-lived identity)
         uses: actions/attest-build-provenance@db473fddc028af60658334401dc6fa3ffd8669fd # v2.3.0
         with:
+          # Only artifacts whose bytes are FINAL here: the wheel and the
+          # sdist. SHA256SUMS is finalized later (the windows worker zip
+          # joins it) and is attested with its final bytes by the
+          # finalize-release-bundle job — an attestation must always cover
+          # the exact bytes a consumer downloads.
           subject-path: |
             dist/scarcity_router-*.whl
             dist/scarcity_router-*.tar.gz
-            dist/SHA256SUMS
 
       - name: Upload the PyPI payload (only actual Python distributions)
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -278,13 +287,18 @@ jobs:
           path: dist/scarcity-worker-*-windows-x64.zip
           if-no-files-found: error
 
-  publish-github-release:
-    name: publish-github-release
+  finalize-release-bundle:
+    name: finalize-release-bundle
     needs: [build, build-windows-worker]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      contents: write # create the Release and attach artifacts (nothing else)
+      contents: read
+      # Short-lived OIDC identity for the Sigstore attestation of the
+      # windows worker zip and the FINAL SHA256SUMS; no persistent
+      # signing secret exists anywhere in this workflow.
+      id-token: write
+      attestations: write
     steps:
       - name: Download the release bundle
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -298,14 +312,80 @@ jobs:
           name: windows-worker
           path: dist
 
-      - name: Extend SHA256SUMS with the windows worker package
+      - name: Finalize SHA256SUMS (verify every entry against the actual bytes)
         run: |
           cd dist
           # SHA256SUMS covers every public release payload that needs
-          # checksum verification; the worker zip joins the wheel and the
-          # sdist. SHA256SUMS does not hash itself.
+          # checksum verification: the wheel, the sdist and the worker
+          # zip. SHA256SUMS does not hash itself; verify a downloaded
+          # release with `sha256sum -c SHA256SUMS` in the directory
+          # holding the assets. The verification below fails the job if
+          # ANY entry does not match the file actually present.
           sha256sum scarcity-worker-*-windows-x64.zip >> SHA256SUMS
           sha256sum -c SHA256SUMS
+
+      - name: Verify the final payload set (fail closed)
+        run: |
+          set -euo pipefail
+          # dist/ must hold exactly one wheel, one sdist, one worker zip
+          # and the finalized SHA256SUMS — the complete GitHub Release
+          # asset set and nothing else.
+          wheel_count="$(find dist -maxdepth 1 -type f -name 'scarcity_router-*.whl' | wc -l)"
+          sdist_count="$(find dist -maxdepth 1 -type f -name 'scarcity_router-*.tar.gz' | wc -l)"
+          zip_count="$(find dist -maxdepth 1 -type f -name 'scarcity-worker-*-windows-x64.zip' | wc -l)"
+          if [ "${wheel_count}" -ne 1 ] || [ "${sdist_count}" -ne 1 ] || [ "${zip_count}" -ne 1 ]; then
+            echo "FAIL: expected exactly one wheel, one sdist and one worker zip, found ${wheel_count}/${sdist_count}/${zip_count}" >&2
+            exit 1
+          fi
+          if [ ! -f dist/SHA256SUMS ]; then
+            echo "FAIL: missing dist/SHA256SUMS" >&2
+            exit 1
+          fi
+          entries="$(wc -l < dist/SHA256SUMS)"
+          if [ "${entries}" -ne 3 ]; then
+            echo "FAIL: SHA256SUMS must carry exactly three entries (wheel, sdist, zip), found ${entries}" >&2
+            exit 1
+          fi
+          stray="$(find dist -maxdepth 1 -type f ! -name '*.whl' ! -name '*.tar.gz' ! -name 'scarcity-worker-*.zip' ! -name 'SHA256SUMS' ! -name '.*')"
+          if [ -n "${stray}" ]; then
+            echo "FAIL: unexpected files in the release payload:" >&2
+            printf '%s\n' "${stray}" >&2
+            exit 1
+          fi
+
+      - name: Attest the worker zip and the final SHA256SUMS (Sigstore, short-lived identity)
+        uses: actions/attest-build-provenance@db473fddc028af60658334401dc6fa3ffd8669fd # v2.3.0
+        with:
+          # The FINAL bytes a consumer downloads: the attested SHA256SUMS
+          # digest is exactly the file attached to the release.
+          subject-path: |
+            dist/scarcity-worker-*-windows-x64.zip
+            dist/SHA256SUMS
+
+      - name: Upload the final release bundle (complete GitHub Release asset set)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-bundle-final
+          path: |
+            dist/scarcity_router-*.whl
+            dist/scarcity_router-*.tar.gz
+            dist/scarcity-worker-*-windows-x64.zip
+            dist/SHA256SUMS
+          if-no-files-found: error
+
+  publish-github-release:
+    name: publish-github-release
+    needs: [finalize-release-bundle]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # create the Release and attach artifacts (nothing else)
+    steps:
+      - name: Download the final release bundle
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-bundle-final
+          path: dist
 
       - name: Create the GitHub Release and attach artifacts
         env:
