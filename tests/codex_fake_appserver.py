@@ -15,6 +15,12 @@ Usage (the test spawner composes exactly one of these):
   turn/interrupt, approval server-requests) to exercise one scripted
   scenario.
 
+Scenario knobs added for the M10-B composed acceptance suite (opt-in;
+absent keys keep the exact M06 behavior): ``pauseBeforeDelta`` (seconds)
+pauses before streaming every delta AFTER the first, exiting early when a
+``turn/interrupt`` arrives — this gives the M10-B client-disconnect test a
+deterministic window where the turn is open and further output is pending.
+
 Every request the fake receives is appended as one JSON line to the file
 named by the ``SR_FAKE_TRACE`` environment variable (the test spawner adds
 it), so tests can pin exactly which protocol methods ran and with which
@@ -356,7 +362,17 @@ class _Fake:
         deltas = turn.get("deltas") or ["Hel", "lo"]
         assert isinstance(deltas, list)
         text_deltas = [str(delta) for delta in cast("list[object]", deltas)]
+        pause_raw = turn.get("pauseBeforeDelta", 0)
+        pause_between = (
+            float(pause_raw) if isinstance(pause_raw, (int, float)) else 0.0
+        )
         for index, delta in enumerate(text_deltas):
+            if index > 0 and pause_between > 0:
+                # M10-B knob: keep the turn open with output pending so a
+                # client disconnect mid-turn is deterministic; an interrupt
+                # ends the pause early (the queued interrupt is served next).
+                if self._stop_streaming.wait(timeout=pause_between):
+                    return
             if self._stop_streaming.is_set():
                 return
             self._notify(
