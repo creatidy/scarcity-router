@@ -312,7 +312,7 @@ requests. Background operation on Linux is a systemd **user** service —
 `examples/scarcity-router-worker.service` documents install, enable,
 start/stop/status/logs and lingering. The Windows worker ships as a release
 package (`scarcity-worker-X.Y.Z-windows-x64.zip`) with a minimal tray UX;
-live Windows acceptance is an recorded external gate — see the acceptance
+live Windows acceptance is a recorded external gate — see the acceptance
 document for exactly what is and is not verified.
 
 ### Updates and uninstall

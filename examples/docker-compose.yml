@@ -42,8 +42,12 @@ services:
     # image: ghcr.io/creatidy/scarcity-router:X.Y.Z   # once released
     container_name: scarcity-router
     # Loopback-only deployment: share the host network namespace so the
-    # server's 127.0.0.1 bind is the HOST's loopback (Linux; on Docker
-    # Desktop use the TLS variant with an explicit ports: mapping).
+    # server's 127.0.0.1 bind is the HOST's loopback. This works on a
+    # NATIVE Linux engine; any Docker Desktop-backed engine (Windows,
+    # macOS, or a WSL2 distro integrated with Docker Desktop) does NOT
+    # share the host/distro loopback — host networking will NOT surface
+    # the server on 127.0.0.1 there. Use the TLS variant with an
+    # explicit ports: mapping instead.
     network_mode: host
     command:
       - --host=127.0.0.1

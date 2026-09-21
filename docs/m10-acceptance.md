@@ -26,6 +26,36 @@ built or tested.
 | Update path | built/documented | `uv tool upgrade scarcity-router` / container tag pull + `docker compose up -d` / reinstall the worker package; no background auto-update, no remote code execution |
 | Version surface | built/tested | `scarcity-router --version`; server startup banner; `get_version()` single-source literal |
 
+## Issue #95 acceptance-criteria mapping
+
+Every scenario in the issue's acceptance list, with its honest
+disposition. **covered** — automated test(s) named; **documented** —
+implemented and documented, with no meaningful automated assertion to
+make; **gate** — requires an environment this repository does not have;
+**deferred** — explicitly moved to a tracked follow-up.
+
+| # | Scenario | Disposition | Evidence |
+| --- | --- | --- | --- |
+| 1 | Installation from README verified on clean environments | covered (scoped) | `make package-check` installs the built wheel into a throwaway `uv tool` environment from a clean HOME and exercises the installed surface; the committed-tree proof extracts `git archive HEAD` and runs the packaging suites in that fresh checkout. What remains outside automation: a human following the README prose on brand-new OS installs (recorded under the gates below) |
+| 2 | API-only server with no worker | covered | `tests/test_e2e_acceptance.py` scenarios 2–5 (startup/liveness, onboarding, client keys, execution ingress); honest-empty default: `tests/test_program_integration.py::HonestEmptyDefaultTests` |
+| 3 | Server and worker on one machine | covered | `tests/test_e2e_execution.py` scenarios 8–10 (pairing, worker-bridged execution, ownership) — server and worker share the loopback host |
+| 4 | Server and worker on different hosts | gate | the transport between server and worker is the same verified-TLS outbound connection in both cases, and non-loopback TLS + worker origin discipline are tested (`tests/test_tls_acceptance.py`, `tests/test_worker_client.py::WorkerOriginTests`); a run across physically separate hosts is not automatable here — record it with `EXTERNAL_ACCEPTANCE_GATE: LIVE_WINDOWS_ACCEPTANCE`'s host-diversity follow-up or M10-B |
+| 5 | Client access through LAN/VPN | gate | LAN exposure path is exactly the verified-TLS bind (`tests/test_tls_acceptance.py`) plus bearer authentication (`tests/test_security_acceptance.py`); a real LAN/VPN client run requires a second machine — same gates as #4 |
+| 6 | Windows 11 + WSL | gate | `EXTERNAL_ACCEPTANCE_GATE: LIVE_WINDOWS_ACCEPTANCE`; per-platform worker state-dir resolution is unit-tested (`tests/test_worker_local_store.py`) |
+| 7 | Linux accessed through SSH | documented | SSH is how a user reaches the machine, never a router protocol; the Linux worker background path is the systemd user unit (`examples/scarcity-router-worker.service`) with `loginctl enable-linger` for headless operation — documented commands verified against the real CLI; no server-side SSH surface exists to test (asserted: `tests/test_security_acceptance.py::ProtocolVocabularyTests`) |
+| 8 | Server restart | covered | `tests/test_e2e_acceptance.py::RestartPersistenceTests.test_scenario_13_...` (store reopen, identities/keys/config/credential survive, migration idempotent, future schema refused); container restart with a persistent volume verified live during M10 |
+| 9 | Worker restart | covered | `tests/test_worker_client.py::RunLoopTests::test_reconnect_budget_is_bounded` (bounded reconnect with backoff), `tests/test_worker_client.py::RotationPersistenceTests::test_rotated_credential_is_stored_and_used_on_reconnect` (identity survives, reconnect re-authenticates), `tests/test_windows_tray.py::RunTrayWorkerTests::test_restart_spawns_a_fresh_runtime_without_overlap` (tray restart), `tests/test_e2e_execution.py::AmbiguousDisconnectTests` (restart after ambiguity never duplicates execution) |
+| 10 | Worker offline | covered | dispatch refuses an offline owner: `tests/test_worker_bridged_adapter.py::DispatchTests::test_worker_offline_is_permanent_before_dispatch`; real connection state in diagnostics: `tests/test_program_integration.py::DiagnosticsRealStateTests::test_diagnostics_show_worker_connection_state` |
+| 11 | Revoked credential | covered | `tests/test_security_acceptance.py::RevocationTests` (client key + worker credential, immediate effect over real surfaces) |
+| 12 | Exhausted quota | covered | recommendation level: `tests/test_selector.py::test_exhausted_zai_does_not_bypass_capacity_for_any_effort` (`capacity_exhausted`), `tests/test_resource_policy.py::test_scenario_f_exhausted_openai_with_reset_credit`; execution admission: eligibility gates refuse (`tests/test_selector_eligibility.py` `included_window_exhausted`) |
+| 13 | Invalid certificate/identity | covered | `tests/test_tls_acceptance.py` (wrong CA, wrong hostname, expired certificate, revoked worker credential) |
+| 14 | Version upgrade | covered (scoped) | store-schema upgrade discipline is explicit and tested (`tests/test_e2e_acceptance.py::RestartPersistenceTests`, migration v1→v2 in `tests/test_program_integration.py::MigrationFromSchemaOneTests`); the package update command is documented (`uv tool upgrade`); a real old-release→new-release upgrade cannot exist before the first release — the first actual upgrade exercise is post-first-release/M10-B |
+| 15 | Recommendation-only installable without server/worker/Docker | covered | `tests/test_e2e_acceptance.py::RecommendationOnlySurfaceTests`; `make package-check` isolated install needs none of the three |
+| 16 | First-run friction measured and reported | covered | `docs/m10-acceptance.md` first-run sequences (2 / 8 / 5 steps) with friction notes |
+| 17 | Paid-provider tests are explicit opt-in only | covered | no paid-provider test exists in the suite; every M10 test is synthetic/loopback (asserted by review of `tests/m10_fixtures.py` and suites; nothing contacts a provider) |
+| 18 | Security acceptance scenarios pass | covered | `docs/m10-security-acceptance.md` matrix (26 rows, each mapped to its test) |
+| 19 | Full validation gate green; CI covers build, package and deterministic suites | covered | `make check` + `make package-check` green on the committed state; Forgejo `ci` job `check` runs exactly these; the windows-worker release job adds the tag-driven build path |
+
 ## External gates
 
 | Label | Meaning | Owner action |
@@ -65,8 +95,13 @@ Friction notes (measured, deliberate):
   and `--host 0.0.0.0` (D-044: no plaintext LAN). The mounted key must
   be readable by the container's uid 10001 — the compose example
   documents this; it is the single most likely first-run stumble.
-- Docker Desktop on Windows/macOS does not share host loopback, so the
-  loopback default requires the TLS variant there.
+- Any Docker Desktop-backed engine — including Docker Desktop's WSL2
+  integration — does not share the host loopback, so the loopback default
+  requires the TLS variant there. On a WSL2 distro backed by Docker
+  Desktop, `network_mode: host` behaves like Docker Desktop (the server
+  did NOT surface on the WSL distro's own loopback; verified with
+  `curl` returning 000 on `127.0.0.1:8787`), not like a native Linux
+  engine where host networking shares the host namespace.
 - Changing the container's internal port also requires overriding the
   baked `HEALTHCHECK` (documented in the Dockerfile).
 
@@ -110,8 +145,8 @@ no code was changed to soften them):
   closed (the gateway answers a structural error, never routes);
 - recording compatibility-matrix evidence through the administration
   surface is NOT implemented — deployments that need streaming on the
-  composed path need that capability; tracked as follow-up work, not
-  silently assumed by M10.
+  composed path need that capability; tracked as Forgejo issue
+  BioMedical-IT/scarcity-router#106, not silently assumed by M10.
 
 ## Validation
 
