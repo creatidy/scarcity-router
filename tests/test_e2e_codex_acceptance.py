@@ -8,13 +8,27 @@ Codex backend. No test here executes a real Codex binary, contacts any
 account or consumes any quota (the structure-only real-binary probe lives
 in ``tests/test_codex_real_binary_probe.py`` and skips when absent).
 
+Identity and matrix discipline (D-042/D-043, integration blockers 1+2):
+
+- the Codex resource binds the SHIPPED recommendation catalog through its
+  PHYSICAL model identity (``openai`` / ``gpt-5.6-sol``; ``codex`` is the
+  execution surface ``local_adapter_id``, never a model). No synthetic
+  catalog entry and no synthetic compatibility cell exists anywhere; the
+  composed server's matrix is the production one — M04 preset evidence
+  plus the reviewed M06 Codex worker-local evidence cells built by
+  ``server_composition`` from administrator configuration (issue #106);
+- the fake App Server advertises the REAL physical slug with the shipped
+  catalog's calibrated efforts, and every execution pins exactly the
+  selected physical model + effort — a configured-model/selected-model
+  mismatch is rejected before anything runs.
+
 Area mapping (M10-B deliverables 1-13, skipping the real-binary probe):
 
 1.  ``PackagedWorkerPathTests`` — the packaged-style worker path: the
     ``scarcity-router-worker`` console-script pair/run with
-    ``--allow-codex`` discovers the fake codex binary on a tmpdir PATH,
-    pairs and connects over REAL verified TLS, and the Codex resource
-    appears in the server's registry/state and executes end to end.
+    ``--allow-codex --codex-model`` discovers the fake codex binary on a
+    tmpdir PATH, pairs and connects over REAL verified TLS, and the Codex
+    resource appears in the server's registry/state and executes end to end.
 2.  ``CodexCompositionTests.test_exact_configured_ownership...`` — the
     ``worker_bridged`` resource bound to ``local_adapter_id: "codex"``;
     exact configured ownership (worker B can neither report nor serve
@@ -22,18 +36,22 @@ Area mapping (M10-B deliverables 1-13, skipping the real-binary probe):
 3.  ``CodexCompositionTests.test_auth_verdicts_drive_eligibility...`` —
     honest auth verdicts (``auth_unverified`` → ineligible;
     ``chatgpt`` → eligible) through the full snapshot path.
-4.  ``CodexExecutionTests`` (non-streaming, composed server) and
-    ``CodexStreamingExecutionTests.test_streaming...`` (streaming) — full
-    execution round trips. Streaming uses synthetic compatibility cells
-    supplied programmatically, exactly like the M10-A evidenced-streaming
-    scenario; the fail-closed default is never weakened.
+4.  ``CodexExecutionTests`` (non-streaming) and
+    ``CodexStreamingExecutionTests`` (streaming) — full execution round
+    trips through the ACTUAL composed server with NO synthetic cell
+    injection anywhere: the production matrix (built-in evidence) serves
+    the gates.
 6.  ``CodexStreamingExecutionTests.test_client_disconnect_interrupts...``
     — client disconnect → coordinator → worker → ``turn/interrupt`` →
     interrupted; never completed-after-cancel.
 7.  ``...test_reasoning_effort_forwarded_verbatim`` /
     ``...test_unrepresentable_effort_rejected_before_the_turn``.
 8.  ``...test_structured_output_schema_forwarded``.
-9.  ``...test_tools_bearing_request_rejected_before_dispatch``.
+9.  ``...test_tools_bearing_request_rejected_before_dispatch`` (the real
+    M06 ``UNSUPPORTED`` cell) and
+    ``PhysicalModelIdentityTests`` (physical model binding, exact
+    pinned identity, configured/selected mismatch rejection before any
+    spawn, worker CLI ``--codex-model`` discipline).
 10. ``CodexWorkerLossTests`` — mid-execution worker loss through the real
     protocol: honest ambiguous semantics, no blind retry, audited.
 11. ``CodexExecutionTests`` usage honesty (reported usage lands as
@@ -53,7 +71,6 @@ every persistence surface.
 
 from __future__ import annotations
 
-import http.client
 import json
 import socket
 import stat
@@ -62,60 +79,30 @@ import tempfile
 import threading
 import unittest
 from collections.abc import Callable
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import cast, override
 
-from scarcity_router.capacity import CapacitySnapshot
-from scarcity_router.control_api import ControlPlane
-from scarcity_router.eligibility import ExecutionEligibility
-from scarcity_router.gateway_adapters import AdapterRegistry
-from scarcity_router.gateway_audit import BoundedAuditTrail
-from scarcity_router.gateway_contracts import ClientKeyDirectory, GatewayLimits
-from scarcity_router.gateway_coordinator import GatewayApplication
-from scarcity_router.gateway_server import GatewayHTTPServer, make_gateway_server
-from scarcity_router.resource_state import (
-    ExecutionCapabilities,
-    ResourceHealth,
-    ResourceRegistration,
-    ResourceRegistry,
-    ResourceStateSnapshot,
-)
-from scarcity_router.routing_core import AdministratorConstraints
-from scarcity_router.selector import neutral_selector_policy
-from scarcity_router.server_store import ServerStore
-from scarcity_router.worker_bridged_adapter import WorkerBridgedAdapter
+from scarcity_router.codex_worker_evidence import CODEX_WORKER_CELL_VALUES
+from scarcity_router.routing_core import CompatibilityCell
+from scarcity_router.resource_state import ResourceStateSnapshot
 from scarcity_router.worker_client import (
-    ReconnectPolicy,
     WorkerOrigin,
     WorkerRuntime,
 )
 from scarcity_router.worker_codex_adapter import CONTROLLED_CONFIG_NAME
-from scarcity_router.worker_endpoint import WorkerEndpoint
-from scarcity_router.worker_identity_store import WorkerIdentityStore
 from scarcity_router.worker_local_store import WorkerLocalStore
 from scarcity_router.worker_protocol import SocketTransport
 
-from tests.gateway_fixtures import (
-    audit_records,
-    build_aliases,
-    build_profiles,
-    make_sequential_request_ids,
-)
 from tests.m10_codex_fixtures import (
-    ADAPTER_ID,
-    CLIENT_KEY,
+    CODEX_CATALOG_EFFORTS,
+    CODEX_CATALOG_MODEL,
     PIN_MODEL,
     PROMPT,
     REPLY,
     RESOURCE_ID,
     PathShimWorld,
     audit_payloads,
-    build_codex_capacity_snapshots,
-    build_codex_catalog,
-    build_codex_cells,
     canonical_now,
-    codex_identity,
     codex_resource_document,
     make_codex_registry,
     start_worker_process,
@@ -123,21 +110,16 @@ from tests.m10_codex_fixtures import (
     trace_methods,
     trace_request,
     worker_command,
-    write_codex_catalog_document,
 )
 from tests.m10_fixtures import wait_until
-from tests.server_fixtures import PBKDF2_TEST_ITERATIONS, synthetic_collectors
+from tests.server_fixtures import FAKE_PROVIDER_SECRET
 from tests.test_e2e_execution import WorkerWorld
 from tests.test_worker_codex_adapter import (
     ADAPTER_ALLOWED_WIRE_METHODS,
     FORBIDDEN_WIRE_METHODS,
     FakeCodexSpawner,
 )
-from tests.worker_fixtures import (
-    MutableClock,
-    ScriptedWorker,
-    build_worker_report,
-)
+from tests.worker_fixtures import ScriptedWorker, build_worker_report
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -159,19 +141,22 @@ def default_turn() -> dict[str, object]:
     }
 
 
-def codex_model_listing(efforts: tuple[str, ...] = ("minimal", "low", "medium", "high")) -> list[dict[str, object]]:
-    """The fake runtime's model listing: the pinned slug with its efforts.
+def codex_model_listing(
+    efforts: tuple[str, ...] = CODEX_CATALOG_EFFORTS,
+) -> list[dict[str, object]]:
+    """The fake runtime's model listing: the REAL physical slug.
 
-    The real worker path pins the model slug ``codex`` (the resource
-    identity the Codex adapter serves), so the fake's listing must carry
-    that slug. Tests that exercise the exact-binding rejection start the
-    worker with a narrower effort list.
+    The advertised slug is the shipped catalog's ``gpt-5.6-sol`` with the
+    shipped CALIBRATED efforts (never the execution-surface name and
+    never invented efforts): the adapter's exact-binding verification
+    against ``model/list`` therefore proves the configured physical model
+    is representable by THIS runtime.
     """
     return [
         {
-            "id": "codex",
-            "model": "codex",
-            "displayName": "Synthetic Codex",
+            "id": CODEX_CATALOG_MODEL,
+            "model": CODEX_CATALOG_MODEL,
+            "displayName": "Synthetic",
             "hidden": False,
             "isDefault": True,
             "supportedReasoningEfforts": [
@@ -184,7 +169,7 @@ def codex_model_listing(efforts: tuple[str, ...] = ("minimal", "low", "medium", 
 
 def chatgpt_scenario(
     *,
-    efforts: tuple[str, ...] = ("minimal", "low", "medium", "high"),
+    efforts: tuple[str, ...] = CODEX_CATALOG_EFFORTS,
     turn: dict[str, object] | None = None,
 ) -> dict[str, object]:
     return {
@@ -215,6 +200,7 @@ class CodexWorker:
     store: WorkerLocalStore
     spawner: FakeCodexSpawner
     trace_path: Path
+    state_dir: Path
     transports: list[SocketTransport]
     raw_sockets: list[socket.socket]
     origin: WorkerOrigin
@@ -229,6 +215,7 @@ class CodexWorker:
         store: WorkerLocalStore,
         spawner: FakeCodexSpawner,
         trace_path: Path,
+        state_dir: Path,
         transports: list[SocketTransport],
         raw_sockets: list[socket.socket],
         origin: WorkerOrigin,
@@ -239,6 +226,7 @@ class CodexWorker:
         self.store = store
         self.spawner = spawner
         self.trace_path = trace_path
+        self.state_dir = state_dir
         self.transports = transports
         self.raw_sockets = raw_sockets
         self.origin = origin
@@ -262,14 +250,20 @@ class CodexWorker:
         self.store.close()
 
     def replace_adapter(
-        self, scenario: dict[str, object], state_dir: Path, trace_path: Path
+        self,
+        scenario: dict[str, object],
+        state_dir: Path,
+        trace_path: Path,
+        *,
+        model: str = CODEX_CATALOG_MODEL,
     ) -> FakeCodexSpawner:
-        """Rebind a fresh Codex adapter (same store, same identity)."""
+        """Rebind a fresh Codex adapter (same store, given identity)."""
         registry, spawner = make_codex_registry(
-            scenario, state_dir=state_dir, trace_path=trace_path
+            scenario, state_dir=state_dir, trace_path=trace_path, model=model
         )
         self.spawner = spawner
         self.trace_path = trace_path
+        self.state_dir = state_dir
         self.runtime = WorkerRuntime(
             origin=self.origin,
             store=self.store,
@@ -283,46 +277,25 @@ class CodexWorker:
 class CodexComposedTlsWorld(WorkerWorld):
     """The composed M09 server + ``WorkerWorld``'s real verified-TLS listener.
 
-    Identical to the M10-A composed harness except ``catalog_path`` points
-    at the synthetic (openai, codex) catalog binding: the composed server
-    loads the recommendation catalog for admission, and the Codex worker
-    resource binds no catalog variant without one (fail-closed
-    ``capability_unassessed`` otherwise).
+    The application is the production composition: the SHIPPED
+    recommendation catalog (the default control-plane artifact) binds the
+    Codex resource through its physical model, and the compatibility
+    matrix is the production one (``server_composition`` cells — M04
+    preset evidence plus the reviewed M06 Codex cells). No synthetic
+    catalog entry, no synthetic cells, no cell injection seam.
     """
-
-    catalog_path: Path
-
-    def __init__(self, method_name: str = "runTest") -> None:
-        super().__init__(method_name)
-        self.catalog_path = Path(".")
 
     @override
     def setUp(self) -> None:
-        holder = Path(tempfile.mkdtemp(prefix="scarcity-router-m10b-catalog-"))
-        self.catalog_path = write_codex_catalog_document(holder / "catalog.json")
-        self.addCleanup(lambda: _rmtree(holder))
         super().setUp()
         self.onboard()
         _ = self.attach_worker_listener()
 
-    @override
-    def make_plane(self, data_dir: Path) -> ControlPlane:
-        from scarcity_router.server_ui import dispatch_ui
-
-        return ControlPlane(
-            store=ServerStore.open(data_dir),
-            clock=None,  # real clock: real dispatch paths need real deadlines
-            collectors=synthetic_collectors(),
-            pbkdf2_iterations=PBKDF2_TEST_ITERATIONS,
-            version="0.1.0.test",
-            own_origins=("http://127.0.0.1:8787",),
-            ui_dispatcher=dispatch_ui,
-            catalog_path=self.catalog_path,
-        )
-
-    def configure_codex_resource(self, worker_id: str) -> None:
+    def configure_codex_resource(
+        self, worker_id: str, *, model: str = CODEX_CATALOG_MODEL
+    ) -> None:
         status, payload = self.admin_post(
-            "/control/resources", codex_resource_document(worker_id)
+            "/control/resources", codex_resource_document(worker_id, model=model)
         )
         assert status == 200, payload
 
@@ -338,6 +311,7 @@ class CodexComposedTlsWorld(WorkerWorld):
         scenario: dict[str, object],
         *,
         label: str = "m10b-codex",
+        model: str = CODEX_CATALOG_MODEL,
     ) -> CodexWorker:
         """Pair one worker and arm it with the fake-backed Codex adapter.
 
@@ -350,7 +324,7 @@ class CodexComposedTlsWorld(WorkerWorld):
         self.addCleanup(lambda: _rmtree(adapter_tmp))
         trace_path = adapter_tmp / "trace.jsonl"
         registry, spawner = make_codex_registry(
-            scenario, state_dir=adapter_tmp, trace_path=trace_path
+            scenario, state_dir=adapter_tmp, trace_path=trace_path, model=model
         )
         status, payload = self.admin_post(
             "/control/workers/pairing-codes", {"label": label}
@@ -393,6 +367,7 @@ class CodexComposedTlsWorld(WorkerWorld):
             store=store,
             spawner=spawner,
             trace_path=trace_path,
+            state_dir=adapter_tmp,
             transports=transports,
             raw_sockets=raw_sockets,
             origin=self.worker_origin(),
@@ -420,6 +395,24 @@ class CodexComposedTlsWorld(WorkerWorld):
         snapshot = self.observation(resource_id)
         assert snapshot is not None
         return snapshot
+
+    def audit_records(self) -> list[dict[str, object]]:
+        """Every audit record persisted by the composed server."""
+        records: list[dict[str, object]] = []
+        for blob in audit_payloads(self.data_dir):
+            record = cast("dict[str, object]", json.loads(blob))
+            records.append(record)
+        return records
+
+    def executed_audit_records(self) -> list[dict[str, object]]:
+        records = [
+            record
+            for record in self.audit_records()
+            if record.get("executed_target") is not None
+            and RESOURCE_ID in json.dumps(record.get("executed_target"))
+        ]
+        assert records, f"no executed audit record for {RESOURCE_ID}"
+        return records
 
 
 # ── Area 1: the packaged-style worker path ────────────────────────────────────
@@ -485,6 +478,8 @@ class PackagedWorkerPathTests(CodexComposedTlsWorld):
                 "--state-dir",
                 str(self.state_dir),
                 "--allow-codex",
+                "--codex-model",
+                CODEX_CATALOG_MODEL,
                 "--codex-resource",
                 RESOURCE_ID,
             ],
@@ -497,6 +492,11 @@ class PackagedWorkerPathTests(CodexComposedTlsWorld):
         # + controlled home + chatgpt auth verdict all passed).
         snapshot = self.wait_for_observation(RESOURCE_ID)
         self.assertEqual("ok", snapshot.health.status)
+        # The reported identity carries the PHYSICAL model (the
+        # ``--codex-model`` value), never the execution-surface name.
+        self.assertEqual(CODEX_CATALOG_MODEL, snapshot.identity.model)
+        self.assertEqual("openai", snapshot.identity.provider)
+        self.assertIsNone(snapshot.identity.variant)
 
         status, _models, _headers = self.exchange(
             "GET", "/v1/models", headers={"Authorization": f"Bearer {self.client_key}"}
@@ -518,13 +518,14 @@ class PackagedWorkerPathTests(CodexComposedTlsWorld):
         # The worker is still serving (no crash, no reconnect exhaustion).
         self.assertIsNone(proc.poll())
 
-        # The fake backend saw exactly one turn, pinned and isolated.
+        # The fake backend saw exactly one turn, pinned to the CONFIGURED
+        # physical model and isolated.
         methods = trace_methods(self.shim.trace_path)
         self.assertEqual(1, methods.count("turn/start"))
         self.assertNotIn("turn/interrupt", methods)
         turn = trace_request(self.shim.trace_path, "turn/start")
         assert turn is not None
-        self.assertEqual("codex", turn.get("model"))
+        self.assertEqual(CODEX_CATALOG_MODEL, turn.get("model"))
         turn_input = cast("list[object]", turn.get("input"))
         first_item = cast("dict[str, object]", turn_input[0])
         self.assertEqual(PROMPT, first_item.get("text"))
@@ -581,7 +582,7 @@ class CodexCompositionTests(CodexComposedTlsWorld):
                         worker_id=identity_b.worker_id,
                         resource_id=RESOURCE_ID,
                         provider="openai",
-                        model="codex",
+                        model=CODEX_CATALOG_MODEL,
                         entitlement="subscription_included",
                         reported_at=canonical_now(),
                     )
@@ -674,24 +675,137 @@ class CodexCompositionTests(CodexComposedTlsWorld):
         worker.stop()
 
 
+# ── Blocker 1: physical model identity end to end ─────────────────────────────
+
+
+class PhysicalModelIdentityTests(CodexComposedTlsWorld):
+    """The Codex resource binds the SHIPPED catalog by physical model.
+
+    ``(openai, gpt-5.6-sol)`` — the administrator never invents a catalog
+    entry; the pinned reference resolves to the shipped calibrated
+    identity; the adapter receives exactly the selected model; and a
+    configured/selected mismatch fails before anything runs.
+    """
+
+    def test_pinned_request_binds_shipped_catalog_and_pins_exact_identity(
+        self,
+    ) -> None:
+        worker = self.start_codex_worker(chatgpt_scenario())
+        self.configure_codex_resource(worker.worker_id)
+        worker.start()
+        try:
+            snapshot = self.wait_for_observation(RESOURCE_ID)
+            self.assertEqual("ok", snapshot.health.status)
+
+            status, payload, _headers = self.exchange(
+                "POST",
+                "/v1/chat/completions",
+                _pin_body(reasoning_effort="high"),
+                headers={"Authorization": f"Bearer {self.client_key}"},
+                timeout=60,
+            )
+            self.assertEqual(200, status, payload)
+            document = cast("dict[str, object]", payload)
+            choices = cast("list[object]", document["choices"])
+            message = cast("dict[str, object]", choices[0])["message"]
+            self.assertEqual(REPLY, cast("dict[str, object]", message)["content"])
+            # The audited executed target IS the shipped calibrated
+            # identity: exact provider, physical model and variant.
+            record = self.executed_audit_records()[-1]
+            target = cast("dict[str, object]", record["executed_target"])
+            self.assertEqual(RESOURCE_ID, target.get("resource_id"))
+            self.assertEqual("openai", target.get("provider"))
+            self.assertEqual(CODEX_CATALOG_MODEL, target.get("model"))
+            self.assertEqual("high", target.get("variant"))
+            # The adapter pinned EXACTLY that model+effort for the turn —
+            # the fake's listing advertises ``gpt-5.6-sol`` (never
+            # ``codex``), so this proves the exact-binding chain.
+            turn = trace_request(worker.trace_path, "turn/start")
+            assert turn is not None
+            self.assertEqual(CODEX_CATALOG_MODEL, turn.get("model"))
+            self.assertEqual("high", turn.get("effort"))
+            self.assertIn("model/list", trace_methods(worker.trace_path))
+        finally:
+            worker.stop()
+
+    def test_configured_model_mismatch_fails_before_any_spawn(self) -> None:
+        """A desynced worker configuration can never execute another model.
+
+        The server's resource represents ``gpt-5.6-sol``; the worker's
+        adapter was re-armed with ``gpt-5.6-luna``. Its reports are
+        rejected (identity mismatch), the last ok observation stays fresh,
+        so admission passes and dispatch reaches the worker — where the
+        adapter's invariant rejects the selected model BEFORE any process
+        spawn, before any thread/turn, with the typed reason.
+        """
+        worker = self.start_codex_worker(chatgpt_scenario())
+        self.configure_codex_resource(worker.worker_id)
+        worker.start()
+        try:
+            _ = self.wait_for_observation(RESOURCE_ID)
+        finally:
+            worker.stop()
+
+        adapter_tmp = Path(tempfile.mkdtemp(prefix="scarcity-router-m10b-desync-"))
+        self.addCleanup(lambda: _rmtree(adapter_tmp))
+        _ = worker.replace_adapter(
+            chatgpt_scenario(),
+            state_dir=adapter_tmp,
+            trace_path=adapter_tmp / "trace.jsonl",
+            model="gpt-5.6-luna",
+        )
+        worker.start()
+        try:
+            # Wait until the desynced worker's session is live AND its
+            # initial eligibility probe has run (the probe spawns one
+            # app-server session worker-side), so the dispatch below is
+            # deterministic — any additional spawn belongs to the DISPATCH.
+            wait_until(
+                lambda: len(worker.transports) >= 2,
+                timeout=20,
+                message="the desynced worker never reconnected",
+            )
+            wait_until(
+                lambda: len(worker.spawner.app_server_specs) >= 1,
+                timeout=20,
+                message="the desynced adapter's eligibility probe never ran",
+            )
+            status, payload, _headers = self.exchange(
+                "POST",
+                "/v1/chat/completions",
+                # A single-message, non-streaming, effort-less request
+                # needs NO compatibility feature: on a build without the
+                # adapter invariant this dispatch EXECUTES (200) — the
+                # exact failure this invariant forbids.
+                _pin_body(),
+                headers={"Authorization": f"Bearer {self.client_key}"},
+                timeout=60,
+            )
+            self.assertEqual(502, status)
+            error_body = cast(
+                "dict[str, object]", cast("dict[str, object]", payload)["error"]
+            )
+            self.assertEqual("backend_failure", error_body["code"])
+            # The audit records the failed execution (the typed worker-side
+            # reason stays on the worker path; the audit carries the closed
+            # reason code).
+            record = self.executed_audit_records()[-1]
+            self.assertEqual("failed", record["result_status"])
+            self.assertIn("backend_failure", cast("list[str]", record["reason_codes"]))
+            # The dispatch spawned NOTHING: exactly the initial eligibility
+            # probe session exists — no second app-server session, no
+            # thread, no turn.
+            self.assertEqual(1, len(worker.spawner.app_server_specs))
+            self.assertNotIn("thread/start", trace_methods(worker.trace_path))
+            self.assertNotIn("turn/start", trace_methods(worker.trace_path))
+        finally:
+            worker.stop()
+
+
 # ── Areas 4a, 11, 12: composed execution, usage honesty, leakage ──────────────
 
 
 class CodexExecutionTests(CodexComposedTlsWorld):
-    def _completed_records(self) -> list[dict[str, object]]:
-        records = [
-            cast("dict[str, object]", json.loads(blob))
-            for blob in audit_payloads(self.data_dir)
-        ]
-        executed = [
-            record
-            for record in records
-            if record.get("executed_target") is not None
-            and RESOURCE_ID in json.dumps(record.get("executed_target"))
-        ]
-        assert executed, f"no executed audit record for {RESOURCE_ID}"
-        return executed
-
     def test_nonstreaming_execution_reports_provider_usage_honestly(self) -> None:
         worker = self.start_codex_worker(chatgpt_scenario())
         self.configure_codex_resource(worker.worker_id)
@@ -706,7 +820,7 @@ class CodexExecutionTests(CodexComposedTlsWorld):
                 timeout=60,
             )
             self.assertEqual(200, status, payload)
-            record = self._completed_records()[-1]
+            record = self.executed_audit_records()[-1]
             self.assertEqual("completed", record["result_status"])
             self.assertEqual(1, record["call_count"])
             self.assertEqual(
@@ -735,7 +849,7 @@ class CodexExecutionTests(CodexComposedTlsWorld):
                 timeout=60,
             )
             self.assertEqual(200, status, payload)
-            record = self._completed_records()[-1]
+            record = self.executed_audit_records()[-1]
             self.assertEqual("completed", record["result_status"])
             self.assertIsNone(record["provider_reported_usage"])
             self.assertIsNone(record["estimated_usage"])
@@ -753,9 +867,6 @@ class CodexExecutionTests(CodexComposedTlsWorld):
             status, _payload, _headers = self.exchange(
                 "POST",
                 "/v1/chat/completions",
-                # A single-message request: the composed deployment records
-                # no compatibility cells (fail-closed, issue #106), so a
-                # multi-message conversation would be refused outright.
                 _pin_body(),
                 headers={"Authorization": f"Bearer {self.client_key}"},
                 timeout=60,
@@ -888,12 +999,10 @@ class CodexWorkerLossTests(CodexComposedTlsWorld):
             self.assertEqual("ambiguous_execution_state", error_body["code"])
 
             # The audit records the ambiguous outcome.
-            records = [
-                cast("dict[str, object]", json.loads(blob))
-                for blob in audit_payloads(self.data_dir)
-            ]
             executed = [
-                record for record in records if record.get("executed_target") is not None
+                record
+                for record in self.audit_records()
+                if record.get("executed_target") is not None
             ]
             assert executed
             self.assertIn(
@@ -919,251 +1028,207 @@ class CodexWorkerLossTests(CodexComposedTlsWorld):
             worker.stop()
 
 
-# ── The bare M03 gateway + evidenced cells + real worker world ────────────────
+# ── Blocker 2: the production compatibility matrix ────────────────────────────
 
 
-def _healthy_observation() -> ResourceStateSnapshot:
-    return ResourceStateSnapshot(
-        schema_version=1,
-        identity=codex_identity(),
-        observed_at=canonical_now(),
-        health=ResourceHealth(status="ok", diagnostics=()),
-        quota_facts=(),
-        promotions=(),
-    )
+_ZAI_PROVIDER_DOCUMENT: dict[str, object] = {
+    "provider_id": "zai-http",
+    "adapter_id": "zai-coding-plan",
+    "base_url": "https://api.z.ai",
+    "secret": FAKE_PROVIDER_SECRET,
+}
+
+_ZAI_RESOURCE_DOCUMENT: dict[str, object] = {
+    "registration": {
+        "identity": {
+            "resource_id": "zai-plan-1",
+            "channel": "server_direct_http",
+            "provider": "zai",
+            "model": "glm-5.3",
+            "entitlement": "subscription_included",
+        },
+        "freshness_ttl_seconds": 3600,
+        "capabilities": {"context_limit_tokens": 272_000},
+    },
+    "enabled": True,
+    "endpoint_id": "zai-http",
+}
 
 
-class BareCodexWorld(unittest.TestCase):
-    """Bare M03 gateway + synthetic cells + real worker endpoint/runtime.
+def _cell_keys(cells: tuple[CompatibilityCell, ...]) -> set[tuple[str, str, str, str]]:
+    """The ``(channel, provider, model, feature)`` keys of a cell tuple."""
+    return {
+        (cell.channel, cell.provider, cell.model, cell.feature) for cell in cells
+    }
 
-    The one synthetic input is the compatibility-matrix evidence, supplied
-    programmatically exactly like the M10-A evidenced-streaming scenario
-    (the composed control plane hard-wires the fail-closed empty cell set;
-    issue #106 records the administrative gap). Everything else is real:
-    the HTTP surface, the coordinator, the WorkerBridgedAdapter, the
-    worker endpoint, the worker runtime and the CodexLocalAdapter.
+
+def _cell_map(
+    cells: tuple[CompatibilityCell, ...],
+) -> dict[tuple[str, str, str, str], str]:
+    return {
+        (cell.channel, cell.provider, cell.model, cell.feature): cell.value
+        for cell in cells
+    }
+
+
+class ProductionCompatibilityMatrixTests(CodexComposedTlsWorld):
+    """The composed application carries the REAL evidence-backed matrix.
+
+    Cells come from administrator configuration through the production
+    composition seam (M04 preset evidence + the reviewed M06 Codex
+    evidence) — no synthetic cell injection, no empty-matrix shortcut.
     """
 
-    tmp: Path
-    identity_store: WorkerIdentityStore
-    endpoint: WorkerEndpoint
-    application: GatewayApplication
-    server: GatewayHTTPServer
-    server_thread: threading.Thread
-    http_port: int
-    worker_port: int
-    assignment: dict[str, str | None]
-    worker_store: WorkerLocalStore
-    runtime: WorkerRuntime
-    worker_session: threading.Thread | None
-    spawner: FakeCodexSpawner
-    trace_path: Path
-    transports: list[SocketTransport]
-    raw_sockets: list[socket.socket]
+    def application_cells(self) -> tuple[CompatibilityCell, ...]:
+        return self.plane.current_application().compatibility_cells
 
-    def __init__(self, method_name: str = "runTest") -> None:
-        super().__init__(method_name)
-        self.tmp = Path(".")
-        self.identity_store = cast(WorkerIdentityStore, object())
-        self.endpoint = cast(WorkerEndpoint, object())
-        self.application = cast(GatewayApplication, object())
-        self.server = cast(GatewayHTTPServer, object())
-        self.server_thread = cast(threading.Thread, object())
-        self.http_port = 0
-        self.worker_port = 0
-        self.assignment = {}
-        self.worker_store = cast(WorkerLocalStore, object())
-        self.runtime = cast(WorkerRuntime, object())
-        self.worker_session = None
-        self.spawner = cast(FakeCodexSpawner, object())
-        self.trace_path = Path(".")
-        self.transports = []
-        self.raw_sockets = []
-
-    def _fresh_registry(self) -> ResourceRegistry:
-        registry = ResourceRegistry(clock=canonical_now)
-        registry.register(
-            ResourceRegistration(
-                identity=codex_identity(),
-                freshness_ttl_seconds=300,
-                capabilities=ExecutionCapabilities(context_limit_tokens=272_000),
+    def test_codex_resource_gets_the_reviewed_m06_cells(self) -> None:
+        worker = self.start_codex_worker(chatgpt_scenario())
+        self.configure_codex_resource(worker.worker_id)
+        values = _cell_map(self.application_cells())
+        for feature, (expected_value, _note) in CODEX_WORKER_CELL_VALUES.items():
+            key = ("worker_bridged", "openai", CODEX_CATALOG_MODEL, feature)
+            self.assertIn(key, values, f"missing M06 cell for {feature}")
+            self.assertEqual(
+                expected_value,
+                values[key],
+                f"M06 cell {feature} must equal the reviewed value",
             )
-        )
-        return registry
+        # No cells beyond the reviewed table's features for this backend.
+        reviewed_features = {feature for feature in CODEX_WORKER_CELL_VALUES}
+        present = {
+            feature
+            for (_ch, _p, _m, feature) in _cell_keys(self.application_cells())
+            if (_ch, _p, _m) == ("worker_bridged", "openai", CODEX_CATALOG_MODEL)
+        }
+        self.assertEqual(reviewed_features, present)
 
-    @staticmethod
-    def _capacity_source(
-        now: str,
-    ) -> tuple[tuple[CapacitySnapshot, ...], tuple[ExecutionEligibility, ...]]:
-        _ = now
-        return (build_codex_capacity_snapshots(), ())
-
-    def _connect_factory(self, origin_ref: WorkerOrigin) -> SocketTransport:
-        _ = origin_ref
-        raw = socket.create_connection(("127.0.0.1", self.worker_port), timeout=10)
-        self.raw_sockets.append(raw)
-        transport = SocketTransport(raw)
-        self.transports.append(transport)
-        return transport
-
-    @override
-    def setUp(self) -> None:
-        self.tmp = Path(tempfile.mkdtemp(prefix="scarcity-router-m10b-bare-"))
-        self.addCleanup(lambda: _rmtree(self.tmp))
-        self.assignment = {}
-        self.transports = []
-        self.raw_sockets = []
-        self.identity_store = WorkerIdentityStore(
-            self.tmp / "identities.db", clock=MutableClock()
-        )
-        self.addCleanup(self.identity_store.close)
-        self.endpoint = WorkerEndpoint(
-            identity_store=self.identity_store,
-            registry=self._fresh_registry(),
-            configured_owner=self.assignment.get,
-            heartbeat_interval_seconds=15,
-        )
-        app_registry = self._fresh_registry()
-        app_registry.apply_snapshot(_healthy_observation())
-        adapters = AdapterRegistry()
-        adapters.register(
-            WorkerBridgedAdapter(
-                self.endpoint, resource_adapter_map={RESOURCE_ID: ADAPTER_ID}
+    def test_m06_cells_carry_dated_provenance_and_adapter_identity(self) -> None:
+        worker = self.start_codex_worker(chatgpt_scenario())
+        self.configure_codex_resource(worker.worker_id)
+        codex_cells = [
+            cell
+            for cell in self.application_cells()
+            if (cell.channel, cell.provider, cell.model)
+            == ("worker_bridged", "openai", CODEX_CATALOG_MODEL)
+        ]
+        self.assertTrue(codex_cells, "the M06 cells must exist for the resource")
+        for cell in codex_cells:
+            self.assertIsNone(cell.variant)
+            self.assertEqual("codex-worker-local", cell.adapter)
+            self.assertEqual("1.0.0", cell.adapter_version)
+            self.assertEqual("codex_adapter_stage2", cell.evidence.source)
+            self.assertEqual("2026-09-20", cell.evidence.date)
+            self.assertIn(
+                "codex-cli 0.154.0-alpha.6.2", cell.evidence.identifier
             )
-        )
-        self.application = GatewayApplication(
-            catalog=build_codex_catalog(),
-            profiles=build_profiles(),
-            profile_policy_version=1,
-            policy=neutral_selector_policy(),
-            registry=app_registry,
-            capacity_source=self._capacity_source,
-            compatibility_cells=build_codex_cells(),
-            admin_constraints=AdministratorConstraints(),
-            aliases=build_aliases(),
-            adapters=adapters,
-            audit=BoundedAuditTrail(),
-            limits=GatewayLimits(),
-            client_key_directory=ClientKeyDirectory.from_secrets(
-                {"e2e-client": CLIENT_KEY}
-            ),
-            clock=lambda: datetime.now(timezone.utc),
-            request_id_factory=make_sequential_request_ids(),
-        )
-        self.server = make_gateway_server(self.application, host="127.0.0.1", port=0)
-        self.server_thread = threading.Thread(
-            target=self.server.serve_forever, daemon=True
-        )
-        self.server_thread.start()
-        self.addCleanup(self.server.server_close)
-        self.http_port = cast("tuple[str, int]", self.server.server_address)[1]
-        listener = self.endpoint.attach_listener(
-            host="127.0.0.1", port=0, tls_context=None
-        )
-        listener.serve_in_background()
-        self.addCleanup(listener.shutdown)
-        self.worker_port = listener.bound_port
-        self.worker_store = WorkerLocalStore(self.tmp / "worker-state.db")
-        self.worker_session = None
+            self.assertIn(
+                "docs/codex-adapter-stage1-evidence.md", cell.evidence.identifier
+            )
 
-    @override
-    def tearDown(self) -> None:
-        self.endpoint.close_all_sessions(note="m10b teardown")
-        if self.worker_session is not None:
-            self.runtime.request_stop()
-            _ = self.worker_session.join(timeout=15)
-        self.worker_store.close()
-        self.server.shutdown()
-        _ = self.server_thread.join(timeout=10)
+    def test_evidence_backed_m04_resource_gets_its_preset_cells(self) -> None:
+        worker = self.start_codex_worker(chatgpt_scenario())
+        self.configure_codex_resource(worker.worker_id)
+        status, payload = self.admin_post("/control/providers", _ZAI_PROVIDER_DOCUMENT)
+        self.assertEqual(200, status, payload)
+        status, payload = self.admin_post(
+            "/control/resources", _ZAI_RESOURCE_DOCUMENT
+        )
+        self.assertEqual(200, status, payload)
+        values = _cell_map(self.application_cells())
+        # The zai-coding-plan preset's evidenced cells, keyed to the
+        # configured (provider, model).
+        self.assertEqual(
+            "PASS", values[("server_direct_http", "zai", "glm-5.3", "streaming")]
+        )
+        self.assertEqual(
+            "PARTIAL",
+            values[("server_direct_http", "zai", "glm-5.3", "reasoning_controls")],
+        )
+        # No leakage in either direction between the two backends.
+        self.assertNotIn(
+            ("server_direct_http", "openai", CODEX_CATALOG_MODEL, "streaming"),
+            values,
+        )
+        self.assertNotIn(("worker_bridged", "zai", "glm-5.3", "streaming"), values)
 
-    def start_codex_worker(self, scenario: dict[str, object]) -> None:
-        registry, spawner = make_codex_registry(
-            scenario,
-            state_dir=self.tmp / "codex-adapter-state",
-            trace_path=self.tmp / "codex-trace.jsonl",
+    def test_configuration_removal_rebuilds_the_matrix(self) -> None:
+        worker = self.start_codex_worker(chatgpt_scenario())
+        self.configure_codex_resource(worker.worker_id)
+        keys_before = _cell_keys(self.application_cells())
+        self.assertIn(
+            ("worker_bridged", "openai", CODEX_CATALOG_MODEL, "streaming"),
+            keys_before,
         )
-        self.trace_path = self.tmp / "codex-trace.jsonl"
-        pairing = self.identity_store.begin_pairing(label="m10b-bare")
-        runtime = WorkerRuntime(
-            origin=WorkerOrigin.parse(f"srw://127.0.0.1:{self.worker_port}"),
-            store=self.worker_store,
-            local_adapters=registry,
-            state_report_interval_seconds=0,
-            connect_factory=self._connect_factory,
-            reconnect=ReconnectPolicy(
-                initial_delay_seconds=0.2, max_delay_seconds=1.0, max_attempts=5
-            ),
+        csrf = self.plane.csrf_token_for_cookie(self.cookie)
+        assert csrf is not None
+        status, payload, _headers = self.exchange(
+            "DELETE",
+            f"/control/resources/{RESOURCE_ID}",
+            headers={"X-Scarcity-CSRF": csrf},
         )
-        identity = runtime.pair(pairing.pairing_code)
-        self.assignment[RESOURCE_ID] = identity.worker_id
-        self.spawner = spawner
-        self.runtime = runtime
-        self.worker_session = threading.Thread(
-            target=runtime.run, name="m10b-bare-worker", daemon=True
+        self.assertEqual(200, status, payload)
+        keys_after = _cell_keys(self.application_cells())
+        self.assertNotIn(
+            ("worker_bridged", "openai", CODEX_CATALOG_MODEL, "streaming"),
+            keys_after,
         )
-        self.worker_session.start()
-        # Availability evidence: dispatch requires the configured owner's
-        # own valid report (the endpoint refuses an unreported resource).
-        wait_until(
-            lambda: self.endpoint._observed_bindings.get(RESOURCE_ID)  # pyright: ignore[reportPrivateUsage] - acceptance reads the seam
-            == identity.worker_id,
-            timeout=30,
-            message="the worker's initial state report never landed",
+        self.assertNotIn(
+            ("worker_bridged", "openai", CODEX_CATALOG_MODEL, "tool_calls"),
+            keys_after,
+        )
+        # Re-adding the resource brings the cells back (configuration is
+        # the only matrix source on the composed path).
+        self.configure_codex_resource(worker.worker_id)
+        self.assertIn(
+            ("worker_bridged", "openai", CODEX_CATALOG_MODEL, "streaming"),
+            _cell_keys(self.application_cells()),
         )
 
-    # -- HTTP helpers ------------------------------------------------------
+    def test_a_codex_streaming_request_serves_on_the_built_in_evidence(self) -> None:
+        """End-to-end: the REAL cells (streaming PARTIAL) admit the stream.
 
-    def post_json(self, payload: dict[str, object], *, timeout: float = 60.0) -> tuple[int, object]:
-        connection = http.client.HTTPConnection(
-            "127.0.0.1", self.http_port, timeout=timeout
-        )
+        No synthetic cell exists anywhere in this test — if the composed
+        matrix were empty (or the evidence not wired), this request would
+        fail closed with ``compatibility_unknown``.
+        """
+        worker = self.start_codex_worker(chatgpt_scenario())
+        self.configure_codex_resource(worker.worker_id)
+        worker.start()
         try:
-            connection.request(
+            _ = self.wait_for_observation(RESOURCE_ID)
+            status, payload, _headers = self.exchange(
                 "POST",
                 "/v1/chat/completions",
-                body=json.dumps(payload).encode("utf-8"),
-                headers={
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {CLIENT_KEY}",
-                },
+                _pin_body(stream=True),
+                headers={"Authorization": f"Bearer {self.client_key}"},
+                timeout=60,
             )
-            response = connection.getresponse()
-            raw = response.read()
-            status = response.status
+            self.assertEqual(200, status, payload)
+            self.assertEqual(1, trace_methods(worker.trace_path).count("turn/start"))
         finally:
-            connection.close()
-        parsed: object = json.loads(raw.decode("utf-8")) if raw else None
-        return status, parsed
+            worker.stop()
 
-    def post_stream(self, payload: dict[str, object], *, timeout: float = 60.0) -> tuple[int, bytes]:
-        connection = http.client.HTTPConnection(
-            "127.0.0.1", self.http_port, timeout=timeout
-        )
-        try:
-            connection.request(
-                "POST",
-                "/v1/chat/completions",
-                body=json.dumps(payload).encode("utf-8"),
-                headers={
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {CLIENT_KEY}",
-                },
-            )
-            response = connection.getresponse()
-            raw = response.read()
-            status = response.status
-        finally:
-            connection.close()
-        return status, raw
+
+# ── Areas 4b, 6-9, 13: streaming execution semantics (composed server) ────────
+
+
+class CodexStreamingExecutionTests(CodexComposedTlsWorld):
+    """Streaming semantics through the ACTUAL composed server.
+
+    Every gate here is served by the production matrix (the built-in M06
+    evidence cells); no test in this class supplies or injects cells.
+    """
 
     def open_raw_stream(self, payload: dict[str, object]) -> socket.socket:
+        """One raw-socket SSE request (for client-disconnect control)."""
         body = json.dumps(payload).encode("utf-8")
-        raw = socket.create_connection(("127.0.0.1", self.http_port), timeout=30)
+        raw = socket.create_connection(("127.0.0.1", self.port), timeout=30)
         request = (
             "POST /v1/chat/completions HTTP/1.1\r\n"
             "Host: 127.0.0.1\r\n"
             "Content-Type: application/json\r\n"
-            f"Authorization: Bearer {CLIENT_KEY}\r\n"
+            f"Authorization: Bearer {self.client_key}\r\n"
             f"Content-Length: {len(body)}\r\n"
             "Connection: close\r\n\r\n"
         ).encode("utf-8")
@@ -1180,68 +1245,77 @@ class BareCodexWorld(unittest.TestCase):
             buffer += piece
         return buffer
 
-
-# ── Areas 4b, 6-9, 13: streaming execution semantics ──────────────────────────
-
-
-class CodexStreamingExecutionTests(BareCodexWorld):
     def test_streaming_roles_and_history_end_to_end(self) -> None:
         """Full SSE round trip: roles map, history is injected, deltas flow."""
-        self.start_codex_worker(chatgpt_scenario())
-        status, raw = self.post_stream(
-            _pin_body(
-                messages=[
-                    {"role": "system", "content": "SYS-M10B-system-text"},
-                    {"role": "user", "content": "earlier question"},
-                    {"role": "assistant", "content": "earlier answer"},
-                    {"role": "user", "content": PROMPT},
-                ],
-                stream=True,
+        worker = self.start_codex_worker(chatgpt_scenario())
+        self.configure_codex_resource(worker.worker_id)
+        worker.start()
+        try:
+            _ = self.wait_for_observation(RESOURCE_ID)
+            status, payload, _headers = self.exchange(
+                "POST",
+                "/v1/chat/completions",
+                _pin_body(
+                    messages=[
+                        {"role": "system", "content": "SYS-M10B-system-text"},
+                        {"role": "user", "content": "earlier question"},
+                        {"role": "assistant", "content": "earlier answer"},
+                        {"role": "user", "content": PROMPT},
+                    ],
+                    stream=True,
+                ),
+                headers={"Authorization": f"Bearer {self.client_key}"},
+                timeout=60,
             )
-        )
-        self.assertEqual(200, status)
-        text = raw.decode("utf-8")
-        self.assertTrue(text.rstrip().endswith("data: [DONE]"))
-        # Parse the SSE frames. The honest surface shape for a stream the
-        # adapter delivered as text deltas: the role frame first, the
-        # deltas assembling the fake's message, then [DONE] — the explicit
-        # finish_reason frame appears only when the adapter itself emits a
-        # finish chunk (the Codex adapter does not; recorded in the
-        # acceptance doc).
-        frames = [
-            cast("dict[str, object]", json.loads(line[len("data: ") :]))
-            for line in text.splitlines()
-            if line.startswith("data: ") and line != "data: [DONE]"
-        ]
-        self.assertGreaterEqual(len(frames), 3)
-        content = ""
-        for frame in frames:
-            for choice in cast("list[object]", frame.get("choices", [])):
-                choice_map = cast("dict[str, object]", choice)
-                delta = cast("dict[str, object]", choice_map.get("delta", {}))
-                piece = delta.get("content")
-                if piece:
-                    content += str(piece)
-                self.assertIsNone(choice_map.get("finish_reason"))
-        self.assertEqual(REPLY, content)
+            self.assertEqual(200, status, payload)
+            text = payload if isinstance(payload, str) else str(payload)
+            self.assertTrue(text.rstrip().endswith("data: [DONE]"))
+            # Parse the SSE frames. The honest surface shape for a stream
+            # the adapter delivered as text deltas: the role frame first,
+            # the deltas assembling the fake's message, then [DONE] — the
+            # explicit finish_reason frame appears only when the adapter
+            # itself emits a finish chunk (the Codex adapter does not;
+            # recorded in the acceptance doc).
+            frames = [
+                cast("dict[str, object]", json.loads(line[len("data: ") :]))
+                for line in text.splitlines()
+                if line.startswith("data: ") and line != "data: [DONE]"
+            ]
+            self.assertGreaterEqual(len(frames), 3)
+            content = ""
+            for frame in frames:
+                for choice in cast("list[object]", frame.get("choices", [])):
+                    choice_map = cast("dict[str, object]", choice)
+                    delta = cast("dict[str, object]", choice_map.get("delta", {}))
+                    piece = delta.get("content")
+                    if piece:
+                        content += str(piece)
+                    self.assertIsNone(choice_map.get("finish_reason"))
+            self.assertEqual(REPLY, content)
 
-        thread_params = trace_request(self.trace_path, "thread/start")
-        assert thread_params is not None
-        self.assertEqual("SYS-M10B-system-text", thread_params.get("baseInstructions"))
-        inject = trace_request(self.trace_path, "thread/inject_items")
-        assert inject is not None
-        items = cast("list[object]", inject.get("items"))
-        roles = [cast("dict[str, object]", item).get("role") for item in items]
-        self.assertEqual(["user", "assistant"], roles)
-        turn = trace_request(self.trace_path, "turn/start")
-        assert turn is not None
-        turn_input = cast("list[object]", turn.get("input"))
-        first = cast("dict[str, object]", turn_input[0])
-        self.assertEqual(PROMPT, first.get("text"))
+            thread_params = trace_request(worker.trace_path, "thread/start")
+            assert thread_params is not None
+            self.assertEqual("SYS-M10B-system-text", thread_params.get("baseInstructions"))
+            inject = trace_request(worker.trace_path, "thread/inject_items")
+            assert inject is not None
+            items = cast("list[object]", inject.get("items"))
+            roles = [cast("dict[str, object]", item).get("role") for item in items]
+            self.assertEqual(["user", "assistant"], roles)
+            turn = trace_request(worker.trace_path, "turn/start")
+            assert turn is not None
+            turn_input = cast("list[object]", turn.get("input"))
+            first = cast("dict[str, object]", turn_input[0])
+            self.assertEqual(PROMPT, first.get("text"))
 
-        records = audit_records(self.application)
-        self.assertEqual(1, len(records))
-        self.assertEqual("completed", records[0].result_status)
+            executed = [
+                record
+                for record in self.audit_records()
+                if record.get("executed_target") is not None
+            ]
+            self.assertEqual(1, len(executed))
+            self.assertEqual("completed", executed[0]["result_status"])
+        finally:
+            worker.stop()
 
     def test_client_disconnect_interrupts_the_codex_turn(self) -> None:
         """Client disconnect propagates: turn/interrupt, never completed.
@@ -1257,203 +1331,294 @@ class CodexStreamingExecutionTests(BareCodexWorld):
             "pauseBeforeCompleted": 10.0,
             "status": "completed",
         }
-        self.start_codex_worker(chatgpt_scenario(turn=turn))
-        raw = self.open_raw_stream(_pin_body(stream=True))
+        worker = self.start_codex_worker(chatgpt_scenario(turn=turn))
+        self.configure_codex_resource(worker.worker_id)
+        worker.start()
         try:
-            wait_until(
-                lambda: "turn/start" in trace_methods(self.trace_path),
-                timeout=30,
-                message="the turn never started",
-            )
-            _ = raw.settimeout(60.0)
-            head = self.read_until_headers(raw)
-            self.assertIn(" 200 ", head.decode("ascii", errors="replace"))
-            # Drain whatever frames already rode with the headers (bounded):
-            # the FIN then lands while the fake still holds pending output.
-            _ = raw.settimeout(5.0)
+            _ = self.wait_for_observation(RESOURCE_ID)
+            raw = self.open_raw_stream(_pin_body(stream=True))
             try:
-                _ = raw.recv(4096)
-            except (TimeoutError, OSError):
-                pass
-            # The client disconnects: a clean FIN on the request socket.
-            _ = raw.shutdown(socket.SHUT_WR)
-            # The next pending chunk drives the gateway's EOF check; the
-            # cancel must propagate all the way to turn/interrupt while
-            # the turn is still open.
-            wait_until(
-                lambda: "turn/interrupt" in trace_methods(self.trace_path),
-                timeout=25,
-                message="cancel never reached the codex turn",
-            )
-            methods = trace_methods(self.trace_path)
-            self.assertEqual(1, methods.count("turn/start"))
-            self.assertEqual(1, methods.count("turn/interrupt"))
-        finally:
-            _ = raw.close()
+                wait_until(
+                    lambda: "turn/start" in trace_methods(worker.trace_path),
+                    timeout=30,
+                    message="the turn never started",
+                )
+                _ = raw.settimeout(60.0)
+                head = self.read_until_headers(raw)
+                self.assertIn(" 200 ", head.decode("ascii", errors="replace"))
+                # Drain whatever frames already rode with the headers
+                # (bounded): the FIN then lands while the fake still holds
+                # pending output.
+                _ = raw.settimeout(5.0)
+                try:
+                    _ = raw.recv(4096)
+                except (TimeoutError, OSError):
+                    pass
+                # The client disconnects: a clean FIN on the request socket.
+                _ = raw.shutdown(socket.SHUT_WR)
+                # The next pending chunk drives the gateway's EOF check;
+                # the cancel must propagate all the way to turn/interrupt
+                # while the turn is still open.
+                wait_until(
+                    lambda: "turn/interrupt" in trace_methods(worker.trace_path),
+                    timeout=25,
+                    message="cancel never reached the codex turn",
+                )
+                methods = trace_methods(worker.trace_path)
+                self.assertEqual(1, methods.count("turn/start"))
+                self.assertEqual(1, methods.count("turn/interrupt"))
+            finally:
+                _ = raw.close()
 
-        # The outcome was reported honestly: cancelled (client gone), and
-        # no completion was ever produced after the cancellation.
-        records = audit_records(self.application)
-        self.assertEqual(1, len(records))
-        self.assertEqual("cancelled", records[0].result_status)
-        self.assertIn("client_disconnected", records[0].reason_codes)
-        # Exactly two app-server sessions ran: the state-report probe and
-        # the dispatch — no third session, no second execution.
-        wait_until(
-            lambda: len(self.spawner.app_server_specs) >= 2,
-            timeout=15,
-            message="the probe and dispatch sessions never both ran",
-        )
-        self.assertEqual(2, len(self.spawner.app_server_specs))
+            # The outcome was reported honestly: cancelled (client gone),
+            # and no completion was ever produced after the cancellation.
+            executed = [
+                record
+                for record in self.audit_records()
+                if record.get("executed_target") is not None
+            ]
+            self.assertEqual(1, len(executed))
+            self.assertEqual("cancelled", executed[0]["result_status"])
+            self.assertIn("client_disconnected", cast("list[str]", executed[0]["reason_codes"]))
+            # Exactly two app-server sessions ran: the state-report probe
+            # and the dispatch — no third session, no second execution.
+            wait_until(
+                lambda: len(worker.spawner.app_server_specs) >= 2,
+                timeout=15,
+                message="the probe and dispatch sessions never both ran",
+            )
+            self.assertEqual(2, len(worker.spawner.app_server_specs))
+        finally:
+            worker.stop()
 
     def test_reasoning_effort_forwarded_verbatim(self) -> None:
-        self.start_codex_worker(chatgpt_scenario())
-        status, payload = self.post_json(_pin_body(reasoning_effort="high"))
-        self.assertEqual(200, status, payload)
-        turn = trace_request(self.trace_path, "turn/start")
-        assert turn is not None
-        self.assertEqual("codex", turn.get("model"))
-        self.assertEqual("high", turn.get("effort"))
+        worker = self.start_codex_worker(chatgpt_scenario())
+        self.configure_codex_resource(worker.worker_id)
+        worker.start()
+        try:
+            _ = self.wait_for_observation(RESOURCE_ID)
+            status, payload, _headers = self.exchange(
+                "POST",
+                "/v1/chat/completions",
+                _pin_body(reasoning_effort="high"),
+                headers={"Authorization": f"Bearer {self.client_key}"},
+                timeout=60,
+            )
+            self.assertEqual(200, status, payload)
+            turn = trace_request(worker.trace_path, "turn/start")
+            assert turn is not None
+            self.assertEqual(CODEX_CATALOG_MODEL, turn.get("model"))
+            self.assertEqual("high", turn.get("effort"))
+        finally:
+            worker.stop()
 
     def test_unrepresentable_effort_rejected_before_the_turn(self) -> None:
-        # The fake runtime's listing deliberately omits "minimal": the
-        # surface-valid effort is unrepresentable for THIS runtime, so the
-        # adapter's exact-binding check must reject it before the turn.
-        self.start_codex_worker(chatgpt_scenario(efforts=("low", "medium", "high")))
-        status, payload = self.post_json(_pin_body(reasoning_effort="minimal"))
-        self.assertEqual(502, status)
-        error_body = cast("dict[str, object]", cast("dict[str, object]", payload)["error"])
-        self.assertEqual("backend_failure", error_body["code"])
-        methods = trace_methods(self.trace_path)
-        # The binding verdict needs the runtime's own model/list, but the
-        # TURN never starts: no thread, no turn, nothing executed.
-        self.assertIn("model/list", methods)
-        self.assertNotIn("thread/start", methods)
-        self.assertNotIn("turn/start", methods)
-        records = audit_records(self.application)
-        self.assertEqual(1, len(records))
-        self.assertEqual("failed", records[0].result_status)
+        """The runtime listing is the effort authority — and never a model
+        selector: the configured physical model is selected, but the
+        pinned effort is absent from ITS ``supportedReasoningEfforts``
+        (the shipped-calibrated ``medium``/``high``), so the adapter's
+        exact-binding check rejects it before any thread/turn exists."""
+        worker = self.start_codex_worker(chatgpt_scenario())
+        self.configure_codex_resource(worker.worker_id)
+        worker.start()
+        try:
+            _ = self.wait_for_observation(RESOURCE_ID)
+            status, payload, _headers = self.exchange(
+                "POST",
+                "/v1/chat/completions",
+                _pin_body(reasoning_effort="minimal"),
+                headers={"Authorization": f"Bearer {self.client_key}"},
+                timeout=60,
+            )
+            self.assertEqual(502, status)
+            error_body = cast(
+                "dict[str, object]", cast("dict[str, object]", payload)["error"]
+            )
+            self.assertEqual("backend_failure", error_body["code"])
+            methods = trace_methods(worker.trace_path)
+            # The binding verdict needs the runtime's own model/list, but
+            # the TURN never starts: no thread, no turn, nothing executed.
+            self.assertIn("model/list", methods)
+            self.assertNotIn("thread/start", methods)
+            self.assertNotIn("turn/start", methods)
+            executed = [
+                record
+                for record in self.audit_records()
+                if record.get("executed_target") is not None
+            ]
+            self.assertEqual(1, len(executed))
+            self.assertEqual("failed", executed[0]["result_status"])
+        finally:
+            worker.stop()
 
     def test_structured_output_schema_forwarded(self) -> None:
-        self.start_codex_worker(chatgpt_scenario())
-        schema = {
-            "type": "object",
-            "properties": {"answer": {"type": "string"}},
-            "required": ["answer"],
-        }
-        status, payload = self.post_json(
-            _pin_body(
-                response_format={
-                    "type": "json_schema",
-                    "json_schema": {"name": "answer", "schema": schema, "strict": True},
-                }
+        worker = self.start_codex_worker(chatgpt_scenario())
+        self.configure_codex_resource(worker.worker_id)
+        worker.start()
+        try:
+            _ = self.wait_for_observation(RESOURCE_ID)
+            schema = {
+                "type": "object",
+                "properties": {"answer": {"type": "string"}},
+                "required": ["answer"],
+            }
+            status, payload, _headers = self.exchange(
+                "POST",
+                "/v1/chat/completions",
+                _pin_body(
+                    response_format={
+                        "type": "json_schema",
+                        "json_schema": {
+                            "name": "answer",
+                            "schema": schema,
+                            "strict": True,
+                        },
+                    }
+                ),
+                headers={"Authorization": f"Bearer {self.client_key}"},
+                timeout=60,
             )
-        )
-        self.assertEqual(200, status, payload)
-        turn = trace_request(self.trace_path, "turn/start")
-        assert turn is not None
-        self.assertEqual(schema, turn.get("outputSchema"))
+            self.assertEqual(200, status, payload)
+            turn = trace_request(worker.trace_path, "turn/start")
+            assert turn is not None
+            self.assertEqual(schema, turn.get("outputSchema"))
+        finally:
+            worker.stop()
 
     def test_tools_bearing_request_rejected_before_dispatch(self) -> None:
-        self.start_codex_worker(chatgpt_scenario())
-        status, payload = self.post_json(
-            _pin_body(
-                tools=cast(
-                    "list[dict[str, object]]",
-                    [
-                        {
-                            "type": "function",
-                            "function": {
-                                "name": "synthetic_lookup",
-                                "parameters": {"type": "object", "properties": {}},
-                            },
-                        }
-                    ],
-                )
+        """The REAL M06 ``UNSUPPORTED`` tool_calls cell fails the request
+        closed at admission — no execute message, no dispatch session,
+        no turn."""
+        worker = self.start_codex_worker(chatgpt_scenario())
+        self.configure_codex_resource(worker.worker_id)
+        worker.start()
+        try:
+            _ = self.wait_for_observation(RESOURCE_ID)
+            status, payload, _headers = self.exchange(
+                "POST",
+                "/v1/chat/completions",
+                _pin_body(
+                    tools=cast(
+                        "list[dict[str, object]]",
+                        [
+                            {
+                                "type": "function",
+                                "function": {
+                                    "name": "synthetic_lookup",
+                                    "parameters": {"type": "object", "properties": {}},
+                                },
+                            }
+                        ],
+                    )
+                ),
+                headers={"Authorization": f"Bearer {self.client_key}"},
+                timeout=60,
             )
-        )
-        self.assertEqual(400, status)
-        error_body = cast("dict[str, object]", cast("dict[str, object]", payload)["error"])
-        self.assertEqual("compatibility_unsupported", error_body["code"])
-        # Rejected at admission: no execute message, no dispatch session,
-        # no turn — only the initial state-report probe ever runs.
-        wait_until(
-            lambda: len(self.spawner.app_server_specs) >= 1,
-            timeout=15,
-            message="the state-report probe session never ran",
-        )
-        methods = trace_methods(self.trace_path)
-        self.assertNotIn("thread/start", methods)
-        self.assertNotIn("turn/start", methods)
-        self.assertEqual(1, len(self.spawner.app_server_specs))
-        records = audit_records(self.application)
-        self.assertEqual(1, len(records))
-        self.assertEqual("rejected", records[0].result_status)
-        self.assertIn("compatibility_unsupported", records[0].reason_codes)
+            self.assertEqual(400, status)
+            error_body = cast(
+                "dict[str, object]", cast("dict[str, object]", payload)["error"]
+            )
+            self.assertEqual("compatibility_unsupported", error_body["code"])
+            # Rejected at admission: no dispatch session, no turn — only
+            # the initial state-report probe ever runs.
+            wait_until(
+                lambda: len(worker.spawner.app_server_specs) >= 1,
+                timeout=15,
+                message="the state-report probe session never ran",
+            )
+            methods = trace_methods(worker.trace_path)
+            self.assertNotIn("thread/start", methods)
+            self.assertNotIn("turn/start", methods)
+            self.assertEqual(1, len(worker.spawner.app_server_specs))
+            # The rejection is audited as `rejected` (never dispatched, so
+            # the record carries no executed target).
+            rejected = [
+                record
+                for record in self.audit_records()
+                if record.get("result_status") == "rejected"
+            ]
+            self.assertEqual(1, len(rejected))
+            self.assertIn(
+                "compatibility_unsupported",
+                cast("list[str]", rejected[0]["reason_codes"]),
+            )
+            self.assertIsNone(rejected[0].get("executed_target"))
+        finally:
+            worker.stop()
 
     def test_isolation_profile_end_to_end(self) -> None:
-        self.start_codex_worker(chatgpt_scenario())
-        status, payload = self.post_json(
-            _pin_body(
-                messages=[
-                    {"role": "system", "content": "SYS-TEXT"},
-                    {"role": "developer", "content": "DEV-TEXT"},
-                    {"role": "user", "content": "first"},
-                    {"role": "assistant", "content": "second"},
-                    {"role": "user", "content": PROMPT},
-                ]
+        worker = self.start_codex_worker(chatgpt_scenario())
+        self.configure_codex_resource(worker.worker_id)
+        worker.start()
+        try:
+            _ = self.wait_for_observation(RESOURCE_ID)
+            status, payload, _headers = self.exchange(
+                "POST",
+                "/v1/chat/completions",
+                _pin_body(
+                    messages=[
+                        {"role": "system", "content": "SYS-TEXT"},
+                        {"role": "developer", "content": "DEV-TEXT"},
+                        {"role": "user", "content": "first"},
+                        {"role": "assistant", "content": "second"},
+                        {"role": "user", "content": PROMPT},
+                    ]
+                ),
+                headers={"Authorization": f"Bearer {self.client_key}"},
+                timeout=60,
             )
-        )
-        self.assertEqual(200, status, payload)
+            self.assertEqual(200, status, payload)
 
-        state_dir = self.tmp / "codex-adapter-state"
-        home = state_dir / "codex" / "codex-home"
-        # The controlled home: 0o700, minimal generated config, no MCP
-        # servers, no credential material.
-        self.assertEqual(0o700, stat.S_IMODE(home.stat().st_mode))
-        config = (home / CONTROLLED_CONFIG_NAME).read_text(encoding="utf-8")
-        self.assertNotIn("mcp_servers", config)
-        self.assertFalse((home / "auth.json").exists())
+            state_dir = worker.state_dir
+            home = state_dir / "codex" / "codex-home"
+            # The controlled home: 0o700, minimal generated config, no MCP
+            # servers, no credential material.
+            self.assertEqual(0o700, stat.S_IMODE(home.stat().st_mode))
+            config = (home / CONTROLLED_CONFIG_NAME).read_text(encoding="utf-8")
+            self.assertNotIn("mcp_servers", config)
+            self.assertFalse((home / "auth.json").exists())
 
-        # The spawn spec is fully adapter-owned: minimal env, controlled
-        # home, scratch cwd under the worker state dir.
-        self.assertEqual(2, len(self.spawner.app_server_specs))
-        spec = self.spawner.app_server_specs[-1]
-        self.assertLessEqual(
-            set(spec.env) - {"SR_FAKE_TRACE"}, {"PATH", "HOME", "CODEX_HOME"}
-        )
-        self.assertEqual(str(home), spec.env["CODEX_HOME"])
-        scratch_root = state_dir / "codex" / "scratch"
-        self.assertTrue(str(spec.cwd).startswith(str(scratch_root)))
+            # The spawn spec is fully adapter-owned: minimal env, controlled
+            # home, scratch cwd under the worker state dir.
+            self.assertEqual(2, len(worker.spawner.app_server_specs))
+            spec = worker.spawner.app_server_specs[-1]
+            self.assertLessEqual(
+                set(spec.env) - {"SR_FAKE_TRACE"}, {"PATH", "HOME", "CODEX_HOME"}
+            )
+            self.assertEqual(str(home), spec.env["CODEX_HOME"])
+            scratch_root = state_dir / "codex" / "scratch"
+            self.assertTrue(str(spec.cwd).startswith(str(scratch_root)))
 
-        # The protocol requests carry the composed isolation policy.
-        thread_params = trace_request(self.trace_path, "thread/start")
-        assert thread_params is not None
-        self.assertIs(True, thread_params.get("ephemeral"))
-        self.assertEqual("never", thread_params.get("approvalPolicy"))
-        self.assertEqual("workspace-write", thread_params.get("sandbox"))
-        self.assertEqual("SYS-TEXT", thread_params.get("baseInstructions"))
-        self.assertEqual("DEV-TEXT", thread_params.get("developerInstructions"))
-        scratch = thread_params.get("cwd")
-        self.assertTrue(str(scratch).startswith(str(scratch_root)))
+            # The protocol requests carry the composed isolation policy.
+            thread_params = trace_request(worker.trace_path, "thread/start")
+            assert thread_params is not None
+            self.assertIs(True, thread_params.get("ephemeral"))
+            self.assertEqual("never", thread_params.get("approvalPolicy"))
+            self.assertEqual("workspace-write", thread_params.get("sandbox"))
+            self.assertEqual("SYS-TEXT", thread_params.get("baseInstructions"))
+            self.assertEqual("DEV-TEXT", thread_params.get("developerInstructions"))
+            scratch = thread_params.get("cwd")
+            self.assertTrue(str(scratch).startswith(str(scratch_root)))
 
-        turn_params = trace_request(self.trace_path, "turn/start")
-        assert turn_params is not None
-        self.assertEqual("never", turn_params.get("approvalPolicy"))
-        self.assertEqual(scratch, turn_params.get("cwd"))
-        self.assertEqual(
-            {
-                "type": "workspaceWrite",
-                "writableRoots": [scratch],
-                "networkAccess": False,
-            },
-            turn_params.get("sandboxPolicy"),
-        )
-        self.assertNotIn("effort", turn_params)
-        self.assertNotIn("outputSchema", turn_params)
+            turn_params = trace_request(worker.trace_path, "turn/start")
+            assert turn_params is not None
+            self.assertEqual("never", turn_params.get("approvalPolicy"))
+            self.assertEqual(scratch, turn_params.get("cwd"))
+            self.assertEqual(
+                {
+                    "type": "workspaceWrite",
+                    "writableRoots": [scratch],
+                    "networkAccess": False,
+                },
+                turn_params.get("sandboxPolicy"),
+            )
+            self.assertNotIn("effort", turn_params)
+            self.assertNotIn("outputSchema", turn_params)
 
-        # The scratch directory is cleaned up after the call.
-        self.assertEqual([], list(scratch_root.iterdir()))
+            # The scratch directory is cleaned up after the call.
+            self.assertEqual([], list(scratch_root.iterdir()))
+        finally:
+            worker.stop()
 
 
 if __name__ == "__main__":

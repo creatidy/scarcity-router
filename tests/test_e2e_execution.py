@@ -225,14 +225,29 @@ class ServerDirectEndToEndTests(_ServerDirectWorld):
 
     def test_scenario_06_streaming_fails_closed_without_matrix_evidence(self) -> None:
         """A streaming request is refused before inference when the
-        deployment's compatibility matrix carries no evidence (D-043:
-        UNKNOWN cells fail closed). The composed deployment registers no
-        cells, so ``stream: true`` is an explicit 400 — never a silent
-        degradation — and the synthetic provider is never contacted.
-        The evidenced streaming proof runs on the M03 surface in
-        test_e2e_acceptance (scenario 5)."""
+        backend's matrix cells carry no evidence (D-043: UNKNOWN fails
+        closed). The composed deployment now builds the REAL matrix from
+        configuration (M04 preset evidence): the ``generic-openai`` preset
+        is evidenced as all-UNKNOWN, its cells ARE present in the
+        application, and streaming still fails closed with an explicit
+        400 — never a silent degradation — and the synthetic provider is
+        never contacted. The evidence-backed streaming proof on the
+        composed path runs in tests/test_e2e_codex_acceptance.py."""
         provider = self.wire_provider(adapter_id="generic-openai")
         self._configure_resource()
+        # The composed application now carries the generic preset's
+        # honest all-UNKNOWN cells for this backend — the fail-closed
+        # verdict below comes from the evidence, not from missing cells.
+        cells = self.plane.current_application().compatibility_cells
+        generic = [
+            cell
+            for cell in cells
+            if (cell.channel, cell.provider, cell.model)
+            == ("server_direct_http", "zai", "glm-5.3")
+        ]
+        self.assertTrue(generic, "the generic preset's cells must be present")
+        for cell in generic:
+            self.assertEqual("UNKNOWN", cell.value)
         connection = self.open_stream(
             "/v1/chat/completions",
             {

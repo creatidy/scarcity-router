@@ -1,21 +1,22 @@
 """Shared M10-B Codex end-to-end acceptance fixtures (issue #95).
 
 Everything here is deterministic, synthetic and CI-safe: the Codex backend
-is ALWAYS ``tests/codex_fake_appserver.py`` (never a real binary), the
-compatibility-matrix cells and the catalog binding for the Codex model
-identity are supplied programmatically as clearly-synthetic test evidence
-(the composed deployment keeps its honest fail-closed defaults — issue
-#106), and every secret-like string is a conspicuous throwaway.
+is ALWAYS ``tests/codex_fake_appserver.py`` (never a real binary), and
+every secret-like string is a conspicuous throwaway. The Codex resource
+binds the SHIPPED recommendation catalog through its PHYSICAL model
+identity (D-042: ``openai`` / ``gpt-5.6-sol``; the slug ``codex`` is the
+execution surface ``local_adapter_id``, never a model), and the composed
+deployment's compatibility matrix is the production one — M04 preset
+evidence plus the reviewed M06 Codex worker-local evidence cells built by
+``server_composition`` from administrator configuration (issue #106).
+No synthetic catalog entry and no synthetic compatibility cell exists
+anywhere in these fixtures.
 
-Served compositions: the composed-server pieces (synthetic catalog
-document, resource document, audit-store reader, packaged-style worker
-subprocess helpers) and the bare-world pieces (``build_codex_cells``/
-``build_codex_catalog`` and friends for the bare M03 gateway + real
-``WorkerBridgedAdapter`` + real worker endpoint + real worker runtime,
-with synthetic compatibility cells supplied exactly like
-``tests/test_e2e_acceptance``'s evidenced-streaming scenario — streaming
-needs recorded cells; the composed control plane hard-wires the
-fail-closed empty cell set).
+Served compositions: the composed-server pieces (resource document,
+audit-store reader, packaged-style worker subprocess helpers) shared by
+every suite in ``tests/test_e2e_codex_acceptance.py`` — server surfaces,
+coordinator, worker protocol, worker endpoint and the real
+``CodexLocalAdapter`` are all the production code paths.
 """
 
 from __future__ import annotations
@@ -31,25 +32,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
-from scarcity_router.capacity import CapacitySnapshot, CapacityWindow
-from scarcity_router.routing_core import CompatibilityCell
-from scarcity_router.selection_types import (
-    CapabilityAssessment,
-    CapabilityAssessments,
-    CapacityScopeRef,
-    EvidenceRef,
-    ModelCatalog,
-    ModelCatalogEntry,
-    ModelHardProperties,
-    ModelIdentity,
-)
+from scarcity_router.resource_state import ResourceIdentity
 from scarcity_router.server_store import STORE_FILE_NAME
 
 from tests.test_worker_codex_adapter import FAKE as FAKE_APP_SERVER
 from tests.test_worker_codex_adapter import FakeCodexSpawner
 
 if TYPE_CHECKING:  # pragma: no cover - type-only import
-    from scarcity_router.resource_state import ResourceIdentity
     from scarcity_router.worker_local_adapters import LocalAdapterRegistry
 
 REPO = Path(__file__).resolve().parents[1]
@@ -58,7 +47,17 @@ REPO = Path(__file__).resolve().parents[1]
 
 RESOURCE_ID = "codex-e2e"
 ADAPTER_ID = "codex"
-PIN_MODEL = f"sr-pin:{RESOURCE_ID}/openai/codex/high"
+
+#: The physical model the Codex resource represents (D-042): a REAL
+#: calibrated slug from the shipped ``model-catalog.json`` — never the
+#: execution surface name. The shipped catalog calibrates ``gpt-5.6-sol``
+#: with the ``medium`` and ``high`` reasoning variants.
+CODEX_CATALOG_MODEL = "gpt-5.6-sol"
+CODEX_CATALOG_EFFORTS: tuple[str, ...] = ("medium", "high")
+
+#: The pinned client reference resolves against the shipped catalog's
+#: calibrated ``gpt-5.6-sol``/``high`` identity.
+PIN_MODEL = f"sr-pin:{RESOURCE_ID}/openai/{CODEX_CATALOG_MODEL}/high"
 
 PROMPT = "SYNTHETIC-M10B-CODEX-PROMPT-k4t8"
 REPLY = "Hello"
@@ -75,33 +74,43 @@ def canonical_now() -> str:
     )
 
 
-def codex_identity(resource_id: str = RESOURCE_ID) -> ResourceIdentity:
-    """The resource identity the real Codex adapter serves (model ``codex``).
+def codex_identity(
+    resource_id: str = RESOURCE_ID,
+    *,
+    model: str = CODEX_CATALOG_MODEL,
+) -> ResourceIdentity:
+    """The resource identity the real Codex adapter serves.
 
     Mirrors ``worker_client.build_registry`` exactly: provider ``openai``,
-    model ``codex``, entitlement ``subscription_included``, channel
-    ``worker_bridged``.
+    the configured PHYSICAL model slug, entitlement ``subscription_included``,
+    channel ``worker_bridged`` — variant-less (the M02 binding rule binds
+    every calibrated variant of the physical model).
     """
-    from scarcity_router.resource_state import ResourceIdentity
-
     return ResourceIdentity(
         resource_id=resource_id,
         channel="worker_bridged",
         provider="openai",
-        model="codex",
+        model=model,
         entitlement="subscription_included",
     )
 
 
-def codex_resource_document(worker_id: str) -> dict[str, object]:
-    """The administrator configuration binding the Codex resource to a worker."""
+def codex_resource_document(
+    worker_id: str, *, model: str = CODEX_CATALOG_MODEL
+) -> dict[str, object]:
+    """The administrator configuration binding the Codex resource to a worker.
+
+    The registration identity names the physical model (the worker's
+    ``--codex-model`` value); ``local_adapter_id`` names the execution
+    surface.
+    """
     return {
         "registration": {
             "identity": {
                 "resource_id": RESOURCE_ID,
                 "channel": "worker_bridged",
                 "provider": "openai",
-                "model": "codex",
+                "model": model,
                 "entitlement": "subscription_included",
             },
             "freshness_ttl_seconds": 300,
@@ -111,190 +120,6 @@ def codex_resource_document(worker_id: str) -> dict[str, object]:
         "worker_id": worker_id,
         "local_adapter_id": ADAPTER_ID,
     }
-
-
-# ── Synthetic catalog binding for the Codex model identity ────────────────────
-#
-# ``_bind_identities`` binds a resource to catalog variants of its exact
-# (provider, model); the shipped recommendation catalog has no
-# (openai, "codex") entry, so a deployment executing the worker-local Codex
-# resource needs a catalog binding to admit anything. The tests supply ONE
-# synthetic entry with clearly-synthetic evidence — a fixture, never a
-# calibration claim (intrinsic capability stays catalog-owned, D-040).
-
-_CATALOG_EVIDENCE = {
-    "source": "synthetic_test",
-    "identifier": "synthetic://m10b-codex-e2e",
-    "date": "2026-09-20",
-}
-
-
-def _assessment(rating: int) -> dict[str, object]:
-    return {
-        "rating": rating,
-        "evidence": [_CATALOG_EVIDENCE],
-        "confidence": "medium",
-        "assessed_on": "2026-09-20",
-        "rationale": "synthetic M10-B fixture rating; not a calibration claim",
-    }
-
-
-def _catalog_entry_document(variant: str, effort: str) -> dict[str, object]:
-    return {
-        "identity": {"provider": "openai", "model": "codex", "variant": variant},
-        "display_name": f"Codex {variant} (M10-B synthetic fixture)",
-        "reasoning_effort": effort,
-        "hard_properties": {
-            "input_context_tokens": 272_000,
-            "output_tokens": 128_000,
-            "supports_tool_use": True,
-            "supports_vision": False,
-            "supports_reasoning_mode": True,
-        },
-        "capabilities": {
-            "reasoning": _assessment(4),
-            "coding": _assessment(4),
-            "scientific_methodological": _assessment(3),
-            "writing_editorial": _assessment(3),
-            "tool_use": _assessment(4),
-            "translation_multilingual": _assessment(3),
-        },
-        "capacity_bindings": [{"provider": "openai", "scope_id": "codex"}],
-        "model_version_date": "2026-09-20",
-        "last_reviewed_on": "2026-09-20",
-    }
-
-
-def write_codex_catalog_document(path: Path) -> Path:
-    """Write the synthetic catalog document used by the composed tests."""
-    document = {
-        "catalog_version": 1,
-        "updated_on": "2026-09-20",
-        "entries": [_catalog_entry_document("high", "high")],
-    }
-    _ = path.write_text(json.dumps(document, indent=1), encoding="utf-8")
-    return path
-
-
-def build_codex_catalog() -> ModelCatalog:
-    """The same synthetic binding as in-memory selection_types objects."""
-    evidence = EvidenceRef(
-        source="synthetic_test",
-        identifier="synthetic://m10b-codex-e2e",
-        date="2026-09-20",
-    )
-
-    def known(rating: int) -> CapabilityAssessment:
-        return CapabilityAssessment(
-            rating=rating,
-            evidence=(evidence,),
-            confidence="medium",
-            assessed_on="2026-09-20",
-            rationale="synthetic M10-B fixture rating; not a calibration claim",
-        )
-
-    unknown = CapabilityAssessment(rating=None)
-    entry = ModelCatalogEntry(
-        identity=ModelIdentity(provider="openai", model="codex", variant="high"),
-        display_name="Codex high (M10-B synthetic fixture)",
-        hard_properties=ModelHardProperties(
-            input_context_tokens=272_000,
-            output_tokens=128_000,
-            supports_tool_use=True,
-            supports_vision=False,
-            supports_reasoning_mode=True,
-        ),
-        capabilities=CapabilityAssessments(
-            reasoning=known(4),
-            coding=known(4),
-            scientific_methodological=unknown,
-            writing_editorial=unknown,
-            tool_use=known(4),
-            translation_multilingual=unknown,
-        ),
-        capacity_bindings=(CapacityScopeRef(provider="openai", scope_id="codex"),),
-        reasoning_effort="high",
-    )
-    return ModelCatalog(
-        catalog_version=1,
-        updated_on="2026-09-20",
-        entries=(entry,),
-    )
-
-
-# ── Synthetic compatibility-matrix cells (programmatic seam, issue #106) ──────
-
-_SYNTHETIC_EVIDENCE = EvidenceRef(
-    source="synthetic_test",
-    identifier="synthetic://m10b-codex-cells",
-    date="2026-09-20",
-)
-
-#: The cell values the M10-B streaming world runs with. They mirror the
-#: Stage-2 adapter matrix honestly: everything the adapter maps is PASS,
-#: the stable-surface ``tool_calls``/``tool_results`` positions are
-#: UNSUPPORTED (and drive the fail-closed pre-dispatch rejection test).
-CODEX_CELL_VALUES: dict[str, str] = {
-    "roles_history": "PASS",
-    "streaming": "PASS",
-    "tool_calls": "UNSUPPORTED",
-    "tool_results": "UNSUPPORTED",
-    "structured_output": "PASS",
-    "reasoning_controls": "PASS",
-}
-
-
-def build_codex_cells(
-    overrides: dict[str, str] | None = None,
-) -> tuple[CompatibilityCell, ...]:
-    """Synthetic cells for (worker_bridged, openai, codex), with overrides.
-
-    Exactly the programmatic seam ``tests/test_e2e_acceptance.py``'s
-    evidenced-streaming scenario uses: explicit test evidence supplied to
-    the application constructor — the fail-closed default (an empty cell
-    set) is never weakened anywhere.
-    """
-    values = dict(CODEX_CELL_VALUES)
-    if overrides is not None:
-        values.update(overrides)
-    return tuple(
-        CompatibilityCell(
-            channel="worker_bridged",
-            provider="openai",
-            model="codex",
-            feature=feature,
-            value=value,
-            adapter="codex-worker-local",
-            adapter_version="1.0.0",
-            evidence=_SYNTHETIC_EVIDENCE,
-        )
-        for feature, value in values.items()
-    )
-
-
-def build_codex_capacity_snapshots() -> tuple[CapacitySnapshot, ...]:
-    """One healthy synthetic capacity snapshot for the codex scope."""
-    return (
-        CapacitySnapshot(
-            schema_version=3,
-            provider="openai",
-            source="synthetic_test",
-            retrieved_at=canonical_now(),
-            status="ok",
-            windows=(
-                CapacityWindow(
-                    resource="tokens",
-                    kind="five_hour",
-                    scope_id="codex",
-                    duration_seconds=18_000,
-                    used_percent=10,
-                    remaining_percent=90,
-                    window_id="codex-five",
-                ),
-            ),
-            diagnostics=(),
-        ),
-    )
 
 
 # ── Path lookups and the fake-backed adapter registry ─────────────────────────
@@ -322,11 +147,12 @@ def make_codex_registry(
     state_dir: Path,
     trace_path: Path,
     resource_id: str = RESOURCE_ID,
+    model: str = CODEX_CATALOG_MODEL,
 ) -> tuple[LocalAdapterRegistry, FakeCodexSpawner]:
     """A LocalAdapterRegistry holding one fake-backed CodexLocalAdapter.
 
     The adapter is built exactly like ``worker_client.build_registry``
-    builds it (same identity, same allowlist id), with the reviewed
+    builds it (same identity shape, same allowlist id), with the reviewed
     injectable seams (spawner, path lookup, discovery roots) replaced by
     deterministic fixtures.
     """
@@ -335,7 +161,7 @@ def make_codex_registry(
 
     spawner = FakeCodexSpawner(scenario, trace_path=str(trace_path))
     adapter = CodexLocalAdapter(
-        resource=codex_identity(resource_id),
+        resource=codex_identity(resource_id, model=model),
         state_dir=state_dir,
         discovery_roots=(),
         path_lookup=fixture_path_lookup,
@@ -520,7 +346,8 @@ def audit_payloads(data_dir: Path) -> list[str]:
 __all__ = [
     "ADAPTER_ID",
     "CLIENT_KEY",
-    "CODEX_CELL_VALUES",
+    "CODEX_CATALOG_EFFORTS",
+    "CODEX_CATALOG_MODEL",
     "PIN_MODEL",
     "PROMPT",
     "REPLY",
@@ -529,9 +356,6 @@ __all__ = [
     "PathShimWorld",
     "audit_payloads",
     "fixture_path_lookup",
-    "build_codex_capacity_snapshots",
-    "build_codex_catalog",
-    "build_codex_cells",
     "canonical_now",
     "codex_identity",
     "codex_resource_document",
@@ -542,5 +366,4 @@ __all__ = [
     "trace_methods",
     "trace_request",
     "worker_command",
-    "write_codex_catalog_document",
 ]
