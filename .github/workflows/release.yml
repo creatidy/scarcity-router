@@ -3,14 +3,33 @@
 # a second development-CI authority. Development CI runs on canonical Forgejo
 # (.forgejo/workflows/ci.yml); no pull-request CI exists here by design.
 #
-# Triggered solely by deliberate human-created SemVer release tags on stable
-# main. It fails closed unless every release invariant in
-# docs/release-engineering.md holds: strict SemVer tag, package version equal
-# to the tag (single source: scarcity_router/__init__.py), tagged commit
-# reachable from stable main, artifacts built from the exact tagged commit in
-# this same run, and artifacts passing `make package-check` before any
-# publication. It never publishes from a pull-request event, and all
-# publication identities are short-lived OIDC — no long-lived tokens.
+# Two run modes, one workflow:
+#
+#   1. MANUAL RELEASE-CANDIDATE PREFLIGHT (workflow_dispatch). Build and
+#      verify ONLY, from the exact ref the operator selects: Python
+#      artifacts, the Windows worker ZIP on a real Windows runner, the
+#      finalized bundle, SHA256SUMS and attestations. The candidate record
+#      (ref, SHA, package version) is printed; nothing is published, no tag
+#      is created, no release exists, and the strict tag/main/version
+#      release contract is NOT relaxed — it simply does not apply to a
+#      candidate run, which never claims to be a release.
+#
+#   2. REAL PUBLIC RELEASE (push of a deliberate SemVer tag vX.Y.Z on
+#      stable main). Fails closed unless every release invariant in
+#      docs/release-engineering.md holds: strict SemVer tag, package
+#      version equal to the tag (single source: scarcity_router/__init__.py),
+#      tagged commit reachable from stable main, artifacts built from the
+#      exact tagged commit in this same run, and artifacts passing
+#      `make package-check` before any publication. It never publishes from
+#      a pull-request event, and all publication identities are short-lived
+#      OIDC — no long-lived tokens.
+#
+# Publication ORDERING is fail-safe by construction: EVERY public artifact —
+# wheel, sdist AND the Windows worker ZIP — must build, pass verification and
+# be finalized into the attested release bundle BEFORE the GitHub Release is
+# created, and PyPI publication (irreversible for a given version) runs LAST,
+# strictly downstream of the GitHub Release. A Windows-build failure can
+# therefore never leave a half-published release behind.
 #
 # Artifact transfer is structurally separated into three stages: the
 # `pypi-packages` artifact carries only actual Python distributions
@@ -31,6 +50,7 @@ on:
   push:
     tags:
       - "v*.*.*"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -47,13 +67,19 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Check out the tagged commit with full history
+      - name: Check out the commit under run with full history
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
           persist-credentials: false
 
+      # Real public-release path only: the fail-closed invariants below run
+      # ONLY on the deliberate SemVer tag event. Invariants 4 and 5 are
+      # structural: every later job of this run checks out and builds
+      # exactly ${GITHUB_SHA}, and the artifacts must pass
+      # `make package-check` before any publish job starts.
       - name: Verify release invariants (fail closed)
+        if: github.event_name == 'push'
         run: |
           set -euo pipefail
           TAG="${GITHUB_REF_NAME}"
@@ -93,10 +119,38 @@ jobs:
             exit 1
           fi
 
-          # Invariants 4 and 5 are structural: every later job of this run
-          # checks out and builds exactly ${GITHUB_SHA}, and the artifacts
-          # must pass `make package-check` before any publish job starts.
           echo "release contract verified: tag ${TAG} == package ${PKG_VERSION} == commit ${TAG_COMMIT} on stable main"
+
+      # Manual release-candidate preflight path: record the exact candidate
+      # identity and refuse to pretend a dispatched run is a release. No
+      # tag, no release, no publication happens in this mode; the strict
+      # tag/main/version contract is unchanged for the real release path.
+      - name: Record release-candidate identity (build/verify only)
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          set -euo pipefail
+          case "${GITHUB_REF}" in
+            refs/tags/*)
+              echo "FAIL: manual dispatch must select a branch or commit ref, not a tag '${GITHUB_REF_NAME}'" >&2
+              exit 1
+              ;;
+          esac
+          CANDIDATE_SHA="$(git rev-parse HEAD)"
+          CANDIDATE_VERSION="$(python3 -c '
+          import pathlib
+          import re
+          text = pathlib.Path("scarcity_router/__init__.py").read_text(encoding="utf-8")
+          match = re.search(r"^__version__ = \"([^\"]+)\"$", text, re.MULTILINE)
+          if match is None:
+              raise SystemExit("FAIL: cannot read __version__ from scarcity_router/__init__.py")
+          print(match.group(1))
+          ')"
+          {
+            echo "RELEASE CANDIDATE (build/verify only — nothing is published)"
+            echo "ref:     ${GITHUB_REF} (${GITHUB_REF_NAME})"
+            echo "sha:     ${CANDIDATE_SHA}"
+            echo "version: ${CANDIDATE_VERSION}"
+          } | tee "$GITHUB_STEP_SUMMARY"
 
   build:
     name: build-and-verify-artifacts
@@ -110,7 +164,7 @@ jobs:
       id-token: write
       attestations: write
     steps:
-      - name: Check out the exact tagged commit
+      - name: Check out the exact commit under run
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
@@ -124,10 +178,10 @@ jobs:
       - name: Sync the repository-managed environment
         run: uv sync --only-dev
 
-      # Builds wheel + sdist from this checkout of the tagged commit, inspects
-      # contents and metadata, then smoke-installs the wheel into a throwaway
-      # uv tool environment (console scripts, packaged resources, MCP
-      # discovery, loopback REST healthz). Nothing is published here.
+      # Builds wheel + sdist from this checkout, inspects contents and
+      # metadata, then smoke-installs the wheel into a throwaway uv tool
+      # environment (console scripts, packaged resources, MCP discovery,
+      # loopback REST healthz). Nothing is published here.
       - name: Build, inspect and smoke-install the release artifacts
         run: make package-check
 
@@ -215,7 +269,7 @@ jobs:
       WINDOWS_CODE_SIGNING_PFX: ${{ secrets.WINDOWS_CODE_SIGNING_PFX }}
       WINDOWS_CODE_SIGNING_PASSWORD: ${{ secrets.WINDOWS_CODE_SIGNING_PASSWORD }}
     steps:
-      - name: Check out the exact tagged commit
+      - name: Check out the exact commit under run
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
@@ -318,8 +372,8 @@ jobs:
           # SHA256SUMS covers every public release payload that needs
           # checksum verification: the wheel, the sdist and the worker
           # zip. SHA256SUMS does not hash itself; verify a downloaded
-          # release with `sha256sum -c SHA256SUMS` in the directory
-          # holding the assets. The verification below fails the job if
+          # release with `sha256sum -c SHA256SUMS` in the directory holding
+          # the assets. The verification below fails the job if
           # ANY entry does not match the file actually present.
           sha256sum scarcity-worker-*-windows-x64.zip >> SHA256SUMS
           sha256sum -c SHA256SUMS
@@ -376,6 +430,9 @@ jobs:
   publish-github-release:
     name: publish-github-release
     needs: [finalize-release-bundle]
+    # Publication runs ONLY on the deliberate SemVer tag event; a manual
+    # release-candidate preflight stops after finalization and attests.
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -405,13 +462,18 @@ jobs:
 
   publish-pypi:
     name: publish-pypi
-    needs: build
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # IRREVERSIBLE step, therefore LAST: PyPI publication runs only after
+    # the Windows worker ZIP has built, the release bundle has been
+    # finalized and verified, and the GitHub Release has been created — a
+    # partial public release can never happen.
+    needs: [publish-github-release]
     # External gate (owner action, docs/release-engineering.md): the PyPI
     # project must list this repository/workflow/environment as a Trusted
     # Publisher, and the `pypi` environment should carry required reviewers.
     # Until configured, PyPI rejects the OIDC claim and this job fails closed.
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     environment: pypi
     permissions:
       id-token: write # PyPI Trusted Publishing (OIDC); no API token exists

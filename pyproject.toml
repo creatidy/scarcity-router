@@ -79,6 +79,7 @@ dev = [
     # M10 (issue #95): test-only real-TLS acceptance certificates. Never a
     # runtime dependency; the product code paths create only verified,
     # default TLS contexts.
+    "pyyaml>=6,<7",
     "trustme>=1,<2",
 ]
 

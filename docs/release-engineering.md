@@ -197,16 +197,55 @@ after that is the workflow's job — or a fail-closed refusal.
 
 **Implemented now**; activation requires the owner actions below.
 
-`.github/workflows/release.yml` on the GitHub mirror, six jobs:
+`.github/workflows/release.yml` on the GitHub mirror supports exactly two
+run modes in one workflow:
+
+- **Real public release** — a deliberate `vX.Y.Z` tag push on stable `main`
+  (the only publishing mode);
+- **Manual release-candidate preflight** — `workflow_dispatch` from a
+  selected branch/commit: it builds and verifies EVERY public artifact
+  (wheel, sdist, the Windows worker ZIP on a real Windows runner, the
+  finalized attested bundle, `SHA256SUMS`) and records the candidate
+  identity (ref, exact SHA, package version) — and publishes NOTHING: no
+  PyPI upload, no GitHub Release, no tag, no push. The first real execution
+  of the Windows build therefore never has to be the irreversible release
+  run. The strict tag/main/version contract is not relaxed for candidates;
+  it simply does not apply to a run that never claims to be a release (a
+  dispatched run from a tag ref is refused).
+
+Publication ORDERING is fail-safe by construction — every public artifact,
+including the Windows ZIP, is built, verified and finalized into the
+attested bundle BEFORE the GitHub Release is created, and the irreversible
+PyPI publication runs strictly LAST:
+
+```text
+verify-release-contract        (tag invariants | candidate identity)
+        |                   |
+        v                   v
+      build       build-windows-worker
+        \                   /
+         \                 /
+          v               v
+          finalize-release-bundle
+                    |
+                    v
+          publish-github-release        (tag event only)
+                    |
+                    v
+              publish-pypi               (tag event only)
+```
+
+Both publishing jobs carry `if: github.event_name == 'push'`, so a manual
+candidate run stops after finalization and attestation. Six jobs:
 
 | Job | Needs | Permissions | Does |
 | --- | --- | --- | --- |
-| `verify` | — | `contents: read` | checks out the tag with full history and enforces invariants 1–3 |
-| `build` | verify | `contents: read`, `id-token: write`, `attestations: write` | builds and smoke-installs the artifacts from the exact tagged commit (`make package-check`), writes the PARTIAL `SHA256SUMS` (wheel and sdist entries), verifies the payload set, attests the wheel and the sdist (artifacts whose bytes are final at this stage), and uploads two structurally separated artifacts: `pypi-packages` (only `*.whl`/`*.tar.gz`) and `release-bundle` (distributions plus the partial `SHA256SUMS`) |
-| `build-windows-worker` | build | `contents: read` | on a Windows runner, from the exact tagged commit: builds the one-dir PyInstaller worker (`packaging/windows/worker.spec`, a committed source file), stages `scarcity-worker-X.Y.Z-windows-x64.zip` and uploads the `windows-worker` artifact. The MSIX direction is a fail-closed seam behind the owner's signing secret (`EXTERNAL_RELEASE_GATE: WINDOWS_CODE_SIGNING`) |
+| `verify` | — | `contents: read` | tag event: checks out the tag with full history and enforces invariants 1–3; dispatch: records the candidate identity (ref, SHA, version) and refuses a tag ref |
+| `build` | verify | `contents: read`, `id-token: write`, `attestations: write` | builds and smoke-installs the artifacts from the exact commit under run (`make package-check`), writes the PARTIAL `SHA256SUMS` (wheel and sdist entries), verifies the payload set, attests the wheel and the sdist (artifacts whose bytes are final at this stage), and uploads two structurally separated artifacts: `pypi-packages` (only `*.whl`/`*.tar.gz`) and `release-bundle` (distributions plus the partial `SHA256SUMS`) |
+| `build-windows-worker` | build | `contents: read` | on a Windows runner, from the exact commit under run: builds the one-dir PyInstaller worker (`packaging/windows/worker.spec`, a committed source file), stages `scarcity-worker-X.Y.Z-windows-x64.zip` and uploads the `windows-worker` artifact. The MSIX direction is a fail-closed seam behind the owner's signing secret (`EXTERNAL_RELEASE_GATE: WINDOWS_CODE_SIGNING`) |
 | `finalize-release-bundle` | build, build-windows-worker | `contents: read`, `id-token: write`, `attestations: write` | the only stage that knows every public payload: completes `SHA256SUMS` (the worker zip entry joins the wheel and the sdist), verifies every entry against the actual bytes (`sha256sum -c`), enforces the exact final asset set, attests the worker zip and the FINAL `SHA256SUMS`, and uploads `release-bundle-final` — the exact asset set the GitHub Release attaches |
-| `publish-github-release` | finalize-release-bundle | `contents: write` | downloads `release-bundle-final` and creates the GitHub Release, attaching the wheel, the sdist, the worker zip and `SHA256SUMS` through an explicit asset list |
-| `publish-pypi` | build | `id-token: write` (environment `pypi`) | downloads `pypi-packages`, re-verifies with a guard step that the directory contains only `*.whl`/`*.tar.gz`, and publishes exactly those distributions to PyPI via Trusted Publishing (OIDC) |
+| `publish-github-release` | finalize-release-bundle | `contents: write` | tag event ONLY: downloads `release-bundle-final` and creates the GitHub Release, attaching the wheel, the sdist, the worker zip and `SHA256SUMS` through an explicit asset list |
+| `publish-pypi` | publish-github-release | `id-token: write` (environment `pypi`) | tag event ONLY, and strictly LAST: downloads `pypi-packages`, re-verifies with a guard step that the directory contains only `*.whl`/`*.tar.gz`, and publishes exactly those distributions to PyPI via Trusted Publishing (OIDC). Because it is downstream of `publish-github-release`, the Windows ZIP, the finalized checksums and the GitHub Release must all exist before anything reaches PyPI — a Windows-build failure can never leave a half-published release behind |
 
 Every action is pinned to a full commit SHA with its version in a comment.
 The only credentials used are the run's own short-lived GitHub token and
@@ -369,4 +408,9 @@ make package-check
 Workflow YAML is not executable locally; changes to either workflow must be
 checked with a deterministic parser/linter (for example `actionlint` for the
 GitHub workflow) and the triggers, permissions and job graph re-read
-manually, as done for issue #97.
+manually, as done for issue #97. The release graph, event gates and
+publication ordering are additionally pinned by the structural suite
+`tests/test_release_workflow.py` (runs in the normal gate; parses the
+workflow YAML and fails on any change that could let a candidate run
+publish, a PR event publish, or PyPI publish before the finalized bundle
+and the GitHub Release).
