@@ -312,19 +312,27 @@ class CodexComposedTlsWorld(WorkerWorld):
         *,
         label: str = "m10b-codex",
         model: str = CODEX_CATALOG_MODEL,
+        resource_id: str = RESOURCE_ID,
     ) -> CodexWorker:
         """Pair one worker and arm it with the fake-backed Codex adapter.
 
         The worker is REAL (protocol, pairing, state reports, dispatch);
         the Codex adapter's reviewed injectable seams (spawner, path
-        lookup) carry the deterministic fake backend.
+        lookup) carry the deterministic fake backend. ``resource_id``
+        names the resource the worker's own adapter claims (distinct
+        workers may each own a resource for the SAME physical model,
+        D-042).
         """
         store = self.open_worker_store("codex")
         adapter_tmp = Path(tempfile.mkdtemp(prefix="scarcity-router-m10b-adapter-"))
         self.addCleanup(lambda: _rmtree(adapter_tmp))
         trace_path = adapter_tmp / "trace.jsonl"
         registry, spawner = make_codex_registry(
-            scenario, state_dir=adapter_tmp, trace_path=trace_path, model=model
+            scenario,
+            state_dir=adapter_tmp,
+            trace_path=trace_path,
+            model=model,
+            resource_id=resource_id,
         )
         status, payload = self.admin_post(
             "/control/workers/pairing-codes", {"label": label}
@@ -673,6 +681,152 @@ class CodexCompositionTests(CodexComposedTlsWorld):
         )
         self.assertEqual(200, status, payload)
         worker.stop()
+
+
+# ── Matrix canonicalization: two resources, one physical model (D-042) ─────────
+
+
+SECOND_CODEX_RESOURCE_ID = "codex-e2e-b"
+
+
+def _second_codex_resource_document(worker_id: str) -> dict[str, object]:
+    """The second Codex resource: SAME physical model, different owner."""
+    document = codex_resource_document(worker_id)
+    registration = cast("dict[str, object]", document["registration"])
+    identity = cast("dict[str, object]", registration["identity"])
+    identity["resource_id"] = SECOND_CODEX_RESOURCE_ID
+    return document
+
+
+def _pin_body_for(resource_id: str, **extra: object) -> dict[str, object]:
+    body: dict[str, object] = {
+        "model": f"sr-pin:{resource_id}/openai/{CODEX_CATALOG_MODEL}/high",
+        "messages": [{"role": "user", "content": PROMPT}],
+    }
+    body.update(extra)
+    return body
+
+
+class TwoCodexResourcesSamePhysicalModelTests(CodexComposedTlsWorld):
+    """D-042 through the composed server: two resources, ONE backend.
+
+    Two workers each own a configured resource, and both resources
+    represent the SAME physical model (``openai``/``gpt-5.6-sol``). The
+    D-043 matrix is keyed by the frozen backend key — never
+    ``resource_id`` — so the composition canonicalizes the per-resource
+    emission into ONE set of reviewed M06 cells, a real ``RouteRequest``
+    accepts the matrix (no duplicate-cell rejection), and routing stays
+    resource-distinct (each pin reaches only its owning worker).
+    """
+
+    def _configure_two_resources(self) -> tuple[CodexWorker, CodexWorker]:
+        worker_a = self.start_codex_worker(chatgpt_scenario(), label="codex-a")
+        worker_b = self.start_codex_worker(
+            chatgpt_scenario(),
+            label="codex-b",
+            resource_id=SECOND_CODEX_RESOURCE_ID,
+        )
+        self.assertNotEqual(worker_a.worker_id, worker_b.worker_id)
+        self.configure_codex_resource(worker_a.worker_id)
+        status, payload = self.admin_post(
+            "/control/resources",
+            _second_codex_resource_document(worker_b.worker_id),
+        )
+        assert status == 200, payload
+        return worker_a, worker_b
+
+    def application_cells(self) -> tuple[CompatibilityCell, ...]:
+        return self.plane.current_application().compatibility_cells
+
+    def test_matrix_holds_exactly_one_cell_set_per_backend_key(self) -> None:
+        _worker_a, _worker_b = self._configure_two_resources()
+        cells = self.application_cells()
+        keys = [
+            (cell.channel, cell.provider, cell.model, cell.variant, cell.feature)
+            for cell in cells
+        ]
+        self.assertEqual(
+            len(keys), len(set(keys)), "duplicate cell for one frozen D-043 key"
+        )
+        # The two Codex resources contribute exactly ONE reviewed M06 set.
+        codex_cells = [
+            cell
+            for cell in cells
+            if (cell.channel, cell.provider, cell.model)
+            == ("worker_bridged", "openai", CODEX_CATALOG_MODEL)
+        ]
+        self.assertEqual(len(CODEX_WORKER_CELL_VALUES), len(codex_cells))
+        self.assertEqual(
+            {
+                feature: value
+                for feature, (value, _note) in CODEX_WORKER_CELL_VALUES.items()
+            },
+            {cell.feature: cell.value for cell in codex_cells},
+        )
+
+    def test_a_real_route_request_accepts_the_deduplicated_matrix(self) -> None:
+        """The coordinator's RouteRequest takes the composed matrix as-is.
+
+        With duplicate cells for one frozen key this dispatch dies INSIDE
+        RouteRequest validation (the duplicate-cell rejection surfaces as
+        an ``invalid_state`` 500); with the canonicalized matrix the
+        pinned execution serves end to end.
+        """
+        worker_a, worker_b = self._configure_two_resources()
+        worker_a.start()
+        worker_b.start()
+        try:
+            _ = self.wait_for_observation(RESOURCE_ID)
+            _ = self.wait_for_observation(SECOND_CODEX_RESOURCE_ID)
+            status, payload, _headers = self.exchange(
+                "POST",
+                "/v1/chat/completions",
+                _pin_body_for(RESOURCE_ID),
+                headers={"Authorization": f"Bearer {self.client_key}"},
+                timeout=60,
+            )
+            self.assertEqual(200, status, payload)
+            self.assertIn("turn/start", trace_methods(worker_a.trace_path))
+        finally:
+            worker_a.stop()
+            worker_b.stop()
+
+    def test_both_resources_stay_independent_routing_targets(self) -> None:
+        """Dedup never collapses resources: each pin reaches its owner."""
+        worker_a, worker_b = self._configure_two_resources()
+        worker_a.start()
+        worker_b.start()
+        try:
+            _ = self.wait_for_observation(RESOURCE_ID)
+            _ = self.wait_for_observation(SECOND_CODEX_RESOURCE_ID)
+            status, payload, _headers = self.exchange(
+                "POST",
+                "/v1/chat/completions",
+                _pin_body_for(RESOURCE_ID),
+                headers={"Authorization": f"Bearer {self.client_key}"},
+                timeout=60,
+            )
+            self.assertEqual(200, status, payload)
+            status, payload, _headers = self.exchange(
+                "POST",
+                "/v1/chat/completions",
+                _pin_body_for(SECOND_CODEX_RESOURCE_ID),
+                headers={"Authorization": f"Bearer {self.client_key}"},
+                timeout=60,
+            )
+            self.assertEqual(200, status, payload)
+            # Exactly one turn per worker — ownership stayed configured:
+            # worker B served B's resource, never A's, and vice versa.
+            self.assertEqual(1, trace_methods(worker_a.trace_path).count("turn/start"))
+            self.assertEqual(1, trace_methods(worker_b.trace_path).count("turn/start"))
+            turn_a = trace_request(worker_a.trace_path, "turn/start")
+            turn_b = trace_request(worker_b.trace_path, "turn/start")
+            assert turn_a is not None and turn_b is not None
+            self.assertEqual(CODEX_CATALOG_MODEL, turn_a.get("model"))
+            self.assertEqual(CODEX_CATALOG_MODEL, turn_b.get("model"))
+        finally:
+            worker_a.stop()
+            worker_b.stop()
 
 
 # ── Blocker 1: physical model identity end to end ─────────────────────────────

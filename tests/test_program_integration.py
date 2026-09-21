@@ -38,6 +38,7 @@ from typing import cast, override
 
 from scarcity_router.control_api import ControlPlane, GenerationTester
 from scarcity_router.control_server import build_parser as build_server_parser
+from scarcity_router.codex_worker_evidence import CODEX_WORKER_CELL_VALUES
 from scarcity_router.gateway_adapters import (
     AdapterCall,
     AdapterMessage,
@@ -47,11 +48,14 @@ from scarcity_router.gateway_adapters import (
 from scarcity_router.resource_state import (
     ResourceHealth,
     ResourceIdentity,
+    ResourceRegistration,
     ResourceStateSnapshot,
 )
+from scarcity_router.routing_core import CompatibilityCell
 from scarcity_router.server_composition import (
     CompositionError,
     build_adapter_registry,
+    build_compatibility_cells,
     build_resource_bindings,
     validate_execution_configuration,
 )
@@ -558,6 +562,89 @@ class CompositionFromConfigurationTests(ServerHarness):
             (), self.plane.current_application().adapters.registered_channels()
         )
 
+    def test_conflicting_matrix_evidence_is_rejected_at_save(self) -> None:
+        """Conflicting evidence for one frozen D-043 key fails closed.
+
+        Two server-direct resources representing the SAME physical model
+        (openai/gpt-5.6-sol) through two DIFFERENT presets (evidenced vs
+        generic) assert incompatible values for the same matrix key. The
+        save is rejected with the typed composition error — naming the
+        key, choosing no winner — and nothing is half-applied: the live
+        configuration, the composed matrix and the durable store all keep
+        the previously good state, so unrelated saves still succeed.
+        """
+        self.onboard()
+        for provider_document in (
+            {
+                "provider_id": "openai-http",
+                "adapter_id": "openai-api",
+                "base_url": "https://api.openai.com",
+                "secret": FAKE_PROVIDER_SECRET,
+            },
+            {
+                "provider_id": "generic-http",
+                "adapter_id": "generic-openai",
+                "base_url": "https://relay.example.internal",
+                "secret": FAKE_PROVIDER_SECRET,
+            },
+        ):
+            status, payload = self.admin_post(
+                "/control/providers", provider_document
+            )
+            self.assertEqual(200, status, payload)
+        status, payload = self.admin_post(
+            "/control/resources",
+            _zai_resource_document(
+                resource_id="sol-evidenced",
+                provider="openai",
+                model="gpt-5.6-sol",
+                endpoint_id="openai-http",
+            ),
+        )
+        self.assertEqual(200, status, payload)
+        status, payload = self.admin_post(
+            "/control/resources",
+            _zai_resource_document(
+                resource_id="sol-generic",
+                provider="openai",
+                model="gpt-5.6-sol",
+                endpoint_id="generic-http",
+            ),
+        )
+        self.assertEqual(400, status)
+        message = str(cast("dict[str, object]", payload)["error"])
+        self.assertIn("conflicting compatibility evidence", message)
+        self.assertIn("server_direct_http", message)
+        self.assertIn("gpt-5.6-sol", message)
+        # Fail closed WITHOUT half-applying: the rejected resource is in
+        # neither the live configuration nor the composed matrix, and the
+        # legitimate resource's evidenced cells still serve unchanged.
+        self.assertIsNone(self.plane.configuration.resource_by_id("sol-generic"))
+        application_cells = self.plane.current_application().compatibility_cells
+        application_keys = [
+            (cell.channel, cell.provider, cell.model, cell.variant, cell.feature)
+            for cell in application_cells
+        ]
+        self.assertEqual(len(application_keys), len(set(application_keys)))
+        streaming = next(
+            cell
+            for cell in application_cells
+            if (cell.channel, cell.provider, cell.model, cell.feature)
+            == ("server_direct_http", "openai", "gpt-5.6-sol", "streaming")
+        )
+        self.assertEqual("PASS", streaming.value)
+        # No poisoned state: an unrelated save still succeeds.
+        status, payload = self.admin_post(
+            "/control/providers",
+            {
+                "provider_id": "other-http",
+                "adapter_id": "openai-api",
+                "base_url": "https://api.other.example",
+                "secret": FAKE_PROVIDER_SECRET,
+            },
+        )
+        self.assertEqual(200, status, payload)
+
 
 def _pair_over_inprocess_endpoint(plane: ControlPlane, code: str) -> str:
     import threading
@@ -1043,6 +1130,272 @@ def _registration(resource_id: str):  # type: ignore[no-untyped-def]
         ),
         freshness_ttl_seconds=3600,
     )
+
+
+# ── Matrix canonicalization at composition (D-042/D-043) ─────────────────────
+
+
+def _identity_registration(
+    resource_id: str,
+    *,
+    channel: str,
+    provider: str,
+    model: str,
+    entitlement: str,
+) -> ResourceRegistration:
+    return ResourceRegistration(
+        identity=ResourceIdentity(
+            resource_id=resource_id,
+            channel=channel,
+            provider=provider,
+            model=model,
+            entitlement=entitlement,
+        ),
+        freshness_ttl_seconds=3600,
+    )
+
+
+def _codex_resource(
+    resource_id: str,
+    worker_id: str,
+    *,
+    model: str = "gpt-5.6-sol",
+) -> ResourceConfig:
+    """One configured Codex resource for the given physical model."""
+    return ResourceConfig(
+        registration=_identity_registration(
+            resource_id,
+            channel="worker_bridged",
+            provider="openai",
+            model=model,
+            entitlement="subscription_included",
+        ),
+        worker_id=worker_id,
+        local_adapter_id="codex",
+    )
+
+
+def _server_direct_resource(
+    resource_id: str,
+    endpoint_id: str,
+    *,
+    provider: str = "zai",
+    model: str = "glm-5.3",
+) -> ResourceConfig:
+    return ResourceConfig(
+        registration=_identity_registration(
+            resource_id,
+            channel="server_direct_http",
+            provider=provider,
+            model=model,
+            entitlement="subscription_included",
+        ),
+        endpoint_id=endpoint_id,
+    )
+
+
+def _frozen_keys(
+    cells: tuple[CompatibilityCell, ...],
+) -> list[tuple[str, str, str, str | None, str]]:
+    return [
+        (cell.channel, cell.provider, cell.model, cell.variant, cell.feature)
+        for cell in cells
+    ]
+
+
+class CompatibilityMatrixCanonicalizationTests(unittest.TestCase):
+    """The composed matrix is canonicalized onto the frozen D-043 key.
+
+    The key is ``(channel, provider, model, variant, feature)`` — never
+    ``resource_id`` — because multiple resources may execute the same
+    physical model, differing in worker/entitlement/pool/availability
+    (D-042). Per-resource emission is therefore folded onto one cell per
+    key: identical evidence merges silently, conflicting evidence fails
+    closed, and distinct backends stay distinct.
+    """
+
+    def _cells(
+        self,
+        configuration: ServerConfiguration,
+    ) -> tuple[CompatibilityCell, ...]:
+        return build_compatibility_cells(
+            configuration, provider_secret_reader=lambda _provider_id: "SYNTHETIC"
+        )
+
+    def test_two_codex_resources_same_physical_model_emit_one_cell_set(self) -> None:
+        single = self._cells(
+            ServerConfiguration(resources=(_codex_resource("codex-a", "w1"),))
+        )
+        both = self._cells(
+            ServerConfiguration(
+                resources=(
+                    _codex_resource("codex-a", "w1"),
+                    _codex_resource("codex-b", "w2"),
+                )
+            )
+        )
+        # One set of reviewed M06 cells for the shared physical model:
+        # the second resource adds nothing (silent merge of identical
+        # evidence), and no key is duplicated.
+        self.assertEqual(single, both)
+        keys = _frozen_keys(both)
+        self.assertEqual(len(keys), len(set(keys)))
+        self.assertEqual(len(CODEX_WORKER_CELL_VALUES), len(both))
+        self.assertEqual(
+            {feature: value for feature, (value, _note) in CODEX_WORKER_CELL_VALUES.items()},
+            {cell.feature: cell.value for cell in both},
+        )
+
+    def test_two_server_direct_resources_same_preset_deduplicate(self) -> None:
+        single = self._cells(
+            ServerConfiguration(
+                providers=(
+                    ProviderEndpointConfig(
+                        provider_id="zai-http",
+                        adapter_id="zai-coding-plan",
+                        base_url="https://api.z.ai",
+                    ),
+                ),
+                resources=(_server_direct_resource("zai-plan-1", "zai-http"),),
+            )
+        )
+        both = self._cells(
+            ServerConfiguration(
+                providers=(
+                    ProviderEndpointConfig(
+                        provider_id="zai-http",
+                        adapter_id="zai-coding-plan",
+                        base_url="https://api.z.ai",
+                    ),
+                ),
+                resources=(
+                    _server_direct_resource("zai-plan-1", "zai-http"),
+                    _server_direct_resource("zai-plan-2", "zai-http"),
+                ),
+            )
+        )
+        self.assertEqual(single, both)
+        keys = _frozen_keys(both)
+        self.assertEqual(len(keys), len(set(keys)))
+        # Deterministic canonical order: sorted by the key tuple with an
+        # absent variant first — the routing core's own ordering.
+        self.assertEqual(
+            keys,
+            sorted(keys, key=lambda parts: (parts[0], parts[1], parts[2], parts[3] or "", parts[4])),
+        )
+
+    def test_conflicting_evidence_for_one_key_fails_closed(self) -> None:
+        """Evidenced vs generic preset for the same backend: no winner."""
+        configuration = ServerConfiguration(
+            providers=(
+                ProviderEndpointConfig(
+                    provider_id="openai-http",
+                    adapter_id="openai-api",
+                    base_url="https://api.openai.com",
+                ),
+                ProviderEndpointConfig(
+                    provider_id="generic-http",
+                    adapter_id="generic-openai",
+                    base_url="https://relay.example.internal",
+                ),
+            ),
+            resources=(
+                _server_direct_resource(
+                    "sol-evidenced",
+                    "openai-http",
+                    provider="openai",
+                    model="gpt-5.6-sol",
+                ),
+                _server_direct_resource(
+                    "sol-generic",
+                    "generic-http",
+                    provider="openai",
+                    model="gpt-5.6-sol",
+                ),
+            ),
+        )
+        with self.assertRaises(CompositionError) as caught:
+            _ = self._cells(configuration)
+        message = str(caught.exception)
+        self.assertIn("conflicting compatibility evidence", message)
+        # The error names the frozen key that cannot be represented.
+        self.assertIn("server_direct_http", message)
+        self.assertIn("openai", message)
+        self.assertIn("gpt-5.6-sol", message)
+
+    def test_distinct_backends_compose_cleanly_together(self) -> None:
+        configuration = ServerConfiguration(
+            providers=(
+                ProviderEndpointConfig(
+                    provider_id="zai-http",
+                    adapter_id="zai-coding-plan",
+                    base_url="https://api.z.ai",
+                ),
+                ProviderEndpointConfig(
+                    provider_id="openai-http",
+                    adapter_id="openai-api",
+                    base_url="https://api.openai.com",
+                ),
+            ),
+            resources=(
+                _server_direct_resource("sol-1", "openai-http", provider="openai", model="gpt-5.6-sol"),
+                _server_direct_resource("z1", "zai-http"),
+            ),
+        )
+        # Distinct providers and models compose cleanly together.
+        keys = _frozen_keys(self._cells(configuration))
+        self.assertEqual(len(keys), len(set(keys)))
+
+    def test_different_physical_models_stay_separate(self) -> None:
+        both = self._cells(
+            ServerConfiguration(
+                resources=(
+                    _codex_resource("codex-sol", "w1", model="gpt-5.6-sol"),
+                    _codex_resource("codex-luna", "w2", model="gpt-5.6-luna"),
+                )
+            )
+        )
+        # No over-merging: each physical model keeps its full cell set.
+        self.assertEqual(2 * len(CODEX_WORKER_CELL_VALUES), len(both))
+        keys = _frozen_keys(both)
+        self.assertEqual(len(keys), len(set(keys)))
+        models = {model for (_ch, _p, model, _v, _f) in keys}
+        self.assertEqual({"gpt-5.6-sol", "gpt-5.6-luna"}, models)
+
+    def test_different_channels_stay_separate(self) -> None:
+        configuration = ServerConfiguration(
+            providers=(
+                ProviderEndpointConfig(
+                    provider_id="openai-http",
+                    adapter_id="openai-api",
+                    base_url="https://api.openai.com",
+                ),
+            ),
+            resources=(
+                _codex_resource("codex-sol", "w1"),
+                _server_direct_resource(
+                    "sol-direct",
+                    "openai-http",
+                    provider="openai",
+                    model="gpt-5.6-sol",
+                ),
+            ),
+        )
+        cells = self._cells(configuration)
+        keys = _frozen_keys(cells)
+        self.assertEqual(len(keys), len(set(keys)))
+        self.assertEqual(
+            {"worker_bridged", "server_direct_http"},
+            {channel for (channel, _p, _m, _v, _f) in keys},
+        )
+        # Both channels carry cells for the same (provider, model): the
+        # channel dimension, not the resource, separates them.
+        self.assertIn(
+            ("worker_bridged", "openai", "gpt-5.6-sol", None, "streaming"), keys
+        )
+        self.assertIn(
+            ("server_direct_http", "openai", "gpt-5.6-sol", None, "streaming"), keys
+        )
 
 
 if __name__ == "__main__":
