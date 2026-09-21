@@ -17,9 +17,14 @@
 #
 # 2. LAN / VPN EXPOSURE (any host). Any non-loopback bind REQUIRES
 #    verified TLS (D-044); the server refuses to start otherwise. Mount
-#    your certificate and key read-only and bind 0.0.0.0:
-#      volumes: add ./tls/server.crt:/certs/server.crt:ro and
-#               ./tls/server.key:/certs/server.key:ro
+#    your certificate, key and CA certificate read-only and bind 0.0.0.0:
+#      volumes: add ./tls/server.crt:/certs/server.crt:ro,
+#               ./tls/server.key:/certs/server.key:ro and
+#               ./tls/ca.crt:/certs/ca.crt:ro
+#      environment: set SR_HEALTHCHECK_URL=https://127.0.0.1:8787/healthz
+#               and SR_HEALTHCHECK_CA=/certs/ca.crt so the baked HEALTHCHECK
+#               probes over verified TLS (otherwise it probes plaintext and
+#               a correctly serving TLS deployment reports unhealthy)
 #      command: --host 0.0.0.0 --port 8787 --data-dir /data
 #               --tls-certfile /certs/server.crt --tls-keyfile /certs/server.key
 #               --worker-listen-port 8790 --worker-listen-host 0.0.0.0
