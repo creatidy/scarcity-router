@@ -22,12 +22,16 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from .codex_worker_evidence import default_codex_worker_cells
 from .gateway_adapters import AdapterRegistry
 from .providers.http_origin import ProviderCredential, ProviderOrigin
 from .providers.openai_http_adapter import OpenAICompatibleHttpAdapter, ResourceBinding
+from .providers.openai_http_evidence import default_cells_for
 from .providers.openai_http_presets import preset_by_id
+from .routing_core import CompatibilityCell
 from .server_config import ProviderEndpointConfig, ServerConfiguration
 from .worker_bridged_adapter import WorkerBridgedAdapter
+from .worker_codex_adapter import CODEX_ADAPTER_ID
 from .worker_endpoint import WorkerEndpoint
 
 #: The server-direct channel's adapter id family (M04 presets). A provider
@@ -191,3 +195,65 @@ def build_adapter_registry(
             )
         )
     return registry
+
+
+def build_compatibility_cells(
+    configuration: ServerConfiguration,
+    *,
+    provider_secret_reader: ProviderSecretReader,
+) -> tuple[CompatibilityCell, ...]:
+    """Build the production compatibility matrix from administrator
+    configuration and the existing evidence modules.
+
+    Exactly the resources the adapter registry can actually serve get
+    cells — no more, no less:
+
+    - every ``server_direct_http`` resource with a resolvable binding
+      (the SAME binding set :func:`build_resource_bindings` produces)
+      receives the M04 preset's evidenced default cells
+      (:func:`~scarcity_router.providers.openai_http_evidence.default_cells_for`)
+      keyed to the resource's ``(provider, model)`` — no duplicated
+      tables, and the un-evidenced ``generic`` preset stays all-UNKNOWN;
+    - every ``worker_bridged`` resource the composition would dispatch
+      to the Codex worker-local adapter (``worker_id`` AND
+      ``local_adapter_id == "codex"`` configured, provider ``openai``)
+      receives the reviewed M06 evidence cells
+      (:func:`~scarcity_router.codex_worker_evidence.default_codex_worker_cells`)
+      keyed to that resource's physical model slug.
+
+    Cells are configuration-derived statics: nothing here derives
+    support at runtime or from request content, and nothing elevates a
+    cell above the built-in evidence (administrator narrowing/elevation
+    remains issue #106 territory). The tuple is rebuilt whenever the
+    application is re-composed from configuration, so a configuration
+    change replaces the matrix wholesale.
+    """
+    bindings = build_resource_bindings(
+        configuration, provider_secret_reader=provider_secret_reader
+    )
+    cells: list[CompatibilityCell] = []
+    for resource in configuration.resources:
+        identity = resource.registration.identity
+        binding = bindings.get(identity.resource_id)
+        if binding is not None:
+            cells.extend(
+                default_cells_for(
+                    binding.preset, provider=identity.provider, model=identity.model
+                )
+            )
+            continue
+        if identity.channel != "worker_bridged":
+            continue
+        if resource.worker_id is None or resource.local_adapter_id != CODEX_ADAPTER_ID:
+            continue
+        if identity.provider != "openai":
+            # The Codex adapter's reviewed evidence speaks only for the
+            # OpenAI provider; anything else simply gets no cells (fail
+            # closed) — evidence is never transplanted.
+            continue
+        cells.extend(
+            default_codex_worker_cells(
+                provider=identity.provider, model=identity.model
+            )
+        )
+    return tuple(cells)

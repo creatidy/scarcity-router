@@ -120,6 +120,7 @@ from .selection_app import (
 )
 from .server_composition import (
     build_adapter_registry,
+    build_compatibility_cells,
     validate_execution_configuration,
 )
 from .server_config import (
@@ -1833,12 +1834,14 @@ class ControlPlane:
         loader, enabled resources are (re-)registered, observations for
         still-registered resources are re-applied, both authorization
         layers plus the client-key directory come from the authoritative
-        configuration, and the execution adapters are composed from that
-        same configuration through
+        configuration, and the execution adapters AND the compatibility
+        matrix are composed from that same configuration through
         :mod:`scarcity_router.server_composition` (M04 HTTP adapter from
-        provider endpoints plus store-held credentials; M05 worker-bridged
-        adapter from resource→worker bindings). No selection or routing
-        logic exists here.
+        provider endpoints plus store-held credentials, with each bound
+        resource's evidenced preset cells; M05 worker-bridged adapter
+        from resource→worker bindings, with the reviewed M06 Codex
+        evidence cells keyed to each Codex resource's physical model). No
+        selection or routing logic exists here.
         """
         catalog, profiles, profile_policy_version = load_configured_artifacts(
             self._catalog_path, self._model_policy_path
@@ -1864,7 +1867,10 @@ class ControlPlane:
             policy=policy,
             registry=registry,
             capacity_source=self._capacity_source,
-            compatibility_cells=(),
+            compatibility_cells=build_compatibility_cells(
+                self._config,
+                provider_secret_reader=self._store.get_provider_secret,
+            ),
             admin_constraints=self._config.admin_constraints,
             aliases=RoutingAliasTable(dict(self._config.aliases)),
             adapters=self._adapters,
