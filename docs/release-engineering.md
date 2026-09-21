@@ -296,20 +296,33 @@ actual release is a separate, human decision.
 
 ### Configured externally (owner gates before the first release)
 
-1. **Forgejo runner** with the `ubuntu-latest` label satisfying the runner
+1. **GitHub Actions enablement on the mirror** (verified missing
+   2026-09-21: the Actions API lists zero registered workflows even
+   though `release.yml` is on `develop` and Actions reads `enabled`).
+   Open <https://github.com/creatidy/scarcity-router/actions> once with
+   the owner account and enable workflows; until then neither the
+   candidate preflight nor a tag can start the release pipeline
+   (dispatch API answers 404). One-time, repository-level.
+2. **Forgejo runner** with the `ubuntu-latest` label satisfying the runner
    boundary above.
-2. **`develop` branch protection** requiring the `check` status (exact
+3. **`develop` branch protection** requiring the `check` status (exact
    setting above).
-3. **PyPI project** `scarcity-router` registered, with a **Trusted
+4. **PyPI project** `scarcity-router` registered, with a **Trusted
    Publisher** entry: owner `creatidy`, repository `scarcity-router`,
    workflow `release.yml`, environment `pypi`. This lives on PyPI and cannot
    be represented in Git.
-4. **GitHub `pypi` environment** with required reviewers, so the OIDC
-   publication is also human-gated at release time.
+5. **GitHub `pypi` environment** with required reviewers, so the OIDC
+   publication is also human-gated at release time (verified absent
+   2026-09-21: the repository currently defines zero environments —
+   pre-create `pypi` BEFORE the first release, otherwise the first
+   tag run auto-creates it without reviewers).
 
-Until 3 is configured, `publish-pypi` fails closed: PyPI rejects the OIDC
-claim, nothing is uploaded, and the GitHub Release job is unaffected. That is
-the designed behavior, not an error to work around.
+Until 4 is configured, `publish-pypi` fails closed: PyPI rejects the OIDC
+claim and nothing is uploaded — and by the new ordering this happens AFTER
+the GitHub Release exists, so recovery is simply fixing the Trusted
+Publisher entry and re-running the failed `publish-pypi` job (the same
+final, checksummed bytes are re-published; nothing was partially
+published). That is the designed behavior, not an error to work around.
 
 ### Future contract: GHCR server image
 
