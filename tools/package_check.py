@@ -77,6 +77,7 @@ EXPECTED_ENTRY_POINTS = {
         "scarcity-router": "scarcity_router.cli:main",
         "scarcity-router-mcp": "scarcity_router.mcp:main",
         "scarcity-router-server": "scarcity_router.server:main",
+        "scarcity-router-worker": "scarcity_router.worker_client:main",
     }
 }
 
@@ -219,6 +220,31 @@ def inspect_wheel() -> None:
         parser.read_string(entry_points)
         sections = {section: dict(parser.items(section)) for section in parser.sections()}
         _check(sections == EXPECTED_ENTRY_POINTS, f"wheel entry points mismatch: {sections}")
+        # The optional Windows tray extra (M10) is metadata only: the core
+        # wheel's runtime dependency set is still exactly mcp — the extra's
+        # packages are extra-conditional Requires-Dist entries, never core.
+        extra_requires = sorted(
+            line.split(":", 1)[1].strip()
+            for line in metadata.splitlines()
+            if line.startswith("Requires-Dist:")
+        )
+        conditional = sorted(
+            requirement
+            for requirement in extra_requires
+            if "extra ==" in requirement
+        )
+        core = [requirement for requirement in extra_requires if "extra ==" not in requirement]
+        _check(
+            core in (["mcp>=2,<3"], ["mcp<3,>=2"]),
+            f"core runtime dependencies changed: {core}",
+        )
+        joined_conditionals = "\n".join(conditional).lower()
+        _check(
+            len(conditional) == 2
+            and "pystray" in joined_conditionals
+            and "pillow" in joined_conditionals,
+            f"unexpected conditional extra dependencies: {conditional}",
+        )
     print("PASS wheel contents and metadata verified")
 
 
@@ -320,11 +346,14 @@ def check_installed_resources(tool_python: Path, home: Path) -> None:
 
 
 def check_cli_scripts(bin_dir: Path, home: Path) -> None:
-    for script in ("scarcity-router", "scarcity-router-server"):
+    for script in ("scarcity-router", "scarcity-router-server", "scarcity-router-worker"):
         result = _run([str(bin_dir / script), "--help"], cwd=home, env=_clean_env(home))
         _check(result.returncode == 0, f"{script} --help failed:\n{result.stderr}")
         _check("usage:" in result.stdout, f"{script} --help lacks usage output")
-    print("PASS installed console-script help for scarcity-router and scarcity-router-server")
+    print(
+        "PASS installed console-script help for scarcity-router, "
+        + "scarcity-router-server and scarcity-router-worker"
+    )
 
 
 def check_rest(bin_dir: Path, home: Path) -> None:
@@ -381,7 +410,14 @@ def isolated_install_checks() -> None:
         result = _run(["uv", "tool", "install", str(DIST / WHEEL_NAME)], env=install_env)
         _check(result.returncode == 0, f"isolated uv tool install failed:\n{result.stderr}")
         scripts = sorted(entry.name for entry in bin_dir.iterdir())
-        expected = sorted(["scarcity-router", "scarcity-router-mcp", "scarcity-router-server"])
+        expected = sorted(
+            [
+                "scarcity-router",
+                "scarcity-router-mcp",
+                "scarcity-router-server",
+                "scarcity-router-worker",
+            ]
+        )
         _check(scripts == expected, f"installed scripts {scripts} != {expected}")
         print(f"PASS isolated temporary uv tool install exposes exactly {expected}")
         tool_python = tool_dir / "scarcity-router" / "bin" / "python"

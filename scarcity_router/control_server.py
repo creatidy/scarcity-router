@@ -294,8 +294,10 @@ def main(argv: list[str] | None = None) -> int:
     bound_host, bound_port = cast("tuple[str, int]", server.server_address)
     scheme = "https" if tls_context is not None else "http"
     origin = f"{scheme}://{bound_host}:{bound_port}"
+    from . import get_version
+
     print(
-        "scarcity-router server component listening on "
+        f"scarcity-router {get_version()} server component listening on "
         + f"{origin} (execution surface, control API, web UI at {origin}/admin)",
         flush=True,
     )
