@@ -36,7 +36,14 @@ class _TimingResult(unittest.TextTestResult):
 def main() -> int:
     timing = os.environ.get("SR_TEST_TIMING", "") == "1"
     loader = unittest.TestLoader()
-    suite = loader.discover("tests", pattern="test_*.py")
+    if len(sys.argv) > 1:
+        # Same ergonomics as `python -m unittest tests.some_module.Test`: a
+        # focused run names its tests; no names means full discovery.
+        suite = unittest.TestSuite(
+            [loader.loadTestsFromName(name) for name in sys.argv[1:]]
+        )
+    else:
+        suite = loader.discover("tests", pattern="test_*.py")
     result_class = _TimingResult if timing else unittest.TextTestResult
     runner = unittest.TextTestRunner(resultclass=result_class)
     start = time.perf_counter()
