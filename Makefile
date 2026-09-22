@@ -21,8 +21,8 @@ guardrails: ## M08 per-module gate (issue #93): frozen-interface guardrail + par
 typecheck: ## repo-managed basedpyright (default "recommended" gate)
 	uv run basedpyright
 
-test: ## full unit-test suite (auto-discovers tests/)
-	uv run python -m unittest discover -s tests -p "test_*.py"
+test: ## full unit-test suite (auto-discovers tests/; SR_TEST_TIMING=1 adds a slowest-tests table)
+	uv run python tools/test_runner.py
 
 package-check: ## build wheel/sdist, inspect artifacts, isolated temporary tool install and installed-surface smoke
 	uv run python tools/package_check.py

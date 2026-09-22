@@ -316,7 +316,14 @@ def start_worker_process(
     )
 
 
-def stop_worker_process(proc: subprocess.Popen[bytes]) -> None:
+def stop_worker_process(proc: subprocess.Popen[bytes]) -> tuple[bytes, bytes]:
+    """Fully own the worker subprocess and return ``(stdout, stderr)``.
+
+    Bounded terminate/kill/reap first, then drain and CLOSE both pipes
+    deterministically: the writers are dead after the reap, so the reads
+    cannot block, and closing here is what keeps the suite free of
+    unclosed-pipe ResourceWarnings. Safe to call more than once.
+    """
     if proc.poll() is None:
         proc.terminate()
         try:
@@ -324,6 +331,21 @@ def stop_worker_process(proc: subprocess.Popen[bytes]) -> None:
         except subprocess.TimeoutExpired:
             proc.kill()
             _ = proc.wait(timeout=15)
+    captured: list[bytes] = []
+    for stream in (proc.stdout, proc.stderr):
+        data = b""
+        if stream is not None and not stream.closed:
+            try:
+                data = stream.read() or b""
+            except (OSError, ValueError):
+                data = b""
+            finally:
+                try:
+                    stream.close()
+                except (OSError, ValueError):
+                    pass
+        captured.append(data)
+    return captured[0], captured[1]
 
 
 # ── Audit store helper (composed world) ───────────────────────────────────────

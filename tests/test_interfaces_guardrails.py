@@ -1158,9 +1158,13 @@ class RemoteBridgeTests(GuardrailTestCase):
         server = _ControlStubHTTPServer(_application(collectors))
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
-        self.addCleanup(server.shutdown)
-        self.addCleanup(thread.join, 5)
+        # Cleanup order matters (LIFO): shutdown must ask the serve loop to
+        # exit BEFORE the socket is closed and the thread is joined, else
+        # server_close orphans a spinning loop and join(5) always burns its
+        # full timeout.
         self.addCleanup(server.server_close)
+        self.addCleanup(thread.join, 5)
+        self.addCleanup(server.shutdown)
         return server
 
     def _client(self, server: _ControlStubHTTPServer) -> RemoteScarcityClient:

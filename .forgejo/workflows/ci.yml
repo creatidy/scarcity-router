@@ -51,7 +51,9 @@ jobs:
         run: uv sync --only-dev
 
       - name: Repository validation gate (test + typecheck)
-        run: make check
+        # SR_TEST_TIMING=1 makes tools/test_runner.py append the slowest
+        # tests and the total test wall time to this job's log (issue #111).
+        run: SR_TEST_TIMING=1 make check
 
       - name: basedpyright (documented gate command)
         run: uv run basedpyright

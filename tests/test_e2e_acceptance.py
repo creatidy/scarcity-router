@@ -31,6 +31,7 @@ import json
 import sqlite3
 import subprocess
 import threading
+import time
 import sys
 import tempfile
 import unittest
@@ -208,37 +209,53 @@ class ServerStartupTests(RealTimeServerHarness):
 
         del control_main
         with tempfile.TemporaryDirectory() as parent:
+            process: subprocess.Popen[str] = subprocess.Popen(  # noqa: S603 - test-controlled fixed argv
+                [
+                    sys.executable,
+                    "-m",
+                    "scarcity_router.control_server",
+                    "--port",
+                    "0",
+                    "--data-dir",
+                    str(Path(parent) / "server"),
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
             try:
-                result = subprocess.run(
-                    [
-                        sys.executable,
-                        "-m",
-                        "scarcity_router.control_server",
-                        "--port",
-                        "0",
-                        "--data-dir",
-                        str(Path(parent) / "server"),
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=20,
-                    input="",
-                )
-            except subprocess.TimeoutExpired as expired:
-                # The composed server runs until interrupted; a timeout is
-                # the expected shape. The captured banner must name the
-                # version and the listening origin.
-                stdout = expired.stdout or ""
-                if isinstance(stdout, bytes):
-                    stdout = stdout.decode("utf-8", errors="replace")
-                stderr = expired.stderr or ""
-                if isinstance(stderr, bytes):
-                    stderr = stderr.decode("utf-8", errors="replace")
-                self.assertIn("scarcity-router 0.1.0", stdout)
-                self.assertIn("listening on http://127.0.0.1:", stdout)
-                self.assertNotIn("Traceback", stderr)
-            else:
-                self.fail(f"server exited early: {result.returncode} {result.stderr}")
+                # The banner IS the readiness signal and is flushed at
+                # startup: read just as far as it takes to see it, never
+                # the server's full lifetime (a timeout is a safety
+                # ceiling, not the synchronization mechanism).
+                deadline = time.monotonic() + 20.0
+                banner: str = ""
+                while time.monotonic() < deadline:
+                    line: str = (
+                        process.stdout.readline() if process.stdout else ""
+                    )
+                    if not line:
+                        break
+                    banner += line
+                    if "listening on" in banner:
+                        break
+            finally:
+                process.terminate()
+                try:
+                    _ = process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    _ = process.wait(timeout=10)
+            # The writers are dead, so the drains below cannot block; the
+            # handles are closed explicitly (deterministic ownership).
+            stdout = banner + (process.stdout.read() if process.stdout else "")
+            stderr = process.stderr.read() if process.stderr else ""
+            for stream in (process.stdout, process.stderr):
+                if stream is not None:
+                    stream.close()
+            self.assertIn("scarcity-router 0.1.0", stdout)
+            self.assertIn("listening on http://127.0.0.1:", stdout)
+            self.assertNotIn("Traceback", stderr)
 
 
 class OnboardingTests(RealTimeServerHarness):

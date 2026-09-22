@@ -11,6 +11,7 @@ import os
 import tempfile
 import threading
 import unittest
+from unittest import mock
 from typing import cast, override
 from datetime import datetime, timedelta, timezone
 
@@ -73,6 +74,29 @@ class PairingLifecycleTests(unittest.TestCase):
         record = self.store.get_identity(worker_id)
         assert record is not None
         self.assertEqual("laptop", record.label)
+        _ = self.store.authenticate(worker_id, credential)
+
+    def test_pairing_code_draw_starting_with_a_dash_is_redrawn(self) -> None:
+        """The CLI-safe grammar: a draw beginning with '-' is redrawn.
+
+        A code handed to the CLI as an argv value beginning with '-' is
+        misread by argparse as a flag, so issuance redraws such a draw
+        (deterministic here: token_urlsafe is mocked).
+        """
+        draws: list[str] = []
+
+        def fake_token_urlsafe(nbytes: int) -> str:
+            _ = nbytes
+            if not draws:
+                draws.append("-leading-dash-draw")
+                return "-leading-dash-draw"
+            return "acceptable-code"
+
+        with mock.patch("secrets.token_urlsafe", side_effect=fake_token_urlsafe):
+            code = self.store.begin_pairing(label="cli-safe")
+        self.assertEqual("acceptable-code", code.pairing_code)
+        worker_id, credential = self.store.redeem_pairing_code(code.pairing_code)
+        self.assertTrue(worker_id.startswith("w-"))
         _ = self.store.authenticate(worker_id, credential)
 
     def test_one_time_code_reuse_is_rejected(self) -> None:

@@ -39,7 +39,11 @@ from scarcity_router.resource_state import (
     ResourceStateSnapshot,
 )
 from scarcity_router.worker_bridged_adapter import WorkerBridgedAdapter
-from scarcity_router.worker_client import WorkerOrigin, WorkerRuntime
+from scarcity_router.worker_client import (
+    SESSION_IO_TIMEOUT_SECONDS,
+    WorkerOrigin,
+    WorkerRuntime,
+)
 from scarcity_router.worker_endpoint import (
     WorkerEndpoint,
     build_tls_context as build_worker_tls,
@@ -336,6 +340,8 @@ class WorkerWorld(RealTimeServerHarness):
         raw = socket.create_connection(("127.0.0.1", self.worker_port), timeout=10)
         try:
             wrapped = context.wrap_socket(raw, server_hostname="127.0.0.1")
+            # Production-factory parity: protocol-sane session I/O ceiling.
+            _ = wrapped.settimeout(SESSION_IO_TIMEOUT_SECONDS)
             return SocketTransport(wrapped)
         except BaseException:
             raw.close()
@@ -371,6 +377,8 @@ class WorkerWorld(RealTimeServerHarness):
                 wrapped = client_context.wrap_socket(
                     raw, server_hostname=origin_ref.host
                 )
+                # Production-factory parity: protocol-sane session ceiling.
+                _ = wrapped.settimeout(SESSION_IO_TIMEOUT_SECONDS)
                 return SocketTransport(wrapped)
             except BaseException:
                 raw.close()

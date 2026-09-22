@@ -606,7 +606,8 @@ class AdapterCallImportGuard(unittest.TestCase):
     def test_core_module_imports_no_coordinator_or_transport(self) -> None:
         import scarcity_router.providers.openai_http_core as core
 
-        source = open(core.__file__, encoding="utf-8").read()
+        with open(core.__file__, encoding="utf-8") as handle:
+            source = handle.read()
         self.assertNotIn("gateway_coordinator", source)
         self.assertNotIn("import http", source)
         self.assertNotIn("ssl", source)

@@ -86,6 +86,7 @@ from scarcity_router.codex_worker_evidence import CODEX_WORKER_CELL_VALUES
 from scarcity_router.routing_core import CompatibilityCell
 from scarcity_router.resource_state import ResourceStateSnapshot
 from scarcity_router.worker_client import (
+    SESSION_IO_TIMEOUT_SECONDS,
     WorkerOrigin,
     WorkerRuntime,
 )
@@ -247,6 +248,18 @@ class CodexWorker:
 
     def close(self) -> None:
         self.stop()
+        # Deterministic socket ownership: the run loop closed its live
+        # transport on unwind; close every captured transport/raw socket
+        # here (idempotent) so nothing waits for GC.
+        for transport in self.transports:
+            transport.close()
+        self.transports.clear()
+        for raw in self.raw_sockets:
+            try:
+                raw.close()
+            except OSError:
+                pass
+        self.raw_sockets.clear()
         self.store.close()
 
     def replace_adapter(
@@ -350,6 +363,9 @@ class CodexComposedTlsWorld(WorkerWorld):
                 wrapped = self.tls.client_context().wrap_socket(
                     raw, server_hostname=origin_ref.host
                 )
+                # Mirror the production factory: the session socket gets
+                # the protocol-sane I/O ceiling, never the connect timeout.
+                _ = wrapped.settimeout(SESSION_IO_TIMEOUT_SECONDS)
             except BaseException:
                 raw.close()
                 raise
@@ -457,8 +473,7 @@ class PackagedWorkerPathTests(CodexComposedTlsWorld):
                     "pair",
                     "--server",
                     f"srws://127.0.0.1:{self.worker_port}",
-                    "--code",
-                    str(code),
+                    f"--code={code}",
                     "--state-dir",
                     str(self.state_dir),
                 ]
@@ -518,6 +533,17 @@ class PackagedWorkerPathTests(CodexComposedTlsWorld):
             headers={"Authorization": f"Bearer {self.client_key}"},
             timeout=60,
         )
+        if status != 200:
+            # Failure evidence, not a weaker assertion: the closed
+            # worker-side failure reason is only visible in the worker
+            # process's own diagnostics, so stop it (idempotent) and
+            # surface its stderr with the assertion.
+            _out, err = stop_worker_process(proc)
+            self.fail(
+                f"expected 200, received {status}: {payload}; "
+                + "worker stderr tail: "
+                + err.decode(encoding="utf-8", errors="replace")[-2000:]
+            )
         self.assertEqual(200, status, payload)
         document = cast("dict[str, object]", payload)
         choices = cast("list[object]", document["choices"])

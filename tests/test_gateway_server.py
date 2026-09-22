@@ -78,6 +78,7 @@ class ServerHarness(unittest.TestCase):
         self.application = cast("GatewayApplication", object())
         self.server = cast("GatewayHTTPServer", object())
         self.thread = cast("threading.Thread", object())
+        self._connections: list[http.client.HTTPConnection] = []
 
     def make_server(
         self,
@@ -96,6 +97,12 @@ class ServerHarness(unittest.TestCase):
 
     @override
     def tearDown(self) -> None:
+        for connection in self._connections:
+            try:
+                connection.close()
+            except OSError:
+                pass
+        self._connections.clear()
         self.server.shutdown()
         self.server.server_close()
         _ = self.thread.join(timeout=10)
@@ -103,7 +110,11 @@ class ServerHarness(unittest.TestCase):
     # ── Clients ───────────────────────────────────────────────────────────
 
     def client(self, port: int) -> http.client.HTTPConnection:
-        return http.client.HTTPConnection("127.0.0.1", port, timeout=30)
+        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
+        # The harness owns every client connection: tearDown closes them
+        # deterministically (no GC-timed socket ResourceWarnings).
+        self._connections.append(connection)
+        return connection
 
     def post_chat(
         self,

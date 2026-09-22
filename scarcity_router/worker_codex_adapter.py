@@ -422,25 +422,40 @@ def probe_codex_version(
         # All writers are dead after the bounded termination, so the
         # post-termination read below always returns promptly.
         _ = terminate_codex_process(proc)
-    if reason is not None:
-        return None, reason
     stdout = proc.stdout
-    if stdout is None:
-        return None, "version_probe_failed"
     try:
-        output = stdout.read(MAX_PROBE_OUTPUT_BYTES + 1) or b""
-    except (OSError, ValueError, AttributeError):
-        return None, "version_probe_failed"
-    text = output[:MAX_PROBE_OUTPUT_BYTES].decode("utf-8", errors="replace").strip()
-    if len(output) > MAX_PROBE_OUTPUT_BYTES or not text.startswith(_VERSION_PREFIX):
-        return None, "version_unparseable"
-    match = _VERSION_RE.match(text[len(_VERSION_PREFIX) :])
-    if match is None:
-        return None, "version_unparseable"
-    version = (int(match.group(1)), int(match.group(2)), int(match.group(3)))
-    if version < MIN_SUPPORTED_CODEX_VERSION:
-        return None, "version_unsupported"
-    return version, None
+        if reason is not None:
+            return None, reason
+        if stdout is None:
+            return None, "version_probe_failed"
+        try:
+            output = stdout.read(MAX_PROBE_OUTPUT_BYTES + 1) or b""
+        except (OSError, ValueError, AttributeError):
+            return None, "version_probe_failed"
+        text = output[:MAX_PROBE_OUTPUT_BYTES].decode(
+            encoding="utf-8", errors="replace"
+        ).strip()
+        if len(output) > MAX_PROBE_OUTPUT_BYTES or not text.startswith(
+            _VERSION_PREFIX
+        ):
+            return None, "version_unparseable"
+        match = _VERSION_RE.match(text[len(_VERSION_PREFIX) :])
+        if match is None:
+            return None, "version_unparseable"
+        version = (int(match.group(1)), int(match.group(2)), int(match.group(3)))
+        if version < MIN_SUPPORTED_CODEX_VERSION:
+            return None, "version_unsupported"
+        return version, None
+    finally:
+        # The process is reaped, so both pipes are at EOF: close them here
+        # so the probe owns every descriptor it created (no GC-timed
+        # ResourceWarnings, no leaked pipe fds under repeated probing).
+        for stream in (stdout, proc.stderr):
+            if stream is not None:
+                try:
+                    stream.close()
+                except (OSError, ValueError):
+                    pass
 
 
 # ── Sandbox availability (honest platform gating) ─────────────────────────────
@@ -707,6 +722,7 @@ class CodexSession:
         self._events_seen: int = 0
         self._unknown_notifications: int = 0
         self._closed: bool = False
+        self._drainer: threading.Thread | None = None
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -720,6 +736,7 @@ class CodexSession:
                 daemon=True,
                 name="codex-app-server-stderr",
             )
+            self._drainer = thread
             thread.start()
 
     def _drain_stderr(self, stream: IO[bytes]) -> None:
@@ -886,13 +903,28 @@ class CodexSession:
     # -- shutdown ----------------------------------------------------------
 
     def close(self) -> bool:
-        """Graceful stdin-close shutdown, then bounded terminate/kill/reap."""
+        """Graceful stdin-close shutdown, then bounded terminate/kill/reap.
+
+        Shutdown owns every activity it started: the reader thread is
+        stopped and joined, the stderr drainer is joined, and both pipe
+        handles are closed explicitly once the child is reaped (both are
+        at EOF then) — no descriptor or thread outlives the session.
+        """
         if self._closed:
             return True
         self._closed = True
         reaped = terminate_codex_process(self._proc)
         self._reader.close()
         self._reader.join(timeout=1.0)
+        if self._drainer is not None:
+            self._drainer.join(timeout=1.0)
+            self._drainer = None
+        for stream in (self._proc.stdout, self._proc.stderr):
+            if stream is not None:
+                try:
+                    stream.close()
+                except (OSError, ValueError):
+                    pass
         return reaped
 
     @property

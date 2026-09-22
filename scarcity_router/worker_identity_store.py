@@ -316,6 +316,11 @@ class WorkerIdentityStore:
         now = self._clock()
         expires_at = now + timedelta(seconds=self._pairing_code_ttl)
         pairing_code = secrets.token_urlsafe(_PAIRING_CODE_LENGTH_BYTES)
+        while pairing_code.startswith("-"):
+            # CLI-safe grammar: a code whose first character is '-' is
+            # ambiguous as an argv value (argparse reads it as a flag),
+            # so a leading '-' is redrawn. Mid-code '-' stays legal.
+            pairing_code = secrets.token_urlsafe(_PAIRING_CODE_LENGTH_BYTES)
         with self._lock:
             self._prune_expired_locked(now)
             outstanding = cast(

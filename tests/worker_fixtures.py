@@ -16,6 +16,10 @@ import time
 from collections import deque
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
+from typing import TYPE_CHECKING, cast
+
+if TYPE_CHECKING:  # pragma: no cover - type-only import
+    from scarcity_router.worker_protocol import SocketTransport
 
 from scarcity_router.capacity import CapacitySnapshot, CapacityWindow
 from scarcity_router.gateway_adapters import (
@@ -143,6 +147,9 @@ class MemoryTransport:
         with peer._condition:
             peer._buffer.extend(data)
             peer._condition.notify_all()
+
+    def set_timeout(self, seconds: float) -> None:
+        _ = seconds  # deterministic in-memory pipe: no socket ceiling exists
 
     def close(self) -> None:
         with self._condition:
@@ -332,7 +339,16 @@ class ScriptedWorker:
                     self.executes.append(message)
                     return message
             raise AssertionError("connection closed before an execute arrived")
+        # The direct-read path honors its timeout too: bound each raw read
+        # to the remaining wait budget so silence raises TimeoutError at
+        # the deadline instead of at the connection-wide socket ceiling.
+        deadline = time.monotonic() + timeout
         while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("no execute arrived before the timeout")
+            transport = cast("SocketTransport", self.transport)
+            transport.set_timeout(remaining)
             message = self.read_server_message()
             if message is None:
                 raise AssertionError("connection closed before an execute arrived")
@@ -344,7 +360,6 @@ class ScriptedWorker:
                 self.received_execute_count += 1
                 self.executes.append(message)
                 return message
-
     def complete(
         self,
         execute: ExecuteMessage,
