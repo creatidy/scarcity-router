@@ -229,9 +229,11 @@ class ServerStartupTests(RealTimeServerHarness):
                 # the server's full lifetime (a timeout is a safety
                 # ceiling, not the synchronization mechanism).
                 deadline = time.monotonic() + 20.0
-                banner = ""
+                banner: str = ""
                 while time.monotonic() < deadline:
-                    line = process.stdout.readline() if process.stdout else ""
+                    line: str = (
+                        process.stdout.readline() if process.stdout else ""
+                    )
                     if not line:
                         break
                     banner += line

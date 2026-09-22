@@ -306,6 +306,14 @@ class SocketTransport:
         if recv_timeout_seconds is not None:
             self._socket.settimeout(recv_timeout_seconds)
 
+    def set_timeout(self, seconds: float) -> None:
+        """Adjust the session socket's I/O ceiling.
+
+        Used by scripted test harnesses to bound a direct read to the
+        remaining wait budget instead of the connection-wide ceiling.
+        """
+        self._socket.settimeout(seconds)
+
     def recv_exact(self, size: int) -> bytes | None:
         chunks: list[bytes] = []
         remaining = size
