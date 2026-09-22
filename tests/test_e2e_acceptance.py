@@ -209,7 +209,7 @@ class ServerStartupTests(RealTimeServerHarness):
 
         del control_main
         with tempfile.TemporaryDirectory() as parent:
-            process = subprocess.Popen(  # noqa: S603 - test-controlled fixed argv
+            process: subprocess.Popen[str] = subprocess.Popen(  # noqa: S603 - test-controlled fixed argv
                 [
                     sys.executable,
                     "-m",
