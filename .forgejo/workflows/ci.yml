@@ -1,0 +1,65 @@
+# Development CI (issue #97). Canonical authority is Forgejo; GitHub adds no
+# duplicate development CI (its only workflow is the tag-driven public release
+# pipeline under .github/workflows/release.yml).
+#
+# Stability contract for branch protection (docs/release-engineering.md):
+# workflow `ci`, job `check`. The steps are exactly the repository validation
+# gate from AGENTS.md plus `make package-check`, the repository-authoritative
+# build + isolated-install smoke target. This workflow keeps no test list of
+# its own; when the authoritative gate changes, change it here and in the
+# gate documents together.
+#
+# Trust model: pull-request code is untrusted. This job runs with
+# `contents: read` only, requires no provider or publishing secrets, and
+# never publishes anything. Runner boundary requirements and owner-side
+# hardening are frozen in docs/release-engineering.md.
+name: ci
+
+on:
+  pull_request:
+    branches: [develop]
+  push:
+    branches: [develop]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out the commit under test
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Install pinned uv
+        uses: astral-sh/setup-uv@22695119d769bdb6f7032ad67b9bca0ef8c4a174 # v5.4.0
+        with:
+          # Pin the interpreter so the gate stays deterministic across runner
+          # image updates; requires-python is >=3.12.
+          python-version: "3.12"
+          enable-cache: false
+
+      - name: Sync the repository-managed environment
+        run: uv sync --only-dev
+
+      - name: Repository validation gate (test + typecheck)
+        # SR_TEST_TIMING=1 makes tools/test_runner.py append the slowest
+        # tests and the total test wall time to this job's log (issue #111).
+        run: SR_TEST_TIMING=1 make check
+
+      - name: basedpyright (documented gate command)
+        run: uv run basedpyright
+
+      - name: Whitespace hygiene (documented gate command)
+        run: git diff --check
+
+      - name: Build, inspect and smoke-install the distributable package
+        run: make package-check

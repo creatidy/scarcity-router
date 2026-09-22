@@ -1,0 +1,32 @@
+# Keep the container build context minimal and secret-free: only the wheel
+# build set is copied by the Dockerfile; everything else stays out of the
+# context (never sent to the builder, never cached in the daemon).
+.git
+.github
+.forgejo
+.kilo
+.venv
+venv
+dist
+build
+docs
+tests
+tools
+packaging
+examples/agent-routing-prompt.md
+examples/mcp-stdio.json
+examples/scarcity-router-worker.service
+*.md
+!README.md
+.gitignore
+.gitattributes
+Makefile
+uv.lock
+**/__pycache__
+**/*.pyc
+**/*.pyo
+.pytest_cache
+.ruff_cache
+Dockerfile
+.dockerignore
+docker-compose.yml

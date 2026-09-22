@@ -22,10 +22,23 @@ dependencies = [
 ]
 dynamic = ["version"]
 
+# Optional Windows tray UX for the packaged worker (M10, issue #95): never
+# a core dependency — the core package stays standard-library + mcp only,
+# and the PyInstaller Windows build bundles the extra.
+[project.optional-dependencies]
+tray = [
+    "pystray>=0.19,<1",
+    "Pillow>=10,<13",
+]
+
 [project.scripts]
 scarcity-router = "scarcity_router.cli:main"
 scarcity-router-mcp = "scarcity_router.mcp:main"
 scarcity-router-server = "scarcity_router.server:main"
+# M10 (issue #95): the M05 native worker's console entry point. The parser
+# already anticipated this invoked name; the frozen three scripts above keep
+# their names and semantics untouched.
+scarcity-router-worker = "scarcity_router.worker_client:main"
 
 # The version lives only in scarcity_router/__init__.py; metadata reads it
 # from there instead of committing a second copy in this file.
@@ -63,6 +76,11 @@ include = [
 dev = [
     "basedpyright>=1.0.0",
     "mcp>=2,<3",
+    # M10 (issue #95): test-only real-TLS acceptance certificates. Never a
+    # runtime dependency; the product code paths create only verified,
+    # default TLS contexts.
+    "pyyaml>=6,<7",
+    "trustme>=1,<2",
 ]
 
 [tool.basedpyright]

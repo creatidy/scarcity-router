@@ -47,6 +47,8 @@ EXPECTED_SCRIPTS = {
     "scarcity-router": "scarcity_router.cli:main",
     "scarcity-router-mcp": "scarcity_router.mcp:main",
     "scarcity-router-server": "scarcity_router.server:main",
+    # M10 (issue #95): the M05 native worker's console entry point.
+    "scarcity-router-worker": "scarcity_router.worker_client:main",
 }
 
 
@@ -84,11 +86,20 @@ class PackagingMetadataTests(unittest.TestCase):
         self.assertEqual(">=3.12", project["requires-python"])
         self.assertEqual(["mcp>=2,<3"], project["dependencies"])
 
-    def test_exactly_the_three_console_scripts(self) -> None:
+    def test_exactly_the_four_console_scripts(self) -> None:
+        """The frozen three scripts plus the M10 worker entry point."""
         project = self._project_table()
         scripts = project["scripts"]
         self.assertIsInstance(scripts, dict)
         self.assertEqual(EXPECTED_SCRIPTS, cast("dict[str, str]", scripts))
+
+    def test_version_flag_renders_the_authoritative_version(self) -> None:
+        captured = io.StringIO()
+        with redirect_stdout(captured):
+            with self.assertRaises(SystemExit) as ctx:
+                _ = build_cli_parser().parse_args(["--version"])
+        self.assertEqual(0, ctx.exception.code)
+        self.assertIn(get_version(), captured.getvalue())
 
     def test_no_committed_artifact_duplicates_in_package(self) -> None:
         # The root copies stay the single committed authoritative artifacts;

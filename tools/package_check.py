@@ -4,8 +4,9 @@
 Builds the distribution with ``uv build --no-sources``, inspects the wheel
 and sdist contents and metadata, then installs the wheel into a throwaway
 ``uv tool`` environment and exercises the installed surface: console-script
-help, default catalog/policy resource loading (catalog version 2, policy
-version 6) without a checkout, cwd dependency or source-tree environment,
+help, default catalog/policy resource loading (the versions expected are
+read from the root-authoritative artifacts, so this check never pins them)
+without a checkout, cwd dependency or source-tree environment,
 official MCP-client initialization and tool discovery with clean shutdown
 and no stdout contamination, and a loopback REST ``/healthz`` smoke on a
 kernel-assigned port with clean SIGINT shutdown. No live provider endpoint
@@ -22,6 +23,7 @@ import argparse
 import configparser
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -34,15 +36,48 @@ from urllib.request import Request, urlopen
 
 REPO = Path(__file__).resolve().parents[1]
 DIST = REPO / "dist"
-WHEEL_NAME = "scarcity_router-0.1.0-py3-none-any.whl"
-SDIST_NAME = "scarcity_router-0.1.0.tar.gz"
 README_TAGLINE = "> Choose the least scarce model that is capable enough for the task."
+
+# The distribution version is read from the single authoritative source
+# literal in scarcity_router/__init__.py — the same literal hatch reads for
+# build metadata — so this check never pins a version and stays valid for
+# release builds of any version (issue #97).
+_VERSION_PATTERN = re.compile(r'^__version__ = "([^"]+)"$', re.MULTILINE)
+
+
+def _source_version() -> str:
+    text = (REPO / "scarcity_router" / "__init__.py").read_text(encoding="utf-8")
+    match = _VERSION_PATTERN.search(text)
+    if match is None:
+        raise SystemExit("package-check: FAIL: cannot read __version__ from scarcity_router/__init__.py")
+    return match.group(1)
+
+
+VERSION = _source_version()
+WHEEL_NAME = f"scarcity_router-{VERSION}-py3-none-any.whl"
+SDIST_NAME = f"scarcity_router-{VERSION}.tar.gz"
+
+
+def _root_artifact_versions() -> tuple[int, int]:
+    """Return the expected packaged catalog/policy versions from the root
+    artifacts — the same files hatch force-includes into the wheel — so the
+    smoke check never pins stale numbers."""
+    catalog = json.loads((REPO / "model-catalog.json").read_text(encoding="utf-8"))
+    policy = json.loads((REPO / "model-policy.json").read_text(encoding="utf-8"))
+    try:
+        return int(catalog["catalog_version"]), int(policy["policy_version"])
+    except (KeyError, TypeError, ValueError) as error:
+        raise SystemExit(f"package-check: FAIL: cannot read artifact versions: {error}") from error
+
+
+EXPECTED_CATALOG_VERSION, EXPECTED_POLICY_VERSION = _root_artifact_versions()
 
 EXPECTED_ENTRY_POINTS = {
     "console_scripts": {
         "scarcity-router": "scarcity_router.cli:main",
         "scarcity-router-mcp": "scarcity_router.mcp:main",
         "scarcity-router-server": "scarcity_router.server:main",
+        "scarcity-router-worker": "scarcity_router.worker_client:main",
     }
 }
 
@@ -67,8 +102,8 @@ FORBIDDEN_NAME_PARTS = (
 
 # Hatchling always injects the root .gitignore and PKG-INFO into sdists.
 SDIST_ALLOWED_EXTRA_NAMES = (
-    "scarcity_router-0.1.0/.gitignore",
-    "scarcity_router-0.1.0/PKG-INFO",
+    f"scarcity_router-{VERSION}/.gitignore",
+    f"scarcity_router-{VERSION}/PKG-INFO",
 )
 
 REQUIRED_WHEEL_NAMES = (
@@ -81,9 +116,9 @@ REQUIRED_WHEEL_NAMES = (
     "scarcity_router/model-catalog.json",
     "scarcity_router/model-policy.json",
     "scarcity_router/default-selector-policy.json",
-    "scarcity_router-0.1.0.dist-info/METADATA",
-    "scarcity_router-0.1.0.dist-info/entry_points.txt",
-    "scarcity_router-0.1.0.dist-info/licenses/LICENSE",
+    f"scarcity_router-{VERSION}.dist-info/METADATA",
+    f"scarcity_router-{VERSION}.dist-info/entry_points.txt",
+    f"scarcity_router-{VERSION}.dist-info/licenses/LICENSE",
 )
 
 REQUIRED_SDIST_NAMES = (
@@ -166,9 +201,9 @@ def inspect_wheel() -> None:
         for required in REQUIRED_WHEEL_NAMES:
             _check(required in names, f"wheel missing {required}")
         _forbid_entries(names, "wheel")
-        metadata = archive.read("scarcity_router-0.1.0.dist-info/METADATA").decode("utf-8")
+        metadata = archive.read(f"scarcity_router-{VERSION}.dist-info/METADATA").decode("utf-8")
         _check(_metadata_field(metadata, "Name") == "scarcity-router", "wheel METADATA name mismatch")
-        _check(_metadata_field(metadata, "Version") == "0.1.0", "wheel METADATA version mismatch")
+        _check(_metadata_field(metadata, "Version") == VERSION, "wheel METADATA version mismatch")
         _check(
             _metadata_field(metadata, "License-Expression") == "Apache-2.0",
             "wheel METADATA license expression mismatch",
@@ -180,11 +215,36 @@ def inspect_wheel() -> None:
             f"wheel Requires-Dist mismatch: {requires_dist}",
         )
         _check(README_TAGLINE in metadata, "wheel METADATA lacks the README description payload")
-        entry_points = archive.read("scarcity_router-0.1.0.dist-info/entry_points.txt").decode("utf-8")
+        entry_points = archive.read(f"scarcity_router-{VERSION}.dist-info/entry_points.txt").decode("utf-8")
         parser = configparser.ConfigParser()
         parser.read_string(entry_points)
         sections = {section: dict(parser.items(section)) for section in parser.sections()}
         _check(sections == EXPECTED_ENTRY_POINTS, f"wheel entry points mismatch: {sections}")
+        # The optional Windows tray extra (M10) is metadata only: the core
+        # wheel's runtime dependency set is still exactly mcp — the extra's
+        # packages are extra-conditional Requires-Dist entries, never core.
+        extra_requires = sorted(
+            line.split(":", 1)[1].strip()
+            for line in metadata.splitlines()
+            if line.startswith("Requires-Dist:")
+        )
+        conditional = sorted(
+            requirement
+            for requirement in extra_requires
+            if "extra ==" in requirement
+        )
+        core = [requirement for requirement in extra_requires if "extra ==" not in requirement]
+        _check(
+            core in (["mcp>=2,<3"], ["mcp<3,>=2"]),
+            f"core runtime dependencies changed: {core}",
+        )
+        joined_conditionals = "\n".join(conditional).lower()
+        _check(
+            len(conditional) == 2
+            and "pystray" in joined_conditionals
+            and "pillow" in joined_conditionals,
+            f"unexpected conditional extra dependencies: {conditional}",
+        )
     print("PASS wheel contents and metadata verified")
 
 
@@ -199,8 +259,8 @@ def _package_python_files() -> set[str]:
 def inspect_sdist() -> None:
     with tarfile.open(DIST / SDIST_NAME) as archive:
         names = [member.name for member in archive.getmembers()]
-        allowed = {f"scarcity_router-0.1.0/{required}" for required in REQUIRED_SDIST_NAMES}
-        allowed.update(f"scarcity_router-0.1.0/{relative}" for relative in _package_python_files())
+        allowed = {f"scarcity_router-{VERSION}/{required}" for required in REQUIRED_SDIST_NAMES}
+        allowed.update(f"scarcity_router-{VERSION}/{relative}" for relative in _package_python_files())
         allowed.update(SDIST_ALLOWED_EXTRA_NAMES)
         # Exact allowlist: the sdist contains the minimal rebuild set and
         # nothing else (no tests, docs, tooling, local or secret material).
@@ -260,29 +320,40 @@ for path in (DEFAULT_CATALOG_PATH, DEFAULT_MODEL_POLICY_PATH):
 catalog, _profiles, policy_version = load_configured_artifacts(
     DEFAULT_CATALOG_PATH, DEFAULT_MODEL_POLICY_PATH
 )
-assert catalog.catalog_version == 2, catalog.catalog_version
-assert policy_version == 6, policy_version
-assert scarcity_router.get_version() == "0.1.0", scarcity_router.get_version()
+assert catalog.catalog_version == @CATALOG_VERSION@, catalog.catalog_version
+assert policy_version == @POLICY_VERSION@, policy_version
+assert scarcity_router.get_version() == @VERSION@, scarcity_router.get_version()
 print("ok")
 """
 
 
 def check_installed_resources(tool_python: Path, home: Path) -> None:
-    code = RESOURCE_CHECK.replace("CHECKOUT", repr(str(REPO)))
+    code = (
+        RESOURCE_CHECK.replace("CHECKOUT", repr(str(REPO)))
+        .replace("@VERSION@", repr(VERSION))
+        .replace("@CATALOG_VERSION@", repr(EXPECTED_CATALOG_VERSION))
+        .replace("@POLICY_VERSION@", repr(EXPECTED_POLICY_VERSION))
+    )
     result = _run([str(tool_python), "-I", "-c", code], cwd=home, env=_clean_env(home))
     _check(
         result.returncode == 0 and result.stdout.strip().endswith("ok"),
         f"installed resource loading failed:\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}",
     )
-    print("PASS installed defaults load catalog 2 / policy 6 without checkout, cwd or source env")
+    print(
+        f"PASS installed defaults load catalog {EXPECTED_CATALOG_VERSION} / "
+        f"policy {EXPECTED_POLICY_VERSION} without checkout, cwd or source env"
+    )
 
 
 def check_cli_scripts(bin_dir: Path, home: Path) -> None:
-    for script in ("scarcity-router", "scarcity-router-server"):
+    for script in ("scarcity-router", "scarcity-router-server", "scarcity-router-worker"):
         result = _run([str(bin_dir / script), "--help"], cwd=home, env=_clean_env(home))
         _check(result.returncode == 0, f"{script} --help failed:\n{result.stderr}")
         _check("usage:" in result.stdout, f"{script} --help lacks usage output")
-    print("PASS installed console-script help for scarcity-router and scarcity-router-server")
+    print(
+        "PASS installed console-script help for scarcity-router, "
+        + "scarcity-router-server and scarcity-router-worker"
+    )
 
 
 def check_rest(bin_dir: Path, home: Path) -> None:
@@ -339,7 +410,14 @@ def isolated_install_checks() -> None:
         result = _run(["uv", "tool", "install", str(DIST / WHEEL_NAME)], env=install_env)
         _check(result.returncode == 0, f"isolated uv tool install failed:\n{result.stderr}")
         scripts = sorted(entry.name for entry in bin_dir.iterdir())
-        expected = sorted(["scarcity-router", "scarcity-router-mcp", "scarcity-router-server"])
+        expected = sorted(
+            [
+                "scarcity-router",
+                "scarcity-router-mcp",
+                "scarcity-router-server",
+                "scarcity-router-worker",
+            ]
+        )
         _check(scripts == expected, f"installed scripts {scripts} != {expected}")
         print(f"PASS isolated temporary uv tool install exposes exactly {expected}")
         tool_python = tool_dir / "scarcity-router" / "bin" / "python"

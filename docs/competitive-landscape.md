@@ -86,8 +86,11 @@ Learn from:
 - quota/cost preservation concepts;
 - explicit fallback ordering.
 
-Scarcity Router differs by not proxying or executing the routed request and by
-making live subscription capacity an independent normalized input. Chuzom is
+Scarcity Router differs by making live subscription capacity an independent
+normalized input, and by defaulting to recommendation-only operation that
+neither proxies nor executes the routed request; the optional execution
+gateway (D-040) is an explicitly deployed, policy-gated extension under its
+recorded decisions, not an orchestration platform. Chuzom is
 MIT-licensed at the time of this review; the same attribution rule applies to
 substantially adapted code.
 

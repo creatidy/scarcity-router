@@ -32,8 +32,12 @@ import argparse
 import os
 import sys
 from collections.abc import Sequence
+from datetime import datetime
 from pathlib import Path
-from typing import TextIO, cast
+from typing import TYPE_CHECKING, TextIO, cast
+
+if TYPE_CHECKING:  # pragma: no cover - type-only import
+    from .diagnostics import DiagnosticsReport
 
 from .config import ensure_default_user_config
 from .errors import CapacityError, SelectionContractError
@@ -64,12 +68,23 @@ def _default_prog() -> str:
 
 def build_parser() -> argparse.ArgumentParser:
     """Build the top-level ``status`` / ``select`` / ``simulate`` parser."""
+    from . import get_version
+
     parser = argparse.ArgumentParser(
         prog=_default_prog(),
         description=(
             "Read-only normalized AI provider capacity status and "
             "deterministic least-scarce model selection."
         ),
+    )
+    # M10 (issue #95): the version/about surface the update path documents.
+    # Read from the single authoritative source literal (installed metadata
+    # preferred, source fallback), never a second committed copy.
+    _ = parser.add_argument(
+        "--version",
+        action="version",
+        version=f"scarcity-router {get_version()}",
+        help="show the program version and exit",
     )
     commands = parser.add_subparsers(dest="command", required=True)
 
@@ -149,6 +164,35 @@ def build_parser() -> argparse.ArgumentParser:
         "--force",
         action="store_true",
         help="replace an existing selector-policy.json with the shipped defaults",
+    )
+
+    doctor_parser = commands.add_parser(
+        "doctor",
+        help=(
+            "run redacted diagnostics (local mode, or a server's data "
+            + "directory with --server-data-dir)"
+        ),
+        description=(
+            "Shared diagnostic report (issue #94, realizing the deferred "
+            + "D-016 doctor concept): checks configuration, artifacts, the "
+            + "durable store, resource states and workers. Reads stored "
+            + "state only — no collector call, adapter dispatch or "
+            + "inference request is ever made."
+        ),
+    )
+    _ = doctor_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="emit the diagnostics report as JSON",
+    )
+    _ = doctor_parser.add_argument(
+        "--server-data-dir",
+        metavar="DIR",
+        default=None,
+        help=(
+            "diagnose a deployed server component's durable store and "
+            + "configuration instead of the local recommendation setup"
+        ),
     )
     return parser
 
@@ -257,6 +301,196 @@ def _run_install_config(args: dict[str, object], output: TextIO) -> int:
     action = "wrote" if wrote else "kept existing"
     _ = output.write(f"{action}: {path}\n")
     return 0
+
+
+def _run_doctor(args: dict[str, object], output: TextIO) -> int:
+    """The additive ``doctor`` command (issue #94; shared diagnostics).
+
+    Renders the same report the server UI shows: local artifact/policy
+    checks by default, or a deployed server's store, configuration,
+    resource ladder and pairing state with ``--server-data-dir``. Reads
+    stored state only — never a collector, adapter dispatch or inference
+    request — and never prints secrets.
+    """
+    from datetime import timezone
+
+    from . import get_version
+    from .diagnostics import (
+        ServerDiagnosticsInputs,
+        collect_local_diagnostics,
+        collect_server_diagnostics,
+        render_report_human,
+    )
+    from .selection_app import load_configured_artifacts
+    from .server_config import ServerConfiguration
+    from .server_store import ServerStore, ServerStoreError
+
+    json_output = args.get("json")
+    if not isinstance(json_output, bool):
+        raise RuntimeError("parser produced an invalid JSON output argument")
+    now = datetime.now(timezone.utc)
+    version = get_version()
+    report: DiagnosticsReport
+
+    server_dir_value = args.get("server_data_dir")
+    if isinstance(server_dir_value, str) and server_dir_value:
+        from pathlib import Path as _Path
+
+        store_error: str | None = None
+        store: ServerStore | None = None
+        try:
+            store = ServerStore.open(_Path(server_dir_value))
+            _ = store.require_current_schema()
+        except (ServerStoreError, OSError) as exc:
+            store_error = str(exc)
+        document: dict[str, object] | None = None
+        config_error: str | None = None
+        if store is not None:
+            try:
+                document = store.load_configuration_document()
+            except ServerStoreError as exc:
+                config_error = str(exc)
+        configuration: ServerConfiguration | None = None
+        if document is not None:
+            try:
+                configuration = ServerConfiguration.from_document(document)
+            except ValueError as exc:
+                config_error = str(exc)
+        if store is None or configuration is None:
+            report = _doctor_server_failure_report(
+                now=now,
+                version=version,
+                detail=store_error or config_error or "server store unreadable",
+            )
+        else:
+            active = [
+                record
+                for record in store.list_client_keys()
+                if record.revoked_at is None
+            ]
+            total = len(store.list_client_keys())
+            # Worker pairing state lives in the ONE pairing system (M05's
+            # identity store beside the server store); the server's live
+            # connection state is in-process and therefore not visible to
+            # an offline doctor — rows honestly carry no connection claim.
+            worker_records: tuple[WorkerIdentityRecord, ...] = ()
+            from .worker_identity_store import (
+                WorkerIdentityError,
+                WorkerIdentityRecord,
+                WorkerIdentityStore,
+                default_worker_store_path,
+            )
+
+            worker_path = _Path(default_worker_store_path(server_dir_value))
+            if worker_path.is_file():
+                try:
+                    worker_store = WorkerIdentityStore(worker_path)
+                    try:
+                        worker_records = worker_store.list_identities()
+                    finally:
+                        worker_store.close()
+                except (WorkerIdentityError, OSError, ValueError):
+                    worker_records = ()
+            report = collect_server_diagnostics(
+                ServerDiagnosticsInputs(
+                    configuration=configuration,
+                    registry_snapshot=None,
+                    constraints=configuration.admin_constraints,
+                    paired_worker_ids=frozenset(
+                        record.worker_id
+                        for record in worker_records
+                        if record.status == "active"
+                    ),
+                    channels_with_adapters=frozenset(),
+                    endpoints_with_credentials=frozenset(
+                        provider.provider_id
+                        for provider in configuration.providers
+                        if store.has_provider_secret(provider.provider_id)
+                    ),
+                    pairings=tuple(
+                        {
+                            "worker_id": record.worker_id,
+                            "label": record.label,
+                            "status": record.status,
+                        }
+                        for record in worker_records
+                    ),
+                    store_schema_version=store.schema_version(),
+                    store_error=None,
+                    admin_configured=store.admin_identity() is not None,
+                    active_client_keys=len(active),
+                    revoked_client_keys=total - len(active),
+                    now=now,
+                    version=version,
+                    provider_endpoints=configuration.providers,
+                )
+            )
+        if store is not None:
+            store.close()
+    else:
+        artifact_error: str | None = None
+        try:
+            _ = load_configured_artifacts(
+                DEFAULT_CATALOG_PATH, DEFAULT_MODEL_POLICY_PATH
+            )
+        except (ValueError, OSError, SelectionContractError) as exc:
+            artifact_error = str(exc)
+        policy_error: str | None = None
+        policy_configured = False
+        from .config import default_selector_policy_path, load_default_selector_policy
+
+        if default_selector_policy_path(env=os.environ).is_file():
+            policy_configured = True
+            try:
+                _ = load_default_selector_policy(env=os.environ)
+            except (ValueError, OSError, SelectionContractError) as exc:
+                policy_error = str(exc)
+        report = collect_local_diagnostics(
+            now=now,
+            version=version,
+            artifact_error=artifact_error,
+            policy_error=policy_error,
+            policy_configured=policy_configured,
+        )
+    if json_output:
+        import json
+
+        _ = output.write(
+            json.dumps(report.to_dict(), sort_keys=True, indent=2) + "\n"
+        )
+    else:
+        _ = output.write(render_report_human(report))
+    return 0
+
+
+def _doctor_server_failure_report(
+    *, now: datetime, version: str, detail: str
+) -> DiagnosticsReport:
+    """A one-check report when the server store cannot be diagnosed."""
+    from datetime import timezone
+
+    from .diagnostics import DiagnosticCheck, DiagnosticsReport
+
+    return DiagnosticsReport(
+        generated_at=(
+            now.astimezone(timezone.utc)
+            .isoformat(timespec="milliseconds")
+            .replace("+00:00", "Z")
+        ),
+        mode="server",
+        checks=(
+            DiagnosticCheck(
+                check_id="store",
+                title="Durable store",
+                state="error",
+                detail="the server store or its configuration failed validation",
+                remediation=detail,
+            ),
+        ),
+        resources=(),
+        workers=(),
+        versions={"scarcity_router": version},
+    )
 
 
 def _run_status(
@@ -374,6 +608,8 @@ def main(
             return _run_simulate(arguments, output, collectors, clock)
         if command == "install-config":
             return _run_install_config(arguments, output)
+        if command == "doctor":
+            return _run_doctor(arguments, output)
     except (ValueError, OSError, SelectionContractError, CapacityError) as exc:
         # Fail safely: a concise structural message only — never a raw
         # provider payload, credential or traceback dump.

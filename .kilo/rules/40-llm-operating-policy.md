@@ -25,5 +25,6 @@ Follow the full policy in [`docs/llm-operating-policy.md`](../../docs/llm-operat
 - Prefer a small ready queue; do not maximize concurrency.
 
 The role-assignment metadata is descriptive and non-selector-facing. The
-active catalog remains authoritative for selector eligibility, and Scarcity
-Router's D-017 project decision excludes local inference.
+active catalog remains authoritative for selector eligibility; D-017's
+local-inference exclusion is superseded by D-040, and local resources return
+only as execution-gateway resources through the module issues.

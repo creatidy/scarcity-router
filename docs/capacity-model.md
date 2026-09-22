@@ -353,3 +353,50 @@ serialized v2 snapshot is rejected exactly like any other wrong
 `schema_version`. This is an internal/provisional contract, so the migration
 is an explicit one-step reversion-free upgrade rather than a versioned public
 API migration.
+
+## Executable resources, observation classes and quota pools (A0, D-042)
+
+The execution-gateway program extends what the router must know about each
+resource — but not through this contract: **capacity contract v3 is
+preserved**, and executable-resource state extends through a new versioned
+resource-state snapshot contract owned by M01 (#86), additive to (or, if
+evidence demands, an explicitly versioned successor of) v3 under the same
+discipline as D-023. The semantics below are frozen by D-042 and detailed in
+[`docs/architecture.md`](architecture.md).
+
+- **Observation classes.** Every quota/cost fact in the resource-state
+  contract carries one of: `direct_observation` (measured by the router
+  itself), `provider_telemetry` (reported by the provider, as v3 snapshots
+  are), `estimate` (modeled), `local_limit` (enforced/observed locally, e.g.
+  worker-reported), or `unknown`. Tokens reported by an adapter are never
+  equated with subscription quota percentages. The router never assumes it
+  observes account usage happening outside it.
+- **Quota pools.** A quota pool is a shared budget drawn on by one or more
+  resources; pool identity is explicit. Resources sharing one *confirmed*
+  pool are never counted as independent capacity; *unconfirmed* sharing is
+  never assumed in either direction — the same subscription discovered
+  through Desktop, CLI, Windows and WSL is not multiple pools, and two
+  surfaces are not assumed to share one pool without verification.
+- **Entitlements.** Entitlement class (subscription-included, promotional,
+  PAYG metered, prepaid credits, local/ungated) is per-resource state, never
+  implied by a model name. Promotions are separate observations with source,
+  observation time, execution-channel scope, model scope, plan scope,
+  validity period and timezone; a promotion-based routing preference is
+  distinct from proof that an execution qualifies (D-039 gating).
+- **Worker-reported state.** When telemetry is only available locally, the
+  worker (M05) reports safe normalized state through one shared
+  normalization path — never a second collector implementation for the same
+  provider/account. Worker reports are authenticated input; malformed
+  reports are rejected/reported, never merged silently.
+- **Freshness.** The resource-state contract carries explicit freshness and
+  bounded polling/cache metadata; this is the scope in which the deferred
+  U-003 staleness policy was resolved (M01, issue #86, 2026-09-19): the
+  administrator resource registration carries a required positive
+  `freshness_ttl_seconds` (and optional `poll_interval_seconds`) as the
+  authoritative server policy; observation documents carry only
+  `observed_at`, never policy fields, and the resource registry classifies
+  `fresh`/`stale`/`never_observed` against an explicit injectable instant,
+  rejecting future-dated observations rather than treating them as fresh
+  (`scarcity_router/resource_state.py`; `docs/decisions.md` U-003). The
+  synchronous fresh-collection
+  behavior of the local recommendation-only surfaces is unchanged.

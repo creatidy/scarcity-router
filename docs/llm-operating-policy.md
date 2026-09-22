@@ -294,9 +294,14 @@ eligibility nor capacity binding.
 
 The reusable generic operating principle is that local inference may be used
 when it is stable and sufficient and disabled when it is unstable. Scarcity
-Router has the stricter accepted project override in D-017: local inference,
-including Ollama, is completely unsupported. Restoring it requires a new
-explicit product decision. No local model is in the active catalog.
+Router's stricter D-017 override excluded local inference entirely; D-040
+(2026-09-19) supersedes D-017: local inference, including Ollama, returns as
+an execution resource of the optional execution gateway (server-direct HTTP
+when network-accessible, worker-bridged when localhost-only), and the D-017
+operational-instability rationale remains a design input for isolation,
+health handling and honest unknown states. No local model is in the active
+catalog today; executable resources enter only through the execution-gateway
+module issues with evidence.
 
 The repository's multi-agent policy is also stricter than a generic two-round
 remediation suggestion. The one-remediation default, immutable review head,
@@ -334,10 +339,17 @@ available or selector-eligible.
 
 ## Scarcity Router product boundary
 
-Scarcity Router reads normalized subscription capacity, evaluates task
-requirements and user policy, and recommends a model with ranked alternatives
-and an explanation. It does not proxy prompts, execute models, inspect
-repositories for clients, dispatch fallback calls, manage credentials or
-become a generic LLM gateway. REST, MCP and any future dashboard must call the
-same authoritative core; they must not introduce execution or role-assignment
+Scarcity Router is two-mode (D-040). In the default recommendation-only mode
+it reads normalized subscription capacity, evaluates task requirements and
+user policy, and recommends a model with ranked alternatives and an
+explanation; it does not proxy prompts or execute models. The optional
+execution gateway (explicit deployment; decisions D-040 through D-045, see
+[`docs/architecture.md`](architecture.md)) may receive prompts and execute or
+proxy model traffic to authorized resources. Forbidden in both modes:
+autonomous fallback execution, inspecting repositories for clients,
+issue-to-PR orchestration, repository management, generic agent workflow
+frameworks, general task schedulers, benefit-consuming actions and executing
+client-supplied tools; repositories and client-side tools remain controlled
+by the client. REST, MCP and any future dashboard must call the same
+authoritative core; they must not introduce execution or role-assignment
 logic of their own.

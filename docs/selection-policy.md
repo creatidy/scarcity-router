@@ -657,12 +657,147 @@ same policy layer. Modes cannot fabricate capacity or bypass explicit privacy
 constraints. Provider blackout schedules are orthogonal hard policy and must
 not be weakened by a mode unless the user explicitly overrides them.
 
+## Executable targets and the route-decision contract (A0, D-042)
+
+The execution-gateway program extends the same selector to choose an
+authorized **executable target** — not merely a model name — as a pure,
+deterministic decision (M02, #87). The existing balanced pipeline, ranking
+semantics (D-027/D-032/D-037) and the D-039 execution-eligibility stage are
+preserved; execution-era inputs enter as typed inputs in the same pattern as
+eligibility reports, never as hidden penalties.
+
+- **Route-decision dimensions.** A route decision separates the physical
+  model/variant (`ModelIdentity`), the execution channel/surface
+  (server-direct HTTP, worker-bridged, local CLI/app adapter), the
+  entitlement in use, the confirmed quota pool(s) it draws from, and the
+  client routing profile. The same model name never implies any of these
+  ([`docs/capacity-model.md`](capacity-model.md)).
+- **Authorization precedence (frozen, D-042).**
+  `administrator constraints > client authorization > request requirements >
+  configured routing profile > explicitly selected target/model >
+  optimization preferences`. Each layer may only narrow the space allowed by
+  stronger layers; a client override never expands authorization, provider
+  access or spending limits. An explicitly requested model/effort/target is
+  pinned and never silently replaced — a pinned target violating a stronger
+  layer fails with an explicit error rather than being re-routed.
+- **Profiles and aliases.** Administrator-defined aliases may occupy the
+  `model` field of OpenAI-compatible clients, but each alias resolves to
+  the existing task/profile requirement model (`TaskRequirement`,
+  `model-policy.json` profiles). There is no second simplified scoring
+  system and no mandatory LLM request classifier; request structure (tools
+  present, structured output requested) yields compatibility requirements,
+  not rankings.
+- **Pinned-target execution.** A client that first used `select` may pin the
+  decision's executable-target reference in a gateway request; the gateway
+  then performs admission only (authorization, limits, availability,
+  compatibility) — no second competitive ranking. The reference is exact:
+  `PinnedTarget` carries the selected target's `resource_id` plus its
+  exact `ModelIdentity` (provider, model, variant), and admission approves
+  exactly that variant — a variant that is no longer bound is an explicit
+  rejection, never a substitution. Frozen alongside: a recommendation is
+  not automatically a reservation, a capacity guarantee or an execution
+  guarantee (D-042).
+- **Quota still never changes capability.** Execution-surface availability,
+  authorization and spending limits are eligibility/ranking inputs exactly
+  like capacity and eligibility reports; telemetry never raises a
+  capability rating.
+
+### Implemented route-decision core (#87)
+
+The contract is implemented by the pure `scarcity_router/routing_core.py`
+(standard library only, no filesystem/network/environment/subprocess/clock
+access; the caller supplies every observation plus one timezone-aware
+evaluation instant). It adds no second selector and no hidden penalties; it
+composes three steps:
+
+1. **Requirement binding.** The administrator and client layers
+   (`AdministratorConstraints`, `ClientAuthorization`) intersect into one
+   effective authorization — allowed providers/channels/entitlements,
+   blocked resources and the stricter spending limit — so a client grant
+   can only narrow. The configured routing profile
+   (`ClientRoutingProfile`) resolves through the existing
+   `TaskProfileCatalog.resolve` and supplies the monotone base
+   requirement; the request's structural constraints (tools present,
+   structured output, streaming, reasoning controls, context/output sizes)
+   merge through `tighten_requirement` and may tighten but never loosen
+   it. Unprofiled requests resolve to the minimal honest requirement
+   (`L0`, no fabricated minima).
+2. **Model selection.** The unmodified `select_model` runs over a narrowed
+   catalog view (same versioned artifact, fewer entries) with the merged
+   requirement, the caller's capacity snapshots, replenishment states,
+   D-039 eligibility reports and the `SelectorPolicy` — preserving
+   D-027/D-032/D-037 ranking, quota-never-raises-capability and every
+   existing `select`/`simulate` semantic. Identities removed by target
+   narrowing are reported as `unroutable_identities`.
+3. **Target binding.** Registry resources bind to catalog identities by
+   exact `(provider, model)` plus the variant rule (no variant qualifier
+   binds every calibrated variant of the model). Each resource passes the
+   frozen gate order `binding -> authorization -> availability ->
+   compatibility`; the first failing stage wins and is reported as a typed
+   `TargetExclusion`. Fail-closed throughout: stale or never-observed
+   state, non-`ok` health, a non-eligible D-039 report (absence of a
+   report means the stage never applies — never "eligible"), a metered
+   surface without a cost record under a spending limit, an unknown
+   context ceiling and a missing/`UNKNOWN`/`UNSUPPORTED` compatibility
+   cell all block with honest reason codes. Uncalibrated backends (no
+   catalog binding) are excluded as `capability_unassessed`, never routed
+   on guessed capability.
+
+Pins and the binding seam:
+
+- **Pins.** An explicit target (`PinnedTarget`), model (`explicit_model`)
+  or effort/variant (`explicit_variant`) narrows the candidate set and is
+  honored or explicitly failed: a selected decision carries exactly the
+  pinned target with no alternatives; a pin that violates a stronger layer
+  (unauthorized, blocked, stale, incompatible, profile-constrained)
+  produces an explicit no-solution with the `pinned_request_failed` route
+  code and the failing gate's typed exclusion — never a substituted
+  candidate.
+- **Promotions.** An active promotion whose evidenced scopes match the
+  resource contributes a target-level preference (ordered ahead within the
+  same model identity, like the D-035 happy-hour group); an expired one
+  never contributes and is listed under `expired_promotions`. A `plan`
+  scope cannot be verified against a resource and never matches. A
+  promotion preference is never a qualification proof (D-039 still gates).
+- **Quota pools.** A target carries only its CONFIRMED pools; an
+  alternative whose confirmed pools intersect the selected target's is
+  marked `shares_quota_pool_with_selected` — one budget, never independent
+  fallback capacity (there is no automatic failover).
+- **Compatibility.** Request features gate against the typed
+  `CompatibilityCell` representation of the D-043 matrix (frozen
+  `PASS`/`PARTIAL`/`UNSUPPORTED`/`UNKNOWN` values with adapter version and
+  dated evidence; `PASS`/`PARTIAL` serve, everything else — including a
+  missing cell — fails closed). The numeric context ceiling is the M01
+  registration's `context_limit_tokens` (fail closed when unknown); the
+  M01 boolean capability facts are not independently gating.
+- **Decision identity and admission.** `RouteDecision.decision_id` is
+  derived deterministically (SHA-256 over the canonical serialized content
+  excluding the id itself), so identical inputs and evaluation time yield
+  the identical id. `admit_pinned_target` then evaluates exactly one
+  pinned reference through the gates only — authorization, limits,
+  availability, compatibility — and never re-runs competitive ranking: a
+  non-winner that passes every gate is approved, and a recommendation is
+  re-checked against current state, never treated as a reservation. The
+  pinned reference is exact: `PinnedTarget` carries `resource_id` plus the
+  selected target's exact `ModelIdentity` (provider, model, variant),
+  built from the decision itself with `PinnedTarget.from_route_target` /
+  `from_route_target_dict`, so no target dimension is reconstructed from
+  outside the decision. Admission verifies the pinned identity is one of
+  the identities the named resource currently binds and approves exactly
+  that resource and variant; a no-longer-bound identity is rejected with
+  the explicit `pinned_model_not_bound` code — there is no
+  canonically-first bound-identity fallback, no variant substitution and
+  no silent repair of an incomplete reference (an incomplete pin is a
+  construction-time validation error).
+
 ## Bounded compound workflow recommendations
 
-Scarcity Router remains a recommendation service and does not execute model
-calls. If a later selector recommends a compound workflow rather than one model,
-the workflow itself becomes part of the resource decision and must be bounded by
-construction.
+Scarcity Router remains a recommendation service at its core; the optional
+execution gateway (D-040) executes single authorized requests and does not
+turn compound recommendations into an executor. If a later selector
+recommends a compound workflow rather than one model, the workflow itself
+becomes part of the resource decision and must be bounded by construction
+(D-022 remains a contract, not an executor).
 
 A compound recommendation carries a conceptual `ExecutionBudget` with at
 least:

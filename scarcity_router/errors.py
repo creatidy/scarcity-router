@@ -43,3 +43,31 @@ class ApplicationInputError(SelectionContractError):
     :class:`SelectionContractError` keeps the CLI's single invalid-input
     failure class unchanged.
     """
+
+
+class RouteContractValidationError(SelectionContractError):
+    """Raised when a routing-core input violates a route-decision invariant.
+
+    Deliberately separate from :class:`CapacityValidationError` (M01 resource
+    state) and from the selector's own
+    :class:`SelectionContractValidationError`: the route-decision contract is
+    its own versioned family (D-042), so its violations fail as their own
+    type while remaining inside the selection-contract error hierarchy that
+    application adapters already classify as invalid input.
+    """
+
+
+class RemoteBridgeError(Exception):
+    """Raised for every configured-remote-server bridge failure (M08, #93).
+
+    The optional remote mode (D-045 topology 4) is explicit configuration
+    with explicit failure: when a configured remote Scarcity Router server
+    is unreachable, rejects the client credential, returns an unexpected
+    status or a response that violates the expected contract, this error is
+    raised and surfaced — it is never silently converted into local state,
+    local policy or a local re-selection. The client module holds no
+    collectors, artifacts or policy, so no fallback path exists.
+
+    Messages are safe and structural: they carry the origin, endpoint and a
+    failure class only — never a credential, never a raw response body.
+    """

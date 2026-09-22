@@ -31,6 +31,10 @@ MANIFEST
 #   before PyInstaller builds the exe, so as to inject date/other infos into it.
 *.manifest
 *.spec
+#   Exception (M10, issue #95): the committed Windows worker build spec is
+#   source, not build residue — the release workflow and the packaging tests
+#   consume it from the exact tagged commit (D-046 provenance).
+!packaging/windows/worker.spec
 
 # Installer logs
 pip-log.txt

@@ -13,10 +13,30 @@ The broker answers **which capable model should this task consume now?** It
 considers quota windows, capability, constraints and reservations, then prefers
 the least scarce sufficient candidate.
 
-It is a recommendation service, not a model gateway. It does not receive
-prompts, proxy model traffic, read source code or repositories, execute model
-calls, dispatch fallbacks, or replace an orchestrator such as Kilo, Codex or
-Claude Code.
+Scarcity Router is two-mode. By default it is a local recommendation service,
+not a model gateway: it does not receive prompts, proxy model traffic, read
+source code or repositories, execute model calls, dispatch fallbacks, or
+replace an orchestrator such as Kilo, Codex or Claude Code. Optionally — as a
+separate, explicitly deployed server component — an execution gateway
+(decisions D-040 through D-049, implemented; see
+[`docs/roadmap.md`](docs/roadmap.md)) lets OpenAI-compatible clients send
+authorized requests to one endpoint and have them served from the best
+available resource under the same discipline. The gateway's authenticated
+OpenAI-compatible execution surface is implemented
+(`python -m scarcity_router.control_server`, the one composed server;
+contract:
+[`docs/execution-surface.md`](docs/execution-surface.md)); native workers
+bridge localhost-only resources to it over outbound TLS
+(`python -m scarcity_router.worker_client pair|run`; contract:
+[`docs/worker-protocol.md`](docs/worker-protocol.md)); the server's
+administration surface (control API, web UI, diagnostics) and the
+OpenAI-compatible provider adapters are implemented, with configuration,
+adapters and the worker transport composed in one process
+([`docs/control-surface.md`](docs/control-surface.md)); distribution and
+acceptance are complete subject to the explicit external gates recorded in
+[`docs/m10-acceptance.md`](docs/m10-acceptance.md). This README
+documents the recommendation-only product, whose behavior is unchanged by
+the gateway.
 
 ## Quick Start
 
@@ -27,8 +47,11 @@ Requirements:
 
 Provider access is described in [Supported Providers](#supported-providers).
 
-The package is not published to any index; install it locally from a
-checkout (or a built wheel) into an isolated `uv` tool environment:
+The package is not published to any index yet (the public install path that
+activates with the first PyPI release is contracted in
+[`docs/release-engineering.md`](docs/release-engineering.md)); install it
+locally from a checkout (or a built wheel) into an isolated `uv` tool
+environment:
 
 ```bash
 uv tool install /path/to/scarcity-router-checkout
@@ -38,14 +61,22 @@ uv tool install dist/scarcity_router-0.1.0-py3-none-any.whl
 make install
 ```
 
-This exposes exactly three commands:
+After the first PyPI publication, the supported path becomes
+`uv tool install scarcity-router` (`pipx install scarcity-router` as the
+conventional alternative) — it is deliberately not documented as working
+before that release exists.
 
-- `scarcity-router` — the `status` / `select` / `simulate` CLI;
+This exposes exactly four commands:
+
+- `scarcity-router` — the `status` / `select` / `simulate` CLI (plus
+  `install-config` and the offline `doctor`);
 - `scarcity-router-mcp` — the stdio MCP adapter;
-- `scarcity-router-server` — the loopback REST adapter.
+- `scarcity-router-server` — the loopback REST adapter;
+- `scarcity-router-worker` — the native worker of the optional execution
+  gateway (`pair` / `run`).
 
-The installed commands load the packaged default catalog (version 2) and
-model policy (version 6) as package resources, so they work without a
+The installed commands load the packaged default catalog and model policy
+as package resources, so they work without a
 repository checkout and independent of the current directory; explicit
 `--catalog` and `--model-policy` flags always override the defaults. The
 default user selector policy is packaged the same way and provisioned into
@@ -230,9 +261,77 @@ tool (or the recipe adjusted to the checkout-based module command).
   and the provider's normalized usage endpoint.
 
 These adapters report subscription capacity, not generic API pricing. Local
-inference providers are not supported. See
+inference is not part of the recommendation surfaces; it returns as an
+execution resource of the optional execution-gateway program (decision D-040;
+module issues #86–#95). See
 [`docs/providers.md`](docs/providers.md) for discovery, normalization and
-provider-change behavior.
+provider-change behavior, and
+[`docs/architecture.md`](docs/architecture.md) for the gateway architecture.
+
+## Deploying The Optional Execution Gateway
+
+The recommendation-only product above needs none of this. If you want one
+OpenAI-compatible endpoint served from your own heterogeneous resources
+(subscription plans, APIs, local inference), the execution gateway is a
+separate, explicitly deployed server plus — where local resources need
+bridging — a small worker. The honest acceptance record, platform support
+table and measured first-run steps live in
+[`docs/m10-acceptance.md`](docs/m10-acceptance.md); the security matrix is
+[`docs/m10-security-acceptance.md`](docs/m10-security-acceptance.md).
+
+### Server (one container)
+
+```bash
+docker build -t scarcity-router .
+docker compose up -d          # examples/docker-compose.yml, loopback default
+# open http://127.0.0.1:8787/admin and complete first-run onboarding:
+# create the administrator password -> add a provider endpoint ->
+# add a resource -> issue a client key (shown exactly once)
+```
+
+Defaults are loopback-only. LAN/VPN exposure requires verified TLS
+certificates (`--host 0.0.0.0 --tls-certfile ... --tls-keyfile ...`) — the
+server refuses a non-loopback plaintext bind by design (D-044). The compose
+example documents the real flag surface, volume and update discipline;
+nothing is invented. The image is not published to any registry yet (the
+GHCR contract is recorded in
+[`docs/release-engineering.md`](docs/release-engineering.md)).
+
+### Worker (bridges localhost-only resources)
+
+One-time pairing: the administrator issues a short-lived one-time code in
+the web UI (Workers page); the worker redeems it over verified TLS:
+
+```bash
+scarcity-router-worker pair --server srws://SERVER-HOST:8790 --code CODE
+scarcity-router-worker run --allow-ollama --resource my-ollama
+```
+
+The worker connects outbound only (no inbound port), holds no provider
+credentials and enforces its local adapter allowlist even against server
+requests. Background operation on Linux is a systemd **user** service —
+`examples/scarcity-router-worker.service` documents install, enable,
+start/stop/status/logs and lingering. The Windows worker ships as a release
+package (`scarcity-worker-X.Y.Z-windows-x64.zip`) with a minimal tray UX;
+live Windows acceptance is a recorded external gate — see the acceptance
+document for exactly what is and is not verified.
+
+### Updates and uninstall
+
+- Linux/WSL package: `uv tool upgrade scarcity-router` (or `pipx upgrade`);
+  restart any server/worker processes.
+- Container: pull the new image tag, `docker compose up -d`; the named
+  volume keeps identities, configuration and keys (store schema migrations
+  are explicit and refuse future versions — never downgrade across one).
+- Windows worker: reinstall the new release package; restart the worker.
+- Uninstall: `uv tool uninstall scarcity-router` (or remove the container
+  and volume); user state lives in `~/.config/scarcity-router/` (user
+  policy), `~/.local/share/scarcity-router/` (server store + worker state,
+  `%LOCALAPPDATA%\scarcity-router` on Windows) — delete it only when you
+  mean to lose keys and configuration.
+
+There is deliberately no background auto-update and no remote code
+execution in any update path.
 
 ## Privacy / Product Boundary
 
@@ -241,9 +340,13 @@ possible. Collectors use them transiently, never return or persist their
 values, and only emit normalized safe status. The REST adapter binds to
 `127.0.0.1` by default; MCP uses local stdio.
 
-The service does not inspect prompts, source code, repository contents or
-browser sessions. It does not proxy requests, call models, redeem reset credits
-or automatically execute a fallback. Read
+In the default recommendation-only mode, the service does not inspect prompts,
+source code, repository contents or browser sessions. It does not proxy
+requests, call models, redeem reset credits or automatically execute a
+fallback. The optional execution-gateway program extends this boundary only
+through its recorded decisions D-040 through
+D-049, with its own security architecture in
+[`docs/security.md`](docs/security.md). Read
 [`docs/security.md`](docs/security.md) for the complete credential and network
 boundary.
 
@@ -268,14 +371,26 @@ rules and historical evidence remain available without being part of onboarding.
 - [`docs/capability-model.md`](docs/capability-model.md) — requirements and capabilities.
 - [`docs/selection-policy.md`](docs/selection-policy.md) — eligibility and ranking.
 - [`docs/machine-interfaces.md`](docs/machine-interfaces.md) — REST and MCP.
+- [`docs/execution-surface.md`](docs/execution-surface.md) — OpenAI-compatible execution surface.
+- [`docs/control-surface.md`](docs/control-surface.md) — server control API, web UI and diagnostics.
 - [`docs/providers.md`](docs/providers.md) — provider adapters.
 - [`docs/security.md`](docs/security.md) — secrets and network boundaries.
+- [`docs/worker-protocol.md`](docs/worker-protocol.md) — the versioned
+  native-worker transport, pairing and execution-bridging contract of the
+  optional execution gateway.
+- [`docs/m10-acceptance.md`](docs/m10-acceptance.md) — distribution and
+  end-to-end acceptance record: platform support table, measured first-run
+  steps, external gates.
+- [`docs/m10-security-acceptance.md`](docs/m10-security-acceptance.md) —
+  the security acceptance matrix mapped to the D-044 threat model.
 
 ### DEVELOP IT
 
 - [`AGENTS.md`](AGENTS.md) — durable repository and agent rules.
 - [`docs/llm-operating-policy.md`](docs/llm-operating-policy.md) — bounded
   multi-model execution and review governance.
+- [`docs/release-engineering.md`](docs/release-engineering.md) — CI, release
+  integrity and public distribution contracts.
 - [`Makefile`](Makefile) — the reproducible test and type-check gate.
 
 ### AUDIT / HISTORY
@@ -308,6 +423,14 @@ Package artifact and isolated-install checks:
 ```bash
 make package-check
 ```
+
+Development CI runs the same gate plus `make package-check` on every pull
+request to `develop` and every push to `develop` (workflow `ci`, job
+`check` — the stable required check for `develop` branch protection). Public
+releases are deliberate SemVer tags on stable `main`, published through the
+tag-driven GitHub workflow. The CI/release authority split, trust model and
+owner-action checklist live in
+[`docs/release-engineering.md`](docs/release-engineering.md).
 
 Forgejo is canonical for issues, branches, pull requests and reviews; `develop`
 is the integration branch. GitHub is an automatic read-only mirror for public
