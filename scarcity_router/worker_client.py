@@ -920,11 +920,15 @@ class _ActiveSession:
 
 def build_parser() -> argparse.ArgumentParser:
     invoked = Path(sys.argv[0]).name if sys.argv and sys.argv[0] else ""
-    prog = (
-        invoked
-        if invoked == "scarcity-router-worker"
-        else "python -m scarcity_router.worker_client"
-    )
+    if invoked == "scarcity-router-worker":
+        prog = invoked
+    elif invoked.startswith("scarcity-worker"):
+        # The PyInstaller-packaged executable (issue #113): usage text
+        # names the binary the user actually ran, never the Python
+        # console script the standalone ZIP does not contain.
+        prog = invoked
+    else:
+        prog = "python -m scarcity_router.worker_client"
     parser = argparse.ArgumentParser(
         prog=prog,
         description=(

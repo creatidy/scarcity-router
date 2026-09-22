@@ -34,6 +34,7 @@ REPO = Path(__file__).resolve().parents[1]
 SPEC_PATH = REPO / "packaging" / "windows" / "worker.spec"
 LAUNCHER_PATH = REPO / "packaging" / "windows" / "scarcity_worker_main.py"
 ADAPTER_PATH = REPO / "packaging" / "windows" / "scarcity_worker_tray_view.py"
+SETUP_VIEW_PATH = REPO / "packaging" / "windows" / "scarcity_worker_setup_view.py"
 
 BuildCall = tuple[str, tuple[object, ...], dict[str, object]]
 
@@ -100,7 +101,7 @@ class SpecShapeTests(unittest.TestCase):
         args, _kwargs = self._one("Analysis")
         self.assertEqual((["scarcity_worker_main.py"],), args)
 
-    def test_analysis_pins_the_win32_tray_stack(self) -> None:
+    def test_analysis_pins_the_win32_tray_stack_and_tkinter(self) -> None:
         _args, kwargs = self._one("Analysis")
         hidden = kwargs.get("hiddenimports")
         if not isinstance(hidden, list):
@@ -112,6 +113,7 @@ class SpecShapeTests(unittest.TestCase):
             "PIL",
             "PIL.Image",
             "PIL.ImageDraw",
+            "tkinter",
         ):
             self.assertIn(required, hidden_names)
 
@@ -144,6 +146,7 @@ class LauncherShapeTests(unittest.TestCase):
         ]
         self.assertIn("scarcity_router.windows_tray", imported)
         self.assertIn("scarcity_worker_tray_view", imported)
+        self.assertIn("scarcity_worker_setup_view", imported)
         # The launcher defines no classes: all behavior stays in the
         # library and the packaging adapter.
         top_level_classes = [
@@ -151,10 +154,11 @@ class LauncherShapeTests(unittest.TestCase):
         ]
         self.assertEqual([], top_level_classes)
 
-    def test_spec_launcher_and_adapter_exist_in_tree(self) -> None:
+    def test_spec_launcher_adapter_and_setup_view_exist_in_tree(self) -> None:
         self.assertTrue(SPEC_PATH.is_file())
         self.assertTrue(LAUNCHER_PATH.is_file())
         self.assertTrue(ADAPTER_PATH.is_file())
+        self.assertTrue(SETUP_VIEW_PATH.is_file())
 
 
 @dataclass(frozen=True)
@@ -237,6 +241,58 @@ class TrayViewAdapterTests(unittest.TestCase):
         for name in module_level_names:
             self.assertNotIn("pystray", name)
             self.assertNotIn("PIL", name)
+
+
+class SetupViewAdapterTests(unittest.TestCase):
+    """The tkinter first-run/settings dialog adapter (issue #113).
+
+    Like the pystray adapter: importable everywhere, tkinter imported
+    lazily inside functions only (the dialog stack is bundled by the
+    PyInstaller build; the library core is exercised with fake views in
+    ``tests/test_worker_first_run.py``).
+    """
+
+    def test_setup_view_imports_on_every_platform(self) -> None:
+        module = _load_setup_view_module()
+        self.assertTrue(callable(module.build_setup_view))
+        self.assertTrue(callable(module.is_setup_available))
+        self.assertTrue(module.is_setup_available() in (True, False))
+
+    def test_setup_view_has_no_module_level_tkinter_import(self) -> None:
+        tree = ast.parse(SETUP_VIEW_PATH.read_text(encoding="utf-8"))
+        offenders: list[str] = []
+        for node in tree.body:
+            if isinstance(node, ast.Import):
+                offenders.extend(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                offenders.append(node.module)
+        for name in offenders:
+            self.assertNotIn("tkinter", name)
+            self.assertNotIn("tkinter.", name)
+
+
+def _load_setup_view_module() -> "_SetupViewModule":
+    """Import the packaging-side setup dialog by file path (safe: the
+    tkinter import happens lazily inside functions only)."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "scarcity_worker_setup_view", SETUP_VIEW_PATH
+    )
+    if spec is None or spec.loader is None:  # pragma: no cover - loader seam
+        raise AssertionError("setup view module spec unavailable")
+    module = importlib.util.module_from_spec(spec)
+    _ = spec.loader.exec_module(module)
+    typed = cast("_SetupViewModule", cast("object", module))
+    return typed
+
+
+class _SetupViewModule(Protocol):
+    """Module-level protocol for the safe double cast above."""
+
+    def build_setup_view(self) -> object: ...
+
+    def is_setup_available(self) -> bool: ...
 
 
 if __name__ == "__main__":

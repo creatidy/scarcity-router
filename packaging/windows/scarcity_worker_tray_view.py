@@ -43,6 +43,7 @@ def build_tray_view(
     model: TrayStateModel,
     open_control_ui: Callable[[], None],
     diagnostics_dir: Path,
+    on_settings: Callable[[], None] | None = None,
 ) -> TrayView:
     """The pystray-backed :class:`TrayView` (Windows + the ``tray`` extra).
 
@@ -50,7 +51,10 @@ def build_tray_view(
     the optional dependency this raises :class:`TrayNotAvailableError`
     with a remediation message instead of a bare ImportError. The icon
     is drawn programmatically (state-colored disc), so the packaging
-    bundles no image assets.
+    bundles no image assets. ``on_settings`` (issue #113) adds the
+    "Worker settings..." action, which reopens the same local
+    configuration dialog the first run used; without one the item is
+    omitted (never a dead menu entry).
     """
     if not is_windows():
         raise TrayNotAvailableError(
@@ -84,20 +88,26 @@ def build_tray_view(
         """
 
         def __init__(self) -> None:
-            self._icon = pystray.Icon(
-                "scarcity-router-worker",
-                icon=icon_image(STATE_DISCONNECTED),
-                title="Scarcity Router worker",
-                menu=pystray.Menu(
+            menu_items = [
+                pystray.MenuItem(
+                    "Show worker status",
+                    lambda icon, item: self._notify(model.status_text()),
+                    default=True,
+                ),
+                pystray.MenuItem(
+                    "Open server control UI",
+                    lambda icon, item: open_control_ui(),
+                ),
+            ]
+            if on_settings is not None:
+                menu_items.append(
                     pystray.MenuItem(
-                        "Show worker status",
-                        lambda icon, item: self._notify(model.status_text()),
-                        default=True,
-                    ),
-                    pystray.MenuItem(
-                        "Open server control UI",
-                        lambda icon, item: open_control_ui(),
-                    ),
+                        "Worker settings...",
+                        lambda icon, item: on_settings(),
+                    )
+                )
+            menu_items.extend(
+                [
                     pystray.MenuItem(
                         "Reconnect / restart",
                         lambda icon, item: model.request_restart(),
@@ -110,7 +120,13 @@ def build_tray_view(
                     pystray.MenuItem(
                         "Quit", lambda icon, item: model.request_quit()
                     ),
-                ),
+                ]
+            )
+            self._icon = pystray.Icon(
+                "scarcity-router-worker",
+                icon=icon_image(STATE_DISCONNECTED),
+                title="Scarcity Router worker",
+                menu=pystray.Menu(*menu_items),
             )
             self._thread = None
             self._diagnostics_dir = diagnostics_dir

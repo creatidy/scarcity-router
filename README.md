@@ -73,7 +73,11 @@ This exposes exactly four commands:
 - `scarcity-router-mcp` — the stdio MCP adapter;
 - `scarcity-router-server` — the loopback REST adapter;
 - `scarcity-router-worker` — the native worker of the optional execution
-  gateway (`pair` / `run`).
+  gateway (`pair` / `run`). The standalone Windows package does not
+  contain these console scripts: it ships one executable,
+  `scarcity-worker.exe`, which opens a first-run setup dialog on first
+  launch and provides the same `pair` / `run` commands directly (see
+  the worker section below).
 
 The installed commands load the packaged default catalog and model policy
 as package resources, so they work without a
@@ -311,10 +315,39 @@ The worker connects outbound only (no inbound port), holds no provider
 credentials and enforces its local adapter allowlist even against server
 requests. Background operation on Linux is a systemd **user** service —
 `examples/scarcity-router-worker.service` documents install, enable,
-start/stop/status/logs and lingering. The Windows worker ships as a release
-package (`scarcity-worker-X.Y.Z-windows-x64.zip`) with a minimal tray UX;
-live Windows acceptance is a recorded external gate — see the acceptance
-document for exactly what is and is not verified.
+start/stop/status/logs and lingering.
+
+**Windows (standalone package, no Python required).** The release ZIP
+(`scarcity-worker-X.Y.Z-windows-x64.zip`) contains a single executable,
+`scarcity-worker.exe`:
+
+1. Unzip and double-click `scarcity-worker.exe`. An unpaired worker opens
+   the compact **first-run setup dialog**: enter the worker server origin
+   (`srws://SERVER:8790`) and the one-time code (a button opens the
+   server web UI where codes are issued), and optionally tick
+   "Enable local Ollama" (loopback only; a resource id is required).
+   Pairing stores the identity locally and the tray starts.
+2. Later launches go straight to the tray. Pair-only is valid: a local
+   adapter can be enabled or changed any time via the tray's
+   **"Worker settings..."** action (a save restarts the worker loop with
+   the new allowlist).
+3. PowerShell/cmd automation uses the same executable — no Python
+   needed:
+
+```powershell
+scarcity-worker.exe pair --server srws://SERVER-HOST:8790 --code CODE
+scarcity-worker.exe run --allow-ollama --resource my-ollama
+```
+
+The dialog and the `pair` command share one pairing implementation; the
+pairing code is never stored. Local settings persist only non-secret
+worker configuration (control-UI origin, enabled loopback Ollama
+resource) in `%LOCALAPPDATA%\scarcity-router` alongside the identity;
+the server can never widen the local allowlist remotely. Windows-native
+Codex execution is not offered on this path (unevidenced for v0.1.0 —
+Codex worker execution requires the Linux/WSL CLI path). Live Windows
+acceptance is a recorded external gate — see the acceptance document for
+exactly what is and is not verified.
 
 ### Updates and uninstall
 

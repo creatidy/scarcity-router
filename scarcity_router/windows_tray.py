@@ -1,12 +1,22 @@
-"""Windows tray UX for the packaged Scarcity Router native worker.
+"""Windows tray UX and packaged entry point of the Scarcity Router worker.
 
 M10 (issue #95): the PyInstaller-packaged Windows worker shows a minimal
 tray icon with its state (running / disconnected / error), the worker
-identity and server it is bound to, and five actions: show the identity/
-status text, open the server's control UI in a browser, reconnect
-(restart the runtime loop with a fresh bounded reconnect budget), open
-the diagnostics folder (the worker's state directory holding its bounded
-redacted log), and quit.
+identity and server it is bound to, and actions: show the identity/
+status text, open the server's control UI in a browser, open the Worker
+settings dialog (issue #113), reconnect (restart the runtime loop with a
+fresh bounded reconnect budget), open the diagnostics folder (the
+worker's state directory holding its bounded redacted log), and quit.
+
+Issue #113 made the packaged executable's entry point a real router:
+no-arg launch enters the compact first-run setup dialog when the worker
+is unpaired (:mod:`scarcity_router.worker_setup` is the GUI-independent
+core; the tkinter dialog lives in the packaging tree like the pystray
+adapter), the packaged ``pair`` command shares the dialog's pairing
+path, and explicit ``run``-style flags keep their CLI semantics. The
+tray's runtime factory rebuilds the local adapter registry from the
+stored non-secret local settings on every (re)connect, so a settings
+change takes effect through the existing restart machinery.
 
 Deliberate boundaries (D-044/D-049; the tray is a status surface, never
 a second control plane):
@@ -21,7 +31,7 @@ a second control plane):
   origin and the redacted diagnostic lines the runtime already exposes.
 - **Small GUI, packaging-owned adapter.** The GUI stack (pystray +
   Pillow) is an optional Windows-only extra bundled by the PyInstaller
-  build; the pystry adapter itself lives in the packaging tree
+  build; the pystray adapter itself lives in the packaging tree
   (``packaging/windows/scarcity_worker_tray_view.py``), NOT in the
   library: the core package keeps its dependency set, this module
   imports on every platform, and everything except the adapter is pure
@@ -37,6 +47,31 @@ import threading
 from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol
+
+from . import worker_setup
+from .worker_client import (
+    ConnectFactory,
+    WorkerConfigError,
+    WorkerOrigin,
+    WorkerRuntime,
+    WorkerRuntimeError,
+    build_local_adapter_registry,
+    build_parser,
+    open_worker_store,
+)
+from .worker_local_store import WorkerLocalStore
+from .worker_protocol import WorkerProtocolError
+from .worker_setup import (
+    SettingsDialogContext,
+    SetupFields,
+    WorkerSetupConfigError,
+    complete_setup,
+    control_ui_origin,
+    effective_arguments,
+    load_worker_settings,
+    resolve_launch,
+    save_settings_fields,
+)
 
 #: Tray states (closed vocabulary; icon color and status text derive from it).
 STATE_RUNNING = "running"
@@ -368,26 +403,54 @@ def run_tray_worker(
 
 
 #: The packaging side's view factory: builds the platform tray view for a
-#: model, receiving the control-UI opener and the diagnostics folder.
-ViewFactory = Callable[[TrayStateModel, Callable[[], None], Path], TrayView]
+#: model, receiving the control-UI opener, the diagnostics folder and the
+#: Worker-settings action (issue #113).
+ViewFactory = Callable[
+    [TrayStateModel, Callable[[], None], Path, Callable[[], None]], TrayView
+]
+
+#: The packaging side's setup-dialog factory (tkinter adapter; issue #113).
+SetupViewFactory = Callable[[], "worker_setup.SetupView"]
 
 
-def tray_main(argv: list[str] | None = None, *, view_factory: ViewFactory | None = None) -> int:
-    """Entry point of the packaged Windows worker executable.
+def tray_main(
+    argv: list[str] | None = None,
+    *,
+    view_factory: ViewFactory | None = None,
+    setup_view_factory: SetupViewFactory | None = None,
+    connect_factory: ConnectFactory | None = None,
+    runtime_factory: Callable[[], TrayRuntime] | None = None,
+    state_dir: str | None = None,
+) -> int:
+    """Entry point of the packaged Windows worker executable (issue #113).
 
-    Reuses the worker CLI's parser (so ``run`` flags and allowlist
-    semantics are identical by construction) and the real runtime. The
-    view factory comes from the packaging tree (the pystray adapter);
-    without one — or with the adapter unavailable — the packaged
-    executable surfaces a remediation message instead of a bare
-    ImportError (windowed executables have no console).
+    Routing (one executable, three paths):
+
+    - ``pair --server … --code …`` → packaged CLI pairing through the
+      SAME pairing path the first-run dialog drives
+      (:func:`worker_setup.pair_worker` over ``WorkerRuntime.pair``);
+      output reaches the calling PowerShell/cmd window via a
+      best-effort parent-console attach (the build is windowed);
+    - no arguments → first-run setup when unpaired (the compact setup
+      dialog from the packaging tree), the tray when paired;
+    - ``run``-style flags → explicit advanced run (tray), exactly the
+      pre-#113 CLI semantics.
+
+    The tray's runtime factory rebuilds the local adapter registry from
+    the stored local settings (:mod:`worker_setup`) on every
+    (re)connect, so a settings change takes effect through the existing
+    restart machinery. Explicit run flags that select an adapter
+    override the stored selection for that process.
 
     ``--server-ui-url URL`` (packaging-only flag) names the server's
-    web-UI origin for the tray's "Open server control UI" action. The
-    worker protocol does not carry the server's HTTP origin (it has its
-    own port), so without this flag the action derives the DOCUMENTED
-    default (https://HOST:8787 or http://HOST:8787 from the worker
-    origin's host); deployments on custom ports should pass the flag.
+    web-UI origin for the tray's "Open server control UI" action and
+    wins over the stored setting; without either, the DOCUMENTED default
+    derivation applies (https://HOST:8787 or http://HOST:8787 from the
+    worker origin's host).
+
+    ``state_dir`` is the library-level override of the ``--state-dir``
+    flag (the entry-routing and GUI seams are exercised in tests against
+    throwaway directories; production passes only ``argv``).
     """
     argv_list = list(argv) if argv is not None else []
     try:
@@ -395,41 +458,74 @@ def tray_main(argv: list[str] | None = None, *, view_factory: ViewFactory | None
     except WorkerTrayUsageError as exc:
         _pre_tray_error(str(exc))
         return 2
-    arguments = _parse_run_arguments(argv_list)
-    state_dir = _arguments_state_dir(arguments)
+
+    if argv_list and argv_list[0] == "pair":
+        return _packaged_pair(argv_list[1:], connect_factory=connect_factory)
+
     try:
-        worker_id, server_origin = load_worker_identity(state_dir)
+        arguments = _parse_run_arguments(argv_list)
+    except SystemExit:
+        # argparse rejected the flags: it already printed its usage to
+        # the (best-effort attached) console; keep the exit contract.
+        raise
+    resolved_dir = state_dir if state_dir is not None else _arguments_state_dir(arguments)
+    try:
+        worker_id, server_origin = load_worker_identity(resolved_dir)
     except (ValueError, OSError) as exc:
         _pre_tray_error(str(exc))
         return 2
-    if worker_id is None or server_origin is None:
-        _pre_tray_error(
-            "the worker is not paired yet.\n\nRun:\n"
-            + "  scarcity-router-worker pair --server srws://SERVER:8790 --code CODE\n"
-            + "(the one-time code comes from the server web UI, Workers page)"
+
+    paired = worker_id is not None and server_origin is not None
+    if resolve_launch(paired=paired) == worker_setup.FIRST_RUN:
+        if argv_list or setup_view_factory is None:
+            _pre_tray_error(_unpaired_remediation())
+            return 2
+        outcome = _run_first_run(
+            setup_view_factory, resolved_dir, connect_factory=connect_factory
         )
-        return 2
+        if outcome is None:
+            # User cancelled before pairing: no identity/config mutation.
+            return 1
+        if not outcome.ok or outcome.worker_id is None:
+            # Defensive: the dialog loop only returns on success or
+            # cancel; treat anything else as a failed setup.
+            _pre_tray_error(outcome.message or "setup failed")
+            return 2
+        try:
+            worker_id, server_origin = load_worker_identity(resolved_dir)
+        except (ValueError, OSError) as exc:
+            _pre_tray_error(str(exc))
+            return 2
+        if worker_id is None or server_origin is None:
+            _pre_tray_error("pairing completed but the stored identity could not be read")
+            return 2
+        diagnostics_dir = Path(resolved_dir) if resolved_dir else worker_state_dir()
+        if not outcome.settings_saved:
+            append_worker_log(
+                diagnostics_dir,
+                (
+                    "local settings were not saved after pairing; "
+                    + "complete them via the tray's Worker settings action",
+                ),
+            )
 
-    from .worker_client import (
-        WorkerConfigError,
-        WorkerOrigin,
-        WorkerRuntime,
-        build_local_adapter_registry,
-        open_worker_store,
-    )
-
-    diagnostics_dir = Path(state_dir) if state_dir else worker_state_dir()
+    diagnostics_dir = Path(resolved_dir) if resolved_dir else worker_state_dir()
     try:
         origin = (
             WorkerOrigin.parse(str(arguments["server"]))
             if arguments.get("server")
-            else WorkerOrigin.parse(server_origin)
+            else WorkerOrigin.parse(str(server_origin))
         )
-        store = open_worker_store(state_dir)
-        registry = build_local_adapter_registry(arguments)
+        store = open_worker_store(resolved_dir)
         origin_text = f"{'srws' if origin.tls else 'srw'}://{origin.host}:{origin.port}"
-        ui_origin = ui_url_override or (
-            f"{'https' if origin.tls else 'http'}://{origin.host}:8787"
+        try:
+            stored_settings = load_worker_settings(store)
+        except WorkerSetupConfigError:
+            # A malformed document must not choose the control-UI
+            # origin; the runtime factory fails closed on it separately.
+            stored_settings = None
+        ui_origin = control_ui_origin(
+            origin, ui_url_override or (stored_settings.server_ui_url if stored_settings else None)
         )
 
         def open_control_ui() -> None:
@@ -443,14 +539,39 @@ def tray_main(argv: list[str] | None = None, *, view_factory: ViewFactory | None
                 + "use the scarcity-router-worker console command instead"
             )
 
-        runtime_factory = lambda: WorkerRuntime(  # noqa: E731 - small factory
-            origin=origin, store=store, local_adapters=registry
+        # The settings dialog asks the tray model for the controlled
+        # restart after a successful save; the hook is bound when the
+        # real view is built (before the session thread starts), so the
+        # action can never fire into the void.
+        restart_hook: list[Callable[[], None]] = []
+
+        def open_worker_settings() -> None:
+            _open_settings_dialog(
+                setup_view_factory,
+                store,
+                worker_id or "",
+                origin_text,
+                restart=restart_hook[0] if restart_hook else None,
+            )
+
+        def make_runtime() -> WorkerRuntime:
+            return build_runtime(
+                origin=origin,
+                store=store,
+                cli_arguments=arguments,
+                state_dir=resolved_dir,
+            )
+
+        def view_wrapper(model: TrayStateModel) -> TrayView:
+            restart_hook[:] = [model.request_restart]
+            return view_factory(model, open_control_ui, diagnostics_dir, open_worker_settings)
+
+        factory: Callable[[], TrayRuntime] = (
+            runtime_factory if runtime_factory is not None else make_runtime
         )
         run_tray_worker(
-            runtime_factory=runtime_factory,
-            view_factory=lambda model: view_factory(
-                model, open_control_ui, diagnostics_dir
-            ),
+            runtime_factory=factory,
+            view_factory=view_wrapper,
             state_dir=diagnostics_dir,
             worker_id=worker_id,
             server_origin=origin_text,
@@ -461,11 +582,218 @@ def tray_main(argv: list[str] | None = None, *, view_factory: ViewFactory | None
     return 0
 
 
-def _parse_run_arguments(argv: list[str]) -> dict[str, object]:
-    """Parse ``run``-style flags with the worker CLI's own parser."""
-    from .worker_client import build_parser
+def build_runtime(
+    *,
+    origin: WorkerOrigin,
+    store: WorkerLocalStore,
+    cli_arguments: dict[str, object],
+    state_dir: str | None,
+) -> WorkerRuntime:
+    """The tray's runtime factory: settings-aware adapter registry.
 
-    if not argv or argv[0] not in {"pair", "run"}:
+    Called on every (re)connect, so a settings change (or a stored
+    malformed document) takes effect at the next runtime construction:
+    the registry is rebuilt through the EXISTING
+    ``build_local_adapter_registry`` (identical semantics to the CLI),
+    never mutated at runtime. A malformed stored document raises the
+    typed setup error — the tray surfaces the failure and the settings
+    dialog is the recovery path (fail closed, never a guess).
+    """
+    settings = load_worker_settings(store)
+    arguments = effective_arguments(cli_arguments, settings)
+    registry = build_local_adapter_registry(arguments, state_dir)
+    return WorkerRuntime(origin=origin, store=store, local_adapters=registry)
+
+
+def _open_settings_dialog(
+    setup_view_factory: SetupViewFactory | None,
+    store: WorkerLocalStore,
+    worker_id: str,
+    origin_text: str,
+    *,
+    restart: Callable[[], None] | None,
+) -> None:
+    """Open the SAME local configuration UI in its settings mode.
+
+    Reopens the first-run dialog without the pairing section (issue
+    #113): no second configuration implementation. A successful save
+    asks the tray for a controlled restart (the runtime factory rebuilds
+    the registry from the store); a cancel changes nothing.
+    """
+    if setup_view_factory is None:
+        return
+    try:
+        current = load_worker_settings(store)
+        problem: str | None = None
+    except WorkerSetupConfigError as exc:
+        current, problem = None, str(exc)
+    context = SettingsDialogContext(
+        worker_id=worker_id,
+        server_origin=origin_text,
+        current=current,
+        problem=problem,
+    )
+
+    def save(fields: SetupFields) -> "worker_setup.WorkerLocalSettings":
+        return save_settings_fields(fields, store=store)
+
+    try:
+        saved = setup_view_factory().run_settings(context, save)
+    except Exception:  # noqa: BLE001 - a dialog failure never kills the tray
+        return
+    if saved is not None and restart is not None:
+        restart()
+
+
+def _run_first_run(
+    setup_view_factory: SetupViewFactory,
+    state_dir: str | None,
+    *,
+    connect_factory: ConnectFactory | None,
+) -> worker_setup.SetupOutcome | None:
+    """Run the first-run dialog against a store opened on ``state_dir``."""
+    try:
+        setup_view = setup_view_factory()
+    except Exception as exc:  # the dialog stack itself is unavailable
+        _pre_tray_error(f"the setup dialog is unavailable ({type(exc).__name__})")
+        return None
+    store = open_worker_store(state_dir)
+    try:
+
+        def submit(fields: SetupFields) -> "worker_setup.SetupOutcome":
+            return complete_setup(fields, store=store, connect_factory=connect_factory)
+
+        return setup_view.run_first_run(submit)
+    finally:
+        store.close()
+
+
+def _packaged_pair(rest: list[str], *, connect_factory: ConnectFactory | None) -> int:
+    """The packaged ``pair`` command (issue #113): same pairing path as
+    the dialog, usable from PowerShell/cmd without Python installed."""
+    attached = _attach_parent_console()
+    arguments: dict[str, object] = dict(vars(build_parser().parse_args(["pair", *rest])))
+    state_dir = _arguments_state_dir(arguments)
+    store = open_worker_store(state_dir)
+    try:
+        origin = WorkerOrigin.parse(str(arguments["server"]))
+        identity = worker_setup.pair_worker(
+            origin,
+            str(arguments["code"]),
+            store=store,
+            device_label=(
+                str(arguments["label"]) if arguments.get("label") else None
+            ),
+            connect_factory=connect_factory,
+        )
+    except (
+        WorkerConfigError,
+        WorkerRuntimeError,
+        WorkerProtocolError,
+        ValueError,
+        OSError,
+    ) as exc:
+        message = worker_setup.describe_pairing_failure(exc)
+        print(f"worker: {message}", file=sys.stderr)
+        if not attached:
+            _pre_tray_error(message)
+        return 2
+    print(f"paired as {identity.worker_id}; identity stored")
+    store.close()
+    return 0
+
+
+def _attach_parent_console() -> bool:
+    """Best-effort: show packaged CLI output in the calling console.
+
+    The packaged executable is a windowed build (no console of its
+    own); when launched from an existing PowerShell/cmd window this
+    attaches the parent console and rebinds stdout/stderr to it, so
+    ``pair`` output is visible. Any failure leaves the (invisible)
+    streams in place — the caller falls back to the message box.
+
+    The console device is reached through the Win32 ``CreateFileW``
+    handle + fd conversion, never a filesystem open: this module writes
+    no files (the repository guardrail keeps it that way).
+    """
+    if not is_supported():
+        return False
+    try:
+        import ctypes
+        import io
+        import msvcrt
+        import os
+
+        # Windows-only Win32 console attach through the untyped ctypes
+        # shell; the narrow suppressions below are the explicit
+        # justification (constant arguments, no credential data).
+        windll: object = ctypes.windll  # type: ignore[attr-defined] - Windows only
+        kernel32 = getattr(windll, "kernel32")  # pyright: ignore[reportAny]
+        attach = getattr(kernel32, "AttachConsole")  # pyright: ignore[reportAny]
+        create_file = getattr(kernel32, "CreateFileW")  # pyright: ignore[reportAny]
+        ATTACH_PARENT_PROCESS = 0xFFFFFFFF
+        if not attach(ATTACH_PARENT_PROCESS):
+            return False
+        GENERIC_WRITE = 0x40000000
+        FILE_SHARE_READ_WRITE = 0x3
+        OPEN_EXISTING = 3
+        handle: int | None = create_file(  # pyright: ignore[reportAny]
+            "CONOUT$",
+            GENERIC_WRITE,
+            FILE_SHARE_READ_WRITE,
+            None,
+            OPEN_EXISTING,
+            0,
+            None,
+        )
+        if not isinstance(handle, int) or handle == -1:  # INVALID_HANDLE_VALUE
+            return False
+        console = msvcrt.open_osfhandle(handle, 0)
+        _ = os.dup2(console, 1)
+        _ = os.dup2(console, 2)
+        sys.stdout = io.TextIOWrapper(
+            io.FileIO(1, "w", closefd=False), encoding="utf-8", errors="replace"
+        )
+        sys.stderr = io.TextIOWrapper(
+            io.FileIO(2, "w", closefd=False), encoding="utf-8", errors="replace"
+        )
+        return True
+    except Exception:
+        return False
+
+
+def _invoked_packaged_name() -> str:
+    """The packaged executable's own name for remediation messages."""
+    invoked = Path(sys.argv[0]).name if sys.argv and sys.argv[0] else ""
+    if invoked.startswith("scarcity-worker"):
+        return invoked
+    return "scarcity-worker.exe"
+
+
+def _unpaired_remediation() -> str:
+    """The unpaired remediation text, naming THIS executable (issue #113).
+
+    The standalone ZIP contains only ``scarcity-worker.exe``; its
+    instructions must never send the user to the Python console script
+    (the v0.1.0 first-launch dead end).
+    """
+    exe = _invoked_packaged_name()
+    return (
+        "the worker is not paired yet.\n\n"
+        + "Double-click this executable and complete the first-run setup, or run:\n"
+        + f"  {exe} pair --server srws://SERVER:8790 --code CODE\n"
+        + "(the one-time code comes from the server web UI, Workers page)"
+    )
+
+
+def _parse_run_arguments(argv: list[str]) -> dict[str, object]:
+    """Parse ``run``-style flags with the worker CLI's own parser.
+
+    ``pair`` never reaches here (the packaged router intercepts it); any
+    other leading word is treated as a run flag, so argparse's rejection
+    behavior stays exactly what the pre-#113 executable did.
+    """
+    if not argv or argv[0] != "run":
         argv = ["run", *argv]
     arguments: dict[str, object] = dict(vars(build_parser().parse_args(argv)))
     if arguments.get("command") != "run":
@@ -540,6 +868,7 @@ __all__ = [
     "WORKER_LOG_MAX_BYTES",
     "WORKER_LOG_NAME",
     "append_worker_log",
+    "build_runtime",
     "is_supported",
     "load_worker_identity",
     "run_tray_worker",

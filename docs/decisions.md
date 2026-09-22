@@ -3422,6 +3422,93 @@ what M4.1 forbids); a configurable per-provider eligibility policy
   new superseding decision; no repository-side monitoring exists. The
   bullets above are historical question/answer provenance and are unchanged.
 
+### D-051 — Compact first-run setup dialog for the packaged Windows worker
+
+- **Status:** Accepted (issue #113; remediates the v0.1.0 first-launch
+  release blocker observed on Windows 11)
+- **Date:** 2026-09-22
+- **Issue:** #113 — the standalone Windows ZIP (`scarcity-worker.exe`)
+  told users to run `scarcity-router-worker pair`, a Python console
+  script the ZIP does not contain; `docs/m10-acceptance.md` already
+  claimed the Windows package "asks for pairing information in its
+  first-run dialog", which was untrue.
+- **Confidence:** High — the implementation reuses every existing seam
+  (`WorkerRuntime.pair`, `WorkerLocalStore`, `WorkerOrigin`,
+  `build_local_adapter_registry`, the tray restart machinery), adds one
+  small stdlib GUI surface, and is discriminatingly tested on every
+  platform.
+- **Decision:**
+  1. **One compact dialog, two modes — not a configuration
+     application.** The packaged executable's no-arg launch routes
+     unpaired workers into a first-run setup dialog (server origin +
+     one-time code + optional "Enable local Ollama") and paired workers
+     into the tray; the tray gains a "Worker settings..." action that
+     reopens the SAME dialog without the pairing section. The dialog is
+     stdlib `tkinter`, owned by the packaging tree
+     (`packaging/windows/scarcity_worker_setup_view.py`) exactly like
+     the pystray tray view — the library keeps its dependency set and
+     the GUI-independent core (`scarcity_router.worker_setup`) is
+     unit-tested everywhere. No Electron/Qt/web stack, no wizard, no
+     second process, no configuration server.
+  2. **One pairing system.** The dialog and the packaged `pair` CLI
+     command both drive `worker_setup.pair_worker`, a thin orchestration
+     over the existing `WorkerRuntime.pair` (protocol handshake +
+     `WorkerLocalStore` persistence); the Python console script keeps
+     driving `WorkerRuntime.pair` directly. The packaged `pair` command
+     attaches the parent console best-effort so output is visible from
+     PowerShell/cmd despite the windowed build. The pairing code is
+     never persisted, logged or echoed in failure text.
+  3. **Typed, versioned, non-secret local settings in the EXISTING
+     store.** The settings document (`WorkerLocalSettings`: optional
+     control-UI origin + optional loopback Ollama
+     resource/host/port) persists as one strictly parsed JSON value in
+     `WorkerLocalStore` (`local_settings` key; schema version 1; exact
+     key set; bounded size; atomic SQLite write). Malformed documents
+     fail closed into a recoverable settings state — never a guess,
+     never a second pairing code. Precedence: explicit CLI `run` flags
+     that select an adapter replace the stored selection for that
+     process; otherwise the stored settings drive the registry, which
+     is rebuilt through the existing `build_local_adapter_registry` on
+     every (re)connect so a settings save takes effect via the tray's
+     existing restart machinery.
+  4. **The allowlist stays local (D-044).** The GUI can only describe a
+     loopback Ollama endpoint; `worker_setup` refuses non-loopback hosts
+     before anything is paired or persisted, and `LoopbackOllamaAdapter`
+     re-validates at its own construction. The server can never expand
+     the allowlist remotely; server-side setup (adding the
+     `worker_bridged` resource) remains server-side.
+  5. **Honest platform surface.** Windows-native Codex execution stays
+     `platform_not_evidenced`: the dialog exposes no Codex section (its
+     source contains no codex token, asserted by test), the settings
+     schema rejects unknown fields, and the evidenced Linux/WSL Codex
+     path remains CLI/config-driven and fail-closed. TLS discipline is
+     unchanged (verified certificates; certificate-trust problems are
+     actionable errors, never bypassed).
+- **Reason:** The standalone product must be usable from a double-click
+  with no Python, no repository and no manually created files, while
+  worker-local adapter authority (D-044) requires a LOCAL configuration
+  surface. The smallest professional mechanism that satisfies both is a
+  single stdlib dialog over the existing stores; docs truth
+  (m10-acceptance's first-run claim) is restored by making the claim
+  true.
+- **Alternatives considered:** Electron/Qt/web-UI configuration app
+  (rejected: a new application and dependency surface for one dialog,
+  contrary to the owner's explicit constraint); pystray-native dialogs
+  (rejected: pystray has no form/dialog capability; would still need a
+  GUI toolkit); a sidecar JSON file next to the store (rejected:
+  `WorkerLocalStore.save_value` already gives atomic, bounded,
+  validated single-row persistence — a second file adds a second
+  durability story without migration need); exposing Windows Codex in
+  the dialog behind a warning (rejected: advertising an unevidenced
+  execution surface, however caveated, invites use before evidence);
+  auto-deriving the control-UI origin only from ports (kept as the
+  documented fallback — https://HOST:8787 — with the stored setting and
+  the `--server-ui-url` flag as the explicit overrides).
+- **Boundary:** The packaged Windows worker's first-run experience
+  (issue #113) only. No selector, routing, protocol, frozen-interface
+  or server-side change; the M05 worker protocol and the four console
+  scripts are untouched.
+
 ## Superseding a decision
 
 Add a new numbered entry with its status, date, evidence and `Supersedes: D-nnn`.
