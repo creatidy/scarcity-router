@@ -51,7 +51,11 @@ from tests.m10_fixtures import (
     RESPONSE_MARKER,
     RealTimeServerHarness,
 )
-from tests.openai_http_fixtures import FAKE_PROVIDER_KEY, ScriptedProviderServer
+from tests.openai_http_fixtures import (
+    FAKE_PROVIDER_KEY,
+    ScriptedProviderServer,
+    ScriptedResponse,
+)
 from tests.server_fixtures import (
     FAKE_ADMIN_PASSWORD,
     FAKE_PROVIDER_SECRET,
@@ -697,6 +701,152 @@ class DiagnosticsAndExportTests(RealTimeServerHarness):
         self.assertNotIn(FAKE_PROVIDER_SECRET, rendered)
         self.assertNotIn(PROMPT_MARKER, rendered)
         self.assertNotIn(RESPONSE_MARKER, rendered)
+
+
+class FirstRunAvailabilityTests(RealTimeServerHarness):
+    """The documented first-run path with NO test-side observation.
+
+    Release-readiness fix: a freshly configured server-direct resource is
+    ``never_observed``; the request-loop refresh (M01 ``refresh_due`` plus
+    the M04 quota-free readiness probe) must observe it on first
+    execution, so a first-run administrator can execute through the
+    documented onboarding flow without any developer-only seam.
+    """
+
+    @override
+    def setUp(self) -> None:
+        super().setUp()
+        self.onboard()
+
+    def test_scenario_17_first_run_execution_observes_the_resource(self) -> None:
+        provider = ScriptedProviderServer()
+        provider.start()
+        self.addCleanup(provider.stop)
+        status, _payload = self.admin_post(
+            "/control/providers",
+            {
+                "provider_id": "fake-openai",
+                "adapter_id": "openai-api",
+                "base_url": provider.origin,
+                "secret": FAKE_PROVIDER_SECRET,
+            },
+        )
+        self.assertEqual(200, status)
+        status, _payload = self.admin_post(
+            "/control/resources",
+            {
+                "registration": {
+                    "identity": {
+                        "resource_id": "fake-openai-1",
+                        "channel": "server_direct_http",
+                        "provider": "openai",
+                        "model": "gpt-5.6-luna",
+                        "entitlement": "payg_metered",
+                    },
+                    "freshness_ttl_seconds": 3600,
+                    "capabilities": {"context_limit_tokens": 272_000},
+                },
+                "enabled": True,
+                "endpoint_id": "fake-openai",
+            },
+        )
+        self.assertEqual(200, status)
+
+        # The readiness probe GET hits the documented path first (the
+        # scripted provider answers it 405 like a real POST-only
+        # endpoint); the completion behavior is for the execution POST.
+        provider.enqueue(lambda _request: ScriptedResponse(405, {}, b""))
+        provider.enqueue_completion(content=RESPONSE_MARKER)
+        status, payload, _headers = self.exchange(
+            "POST",
+            "/v1/chat/completions",
+            {
+                "model": "sr-pin:fake-openai-1/openai/gpt-5.6-luna/max",
+                "messages": [{"role": "user", "content": PROMPT_MARKER}],
+            },
+            headers={"Authorization": f"Bearer {self.client_key}"},
+        )
+        self.assertEqual(200, status, str(payload)[:400])
+        document = cast("dict[str, object]", payload)
+        choices = cast("list[dict[str, object]]", document["choices"])
+        message = cast("dict[str, object]", choices[0]["message"])
+        self.assertEqual(RESPONSE_MARKER, message["content"])
+
+        # The readiness probe (GET on the documented path) preceded the
+        # execution POST: the SERVER observed the resource, not a test
+        # seam.
+        self.assertEqual(2, len(provider.requests))
+        self.assertEqual("GET", provider.requests[0].method)
+        self.assertEqual("POST", provider.requests[1].method)
+        self.assertEqual("/v1/chat/completions", provider.requests[0].path)
+
+        # The acceptance ladder now reports the resource available with
+        # no unmet stage.
+        status, payload, _headers = self.exchange("GET", "/control/diagnostics")
+        self.assertEqual(200, status)
+        document = cast("dict[str, object]", payload)
+        ladders = {
+            str(row["resource_id"]): row
+            for row in cast("list[dict[str, object]]", document["resources"])
+        }
+        ladder = ladders["fake-openai-1"]
+        self.assertTrue(ladder["available"])
+        self.assertIsNone(ladder["first_blocked_stage"])
+
+    def test_scenario_18_connection_test_records_the_observation(self) -> None:
+        provider = ScriptedProviderServer()
+        provider.start()
+        self.addCleanup(provider.stop)
+        status, _payload = self.admin_post(
+            "/control/providers",
+            {
+                "provider_id": "fake-openai",
+                "adapter_id": "openai-api",
+                "base_url": provider.origin,
+                "secret": FAKE_PROVIDER_SECRET,
+            },
+        )
+        self.assertEqual(200, status)
+        status, _payload = self.admin_post(
+            "/control/resources",
+            {
+                "registration": {
+                    "identity": {
+                        "resource_id": "fake-openai-1",
+                        "channel": "server_direct_http",
+                        "provider": "openai",
+                        "model": "gpt-5.6-luna",
+                        "entitlement": "payg_metered",
+                    },
+                    "freshness_ttl_seconds": 3600,
+                    "capabilities": {"context_limit_tokens": 272_000},
+                },
+                "enabled": True,
+                "endpoint_id": "fake-openai",
+            },
+        )
+        self.assertEqual(200, status)
+
+        # The quota-free connection test IS the documented "trigger a
+        # health check" action: its probe result becomes the resource's
+        # observation.
+        status, payload = self.admin_post(
+            "/control/resources/fake-openai-1/connection-test", {}
+        )
+        self.assertEqual(200, status)
+        document = cast("dict[str, object]", payload)
+        checks = {
+            str(check["check"]): check
+            for check in cast("list[dict[str, object]]", document["checks"])
+        }
+        self.assertTrue(checks["provider_health"]["passed"])
+        status, payload, _headers = self.exchange("GET", "/control/diagnostics")
+        document = cast("dict[str, object]", payload)
+        ladders = {
+            str(row["resource_id"]): row
+            for row in cast("list[dict[str, object]]", document["resources"])
+        }
+        self.assertTrue(ladders["fake-openai-1"]["available"])
 
 
 def _audit_payloads(data_dir: Path) -> list[str]:

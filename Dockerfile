@@ -81,7 +81,13 @@ CMD ["--host", "127.0.0.1", "--port", "8787", "--data-dir", "/data"]
 # Liveness against the one unauthenticated endpoint (GET /healthz returns
 # {"status":"ok"}); it invokes no collector and reads no store. The probe
 # targets the container's fixed internal port: keep the internal listener
-# on 8787 and adjust exposure on the host side (port publishing, TLS bind);
-# if you must change the internal port, override the healthcheck too.
+# on 8787 and adjust exposure on the host side (port publishing, TLS bind).
+# TLS deployments (any non-loopback bind requires TLS) set SR_HEALTHCHECK_URL
+# to the https:// URL and SR_HEALTHCHECK_CA to the mounted CA certificate, so
+# the probe speaks VERIFIED TLS with the same CA the clients use — the
+# healthcheck never weakens certificate verification. SR_HEALTHCHECK_URL must
+# name a host or IP that appears in the certificate's SAN list (e.g. point it
+# at the certificate's DNS name, or issue the certificate with a 127.0.0.1 IP
+# SAN when probing the loopback URL).
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD ["python", "-c", "import urllib.request; response = urllib.request.urlopen('http://127.0.0.1:8787/healthz', timeout=4); raise SystemExit(0 if response.status == 200 else 1)"]
+    CMD ["python", "-c", "import os, ssl, urllib.request; url = os.environ.get('SR_HEALTHCHECK_URL', 'http://127.0.0.1:8787/healthz'); ca = os.environ.get('SR_HEALTHCHECK_CA'); context = ssl.create_default_context(cafile=ca) if ca else None; response = urllib.request.urlopen(url, timeout=4, context=context); raise SystemExit(0 if response.status == 200 else 1)"]

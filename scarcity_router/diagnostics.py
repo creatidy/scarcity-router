@@ -376,20 +376,22 @@ def _first_blocked(
             return (
                 "available",
                 "no registry observation is available for this resource: "
-                + "wait for collection or verify the registration",
+                + "verify the registration",
             )
         if entry.observation is None:
             return (
                 "available",
-                "the resource has never been observed: wait for its "
-                + "collection cadence or trigger a health check",
+                "the resource has never been observed: the server probes "
+                + "enabled server-direct resources at their polling cadence "
+                + "(default 300 s) and records the connection test's probe; "
+                + "run the connection test to probe now",
             )
         if entry.freshness != "fresh":
             return (
                 "available",
                 "the last observation is "
-                + f"{entry.freshness}: check the resource's reachability "
-                + "and its freshness TTL configuration",
+                + f"{entry.freshness}: the server re-probes at the resource's "
+                + "polling cadence, or run the connection test to probe now",
             )
         return (
             "available",

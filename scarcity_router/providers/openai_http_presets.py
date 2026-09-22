@@ -302,7 +302,12 @@ ZAI_CODING_PLAN_PRESET = ProviderPreset(
     ),
     policy=TranslationPolicy(
         preset_id="zai-coding-plan",
-        endpoint_path="/chat/completions",
+        # The documented Chat Completions base URL is
+        # https://api.z.ai/api/coding/paas/v4 (evidence ref above).
+        # Administrators configure a BARE origin, so the preset endpoint
+        # path carries the documented base path — the same rule the
+        # OpenRouter preset follows for https://openrouter.ai/api/v1.
+        endpoint_path="/api/coding/paas/v4/chat/completions",
         max_tokens_field="max_tokens",
         developer_role="reject",
         tool_choice_policy="auto_only",

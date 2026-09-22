@@ -93,9 +93,11 @@ from .machine_api import (
     simulation_envelope,
     status_envelope,
 )
-from .capacity import CapacitySnapshot
+from .capacity import CapacityDiagnostic, CapacitySnapshot
 from .eligibility import ExecutionEligibility
 from .resource_state import (
+    RESOURCE_STATE_SCHEMA_VERSION,
+    ResourceHealth,
     ResourceRegistration,
     ResourceRegistry,
     ResourceStateSnapshot,
@@ -131,7 +133,10 @@ from .server_config import (
     ServerConfiguration,
 )
 from .server_store import ServerStore, ServerStoreError
-from .providers.openai_http_adapter import OpenAICompatibleHttpAdapter
+from .providers.openai_http_adapter import (
+    HealthProbeResult,
+    OpenAICompatibleHttpAdapter,
+)
 from .status import StatusCollectors, collect_status
 from .worker_endpoint import WorkerEndpoint
 from .worker_identity_store import (
@@ -1613,7 +1618,8 @@ class ControlPlane:
                     "set the provider credential through the providers page",
                 )
             if bound and identity.channel == "server_direct_http":
-                probed = self._probe_provider_health(resource, record)
+                probed, probe_result = self._probe_provider_health(resource, record)
+                self._record_probe_observation(resource, probe_result)
         passed = all(bool(check["passed"]) for check in checks)
         return {
             "resource_id": resource_id,
@@ -1626,8 +1632,9 @@ class ControlPlane:
                 + "never an inference request"
                 if probed
                 else (
-                    "quota-free test; this preset evidences no health "
-                    + "endpoint, so no provider request was made"
+                    "quota-free test; no readiness probe ran for this "
+                    + "resource (no adapter is composed for its channel), "
+                    + "so no provider request was made"
                     if identity.channel == "server_direct_http"
                     and resource.endpoint_id is not None
                     else (
@@ -1642,22 +1649,23 @@ class ControlPlane:
         self,
         resource: ResourceConfig,
         record: Callable[[str, bool, str, str], None],
-    ) -> bool:
-        """Run the M04 adapter's quota-free health probe when possible.
+    ) -> tuple[bool, "HealthProbeResult | None"]:
+        """Run the M04 adapter's quota-free readiness probe when possible.
 
-        Returns ``True`` when a probe actually ran (its check is appended);
-        ``False`` when the resource is unbound, no adapter is composed for
-        the channel, or the preset evidences no health endpoint — states
-        that stay honestly absent from the check list.
+        Returns ``(ran, result)``: a probe actually ran (its check is
+        appended and the outcome is recorded as an observation by the
+        caller) versus the states where nothing was probed — unbound,
+        no adapter composed for the channel. Those stay honestly absent
+        from the check list rather than reported fake-green.
         """
         adapter = self._adapters.resolve("server_direct_http")
         if not isinstance(adapter, OpenAICompatibleHttpAdapter):
-            return False
+            return False, None
         result = adapter.probe_health(
             resource.registration.identity.resource_id
         )
         if result.status == "unsupported_preset":
-            return False
+            return False, None
         if result.status == "refused":
             record(
                 "provider_health",
@@ -1666,7 +1674,7 @@ class ControlPlane:
                 "bind a provider endpoint (with the M04 preset) to this "
                 + "resource",
             )
-            return True
+            return True, result
         passed = result.status == "ok"
         record(
             "provider_health",
@@ -1674,7 +1682,7 @@ class ControlPlane:
             result.note or f"health probe status: {result.status}",
             "verify the endpoint's origin, credential and reachability",
         )
-        return True
+        return True, result
 
     def _run_generation_test(self, resource_id: str) -> dict[str, object]:
         resource = self._config.resource_by_id(resource_id)
@@ -1939,9 +1947,111 @@ class ControlPlane:
         self._observations[snapshot.identity.resource_id] = snapshot
         self.current_application().registry.apply_snapshot(snapshot)
 
+    # ── Server-direct readiness observations (M01 refresh seam) ──────────
+
+    #: Probe outcome → resource-health status. ``refused`` and
+    #: ``unsupported_preset`` map to nothing: nothing was observed, and
+    #: the resource stays honestly unobserved.
+    _PROBE_OUTCOME_TO_HEALTH: Mapping[str, str] = {
+        "ok": "ok",
+        "auth_rejected": "auth_required",
+        "unreachable": "unavailable",
+        "schema_drift": "schema_changed",
+    }
+
+    def _record_probe_observation(
+        self,
+        resource: ResourceConfig,
+        result: "HealthProbeResult | None",
+    ) -> None:
+        """Record one readiness probe as the resource's observation.
+
+        The M01 contract deliberately carries no background refresh: the
+        registry exposes ``refresh_due`` and the server's request loop
+        (and the connection test) observe due resources through this
+        seam. Non-``ok`` outcomes are recorded honestly — an endpoint
+        that rejects the credential, answers 404 on the documented path
+        or cannot be reached is EXACTLY the state the acceptance ladder
+        and execution admission must see. A probe that could not run
+        changes nothing.
+        """
+        if result is None:
+            return
+        health_status = self._PROBE_OUTCOME_TO_HEALTH.get(result.status)
+        if health_status is None:
+            return
+        try:
+            self.apply_resource_observation(
+                ResourceStateSnapshot(
+                    schema_version=RESOURCE_STATE_SCHEMA_VERSION,
+                    identity=resource.registration.identity,
+                    observed_at=format_utc(self._clock()),
+                    health=_health_from_probe(health_status),
+                )
+            )
+        except Exception:
+            # An unusable probe outcome (store/config race) must never
+            # break the surface that ran it; the resource simply stays
+            # at its previous observation state.
+            return
+
+    def prepare_execution_admission(self) -> None:
+        """Observe due server-direct resources before execution admission.
+
+        Called by the execution server's request loop (the M01
+        ``refresh_due`` contract): every enabled, bound, composed
+        ``server_direct_http`` resource whose polling cadence says it is
+        due is probed once through the M04 adapter's quota-free readiness
+        probe and the outcome is recorded as its observation. A resource
+        that was never observed therefore becomes observable on the
+        documented first-run path instead of being permanently
+        ``target_unavailable``. Never runs an inference request and never
+        raises: probing problems degrade to the previous observation
+        state.
+        """
+        try:
+            registry = self.current_application().registry
+            now = format_utc(self._clock())
+            due = registry.refresh_due(now=now)
+        except Exception:
+            return
+        adapter = self._adapters.resolve("server_direct_http")
+        if not isinstance(adapter, OpenAICompatibleHttpAdapter):
+            return
+        for resource_id in due:
+            resource = self._config.resource_by_id(resource_id)
+            if (
+                resource is None
+                or not resource.enabled
+                or resource.registration.identity.channel != "server_direct_http"
+            ):
+                continue
+            try:
+                result = adapter.probe_health(resource_id)
+            except Exception:
+                continue
+            self._record_probe_observation(resource, result)
+
+
+#: Non-``ok`` resource-health statuses require their status-level
+#: diagnostic code (the capacity v3 mapping); probe-derived observations
+#: carry exactly that one diagnostic.
+_PROBE_HEALTH_REQUIRED_DIAGNOSTIC: Mapping[str, str] = {
+    "unavailable": "source_unavailable",
+    "auth_required": "auth_required",
+    "schema_changed": "schema_changed",
+}
+
+
+def _health_from_probe(health_status: str) -> ResourceHealth:
+    required = _PROBE_HEALTH_REQUIRED_DIAGNOSTIC.get(health_status)
+    diagnostics = (
+        (CapacityDiagnostic(code=required),) if required is not None else ()
+    )
+    return ResourceHealth(status=health_status, diagnostics=diagnostics)
+
 
 # ── Small configuration-record helpers ────────────────────────────────────────
-
 
 def _with_enabled(resource: ResourceConfig, enabled: bool) -> ResourceConfig:
     return ResourceConfig(

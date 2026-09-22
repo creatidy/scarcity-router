@@ -16,35 +16,51 @@ Scarcity Router currently provides:
   application/core;
 - a provenance-bearing catalog and data-driven task profiles;
 - an installable local package (D-034) with a default user configuration
-  (D-036).
+  (D-036);
+- the implemented optional execution gateway (D-040 through D-049): one
+  composed server with an authenticated OpenAI-compatible execution surface,
+  control API and web UI, generic OpenAI-compatible HTTP/Ollama adapters,
+  a native outbound-TLS worker, and the Codex worker-local adapter — with
+  distribution and acceptance work complete subject to the explicit external
+  gates recorded in
+  [`docs/m10-acceptance.md`](m10-acceptance.md).
 
 Recommendation-only operation is the default and remains fully supported
 throughout everything below.
 
-## Execution-Gateway Program (A0, issues #85–#95)
+## Execution-Gateway Program (A0, issues #85–#95) — COMPLETE
 
-The owner-approved optional execution gateway (D-040, 2026-09-19) is specified
-and tracked as a module program. Architecture, decisions and contracts are
-merged as A0 (#85); implementation proceeds per module:
+The owner-approved optional execution gateway (D-040, 2026-09-19) is
+specified (A0, #85) and fully implemented. Completion state per module,
+with the honest evidence and remaining external gates:
 
-| Planning id | Issue | Scope |
-| --- | --- | --- |
-| M01 | #86 | Resource registry, state, and collectors for executable resources |
-| M02 | #87 | Routing core, policy, and client-requirement binding for executable targets |
-| M03 | #88 | OpenAI-compatible gateway and execution coordinator |
-| M04 | #89 | Generic OpenAI-compatible HTTP adapter and Ollama integration |
-| M05 | #90 | Native worker, pairing, and execution transport |
-| M06 | #91 | Codex adapter (Stage 1 evidence may run anytime) |
-| M07 | #92 | ZCode adapter feasibility — Stage 1 complete; Stage 2 cancelled (D-047) |
-| M08 | #93 | MCP, REST, and CLI compatibility; optional remote mode |
-| M09 | #94 | Configuration, web UX, and diagnostics |
-| M10 | #95 | Distribution, installation, update, and end-to-end acceptance |
+| Planning id | Issue | Scope | Completion state |
+| --- | --- | --- | --- |
+| A0 | #85 | Architecture, decisions, contracts | Complete |
+| M01 | #86 | Resource registry, state, and collectors for executable resources | Complete |
+| M02 | #87 | Routing core, policy, and client-requirement binding for executable targets | Complete |
+| M03 | #88 | OpenAI-compatible gateway and execution coordinator | Complete |
+| M04 | #89 | Generic OpenAI-compatible HTTP adapter and Ollama integration | Complete |
+| M05 | #90 | Native worker, pairing, and execution transport | Complete |
+| M06 | #91 | Codex adapter (Stage 1 evidence + Stage 2 implementation) | Complete subject to the recorded `EXTERNAL_ACCEPTANCE_GATE: LIVE_CODEX_SUBSCRIPTION` live-acceptance gate |
+| M07 | #92 | ZCode adapter feasibility | Stage 1 complete; Stage 2 cancelled (D-047) |
+| M08 | #93 | MCP, REST, and CLI compatibility; optional remote mode | Complete |
+| M09 | #94 | Configuration, web UX, and diagnostics | Complete |
+| M10 | #95 | Distribution, installation, update, and end-to-end acceptance | Implementation and deterministic acceptance complete subject to the explicit external gates in [`docs/m10-acceptance.md`](m10-acceptance.md) |
 
-The recommended order is the first useful vertical slice — M01/M02 → M03/M04
-with the minimum M09/M10 support each slice needs — so a user can route real
-API/Ollama resources through one OpenAI-compatible endpoint before all local
-CLI adapters are complete. Then M05 and M06; M08 guards compatibility
-throughout. M07 ran as an independent research track and never blocked the
+The acceptance records are
+[`docs/m10-acceptance.md`](m10-acceptance.md) (platform support table,
+sixteen-mission-scenario E2E matrix, measured first-run friction,
+external gates) and
+[`docs/m10-security-acceptance.md`](m10-security-acceptance.md) (the
+26-row security matrix mapped to the D-044 threat model). The remaining
+external gates — live Codex subscription acceptance, live Windows
+acceptance, Windows code signing and PyPI Trusted Publisher
+configuration — are owner actions recorded there and in
+[`docs/release-engineering.md`](release-engineering.md); none of them is
+unrecorded implementation work.
+
+M07 ran as an independent research track and never blocked the
 program: its Stage-1 feasibility evidence is complete
 ([`docs/zcode-adapter-stage1-evidence.md`](zcode-adapter-stage1-evidence.md))
 and Stage 2 was cancelled by owner decision (D-047) — no ZCode execution
@@ -54,10 +70,12 @@ the ZCode desktop application only: Z.ai Coding Plan execution remains in
 scope through M04's generic OpenAI-compatible HTTP adapter, which is a
 different access path from the ZCode runtime.
 
-A CI and public release-engineering foundation (#97,
-[`docs/release-engineering.md`](release-engineering.md), D-046) lands before
-module implementation starts; M10 (#95) builds its distribution and
-acceptance work on that foundation.
+The CI and public release-engineering foundation (#97,
+[`docs/release-engineering.md`](release-engineering.md), D-046) is in
+place: Forgejo development CI runs the authoritative gate plus the
+package check on every `develop` push and PR, and the tag-driven public
+release pipeline is implemented with its owner-side activation steps
+recorded.
 
 ## Future Direction
 

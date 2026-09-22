@@ -17,6 +17,7 @@ from scarcity_router.routing_core import (
 )
 from scarcity_router.server_config import (
     CONFIG_SCHEMA_VERSION,
+    SERVER_DIRECT_DEFAULT_POLL_INTERVAL_SECONDS,
     ProviderEndpointConfig,
     ServerConfigError,
     ServerConfiguration,
@@ -171,6 +172,35 @@ class FailClosedTests(unittest.TestCase):
         with self.assertRaises(ServerConfigError):
             _config = ServerConfiguration.from_document(document)
             _ = _config
+
+
+class PollingDefaultTests(unittest.TestCase):
+    """Server-side availability policy is authoritative (M01/U-003).
+
+    Server-direct HTTP resources get the bounded default polling cadence
+    so the server's readiness probes can observe them; an explicit
+    administrator cadence always wins.
+    """
+
+    def test_server_direct_registration_gets_the_default_cadence(self) -> None:
+        document = full_document()
+        config = ServerConfiguration.from_document(document)
+        resource = config.resource_by_id("zai-plan-1")
+        assert resource is not None
+        self.assertEqual(
+            SERVER_DIRECT_DEFAULT_POLL_INTERVAL_SECONDS,
+            resource.registration.poll_interval_seconds,
+        )
+
+    def test_explicit_cadence_is_preserved(self) -> None:
+        document = full_document()
+        resources = cast("list[dict[str, object]]", document["resources"])
+        registration = cast("dict[str, object]", resources[0]["registration"])
+        registration["poll_interval_seconds"] = 60
+        config = ServerConfiguration.from_document(document)
+        resource = config.resource_by_id("zai-plan-1")
+        assert resource is not None
+        self.assertEqual(60, resource.registration.poll_interval_seconds)
 
 
 class ProviderOriginDisciplineTests(unittest.TestCase):
