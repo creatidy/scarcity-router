@@ -206,14 +206,31 @@ def tls_context_for_worker() -> ssl.SSLContext:
     return ssl.create_default_context()
 
 
+#: The session socket's I/O ceiling once the connection is established.
+#: The protocol keeps the link alive (worker heartbeats at the
+#: server-advertised cadence, server acks; the server's liveness monitor
+#: closes silent workers at three intervals), so this ceiling sits far
+#: above the heartbeat cadence. It must NEVER be the short connect
+#: timeout: the worker read loop treats a socket timeout as connection
+#: loss and reconnects, so a short ceiling tears down healthy idle
+#: sessions (observed as mid-execution drops in the M10 acceptance suite).
+SESSION_IO_TIMEOUT_SECONDS = 60.0
+
+
 def default_connect_factory(origin: WorkerOrigin) -> FrameTransport:
-    """TCP (+ TLS when the origin requires it) transport for one origin."""
+    """TCP (+ TLS when the origin requires it) transport for one origin.
+
+    The connect phase is bounded by ``create_connection``'s 10 s timeout;
+    the established session socket then gets the long protocol-sane I/O
+    ceiling (:data:`SESSION_IO_TIMEOUT_SECONDS`) — see its documentation.
+    """
     raw = socket.create_connection((origin.host, origin.port), timeout=10.0)
     try:
         if origin.tls:
             raw = tls_context_for_worker().wrap_socket(
                 raw, server_hostname=origin.host
             )
+        _ = raw.settimeout(SESSION_IO_TIMEOUT_SECONDS)
         return SocketTransport(raw)
     except BaseException:
         try:
@@ -290,6 +307,8 @@ class WorkerRuntime:
         self._interrupted: deque[str] = deque(maxlen=1024)
         self._stop_event: threading.Event = threading.Event()
         self._stop_reason: str = STOP_NONE
+        self._session_lock: threading.Lock = threading.Lock()
+        self._active_sender: "_FrameSender | None" = None
 
     # ── Public surface ───────────────────────────────────────────────
 
@@ -344,9 +363,19 @@ class WorkerRuntime:
         return tuple(line.render() for line in self._diagnostics)
 
     def request_stop(self) -> None:
-        """Ask the run loop to stop at the next boundary."""
+        """Ask the run loop to stop at the next boundary.
+
+        Stop ownership is deterministic, never timing-based: the active
+        session's transport is closed here so a read blocked in
+        ``recv`` unwinds immediately (EOF/connection error), instead of
+        waiting on a socket timeout to happen to break the block.
+        """
         self._stop_event.set()
         self._stop_reason = STOP_REQUESTED
+        with self._session_lock:
+            sender = self._active_sender
+        if sender is not None:
+            sender.close()
 
     @property
     def stop_reason(self) -> str:
@@ -451,6 +480,23 @@ class WorkerRuntime:
         """One connection's session; returns why it ended."""
         sender = _FrameSender(transport)
         reader = FrameReader(transport)
+        # Registered so request_stop can close the transport and unblock a
+        # read parked in recv (deterministic stop, never timeout-based).
+        with self._session_lock:
+            self._active_sender = sender
+        try:
+            result = self._session_body(sender, reader, identity)
+        finally:
+            with self._session_lock:
+                self._active_sender = None
+        return result
+
+    def _session_body(
+        self,
+        sender: "_FrameSender",
+        reader: FrameReader,
+        identity: WorkerLocalIdentity,
+    ) -> str:
         try:
             sender.send(
                 HelloMessage(
