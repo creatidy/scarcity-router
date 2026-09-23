@@ -517,65 +517,72 @@ def tray_main(
             else WorkerOrigin.parse(str(server_origin))
         )
         store = open_worker_store(resolved_dir)
-        origin_text = f"{'srws' if origin.tls else 'srw'}://{origin.host}:{origin.port}"
         try:
-            stored_settings = load_worker_settings(store)
-        except WorkerSetupConfigError:
-            # A malformed document must not choose the control-UI
-            # origin; the runtime factory fails closed on it separately.
-            stored_settings = None
-        ui_origin = control_ui_origin(
-            origin, ui_url_override or (stored_settings.server_ui_url if stored_settings else None)
-        )
-
-        def open_control_ui() -> None:
-            import webbrowser
-
-            _ = webbrowser.open(f"{ui_origin}/admin")
-
-        if view_factory is None:
-            raise TrayNotAvailableError(
-                "the packaged worker was built without the tray view; "
-                + "use the scarcity-router-worker console command instead"
+            # The runtime and the settings dialog use the store for the
+            # whole tray session, so it stays open until run_tray_worker
+            # returns (the session thread is joined by then) — and it is
+            # closed exactly once on every path out of this block.
+            origin_text = f"{'srws' if origin.tls else 'srw'}://{origin.host}:{origin.port}"
+            try:
+                stored_settings = load_worker_settings(store)
+            except WorkerSetupConfigError:
+                # A malformed document must not choose the control-UI
+                # origin; the runtime factory fails closed on it separately.
+                stored_settings = None
+            ui_origin = control_ui_origin(
+                origin, ui_url_override or (stored_settings.server_ui_url if stored_settings else None)
             )
 
-        # The settings dialog asks the tray model for the controlled
-        # restart after a successful save; the hook is bound when the
-        # real view is built (before the session thread starts), so the
-        # action can never fire into the void.
-        restart_hook: list[Callable[[], None]] = []
+            def open_control_ui() -> None:
+                import webbrowser
 
-        def open_worker_settings() -> None:
-            _open_settings_dialog(
-                setup_view_factory,
-                store,
-                worker_id or "",
-                origin_text,
-                restart=restart_hook[0] if restart_hook else None,
+                _ = webbrowser.open(f"{ui_origin}/admin")
+
+            if view_factory is None:
+                raise TrayNotAvailableError(
+                    "the packaged worker was built without the tray view; "
+                    + "use the scarcity-router-worker console command instead"
+                )
+
+            # The settings dialog asks the tray model for the controlled
+            # restart after a successful save; the hook is bound when the
+            # real view is built (before the session thread starts), so the
+            # action can never fire into the void.
+            restart_hook: list[Callable[[], None]] = []
+
+            def open_worker_settings() -> None:
+                _open_settings_dialog(
+                    setup_view_factory,
+                    store,
+                    worker_id or "",
+                    origin_text,
+                    restart=restart_hook[0] if restart_hook else None,
+                )
+
+            def make_runtime() -> WorkerRuntime:
+                return build_runtime(
+                    origin=origin,
+                    store=store,
+                    cli_arguments=arguments,
+                    state_dir=resolved_dir,
+                )
+
+            def view_wrapper(model: TrayStateModel) -> TrayView:
+                restart_hook[:] = [model.request_restart]
+                return view_factory(model, open_control_ui, diagnostics_dir, open_worker_settings)
+
+            factory: Callable[[], TrayRuntime] = (
+                runtime_factory if runtime_factory is not None else make_runtime
             )
-
-        def make_runtime() -> WorkerRuntime:
-            return build_runtime(
-                origin=origin,
-                store=store,
-                cli_arguments=arguments,
-                state_dir=resolved_dir,
+            run_tray_worker(
+                runtime_factory=factory,
+                view_factory=view_wrapper,
+                state_dir=diagnostics_dir,
+                worker_id=worker_id,
+                server_origin=origin_text,
             )
-
-        def view_wrapper(model: TrayStateModel) -> TrayView:
-            restart_hook[:] = [model.request_restart]
-            return view_factory(model, open_control_ui, diagnostics_dir, open_worker_settings)
-
-        factory: Callable[[], TrayRuntime] = (
-            runtime_factory if runtime_factory is not None else make_runtime
-        )
-        run_tray_worker(
-            runtime_factory=factory,
-            view_factory=view_wrapper,
-            state_dir=diagnostics_dir,
-            worker_id=worker_id,
-            server_origin=origin_text,
-        )
+        finally:
+            store.close()
     except (WorkerConfigError, ValueError, OSError, TrayNotAvailableError) as exc:
         _pre_tray_error(str(exc))
         return 2
@@ -698,8 +705,12 @@ def _packaged_pair(rest: list[str], *, connect_factory: ConnectFactory | None) -
         if not attached:
             _pre_tray_error(message)
         return 2
+    finally:
+        # This function opened the store, so it closes it exactly once —
+        # on success, on a typed pairing failure (a normal first-run
+        # path) and on anything unexpected alike.
+        store.close()
     print(f"paired as {identity.worker_id}; identity stored")
-    store.close()
     return 0
 
 

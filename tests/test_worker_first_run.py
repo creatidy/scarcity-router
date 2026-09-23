@@ -29,10 +29,12 @@ Locked behavior:
 from __future__ import annotations
 
 import io
+import ssl
 import tempfile
 import threading
 import time
 import unittest
+import unittest.mock
 from collections import deque
 from collections.abc import Callable
 from contextlib import redirect_stderr, redirect_stdout
@@ -62,7 +64,10 @@ from scarcity_router.worker_protocol import (
 from tests.worker_fixtures import (
     SYNTHETIC_CODE,
     SYNTHETIC_CREDENTIAL,
+    CloseCountingStore,
     MemoryTransport,
+    assert_stores_closed_exactly_once,
+    counting_store_opener,
 )
 
 REPO = Path(__file__).resolve().parents[1]
@@ -232,6 +237,44 @@ class FakeRuntime:
 
     def diagnostics(self) -> tuple[str, ...]:
         return ("synthetic first-run diagnostic line",)
+
+
+class StoreObservingRuntime(FakeRuntime):
+    """A tray runtime that snapshots store-close counts when run starts."""
+
+    def __init__(
+        self,
+        stores: list[CloseCountingStore],
+        *,
+        reason: str = "requested",
+        immediate: bool = True,
+    ) -> None:
+        super().__init__(reason=reason, immediate=immediate)
+        self.stores: list[CloseCountingStore] = stores
+        self.closes_when_run_started: int | None = None
+
+    @override
+    def run(self) -> str:
+        self.closes_when_run_started = sum(store.close_count for store in self.stores)
+        return super().run()
+
+
+class FailingStoreObservingRuntime:
+    """A tray runtime whose ``run`` raises; snapshots close counts first."""
+
+    def __init__(self, stores: list[CloseCountingStore]) -> None:
+        self.stores: list[CloseCountingStore] = stores
+        self.closes_when_run_started: int | None = None
+
+    def run(self) -> str:
+        self.closes_when_run_started = sum(store.close_count for store in self.stores)
+        raise RuntimeError("synthetic runtime failure")
+
+    def diagnostics(self) -> tuple[str, ...]:
+        return ("synthetic failing-runtime diagnostic line",)
+
+    def request_stop(self) -> None:
+        return None
 
 
 class RecordingView:
@@ -1022,6 +1065,298 @@ class TraySettingsActionTests(unittest.TestCase):
         self.assertIsNone(context.current)
         assert context.problem is not None
         self.assertIn("not valid JSON", context.problem)
+
+
+# ── Store ownership: every path closes the store it opened ────────────────────
+
+
+class PackagedPairStoreOwnershipTests(unittest.TestCase):
+    """The packaged ``pair`` command closes its store exactly once.
+
+    A failed first-run pairing is a normal user path, so the store
+    opened by ``_packaged_pair`` must be closed on every exit — typed
+    server rejections, transport/TLS failures, origin validation and
+    unexpected exceptions alike (issue #113 remediation).
+    """
+
+    def _run_pair(
+        self,
+        *,
+        server: str = ORIGIN,
+        connect_factory: Callable[[WorkerOrigin], FrameTransport] | None = None,
+    ) -> tuple[int, str, list[CloseCountingStore]]:
+        stderr = io.StringIO()
+        recorded: list[CloseCountingStore] = []
+        with tempfile.TemporaryDirectory() as parent:
+            with unittest.mock.patch.object(
+                windows_tray, "open_worker_store", counting_store_opener(recorded)
+            ):
+                with redirect_stderr(stderr):
+                    exit_code = windows_tray.tray_main(
+                        [
+                            "pair",
+                            "--server",
+                            server,
+                            "--code",
+                            SYNTHETIC_CODE,
+                            "--state-dir",
+                            parent,
+                        ],
+                        connect_factory=connect_factory,
+                    )
+        return exit_code, stderr.getvalue(), recorded
+
+    def _run_rejection(
+        self, error_code: str
+    ) -> tuple[int, str, list[CloseCountingStore]]:
+        return self._run_pair(
+            connect_factory=scripted_connect_factory(
+                FakePairingServer(error_code=error_code)
+            )
+        )
+
+    def test_success_closes_store_exactly_once(self) -> None:
+        stdout = io.StringIO()
+        with tempfile.TemporaryDirectory() as parent:
+            recorded: list[CloseCountingStore] = []
+            with unittest.mock.patch.object(
+                windows_tray, "open_worker_store", counting_store_opener(recorded)
+            ):
+                with redirect_stdout(stdout):
+                    exit_code = windows_tray.tray_main(
+                        [
+                            "pair",
+                            "--server",
+                            ORIGIN,
+                            "--code",
+                            SYNTHETIC_CODE,
+                            "--state-dir",
+                            parent,
+                        ],
+                        connect_factory=scripted_connect_factory(FakePairingServer()),
+                    )
+            reopened = open_store(parent)
+            try:
+                identity = reopened.load_identity()
+            finally:
+                reopened.close()
+        self.assertEqual(0, exit_code)
+        self.assertIn("paired as worker-first-run-1", stdout.getvalue())
+        assert identity is not None
+        self.assertEqual("worker-first-run-1", identity.worker_id)
+        assert_stores_closed_exactly_once(self, recorded)
+
+    def test_invalid_code_closes_store_exactly_once(self) -> None:
+        exit_code, text, recorded = self._run_rejection("pairing_code_invalid")
+        self.assertEqual(2, exit_code)
+        self.assertIn("not accepted (invalid)", text)
+        self.assertNotIn("Traceback", text)
+        self.assertNotIn(SYNTHETIC_CODE, text)
+        assert_stores_closed_exactly_once(self, recorded)
+
+    def test_expired_code_closes_store_exactly_once(self) -> None:
+        exit_code, text, recorded = self._run_rejection("pairing_code_expired")
+        self.assertEqual(2, exit_code)
+        self.assertIn("has expired", text)
+        self.assertIn("Workers page", text)
+        self.assertNotIn(SYNTHETIC_CODE, text)
+        assert_stores_closed_exactly_once(self, recorded)
+
+    def test_used_code_closes_store_exactly_once(self) -> None:
+        exit_code, text, recorded = self._run_rejection("pairing_code_used")
+        self.assertEqual(2, exit_code)
+        self.assertIn("already used", text)
+        assert_stores_closed_exactly_once(self, recorded)
+
+    def test_tls_failure_closes_store_exactly_once(self) -> None:
+        def tls_failure_factory(origin: WorkerOrigin) -> FrameTransport:
+            _ = origin
+            raise ssl.SSLError("certificate verify failed")
+
+        exit_code, text, recorded = self._run_pair(
+            connect_factory=tls_failure_factory
+        )
+        self.assertEqual(2, exit_code)
+        # The TLS message preserves verification discipline (no bypass).
+        self.assertIn("could not be verified", text)
+        self.assertNotIn("Traceback", text)
+        assert_stores_closed_exactly_once(self, recorded)
+
+    def test_transport_failure_closes_store_exactly_once(self) -> None:
+        def refusing_factory(origin: WorkerOrigin) -> FrameTransport:
+            _ = origin
+            raise OSError("synthetic connection refused")
+
+        exit_code, text, recorded = self._run_pair(
+            connect_factory=refusing_factory
+        )
+        self.assertEqual(2, exit_code)
+        self.assertIn("could not reach the server", text)
+        self.assertNotIn("Traceback", text)
+        assert_stores_closed_exactly_once(self, recorded)
+
+    def test_config_validation_failure_after_open_closes_store_exactly_once(
+        self,
+    ) -> None:
+        # The remote plaintext origin is rejected by ``WorkerOrigin.parse``
+        # AFTER the store is already open.
+        exit_code, text, recorded = self._run_pair(server="srw://intranet.example:8790")
+        self.assertEqual(2, exit_code)
+        self.assertIn("loopback", text)
+        self.assertNotIn("Traceback", text)
+        assert_stores_closed_exactly_once(self, recorded)
+
+    def test_malformed_origin_after_open_closes_store_exactly_once(self) -> None:
+        exit_code, text, recorded = self._run_pair(server="http://intranet.example:8790")
+        self.assertEqual(2, exit_code)
+        self.assertIn("srws://", text)
+        self.assertNotIn("Traceback", text)
+        assert_stores_closed_exactly_once(self, recorded)
+
+    def test_unexpected_failure_still_closes_store_exactly_once(self) -> None:
+        def exploding_factory(origin: WorkerOrigin) -> FrameTransport:
+            _ = origin
+            raise RuntimeError("synthetic unexpected failure")
+
+        with tempfile.TemporaryDirectory() as parent:
+            recorded: list[CloseCountingStore] = []
+            with unittest.mock.patch.object(
+                windows_tray, "open_worker_store", counting_store_opener(recorded)
+            ):
+                with self.assertRaises(RuntimeError):
+                    with redirect_stderr(io.StringIO()):
+                        _ = windows_tray.tray_main(
+                            [
+                                "pair",
+                                "--server",
+                                ORIGIN,
+                                "--code",
+                                SYNTHETIC_CODE,
+                                "--state-dir",
+                                parent,
+                            ],
+                            connect_factory=exploding_factory,
+                        )
+        assert_stores_closed_exactly_once(self, recorded)
+
+    def test_failed_pair_persists_no_code_and_closes_store(self) -> None:
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as parent:
+            recorded: list[CloseCountingStore] = []
+            with unittest.mock.patch.object(
+                windows_tray, "open_worker_store", counting_store_opener(recorded)
+            ):
+                with redirect_stderr(stderr):
+                    exit_code = windows_tray.tray_main(
+                        [
+                            "pair",
+                            "--server",
+                            ORIGIN,
+                            "--code",
+                            SYNTHETIC_CODE,
+                            "--state-dir",
+                            parent,
+                        ],
+                        connect_factory=scripted_connect_factory(
+                            FakePairingServer(error_code="pairing_code_expired")
+                        ),
+                    )
+            db_bytes = (Path(parent) / "worker-state.db").read_bytes()
+            log_path = Path(parent) / windows_tray.WORKER_LOG_NAME
+            reopened = open_store(parent)
+            try:
+                identity = reopened.load_identity()
+            finally:
+                reopened.close()
+        self.assertEqual(2, exit_code)
+        self.assertNotIn(SYNTHETIC_CODE, stderr.getvalue())
+        self.assertNotIn(SYNTHETIC_CODE.encode(), db_bytes)
+        self.assertFalse(log_path.exists())
+        self.assertIsNone(identity)
+        assert_stores_closed_exactly_once(self, recorded)
+
+
+class TrayStoreOwnershipTests(unittest.TestCase):
+    """The tray body closes its store once, only after the runtime ended."""
+
+    def _paired_tree(self, parent: str) -> None:
+        store = open_store(parent)
+        store.save_identity(synthetic_identity())
+        store.close()
+
+    def test_paired_launch_closes_store_once_after_runtime_finished(self) -> None:
+        runtimes: list[StoreObservingRuntime] = []
+
+        def runtime_factory() -> StoreObservingRuntime:
+            # The tray body's store is the one open when the runtime starts.
+            runtime = StoreObservingRuntime(recorded[-1:])
+            runtimes.append(runtime)
+            return runtime
+
+        with tempfile.TemporaryDirectory() as parent:
+            self._paired_tree(parent)
+            recorded: list[CloseCountingStore] = []
+            with unittest.mock.patch.object(
+                windows_tray, "open_worker_store", counting_store_opener(recorded)
+            ):
+                exit_code = windows_tray.tray_main(
+                    ["--state-dir", parent],
+                    view_factory=autoquit_view_factory(RecordingView(), "running", {}),
+                    runtime_factory=runtime_factory,
+                )
+        self.assertEqual(0, exit_code)
+        # The patched seam sees the tray body's store (the identity
+        # read opens its own through worker_client and closes it in its
+        # own finally). The body store was still open while the runtime
+        # ran, and it was closed exactly once afterwards.
+        self.assertEqual(1, len(recorded))
+        self.assertEqual([0], [r.closes_when_run_started for r in runtimes])
+        assert_stores_closed_exactly_once(self, recorded)
+
+    def test_config_failure_after_store_open_closes_store_once(self) -> None:
+        # ``view_factory=None`` with explicit run flags raises
+        # ``TrayNotAvailableError`` after the body store is already open.
+        with tempfile.TemporaryDirectory() as parent:
+            self._paired_tree(parent)
+            recorded: list[CloseCountingStore] = []
+            with unittest.mock.patch.object(
+                windows_tray, "open_worker_store", counting_store_opener(recorded)
+            ):
+                with redirect_stderr(io.StringIO()):
+                    exit_code = windows_tray.tray_main(
+                        ["--state-dir", parent, "--server", ORIGIN],
+                    )
+        self.assertEqual(2, exit_code)
+        # The patched seam sees the tray body's store (the identity
+        # read manages its own); it was opened before the failure and
+        # still closed exactly once.
+        self.assertEqual(1, len(recorded))
+        assert_stores_closed_exactly_once(self, recorded)
+
+    def test_runtime_failure_closes_store_once_after_run_raised(self) -> None:
+        runtimes: list[FailingStoreObservingRuntime] = []
+
+        def runtime_factory() -> FailingStoreObservingRuntime:
+            runtime = FailingStoreObservingRuntime(recorded[-1:])
+            runtimes.append(runtime)
+            return runtime
+
+        with tempfile.TemporaryDirectory() as parent:
+            self._paired_tree(parent)
+            recorded: list[CloseCountingStore] = []
+            with unittest.mock.patch.object(
+                windows_tray, "open_worker_store", counting_store_opener(recorded)
+            ):
+                exit_code = windows_tray.tray_main(
+                    ["--state-dir", parent],
+                    view_factory=autoquit_view_factory(RecordingView(), "error", {}),
+                    runtime_factory=runtime_factory,
+                )
+        self.assertEqual(0, exit_code)
+        # The failure surfaced as a tray error state, the store stayed
+        # open until the (failed) run returned, and it closed once.
+        self.assertEqual([0], [r.closes_when_run_started for r in runtimes])
+        assert_stores_closed_exactly_once(self, recorded)
 
 
 # ── Honest Windows Codex posture ──────────────────────────────────────────────
