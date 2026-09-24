@@ -579,7 +579,22 @@ class WorkerSession:
         for inventory in applied_inventories:
             sink = endpoint.inventory_sink
             if sink is not None:
-                sink(inventory)
+                # The sink (server-side adoption) is guarded exactly like
+                # the resource section: a server-side adoption failure is
+                # a non-fatal, client-classifiable error frame — never an
+                # unhandled exception on the session thread (D-053 point
+                # 11: a discovery failure isolates to its source).
+                try:
+                    sink(inventory)
+                except ValueError as exc:
+                    self._send_error(
+                        ErrorMessage(
+                            code=ERR_INTERNAL,
+                            message=f"the inventory could not be adopted: {exc}",
+                            fatal=False,
+                        )
+                    )
+                    return
         # AUTHORIZATION (D-049 amendment): current administrator
         # configuration is the only source of resource-to-worker
         # ownership. Every reported resource must be configured to THIS

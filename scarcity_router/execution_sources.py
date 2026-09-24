@@ -250,6 +250,7 @@ class SourceRegistry:
                 )
                 continue
             routable_now.add(slug)
+            derived_id = _resource_id(config.source_id, slug)
             state.adopted[slug] = (track.track_id(), model.reasoning_efforts)
             decisions.append(
                 AdoptionDecision(
@@ -257,7 +258,7 @@ class SourceRegistry:
                     "routable",
                     track.track_id(),
                     None,
-                    _resource_id(config.source_id, slug),
+                    derived_id,
                     model.reasoning_efforts,
                 )
             )

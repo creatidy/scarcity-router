@@ -1228,6 +1228,17 @@ class ControlPlane:
             raise ControlHTTPError.invalid_request(
                 "source references a revoked worker"
             )
+        per_worker = sum(
+            1
+            for existing in self._config.sources
+            if existing.worker_id == source.worker_id
+        )
+        if per_worker >= 8:
+            # The worker protocol carries at most 8 inventory documents per
+            # state report; a 9th source would make every report malformed.
+            raise ControlHTTPError.invalid_request(
+                "this worker already serves the maximum of 8 sources"
+            )
         try:
             self._save_config(self._updated(sources=self._config.sources + (source,)))
         except (ServerConfigError, ServerStoreError):
@@ -1267,10 +1278,16 @@ class ControlPlane:
                     "errors": live.get("errors", 0),
                     "retired": live.get("retired", []),
                     "observed_at": live.get("observed_at"),
-                    # The worker-side login action is the ONE clear
-                    # command; it is printed, never derived by the user.
+                    # The worker-side actions are printed, never derived
+                    # by the user: the ONE login command, and the run flag
+                    # that connects the source's adapter (both required —
+                    # logging in alone never materializes models).
                     "login_command": (
                         "scarcity-router-worker codex-login --source "
+                        + source.source_id
+                    ),
+                    "run_command": (
+                        "scarcity-router-worker run --codex-source "
                         + source.source_id
                     ),
                 }

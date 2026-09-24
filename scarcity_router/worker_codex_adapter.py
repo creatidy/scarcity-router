@@ -101,7 +101,11 @@ from .gateway_adapters import (
 )
 from .gateway_contracts import UsageTokens
 from .gateway_validation import v_safe_id
-from .model_inventory import DiscoveredModel, SourceInventory
+from .model_inventory import (
+    DiscoveredModel,
+    ModelInventoryError,
+    SourceInventory,
+)
 from .providers.openai_codex import classify_app_server_message
 from .providers.openai_codex_acquisition import (
     BoundedLineReader,
@@ -1564,14 +1568,21 @@ class CodexLocalAdapter:
                     raise CodexIneligible(verdict.reason or "auth_unverified")
                 auth_state = "authenticated"
                 models = self._load_models(session, deadline, threading.Event())
+                # The derived-id bound is part of the inventory contract:
+                # a listing carrying an over-long slug is structural drift
+                # and fails the whole observation closed HERE, at the
+                # worker — it can never reach the server.
+                for slug in models:
+                    _ = DiscoveredModel(slug=slug, reasoning_efforts=())
             finally:
                 if session is not None:
                     _ = session.close()
                 shutil.rmtree(scratch, ignore_errors=True)
         except CodexIneligible:
             pass
-        except CodexProtocolFailure:
+        except (CodexProtocolFailure, ModelInventoryError):
             auth_state = "unverified"
+            models = {}  # an unverifiable listing is never partially kept
         except (CodexProcessLost, OSError, RuntimeError):
             auth_state = "unavailable"
         assert self._source_id is not None  # source mode only

@@ -283,3 +283,25 @@ class TrackRegistryArtifactTests(unittest.TestCase):
 
 if __name__ == "__main__":
     _ = unittest.main()
+
+
+class SlugBoundTests(unittest.TestCase):
+    """The derived-id bound is enforced at the inventory contract itself."""
+
+    def test_over_long_slug_is_rejected_before_any_report(self) -> None:
+        # 41-64 char safe-id slugs used to pass the inventory contract and
+        # explode later in adoption (review finding 1); the bound is the
+        # contract's, so the WORKER fails the listing closed and the
+        # server can never be poisoned by one.
+        with self.assertRaises(ModelInventoryError):
+            _ = DiscoveredModel("a" * 41, ("low",))
+        # Exactly at the bound is legal.
+        self.assertEqual("b" * 40, DiscoveredModel("b" * 40, ("low",)).slug)
+
+    def test_source_resource_id_rejects_unfit_combinations(self) -> None:
+        from scarcity_router.model_inventory import source_resource_id
+
+        with self.assertRaises(ValueError):
+            source_resource_id("a" * 20, "b" * 45)  # combined > 64 (safe-id)
+        _ = source_resource_id("s", "c" * 40)
+        self.assertEqual("s:" + "c" * 40, source_resource_id("s", "c" * 40))

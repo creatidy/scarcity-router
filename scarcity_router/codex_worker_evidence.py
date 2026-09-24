@@ -43,23 +43,6 @@ CODEX_WORKER_CHANNEL = "worker_bridged"
 CODEX_WORKER_ADAPTER_NAME = "codex-worker-local"
 CODEX_WORKER_ADAPTER_VERSION = "1.0.0"
 
-#: The evidenced capability facts of the CODEX EXECUTION SURFACE
-#: (registration-owned, D-053): derived resources served through this
-#: surface inherit exactly what the reviewed M06 evidence supports — the
-#: 272k thread context limit and reasoning controls — and nothing about
-#: any specific model. Tool calls stay false on the stable surface
-#: (client tools return to clients, D-043); the D-043 matrix remains the
-#: per-request admission authority.
-CODEX_SURFACE_CAPABILITIES: dict[str, object] = {
-    "context_limit_tokens": 272_000,
-    "streaming": True,
-    "tool_calls": False,
-    "structured_output": True,
-    "reasoning_controls": True,
-    "usage_reporting": True,
-    "cancellation": True,
-}
-
 #: The tested Codex generation and the evidence record, as reviewed
 #: (docs/codex-adapter-stage1-evidence.md, Stage-2 matrix, 2026-09-20).
 _CODEX_TESTED_VERSION = "codex-cli 0.154.0-alpha.6.2 / schemas rust-v0.155.1"

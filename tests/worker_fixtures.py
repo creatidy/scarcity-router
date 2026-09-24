@@ -303,9 +303,16 @@ class ScriptedWorker:
         self._writer.write_message(HeartbeatMessage(seq=seq).to_payload())
         return self.read_server_message()
 
-    def send_state_report(self, report: dict[str, object]) -> object:
+    def send_state_report(
+        self,
+        report: dict[str, object],
+        *,
+        inventories: tuple[dict[str, object], ...] = (),
+    ) -> object:
         """Send one report; returns the ack or the rejection error."""
-        self._writer.write_message(StateReportMessage(report=report).to_payload())
+        self._writer.write_message(
+            StateReportMessage(report=report, inventories=inventories).to_payload()
+        )
         message = self.read_server_message()
         assert not isinstance(message, HeartbeatAckMessage), message
         return message

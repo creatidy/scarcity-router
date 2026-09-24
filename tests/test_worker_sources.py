@@ -258,6 +258,33 @@ class SourceAdapterTests(unittest.TestCase):
         assert result.calls[0].note is not None
         self.assertEqual("resource_not_served", result.calls[0].note)
 
+    def test_over_long_listing_slug_fails_closed_before_reporting(self) -> None:
+        # A hostile (or drifted) runtime advertising a 41-64 char safe-id
+        # slug is STRUCTURAL LISTING DRIFT: the whole observation fails
+        # closed (unverified, no models) at the worker — the server can
+        # never see the poison slug (review finding 1).
+        state = self._tmp()
+        adapter = self._adapter(
+            "personal-openai",
+            state,
+            scenario=_default_scenario()
+            | {
+                "models": [
+                    {
+                        "id": "a" * 45,
+                        "model": "a" * 45,
+                        "hidden": False,
+                        "isDefault": True,
+                        "supportedReasoningEfforts": [{"reasoningEffort": "high"}],
+                    }
+                ]
+            },
+        )
+        inventory = adapter.observe_inventory()
+        self.assertEqual("unverified", inventory.auth_state)
+        self.assertEqual((), inventory.models)
+        self.assertEqual((), adapter.resource_ids)
+
     def test_source_failure_isolation_between_two_sources(self) -> None:
         state = self._tmp()
         broken = self._adapter(

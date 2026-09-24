@@ -1080,7 +1080,9 @@ def _sources(
             + f"<span class=\"muted\"><code>{_esc(str(source.get('source_id')))}</code></span></td>"
             + f"<td>{'connected' if connected else 'not connected'} &middot; "
             + f"source auth: {_esc(auth)}<br>"
-            + f"<span class=\"muted\">login once: <code>{_esc(str(source.get('login_command')))}</code></span></td>"
+            + f"<span class=\"muted\">on the worker host run once: "
+            + f"<code>{_esc(str(source.get('login_command')))}</code> then "
+            + f"<code>{_esc(str(source.get('run_command')))}</code></span></td>"
             + (
                 f"<td><ul>{model_lines}</ul><p class=\"muted\">{counts}</p></td>"
                 if models
@@ -1119,8 +1121,9 @@ def _sources(
         + worker_options
         + "</select></label> "
         + '<button type="submit">Add source</button></form>'
-        + "<p class=\"muted\">After adding, run the printed login command once on "
-        + "the worker host, then the models appear here automatically.</p>"
+        + "<p class=\"muted\">After adding, run BOTH printed commands once on the "
+        + "worker host (login, then run with the source flag) — the models then "
+        + "appear here automatically.</p>"
         + "</div>"
     )
     plane.send_html(handler, 200, _page(plane, handler, "Sources", body))
@@ -1137,10 +1140,17 @@ def _sources_add(
         worker_id = form.get("worker_id")
         # The source_id derives from the label (friendly UX); the user
         # never invents technical identifiers. Collisions are explicit.
-        base = "".join(
-            ch if ch.isalnum() or ch in "-._" else "-"
-            for ch in label.lower().replace(" ", "-")
-        ).strip("-")[:20] or "codex-source"
+        import unicodedata
+
+        folded = unicodedata.normalize("NFKD", label)
+        folded = "".join(ch for ch in folded if not unicodedata.combining(ch))
+        base = (
+            "".join(
+                ch if ch.isascii() and (ch.isalnum() or ch in "-._") else "-"
+                for ch in folded.lower().replace(" ", "-")
+            ).strip("-")[:20]
+            or "codex-source"
+        )
         source_id = base
         suffix = 2
         while plane.configuration.source_by_id(source_id) is not None:

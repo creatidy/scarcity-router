@@ -31,6 +31,7 @@ serialized contract in this repository.
 from __future__ import annotations
 
 import json
+import re
 from typing import cast, override
 
 from .gateway_validation import exact_shape, v_int, v_safe_id, v_str
@@ -68,6 +69,12 @@ SOURCE_KINDS: tuple[str, ...] = ("codex_subscription",)
 #: ``<source_id>:<slug>`` always fits the safe-id contract (64 chars)
 #: with room for realistic physical slugs.
 SOURCE_ID_MAX_LENGTH = 20
+
+#: Upper bound for a runtime-reported slug: ``<source_id>:<slug>`` must
+#: stay inside the safe-id contract (20 + 1 + 40 <= 64). A longer slug is
+#: structural listing drift and fails closed at the worker, before any
+#: report — it can never poison adoption or the registry read model.
+SLUG_MAX_LENGTH = 40
 
 
 def source_resource_id(source_id: str, slug: str) -> str:
@@ -113,10 +120,13 @@ def _v_effort_name(value: object, field: str) -> str:
     return name
 
 
+_CANONICAL_MOMENT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
+
+
 def parse_canonical_moment(value: object, field: str) -> str:
     """Validate an RFC3339 UTC-milliseconds ``...Z`` timestamp."""
     text = v_str(value, field)
-    if not text.endswith("Z") or len(text) != 24 or text[10] != "T":
+    if not _CANONICAL_MOMENT_RE.match(text):
         raise ModelInventoryError(f"{field}: not a canonical UTC timestamp")
     return text
 
@@ -169,6 +179,11 @@ class DiscoveredModel:
         display_name: str = "",
     ) -> None:
         try:
+            if len(slug) > SLUG_MAX_LENGTH:
+                raise ModelInventoryError(
+                    f"discovered_model.slug: longer than {SLUG_MAX_LENGTH} chars; "
+                    + "derived resource ids would exceed the safe-id contract"
+                )
             checked_slug = v_safe_id(slug, "discovered_model.slug")
             seen: set[str] = set()
             efforts: list[str] = []
@@ -457,6 +472,7 @@ class ModelInventoryReport:
 
 __all__ = [
     "DiscoveredModel",
+    "SLUG_MAX_LENGTH",
     "SOURCE_ID_MAX_LENGTH",
     "is_source_resource_id",
     "source_resource_id",

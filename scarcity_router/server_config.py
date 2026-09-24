@@ -348,8 +348,20 @@ class SourceConfig:
                 + "characters (derived resource ids must stay safe ids)"
             )
         _ = v_safe_id(self.source_id, "source.source_id")
+        if ":" in self.source_id:
+            # The derived namespace partitions on the first colon; a colon
+            # inside a source id would make ownership ambiguous.
+            raise ServerConfigError(
+                "source.source_id: ':' is not allowed (the derived resource "
+                + "namespace is <source_id>:<slug>)"
+            )
         if self.kind not in SOURCE_KINDS:
             raise ServerConfigError(f"source.kind: unknown kind {self.kind!r}")
+        if self.kind == "codex_subscription" and self.entitlement != "subscription_included":
+            raise ServerConfigError(
+                "source.entitlement: codex_subscription capacity is "
+                + "subscription_included by the evidenced provider terms"
+            )
         if not self.label or len(self.label) > 200:
             raise ServerConfigError("source.label: required, <= 200 chars")
         _ = v_safe_id(self.worker_id, "source.worker_id")
@@ -521,19 +533,14 @@ class ServerConfiguration:
         source_ids = {source.source_id for source in self.sources}
         if len(source_ids) != len(self.sources):
             raise ServerConfigError("duplicate source_id in configuration")
-        worker_bound_resources = {
-            resource.registration.identity.resource_id: resource.worker_id
-            for resource in self.resources
-            if resource.worker_id is not None
-        }
-        for derived in worker_bound_resources:
-            from .model_inventory import is_source_resource_id
+        from .model_inventory import is_source_resource_id
 
-            if is_source_resource_id(derived):
+        for resource in self.resources:
+            if is_source_resource_id(resource.registration.identity.resource_id):
                 raise ServerConfigError(
-                    f"resource {derived!r}: '<source_id>:<slug>' ids are "
-                    + "derived from execution sources and must never be "
-                    + "configured by hand (D-053)"
+                    f"resource {resource.registration.identity.resource_id!r}: "
+                    + "'<source_id>:<slug>' ids are derived from execution "
+                    + "sources and must never be configured by hand (D-053)"
                 )
         for resource in self.resources:
             if resource.endpoint_id is not None and (
