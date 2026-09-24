@@ -920,16 +920,22 @@ class StateReportMessage:
         inventories: tuple[Mapping[str, object], ...] = ()
         if "inventories" in dd:
             raw = dd["inventories"]
-            if not isinstance(raw, list) or len(raw) > MAX_INVENTORIES_PER_REPORT:
+            if (
+                not isinstance(raw, list)
+                or len(cast("list[object]", raw)) > MAX_INVENTORIES_PER_REPORT
+            ):
                 raise WorkerProtocolError(
                     ERR_MALFORMED, "state_report.inventories: expected a bounded list"
                 )
-            for item in raw:
+            inventory_items = cast("list[object]", raw)
+            for item in inventory_items:
                 if not isinstance(item, Mapping):
                     raise WorkerProtocolError(
                         ERR_MALFORMED, "state_report.inventories: expected objects"
                     )
-            inventories = tuple(cast("Mapping[str, object]", item) for item in raw)
+            inventories = tuple(
+                cast("Mapping[str, object]", item) for item in inventory_items
+            )
         return cls(report=cast("Mapping[str, object]", dd["report"]), inventories=inventories)
 
 

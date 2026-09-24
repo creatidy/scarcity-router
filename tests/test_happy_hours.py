@@ -54,10 +54,13 @@ FLASH = ModelIdentity(provider="zai", model="glm-5.3-flash", variant="max")
 GLM53 = ModelIdentity(provider="zai", model="glm-5.3", variant="max")
 # With no capability minima every OpenAI configuration is sufficient and
 # shares one capacity scope, so the balanced tie-breaks select the lowest
-# configured reasoning effort, then the first stable identity.
+# configured reasoning effort, then the first stable identity. The D-053
+# GPT-6 entries added "low" configurations to the codex scope, so the
+# lowest-effort OpenAI identity is now Astra Low.
 LUNA_MEDIUM = ModelIdentity(
     provider="openai", model="gpt-5.6-luna", variant="medium"
 )
+GPT6_ASTRA = ModelIdentity(provider="openai", model="gpt-6-astra", variant="low")
 
 
 def _ill(value: object) -> object:
@@ -427,7 +430,7 @@ class RankingIntegrationTests(unittest.TestCase):
         # Outside the window, OpenAI (90%) is least scarce and wins.
         neutral = _select(neutral_selector_policy(), snapshots, at=_at(12))
         assert neutral.selected is not None
-        self.assertEqual(LUNA_MEDIUM, neutral.selected.identity)
+        self.assertEqual(GPT6_ASTRA, neutral.selected.identity)
         # Inside the window, GLM-5.3-Flash is quota-preferred despite being
         # much scarcer — spending full-price OpenAI quota is what the
         # window exists to avoid.
@@ -439,7 +442,7 @@ class RankingIntegrationTests(unittest.TestCase):
         self.assertEqual("night-campaign", selected_decision.rule_id)
         # Alternatives stay in exact ranking order after the preferred one
         # and carry no preference themselves.
-        self.assertEqual(LUNA_MEDIUM, decision.alternatives[0].identity)
+        self.assertEqual(GPT6_ASTRA, decision.alternatives[0].identity)
         self.assertIsNone(decision.alternatives[0].happy_hour_decision)
 
     def test_serialized_decision_carries_the_preference(self) -> None:
@@ -477,7 +480,7 @@ class RankingIntegrationTests(unittest.TestCase):
             evaluated_at=_at(2),
         )
         assert decision.selected is not None
-        self.assertEqual(LUNA_MEDIUM, decision.selected.identity)
+        self.assertEqual(GPT6_ASTRA, decision.selected.identity)
         excluded = {
             (c.identity.provider, c.identity.model): c for c in decision.excluded
         }
@@ -491,7 +494,7 @@ class RankingIntegrationTests(unittest.TestCase):
             [_snap("openai", 30, 30), _snap("zai", 0, 0)],
         )
         assert decision.selected is not None
-        self.assertEqual(LUNA_MEDIUM, decision.selected.identity)
+        self.assertEqual(GPT6_ASTRA, decision.selected.identity)
         excluded = {
             (c.identity.provider, c.identity.model): c for c in decision.excluded
         }
@@ -507,7 +510,7 @@ class RankingIntegrationTests(unittest.TestCase):
             [_snap("openai", 30, 30)],
         )
         assert decision.selected is not None
-        self.assertEqual(LUNA_MEDIUM, decision.selected.identity)
+        self.assertEqual(GPT6_ASTRA, decision.selected.identity)
         self.assertFalse(decision.degraded)
 
     def test_blackout_wins_over_overlapping_happy_hour(self) -> None:
@@ -531,7 +534,7 @@ class RankingIntegrationTests(unittest.TestCase):
             [_snap("openai", 30, 30), _snap("zai", 95, 95)],
         )
         assert decision.selected is not None
-        self.assertEqual(LUNA_MEDIUM, decision.selected.identity)
+        self.assertEqual(GPT6_ASTRA, decision.selected.identity)
         excluded = {
             (c.identity.provider, c.identity.model): c for c in decision.excluded
         }
@@ -547,7 +550,7 @@ class RankingIntegrationTests(unittest.TestCase):
             at=_at(2),
         )
         assert decision.selected is not None
-        self.assertEqual(LUNA_MEDIUM, decision.selected.identity)
+        self.assertEqual(GPT6_ASTRA, decision.selected.identity)
         self.assertIsNone(decision.selected.happy_hour_decision)
         # The weekly window would cover 02:00 SGT; only the date bounds
         # exclude it, so the decision names the expired rule (explanation

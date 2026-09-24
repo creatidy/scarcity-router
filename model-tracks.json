@@ -21,7 +21,12 @@
         "assessed_on": "2026-09-24",
         "confidence": "medium",
         "decision": "D-053",
-        "rationale": "One level below every reviewed gpt-5.6-sol rating (catalog: 5/5/5/5/5/5 at high effort), because runtime listing never proves capability. The owner-approved workflow roles (model-policy.json: GPT-5.6 Sol as the calibrated alternate under GPT-6-generation references) corroborate family continuity across generations. A new sol generation routes only against this floor until its own dated evidence lands."
+        "rationale": "One level below every reviewed gpt-5.6-sol rating (catalog: 5/5/5/5/5/5 at high effort), because runtime listing never proves capability. The owner-approved workflow roles (model-policy.json: GPT-5.6 Sol as the calibrated alternate under GPT-6-generation references) corroborate family continuity across generations. A new sol generation routes only against this floor until its own dated evidence lands.",
+        "hard_properties_continuity": {
+          "input_context_tokens": 1050000,
+          "output_tokens": 128000
+        },
+        "continuity_rationale": "Family-continuity assumption (gpt-5.6 evidenced values), deliberately conservative pending direct evidence for the new generation. The runtime remains the true enforcement boundary: an over-limit request fails honestly at the source."
       }
     },
     {
@@ -42,7 +47,12 @@
         "assessed_on": "2026-09-24",
         "confidence": "medium",
         "decision": "D-053",
-        "rationale": "Same deliberately conservative floor as the sol track: the live 0.155 runtime listing plus the owner-approved reference roles (model-policy.json assigns GPT-6 Astra as preferred reference for deep-execution/scientific/semantic-review roles with GPT-5.6 Sol High as the calibrated alternate) evidence family continuity, not per-dimension capability. This entry is the D-033 reconciliation: Astra becomes selector-eligible at floor level only through this reviewed artifact; stronger ratings require direct dated evidence."
+        "rationale": "Same deliberately conservative floor as the sol track: the live 0.155 runtime listing plus the owner-approved reference roles (model-policy.json assigns GPT-6 Astra as preferred reference for deep-execution/scientific/semantic-review roles with GPT-5.6 Sol High as the calibrated alternate) evidence family continuity, not per-dimension capability. This entry is the D-033 reconciliation: Astra becomes selector-eligible at floor level only through this reviewed artifact; stronger ratings require direct dated evidence.",
+        "hard_properties_continuity": {
+          "input_context_tokens": 1050000,
+          "output_tokens": 128000
+        },
+        "continuity_rationale": "Family-continuity assumption (gpt-5.6 evidenced values), deliberately conservative pending direct evidence for the new generation. The runtime remains the true enforcement boundary: an over-limit request fails honestly at the source."
       }
     },
     {
@@ -63,7 +73,12 @@
         "assessed_on": "2026-09-24",
         "confidence": "medium",
         "decision": "D-053",
-        "rationale": "One level below the reviewed gpt-5.6-luna max-effort ratings (catalog: 4/4/3/5/5/4), preserving the family's evidenced shape (strong writing/tool use, moderate reasoning/science) without asserting parity for a new generation."
+        "rationale": "One level below the reviewed gpt-5.6-luna max-effort ratings (catalog: 4/4/3/5/5/4), preserving the family's evidenced shape (strong writing/tool use, moderate reasoning/science) without asserting parity for a new generation.",
+        "hard_properties_continuity": {
+          "input_context_tokens": 1050000,
+          "output_tokens": 128000
+        },
+        "continuity_rationale": "Family-continuity assumption (gpt-5.6 evidenced values), deliberately conservative pending direct evidence for the new generation. The runtime remains the true enforcement boundary: an over-limit request fails honestly at the source."
       }
     },
     {

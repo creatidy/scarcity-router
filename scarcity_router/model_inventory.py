@@ -31,7 +31,7 @@ serialized contract in this repository.
 from __future__ import annotations
 
 import json
-from typing import cast
+from typing import cast, override
 
 from .gateway_validation import exact_shape, v_int, v_safe_id, v_str
 
@@ -64,6 +64,44 @@ SOURCE_AUTH_STATES: tuple[str, ...] = (
 #: evidenced kind; new kinds arrive only through an explicit decision.
 SOURCE_KINDS: tuple[str, ...] = ("codex_subscription",)
 
+#: Upper bound for a source_id so the derived resource id
+#: ``<source_id>:<slug>`` always fits the safe-id contract (64 chars)
+#: with room for realistic physical slugs.
+SOURCE_ID_MAX_LENGTH = 20
+
+
+def source_resource_id(source_id: str, slug: str) -> str:
+    """The deterministic derived resource id (D-053 point 6).
+
+    Both sides (worker discovery and server adoption) compute the same
+    id from the same inventory, so no extra protocol state is needed.
+    The combined form must stay a valid safe identifier.
+    """
+    if len(source_id) > SOURCE_ID_MAX_LENGTH:
+        raise ModelInventoryError(
+            f"source_id {source_id!r}: longer than {SOURCE_ID_MAX_LENGTH} chars; "
+            + "derived resource ids would exceed the safe-id contract"
+        )
+    combined = f"{source_id}:{slug}"
+    _ = v_safe_id(combined, "source_resource_id")
+    return combined
+
+
+def is_source_resource_id(resource_id: str) -> bool:
+    """Whether an id has the derived ``<source_id>:<slug>`` shape.
+
+    Shape-only check used by configuration validation to keep hand-made
+    resources out of the derived namespace; ownership still resolves
+    through the configured sources.
+    """
+    head, sep, tail = resource_id.partition(":")
+    return (
+        bool(sep)
+        and bool(head)
+        and bool(tail)
+        and len(head) <= SOURCE_ID_MAX_LENGTH
+    )
+
 
 class ModelInventoryError(ValueError):
     """A discovery document failed validation (fail closed, no partial load)."""
@@ -92,14 +130,15 @@ def parse_inventory_document(document: object) -> dict[str, object]:
             else document
         )
         try:
-            document = json.loads(
-                text, object_pairs_hook=_reject_duplicate_keys
+            document = cast(
+                "object",
+                json.loads(text, object_pairs_hook=_reject_duplicate_keys),
             )
         except ValueError as exc:
             raise ModelInventoryError(f"inventory: malformed JSON: {exc}") from None
     if not isinstance(document, dict):
         raise ModelInventoryError("inventory: not a JSON object")
-    return document
+    return cast("dict[str, object]", document)
 
 
 def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -121,7 +160,7 @@ class DiscoveredModel:
     here fails closed at the worker AND at the server.
     """
 
-    __slots__ = ("slug", "reasoning_efforts", "display_name")
+    __slots__: tuple[str, ...] = ("slug", "reasoning_efforts", "display_name")
 
     def __init__(
         self,
@@ -130,40 +169,34 @@ class DiscoveredModel:
         display_name: str = "",
     ) -> None:
         try:
-            self._init_validated(slug, reasoning_efforts, display_name)
+            checked_slug = v_safe_id(slug, "discovered_model.slug")
+            seen: set[str] = set()
+            efforts: list[str] = []
+            for effort in reasoning_efforts:
+                name = _v_effort_name(effort, "discovered_model.reasoning_efforts")
+                if name in seen:
+                    raise ModelInventoryError(
+                        f"discovered_model {slug!r}: duplicate effort {name!r}"
+                    )
+                seen.add(name)
+                efforts.append(name)
+            if len(efforts) > MAX_EFFORTS_PER_MODEL:
+                raise ModelInventoryError(
+                    f"discovered_model {slug!r}: more than "
+                    + f"{MAX_EFFORTS_PER_MODEL} reasoning efforts"
+                )
+            checked_display = display_name if display_name else ""
+            if len(checked_display) > _MAX_DISPLAY_NAME:
+                raise ModelInventoryError("discovered_model.display_name too long")
         except ModelInventoryError:
             raise
         except ValueError as exc:
             raise ModelInventoryError(f"discovered_model: {exc}") from None
-
-    def _init_validated(
-        self,
-        slug: str,
-        reasoning_efforts: tuple[str, ...],
-        display_name: str,
-    ) -> None:
-        self.slug = v_safe_id(slug, "discovered_model.slug")
-        seen: set[str] = set()
-        efforts: list[str] = []
-        for effort in reasoning_efforts:
-            name = _v_effort_name(effort, "discovered_model.reasoning_efforts")
-            if name in seen:
-                raise ModelInventoryError(
-                    f"discovered_model {slug!r}: duplicate effort {name!r}"
-                )
-            seen.add(name)
-            efforts.append(name)
-        if len(efforts) > MAX_EFFORTS_PER_MODEL:
-            raise ModelInventoryError(
-                f"discovered_model {slug!r}: more than "
-                + f"{MAX_EFFORTS_PER_MODEL} reasoning efforts"
-            )
+        self.slug: str = checked_slug
         self.reasoning_efforts: tuple[str, ...] = tuple(efforts)
-        display = display_name if display_name else ""
-        if len(display) > _MAX_DISPLAY_NAME:
-            raise ModelInventoryError("discovered_model.display_name too long")
-        self.display_name = display
+        self.display_name: str = checked_display
 
+    @override
     def __eq__(self, other: object) -> bool:
         return (
             isinstance(other, DiscoveredModel)
@@ -172,6 +205,7 @@ class DiscoveredModel:
             and self.display_name == other.display_name
         )
 
+    @override
     def __repr__(self) -> str:
         return f"DiscoveredModel(slug={self.slug!r}, efforts={self.reasoning_efforts!r})"
 
@@ -215,7 +249,7 @@ class SourceInventory:
     the runtime's current listing (bounded).
     """
 
-    __slots__ = (
+    __slots__: tuple[str, ...] = (
         "source_id",
         "adapter_id",
         "kind",
@@ -237,24 +271,26 @@ class SourceInventory:
         runtime_version: str,
         models: tuple[DiscoveredModel, ...],
     ) -> None:
-        self.source_id = v_safe_id(source_id, "source_inventory.source_id")
-        self.adapter_id = v_safe_id(adapter_id, "source_inventory.adapter_id")
+        self.source_id: str = v_safe_id(source_id, "source_inventory.source_id")
+        self.adapter_id: str = v_safe_id(adapter_id, "source_inventory.adapter_id")
         if kind not in SOURCE_KINDS:
             raise ModelInventoryError(f"source_inventory.kind: unknown kind {kind!r}")
-        self.kind = kind
-        self.observed_at = parse_canonical_moment(
+        self.kind: str = kind
+        self.observed_at: str = parse_canonical_moment(
             observed_at, "source_inventory.observed_at"
         )
         if auth_state not in SOURCE_AUTH_STATES:
             raise ModelInventoryError(
                 f"source_inventory.auth_state: unknown state {auth_state!r}"
             )
-        self.auth_state = auth_state
-        self.runtime_name = v_safe_id(runtime_name, "source_inventory.runtime_name")
+        self.auth_state: str = auth_state
+        self.runtime_name: str = v_safe_id(
+            runtime_name, "source_inventory.runtime_name"
+        )
         version = v_str(runtime_version, "source_inventory.runtime_version")
         if len(version) > _MAX_RUNTIME_VERSION:
             raise ModelInventoryError("source_inventory.runtime_version too long")
-        self.runtime_version = version
+        self.runtime_version: str = version
         if len(models) > MAX_MODELS_PER_SOURCE:
             raise ModelInventoryError(
                 f"source_inventory {source_id!r}: more than "
@@ -265,7 +301,9 @@ class SourceInventory:
             raise ModelInventoryError(
                 f"source_inventory {source_id!r}: duplicate model slug"
             )
-        self.models = tuple(sorted(models, key=lambda model: model.slug))
+        self.models: tuple[DiscoveredModel, ...] = tuple(
+            sorted(models, key=lambda model: model.slug)
+        )
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -336,7 +374,7 @@ class ModelInventoryReport:
     whole document, never a partial load.
     """
 
-    __slots__ = ("schema_version", "worker_id", "sources")
+    __slots__: tuple[str, ...] = ("schema_version", "worker_id", "sources")
 
     def __init__(
         self,
@@ -350,8 +388,8 @@ class ModelInventoryReport:
                 f"inventory.schema_version {schema_version} is not supported "
                 + f"(expected {MODEL_INVENTORY_SCHEMA_VERSION})"
             )
-        self.schema_version = schema_version
-        self.worker_id = v_safe_id(worker_id, "inventory.worker_id")
+        self.schema_version: int = schema_version
+        self.worker_id: str = v_safe_id(worker_id, "inventory.worker_id")
         if len(sources) > MAX_SOURCES_PER_REPORT:
             raise ModelInventoryError(
                 f"inventory: more than {MAX_SOURCES_PER_REPORT} sources"
@@ -362,7 +400,9 @@ class ModelInventoryReport:
         adapter_ids = {source.adapter_id for source in sources}
         if len(adapter_ids) != len(sources):
             raise ModelInventoryError("inventory: duplicate adapter_id")
-        self.sources = tuple(sorted(sources, key=lambda source: source.source_id))
+        self.sources: tuple[SourceInventory, ...] = tuple(
+            sorted(sources, key=lambda source: source.source_id)
+        )
 
     def source(self, source_id: str) -> SourceInventory | None:
         for source in self.sources:
@@ -417,6 +457,9 @@ class ModelInventoryReport:
 
 __all__ = [
     "DiscoveredModel",
+    "SOURCE_ID_MAX_LENGTH",
+    "is_source_resource_id",
+    "source_resource_id",
     "MAX_EFFORTS_PER_MODEL",
     "MAX_MODELS_PER_SOURCE",
     "MAX_SOURCES_PER_REPORT",

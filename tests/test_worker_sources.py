@@ -10,33 +10,26 @@ reports (absent on v1 sessions, validated and forwarded on v2).
 
 from __future__ import annotations
 
-import json
 import os
 import stat
-import subprocess
 import sys
 import threading
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import cast
+from typing import override
 
 REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
-
-from tests.worker_fixtures import MemoryTransport, ScriptedWorker  # noqa: E402
 
 from scarcity_router import worker_protocol  # noqa: E402
 from scarcity_router.gateway_adapters import (  # noqa: E402
     AdapterCall,
     AdapterMessage,
 )
-from scarcity_router.model_inventory import (  # noqa: E402
-    SOURCE_AUTH_STATES,
-    ModelInventoryReport,
-)
+from scarcity_router.model_inventory import ModelInventoryReport  # noqa: E402
 from scarcity_router.resource_state import ResourceIdentity  # noqa: E402
 from scarcity_router.selection_types import ModelIdentity  # noqa: E402
 from scarcity_router.worker_client import (  # noqa: E402
@@ -103,11 +96,17 @@ def _default_scenario() -> dict[str, object]:
 
 
 class SourceAdapterTests(unittest.TestCase):
-    _tmps: list[TemporaryDirectory]
+    def __init__(self, method_name: str = "runTest") -> None:
+        self._tmps: list[TemporaryDirectory[str]] = []
+        self._spawners: list[FakeCodexSpawner] = []
+        super().__init__(method_name)
 
+    @override
     def setUp(self) -> None:
         self._tmps = []
+        self._spawners = []
 
+    @override
     def tearDown(self) -> None:
         for tmp in self._tmps:
             tmp.cleanup()
@@ -127,7 +126,6 @@ class SourceAdapterTests(unittest.TestCase):
         spawner = FakeCodexSpawner(
             scenario if scenario is not None else _default_scenario()
         )
-        self._spawners = getattr(self, "_spawners", [])
         self._spawners.append(spawner)
         return CodexLocalAdapter(
             source_id=source_id,
@@ -137,7 +135,7 @@ class SourceAdapterTests(unittest.TestCase):
             path_lookup=_bwrap_lookup,
             platform_name="linux",
             platform_release="6.x-generic",
-            **kwargs,  # type: ignore[arg-type]
+            **kwargs,  # pyright: ignore[reportArgumentType] - typed keyword helper
         )
 
     def test_adapter_instance_id_is_kind_prefixed_per_source(self) -> None:
@@ -238,7 +236,7 @@ class SourceAdapterTests(unittest.TestCase):
         state = self._tmp()
         adapter = self._adapter("personal-openai", state)
         _ = adapter.observe_inventory()
-        rid = source_resource_id("personal-openai", "gpt-6-sol")
+        _ = source_resource_id("personal-openai", "gpt-6-sol")
         # A resource the source did NOT discover is never served.
         result = adapter.invoke(
             AdapterCall(
@@ -268,8 +266,11 @@ class SourceAdapterTests(unittest.TestCase):
         healthy = self._adapter("healthy-source", state)
         _ = broken.observe_inventory()
         _ = healthy.observe_inventory()
-        self.assertEqual("unverified", broken.inventory_report().auth_state)
-        self.assertEqual("authenticated", healthy.inventory_report().auth_state)
+        broken_report = broken.inventory_report()
+        healthy_report = healthy.inventory_report()
+        assert broken_report is not None and healthy_report is not None
+        self.assertEqual("unverified", broken_report.auth_state)
+        self.assertEqual("authenticated", healthy_report.auth_state)
 
     def test_cadence_is_bounded_and_deterministic(self) -> None:
         state = self._tmp()
@@ -277,7 +278,7 @@ class SourceAdapterTests(unittest.TestCase):
             "personal-openai", state, inventory_ttl_seconds=300.0
         )
         ticks = {"now": 1000.0}
-        adapter._clock = lambda: ticks["now"]  # type: ignore[assignment]
+        adapter._clock = lambda: ticks["now"]  # pyright: ignore[reportPrivateUsage] - test seam: the mutable test clock replaces the injected one
         _ = adapter.observe_inventory(now=ticks["now"])
         self.assertFalse(adapter.inventory_if_due())
         ticks["now"] += 299.0
@@ -305,7 +306,7 @@ class SourceRegistryBuildTests(unittest.TestCase):
     def test_source_and_legacy_flags_are_mutually_exclusive(self) -> None:
         with TemporaryDirectory() as tmp:
             with self.assertRaises(WorkerConfigError):
-                build_registry(
+                _ = build_registry(
                     {
                         "codex_sources": ["a"],
                         "allow_codex": True,
@@ -318,7 +319,7 @@ class SourceRegistryBuildTests(unittest.TestCase):
     def test_unsafe_source_id_fails_closed(self) -> None:
         with TemporaryDirectory() as tmp:
             with self.assertRaises(WorkerConfigError):
-                build_registry(
+                _ = build_registry(
                     {"codex_sources": ["Not A Source!"]}, state_dir=tmp
                 )
 
@@ -348,9 +349,11 @@ class InventoryProtocolTests(unittest.TestCase):
         self.assertEqual((), parsed.inventories)
 
     def test_oversized_inventory_section_fails_closed(self) -> None:
-        payloads = [{"schema_version": 1, "worker_id": f"w{i}", "sources": []} for i in range(9)]
+        payloads: list[dict[str, object]] = [
+            {"schema_version": 1, "worker_id": f"w{i}", "sources": []} for i in range(9)
+        ]
         with self.assertRaises(worker_protocol.WorkerProtocolError):
-            worker_protocol.StateReportMessage.from_payload(
+            _ = worker_protocol.StateReportMessage.from_payload(
                 {"type": "state_report", "report": {}, "inventories": payloads}
             )
 
@@ -364,8 +367,8 @@ class InventoryProtocolTests(unittest.TestCase):
             worker_protocol.negotiate_version((2, 1), (1,)),
         )
         with self.assertRaises(worker_protocol.WorkerProtocolError):
-            worker_protocol.negotiate_version((2,), (1,))
+            _ = worker_protocol.negotiate_version((2,), (1,))
 
 
 if __name__ == "__main__":
-    unittest.main()
+    _ = unittest.main()

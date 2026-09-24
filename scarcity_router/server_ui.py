@@ -1062,7 +1062,7 @@ def _sources(
     for source in plane.sources_view():
         connected = bool(source.get("connected"))
         auth = str(source.get("source_authenticated", "unverified"))
-        models = source.get("detected_models") or []
+        models = cast("list[dict[str, object]]", source.get("detected_models") or [])
         model_lines = "".join(
             "<li>"
             + _esc(str(model.get("slug")))

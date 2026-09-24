@@ -123,27 +123,10 @@ CODEX_ADAPTER_ID = "codex"
 #: worker's own state-report path — no background poller exists.
 INVENTORY_DEFAULT_TTL_SECONDS = 300.0
 
-#: Upper bound for a source_id so the derived resource id
-#: ``<source_id>:<slug>`` always fits the safe-id contract (64 chars)
-#: with room for realistic physical slugs.
-SOURCE_ID_MAX_LENGTH = 20
-
-
-def source_resource_id(source_id: str, slug: str) -> str:
-    """The deterministic derived resource id (D-053 point 6).
-
-    Both sides (worker discovery and server adoption) compute the same
-    id from the same inventory, so no extra protocol state is needed.
-    The combined form must stay a valid safe identifier.
-    """
-    if len(source_id) > SOURCE_ID_MAX_LENGTH:
-        raise ValueError(
-            f"source_id {source_id!r}: longer than {SOURCE_ID_MAX_LENGTH} chars; "
-            + "derived resource ids would exceed the safe-id contract"
-        )
-    combined = f"{source_id}:{slug}"
-    _ = v_safe_id(combined, "source_resource_id")
-    return combined
+# The derived-resource id derivation lives with the inventory contract
+# (model_inventory.source_resource_id); re-exported here for the worker
+# surface that discovers and serves those ids.
+from .model_inventory import SOURCE_ID_MAX_LENGTH, source_resource_id  # noqa: E402
 
 #: The provider identity shared with the existing Codex collector
 #: (``providers/openai_codex.py``); resource identity and snapshots must use
@@ -1451,14 +1434,14 @@ class CodexLocalAdapter:
             # (adapter id ``codex:<source_id>``) and serves the resources
             # it discovers in its own controlled home — never a
             # hand-configured single model.
-            self._source_id = v_safe_id(source_id, "codex_source_id")
+            self._source_id: str | None = v_safe_id(source_id, "codex_source_id")
             if resource is not None:
                 raise ValueError(
                     "codex_adapter: source mode discovers its resources; "
                     + "pass either source_id or resource, never both"
                 )
             self.adapter_id = f"{CODEX_ADAPTER_ID}:{self._source_id}"
-            self._resource = None
+            self._resource: ResourceIdentity | None = None
             home_name = f"codex-sources/{self._source_id}"
         else:
             if resource is None:
@@ -1488,11 +1471,11 @@ class CodexLocalAdapter:
         # observation and the derived served resources. Written only by
         # the observation path; reads are from the worker's own session
         # thread plus snapshot/report paths.
-        self._inventory_lock = threading.Lock()
+        self._inventory_lock: threading.Lock = threading.Lock()
         self._inventory: SourceInventory | None = None
         self._inventory_monotonic: float | None = None
-        self._inventory_ttl = inventory_ttl_seconds
-        self._clock = clock
+        self._inventory_ttl: float = inventory_ttl_seconds
+        self._clock: Callable[[], float] = clock
 
     @property
     def source_id(self) -> str | None:
@@ -1544,8 +1527,8 @@ class CodexLocalAdapter:
                 spawner=self._spawner,
                 timeout=self._version_probe_timeout,
             )
-            if version_reason is not None:
-                raise CodexIneligible(version_reason)
+            if version is None or version_reason is not None:
+                raise CodexIneligible(version_reason or "version_unsupported")
             runtime_version = ".".join(str(part) for part in version)
             sandbox_reason = check_sandbox_availability(
                 platform_name=self._platform_name,
@@ -1622,7 +1605,7 @@ class CodexLocalAdapter:
         if self._source_id is None or not self.inventory_if_due():
             return
         try:
-            self.observe_inventory()
+            _ = self.observe_inventory()
         except (OSError, RuntimeError, CodexProtocolFailure):
             # observe_inventory maps failures into honest auth states; a
             # raise here would risk the worker's report loop, which is
@@ -2189,11 +2172,13 @@ class CodexLocalAdapter:
         """
         if self._source_id is not None:
             return self._source_mode_snapshots()
+        resource = self._resource
+        assert resource is not None  # legacy mode always has a resource
         reason = self._eligibility_reason()
         if reason is None:
             snapshot = CapacitySnapshot(
                 schema_version=SCHEMA_VERSION,
-                provider=self._resource.provider,
+                provider=resource.provider,
                 source=f"worker-local:{CODEX_ADAPTER_ID}",
                 retrieved_at=observed_at,
                 status="ok",
@@ -2204,7 +2189,7 @@ class CodexLocalAdapter:
             status, code = _snapshot_class(reason)
             snapshot = CapacitySnapshot(
                 schema_version=SCHEMA_VERSION,
-                provider=self._resource.provider,
+                provider=resource.provider,
                 source=f"worker-local:{CODEX_ADAPTER_ID}",
                 retrieved_at=observed_at,
                 status=status,
@@ -2214,7 +2199,7 @@ class CodexLocalAdapter:
         return (
             resource_snapshot_from_capacity(
                 snapshot,
-                identity=self._resource,
+                identity=resource,
                 quota_observation_class="unknown",
             ),
         )
@@ -2228,7 +2213,7 @@ class CodexLocalAdapter:
         assert self._source_id is not None
         with self._inventory_lock:
             inventory = self._inventory
-            resources = self._discovered_resource_ids_locked()
+            _resources = self._discovered_resource_ids_locked()
         if inventory is None:
             return ()
         status_by_auth = {
@@ -2344,6 +2329,8 @@ def run_official_codex_login(
         raise ValueError(
             f"source_id {source_id!r}: longer than {SOURCE_ID_MAX_LENGTH} chars"
         )
+    from .worker_local_store import default_worker_state_dir
+
     resolved_state = (
         Path(state_dir)
         if state_dir is not None
@@ -2354,12 +2341,13 @@ def run_official_codex_login(
     invalid = home.validate()
     if invalid is not None:
         raise CodexIneligible(invalid)
-    from .worker_local_store import default_worker_state_dir
-
-    binary = discover_codex_binary(
-        pinned=Path(pinned_binary) if pinned_binary else None,
+    binary, reason = discover_codex_binary(
+        pinned_binary=Path(pinned_binary) if pinned_binary else None,
         path_lookup=shutil.which,
     )
+    if binary is None or reason is not None:
+        _ = sys.stderr.write("codex binary not found; install the official codex CLI\n")
+        return 1
     env = dict(os.environ)
     env["CODEX_HOME"] = str(home.path)
     try:

@@ -37,6 +37,11 @@ ASSESSED_ON = "2026-09-06"
 EFFORT_ASSESSED_ON = "2026-09-08"
 VARIANTS_ASSESSED_ON = "2026-09-15"
 POLICY_UPDATED_ON = "2026-09-15"
+# The GPT-6 generation onboarding (D-053 point 8, issue #119): live
+# controlled-runtime inventory evidence dated 2026-09-24, floor-level
+# ratings via the reviewed track artifact.
+GPT6_ASSESSED_ON = "2026-09-24"
+CATALOG_UPDATED_ON = "2026-09-24"
 
 LUNA = ("openai", "gpt-5.6-luna", "max")
 SOL = ("openai", "gpt-5.6-sol", "high")
@@ -49,7 +54,13 @@ GLM53_HIGH = ("zai", "glm-5.3", "high")
 GLM53_LOW = ("zai", "glm-5.3", "low")
 NEW_CONFIGURATIONS = frozenset({LUNA_MEDIUM, TERRA_MEDIUM, SOL_MEDIUM})
 ZAI_VARIANTS = frozenset({GLM53_HIGH, GLM53_LOW})
-ALL_MODELS = frozenset({LUNA, SOL, GLM53, FLASH}) | NEW_CONFIGURATIONS | ZAI_VARIANTS
+GPT6_LUNA = ("openai", "gpt-6-luna", "high")
+GPT6_SOL = ("openai", "gpt-6-sol", "high")
+GPT6_ASTRA = ("openai", "gpt-6-astra", "low")
+GPT6_IDENTITIES = frozenset({GPT6_LUNA, GPT6_SOL, GPT6_ASTRA})
+ALL_MODELS = (
+    frozenset({LUNA, SOL, GLM53, FLASH}) | NEW_CONFIGURATIONS | ZAI_VARIANTS | GPT6_IDENTITIES
+)
 
 # The accepted initial calibration (D-025). Ratings describe routing
 # suitability in the owner's workflow; they are not benchmark percentiles.
@@ -181,6 +192,20 @@ ACCEPTED_MODEL_VERSION_DATES: dict[tuple[str, str, str], str] = {
     GLM53_LOW: "2026-08-14",
 }
 
+# The GPT-6 generation enters with the FAMILY hard-property continuity
+# assumption (D-053 point 8): context/output tokens continue the reviewed
+# gpt-5.6 values, vision stays unknown, reasoning support is evidenced by
+# the runtime's own effort listing. The runtime remains the true
+# enforcement boundary.
+for gpt6 in GPT6_IDENTITIES:
+    ACCEPTED_HARD_PROPERTIES[gpt6] = {
+        "input_context_tokens": 1_050_000, "output_tokens": 128_000,
+        "supports_tool_use": None, "supports_vision": None,
+        "supports_reasoning_mode": True,
+    }
+    ACCEPTED_BINDINGS[gpt6] = {("openai", "codex")}
+    ACCEPTED_MODEL_VERSION_DATES[gpt6] = GPT6_ASSESSED_ON
+
 for configuration in NEW_CONFIGURATIONS:
     ACCEPTED_HARD_PROPERTIES[configuration] = {
         "input_context_tokens": 1_050_000, "output_tokens": 128_000,
@@ -192,20 +217,29 @@ for configuration in NEW_CONFIGURATIONS:
 
 # Capability-only eligible sets (ignoring scarcity, capacity and policy):
 # which calibrated models satisfy every profile minimum.
+# The GPT-6 floor identities satisfy exactly these profiles (D-053):
+# the Luna floor (3/3/2/4/4/3) clears mechanical + routine_coding; the
+# Sol/Astra floors (4/4/4/4/4/4) additionally clear repository_review
+# and general_reasoning. No floor reaches the coding-5 / science-5 /
+# writing-5 / translation-5 minima by construction.
 ACCEPTED_ELIGIBLE_SETS: dict[str, frozenset[tuple[str, str, str]]] = {
     "mechanical": frozenset(ALL_MODELS),
     # M3.1 production floor: excludes the low effort and Luna Medium.
     "repository_review": frozenset(
         {LUNA, SOL, SOL_MEDIUM, TERRA_MEDIUM, GLM53, GLM53_HIGH, FLASH}
+        | (GPT6_IDENTITIES - {GPT6_LUNA})
     ),
     "routine_coding": frozenset(ALL_MODELS),
     # deep_coding keeps its coding-5 minimum: the conservatively rated
-    # GLM-5.3 high/low identities do NOT satisfy it (issue #79 intent).
+    # GLM-5.3 high/low identities do NOT satisfy it (issue #79 intent),
+    # and neither do the GPT-6 floors (coding floor 4).
     "deep_coding": frozenset({TERRA_MEDIUM, SOL_MEDIUM, SOL, GLM53}),
     "scientific_review": frozenset({SOL}),
     "editorial": frozenset({LUNA_MEDIUM, LUNA, SOL_MEDIUM, SOL}),
     # glm-5.3 high (reasoning 4) qualifies; low (reasoning 2) does not.
-    "general_reasoning": (ALL_MODELS - {LUNA_MEDIUM, GLM53_LOW}),
+    "general_reasoning": (
+        ALL_MODELS - {LUNA_MEDIUM, GLM53_LOW, GPT6_LUNA}
+    ),
     "orchestration": frozenset({LUNA, SOL_MEDIUM, SOL}),
     "translation": frozenset({SOL}),
 }
@@ -315,11 +349,13 @@ _PROFILES = _policy_profile_entries()
 
 class ModelCatalogCalibration(unittest.TestCase):
     def test_catalog_parses_with_accepted_version_and_dates(self) -> None:
-        self.assertEqual(_CATALOG.catalog_version, 3)
-        self.assertEqual(_CATALOG.updated_on, VARIANTS_ASSESSED_ON)
+        self.assertEqual(_CATALOG.catalog_version, 4)
+        self.assertEqual(_CATALOG.updated_on, CATALOG_UPDATED_ON)
         for entry in _CATALOG.entries:
             identity = (entry.identity.provider, entry.identity.model, entry.identity.variant)
-            if identity in ZAI_VARIANTS:
+            if identity in GPT6_IDENTITIES:
+                expected_reviewed = GPT6_ASSESSED_ON
+            elif identity in ZAI_VARIANTS:
                 expected_reviewed = VARIANTS_ASSESSED_ON
             elif identity in NEW_CONFIGURATIONS:
                 expected_reviewed = EFFORT_ASSESSED_ON
@@ -334,14 +370,18 @@ class ModelCatalogCalibration(unittest.TestCase):
             )
             self.assertIsNone(entry.model_version)
 
-    def test_exactly_nine_accepted_identities(self) -> None:
-        self.assertEqual(len(_CATALOG.entries), 9)
+    def test_exactly_twelve_accepted_identities(self) -> None:
+        self.assertEqual(len(_CATALOG.entries), 12)
         self.assertEqual(set(_BY_IDENTITY), set(ALL_MODELS))
 
     def test_no_additional_model_slipped_into_catalog(self) -> None:
+        # "astra" was deliberately removed from the forbidden list by the
+        # D-053 GPT-6 reconciliation (issue #119): the Astra onboarding
+        # gate (D-033) is exercised with dated evidence and a reviewable
+        # diff. Every other foreign family stays forbidden.
         for identity, entry in _BY_IDENTITY.items():
             serialized = json.dumps(entry.to_dict()).lower()
-            for forbidden in ("astra", "claude", "gemini", "kimi", "deepseek", "ollama"):
+            for forbidden in ("claude", "gemini", "kimi", "deepseek", "ollama"):
                 self.assertNotIn(forbidden, serialized, identity)
 
     def test_exact_rating_matrix(self) -> None:
@@ -353,6 +393,41 @@ class ModelCatalogCalibration(unittest.TestCase):
                     expected[dimension],
                     f"{identity}.{dimension}",
                 )
+
+    def test_gpt6_floor_ratings_and_track_provenance(self) -> None:
+        # D-053 point 8: the GPT-6 generation enters at the conservative
+        # track floor with dated live-inventory evidence plus the reviewed
+        # track artifact. Nothing is copied from the gpt-5.6 ratings.
+        expected = {
+            GPT6_LUNA: {
+                "reasoning": 3, "coding": 3, "scientific_methodological": 2,
+                "writing_editorial": 4, "tool_use": 4, "translation_multilingual": 3,
+            },
+            GPT6_SOL: {
+                "reasoning": 4, "coding": 4, "scientific_methodological": 4,
+                "writing_editorial": 4, "tool_use": 4, "translation_multilingual": 4,
+            },
+            GPT6_ASTRA: {
+                "reasoning": 4, "coding": 4, "scientific_methodological": 4,
+                "writing_editorial": 4, "tool_use": 4, "translation_multilingual": 4,
+            },
+        }
+        for identity, ratings in expected.items():
+            entry = _BY_IDENTITY[identity]
+            for dimension, assessment in _assessments(entry.capabilities).items():
+                self.assertEqual(assessment.rating, ratings[dimension], f"{identity}.{dimension}")
+                self.assertEqual(assessment.confidence, "low", f"{identity}.{dimension}")
+                self.assertEqual(assessment.assessed_on, GPT6_ASSESSED_ON)
+                sources = {ref.source for ref in assessment.evidence}
+                self.assertIn("model-tracks.json", sources, f"{identity}.{dimension}")
+                self.assertIn("owner_observation", sources, f"{identity}.{dimension}")
+                self.assertIn(
+                    "controlled_codex_0.155.0-alpha.16.3_model_list_2026-09-24_issue_116",
+                    {ref.identifier for ref in assessment.evidence},
+                )
+            rationale = entry.capabilities.reasoning.rationale
+            assert rationale is not None
+            self.assertIn("track-floor rating", rationale.lower())
 
     def test_explicit_efforts_and_new_configuration_provenance(self) -> None:
         efforts = {LUNA: "max", SOL: "high", GLM53: "max", FLASH: "max",
@@ -437,11 +512,18 @@ class ModelCatalogCalibration(unittest.TestCase):
         self.assertEqual(flash.hard_properties.output_tokens, 128_000)
         serialized_flash = flash.hard_properties.to_dict()
         self.assertEqual(serialized_flash.get("output_tokens"), 128_000)
-        # Known properties on all entries remain explicit.
+        # Known properties on all entries remain explicit; the GPT-6
+        # entries (D-053) carry deliberately UNKNOWN tool/vision support
+        # (no direct evidence yet) while reasoning support is evidenced
+        # by the runtime's own effort listing.
         for identity in ALL_MODELS:
             props = _BY_IDENTITY[identity].hard_properties
-            self.assertTrue(props.supports_tool_use)
-            self.assertTrue(props.supports_reasoning_mode)
+            if identity in GPT6_IDENTITIES:
+                self.assertIsNone(props.supports_tool_use, identity)
+                self.assertIsNone(props.supports_vision, identity)
+            else:
+                self.assertTrue(props.supports_tool_use, identity)
+            self.assertTrue(props.supports_reasoning_mode, identity)
 
     def test_exact_capacity_binding_matrix(self) -> None:
         for identity, expected in ACCEPTED_BINDINGS.items():
@@ -480,7 +562,12 @@ class ModelCatalogCalibration(unittest.TestCase):
                 for ref in assessment.evidence:
                     self.assertIn(
                         ref.source,
-                        ("official_docs", "artificial_analysis", "owner_observation"),
+                        (
+                            "official_docs",
+                            "artificial_analysis",
+                            "owner_observation",
+                            "model-tracks.json",
+                        ),
                     )
                     self.assertTrue(ref.identifier)
 

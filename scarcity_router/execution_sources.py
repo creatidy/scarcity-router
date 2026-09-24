@@ -29,9 +29,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .model_inventory import ModelInventoryReport, SourceInventory
+from .model_inventory import (
+    SOURCE_ID_MAX_LENGTH,
+    ModelInventoryReport,
+    SourceInventory,
+    is_source_resource_id,
+    source_resource_id,
+)
 from .model_tracks import TrackRegistry
-from .resource_state import ResourceRegistration, ResourceIdentity
+from .resource_state import (
+    ExecutionCapabilities,
+    ResourceRegistration,
+    ResourceIdentity,
+)
 from .selection_types import (
     CAPABILITY_DIMENSIONS,
     CapabilityAssessment,
@@ -61,18 +71,22 @@ ADOPTION_STATES: tuple[str, ...] = (
     "retired",
 )
 
-def is_source_resource_id(resource_id: str) -> bool:
-    """Whether an id has the derived ``<source_id>:<slug>`` shape.
-
-    Shape-only check used by configuration validation to keep hand-made
-    resources out of the derived namespace; ownership still resolves
-    through the source registry (which knows the configured sources).
-    """
-    from .worker_codex_adapter import SOURCE_ID_MAX_LENGTH
-
-    head, sep, tail = resource_id.partition(":")
-    return bool(sep) and bool(head) and bool(tail) and len(head) <= SOURCE_ID_MAX_LENGTH
-
+#: Registration-owned capability facts of the CODEX EXECUTION SURFACE
+#: (D-053): derived resources served through this surface inherit exactly
+#: what the reviewed M06 evidence supports (docs/codex-adapter-stage1-
+#: evidence.md) — the 272k thread context limit and reasoning controls —
+#: and nothing about any specific model. Tool calls stay false on the
+#: stable surface (client tools return to clients, D-043); the D-043
+#: matrix remains the per-request admission authority.
+CODEX_SURFACE_CAPABILITIES: dict[str, object] = {
+    "context_limit_tokens": 272_000,
+    "streaming": True,
+    "tool_calls": False,
+    "structured_output": True,
+    "reasoning_controls": True,
+    "usage_reporting": True,
+    "cancellation": True,
+}
 
 #: Closed reason codes for non-adopted models (audit + UX remediations).
 ADOPTION_EXCLUSION_CODES: frozenset[str] = frozenset(
@@ -93,11 +107,10 @@ class SourceAdoptionError(ValueError):
     """An inventory document could not be adopted (fail closed)."""
 
 
-def _default_freshness_seconds() -> int:
-    # Mirrors the M01 registration contract's required TTL for
-    # worker-reported resources: bounded and honest (a source that stops
-    # reporting goes stale on the normal registry path).
-    return 900
+#: Mirrors the M01 registration contract's required TTL for
+#: worker-reported resources: bounded and honest (a source that stops
+#: reporting goes stale on the normal registry path).
+_DEFAULT_FRESHNESS_SECONDS = 900
 
 
 @dataclass(frozen=True)
@@ -143,10 +156,10 @@ class SourceRegistry:
         self,
         *,
         track_registry: TrackRegistry,
-        freshness_ttl_seconds: int = _default_freshness_seconds(),
+        freshness_ttl_seconds: int = _DEFAULT_FRESHNESS_SECONDS,
     ) -> None:
-        self._tracks = track_registry
-        self._ttl = freshness_ttl_seconds
+        self._tracks: TrackRegistry = track_registry
+        self._ttl: int = freshness_ttl_seconds
         self._sources: dict[str, _SourceState] = {}
 
     # ── configuration coupling ────────────────────────────────────────
@@ -257,16 +270,16 @@ class SourceRegistry:
                 misses = state.miss_counts.get(slug, 0) + 1
                 if misses >= RETIRE_AFTER_MISSES:
                     track_id, _efforts = state.adopted.pop(slug, ("", ()))
-                    state.retired.setdefault(slug, track_id)
-                    state.miss_counts.pop(slug, None)
+                    _ = state.retired.setdefault(slug, track_id)
+                    _ = state.miss_counts.pop(slug, None)
                 else:
                     state.miss_counts[slug] = misses
             for slug in present & set(state.adopted):
-                state.miss_counts.pop(slug, None)
-                state.retired.pop(slug, None)
+                _ = state.miss_counts.pop(slug, None)
+                _ = state.retired.pop(slug, None)
             state.routable = routable_now
         state.decisions = tuple(decisions)
-        return decisions
+        return tuple(decisions)
 
     # ── projections consumed by composition ───────────────────────────
 
@@ -297,6 +310,12 @@ class SourceRegistry:
                     ResourceRegistration(
                         identity=identity,
                         freshness_ttl_seconds=self._ttl,
+                        # Registration-owned capability facts of the CODEX
+                        # EXECUTION SURFACE (evidenced, model-independent):
+                        # the D-043 matrix stays the per-request authority.
+                        capabilities=ExecutionCapabilities.from_dict(
+                            dict(CODEX_SURFACE_CAPABILITIES)
+                        ),
                     )
                 )
         return tuple(registrations)
@@ -434,14 +453,12 @@ def _resource_id(source_id: str, slug: str) -> str:
         raise SourceAdoptionError(
             f"discovered slug {slug!r} exceeds {_MAX_SLUG_LENGTH} chars"
         )
-    from .worker_codex_adapter import source_resource_id
-
     return source_resource_id(source_id, slug)
 
 
 def _split_resource_id(resource_id: str) -> tuple[str, str] | None:
     head, sep, tail = resource_id.partition(":")
-    if not sep or not head or not tail or len(head) > 20:
+    if not sep or not head or not tail or len(head) > SOURCE_ID_MAX_LENGTH:
         return None
     return head, tail
 
@@ -476,13 +493,21 @@ def _floor_entry(
         for dim in CAPABILITY_DIMENSIONS
     }
     _ = config
+    continuity = floor.hard_properties_continuity or {}
     return ModelCatalogEntry(
         identity=ModelIdentity(provider="openai", model=slug, variant=effort),
         display_name=slug,
         # supports_reasoning_mode is EVIDENCED, not inherited: the entry
         # exists because the runtime itself advertises this reasoning
-        # effort for this slug. Everything else stays unknown.
-        hard_properties=ModelHardProperties(supports_reasoning_mode=True),
+        # effort for this slug. Context/output tokens come from the
+        # floor's OWNER-REVIEWED family-continuity assumption (the true
+        # enforcement boundary is the runtime itself); vision and tool
+        # support stay honestly unknown.
+        hard_properties=ModelHardProperties(
+            supports_reasoning_mode=True,
+            input_context_tokens=continuity.get("input_context_tokens"),
+            output_tokens=continuity.get("output_tokens"),
+        ),
         capabilities=CapabilityAssessments(**assessments),
         capacity_bindings=None,
         reasoning_effort=effort,

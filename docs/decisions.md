@@ -3758,11 +3758,20 @@ what M4.1 forbids); a configurable per-provider eligibility policy
   host footprint for what is an instance-addressing problem); collapsing
   source and resource into one entity with a wildcard model (rejected:
   destroys the exact-target contract D-042 freezes).
+- **Reconciliation note (implementation, same review):** quota-pool
+  membership is registration-owned policy, exactly like freshness/polling
+  policy: the M01 observation check compares identities EXCLUDING
+  `quota_pool_ids`, and the read model composes pools from the
+  registration alone. A worker-reported observation therefore can never
+  alter pool membership — including the default `pool-<source_id>`
+  derivation and any administrator override — which is what makes the
+  D-042 sharing rule enforceable on derived resources.
 - **Boundary:** Program architecture decision for #116. Frozen v1 machine
   interfaces stay byte-compatible (additive `ultra` effort vocabulary
   only); the worker protocol moves to negotiated version 2 with v1 peers
   unaffected; D-049's ownership clause is amended only as stated in
-  point 6.
+  point 6, and the M01 identity-match note above narrows the
+  observation/registration equality to the observation-relevant fields.
 
 ## Superseding a decision
 

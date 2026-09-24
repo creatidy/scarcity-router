@@ -96,7 +96,9 @@ class LocalAdapter(Protocol):
     """
 
     adapter_id: str
-    resource_ids: tuple[str, ...]
+
+    @property
+    def resource_ids(self) -> tuple[str, ...]: ...
 
     def invoke(
         self,

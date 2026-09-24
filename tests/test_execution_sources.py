@@ -11,6 +11,7 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
+from typing import cast, override
 
 REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
@@ -29,6 +30,7 @@ from scarcity_router.model_tracks import load_track_registry  # noqa: E402
 from scarcity_router.selection_types import REASONING_EFFORTS  # noqa: E402
 from scarcity_router.server_config import (  # noqa: E402
     CONFIG_SCHEMA_VERSION,
+    ResourceConfig,
     ServerConfigError,
     ServerConfiguration,
     SourceConfig,
@@ -45,7 +47,8 @@ def _config(**overrides: object) -> SourceConfig:
         "worker_id": "worker-1",
     }
     kwargs.update(overrides)
-    return SourceConfig(**kwargs)  # type: ignore[arg-type]
+    # Keys above are fixed literals; dict[str, object] is just the merge vehicle.
+    return SourceConfig(**kwargs)  # pyright: ignore[reportArgumentType] - fixed-literal test helper
 
 
 def _inventory(
@@ -83,13 +86,20 @@ SIX_GEN = (
 
 
 class AdoptionTests(unittest.TestCase):
+    def __init__(self, method_name: str = "runTest") -> None:
+        self.registry: SourceRegistry = SourceRegistry(
+            track_registry=load_track_registry()
+        )
+        super().__init__(method_name)
+
+    @override
     def setUp(self) -> None:
         self.registry = SourceRegistry(track_registry=load_track_registry())
         self.registry.sync_configuration((_config(),))
 
     def _apply(self, models: tuple[DiscoveredModel, ...], **kw: object):
         return self.registry.apply_inventory(
-            _inventory("personal-openai", "worker-1", models, **kw)
+            _inventory("personal-openai", "worker-1", models, **kw)  # pyright: ignore[reportArgumentType] - fixed-literal helper
         )
 
     def test_new_known_track_model_is_adopted_without_manual_configuration(self) -> None:
@@ -160,7 +170,7 @@ class AdoptionTests(unittest.TestCase):
         # gpt-6.1-sol has no exact catalog entries, so every (model,
         # effort) pair in the merged view is a derived floor entry — and
         # only efforts the runtime actually advertised appear.
-        self._apply((_model("gpt-6.1-sol", ("low", "ultra")),))
+        _ = self._apply((_model("gpt-6.1-sol", ("low", "ultra")),))
         entries = {
             (e.identity.model, e.identity.variant)
             for e in self.registry.derived_catalog_entries(_base_catalog()).entries
@@ -176,16 +186,23 @@ class AdoptionTests(unittest.TestCase):
 
 
 class LifecycleTests(unittest.TestCase):
+    def __init__(self, method_name: str = "runTest") -> None:
+        self.registry: SourceRegistry = SourceRegistry(
+            track_registry=load_track_registry()
+        )
+        super().__init__(method_name)
+
+    @override
     def setUp(self) -> None:
         self.registry = SourceRegistry(track_registry=load_track_registry())
         self.registry.sync_configuration((_config(),))
-        self.registry.apply_inventory(
+        _ = self.registry.apply_inventory(
             _inventory("personal-openai", "worker-1", SIX_GEN)
         )
 
     def _apply_without(self, slug: str) -> None:
         models = tuple(m for m in SIX_GEN if m.slug != slug)
-        self.registry.apply_inventory(
+        _ = self.registry.apply_inventory(
             _inventory("personal-openai", "worker-1", models)
         )
 
@@ -203,7 +220,7 @@ class LifecycleTests(unittest.TestCase):
         rids = {r.identity.resource_id for r in self.registry.derived_registrations()}
         self.assertNotIn(rid, rids)
         view = self.registry.source_view()[0]
-        self.assertIn("gpt-6-sol", view["retired"])
+        self.assertIn("gpt-6-sol", cast("list[str]", view["retired"]))
 
     def test_reappearing_model_re_materializes(self) -> None:
         for _ in range(RETIRE_AFTER_MISSES):
@@ -211,7 +228,7 @@ class LifecycleTests(unittest.TestCase):
         rids = {r.identity.resource_id for r in self.registry.derived_registrations()}
         self.assertNotIn("personal-openai:gpt-6-luna", rids)
         # The provider restores it.
-        self.registry.apply_inventory(
+        _ = self.registry.apply_inventory(
             _inventory("personal-openai", "worker-1", SIX_GEN)
         )
         rids = {r.identity.resource_id for r in self.registry.derived_registrations()}
@@ -230,10 +247,10 @@ class QuotaPoolTests(unittest.TestCase):
                 _config(source_id="second-openai", label="Second account"),
             )
         )
-        registry.apply_inventory(
+        _ = registry.apply_inventory(
             _inventory("personal-openai", "worker-1", (_model("gpt-6-sol", ("high",)),))
         )
-        registry.apply_inventory(
+        _ = registry.apply_inventory(
             _inventory("second-openai", "worker-1", (_model("gpt-6-sol", ("high",)),))
         )
         registrations = registry.derived_registrations()
@@ -263,10 +280,10 @@ class QuotaPoolTests(unittest.TestCase):
                 _config(source_id="b", quota_pool_id="shared-family"),
             )
         )
-        registry.apply_inventory(
+        _ = registry.apply_inventory(
             _inventory("a", "worker-1", (_model("gpt-6-sol", ("high",)),))
         )
-        registry.apply_inventory(
+        _ = registry.apply_inventory(
             _inventory("b", "worker-1", (_model("gpt-6-sol", ("high",)),))
         )
         pools = {
@@ -283,7 +300,7 @@ class OwnershipTests(unittest.TestCase):
         registry.sync_configuration(
             (_config(source_id="personal-openai", worker_id="worker-1"),)
         )
-        registry.apply_inventory(
+        _ = registry.apply_inventory(
             _inventory("personal-openai", "worker-1", (_model("gpt-6-sol", ("high",)),))
         )
         self.assertEqual(
@@ -313,7 +330,7 @@ class ConfigurationTests(unittest.TestCase):
         )
 
     def test_v1_document_still_parses_as_zero_sources(self) -> None:
-        document = {
+        document: dict[str, object] = {
             "schema_version": 1,
             "resources": [],
         }
@@ -321,21 +338,20 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual((), parsed.sources)
 
     def test_v1_document_rejects_sources(self) -> None:
-        document = {
+        document: dict[str, object] = {
             "schema_version": 1,
             "sources": [_config().to_dict()],
         }
         with self.assertRaises(ServerConfigError):
-            ServerConfiguration.from_document(document)
+            _ = ServerConfiguration.from_document(document)
 
     def test_hand_made_derived_resource_ids_are_rejected(self) -> None:
         from scarcity_router.resource_state import (
             ResourceIdentity,
             ResourceRegistration,
         )
-        from scarcity_router.resource_state import ResourceRegistration as RR
 
-        registration = RR(
+        registration = ResourceRegistration(
             identity=ResourceIdentity(
                 resource_id="personal-openai:gpt-6-sol",
                 channel="worker_bridged",
@@ -345,18 +361,17 @@ class ConfigurationTests(unittest.TestCase):
             ),
             freshness_ttl_seconds=600,
         )
+        hand_made = ResourceConfig(
+            registration=registration, enabled=True, worker_id="w"
+        )
         with self.assertRaises(ServerConfigError):
-            ServerConfiguration(
-                resources=(
-                    type("R", (), {"registration": registration, "worker_id": "w", "enabled": True})(),
-                )
-            )
+            _ = ServerConfiguration(resources=(hand_made,))
 
     def test_unknown_kind_and_long_ids_fail_closed(self) -> None:
         with self.assertRaises(ServerConfigError):
-            _config(kind="generic_discovery")
+            _ = _config(kind="generic_discovery")
         with self.assertRaises(ServerConfigError):
-            _config(source_id="way-too-long-source-identifier")
+            _ = _config(source_id="way-too-long-source-identifier")
 
 
 def _base_catalog():
@@ -369,7 +384,7 @@ class DerivedCatalogTests(unittest.TestCase):
     def test_floor_entries_are_conservative_and_provenance_bearing(self) -> None:
         registry = SourceRegistry(track_registry=load_track_registry())
         registry.sync_configuration((_config(),))
-        registry.apply_inventory(
+        _ = registry.apply_inventory(
             _inventory(
                 "personal-openai",
                 "worker-1",
@@ -383,8 +398,9 @@ class DerivedCatalogTests(unittest.TestCase):
             if e.identity.model == "gpt-6.1-sol" and e.identity.variant == "high"
         )
         # Capability inheritance is ONLY the track floor...
-        floor = load_track_registry().classify("openai", "gpt-6.1-sol").floor
-        assert floor is not None
+        classified = load_track_registry().classify("openai", "gpt-6.1-sol")
+        assert classified is not None and classified.floor is not None
+        floor = classified.floor
         self.assertEqual(floor.ratings["reasoning"], entry.capabilities.reasoning.rating)
         self.assertEqual(floor.ratings["tool_use"], entry.capabilities.tool_use.rating)
         # ...provenance points at the reviewed artifact...
@@ -392,16 +408,18 @@ class DerivedCatalogTests(unittest.TestCase):
             "model-tracks.json", entry.capabilities.reasoning.evidence[0].source
         )
         self.assertEqual("low", entry.capabilities.reasoning.confidence)
-        # ...hard properties stay honestly unknown...
-        self.assertIsNone(entry.hard_properties.input_context_tokens)
+        # ...context/output carry the owner-reviewed family-continuity
+        # assumption; vision and tool support stay honestly unknown...
+        self.assertEqual(1050000, entry.hard_properties.input_context_tokens)
         self.assertIsNone(entry.hard_properties.supports_vision)
+        self.assertIsNone(entry.hard_properties.supports_tool_use)
         # ...and capacity applicability is unknown, never optimistic.
         self.assertIsNone(entry.capacity_bindings)
 
     def test_exact_catalog_entries_always_win(self) -> None:
         registry = SourceRegistry(track_registry=load_track_registry())
         registry.sync_configuration((_config(),))
-        registry.apply_inventory(
+        _ = registry.apply_inventory(
             _inventory("personal-openai", "worker-1", (_model("gpt-6-sol", ("high",)),))
         )
         merged = registry.derived_catalog_entries(_base_catalog())
@@ -418,7 +436,7 @@ class DerivedCatalogTests(unittest.TestCase):
     def test_registry_never_mutates_the_base_catalog(self) -> None:
         registry = SourceRegistry(track_registry=load_track_registry())
         registry.sync_configuration((_config(),))
-        registry.apply_inventory(
+        _ = registry.apply_inventory(
             _inventory("personal-openai", "worker-1", (_model("gpt-6.1-sol", ("high",)),))
         )
         base = _base_catalog()
@@ -435,7 +453,7 @@ class UpgradeSimulationTests(unittest.TestCase):
         registry = SourceRegistry(track_registry=load_track_registry())
         registry.sync_configuration((_config(),))
         # T0: the source exposes gpt-6-sol.
-        registry.apply_inventory(
+        _ = registry.apply_inventory(
             _inventory("personal-openai", "worker-1", (_model("gpt-6-sol", ("high",)),))
         )
         self.assertEqual(
@@ -444,7 +462,7 @@ class UpgradeSimulationTests(unittest.TestCase):
         )
         # T1: the provider adds gpt-6.1-sol. The SERVER CONFIGURATION IS
         # UNTOUCHED — the same registry, the same config object.
-        registry.apply_inventory(
+        _ = registry.apply_inventory(
             _inventory(
                 "personal-openai",
                 "worker-1",
@@ -461,9 +479,13 @@ class UpgradeSimulationTests(unittest.TestCase):
         ]
         self.assertTrue(new_entries)
         self.assertTrue(
-            all(e.capabilities.reasoning.rating <= 4 for e in new_entries)
+            all(
+                rating is not None and rating <= 4
+                for e in new_entries
+                for rating in [e.capabilities.reasoning.rating]
+            )
         )
 
 
 if __name__ == "__main__":
-    unittest.main()
+    _ = unittest.main()

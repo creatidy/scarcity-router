@@ -46,7 +46,8 @@ def _source(**overrides: object) -> SourceInventory:
         "models": (_model(),),
     }
     kwargs.update(overrides)
-    return SourceInventory(**kwargs)  # type: ignore[arg-type]
+    # Keys above are fixed literals; dict[str, object] is just the merge vehicle.
+    return SourceInventory(**kwargs)  # pyright: ignore[reportArgumentType] - fixed-literal test helper
 
 
 def _report(**overrides: object) -> ModelInventoryReport:
@@ -55,7 +56,8 @@ def _report(**overrides: object) -> ModelInventoryReport:
         "sources": (_source(),),
     }
     kwargs.update(overrides)
-    return ModelInventoryReport(**kwargs)  # type: ignore[arg-type]
+    # Keys above are fixed literals; dict[str, object] is just the merge vehicle.
+    return ModelInventoryReport(**kwargs)  # pyright: ignore[reportArgumentType] - fixed-literal test helper
 
 
 class DiscoveredModelTests(unittest.TestCase):
@@ -87,11 +89,11 @@ class DiscoveredModelTests(unittest.TestCase):
 
     def test_rejects_unsafe_slug_and_duplicate_efforts(self) -> None:
         with self.assertRaises(ModelInventoryError):
-            _model(slug="NOT A SLUG")
+            _ = _model(slug="NOT A SLUG")
         with self.assertRaises(ModelInventoryError):
-            _model(efforts=("low", "low"))
+            _ = _model(efforts=("low", "low"))
         with self.assertRaises(ModelInventoryError):
-            _model(efforts=("low",) * 9)  # beyond MAX_EFFORTS_PER_MODEL
+            _ = _model(efforts=("low",) * 9)  # beyond MAX_EFFORTS_PER_MODEL
 
 
 class SourceInventoryTests(unittest.TestCase):
@@ -104,11 +106,11 @@ class SourceInventoryTests(unittest.TestCase):
 
     def test_closed_vocabulary_rejections(self) -> None:
         with self.assertRaises(ModelInventoryError):
-            _source(kind="generic_discovery")
+            _ = _source(kind="generic_discovery")
         with self.assertRaises(ModelInventoryError):
-            _source(auth_state="probably_fine")
+            _ = _source(auth_state="probably_fine")
         with self.assertRaises(ModelInventoryError):
-            _source(observed_at="2026-09-24T12:00:00Z")  # missing millis
+            _ = _source(observed_at="2026-09-24T12:00:00Z")  # missing millis
         # The codex:<source_id> adapter-instance naming convention is
         # enforced where instances are built (worker side), not in the
         # generic contract; the report-level uniqueness guarantee is here.
@@ -116,9 +118,9 @@ class SourceInventoryTests(unittest.TestCase):
 
     def test_model_bounds_and_duplicates_fail_closed(self) -> None:
         with self.assertRaises(ModelInventoryError):
-            _source(models=tuple(_model(f"m{i}") for i in range(MAX_MODELS_PER_SOURCE + 1)))
+            _ = _source(models=tuple(_model(f"m{i}") for i in range(MAX_MODELS_PER_SOURCE + 1)))
         with self.assertRaises(ModelInventoryError):
-            _source(models=(_model("same"), _model("same")))
+            _ = _source(models=(_model("same"), _model("same")))
         # Models are canonically ordered for stable audit.
         ordered = SourceInventory(
             source_id="s",
@@ -143,31 +145,31 @@ class ReportTests(unittest.TestCase):
         document = _report().to_dict()
         document["schema_version"] = MODEL_INVENTORY_SCHEMA_VERSION + 1
         with self.assertRaises(ModelInventoryError):
-            ModelInventoryReport.from_dict(document)
+            _ = ModelInventoryReport.from_dict(document)
 
     def test_unknown_keys_are_rejected_never_ignored(self) -> None:
         document = _report().to_dict()
         document["raw_provider_payload"] = {"anything": "no"}
         with self.assertRaises(ModelInventoryError):
-            ModelInventoryReport.from_dict(document)
+            _ = ModelInventoryReport.from_dict(document)
         source_document = _source().to_dict()
         source_document["account_email"] = "leak@example.invalid"
         with self.assertRaises(ModelInventoryError):
-            SourceInventory.from_dict(source_document)
+            _ = SourceInventory.from_dict(source_document)
 
     def test_bounded_source_count_and_duplicates(self) -> None:
         with self.assertRaises(ModelInventoryError):
-            _report(
+            _ = _report(
                 sources=tuple(
                     _source(source_id=f"s{i}", adapter_id=f"codex:s{i}")
                     for i in range(MAX_SOURCES_PER_REPORT + 1)
                 )
             )
         with self.assertRaises(ModelInventoryError):
-            _report(sources=(_source(), _source()))
+            _ = _report(sources=(_source(), _source()))
         # Two sources may not share one adapter instance id either.
         with self.assertRaises(ModelInventoryError):
-            _report(
+            _ = _report(
                 sources=(
                     _source(source_id="a"),
                     _source(source_id="b", adapter_id="codex:personal-openai"),
@@ -184,9 +186,9 @@ class ReportTests(unittest.TestCase):
         )
         duplicated = document[:-1] + ', "worker_id": "x"}'
         with self.assertRaises(ModelInventoryError):
-            ModelInventoryReport.parse(duplicated)
+            _ = ModelInventoryReport.parse(duplicated)
         with self.assertRaises(ModelInventoryError):
-            ModelInventoryReport.parse("not json at all")
+            _ = ModelInventoryReport.parse("not json at all")
 
 
 class TrackRegistryArtifactTests(unittest.TestCase):
@@ -206,11 +208,19 @@ class TrackRegistryArtifactTests(unittest.TestCase):
         from scarcity_router.model_tracks import load_track_registry
 
         registry = load_track_registry()
-        self.assertEqual("openai/sol", registry.classify("openai", "gpt-6-sol").track_id())
+        sol = registry.classify("openai", "gpt-6-sol")
+        assert sol is not None
+        self.assertEqual("openai/sol", sol.track_id())
         # A future generation classifies into the SAME track (the whole point).
-        self.assertEqual("openai/sol", registry.classify("openai", "gpt-6.1-sol").track_id())
-        self.assertEqual("openai/luna", registry.classify("openai", "gpt-6-luna").track_id())
-        self.assertEqual("openai/astra", registry.classify("openai", "gpt-6-astra").track_id())
+        nxt = registry.classify("openai", "gpt-6.1-sol")
+        assert nxt is not None
+        self.assertEqual("openai/sol", nxt.track_id())
+        luna = registry.classify("openai", "gpt-6-luna")
+        assert luna is not None
+        self.assertEqual("openai/luna", luna.track_id())
+        astra = registry.classify("openai", "gpt-6-astra")
+        assert astra is not None
+        self.assertEqual("openai/astra", astra.track_id())
 
     def test_unlisted_and_unknown_models_stay_unclassified(self) -> None:
         from scarcity_router.model_tracks import load_track_registry
@@ -235,7 +245,9 @@ class TrackRegistryArtifactTests(unittest.TestCase):
         from scarcity_router.model_tracks import load_track_registry
 
         registry = load_track_registry()
-        self.assertEqual("openai/sol", registry.classify("openai", "gpt-5.6-sol").track_id())
+        legacy = registry.classify("openai", "gpt-5.6-sol")
+        assert legacy is not None
+        self.assertEqual("openai/sol", legacy.track_id())
 
     def test_ambiguous_pattern_match_fails_closed(self) -> None:
         from scarcity_router.model_tracks import (
@@ -266,8 +278,8 @@ class TrackRegistryArtifactTests(unittest.TestCase):
             )
         )
         with self.assertRaises(TrackRegistryError):
-            overlapping.classify("p", "gpt-a-x")
+            _ = overlapping.classify("p", "gpt-a-x")
 
 
 if __name__ == "__main__":
-    unittest.main()
+    _ = unittest.main()

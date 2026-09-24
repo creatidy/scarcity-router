@@ -68,7 +68,11 @@ from .model_inventory import (
     ModelInventoryError,
     ModelInventoryReport,
 )
-from .resource_state import ResourceRegistry, WorkerStateReport
+from .resource_state import (
+    ResourceRegistry,
+    ResourceStateSnapshot,
+    WorkerStateReport,
+)
 from .worker_identity_store import (
     ERR_CREDENTIAL_REVOKED,
     ERR_PAIRING_EXPIRED,
@@ -546,10 +550,41 @@ class WorkerSession:
                 )
             )
             return
+        # D-053 (protocol version 2): optional bounded discovery
+        # documents, validated and applied BEFORE the resource section:
+        # adoption may materialize derived resources that THIS report's
+        # snapshots then reference. Every document is validated
+        # fail-closed by the inventory contract and must name the
+        # authenticated worker; a bad document rejects the whole report
+        # (same atomicity as the resource section). No sink wired means
+        # inventories are acknowledged and dropped — never applied.
+        applied_inventories: list[ModelInventoryReport] = []
+        for raw_inventory in message.inventories:
+            try:
+                inventory = ModelInventoryReport.from_dict(dict(raw_inventory))
+                if inventory.worker_id != worker_id:
+                    raise ModelInventoryError(
+                        "inventory.worker_id does not match the authenticated identity"
+                    )
+            except (ModelInventoryError, ValueError) as exc:
+                self._send_error(
+                    ErrorMessage(
+                        code=ERR_MALFORMED,
+                        message=f"the state report's inventory was rejected: {exc}",
+                        fatal=False,
+                    )
+                )
+                return
+            applied_inventories.append(inventory)
+        for inventory in applied_inventories:
+            sink = endpoint.inventory_sink
+            if sink is not None:
+                sink(inventory)
         # AUTHORIZATION (D-049 amendment): current administrator
         # configuration is the only source of resource-to-worker
         # ownership. Every reported resource must be configured to THIS
-        # authenticated worker; otherwise the ENTIRE report is rejected
+        # authenticated worker (or derived from a source configured on
+        # it, D-053); otherwise the ENTIRE report is rejected
         # fail-closed — the M01 registry and the observed/live bindings
         # change nothing (atomic, matching apply_worker_report), so an
         # unauthorized report can never overwrite a previously valid one.
@@ -567,6 +602,30 @@ class WorkerSession:
                     )
                 )
                 return
+        # D-053 reconciliation: a source worker honestly reports EVERY
+        # model its runtime lists, but only ADOPTED models are registered
+        # (restricted/unclassified models never materialize). A
+        # source-derived snapshot for this authenticated worker that has
+        # no registration is therefore DROPPED from the applied set — its
+        # state lives in the source view, never the resource registry —
+        # while every other unregistered resource still rejects the whole
+        # report (the spoof-protection atomicity is unchanged), and any
+        # failure among the applied snapshots remains atomic.
+        applied: list[ResourceStateSnapshot] = []
+        for snapshot in report.resources:
+            rid = snapshot.identity.resource_id
+            if not endpoint.is_registered(rid) and endpoint.is_source_bound(
+                rid, worker_id
+            ):
+                continue
+            applied.append(snapshot)
+        if len(applied) != len(report.resources):
+            report = WorkerStateReport(
+                schema_version=report.schema_version,
+                worker_id=report.worker_id,
+                reported_at=report.reported_at,
+                resources=tuple(applied),
+            )
         try:
             endpoint.registry.apply_worker_report(report)
         except (CapacityValidationError, ValueError) as exc:
@@ -584,31 +643,6 @@ class WorkerSession:
         with endpoint._lock:  # pyright: ignore[reportPrivateUsage] - same-program endpoint seam
             for snapshot in report.resources:
                 endpoint._observed_bindings[snapshot.identity.resource_id] = worker_id  # pyright: ignore[reportPrivateUsage] - same-program endpoint seam
-        # D-053 (protocol version 2): optional bounded discovery
-        # documents. Every document is validated fail-closed by the
-        # inventory contract and must name the authenticated worker; a
-        # bad document rejects the whole report (same atomicity as the
-        # resource section). No sink wired means the inventories are
-        # acknowledged and dropped — never silently applied.
-        for raw_inventory in message.inventories:
-            try:
-                inventory = ModelInventoryReport.from_dict(dict(raw_inventory))
-                if inventory.worker_id != worker_id:
-                    raise ModelInventoryError(
-                        "inventory.worker_id does not match the authenticated identity"
-                    )
-            except (ModelInventoryError, ValueError) as exc:
-                self._send_error(
-                    ErrorMessage(
-                        code=ERR_MALFORMED,
-                        message=f"the state report's inventory was rejected: {exc}",
-                        fatal=False,
-                    )
-                )
-                return
-            sink = endpoint.inventory_sink
-            if sink is not None:
-                sink(inventory)
         self._state.writer.write_message(StateReportAckMessage().to_payload())
 
     def _route_to_attempt(self, attempt_id: str, message: ExecuteChunkMessage) -> None:
@@ -722,7 +756,14 @@ class WorkerEndpoint:
         # D-053: optional sink for validated source-inventory documents
         # (wired by the composed server; None means inventories are
         # accepted-and-dropped for v2 workers with no source domain).
-        self.inventory_sink: Callable[[object], None] | None = None
+        self.inventory_sink: Callable[[ModelInventoryReport], None] | None = None
+        #: D-053 seams (wired by the composed server): membership over the
+        #: live M01 registry, and the source-derived-binding test for the
+        #: authenticated worker. Defaults deny everything.
+        self.is_registered: Callable[[str], bool] = lambda resource_id: False
+        self.is_source_bound: Callable[[str, str], bool] = (
+            lambda resource_id, worker_id: False
+        )
         self.heartbeat_interval_seconds: int = heartbeat_interval_seconds
         self._monotonic: Callable[[], float] = monotonic
         self._wall_clock: Callable[[], datetime] = (

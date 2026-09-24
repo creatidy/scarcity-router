@@ -296,7 +296,7 @@ class Harness:
             spawner=self.spawner,
             platform_name="linux",
             platform_release="6.x-generic",
-            **adapter_kwargs,
+            **adapter_kwargs,  # pyright: ignore[reportArgumentType] - typed keyword helper
         )
 
     def cleanup(self) -> None:
@@ -351,7 +351,7 @@ class CodexAdapterTests(unittest.TestCase):
         pinned: bool = True,
         path_lookup: Callable[[str], str | None] | None = None,
         discovery_roots: tuple[Path, ...] | None = (),
-        **adapter_kwargs: float,
+        **adapter_kwargs: object,
     ) -> Harness:
         harness = Harness(
             scenario,
@@ -359,7 +359,7 @@ class CodexAdapterTests(unittest.TestCase):
             pinned=pinned,
             path_lookup=path_lookup,
             discovery_roots=discovery_roots,
-            **adapter_kwargs,
+            **adapter_kwargs,  # pyright: ignore[reportArgumentType] - typed keyword helper
         )
         self._harnesses.append(harness)
         return harness
@@ -764,19 +764,25 @@ class CodexAdapterTests(unittest.TestCase):
             assert proc.stdin is not None and proc.stdout is not None
             for method in ("account/read", "model/list"):
                 line = json.dumps({"id": 1, "method": method}) + "\n"
-                proc.stdin.write(line.encode("utf-8"))
+                _ = proc.stdin.write(line.encode("utf-8"))
                 proc.stdin.flush()
-                response = json.loads(proc.stdout.readline().decode("utf-8"))
+                response = cast(
+                    "dict[str, object]",
+                    json.loads(cast("bytes", proc.stdout.readline()).decode("utf-8")),
+                )
                 self.assertEqual(1, response.get("id"))
                 error = response.get("error")
                 assert isinstance(error, dict)
-                self.assertEqual(-32600, error.get("code"))
+                self.assertEqual(-32600, cast("dict[str, object]", error).get("code"))
             # And the explicit empty object is accepted again (the repair's
             # exact wire shape).
             line = json.dumps({"id": 2, "method": "account/read", "params": {}}) + "\n"
-            proc.stdin.write(line.encode("utf-8"))
+            _ = proc.stdin.write(line.encode("utf-8"))
             proc.stdin.flush()
-            response = json.loads(proc.stdout.readline().decode("utf-8"))
+            response = cast(
+                "dict[str, object]",
+                json.loads(cast("bytes", proc.stdout.readline()).decode("utf-8")),
+            )
             self.assertEqual(2, response.get("id"))
             self.assertNotIn("error", response)
         finally:

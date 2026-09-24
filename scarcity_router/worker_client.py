@@ -57,6 +57,7 @@ from typing import cast
 from .errors import CapacityValidationError
 from .gateway_adapters import AdapterResult, AdapterStreamChunk
 from .gateway_validation import v_safe_id, v_text
+from .model_inventory import ModelInventoryReport, SourceInventory
 from .resource_state import ResourceStateSnapshot, WorkerStateReport
 from .worker_local_adapters import (
     AdapterNotAllowedError,
@@ -906,11 +907,25 @@ class _ActiveSession:
         if negotiated is not None and negotiated >= 2:
             for adapter_id in self._runtime.local_adapters.adapter_ids():
                 adapter = self._runtime.local_adapters.resolve(adapter_id)
+                # A due discovery observation happens HERE, inside the
+                # state-report path: bounded, deterministic, and failures
+                # are isolated inside the adapter (D-053 reliability).
+                refresher = getattr(adapter, "refresh_inventory_if_due", None)
+                if refresher is not None:
+                    try:
+                        refresher()
+                    except (OSError, ValueError, WorkerProtocolError) as exc:
+                        self._runtime.note(
+                            "warn",
+                            f"inventory refresh failed for {adapter_id}: {type(exc).__name__}",
+                        )
                 report_source = getattr(adapter, "inventory_report", None)
                 if report_source is None:
                     continue
                 try:
-                    inventory = report_source()
+                    inventory = cast(
+                        "SourceInventory | None", report_source()
+                    )
                 except (OSError, ValueError, WorkerProtocolError) as exc:
                     self._runtime.note(
                         "warn",
@@ -918,7 +933,12 @@ class _ActiveSession:
                     )
                     continue
                 if inventory is not None:
-                    inventories.append(inventory.to_dict())
+                    inventories.append(
+                        ModelInventoryReport(
+                            worker_id=self._identity.worker_id,
+                            sources=(inventory,),
+                        ).to_dict()
+                    )
         try:
             self._sender.send(
                 StateReportMessage(
@@ -1070,7 +1090,9 @@ def build_registry(
     source_ids: tuple[str, ...] = ()
     if isinstance(codex_sources, list):
         source_ids = tuple(
-            item for item in codex_sources if isinstance(item, str) and item
+            item
+            for item in cast("list[object]", codex_sources)
+            if isinstance(item, str) and item
         )
     if not allow_ollama and not allow_codex and not source_ids:
         return None

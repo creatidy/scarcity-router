@@ -95,7 +95,8 @@ from .machine_api import (
 )
 from .capacity import CapacityDiagnostic, CapacitySnapshot
 from .eligibility import ExecutionEligibility
-from .execution_sources import SourceRegistry, is_source_resource_id
+from .execution_sources import SourceRegistry
+from .model_inventory import is_source_resource_id
 from .model_inventory import ModelInventoryReport
 from .model_tracks import load_track_registry
 from .resource_state import (
@@ -377,7 +378,7 @@ class ControlPlane:
         # D-053: the server-side execution-source registry (derived
         # resources, track-floor catalog entries, source views). The
         # reviewed track artifact loads with the other calibrated inputs.
-        self._source_registry = SourceRegistry(
+        self._source_registry: SourceRegistry = SourceRegistry(
             track_registry=load_track_registry()
         )
         self._worker_endpoint = WorkerEndpoint(
@@ -386,6 +387,8 @@ class ControlPlane:
             configured_owner=self._configured_worker_owner,
         )
         self._worker_endpoint.inventory_sink = self._apply_source_inventory
+        self._worker_endpoint.is_registered = self._registry_is_registered
+        self._worker_endpoint.is_source_bound = self._registry_is_source_bound
         document = store.load_configuration_document()
         self._config = (
             ServerConfiguration.from_document(document)
@@ -448,10 +451,24 @@ class ControlPlane:
         # D-053: source-derived resources are owned by their source's
         # configured worker — the administrator granted ownership at
         # source granularity; the report only supplies the inventory.
-        derived_owner = self._source_registry.owner_of(resource_id)
-        if derived_owner is not None and is_source_resource_id(resource_id):
-            return derived_owner
+        # A pure configuration read: authoritative on the FIRST report,
+        # before any derived state exists.
+        if is_source_resource_id(resource_id):
+            source = self._config.source_by_id(
+                resource_id.partition(":")[0]
+            )
+            if source is not None:
+                return source.worker_id
         return None
+
+    def _registry_is_registered(self, resource_id: str) -> bool:
+        return self.current_application().registry.is_registered(resource_id)
+
+    def _registry_is_source_bound(self, resource_id: str, worker_id: str) -> bool:
+        if not is_source_resource_id(resource_id):
+            return False
+        source = self._config.source_by_id(resource_id.partition(":")[0])
+        return source is not None and source.worker_id == worker_id
 
     def _apply_source_inventory(self, inventory: ModelInventoryReport) -> None:
         """The endpoint's validated inventory sink (D-053).

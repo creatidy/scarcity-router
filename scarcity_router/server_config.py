@@ -527,7 +527,7 @@ class ServerConfiguration:
             if resource.worker_id is not None
         }
         for derived in worker_bound_resources:
-            from .execution_sources import is_source_resource_id
+            from .model_inventory import is_source_resource_id
 
             if is_source_resource_id(derived):
                 raise ServerConfigError(

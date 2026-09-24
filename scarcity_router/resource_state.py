@@ -1139,6 +1139,22 @@ class WorkerStateReport:
 # ── Registry read model ───────────────────────────────────────────────────────
 
 
+def _identity_observation_key(identity: ResourceIdentity) -> tuple[str | None, ...]:
+    """The observation-relevant identity fields (pool ids excluded).
+
+    Quota-pool membership is registration-owned policy (D-042/D-053);
+    observations are matched and merged on the execution identity only.
+    """
+    return (
+        identity.resource_id,
+        identity.channel,
+        identity.provider,
+        identity.model,
+        identity.entitlement,
+        identity.variant,
+    )
+
+
 @dataclass(frozen=True)
 class ResourceRegistryEntry:
     """One registry read entry: administrator policy plus evaluated state.
@@ -1204,7 +1220,14 @@ class ResourceRegistryEntry:
             _v_instance_of(
                 self.observation, ResourceStateSnapshot, "registry_entry.observation"
             )
-            if self.observation.identity != self.identity:
+            # Quota-pool membership is registration-owned policy
+            # (D-042/D-053, see ResourceRegistry._checked_observation):
+            # the observation match ignores pool ids, so an observation can
+            # never alter pool membership while cross-resource state still
+            # fails closed.
+            if _identity_observation_key(
+                self.observation.identity
+            ) != _identity_observation_key(self.identity):
                 raise CapacityValidationError(
                     "registry_entry: observation identity for "
                     + f"{self.observation.identity.resource_id!r} does not match "
@@ -1542,7 +1565,14 @@ class ResourceRegistry:
             raise CapacityValidationError(
                 f"registry: resource {resource_id!r} is not registered"
             )
-        if snapshot.identity != registration.identity:
+        # Quota-pool membership is REGISTRATION-owned policy (D-042/D-053):
+        # like freshness/polling policy and configured facts, an observation
+        # can never change it. The identity match therefore ignores the
+        # pool ids — the read model composes pools from the registration
+        # alone, so an accepted observation cannot alter pool membership.
+        if _identity_observation_key(
+            snapshot.identity
+        ) != _identity_observation_key(registration.identity):
             raise CapacityValidationError(
                 f"registry: snapshot identity for {resource_id!r} does not match "
                 + "the registered identity"
@@ -1552,6 +1582,10 @@ class ResourceRegistry:
             snapshot.observed_at,
             context=f"registry: observation for {resource_id!r}",
         )
+
+    def is_registered(self, resource_id: str) -> bool:
+        """Whether a resource id currently has a registration here."""
+        return resource_id in self._registrations
 
     def apply_snapshot(self, snapshot: ResourceStateSnapshot) -> None:
         """Record one normalized observation for a registered resource."""

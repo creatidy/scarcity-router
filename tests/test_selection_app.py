@@ -224,7 +224,7 @@ class SelectCommandTests(unittest.TestCase):
         self.assertIn("Alternatives (exact ranking order):", out)
         self.assertIn("Excluded candidates:", out)
         self.assertIn("capability:", out)
-        self.assertIn("Versions: catalog 3 (2026-09-15)", out)
+        self.assertIn("Versions: catalog 4 (2026-09-24)", out)
 
     def test_select_requirement_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
