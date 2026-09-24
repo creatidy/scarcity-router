@@ -303,5 +303,5 @@ class SlugBoundTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             source_resource_id("a" * 20, "b" * 45)  # combined > 64 (safe-id)
-        _ = source_resource_id("s", "c" * 40)
-        self.assertEqual("s:" + "c" * 40, source_resource_id("s", "c" * 40))
+        fitted = source_resource_id("s", "c" * 40)
+        self.assertEqual("s:" + "c" * 40, fitted)
