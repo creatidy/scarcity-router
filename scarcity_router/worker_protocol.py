@@ -71,7 +71,19 @@ from .selection_types import ModelIdentity
 
 # ── Versioning ────────────────────────────────────────────────────────────────
 
-WORKER_PROTOCOL_VERSION = 1
+#: The protocol version this build speaks. Version 2 (D-053, #120) adds
+#: the OPTIONAL bounded ``inventories`` section on state reports; every
+#: version-1 message shape is unchanged. The server still ACCEPTS v1
+#: peers (see :data:`SERVER_SUPPORTED_PROTOCOL_VERSIONS`), so an old
+#: worker negotiates version 1 and behaves exactly as before; a new
+#: worker against an old server fails cleanly at the handshake (deploy
+#: the server first, the standard rolling-upgrade order).
+WORKER_PROTOCOL_VERSION = 2
+
+#: Versions the server-side endpoint accepts from workers. Version 1
+#: workers never send the version-2 inventory section; version negotiation
+#: picks the highest mutually supported version.
+SERVER_SUPPORTED_PROTOCOL_VERSIONS: tuple[int, ...] = (2, 1)
 
 # ── Framing bounds ────────────────────────────────────────────────────────────
 
@@ -164,6 +176,9 @@ _MAX_NOTE = 200
 _MAX_CHUNK_TEXT = 1_048_576
 _MAX_TOOL_ARGUMENTS = 1_048_576
 _MAX_IDENTIFIER_TEXT = 256
+#: D-053: at most this many source inventory documents per state report
+#: (each document is bounded again by the inventory contract itself).
+MAX_INVENTORIES_PER_REPORT = 8
 
 
 class WorkerProtocolError(Exception):
@@ -878,20 +893,44 @@ class StateReportMessage:
     (``WorkerStateReport.from_dict``) when the server applies it through
     ``ResourceRegistry.apply_worker_report`` -- this module deliberately
     does not re-implement any of that normalization.
+
+    ``inventories`` (protocol version 2, D-053) carries the optional
+    bounded discovery documents (``model_inventory.ModelInventoryReport``
+    serializations) for the worker's execution sources. Version-1
+    sessions never include it: the worker only sends it when the
+    negotiated version is at least 2, and the server validates each
+    document fail-closed through the inventory contract on receipt.
     """
 
     report: Mapping[str, object]
+    inventories: tuple[Mapping[str, object], ...] = ()
 
     def to_payload(self) -> dict[str, object]:
-        return {"type": MSG_STATE_REPORT, "report": dict(self.report)}
+        payload: dict[str, object] = {"type": MSG_STATE_REPORT, "report": dict(self.report)}
+        if self.inventories:
+            payload["inventories"] = [dict(item) for item in self.inventories]
+        return payload
 
     @classmethod
     def from_payload(cls, d: object) -> "StateReportMessage":
-        dd = _payload_shape(d, ("type", "report"), (), "state_report")
+        dd = _payload_shape(d, ("type", "report"), ("inventories",), "state_report")
         _typed(dd, MSG_STATE_REPORT)
         if not isinstance(dd["report"], Mapping):
             raise WorkerProtocolError(ERR_MALFORMED, "state_report.report: expected an object")
-        return cls(report=cast("Mapping[str, object]", dd["report"]))
+        inventories: tuple[Mapping[str, object], ...] = ()
+        if "inventories" in dd:
+            raw = dd["inventories"]
+            if not isinstance(raw, list) or len(raw) > MAX_INVENTORIES_PER_REPORT:
+                raise WorkerProtocolError(
+                    ERR_MALFORMED, "state_report.inventories: expected a bounded list"
+                )
+            for item in raw:
+                if not isinstance(item, Mapping):
+                    raise WorkerProtocolError(
+                        ERR_MALFORMED, "state_report.inventories: expected objects"
+                    )
+            inventories = tuple(cast("Mapping[str, object]", item) for item in raw)
+        return cls(report=cast("Mapping[str, object]", dd["report"]), inventories=inventories)
 
 
 @dataclass(frozen=True)

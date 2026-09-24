@@ -64,6 +64,10 @@ from typing import Protocol, cast
 
 from .errors import CapacityValidationError
 from .gateway_validation import v_int
+from .model_inventory import (
+    ModelInventoryError,
+    ModelInventoryReport,
+)
 from .resource_state import ResourceRegistry, WorkerStateReport
 from .worker_identity_store import (
     ERR_CREDENTIAL_REVOKED,
@@ -99,6 +103,7 @@ from .worker_protocol import (
     SocketTransport,
     StateReportAckMessage,
     StateReportMessage,
+    SERVER_SUPPORTED_PROTOCOL_VERSIONS,
     WORKER_PROTOCOL_VERSION,
     WorkerProtocolError,
     negotiate_version,
@@ -428,7 +433,10 @@ class WorkerSession:
 
     def _negotiate_or_die(self, offered: tuple[int, ...]) -> None:
         try:
-            version = negotiate_version((WORKER_PROTOCOL_VERSION,), offered)
+            # D-053: the server still accepts version-1 workers (they
+            # never send the version-2 inventory section); negotiation
+            # picks the highest mutually supported version.
+            version = negotiate_version(SERVER_SUPPORTED_PROTOCOL_VERSIONS, offered)
         except WorkerProtocolError:
             # The fatal error frame is sent by the run() error handler.
             raise
@@ -576,6 +584,31 @@ class WorkerSession:
         with endpoint._lock:  # pyright: ignore[reportPrivateUsage] - same-program endpoint seam
             for snapshot in report.resources:
                 endpoint._observed_bindings[snapshot.identity.resource_id] = worker_id  # pyright: ignore[reportPrivateUsage] - same-program endpoint seam
+        # D-053 (protocol version 2): optional bounded discovery
+        # documents. Every document is validated fail-closed by the
+        # inventory contract and must name the authenticated worker; a
+        # bad document rejects the whole report (same atomicity as the
+        # resource section). No sink wired means the inventories are
+        # acknowledged and dropped — never silently applied.
+        for raw_inventory in message.inventories:
+            try:
+                inventory = ModelInventoryReport.from_dict(dict(raw_inventory))
+                if inventory.worker_id != worker_id:
+                    raise ModelInventoryError(
+                        "inventory.worker_id does not match the authenticated identity"
+                    )
+            except (ModelInventoryError, ValueError) as exc:
+                self._send_error(
+                    ErrorMessage(
+                        code=ERR_MALFORMED,
+                        message=f"the state report's inventory was rejected: {exc}",
+                        fatal=False,
+                    )
+                )
+                return
+            sink = endpoint.inventory_sink
+            if sink is not None:
+                sink(inventory)
         self._state.writer.write_message(StateReportAckMessage().to_payload())
 
     def _route_to_attempt(self, attempt_id: str, message: ExecuteChunkMessage) -> None:
@@ -686,6 +719,10 @@ class WorkerEndpoint:
         # callable so the supplier (the M09 control plane) can rebind its
         # configuration atomically — the endpoint never caches ownership.
         self.configured_owner: OwnerResolver = configured_owner
+        # D-053: optional sink for validated source-inventory documents
+        # (wired by the composed server; None means inventories are
+        # accepted-and-dropped for v2 workers with no source domain).
+        self.inventory_sink: Callable[[object], None] | None = None
         self.heartbeat_interval_seconds: int = heartbeat_interval_seconds
         self._monotonic: Callable[[], float] = monotonic
         self._wall_clock: Callable[[], datetime] = (
