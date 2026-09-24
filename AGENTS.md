@@ -111,6 +111,27 @@ without provenance, date/version, confidence, rationale and a human-reviewable
 diff. Public CLI, REST, MCP and serialized contracts require backwards
 compatibility or an explicit versioned migration and decision.
 
+## Preserve proven operational properties
+
+When replacing, generalizing or abstracting an existing working path, first
+establish how that path currently works in the relevant real environment.
+Relevant properties, when applicable, include: local vs remote operation;
+interactive vs headless operation; authentication mechanism and credential
+boundary; network topology; filesystem/isolation assumptions; process/service
+lifecycle; deployment ordering; external tool/runtime behavior; and required
+operator/manual steps. These are property classes, not permanent facts about
+any installation.
+
+An architectural abstraction may change implementation structure, but it does
+not erase operational constraints of a proven working path. Existing working
+behavior is a compatibility requirement unless the selected issue or the owner
+explicitly authorizes changing it.
+
+Do not promote transient environment observations into durable repository
+policy merely because they were true during one implementation. Record such
+facts as task/issue/PR evidence unless the owner explicitly declares them a
+durable product or deployment contract.
+
 ## Bounded review lifecycle
 
 Multi-model work is bounded by default. Before any worker or reviewer starts,
