@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "updated_on": "2026-09-24",
+  "description": "Reviewed model-track registry (D-053, issue #117): stable capability families over changing physical slugs. Slug patterns, classifications and conservative capability floors are owner-approved evidence; the runtime never derives them. Exact model-catalog.json entries always take precedence over a track floor.",
+  "tracks": [
+    {
+      "provider": "openai",
+      "track": "sol",
+      "display_name": "GPT Sol",
+      "slug_pattern": "^gpt-[0-9]+(\\.[0-9]+)?-sol$",
+      "classification": "standard",
+      "floor": {
+        "ratings": {
+          "reasoning": 4,
+          "coding": 4,
+          "scientific_methodological": 4,
+          "writing_editorial": 4,
+          "tool_use": 4,
+          "translation_multilingual": 4
+        },
+        "assessed_on": "2026-09-24",
+        "confidence": "medium",
+        "decision": "D-053",
+        "rationale": "One level below every reviewed gpt-5.6-sol rating (catalog: 5/5/5/5/5/5 at high effort), because runtime listing never proves capability. The owner-approved workflow roles (model-policy.json: GPT-5.6 Sol as the calibrated alternate under GPT-6-generation references) corroborate family continuity across generations. A new sol generation routes only against this floor until its own dated evidence lands."
+      }
+    },
+    {
+      "provider": "openai",
+      "track": "astra",
+      "display_name": "GPT Astra",
+      "slug_pattern": "^gpt-[0-9]+(\\.[0-9]+)?-astra$",
+      "classification": "standard",
+      "floor": {
+        "ratings": {
+          "reasoning": 4,
+          "coding": 4,
+          "scientific_methodological": 4,
+          "writing_editorial": 4,
+          "tool_use": 4,
+          "translation_multilingual": 4
+        },
+        "assessed_on": "2026-09-24",
+        "confidence": "medium",
+        "decision": "D-053",
+        "rationale": "Same deliberately conservative floor as the sol track: the live 0.155 runtime listing plus the owner-approved reference roles (model-policy.json assigns GPT-6 Astra as preferred reference for deep-execution/scientific/semantic-review roles with GPT-5.6 Sol High as the calibrated alternate) evidence family continuity, not per-dimension capability. This entry is the D-033 reconciliation: Astra becomes selector-eligible at floor level only through this reviewed artifact; stronger ratings require direct dated evidence."
+      }
+    },
+    {
+      "provider": "openai",
+      "track": "luna",
+      "display_name": "GPT Luna",
+      "slug_pattern": "^gpt-[0-9]+(\\.[0-9]+)?-luna$",
+      "classification": "standard",
+      "floor": {
+        "ratings": {
+          "reasoning": 3,
+          "coding": 3,
+          "scientific_methodological": 2,
+          "writing_editorial": 4,
+          "tool_use": 4,
+          "translation_multilingual": 3
+        },
+        "assessed_on": "2026-09-24",
+        "confidence": "medium",
+        "decision": "D-053",
+        "rationale": "One level below the reviewed gpt-5.6-luna max-effort ratings (catalog: 4/4/3/5/5/4), preserving the family's evidenced shape (strong writing/tool use, moderate reasoning/science) without asserting parity for a new generation."
+      }
+    },
+    {
+      "provider": "openai",
+      "track": "daybreak",
+      "display_name": "Daybreak Blue",
+      "slug_pattern": "^gpt-daybreak-blue-[a-z0-9.-]+$",
+      "classification": "restricted",
+      "floor": null,
+      "notes": "Restricted security-review capability (D-053 point 9): separate approval/access may be required; discovery never proves execution authorization. Restricted tracks are surfaced honestly in inventory but never materialized as routable resources, never silently substituted, and consumed only by the explicit independent security-review gate."
+    }
+  ]
+}

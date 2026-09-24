@@ -56,6 +56,7 @@ packages = ["scarcity_router"]
 [tool.hatch.build.targets.wheel.force-include]
 "model-catalog.json" = "scarcity_router/model-catalog.json"
 "model-policy.json" = "scarcity_router/model-policy.json"
+"model-tracks.json" = "scarcity_router/model-tracks.json"
 "examples/selector-policy.json" = "scarcity_router/default-selector-policy.json"
 
 # Minimal sdist: exactly what rebuilding the wheel requires. Tests, docs,
@@ -66,6 +67,7 @@ include = [
     "/scarcity_router",
     "/model-catalog.json",
     "/model-policy.json",
+    "/model-tracks.json",
     "/examples/selector-policy.json",
     "/pyproject.toml",
     "/README.md",
