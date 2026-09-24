@@ -1267,7 +1267,11 @@ def verify_account_auth(session: CodexSession, deadline: float) -> AuthVerdict:
     official sign-in remediation. Email/plan content is never retained.
     """
     try:
-        result = session.request(_METHOD_ACCOUNT_READ, None, deadline)
+        # codex-cli 0.155 rejects an ABSENT params member on this method
+        # with JSON-RPC -32600 (live evidence 2026-09-24); the explicit
+        # empty object is required. This is a method-specific evidenced
+        # shape, never a global params-forcing rule.
+        result = session.request(_METHOD_ACCOUNT_READ, {}, deadline)
     except _ProtocolError:
         # Fail closed, read-only: no refresh, no retry, no mutation. The
         # error's free text is never inspected (it may carry sensitive
@@ -1664,8 +1668,12 @@ class CodexLocalAdapter:
         models: dict[str, tuple[str, ...]] = {}
         cursor: str | None = None
         for _page in range(MAX_MODEL_PAGES):
-            params: dict[str, object] | None = (
-                {"cursor": cursor} if cursor is not None else None
+            # codex-cli 0.155 rejects an ABSENT params member on this
+            # method with JSON-RPC -32600 (live evidence 2026-09-24): the
+            # first page carries the explicit empty object; later pages
+            # carry the cursor. Method-specific evidenced shapes only.
+            params: dict[str, object] = (
+                {"cursor": cursor} if cursor is not None else {}
             )
             result = session.request(
                 _METHOD_MODEL_LIST, params, deadline, abort=cancel_event.is_set
