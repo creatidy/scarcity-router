@@ -616,6 +616,65 @@ If M03/M09 land different control-API paths or envelope versioning, the
 reconciliation is confined to `scarcity_router/remote.py` (endpoint
 constants plus envelope validation) and the synthetic-server tests.
 
+### Execution sources, model inventory and dynamic resources (D-053, #116)
+
+The execution-source layer sits between administrator configuration and the
+existing routing core; it changes nothing about how a decision is made, only
+where executable resources come from:
+
+```text
+ExecutionSource (administrator configuration, per-source identity)
+      |  worker-run discovery on the source's own controlled runtime
+      v
+ModelInventory (typed, bounded, versioned worker-protocol state)
+      |  classification against the reviewed track registry
+      v
+adoption policy (DISCOVERED -> CLASSIFIED -> ROUTABLE, conservative floors)
+      v
+derived exact resources (deterministic per-source materialization)
+      v
+existing Routing Core (unchanged) -> exact pinned execution target
+```
+
+Contracts:
+
+- **ExecutionSource.** One configured, independently authenticated source of
+  executable model capacity — `source_id`, `kind` (`codex_subscription`
+  first), `label`, owning `worker_id`, `entitlement`, optional explicit
+  `quota_pool_id`, adoption policy. Lives in the additive `sources` domain of
+  the administrator configuration document (config schema version 2; a v1
+  document remains valid). The user configures the source; the source
+  discovers models; physical models remain the exact execution targets.
+- **ModelInventory.** The worker-protocol v2 state report carries an
+  optional bounded `inventories` section: per source — `source_id`,
+  `adapter_id` (`codex:<source_id>`), `observed_at`, closed-vocabulary auth
+  state, runtime name/version, and per-model slug plus runtime-reported
+  reasoning efforts. Bounded entries, no credentials, no account metadata,
+  no raw provider payloads. A v1 peer pair behaves exactly as before.
+- **Adapter instances.** Adapter KIND (`codex`) is separate from adapter
+  INSTANCE (`codex:<source_id>`); one worker process serves any number of
+  sources, each with an isolated controlled CODEX home
+  (`state_dir/codex-sources/<source_id>/`), auth state, inventory and
+  execution identity. No credential or home is shared between sources.
+- **Tracks and adoption.** `model-tracks.json` (reviewed, versioned) maps
+  slug structure to stable capability families (`openai/luna`,
+  `openai/sol`, `openai/astra`, restricted `daybreak`). A discovered model
+  becomes routable only through the conservative floor policy: known track,
+  safely parsed naming, approved track capability floor, runtime-advertised
+  effort, source/auth/health gates, compatibility evidence. Unclassified
+  models stay discovered/not-routable; restricted tracks (Daybreak Blue) are
+  never materialized as routable resources.
+- **Derived resources.** Deterministic per-source materialization
+  (`resource_id = <source_id>:<slug>`), exact slug and efforts,
+  source-owned lifecycle: absence from an authenticated inventory →
+  `unavailable`; absent for three consecutive authenticated inventories →
+  retired (audit history and pins remain interpretable; reappearance
+  re-materializes). Derived registrations are in-memory derived state — the
+  source, not a second durable store, is their origin. D-049's ownership
+  clause is amended at source granularity: the administrator grants
+  ownership by configuring the source; inventory expands what that grant
+  covers, subject to adoption policy.
+
 ### Migration plan
 
 - No rewrite: the existing package, language and module structure are
