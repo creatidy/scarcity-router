@@ -131,6 +131,7 @@ from .server_composition import (
 from .server_config import (
     AuditRetention,
     ProviderEndpointConfig,
+    SourceConfig,
     ResourceConfig,
     ServerConfigError,
     ServerConfiguration,
@@ -956,6 +957,20 @@ class ControlPlane:
             self.service_remove_resource(parts[1])
             self._send_json(handler, HTTPStatus.OK, {"status": "ok"})
             return
+        if parts == ["sources"] and method == "GET":
+            self._send_json(handler, HTTPStatus.OK, {"sources": self.sources_view()})
+            return
+        if parts == ["sources"] and method == "POST":
+            document = self._require_json_body(handler)
+            source_id = self.service_add_source(document)
+            self._send_json(
+                handler, HTTPStatus.OK, {"status": "ok", "source_id": source_id}
+            )
+            return
+        if len(parts) == 2 and parts[0] == "sources" and method == "DELETE":
+            self.service_remove_source(parts[1])
+            self._send_json(handler, HTTPStatus.OK, {"status": "ok"})
+            return
         if len(parts) == 3 and parts[0] == "resources":
             resource_id = parts[1]
             if parts[2] == "enabled" and method == "POST":
@@ -1175,6 +1190,75 @@ class ControlPlane:
             # remediation-bearing message — never a bare 500.
             raise ControlHTTPError.invalid_request(str(exc)) from None
         return resource_id
+
+    def service_add_source(self, document: Mapping[str, object]) -> str:
+        """Add one execution source (D-053). No model slugs here."""
+        try:
+            source = SourceConfig.from_dict(document)
+        except (ValueError, ServerConfigError) as exc:
+            raise ControlHTTPError.invalid_request(str(exc)) from None
+        if self._config.source_by_id(source.source_id) is not None:
+            raise ControlHTTPError.conflict(
+                f"source {source.source_id!r} already exists"
+            )
+        worker = self._worker_identity_store.get_identity(source.worker_id)
+        if worker is None:
+            raise ControlHTTPError.invalid_request(
+                "source references an unknown worker; pair the worker "
+                + "first (workers page)"
+            )
+        if worker.status != "active":
+            raise ControlHTTPError.invalid_request(
+                "source references a revoked worker"
+            )
+        try:
+            self._save_config(self._updated(sources=self._config.sources + (source,)))
+        except (ServerConfigError, ServerStoreError):
+            raise
+        except ValueError as exc:
+            raise ControlHTTPError.invalid_request(str(exc)) from None
+        return source.source_id
+
+    def service_remove_source(self, source_id: str) -> None:
+        if self._config.source_by_id(source_id) is None:
+            raise ControlHTTPError.not_found("unknown source")
+        sources = tuple(
+            source for source in self._config.sources if source.source_id != source_id
+        )
+        self._save_config(self._updated(sources=sources))
+
+    def sources_view(self) -> list[dict[str, object]]:
+        """The read-only source view (D-053 point 10): no raw payloads."""
+        views = {view["source_id"]: view for view in self._source_registry.source_view()}
+        out: list[dict[str, object]] = []
+        for source in self._config.sources:
+            live = views.get(source.source_id, {})
+            out.append(
+                {
+                    "source_id": source.source_id,
+                    "label": source.label or source.source_id,
+                    "kind": source.kind,
+                    "worker_id": source.worker_id,
+                    "auto_adopt": source.auto_adopt,
+                    "connected": bool(live.get("connected")),
+                    "source_authenticated": live.get(
+                        "source_authenticated", "unverified"
+                    ),
+                    "detected_models": live.get("models", []),
+                    "routable": live.get("routable", 0),
+                    "restricted": live.get("restricted", 0),
+                    "errors": live.get("errors", 0),
+                    "retired": live.get("retired", []),
+                    "observed_at": live.get("observed_at"),
+                    # The worker-side login action is the ONE clear
+                    # command; it is printed, never derived by the user.
+                    "login_command": (
+                        "scarcity-router-worker codex-login --source "
+                        + source.source_id
+                    ),
+                }
+            )
+        return out
 
     def service_remove_resource(self, resource_id: str) -> None:
         if self._config.resource_by_id(resource_id) is None:
@@ -1815,6 +1899,7 @@ class ControlPlane:
         *,
         providers: tuple[ProviderEndpointConfig, ...] | None = None,
         resources: tuple[ResourceConfig, ...] | None = None,
+        sources: tuple[SourceConfig, ...] | None = None,
         aliases: Mapping[str, ClientRoutingProfile] | None = None,
         client_authorizations: Mapping[str, ClientAuthorization] | None = None,
         admin_constraints: AdministratorConstraints | None = None,
@@ -1831,6 +1916,7 @@ class ControlPlane:
             resources=(
                 self._config.resources if resources is None else resources
             ),
+            sources=(self._config.sources if sources is None else sources),
             aliases=self._config.aliases if aliases is None else aliases,
             client_authorizations=(
                 self._config.client_authorizations

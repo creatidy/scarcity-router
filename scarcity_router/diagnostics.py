@@ -680,9 +680,10 @@ def render_report_human(report: DiagnosticsReport) -> str:
             if "connected" in worker
             else "connection state unknown (server not running)"
         )
+        label = worker.get("label") or worker.get("worker_id", "?")
         lines.append(
-            f"[info] worker {worker.get('worker_id', '?')} "
-            + f"({worker.get('label', '')}): {worker.get('status', '?')}"
+            f"[info] worker {label} "
+            + f"({worker.get('worker_id', '?')}): {worker.get('status', '?')}"
             + f" [{connection}]"
         )
     for resource in report.resources:

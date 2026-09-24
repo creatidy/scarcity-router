@@ -129,6 +129,21 @@ remediation regressions, not a new architecture review. Budget exhaustion,
 stalled progress after the retry budget or a complexity breach stops work and
 escalates to a human. Workers, reviewers and orchestrators never merge.
 
+**UX is a mandatory review dimension.** Every review answers
+`UX impact: none` or assesses the user-facing consequences (first-run, happy
+path, recovery, upgrade/model-change, unnecessary technical IDs, automatic
+configuration discovery, actionable errors, necessary security friction,
+repeated manual work, understandable state). A material UX regression is
+`CHANGES_REQUESTED` even when the implementation is technically correct — see
+[`docs/llm-operating-policy.md`](docs/llm-operating-policy.md).
+
+**Security-critical work carries an additional independent
+`gpt-daybreak-blue-latest` review gate** when the work is explicitly
+classified `security_critical`. If that restricted access is unavailable the
+record states `SECURITY_REVIEW_UNAVAILABLE` and the gate stays open at the
+human decision point; no substitute model may close it — see
+[`docs/llm-operating-policy.md`](docs/llm-operating-policy.md).
+
 The detailed operating policy is
 [`docs/llm-operating-policy.md`](docs/llm-operating-policy.md), and its
 machine-readable companion is [`model-policy.json`](model-policy.json).
