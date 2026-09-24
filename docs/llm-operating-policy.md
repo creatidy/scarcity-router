@@ -229,6 +229,31 @@ verification checks the identified blockers and obvious remediation
 regressions; it is not an invitation to start a new architecture review. A
 moving branch invalidates a review result.
 
+## Operational UX and compatibility review
+
+Review of a material refactor, redesign or generalization additionally
+assesses operational compatibility. The reviewer asks: what was the actual
+working operator journey before this change, what is it after the change, and
+which operational properties changed? Verify that the change did not silently
+add manual work; that an interactive/browser assumption did not replace a
+working headless path, or vice versa, without authority; that authentication
+and credential boundaries did not change accidentally; that network,
+filesystem and process assumptions were not lost during abstraction; and that
+environment-sensitive behavior has appropriate real-environment evidence.
+
+Synthetic tests prove the behavior of the synthetic boundary they exercise.
+They do not by themselves prove an environment-dependent workflow. When
+acceptance materially depends on an external runtime, authentication flow,
+network topology, filesystem behavior, process supervisor, hardware or a
+comparable environment property, obtain bounded evidence from the relevant
+real environment or leave that acceptance gate explicitly OPEN. Do not
+fabricate closure from passing synthetic E2E tests.
+
+Environment observations collected during review are evidence for that
+change; they become durable repository assumptions only through an explicit
+product/architecture/deployment decision. A material unapproved regression in
+an existing operator path is `CHANGES_REQUESTED`.
+
 ## Completed work stays completed
 
 Do not redo a passed gate, adjudicated claim, confirmed remediation, accepted

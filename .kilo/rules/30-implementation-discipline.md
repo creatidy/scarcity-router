@@ -20,6 +20,29 @@
 - Report blockers honestly; do not hide correctness or reliability gaps in
   final prose.
 
+## Material refactors, redesigns and generalizations
+
+Before implementing a material refactor, redesign or generalization of an
+existing working path, establish:
+
+1. the existing working/operator path relevant to the change;
+2. the operational properties that path currently depends on;
+3. the intended compatibility delta.
+
+The compatibility delta identifies only what matters: behavior being
+preserved; behavior intentionally changed; new or removed operator/manual
+steps; assumptions that require validation on a real environment. No new
+standalone artifact or template is required; the evidence may live in the
+selected issue, the PR, task progress or implementation reasoning.
+
+- A new recurring manual step requires explicit justification.
+- Loss of an existing supported operating mode requires owner or issue
+  authority.
+- Do not infer environment facts from architecture abstractions.
+- When current environment facts matter, discover and verify them for the
+  task instead of relying on stale documentation or model memory.
+- Do not turn one observed environment into a universal platform requirement.
+
 ## Completion
 
 - Do not call work complete unless the acceptance criteria are met or
