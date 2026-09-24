@@ -1080,8 +1080,9 @@ def _sources(
             + f"<span class=\"muted\"><code>{_esc(str(source.get('source_id')))}</code></span></td>"
             + f"<td>{'connected' if connected else 'not connected'} &middot; "
             + f"source auth: {_esc(auth)}<br>"
-            + f"<span class=\"muted\">on the worker host run once: "
-            + f"<code>{_esc(str(source.get('login_command')))}</code> then "
+            + f"<span class=\"muted\">on the worker host (SSH) run once: "
+            + f"<code>{_esc(str(source.get('login_command')))}</code> — a device "
+            + f"code prints; complete it in any browser — then "
             + f"<code>{_esc(str(source.get('run_command')))}</code></span></td>"
             + (
                 f"<td><ul>{model_lines}</ul><p class=\"muted\">{counts}</p></td>"
@@ -1122,8 +1123,9 @@ def _sources(
         + "</select></label> "
         + '<button type="submit">Add source</button></form>'
         + "<p class=\"muted\">After adding, run BOTH printed commands once on the "
-        + "worker host (login, then run with the source flag) — the models then "
-        + "appear here automatically.</p>"
+        + "worker host over SSH: the login prints a device code to complete in "
+        + "any browser (no browser needed on the host), then run the worker "
+        + "with the source flag — the models appear here automatically.</p>"
         + "</div>"
     )
     plane.send_html(handler, 200, _page(plane, handler, "Sources", body))

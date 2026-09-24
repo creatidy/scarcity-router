@@ -3758,6 +3758,18 @@ what M4.1 forbids); a configurable per-provider eligibility policy
   host footprint for what is an instance-addressing problem); collapsing
   source and resource into one entity with a wildcard model (rejected:
   destroys the exact-target contract D-042 freezes).
+- **Reconciliation note (implementation, owner acceptance 2026-09-24):
+  SSH-safe source login.** Precision hosts run over SSH, so the one
+  explicit login per source uses the OFFICIAL CLI's device-auth mode —
+  `codex login --device-auth`, verified against the installed binary
+  (codex-cli 0.155.0-alpha.16.3 `login --help`; the flow prints
+  https://auth.openai.com/codex/device plus a one-time code and polls —
+  no localhost callback, no browser on the host). The capability is
+  checked on the installed CLI at run time and there are NO fallbacks:
+  never the browser/localhost login, never the legacy `codex` home,
+  never `~/.codex`, and never any credential copy/import/inspection
+  between homes. A CLI without the mode, or an incomplete login, fails
+  closed with the source staying `auth_required`.
 - **Reconciliation note (implementation, same review):** quota-pool
   membership is registration-owned policy, exactly like freshness/polling
   policy: the M01 observation check compares identities EXCLUDING

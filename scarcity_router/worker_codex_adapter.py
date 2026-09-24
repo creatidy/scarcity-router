@@ -2320,21 +2320,91 @@ class CodexLocalAdapter:
             shutil.rmtree(scratch, ignore_errors=True)
 
 
+#: The SSH-safe login mode of the OFFICIAL CLI, verified against the
+#: installed binary (`codex login --help` on codex-cli
+#: 0.155.0-alpha.16.3 advertises ``--device-auth``; the flow prints the
+#: https://auth.openai.com/codex/device URL plus a one-time code and
+#: polls — no localhost callback server, no browser spawn), so it works
+#: unchanged over SSH. The capability is checked on the INSTALLED CLI at
+#: run time; it is never assumed and never fallen back from.
+DEVICE_AUTH_FLAG = "--device-auth"
+
+
+class LoginRunResult:
+    """The slice of a completed login subprocess the flow may inspect."""
+
+    __slots__: tuple[str, ...] = ("returncode", "stdout")
+
+    def __init__(self, returncode: int, stdout: str) -> None:
+        self.returncode: int = returncode
+        self.stdout: str = stdout
+
+
+class LoginRunner(Protocol):
+    """One official-CLI login command runner (the injectable test seam)."""
+
+    def __call__(
+        self, argv: Sequence[str], env: Mapping[str, str], *, capture: bool
+    ) -> LoginRunResult: ...
+
+
+def _default_login_runner(
+    argv: Sequence[str], env: Mapping[str, str], *, capture: bool
+) -> LoginRunResult:
+    """Run one official-CLI login command (the injectable seam).
+
+    ``capture=True`` is the bounded capability probe (help text); the
+    login itself inherits stdio so the device code reaches the user's
+    SSH terminal exactly as the vendor prints it.
+    """
+    try:
+        if capture:
+            completed = subprocess.run(  # noqa: S603 - fixed argv, user-initiated
+                list(argv),
+                env=dict(env),
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            raw_stdout = completed.stdout
+        else:
+            completed = subprocess.run(  # noqa: S603 - fixed argv, user-initiated
+                list(argv),
+                env=dict(env),
+                check=False,
+            )
+            raw_stdout = None
+    except OSError as exc:
+        _ = sys.stderr.write(f"codex login failed to start: {type(exc).__name__}\n")
+        return LoginRunResult(1, "")
+    stdout = raw_stdout if isinstance(raw_stdout, str) else ""
+    return LoginRunResult(completed.returncode, stdout)
+
+
 def run_official_codex_login(
     *,
     source_id: str,
     state_dir: str | os.PathLike[str] | None = None,
     pinned_binary: str | None = None,
+    runner: LoginRunner | None = None,
 ) -> int:
-    """The one clear login action for a source (D-053 source UX).
+    """The ONE clear SSH-safe login action for a source (D-053 source UX).
 
-    Creates/validates the source's controlled home and runs the OFFICIAL
-    ``codex login`` against it (``CODEX_HOME`` pointed at the controlled
-    home, stdio inherited so the interactive browser/device-code flow
-    works exactly as the vendor designed it). Scarcity Router never
-    reads, copies or extracts the resulting credentials — the provider
-    manages them inside the controlled home (D-018/D-044 boundary).
+    Creates/validates the SOURCE's own controlled home
+    (``codex-sources/<source_id>/``) and runs the official CLI's
+    device-auth login against it (``CODEX_HOME`` pointed at that home;
+    the URL + one-time code print on the user's terminal and complete in
+    any browser — no localhost callback, so it works over SSH).
+
+    Strictly no fallbacks: the browser/localhost login is never
+    attempted; the legacy ``codex`` home and ``~/.codex`` are never
+    touched; no credential material is ever read, copied, parsed or
+    migrated between homes (the provider manages it inside the
+    controlled home, D-018/D-044). If the installed CLI does not support
+    the SSH-safe mode, or the login does not complete, this fails closed
+    with an actionable message and the source stays ``auth_required``.
     """
+    run_proc: LoginRunner = runner if runner is not None else _default_login_runner
     resolved_source = v_safe_id(source_id, "codex_source")
     if len(resolved_source) > SOURCE_ID_MAX_LENGTH:
         raise ValueError(
@@ -2361,22 +2431,37 @@ def run_official_codex_login(
         return 1
     env = dict(os.environ)
     env["CODEX_HOME"] = str(home.path)
-    try:
-        completed = subprocess.run(  # noqa: S603 - fixed argv, user-initiated
-            [str(binary.path), "login"],
-            env=env,
-            check=False,
+    # Capability gate on the INSTALLED CLI (verified, never assumed): a
+    # CLI without the SSH-safe device mode fails closed here — the
+    # browser/localhost login is never attempted as a fallback.
+    probe = run_proc([str(binary.path), "login", "--help"], env, capture=True)
+    if probe.returncode != 0 or DEVICE_AUTH_FLAG not in probe.stdout:
+        _ = sys.stderr.write(
+            "this codex CLI does not support the SSH-safe --device-auth "
+            + "login; upgrade the official codex CLI (no fallback login "
+            + "is attempted)\n"
         )
-    except OSError as exc:
-        _ = sys.stderr.write(f"codex login failed to start: {type(exc).__name__}\n")
         return 1
-    return completed.returncode
+    completed = run_proc(
+        [str(binary.path), "login", DEVICE_AUTH_FLAG], env, capture=False
+    )
+    if completed.returncode != 0:
+        _ = sys.stderr.write(
+            "the device-code login did not complete; the source stays "
+            + "closed (auth_required) — rerun the login command and enter "
+            + "the code before it expires\n"
+        )
+        return 1
+    return 0
 
 
 __all__ = [
     "AuthVerdict",
     "CODEX_ADAPTER_ID",
     "CODEX_PROVIDER",
+    "DEVICE_AUTH_FLAG",
+    "LoginRunResult",
+    "LoginRunner",
     "INVENTORY_DEFAULT_TTL_SECONDS",
     "SOURCE_ID_MAX_LENGTH",
     "CONTROLLED_CONFIG_NAME",

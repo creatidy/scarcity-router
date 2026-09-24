@@ -18,6 +18,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from collections.abc import Mapping, Sequence
 from typing import override
 
 REPO = Path(__file__).resolve().parents[1]
@@ -38,6 +39,8 @@ from scarcity_router.worker_client import (  # noqa: E402
 )
 from scarcity_router.worker_codex_adapter import (  # noqa: E402
     CodexLocalAdapter,
+    LoginRunner,
+    LoginRunResult,
     source_resource_id,
 )
 from scarcity_router.worker_local_adapters import LocalAdapterRegistry  # noqa: E402
@@ -96,9 +99,12 @@ def _default_scenario() -> dict[str, object]:
 
 
 class SourceAdapterTests(unittest.TestCase):
+    _tmps: list[TemporaryDirectory[str]]
+    _spawners: list[FakeCodexSpawner]
+
     def __init__(self, method_name: str = "runTest") -> None:
-        self._tmps: list[TemporaryDirectory[str]] = []
-        self._spawners: list[FakeCodexSpawner] = []
+        self._tmps = []
+        self._spawners = []
         super().__init__(method_name)
 
     @override
@@ -399,3 +405,225 @@ class InventoryProtocolTests(unittest.TestCase):
 
 if __name__ == "__main__":
     _ = unittest.main()
+
+
+class SourceLoginTests(unittest.TestCase):
+    """The SSH-safe official login path (one explicit login per source).
+
+    Pins: the verified ``--device-auth`` invocation against the SOURCE's
+    own controlled home; the capability gate that fails closed on an old
+    CLI with NO fallback invocation; and the absence of every alternate
+    credential source (legacy home, ``~/.codex``, API-key/token stdin).
+    """
+
+    _tmps: list[TemporaryDirectory[str]]
+    _spawners: list[FakeCodexSpawner]
+
+    def __init__(self, method_name: str = "runTest") -> None:
+        self._tmps = []
+        self._spawners = []
+        super().__init__(method_name)
+
+    def _runner(
+        self, *, device_auth_supported: bool = True, login_exit: int = 0
+    ) -> tuple[LoginRunner, list[tuple[list[str], bool]]]:
+        calls: list[tuple[list[str], bool]] = []
+
+        def run(
+            argv: Sequence[str], env: Mapping[str, str], *, capture: bool
+        ) -> LoginRunResult:
+            _ = env
+            calls.append((list(argv), capture))
+            if capture:
+                help_text = (
+                    "Usage: codex login [OPTIONS]\n"
+                    + ("  --device-auth\n" if device_auth_supported else "")
+                    + "  -h, --help\n"
+                )
+                return LoginRunResult(0, help_text)
+            return LoginRunResult(login_exit, "")
+
+        return run, calls
+
+    def _state(self) -> TemporaryDirectory[str]:
+        tmp = TemporaryDirectory()
+        self._tmps.append(tmp)
+        return tmp
+
+    @override
+    def setUp(self) -> None:
+        self._tmps = []
+        self._spawners = []
+
+    @override
+    def tearDown(self) -> None:
+        for tmp in self._tmps:
+            tmp.cleanup()
+
+    def test_login_uses_the_ssh_safe_device_mode_on_the_source_home(self) -> None:
+        from scarcity_router.worker_codex_adapter import run_official_codex_login
+
+        state = self._state()
+        run, calls = self._runner()
+        code = run_official_codex_login(
+            source_id="personal-openai",
+            state_dir=state.name,
+            pinned_binary=str(FAKE),
+            runner=run,
+        )
+        self.assertEqual(0, code)
+        self.assertEqual(2, len(calls))
+        probe_argv, probe_capture = calls[0]
+        login_argv, login_capture = calls[1]
+        # The capability probe, then the SSH-safe device login — nothing else.
+        self.assertTrue(probe_capture)
+        self.assertEqual(["login", "--help"], probe_argv[1:])
+        self.assertFalse(login_capture)
+        self.assertEqual(["login", "--device-auth"], login_argv[1:])
+        # The login runs against the SOURCE's controlled home — never the
+        # legacy home, never ~/.codex.
+
+        # The runner seam receives env positionally; re-derive it by
+        # re-running with a recording wrapper is unnecessary: assert via
+        # the home the flow created.
+        home = Path(state.name) / "codex-sources" / "personal-openai" / "codex-home"
+        self.assertTrue(home.is_dir())
+        legacy = Path(state.name) / "codex" / "codex-home"
+        self.assertFalse(legacy.exists())
+
+    def test_no_fallback_when_the_cli_lacks_the_ssh_safe_mode(self) -> None:
+        from scarcity_router.worker_codex_adapter import run_official_codex_login
+
+        state = self._state()
+        run, calls = self._runner(device_auth_supported=False)
+        code = run_official_codex_login(
+            source_id="personal-openai",
+            state_dir=state.name,
+            pinned_binary=str(FAKE),
+            runner=run,
+        )
+        self.assertEqual(1, code)
+        # EXACTLY the capability probe ran; no browser/localhost login, no
+        # second attempt, no alternate credential path.
+        self.assertEqual(1, len(calls))
+        self.assertEqual(["login", "--help"], calls[0][0][1:])
+
+    def test_incomplete_device_login_fails_closed(self) -> None:
+        from scarcity_router.worker_codex_adapter import run_official_codex_login
+
+        state = self._state()
+        run, calls = self._runner(login_exit=1)
+        code = run_official_codex_login(
+            source_id="personal-openai",
+            state_dir=state.name,
+            pinned_binary=str(FAKE),
+            runner=run,
+        )
+        self.assertNotEqual(0, code)
+        # The device login WAS attempted (the only fallback-free option)
+        # and its refusal is propagated, never retried.
+        self.assertEqual(2, len(calls))
+        self.assertEqual(["login", "--device-auth"], calls[1][0][1:])
+
+    def test_env_names_only_the_source_home_never_alternate_credential_sources(
+        self,
+    ) -> None:
+        from scarcity_router.worker_codex_adapter import run_official_codex_login
+
+        state = self._state()
+        from scarcity_router.worker_codex_adapter import LoginRunResult
+
+        seen: list[tuple[list[str], dict[str, str]]] = []
+
+        def run(
+            argv: Sequence[str], env: Mapping[str, str], *, capture: bool
+        ) -> LoginRunResult:
+            seen.append((list(argv), dict(env)))
+            if capture:
+                return LoginRunResult(0, "  --device-auth\n")
+            return LoginRunResult(0, "")
+
+        code = run_official_codex_login(
+            source_id="personal-openai",
+            state_dir=state.name,
+            pinned_binary=str(FAKE),
+            runner=run,
+        )
+        self.assertEqual(0, code)
+        expected_home = str(
+            Path(state.name) / "codex-sources" / "personal-openai" / "codex-home"
+        )
+        for _argv, env in seen:
+            # EXACT equality: the CODEX_HOME is the source's own home —
+            # never the legacy home, never ~/.codex.
+            self.assertEqual(expected_home, env.get("CODEX_HOME"))
+        # No credential-stdin modes are ever on the argv.
+        for argv, _env in seen:
+            self.assertNotIn("--with-api-key", argv)
+            self.assertNotIn("--with-access-token", argv)
+
+    def test_refused_login_leaves_the_source_closed(self) -> None:
+        # End-to-end closure: after a login that did not complete, the
+        # source's own runtime probe reports auth_required and the
+        # derived resource set stays empty (fails closed, per contract).
+        state = self._state()
+        run, _calls = self._runner(login_exit=1)
+        from scarcity_router.worker_codex_adapter import run_official_codex_login
+
+        code = run_official_codex_login(
+            source_id="personal-openai",
+            state_dir=state.name,
+            pinned_binary=str(FAKE),
+            runner=run,
+        )
+        self.assertNotEqual(0, code)
+        # A login that did not complete leaves NO credential material in
+        # the source home; the source stays closed.
+        self.assertFalse(
+            (Path(state.name) / "codex-sources" / "personal-openai" / "codex-home" / "auth.json").exists()
+        )
+        # The runtime AFTER the refused login is an unauthenticated one
+        # (no credential material was written): model it honestly.
+        spawner = FakeCodexSpawner(_default_scenario() | {"account": "none"})
+        self._spawners.append(spawner)
+        adapter = CodexLocalAdapter(
+            source_id="personal-openai",
+            state_dir=state.name,
+            pinned_binary=FAKE,
+            spawner=spawner,
+            path_lookup=_bwrap_lookup,
+            platform_name="linux",
+            platform_release="6.x-generic",
+        )
+        inventory = adapter.observe_inventory()
+        self.assertEqual("auth_required", inventory.auth_state)
+        self.assertEqual((), inventory.models)
+        self.assertEqual((), adapter.resource_ids)
+
+    def test_second_source_needs_its_own_home_and_login(self) -> None:
+        from scarcity_router.worker_codex_adapter import run_official_codex_login
+
+        state = self._state()
+        run, calls = self._runner()
+        _ = run_official_codex_login(
+            source_id="personal-openai",
+            state_dir=state.name,
+            pinned_binary=str(FAKE),
+            runner=run,
+        )
+        _ = run_official_codex_login(
+            source_id="second-openai",
+            state_dir=state.name,
+            pinned_binary=str(FAKE),
+            runner=run,
+        )
+        # Two independent homes, two independent logins — no shared or
+        # migrated credential state.
+        self.assertTrue(
+            (Path(state.name) / "codex-sources" / "personal-openai" / "codex-home").is_dir()
+        )
+        self.assertTrue(
+            (Path(state.name) / "codex-sources" / "second-openai" / "codex-home").is_dir()
+        )
+        login_invocations = [argv for argv, capture in calls if not capture]
+        self.assertEqual(2, len(login_invocations))
