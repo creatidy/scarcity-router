@@ -95,6 +95,9 @@ from .machine_api import (
 )
 from .capacity import CapacityDiagnostic, CapacitySnapshot
 from .eligibility import ExecutionEligibility
+from .execution_sources import SourceRegistry, is_source_resource_id
+from .model_inventory import ModelInventoryReport
+from .model_tracks import load_track_registry
 from .resource_state import (
     RESOURCE_STATE_SCHEMA_VERSION,
     ResourceHealth,
@@ -370,11 +373,18 @@ class ControlPlane:
         # document. The resolver is re-read on every call, so each
         # configuration change (add/remove/enable/unassign) is
         # authoritative immediately — no pushed-copy staleness window.
+        # D-053: the server-side execution-source registry (derived
+        # resources, track-floor catalog entries, source views). The
+        # reviewed track artifact loads with the other calibrated inputs.
+        self._source_registry = SourceRegistry(
+            track_registry=load_track_registry()
+        )
         self._worker_endpoint = WorkerEndpoint(
             identity_store=self._worker_identity_store,
             registry=self,
             configured_owner=self._configured_worker_owner,
         )
+        self._worker_endpoint.inventory_sink = self._apply_source_inventory
         document = store.load_configuration_document()
         self._config = (
             ServerConfiguration.from_document(document)
@@ -428,11 +438,31 @@ class ControlPlane:
         amendment).
         """
         resource = self._config.resource_by_id(resource_id)
-        if resource is None or not resource.enabled:
-            return None
-        if resource.registration.identity.channel != "worker_bridged":
-            return None
-        return resource.worker_id
+        if resource is not None:
+            if not resource.enabled:
+                return None
+            if resource.registration.identity.channel != "worker_bridged":
+                return None
+            return resource.worker_id
+        # D-053: source-derived resources are owned by their source's
+        # configured worker — the administrator granted ownership at
+        # source granularity; the report only supplies the inventory.
+        derived_owner = self._source_registry.owner_of(resource_id)
+        if derived_owner is not None and is_source_resource_id(resource_id):
+            return derived_owner
+        return None
+
+    def _apply_source_inventory(self, inventory: ModelInventoryReport) -> None:
+        """The endpoint's validated inventory sink (D-053).
+
+        Applies the discovery document to the source registry (adopt /
+        retire decisions) and rebuilds the routing artifacts so the
+        derived registrations, adapter bindings, compatibility cells and
+        catalog view all change atomically with the configuration.
+        """
+        self._source_registry.sync_configuration(self._config.sources)
+        _ = self._source_registry.apply_inventory(inventory)
+        self._rebuild_application()
 
     def apply_worker_report(self, report: WorkerStateReport) -> None:
         """The M05 endpoint's report sink (the one normalization path).
@@ -1885,8 +1915,20 @@ class ControlPlane:
         catalog, profiles, profile_policy_version = load_configured_artifacts(
             self._catalog_path, self._model_policy_path
         )
+        # D-053: source-derived state participates like configured
+        # registrations — the derived set is recomputed from the latest
+        # inventories, then the catalog view gains the conservative
+        # track-floor entries for adopted models.
+        self._source_registry.sync_configuration(self._config.sources)
+        catalog = self._source_registry.derived_catalog_entries(catalog)
         registry = ResourceRegistry(clock=self._registry_clock)
         for registration in self._config.enabled_registrations():
+            resource_id = registration.identity.resource_id
+            registry.register(registration)
+            observation = self._observations.get(resource_id)
+            if observation is not None:
+                registry.apply_snapshot(observation)
+        for registration in self._source_registry.derived_registrations():
             resource_id = registration.identity.resource_id
             registry.register(registration)
             observation = self._observations.get(resource_id)
@@ -1898,6 +1940,7 @@ class ControlPlane:
             self._config,
             provider_secret_reader=self._store.get_provider_secret,
             worker_endpoint=self._worker_endpoint,
+            source_registry=self._source_registry,
         )
         self._application = GatewayApplication(
             catalog=catalog,
@@ -1909,6 +1952,7 @@ class ControlPlane:
             compatibility_cells=build_compatibility_cells(
                 self._config,
                 provider_secret_reader=self._store.get_provider_secret,
+                source_registry=self._source_registry,
             ),
             admin_constraints=self._config.admin_constraints,
             aliases=RoutingAliasTable(dict(self._config.aliases)),

@@ -68,7 +68,10 @@ TASK_LEVELS: tuple[str, ...] = ("L0", "L1", "L2", "L3", "L4", "L5")
 
 CONFIDENCE_VALUES: frozenset[str] = frozenset({"low", "medium", "high"})
 
-REASONING_EFFORTS: tuple[str, ...] = ("none", "low", "medium", "high", "xhigh", "max")
+# "ultra" arrived with the GPT-6 generation (runtime-reported on Sol/
+# Astra; D-053): the tuple is ordered low to high, so the new member
+# appends after "max".
+REASONING_EFFORTS: tuple[str, ...] = ("none", "low", "medium", "high", "xhigh", "max", "ultra")
 
 MIN_RATING = 1
 MAX_RATING = 5

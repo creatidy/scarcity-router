@@ -106,6 +106,12 @@ REASONING_EFFORTS: frozenset[str] = frozenset({
     "low",
     "medium",
     "high",
+    # Runtime-reported GPT-6-generation efforts (D-053): additive client
+    # acceptance; routing still only selects a model/effort pair the
+    # source's inventory actually reports.
+    "xhigh",
+    "max",
+    "ultra",
 })
 
 RESPONSE_FORMAT_TYPES: frozenset[str] = frozenset({
