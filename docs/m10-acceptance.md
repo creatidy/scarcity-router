@@ -23,6 +23,7 @@ built or tested.
 | Windows worker package (portable zip) | workflow seam | `.github/workflows/release.yml` `build-windows-worker` (windows-latest, exact tagged commit, PyInstaller one-dir, `scarcity-worker-X.Y.Z-windows-x64.zip`, checksummed in `SHA256SUMS`, attached to the release); spec shape verified statically (`tests/test_windows_packaging.py`) |
 | Windows worker MSIX (signed) | external gate | `EXTERNAL_RELEASE_GATE: WINDOWS_CODE_SIGNING` — fail-closed seam; no signature ever fabricated |
 | Windows tray UX | built/tested (logic), adapter Windows-gated | state machine/run-loop/log unit-tested everywhere (`tests/test_windows_tray.py`); pystray adapter lazy-imports and refuses off-Windows (`tests/test_windows_packaging.py::TrayViewAdapterTests`); `EXTERNAL_ACCEPTANCE_GATE: LIVE_WINDOWS_ACCEPTANCE` |
+| Windows first-run onboarding (setup dialog, packaged `pair` command, local settings — issue #113, D-051) | built/tested (logic), adapter Windows-gated | entry routing, cancel/partial-failure semantics, real pairing path, code non-persistence, settings strictness/precedence/restart, loopback-only Ollama, no-codex advertising all unit-tested on every platform (`tests/test_worker_first_run.py`); tkinter dialog adapter lazy-imports (`tests/test_windows_packaging.py::SetupViewAdapterTests`); packaged-CLI output path (`_attach_parent_console`) and the live double-click flow are covered by `EXTERNAL_ACCEPTANCE_GATE: LIVE_WINDOWS_ACCEPTANCE` |
 | Update path | built/documented | `uv tool upgrade scarcity-router` / container tag pull + `docker compose up -d` / reinstall the worker package; no background auto-update, no remote code execution |
 | Version surface | built/tested | `scarcity-router --version`; server startup banner; `get_version()` single-source literal |
 | Codex execution path (worker-local adapter, subscription-included) | built/tested (deterministic e2e; live subscription gated) | `tests/test_e2e_codex_acceptance.py` + `tests/test_codex_real_binary_probe.py` (M10-B section below); `EXTERNAL_ACCEPTANCE_GATE: LIVE_CODEX_SUBSCRIPTION`; Windows-native Codex unevidenced (`platform_not_evidenced` by design) |
@@ -62,7 +63,7 @@ make; **gate** — requires an environment this repository does not have;
 | Label | Meaning | Owner action |
 | --- | --- | --- |
 | `EXTERNAL_RELEASE_GATE: WINDOWS_CODE_SIGNING` | MSIX packaging/signing stays a fail-closed seam in the release workflow until a certificate and implementation evidence exist | configure the signing secret only together with the evidenced MSIX work |
-| `EXTERNAL_ACCEPTANCE_GATE: LIVE_WINDOWS_ACCEPTANCE` | the produced Windows worker package (installer UX, tray icon, autostart, uninstall) has NOT been exercised on a real Windows 11 host | run the release-built package on Windows 11 and record evidence |
+| `EXTERNAL_ACCEPTANCE_GATE: LIVE_WINDOWS_ACCEPTANCE` | the produced Windows worker package (installer UX, tray icon, autostart, uninstall) has NOT been exercised on a real Windows 11 host; the D-052 UI-ownership retest is also outstanding: with the settings dialog OPEN, the tray must stay responsive (status, control UI, diagnostics, reconnect all work), a second settings request must not open another window, Quit/Reconnect must stay deterministic, Quit while a settings save is in flight discards the dialog and the saved row applies at the next restart (D-052), and the previous freeze symptoms (blocked dialog, stuck tray callback, lost focus) must not recur — the retest exercises the tray as a whole, not only Ollama field enablement | run the release-built package on Windows 11 and record evidence |
 | `EXTERNAL_ACCEPTANCE_GATE: LIVE_CODEX_SUBSCRIPTION` | live, turn-level Codex execution against a provider-managed login in a dedicated controlled `CODEX_HOME` has NOT been run (see the M10-B section) | run one official `codex login` against the controlled home, then re-run the live smoke and record the evidence here |
 | `PYPI_TRUSTED_PUBLISHER` | PyPI publication stays workflow-gated and NOT executed; the owner actions (PyPI Trusted Publisher entry, protected `pypi` environment, Forgejo runner, `develop` branch protection) are recorded in `docs/release-engineering.md` — never claimed configured | complete the owner checklist before the first release; until then `publish-pypi` fails closed by design |
 
@@ -111,13 +112,28 @@ Friction notes (measured, deliberate):
 
 1. Administrator: Workers page → issue one-time pairing code
 2. Worker host: install (`uv tool install`/`pipx`; Windows: unzip the release package)
-3. `scarcity-router-worker pair --server srws://HOST:8790 --code CODE` (redeemed over verified TLS; the Windows package asks for these in its first-run dialog)
-4. `scarcity-router-worker run --allow-ollama --resource my-ollama` (or start the packaged executable / systemd unit)
+3. Pair — Linux/WSL: `scarcity-router-worker pair --server srws://HOST:8790 --code CODE` (redeemed over verified TLS); **Windows: double-click `scarcity-worker.exe` and enter the server origin + code in the first-run setup dialog** (or, from PowerShell/cmd: `scarcity-worker.exe pair --server srws://HOST:8790 --code CODE` — the packaged executable speaks the same pairing protocol path; no Python required)
+4. Enable local resources — Linux: `scarcity-router-worker run --allow-ollama --resource my-ollama`; **Windows: tick "Enable local Ollama" in the same dialog (loopback only) or later via the tray's "Worker settings..." action**, then start the executable
 5. Administrator: add a `worker_bridged` resource bound to that device
 
-**Measured friction: 5 steps.** The Windows package additionally accepts
+**Measured friction: 5 steps** (unchanged; on Windows steps 3–4 collapse
+into one dialog). The Windows package additionally accepts
 `--server-ui-url` so its tray action opens the right control UI when the
-server does not use default ports.
+server does not use default ports; the first-run dialog can also store
+that origin (persisted, non-secret, in the worker's local settings).
+
+Windows package specifics (issue #113): the ZIP contains only
+`scarcity-worker.exe`. A no-arg launch of an unpaired worker opens the
+first-run setup dialog; a paired worker starts the tray directly
+(pair-only is valid — a local adapter can be enabled later through the
+tray). Cancelling the dialog before pairing persists nothing. The
+dialog and the packaged `pair` command share one pairing
+implementation (`WorkerRuntime.pair`); local settings are typed,
+versioned and non-secret; a malformed settings document fails closed
+into a recoverable settings state. Windows-native Codex execution is
+not offered in the dialog (platform_not_evidenced for v0.1.0; the
+evidenced path is Linux/WSL via the CLI flags). Record decision:
+D-051 (docs/decisions.md).
 
 ## What M10 verified end to end
 

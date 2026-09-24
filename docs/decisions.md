@@ -3422,6 +3422,172 @@ what M4.1 forbids); a configurable per-provider eligibility policy
   new superseding decision; no repository-side monitoring exists. The
   bullets above are historical question/answer provenance and are unchanged.
 
+### D-051 — Compact first-run setup dialog for the packaged Windows worker
+
+- **Status:** Accepted (issue #113; remediates the v0.1.0 first-launch
+  release blocker observed on Windows 11)
+- **Date:** 2026-09-22
+- **Issue:** #113 — the standalone Windows ZIP (`scarcity-worker.exe`)
+  told users to run `scarcity-router-worker pair`, a Python console
+  script the ZIP does not contain; `docs/m10-acceptance.md` already
+  claimed the Windows package "asks for pairing information in its
+  first-run dialog", which was untrue.
+- **Confidence:** High — the implementation reuses every existing seam
+  (`WorkerRuntime.pair`, `WorkerLocalStore`, `WorkerOrigin`,
+  `build_local_adapter_registry`, the tray restart machinery), adds one
+  small stdlib GUI surface, and is discriminatingly tested on every
+  platform.
+- **Decision:**
+  1. **One compact dialog, two modes — not a configuration
+     application.** The packaged executable's no-arg launch routes
+     unpaired workers into a first-run setup dialog (server origin +
+     one-time code + optional "Enable local Ollama") and paired workers
+     into the tray; the tray gains a "Worker settings..." action that
+     reopens the SAME dialog without the pairing section. The dialog is
+     stdlib `tkinter`, owned by the packaging tree
+     (`packaging/windows/scarcity_worker_setup_view.py`) exactly like
+     the pystray tray view — the library keeps its dependency set and
+     the GUI-independent core (`scarcity_router.worker_setup`) is
+     unit-tested everywhere. No Electron/Qt/web stack, no wizard, no
+     second process, no configuration server.
+  2. **One pairing system.** The dialog and the packaged `pair` CLI
+     command both drive `worker_setup.pair_worker`, a thin orchestration
+     over the existing `WorkerRuntime.pair` (protocol handshake +
+     `WorkerLocalStore` persistence); the Python console script keeps
+     driving `WorkerRuntime.pair` directly. The packaged `pair` command
+     attaches the parent console best-effort so output is visible from
+     PowerShell/cmd despite the windowed build. The pairing code is
+     never persisted, logged or echoed in failure text.
+  3. **Typed, versioned, non-secret local settings in the EXISTING
+     store.** The settings document (`WorkerLocalSettings`: optional
+     control-UI origin + optional loopback Ollama
+     resource/host/port) persists as one strictly parsed JSON value in
+     `WorkerLocalStore` (`local_settings` key; schema version 1; exact
+     key set; bounded size; atomic SQLite write). Malformed documents
+     fail closed into a recoverable settings state — never a guess,
+     never a second pairing code. Precedence: explicit CLI `run` flags
+     that select an adapter replace the stored selection for that
+     process; otherwise the stored settings drive the registry, which
+     is rebuilt through the existing `build_local_adapter_registry` on
+     every (re)connect so a settings save takes effect via the tray's
+     existing restart machinery.
+  4. **The allowlist stays local (D-044).** The GUI can only describe a
+     loopback Ollama endpoint; `worker_setup` refuses non-loopback hosts
+     before anything is paired or persisted, and `LoopbackOllamaAdapter`
+     re-validates at its own construction. The server can never expand
+     the allowlist remotely; server-side setup (adding the
+     `worker_bridged` resource) remains server-side.
+  5. **Honest platform surface.** Windows-native Codex execution stays
+     `platform_not_evidenced`: the dialog exposes no Codex section (its
+     source contains no codex token, asserted by test), the settings
+     schema rejects unknown fields, and the evidenced Linux/WSL Codex
+     path remains CLI/config-driven and fail-closed. TLS discipline is
+     unchanged (verified certificates; certificate-trust problems are
+     actionable errors, never bypassed).
+- **Reason:** The standalone product must be usable from a double-click
+  with no Python, no repository and no manually created files, while
+  worker-local adapter authority (D-044) requires a LOCAL configuration
+  surface. The smallest professional mechanism that satisfies both is a
+  single stdlib dialog over the existing stores; docs truth
+  (m10-acceptance's first-run claim) is restored by making the claim
+  true.
+- **Alternatives considered:** Electron/Qt/web-UI configuration app
+  (rejected: a new application and dependency surface for one dialog,
+  contrary to the owner's explicit constraint); pystray-native dialogs
+  (rejected: pystray has no form/dialog capability; would still need a
+  GUI toolkit); a sidecar JSON file next to the store (rejected:
+  `WorkerLocalStore.save_value` already gives atomic, bounded,
+  validated single-row persistence — a second file adds a second
+  durability story without migration need); exposing Windows Codex in
+  the dialog behind a warning (rejected: advertising an unevidenced
+  execution surface, however caveated, invites use before evidence);
+  auto-deriving the control-UI origin only from ports (kept as the
+  documented fallback — https://HOST:8787 — with the stored setting and
+  the `--server-ui-url` flag as the explicit overrides).
+- **Boundary:** The packaged Windows worker's first-run experience
+  (issue #113) only. No selector, routing, protocol, frozen-interface
+  or server-side change; the M05 worker protocol and the four console
+  scripts are untouched.
+
+### D-052 — Windows UI ownership model: one owner per event loop, async crossings
+
+- **Status:** Accepted (issue #113; remediates the live Windows defect
+  found during the PR #114 acceptance retest)
+- **Date:** 2026-09-24
+- **Issue:** #113 — on a live Windows 11 host, opening the tray's
+  "Worker settings..." dialog left the settings window unresponsive,
+  controls failing to transition, the window not reliably regaining
+  foreground/focus, and the tray callback occupied: the dialog's
+  tkinter mainloop ran synchronously inside the pystray menu callback,
+  i.e. one toolkit's event loop was nested inside another toolkit's
+  message loop. The tray's Win32 loop could not service ANY action
+  (status, control UI, diagnostics, reconnect, quit) while the dialog
+  was open, and Quit could not deterministically tear the process down.
+- **Confidence:** High — the failure mechanism is the documented
+  threading model of both toolkits (pystray invokes menu handlers on
+  its message-loop thread; tkinter owns exactly the thread that runs
+  its mainloop), and the replacement model is discriminatingly
+  unit-tested on every platform (`tests/test_worker_first_run.py::
+  TrayUiOwnershipTests`).
+- **Decision:**
+  1. **Every long-lived event loop has exactly one owner.** The
+     Windows tray/Win32 message loop is owned by the packaging
+     adapter's tray thread (pystray `Icon.run`); every tkinter dialog
+     root is created, mainlooped and destroyed on ONE UI-owner thread
+     driven by the library's `windows_tray.UiDispatcher`
+     (`scarcity-router-ui`, started lazily, dialogs strictly serial);
+     the worker runtime owns its session thread; the process main
+     thread owns restart/quit coordination.
+  2. **No toolkit event loop is ever run synchronously inside another
+     toolkit's callback.** Tray menu handlers only marshal or signal:
+     "Show worker status" and shell/browser/folder opens go to
+     throwaway worker threads; "Worker settings..." posts the dialog
+     task to the UI dispatcher and returns; "Reconnect / restart" and
+     "Quit" set events. The first-run dialog runs on the UI-owner
+     thread while the coordination thread waits on the result future —
+     a plain sequential wait, not a nested loop.
+  3. **One active settings window, enforced at post time.** A
+     non-blocking settings slot is taken in the menu callback (tray
+     thread) before posting; requests arriving while a dialog is
+     active are dropped — a queued request would open a second window
+     the moment the first closed.
+  4. **Cross-component requests are asynchronous signals.** UI thread
+     → session: the existing restart hook (threading events +
+     cooperative runtime stop). UI thread → store: the store's own
+     lock (atomic single-row writes) on the dialog's short-lived save
+     worker. Tray → UI: dispatcher posts. Settings persistence keeps
+     its single home in `WorkerLocalStore`; the session thread reads
+     it only at (re)connect through the existing registry rebuild.
+  5. **Deterministic teardown beats daemon-kill.** The dispatcher
+     exposes a close signal; views implement the optional
+     `arm_close_request` capability (the packaged tkinter view polls
+     it via `after`) so Quit unwinds an open dialog, drains and joins
+     the UI thread within a bounded timeout before `tray_main`
+     returns. Quit with the dialog open discards the dialog (cancel
+     semantics); in-flight store writes are atomic, so nothing is
+     half-persisted.
+- **Reason:** The pre-D-052 nesting was an accidental combination of
+  toolkit callbacks: it blocked the tray message loop for the dialog's
+  lifetime, broke Win32 focus/foreground behavior, made repeated menu
+  actions race, and left process exit conditional on a user closing a
+  window. The owner's acceptance requires the tray to remain a
+  responsive control surface while the dialog is open.
+- **Alternatives considered:** keep the nested dialog and only fix the
+  observed field behavior (rejected: the unsafe event-loop ownership
+  IS the defect; any local fix would leave the freeze/determinism
+  hazards); run tkinter on the process main thread and pystray via
+  `run_detached` (rejected: the two toolkits would still interleave on
+  one thread and the tray loop would remain blocked by dialogs); a
+  separate dialog process with IPC (rejected: a new process/IPC layer
+  for one dialog, contrary to the packaging constraint); replacing
+  pystray/tkinter with a single toolkit (rejected: a GUI migration is
+  out of scope for the defect and would discard the D-051 compact
+  dialog).
+- **Boundary:** The packaged Windows worker's GUI threading only
+  (issue #113). No selector, routing, protocol, frozen-interface,
+  server-side or CLI change; the onboarding semantics, pairing path,
+  store schema and persistence formats are untouched.
+
 ## Superseding a decision
 
 Add a new numbered entry with its status, date, evidence and `Supersedes: D-nnn`.

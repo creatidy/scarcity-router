@@ -8,6 +8,7 @@ injected so timing is deterministic.
 
 from __future__ import annotations
 
+import io
 import socket
 import sys
 import tempfile
@@ -17,6 +18,7 @@ import unittest
 import unittest.mock
 from collections import deque
 from collections.abc import Callable
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from typing import cast, override
 
@@ -25,14 +27,19 @@ if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
 from tests.worker_fixtures import (  # noqa: E402
+    SYNTHETIC_CODE,
     SYNTHETIC_CREDENTIAL,
+    CloseCountingStore,
     MemoryTransport,
     MutableClock,
     SyntheticLocalAdapter,
+    assert_stores_closed_exactly_once,
     build_local_registry,
     build_registry_with_resource,
+    counting_store_opener,
     realtime_canonical,
 )
+from scarcity_router import worker_client  # noqa: E402
 from scarcity_router.gateway_adapters import (  # noqa: E402
     AdapterCall,
     AdapterResult,
@@ -630,6 +637,290 @@ class RotationPersistenceTests(unittest.TestCase):
             # The FIRST handshake used the OLD credential; persistence of
             # the new one is asserted above and governs future sessions.
             self.assertEqual("SYNTHETIC-OLD-CREDENTIAL", handshakes[0].credential)
+
+
+class ScriptedCliRuntime:
+    """A ``WorkerRuntime`` stand-in driving ``main()`` lifecycle tests.
+
+    Snapshots how many tracked stores were already closed when ``run``
+    started, so a test can prove the CLI never closes the store out
+    from under a running runtime.
+    """
+
+    def __init__(
+        self,
+        *,
+        pair_result: WorkerLocalIdentity | None = None,
+        pair_error: Exception | None = None,
+        run_result: str = "requested",
+        run_error: Exception | None = None,
+        stores: list[CloseCountingStore] | None = None,
+    ) -> None:
+        self._pair_result: WorkerLocalIdentity | None = pair_result
+        self._pair_error: Exception | None = pair_error
+        self._run_result: str = run_result
+        self._run_error: Exception | None = run_error
+        self._stores: list[CloseCountingStore] = stores or []
+        self.closes_when_run_started: int | None = None
+
+    def pair(self, pairing_code: str) -> WorkerLocalIdentity:
+        _ = pairing_code
+        if self._pair_error is not None:
+            raise self._pair_error
+        assert self._pair_result is not None
+        return self._pair_result
+
+    def run(self) -> str:
+        self.closes_when_run_started = sum(
+            store.close_count for store in self._stores
+        )
+        if self._run_error is not None:
+            raise self._run_error
+        return self._run_result
+
+    def diagnostics(self) -> tuple[str, ...]:
+        return ("synthetic cli diagnostic line",)
+
+
+def scripted_runtime_factory(
+    recorded: list[CloseCountingStore],
+    *,
+    pair_result: WorkerLocalIdentity | None = None,
+    pair_error: Exception | None = None,
+    run_result: str = "requested",
+    run_error: Exception | None = None,
+    made: list[ScriptedCliRuntime] | None = None,
+) -> Callable[[WorkerOrigin, WorkerLocalStore, object], ScriptedCliRuntime]:
+    """A ``WorkerRuntime`` constructor seam handing out scripted runtimes."""
+
+    created: list[ScriptedCliRuntime] = made if made is not None else []
+
+    def factory(
+        origin: WorkerOrigin,
+        store: WorkerLocalStore,
+        local_adapters: object = None,
+    ) -> ScriptedCliRuntime:
+        _ = origin, store, local_adapters
+        runtime = ScriptedCliRuntime(
+            pair_result=pair_result,
+            pair_error=pair_error,
+            run_result=run_result,
+            run_error=run_error,
+            stores=recorded,
+        )
+        created.append(runtime)
+        return runtime
+
+    return factory
+
+
+class MainStoreOwnershipTests(unittest.TestCase):
+    """``worker_client.main`` closes the store it opened exactly once.
+
+    Every command path — pair success, pair failure, run termination,
+    configuration error — and no close ever happens while the runtime
+    still needs the store (issue #113 remediation, the CLI analogue of
+    the packaged-pairing leak).
+    """
+
+    CLI_ORIGIN: str = "srws://gateway.local:8790"
+
+    def test_pair_success_closes_store_exactly_once(self) -> None:
+        stdout = io.StringIO()
+        with tempfile.TemporaryDirectory[str]() as tmp:
+            recorded: list[CloseCountingStore] = []
+            factory = scripted_runtime_factory(
+                recorded,
+                pair_result=WorkerLocalIdentity(
+                    worker_id="worker-cli-1",
+                    credential=SYNTHETIC_CREDENTIAL,
+                    server_origin=self.CLI_ORIGIN,
+                ),
+            )
+            with (
+                unittest.mock.patch.object(
+                    worker_client, "_open_store", counting_store_opener(recorded)
+                ),
+                unittest.mock.patch.object(worker_client, "WorkerRuntime", factory),
+                redirect_stdout(stdout),
+            ):
+                exit_code = worker_client.main(
+                    [
+                        "pair",
+                        "--server",
+                        self.CLI_ORIGIN,
+                        "--code",
+                        SYNTHETIC_CODE,
+                        "--state-dir",
+                        tmp,
+                    ]
+                )
+        self.assertEqual(0, exit_code)
+        self.assertIn("paired as worker-cli-1; identity stored", stdout.getvalue())
+        assert_stores_closed_exactly_once(self, recorded)
+
+    def test_pair_origin_failure_closes_store_exactly_once(self) -> None:
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory[str]() as tmp:
+            recorded: list[CloseCountingStore] = []
+            with (
+                unittest.mock.patch.object(
+                    worker_client, "_open_store", counting_store_opener(recorded)
+                ),
+                redirect_stderr(stderr),
+            ):
+                exit_code = worker_client.main(
+                    [
+                        "pair",
+                        "--server",
+                        "srw://intranet.example:8790",
+                        "--code",
+                        SYNTHETIC_CODE,
+                        "--state-dir",
+                        tmp,
+                    ]
+                )
+        self.assertEqual(2, exit_code)
+        self.assertIn("loopback", stderr.getvalue())
+        self.assertNotIn("Traceback", stderr.getvalue())
+        assert_stores_closed_exactly_once(self, recorded)
+
+    def test_pair_transport_failure_closes_store_exactly_once(self) -> None:
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory[str]() as tmp:
+            recorded: list[CloseCountingStore] = []
+            factory = scripted_runtime_factory(
+                recorded, pair_error=OSError("synthetic connection refused")
+            )
+            with (
+                unittest.mock.patch.object(
+                    worker_client, "_open_store", counting_store_opener(recorded)
+                ),
+                unittest.mock.patch.object(worker_client, "WorkerRuntime", factory),
+                redirect_stderr(stderr),
+            ):
+                exit_code = worker_client.main(
+                    [
+                        "pair",
+                        "--server",
+                        self.CLI_ORIGIN,
+                        "--code",
+                        SYNTHETIC_CODE,
+                        "--state-dir",
+                        tmp,
+                    ]
+                )
+        self.assertEqual(2, exit_code)
+        self.assertIn("synthetic connection refused", stderr.getvalue())
+        assert_stores_closed_exactly_once(self, recorded)
+
+    def test_run_not_paired_closes_store_exactly_once(self) -> None:
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory[str]() as tmp:
+            recorded: list[CloseCountingStore] = []
+            with (
+                unittest.mock.patch.object(
+                    worker_client, "_open_store", counting_store_opener(recorded)
+                ),
+                redirect_stderr(stderr),
+            ):
+                exit_code = worker_client.main(["run", "--state-dir", tmp])
+        self.assertEqual(2, exit_code)
+        self.assertIn("not paired; run the pair command first", stderr.getvalue())
+        assert_stores_closed_exactly_once(self, recorded)
+
+    def test_run_config_error_closes_store_exactly_once(self) -> None:
+        # The REAL registry builder rejects --allow-ollama without
+        # --resource after the store is already open.
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory[str]() as tmp:
+            recorded: list[CloseCountingStore] = []
+            with (
+                unittest.mock.patch.object(
+                    worker_client, "_open_store", counting_store_opener(recorded)
+                ),
+                redirect_stderr(stderr),
+            ):
+                exit_code = worker_client.main(
+                    [
+                        "run",
+                        "--server",
+                        self.CLI_ORIGIN,
+                        "--allow-ollama",
+                        "--state-dir",
+                        tmp,
+                    ]
+                )
+        self.assertEqual(2, exit_code)
+        self.assertIn("--resource is required", stderr.getvalue())
+        assert_stores_closed_exactly_once(self, recorded)
+
+    def test_run_termination_closes_store_after_runtime_finished(self) -> None:
+        made: list[ScriptedCliRuntime] = []
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory[str]() as tmp:
+            recorded: list[CloseCountingStore] = []
+            factory = scripted_runtime_factory(recorded, run_result="fatal", made=made)
+            with (
+                unittest.mock.patch.object(
+                    worker_client, "_open_store", counting_store_opener(recorded)
+                ),
+                unittest.mock.patch.object(worker_client, "WorkerRuntime", factory),
+                redirect_stderr(stderr),
+            ):
+                exit_code = worker_client.main(
+                    ["run", "--server", self.CLI_ORIGIN, "--state-dir", tmp]
+                )
+        self.assertEqual(2, exit_code)
+        self.assertIn("synthetic cli diagnostic line", stderr.getvalue())
+        # The store was still open when run() started, and it was
+        # closed exactly once after the runtime finished.
+        assert made[0].closes_when_run_started == 0
+        assert_stores_closed_exactly_once(self, recorded)
+
+    def test_run_budget_exhausted_exit_code_with_exactly_one_close(self) -> None:
+        with tempfile.TemporaryDirectory[str]() as tmp:
+            recorded: list[CloseCountingStore] = []
+            factory = scripted_runtime_factory(
+                recorded, run_result="reconnect_budget_exhausted"
+            )
+            with (
+                unittest.mock.patch.object(
+                    worker_client, "_open_store", counting_store_opener(recorded)
+                ),
+                unittest.mock.patch.object(worker_client, "WorkerRuntime", factory),
+            ):
+                exit_code = worker_client.main(
+                    ["run", "--server", self.CLI_ORIGIN, "--state-dir", tmp]
+                )
+        self.assertEqual(3, exit_code)
+        assert_stores_closed_exactly_once(self, recorded)
+
+    def test_run_exception_closes_store_exactly_once(self) -> None:
+        made: list[ScriptedCliRuntime] = []
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory[str]() as tmp:
+            recorded: list[CloseCountingStore] = []
+            factory = scripted_runtime_factory(
+                recorded, run_error=OSError("synthetic socket failure"), made=made
+            )
+            with (
+                unittest.mock.patch.object(
+                    worker_client, "_open_store", counting_store_opener(recorded)
+                ),
+                unittest.mock.patch.object(worker_client, "WorkerRuntime", factory),
+                redirect_stderr(stderr),
+            ):
+                exit_code = worker_client.main(
+                    ["run", "--server", self.CLI_ORIGIN, "--state-dir", tmp]
+                )
+        self.assertEqual(2, exit_code)
+        # The diagnostics finally still ran, and the store did not leak
+        # through the exception path.
+        self.assertIn("synthetic cli diagnostic line", stderr.getvalue())
+        self.assertIn("synthetic socket failure", stderr.getvalue())
+        assert made[0].closes_when_run_started == 0
+        assert_stores_closed_exactly_once(self, recorded)
 
 
 _ = SYNTHETIC_CREDENTIAL
