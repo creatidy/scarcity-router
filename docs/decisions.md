@@ -3509,6 +3509,85 @@ what M4.1 forbids); a configurable per-provider eligibility policy
   or server-side change; the M05 worker protocol and the four console
   scripts are untouched.
 
+### D-052 — Windows UI ownership model: one owner per event loop, async crossings
+
+- **Status:** Accepted (issue #113; remediates the live Windows defect
+  found during the PR #114 acceptance retest)
+- **Date:** 2026-09-24
+- **Issue:** #113 — on a live Windows 11 host, opening the tray's
+  "Worker settings..." dialog left the settings window unresponsive,
+  controls failing to transition, the window not reliably regaining
+  foreground/focus, and the tray callback occupied: the dialog's
+  tkinter mainloop ran synchronously inside the pystray menu callback,
+  i.e. one toolkit's event loop was nested inside another toolkit's
+  message loop. The tray's Win32 loop could not service ANY action
+  (status, control UI, diagnostics, reconnect, quit) while the dialog
+  was open, and Quit could not deterministically tear the process down.
+- **Confidence:** High — the failure mechanism is the documented
+  threading model of both toolkits (pystray invokes menu handlers on
+  its message-loop thread; tkinter owns exactly the thread that runs
+  its mainloop), and the replacement model is discriminatingly
+  unit-tested on every platform (`tests/test_worker_first_run.py::
+  TrayUiOwnershipTests`).
+- **Decision:**
+  1. **Every long-lived event loop has exactly one owner.** The
+     Windows tray/Win32 message loop is owned by the packaging
+     adapter's tray thread (pystray `Icon.run`); every tkinter dialog
+     root is created, mainlooped and destroyed on ONE UI-owner thread
+     driven by the library's `windows_tray.UiDispatcher`
+     (`scarcity-router-ui`, started lazily, dialogs strictly serial);
+     the worker runtime owns its session thread; the process main
+     thread owns restart/quit coordination.
+  2. **No toolkit event loop is ever run synchronously inside another
+     toolkit's callback.** Tray menu handlers only marshal or signal:
+     "Show worker status" and shell/browser/folder opens go to
+     throwaway worker threads; "Worker settings..." posts the dialog
+     task to the UI dispatcher and returns; "Reconnect / restart" and
+     "Quit" set events. The first-run dialog runs on the UI-owner
+     thread while the coordination thread waits on the result future —
+     a plain sequential wait, not a nested loop.
+  3. **One active settings window, enforced at post time.** A
+     non-blocking settings slot is taken in the menu callback (tray
+     thread) before posting; requests arriving while a dialog is
+     active are dropped — a queued request would open a second window
+     the moment the first closed.
+  4. **Cross-component requests are asynchronous signals.** UI thread
+     → session: the existing restart hook (threading events +
+     cooperative runtime stop). UI thread → store: the store's own
+     lock (atomic single-row writes) on the dialog's short-lived save
+     worker. Tray → UI: dispatcher posts. Settings persistence keeps
+     its single home in `WorkerLocalStore`; the session thread reads
+     it only at (re)connect through the existing registry rebuild.
+  5. **Deterministic teardown beats daemon-kill.** The dispatcher
+     exposes a close signal; views implement the optional
+     `arm_close_request` capability (the packaged tkinter view polls
+     it via `after`) so Quit unwinds an open dialog, drains and joins
+     the UI thread within a bounded timeout before `tray_main`
+     returns. Quit with the dialog open discards the dialog (cancel
+     semantics); in-flight store writes are atomic, so nothing is
+     half-persisted.
+- **Reason:** The pre-D-052 nesting was an accidental combination of
+  toolkit callbacks: it blocked the tray message loop for the dialog's
+  lifetime, broke Win32 focus/foreground behavior, made repeated menu
+  actions race, and left process exit conditional on a user closing a
+  window. The owner's acceptance requires the tray to remain a
+  responsive control surface while the dialog is open.
+- **Alternatives considered:** keep the nested dialog and only fix the
+  observed field behavior (rejected: the unsafe event-loop ownership
+  IS the defect; any local fix would leave the freeze/determinism
+  hazards); run tkinter on the process main thread and pystray via
+  `run_detached` (rejected: the two toolkits would still interleave on
+  one thread and the tray loop would remain blocked by dialogs); a
+  separate dialog process with IPC (rejected: a new process/IPC layer
+  for one dialog, contrary to the packaging constraint); replacing
+  pystray/tkinter with a single toolkit (rejected: a GUI migration is
+  out of scope for the defect and would discard the D-051 compact
+  dialog).
+- **Boundary:** The packaged Windows worker's GUI threading only
+  (issue #113). No selector, routing, protocol, frozen-interface,
+  server-side or CLI change; the onboarding semantics, pairing path,
+  store schema and persistence formats are untouched.
+
 ## Superseding a decision
 
 Add a new numbered entry with its status, date, evidence and `Supersedes: D-nnn`.

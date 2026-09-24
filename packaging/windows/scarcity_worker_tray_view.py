@@ -81,10 +81,19 @@ def build_tray_view(
     class PystrayView:
         """The pystray adapter: start/update/stop over one Icon object.
 
-        The icon runs its own loop on a daemon thread; ``update`` swaps
-        the image and tooltip (both documented as thread-safe property
-        assignments). "Show worker status" raises a best-effort
-        notification; a failed notification never raises into the model.
+        The icon runs its own loop on a daemon thread — the OWNER of
+        the Win32 tray message loop (D-052). Menu handlers run on that
+        loop thread and therefore must never block it: they either set
+        events / post to the library's UI dispatcher (the tray model's
+        hooks) or marshal slow work (browser, Explorer shell opens,
+        notifications) to a throwaway worker thread. A handler that
+        ran another event loop synchronously — e.g. the pre-D-052
+        nested tkinter settings dialog — froze the tray, broke window
+        focus and made Quit non-deterministic; that shape is
+        prohibited. ``update`` swaps the image and tooltip (both
+        documented as thread-safe property assignments). "Show worker
+        status" raises a best-effort notification; a failed
+        notification never raises into the model.
         """
 
         def __init__(self) -> None:
@@ -143,7 +152,13 @@ def build_tray_view(
         def _open_folder(self) -> None:
             # The documented Windows shell association open for the
             # worker's own state directory (the bounded redacted log).
-            os.startfile(str(self._diagnostics_dir))
+            # ShellExecute must never run on the tray message loop (D-052).
+            def open_in_explorer() -> None:
+                os.startfile(str(self._diagnostics_dir))
+
+            threading.Thread(
+                target=open_in_explorer, name="worker-open-folder", daemon=True
+            ).start()
 
         def start(self) -> None:
             self._thread = threading.Thread(

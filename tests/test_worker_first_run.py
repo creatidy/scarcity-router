@@ -277,6 +277,62 @@ class FailingStoreObservingRuntime:
         return None
 
 
+class ScriptedSettingsView:
+    """A settings-only view fake for the D-052 ownership tests.
+
+    Steps: ``"hold"`` (the dialog stays open until :attr:`release` or
+    the dispatcher's close signal fires, then cancels), ``None``
+    (immediate cancel), or a :class:`worker_setup.SetupFields` (persist
+    through ``save`` and return the settings). Records the thread each
+    dialog ran on and honors ``arm_close_request`` like the real
+    tkinter view, so the deterministic-teardown path is exercised.
+    """
+
+    def __init__(self, steps: list[object]) -> None:
+        self._steps: list[object] = list(steps)
+        self._lock: threading.Lock = threading.Lock()
+        self.opened: threading.Event = threading.Event()
+        self.closed_count: int = 0
+        self.release: threading.Event = threading.Event()
+        self.close_armed: threading.Event | None = None
+        self.threads: list[threading.Thread] = []
+        self.contexts: list[worker_setup.SettingsDialogContext] = []
+
+    def arm_close_request(self, close_request: threading.Event) -> None:
+        self.close_armed = close_request
+
+    def run_first_run(
+        self, submit: Callable[[worker_setup.SetupFields], worker_setup.SetupOutcome]
+    ) -> worker_setup.SetupOutcome | None:
+        _ = submit
+        raise AssertionError("first-run is not used by the ownership tests")
+
+    def run_settings(
+        self,
+        context: worker_setup.SettingsDialogContext,
+        save: Callable[
+            [worker_setup.SetupFields], worker_setup.WorkerLocalSettings
+        ],
+    ) -> worker_setup.WorkerLocalSettings | None:
+        with self._lock:
+            step: object = self._steps.pop(0) if self._steps else None
+        self.contexts.append(context)
+        self.threads.append(threading.current_thread())
+        self.opened.set()
+        if step == "hold":
+            while not self.release.is_set():
+                if self.close_armed is not None and self.close_armed.is_set():
+                    break
+                _ = threading.Event().wait(0.005)
+            self.closed_count += 1
+            return None
+        self.closed_count += 1
+        if step is None:
+            return None
+        assert isinstance(step, worker_setup.SetupFields)
+        return save(step)
+
+
 class RecordingView:
     """Minimal TrayView stand-in recording updates."""
 
@@ -1357,6 +1413,280 @@ class TrayStoreOwnershipTests(unittest.TestCase):
         # open until the (failed) run returned, and it closed once.
         self.assertEqual([0], [r.closes_when_run_started for r in runtimes])
         assert_stores_closed_exactly_once(self, recorded)
+
+
+# ── D-052 UI ownership: one owner per event loop, async crossings ─────────────
+
+
+def _ui_thread_alive() -> bool:
+    return any(t.name == "scarcity-router-ui" for t in threading.enumerate())
+
+
+class TrayUiOwnershipTests(unittest.TestCase):
+    """The Windows UI ownership model (D-052), discriminatingly.
+
+    The live Windows failure was the settings dialog's tkinter mainloop
+    running synchronously inside the pystray menu callback: the tray
+    froze, focus broke and Quit could not reach the loop. These tests
+    pin the replacement contract: the settings menu action returns
+    immediately (the tray loop stays free), the dialog runs on the ONE
+    UI-owner thread, repeated requests cannot open a second window,
+    Quit/Reconnect with the dialog open are deterministic, and no GUI
+    thread outlives ``tray_main``.
+    """
+
+    def _wait_until(self, predicate: Callable[[], bool], timeout: float = 10.0) -> None:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if predicate():
+                return
+            _ = threading.Event().wait(0.01)
+        self.fail("condition not reached within the timeout")
+
+    def _paired_tree(self, parent: str) -> None:
+        store = open_store(parent)
+        store.save_identity(synthetic_identity())
+        store.close()
+
+    def _paired_launch(
+        self,
+        parent: str,
+        setup: ScriptedSettingsView,
+        made: list[FakeRuntime],
+        actions: dict[str, object],
+    ) -> int:
+        self._paired_tree(parent)
+
+        def runtime_factory() -> FakeRuntime:
+            runtime = FakeRuntime(immediate=False)
+            made.append(runtime)
+            return runtime
+
+        return windows_tray.tray_main(
+            ["--state-dir", parent],
+            view_factory=recording_view_factory(RecordingView(), actions),
+            setup_view_factory=lambda: setup,
+            runtime_factory=runtime_factory,
+        )
+
+    def _wait_for_actions(self, actions: dict[str, object]) -> None:
+        self._wait_until(lambda: bool(actions.get("on_settings")))
+
+    def test_settings_action_never_blocks_the_tray_thread(self) -> None:
+        made: list[FakeRuntime] = []
+        durations: list[float] = []
+
+        with tempfile.TemporaryDirectory() as parent:
+            setup = ScriptedSettingsView(["hold"])
+            actions: dict[str, object] = {}
+
+            def driver() -> None:
+                self._wait_for_actions(actions)
+                on_settings = cast("Callable[[], None]", actions["on_settings"])
+                started = time.monotonic()
+                on_settings()
+                durations.append(time.monotonic() - started)
+                # The dialog is held open; cancelling it must still work
+                # exactly as before, from outside the tray thread.
+                self._wait_until(lambda: setup.opened.is_set())
+                setup.release.set()
+                self._wait_until(lambda: setup.closed_count >= 1)
+                cast("windows_tray.TrayStateModel", actions["model"]).request_quit()
+
+            thread = threading.Thread(target=driver, daemon=True)
+            thread.start()
+            exit_code = self._paired_launch(parent, setup, made, actions)
+            thread.join(timeout=10)
+
+        self.assertEqual(0, exit_code)
+        # The menu callback returned immediately: the tray message loop
+        # was never occupied by the dialog (the live defect).
+        self.assertEqual(1, len(durations))
+        self.assertLess(durations[0], 1.0)
+        # The dialog ran on the ONE UI-owner thread, never on the caller.
+        self.assertEqual(1, len(setup.threads))
+        self.assertEqual("scarcity-router-ui", setup.threads[0].name)
+        # Cancel discarded nothing; no GUI thread outlives tray_main.
+        self.assertEqual(1, len(made))
+        self.assertFalse(_ui_thread_alive())
+
+    def test_rapid_settings_requests_open_exactly_one_window(self) -> None:
+        made: list[FakeRuntime] = []
+
+        with tempfile.TemporaryDirectory() as parent:
+            setup = ScriptedSettingsView(["hold", None])
+            actions: dict[str, object] = {}
+
+            def driver() -> None:
+                self._wait_for_actions(actions)
+                on_settings = cast("Callable[[], None]", actions["on_settings"])
+                for _ in range(5):
+                    on_settings()
+                self._wait_until(lambda: len(setup.contexts) >= 1)
+                _ = threading.Event().wait(0.2)
+                # The four dropped requests stay dropped: still one window.
+                self.assertEqual(1, len(setup.contexts))
+                setup.release.set()
+                self._wait_until(lambda: setup.closed_count >= 1)
+                # A LATER request (slot free again) opens the dialog again.
+                deadline = time.monotonic() + 10
+                while time.monotonic() < deadline and len(setup.contexts) < 2:
+                    on_settings()
+                    _ = threading.Event().wait(0.02)
+                self._wait_until(lambda: setup.closed_count >= 2)
+                cast("windows_tray.TrayStateModel", actions["model"]).request_quit()
+
+            thread = threading.Thread(target=driver, daemon=True)
+            thread.start()
+            exit_code = self._paired_launch(parent, setup, made, actions)
+            thread.join(timeout=10)
+
+        self.assertEqual(0, exit_code)
+        self.assertEqual(2, len(setup.contexts))
+        for dialog_thread in setup.threads:
+            self.assertEqual("scarcity-router-ui", dialog_thread.name)
+        self.assertFalse(_ui_thread_alive())
+
+    def test_quit_with_open_settings_is_deterministic(self) -> None:
+        made: list[FakeRuntime] = []
+
+        with tempfile.TemporaryDirectory() as parent:
+            setup = ScriptedSettingsView(["hold"])
+            actions: dict[str, object] = {}
+
+            def driver() -> None:
+                self._wait_for_actions(actions)
+                cast("Callable[[], None]", actions["on_settings"])()
+                self._wait_until(lambda: len(setup.contexts) >= 1)
+                # Quit while the dialog is open: teardown must unwind it.
+                cast("windows_tray.TrayStateModel", actions["model"]).request_quit()
+
+            thread = threading.Thread(target=driver, daemon=True)
+            thread.start()
+            exit_code = self._paired_launch(parent, setup, made, actions)
+            thread.join(timeout=10)
+
+        self.assertEqual(0, exit_code)
+        # The dialog was armed with the close signal and unwound by it.
+        self.assertIsNotNone(setup.close_armed)
+        assert setup.close_armed is not None
+        self.assertTrue(setup.close_armed.is_set())
+        self.assertEqual(1, setup.closed_count)
+        # Quit never became a restart, and no GUI/session thread remains.
+        self.assertEqual(1, len(made))
+        self.assertFalse(_ui_thread_alive())
+        self.assertFalse(
+            any(
+                t.name == "scarcity-router-worker" for t in threading.enumerate()
+            )
+        )
+
+    def test_reconnect_with_open_settings_is_deterministic(self) -> None:
+        made: list[FakeRuntime] = []
+
+        with tempfile.TemporaryDirectory() as parent:
+            setup = ScriptedSettingsView(["hold"])
+            actions: dict[str, object] = {}
+
+            def driver() -> None:
+                self._wait_for_actions(actions)
+                cast("Callable[[], None]", actions["on_settings"])()
+                self._wait_until(lambda: len(setup.contexts) >= 1)
+                # Reconnect while the dialog is open: a fresh runtime is
+                # built under the open dialog, deterministically.
+                cast("windows_tray.TrayStateModel", actions["model"]).request_restart()
+                self._wait_until(lambda: len(made) >= 2)
+                setup.release.set()
+                self._wait_until(lambda: setup.closed_count >= 1)
+                # The cancelled dialog never triggers a second restart.
+                self._wait_until(lambda: len(made) >= 2)
+                _ = threading.Event().wait(0.2)
+                self.assertEqual(2, len(made))
+                cast("windows_tray.TrayStateModel", actions["model"]).request_quit()
+
+            thread = threading.Thread(target=driver, daemon=True)
+            thread.start()
+            exit_code = self._paired_launch(parent, setup, made, actions)
+            thread.join(timeout=10)
+
+        self.assertEqual(0, exit_code)
+        self.assertEqual(2, len(made))
+        self.assertEqual(1, len(setup.contexts))
+        self.assertFalse(_ui_thread_alive())
+
+    def test_settings_cancel_then_settings_then_save_restarts_once(self) -> None:
+        made: list[FakeRuntime] = []
+        fields = worker_setup.SetupFields(
+            ollama_enabled=True, resource_id="ownership-ollama"
+        )
+
+        with tempfile.TemporaryDirectory() as parent:
+            setup = ScriptedSettingsView(["hold", fields])
+            actions: dict[str, object] = {}
+
+            def driver() -> None:
+                self._wait_for_actions(actions)
+                on_settings = cast("Callable[[], None]", actions["on_settings"])
+                on_settings()
+                self._wait_until(lambda: len(setup.contexts) >= 1)
+                setup.release.set()  # first dialog: cancel
+                self._wait_until(lambda: setup.closed_count >= 1)
+                # Second dialog: save drives the controlled restart.
+                deadline = time.monotonic() + 10
+                while time.monotonic() < deadline and len(made) < 2:
+                    on_settings()
+                    _ = threading.Event().wait(0.02)
+                self._wait_until(lambda: len(made) >= 2)
+                cast("windows_tray.TrayStateModel", actions["model"]).request_quit()
+
+            thread = threading.Thread(target=driver, daemon=True)
+            thread.start()
+            exit_code = self._paired_launch(parent, setup, made, actions)
+            thread.join(timeout=10)
+
+        self.assertEqual(0, exit_code)
+        self.assertEqual(2, len(setup.contexts))
+        self.assertEqual(2, len(made))
+        self.assertGreaterEqual(made[0].stop_requests, 1)
+        self.assertFalse(_ui_thread_alive())
+
+    def test_open_control_ui_never_blocks_the_tray_thread(self) -> None:
+        made: list[FakeRuntime] = []
+        opened = threading.Event()
+        browser_threads: list[threading.Thread] = []
+
+        def fake_open(url: str, *, new: int = 0, autoraise: bool = True) -> bool:
+            _ = new, autoraise
+            self.assertIn("127.0.0.1", url)
+            browser_threads.append(threading.current_thread())
+            _ = threading.Event().wait(0.5)  # a slow shell/browser call
+            opened.set()
+            return True
+
+        with tempfile.TemporaryDirectory() as parent:
+            setup = ScriptedSettingsView([])
+            actions: dict[str, object] = {}
+
+            def driver() -> None:
+                self._wait_for_actions(actions)
+                open_ui = cast("Callable[[], None]", actions["open_control_ui"])
+                started = time.monotonic()
+                open_ui()
+                elapsed = time.monotonic() - started
+                self.assertLess(elapsed, 0.3)
+                self.assertTrue(opened.wait(timeout=10))
+                cast("windows_tray.TrayStateModel", actions["model"]).request_quit()
+
+            thread = threading.Thread(target=driver, daemon=True)
+            thread.start()
+            with unittest.mock.patch("webbrowser.open", fake_open):
+                exit_code = self._paired_launch(parent, setup, made, actions)
+            thread.join(timeout=10)
+
+        self.assertEqual(0, exit_code)
+        # The browser launch ran on a worker thread, not the caller.
+        self.assertEqual(1, len(browser_threads))
+        self.assertNotEqual(browser_threads[0], threading.current_thread())
 
 
 # ── Honest Windows Codex posture ──────────────────────────────────────────────

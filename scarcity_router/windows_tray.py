@@ -38,15 +38,29 @@ a second control plane):
   and unit-tested everywhere. Only the adapter is Windows-gated
   (EXTERNAL_ACCEPTANCE_GATE: LIVE_WINDOWS_ACCEPTANCE,
   docs/m10-acceptance.md).
+- **One owner per long-lived event loop (D-052).** The Windows UI
+  ownership model is deliberate, never an accidental combination of
+  toolkit callbacks: the tray/Win32 message loop is owned by the
+  packaging adapter's tray thread, and its menu callbacks only marshal
+  work or set events — they never block and never run another
+  toolkit's event loop synchronously inside a callback. Every tkinter
+  dialog root is created, mainlooped and destroyed on the ONE
+  UI-owner thread driven by :class:`UiDispatcher`; the worker runtime
+  owns its session thread; the process main thread owns restart/quit
+  coordination. Cross-thread requests are asynchronous signals
+  (dispatcher posts, threading events, the store's own lock) — see
+  D-052 in docs/decisions.md.
 """
 
 from __future__ import annotations
 
+import queue
 import sys
 import threading
 from collections.abc import Callable
+from concurrent.futures import Future
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, TypeVar, runtime_checkable
 
 from . import worker_setup
 from .worker_client import (
@@ -87,6 +101,114 @@ WORKER_LOG_MAX_BYTES = 1_048_576
 
 class TrayNotAvailableError(RuntimeError):
     """The tray GUI stack is unavailable on this platform or install."""
+
+
+_T = TypeVar("_T")
+
+
+class UiDispatcher:
+    """The single owner of every tkinter event loop in the process.
+
+    D-052 (Windows UI ownership model): a tkinter mainloop must never
+    run synchronously inside another toolkit's callback — nested inside
+    the pystray menu callback it froze the tray message loop, broke
+    window focus and made quit non-deterministic on live Windows. This
+    dispatcher owns ONE dedicated thread (``scarcity-router-ui``) on
+    which every dialog root is created, mainlooped and destroyed,
+    strictly serially. Cross-component requests cross thread
+    boundaries only as asynchronous signals:
+
+    - tray thread -> UI thread: :meth:`submit` posts the dialog task
+      and returns immediately, so a menu callback never blocks;
+    - UI thread -> session: the existing restart hook (threading
+      events + cooperative runtime stop);
+    - teardown: :meth:`shutdown` sets :attr:`close_request` (an armed
+      dialog unwinds its mainloop), then drains and joins the thread
+      with a bounded timeout — the process never relies on daemon-kill
+      for the GUI thread.
+
+    The thread starts lazily on the first submit, so paths that never
+    open a dialog (the packaged ``pair`` command, refusals) create only
+    a queue and an event. Views participate in deterministic teardown
+    through the optional ``arm_close_request`` capability; a view
+    without it simply finishes its task before the join completes.
+    """
+
+    def __init__(self, *, name: str = "scarcity-router-ui") -> None:
+        self._tasks: queue.Queue[Callable[[], None] | None] = queue.Queue()
+        self._close_request: threading.Event = threading.Event()
+        self._lock: threading.Lock = threading.Lock()
+        self._shutdown: bool = False
+        self._thread: threading.Thread | None = None
+        self._name: str = name
+
+    @property
+    def close_request(self) -> threading.Event:
+        """Set by :meth:`shutdown`; an armed dialog unwinds when it fires."""
+        return self._close_request
+
+    def submit(self, task: Callable[[], _T]) -> Future[_T]:
+        """Run ``task`` on the UI-owner thread; return its result future.
+
+        The CALLING thread (the pystray menu callback) returns as soon
+        as the task is queued. Tasks execute serially, so a dialog's
+        mainloop occupies the thread exactly once and later tasks wait
+        behind it — which is also the duplicate-window guarantee when
+        combined with the caller's settings slot. The enqueue happens
+        under the same lock as shutdown's poison pill, so a task can
+        never land behind the pill (where it would never run and never
+        complete its future); after :meth:`shutdown` this raises.
+        """
+        future: Future[_T] = Future()
+
+        def run() -> None:
+            if not future.set_running_or_notify_cancel():
+                return
+            try:
+                future.set_result(task())
+            except BaseException as exc:  # delivered to the future's waiter
+                future.set_exception(exc)
+
+        with self._lock:
+            if self._shutdown:
+                raise RuntimeError("the UI dispatcher is shut down")
+            if self._thread is None:
+                self._thread = threading.Thread(
+                    target=self._loop, name=self._name, daemon=True
+                )
+                self._thread.start()
+            self._tasks.put(run)
+        return future
+
+    def is_alive(self) -> bool:
+        """Whether the UI-owner thread is running."""
+        thread = self._thread
+        return thread is not None and thread.is_alive()
+
+    def shutdown(self, *, timeout: float = 10.0) -> bool:
+        """Deterministic teardown; idempotent. Returns whether the thread ended.
+
+        Signals :attr:`close_request` (so an armed dialog destroys its
+        root and its mainloop returns), then drains the queue via a
+        poison pill and joins the thread within ``timeout``.
+        """
+        with self._lock:
+            if not self._shutdown:
+                self._shutdown = True
+                self._close_request.set()
+                self._tasks.put(None)
+            thread = self._thread
+        if thread is None:
+            return True
+        thread.join(timeout=timeout)
+        return not thread.is_alive()
+
+    def _loop(self) -> None:
+        while True:
+            task = self._tasks.get()
+            if task is None:
+                return
+            task()
 
 
 def is_supported() -> bool:
@@ -462,6 +584,46 @@ def tray_main(
     if argv_list and argv_list[0] == "pair":
         return _packaged_pair(argv_list[1:], connect_factory=connect_factory)
 
+    # D-052: ONE UI-owner thread owns every tkinter loop in the process.
+    dispatcher = UiDispatcher()
+    try:
+        return _tray_session_main(
+            argv_list,
+            ui_url_override=ui_url_override,
+            view_factory=view_factory,
+            setup_view_factory=setup_view_factory,
+            connect_factory=connect_factory,
+            runtime_factory=runtime_factory,
+            state_dir=state_dir,
+            dispatcher=dispatcher,
+        )
+    finally:
+        # Deterministic teardown on every exit path: an armed dialog
+        # unwinds via the close signal and the UI-owner thread joins
+        # (bounded) — never a daemon kill, never an orphan GUI thread.
+        _ = dispatcher.shutdown()
+
+
+def _tray_session_main(
+    argv_list: list[str],
+    *,
+    ui_url_override: str | None,
+    view_factory: ViewFactory | None,
+    setup_view_factory: SetupViewFactory | None,
+    connect_factory: ConnectFactory | None,
+    runtime_factory: Callable[[], TrayRuntime] | None,
+    state_dir: str | None,
+    dispatcher: UiDispatcher,
+) -> int:
+    """The tray-session half of :func:`tray_main` (after ``pair`` routing).
+
+    Split out so ``tray_main`` owns the UI dispatcher's lifecycle
+    (D-052): whatever this returns, the dispatcher is shut down
+    deterministically on the way out.
+    """
+    # The settings slot enforces ONE active settings window per process
+    # no matter how often the menu action fires (D-052).
+    settings_slot = threading.Semaphore(1)
     try:
         arguments = _parse_run_arguments(argv_list)
     except SystemExit:
@@ -481,7 +643,10 @@ def tray_main(
             _pre_tray_error(_unpaired_remediation())
             return 2
         outcome = _run_first_run(
-            setup_view_factory, resolved_dir, connect_factory=connect_factory
+            setup_view_factory,
+            resolved_dir,
+            connect_factory=connect_factory,
+            dispatcher=dispatcher,
         )
         if outcome is None:
             # User cancelled before pairing: no identity/config mutation.
@@ -534,9 +699,18 @@ def tray_main(
             )
 
             def open_control_ui() -> None:
-                import webbrowser
+                # A browser/shell launch never runs on the tray message
+                # loop: marshal to a throwaway worker and return (D-052).
+                def open_browser() -> None:
+                    import webbrowser
 
-                _ = webbrowser.open(f"{ui_origin}/admin")
+                    _ = webbrowser.open(f"{ui_origin}/admin")
+
+                threading.Thread(
+                    target=open_browser,
+                    name="scarcity-router-open-ui",
+                    daemon=True,
+                ).start()
 
             if view_factory is None:
                 raise TrayNotAvailableError(
@@ -552,11 +726,13 @@ def tray_main(
 
             def open_worker_settings() -> None:
                 _open_settings_dialog(
+                    dispatcher,
                     setup_view_factory,
                     store,
                     worker_id or "",
                     origin_text,
                     restart=restart_hook[0] if restart_hook else None,
+                    settings_slot=settings_slot,
                 )
 
             def make_runtime() -> WorkerRuntime:
@@ -612,44 +788,87 @@ def build_runtime(
     return WorkerRuntime(origin=origin, store=store, local_adapters=registry)
 
 
+@runtime_checkable
+class ClosableView(Protocol):
+    """A setup view that honors the dispatcher's deterministic teardown.
+
+    Optional capability (D-052): views implementing
+    ``arm_close_request`` unwind their dialog when the UI dispatcher's
+    close signal fires, so Quit is deterministic even with the dialog
+    open. Views without the method simply finish their task before the
+    bounded join completes.
+    """
+
+    def arm_close_request(self, close_request: threading.Event) -> None: ...
+
+
 def _open_settings_dialog(
+    dispatcher: UiDispatcher,
     setup_view_factory: SetupViewFactory | None,
     store: WorkerLocalStore,
     worker_id: str,
     origin_text: str,
     *,
     restart: Callable[[], None] | None,
+    settings_slot: threading.Semaphore,
 ) -> None:
-    """Open the SAME local configuration UI in its settings mode.
+    """Open the SAME local configuration UI in its settings mode (D-052).
 
     Reopens the first-run dialog without the pairing section (issue
-    #113): no second configuration implementation. A successful save
-    asks the tray for a controlled restart (the runtime factory rebuilds
-    the registry from the store); a cancel changes nothing.
+    #113): no second configuration implementation. Called on the TRAY
+    thread: it tries the settings slot immediately (non-blocking) and
+    posts the dialog task to the UI-owner thread only when the slot is
+    free — the callback itself never blocks, the pystray message loop
+    keeps servicing every other menu action while the dialog is open,
+    and requests arriving while a dialog is active are dropped at post
+    time (the open window is the response; a queued request would
+    otherwise open a SECOND window the moment the first closed). The
+    task runs the dialog on the UI-owner thread and releases the slot
+    when the dialog is done. A successful save asks the tray for the
+    controlled restart from the UI thread — an asynchronous event
+    crossing, safe because the restart machinery only sets events and
+    cooperatively stops the runtime.
     """
     if setup_view_factory is None:
+        # A view-less tray never wires this item; defensive only — and
+        # checked BEFORE the slot so the acquire/release pair stays
+        # balanced on this path.
         return
-    try:
-        current = load_worker_settings(store)
-        problem: str | None = None
-    except WorkerSetupConfigError as exc:
-        current, problem = None, str(exc)
-    context = SettingsDialogContext(
-        worker_id=worker_id,
-        server_origin=origin_text,
-        current=current,
-        problem=problem,
-    )
+    if not settings_slot.acquire(blocking=False):
+        return  # a settings dialog is already active; never a second one
 
-    def save(fields: SetupFields) -> "worker_setup.WorkerLocalSettings":
-        return save_settings_fields(fields, store=store)
+    def task() -> None:
+        saved: worker_setup.WorkerLocalSettings | None = None
+        try:
+            view = setup_view_factory()
+            if isinstance(view, ClosableView):
+                # Deterministic teardown: Quit unwinds this dialog via
+                # the dispatcher's close signal (D-052).
+                view.arm_close_request(dispatcher.close_request)
+            try:
+                current = load_worker_settings(store)
+                problem: str | None = None
+            except WorkerSetupConfigError as exc:
+                current, problem = None, str(exc)
+            context = SettingsDialogContext(
+                worker_id=worker_id,
+                server_origin=origin_text,
+                current=current,
+                problem=problem,
+            )
 
-    try:
-        saved = setup_view_factory().run_settings(context, save)
-    except Exception:  # noqa: BLE001 - a dialog failure never kills the tray
-        return
-    if saved is not None and restart is not None:
-        restart()
+            def save(fields: SetupFields) -> "worker_setup.WorkerLocalSettings":
+                return save_settings_fields(fields, store=store)
+
+            saved = view.run_settings(context, save)
+        except Exception:  # noqa: BLE001 - a dialog failure never kills the tray
+            return
+        finally:
+            settings_slot.release()
+        if saved is not None and restart is not None:
+            restart()
+
+    _ = dispatcher.submit(task)
 
 
 def _run_first_run(
@@ -657,8 +876,18 @@ def _run_first_run(
     state_dir: str | None,
     *,
     connect_factory: ConnectFactory | None,
+    dispatcher: UiDispatcher,
 ) -> worker_setup.SetupOutcome | None:
-    """Run the first-run dialog against a store opened on ``state_dir``."""
+    """Run the first-run dialog on the UI-owner thread (D-052).
+
+    The dialog's mainloop belongs to the dispatcher's thread — never to
+    a toolkit callback; the calling (coordination) thread waits on the
+    result future, which is a plain sequential wait, not a nested event
+    loop. The store is opened here and closed exactly once after the
+    dialog finishes (the dialog's own worker thread performs the
+    pairing; its writes are atomic, so an abandoned attempt persists
+    nothing).
+    """
     try:
         setup_view = setup_view_factory()
     except Exception as exc:  # the dialog stack itself is unavailable
@@ -670,7 +899,8 @@ def _run_first_run(
         def submit(fields: SetupFields) -> "worker_setup.SetupOutcome":
             return complete_setup(fields, store=store, connect_factory=connect_factory)
 
-        return setup_view.run_first_run(submit)
+        future = dispatcher.submit(lambda: setup_view.run_first_run(submit))
+        return future.result()
     finally:
         store.close()
 
@@ -872,9 +1102,11 @@ __all__ = [
     "STATE_ERROR",
     "STATE_RUNNING",
     "TRAY_STATES",
+    "ClosableView",
     "TrayNotAvailableError",
     "TrayStateModel",
     "TrayView",
+    "UiDispatcher",
     "ViewFactory",
     "WORKER_LOG_MAX_BYTES",
     "WORKER_LOG_NAME",

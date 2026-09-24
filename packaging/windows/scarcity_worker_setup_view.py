@@ -73,14 +73,29 @@ class TkSetupView:
     """The tkinter :class:`SetupView` (one dialog per invocation).
 
     Every ``run_first_run``/``run_settings`` call creates its own Tk
-    root and runs a local mainloop on the CALLING thread — safe both for
-    the pre-tray first run (main thread) and for the tray's
-    "Worker settings..." action (the pystray menu thread), because all
-    tkinter objects stay on the thread that created them. The
-    submit/save callback runs on a short-lived worker thread; results
-    are marshalled back through a queue so the UI thread owns every
-    widget access.
+    root and runs a local mainloop on the CALLING thread. The calling
+    thread is under the library's D-052 ownership contract: the
+    ``UiDispatcher``'s single UI-owner thread is the ONLY caller for
+    tray-driven settings dialogs (never the pystray message-loop
+    thread — a nested mainloop there froze the tray, broke focus and
+    made quit non-deterministic on live Windows), and the pre-tray
+    first run calls it on the coordination thread before any other
+    loop exists.
+
+    The submit/save callback runs on a short-lived worker thread;
+    results are marshalled back through a queue so the UI thread owns
+    every widget access. ``arm_close_request`` (D-052) adopts the
+    dispatcher's close signal: a dedicated ``after`` poller watches it
+    for the dialog's whole lifetime, so Quit deterministically unwinds
+    an open dialog from outside.
     """
+
+    def __init__(self) -> None:
+        self._close_request: threading.Event | None = None
+
+    def arm_close_request(self, close_request: threading.Event) -> None:
+        """Adopt the UI dispatcher's close signal (D-052 teardown)."""
+        self._close_request = close_request
 
     def run_first_run(
         self, submit: Callable[[SetupFields], SetupOutcome]
@@ -95,6 +110,7 @@ class TkSetupView:
             submit=submit,
             save=None,
             context=None,
+            close_request=self._close_request,
         )
         result = dialog.run()
         return result if isinstance(result, SetupOutcome) else None
@@ -114,6 +130,7 @@ class TkSetupView:
             submit=None,
             save=save,
             context=context,
+            close_request=self._close_request,
         )
         result = dialog.run()
         return result if isinstance(result, WorkerLocalSettings) else None
@@ -131,6 +148,7 @@ class _SetupDialog:
         submit: Callable[[SetupFields], SetupOutcome] | None,
         save: Callable[[SetupFields], WorkerLocalSettings] | None,
         context: SettingsDialogContext | None,
+        close_request: threading.Event | None = None,
     ) -> None:
         self._tk = tk
         self._ttk = ttk
@@ -138,6 +156,7 @@ class _SetupDialog:
         self._submit = submit
         self._save = save
         self._context = context
+        self._close_request = close_request
         self._results: queue.Queue[object] = queue.Queue()
         self._in_flight = False
         self.result: SetupOutcome | WorkerLocalSettings | None = None
@@ -200,8 +219,24 @@ class _SetupDialog:
 
         root.protocol("WM_DELETE_WINDOW", self._on_cancel)
         self._sync_ollama_state()
+        root.after(_POLL_MS, self._poll_close)
         root.mainloop()
         return self.result
+
+    def _poll_close(self) -> None:
+        """Deterministic teardown poller (D-052).
+
+        Watches the UI dispatcher's close signal for the dialog's whole
+        lifetime, so Quit unwinds the dialog from outside even while it
+        sits idle. The result is discarded (cancel semantics); an
+        in-flight attempt is abandoned whole — the store's writes are
+        atomic, so nothing is ever half-persisted.
+        """
+        if self._close_request is not None and self._close_request.is_set():
+            self.result = None
+            self._root.destroy()
+            return
+        self._root.after(_POLL_MS, self._poll_close)
 
     def _build_rows(self, body: "ttk.Frame", row: int, first_run: bool) -> int:
         if first_run:
@@ -444,12 +479,19 @@ class _SetupDialog:
                 if ui_text
                 else control_ui_origin(WorkerOrigin.parse(fields.server_url.strip()))
             )
-            _ = webbrowser.open(f"{url}/admin")
-            self._show_status("opened the server web UI in your browser", error=False)
         except WorkerSetupConfigError as exc:
             self._show_status(str(exc), error=True)
+            return
         except Exception:
             self._show_status("could not open the server web UI", error=True)
+            return
+
+        def open_browser() -> None:
+            _ = webbrowser.open(f"{url}/admin")
+
+        # A shell/browser launch never blocks the UI-owner thread (D-052).
+        threading.Thread(target=open_browser, name="worker-open-ui", daemon=True).start()
+        self._show_status("opening the server web UI in your browser", error=False)
 
 
 def build_setup_view() -> SetupView:
