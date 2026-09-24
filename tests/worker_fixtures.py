@@ -11,14 +11,18 @@ exercises a loopback TCP listener.
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from collections import deque
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, cast
+from pathlib import Path
+from typing import TYPE_CHECKING, cast, override
 
 if TYPE_CHECKING:  # pragma: no cover - type-only import
+    import unittest
+
     from scarcity_router.worker_protocol import SocketTransport
 
 from scarcity_router.capacity import CapacitySnapshot, CapacityWindow
@@ -40,6 +44,7 @@ from scarcity_router.resource_state import (
 )
 from scarcity_router.worker_identity_store import WorkerIdentityStore
 from scarcity_router.worker_local_adapters import LocalAdapterRegistry
+from scarcity_router.worker_local_store import WorkerLocalStore
 from scarcity_router.worker_protocol import (
     CancelMessage,
     ErrorMessage,
@@ -581,22 +586,78 @@ def build_worker_report(
 
 _ = deque
 
+# ── Store-ownership discriminator (deterministic close) ───────────────────────
+
+
+class CloseCountingStore(WorkerLocalStore):
+    """A real ``WorkerLocalStore`` that counts ``close()`` calls.
+
+    Ownership discriminator for the store-lifecycle invariant: code that
+    opens a store closes it exactly once. Zero closes is the leak this
+    guards against; the count itself (not sqlite close semantics, which
+    tolerate a repeated close) is what makes a double close visible to
+    the ``close_count == 1`` assertion. Never relies on garbage
+    collection or process exit.
+    """
+
+    def __init__(self, path: str | os.PathLike[str]) -> None:
+        super().__init__(path)
+        self.close_count: int = 0
+
+    @override
+    def close(self) -> None:
+        self.close_count += 1
+        super().close()
+
+
+def counting_store_opener(
+    recorded: list[CloseCountingStore],
+) -> Callable[[str | None], CloseCountingStore]:
+    """An ``open_worker_store``/``_open_store`` seam that records opens.
+
+    The caller keeps ``recorded`` and asserts every handed-out store
+    ended with ``close_count == 1``.
+    """
+
+    def factory(state_dir: str | None) -> CloseCountingStore:
+        store = CloseCountingStore(Path(state_dir or ".") / "worker-state.db")
+        recorded.append(store)
+        return store
+
+    return factory
+
+
+def assert_stores_closed_exactly_once(
+    testcase: unittest.TestCase,
+    recorded: list[CloseCountingStore],
+) -> None:
+    """Fail unless every recorded store was closed exactly once."""
+    testcase.assertTrue(recorded, "no store was opened through the patched seam")
+    for store in recorded:
+        testcase.assertEqual(
+            1, store.close_count, "a store was not closed exactly once"
+        )
+
+
 __all__ = [
     "SYNTHETIC_CODE",
     "SYNTHETIC_CREDENTIAL",
     "T_EVAL",
     "T_NOW",
+    "CloseCountingStore",
     "FrozenMonotonic",
     "MemoryTransport",
     "MutableClock",
     "NullTransport",
     "ScriptedWorker",
     "SyntheticLocalAdapter",
+    "assert_stores_closed_exactly_once",
     "build_identity_store",
     "build_local_registry",
     "build_registry_with_resource",
     "build_worker_report",
     "canonical",
+    "counting_store_opener",
     "realtime_canonical",
     "fixed_clock",
 ]

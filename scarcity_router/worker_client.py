@@ -920,11 +920,15 @@ class _ActiveSession:
 
 def build_parser() -> argparse.ArgumentParser:
     invoked = Path(sys.argv[0]).name if sys.argv and sys.argv[0] else ""
-    prog = (
-        invoked
-        if invoked == "scarcity-router-worker"
-        else "python -m scarcity_router.worker_client"
-    )
+    if invoked == "scarcity-router-worker":
+        prog = invoked
+    elif invoked.startswith("scarcity-worker"):
+        # The PyInstaller-packaged executable (issue #113): usage text
+        # names the binary the user actually ran, never the Python
+        # console script the standalone ZIP does not contain.
+        prog = invoked
+    else:
+        prog = "python -m scarcity_router.worker_client"
     parser = argparse.ArgumentParser(
         prog=prog,
         description=(
@@ -1100,41 +1104,45 @@ def main(argv: list[str] | None = None) -> int:
         store = _open_store(
             str(arguments["state_dir"]) if arguments.get("state_dir") else None
         )
-        if command == "pair":
-            origin = WorkerOrigin.parse(str(arguments["server"]))
-            runtime = WorkerRuntime(origin=origin, store=store)
-            identity = runtime.pair(str(arguments["code"]))
-            print(f"paired as {identity.worker_id}; identity stored")
-            store.close()
-            return 0
-        if command == "run":
-            server_value = arguments.get("server")
-            if server_value is not None:
-                origin = WorkerOrigin.parse(str(server_value))
-            else:
-                stored = store.load_identity()
-                if stored is None:
-                    print("worker: not paired; run the pair command first", file=sys.stderr)
-                    store.close()
+        try:
+            # This function opened the store, so it closes it exactly
+            # once on every path out of here. The ``run`` runtime uses
+            # the store for its whole lifetime, so the close waits for
+            # ``runtime.run()`` to finish.
+            if command == "pair":
+                origin = WorkerOrigin.parse(str(arguments["server"]))
+                runtime = WorkerRuntime(origin=origin, store=store)
+                identity = runtime.pair(str(arguments["code"]))
+                print(f"paired as {identity.worker_id}; identity stored")
+                return 0
+            if command == "run":
+                server_value = arguments.get("server")
+                if server_value is not None:
+                    origin = WorkerOrigin.parse(str(server_value))
+                else:
+                    stored = store.load_identity()
+                    if stored is None:
+                        print("worker: not paired; run the pair command first", file=sys.stderr)
+                        return 2
+                    origin = WorkerOrigin.parse(stored.server_origin)
+                state_dir = (
+                    str(arguments["state_dir"]) if arguments.get("state_dir") else None
+                )
+                registry = build_registry(arguments, state_dir=state_dir)
+                runtime = WorkerRuntime(origin=origin, store=store, local_adapters=registry)
+                try:
+                    reason = runtime.run()
+                finally:
+                    for line in runtime.diagnostics():
+                        print(f"worker: {line}", file=sys.stderr)
+                if reason == "reconnect_budget_exhausted":
+                    return 3
+                if reason == "fatal":
                     return 2
-                origin = WorkerOrigin.parse(stored.server_origin)
-            state_dir = (
-                str(arguments["state_dir"]) if arguments.get("state_dir") else None
-            )
-            registry = build_registry(arguments, state_dir=state_dir)
-            runtime = WorkerRuntime(origin=origin, store=store, local_adapters=registry)
-            try:
-                reason = runtime.run()
-            finally:
-                for line in runtime.diagnostics():
-                    print(f"worker: {line}", file=sys.stderr)
+                return 0
+            parser.error("unknown command")
+        finally:
             store.close()
-            if reason == "reconnect_budget_exhausted":
-                return 3
-            if reason == "fatal":
-                return 2
-            return 0
-        parser.error("unknown command")
     except (WorkerConfigError, ValueError, OSError) as exc:
         print(f"worker: {exc}", file=sys.stderr)
         return 2
