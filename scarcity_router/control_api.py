@@ -500,7 +500,7 @@ class ControlPlane:
                 for rid in self._observations
                 if rid.partition(":")[0] in inventory_sources
             ]:
-                self._observations.pop(resource_id, None)
+                _ = self._observations.pop(resource_id, None)
         self._rebuild_application()
 
     def apply_worker_report(self, report: WorkerStateReport) -> None:

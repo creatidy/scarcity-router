@@ -507,7 +507,7 @@ class DaybreakRemediationTests(unittest.TestCase):
         # runtime did not advertise.
         registry = SourceRegistry(track_registry=load_track_registry())
         registry.sync_configuration((_config(),))
-        registry.apply_inventory(
+        _ = registry.apply_inventory(
             _inventory("personal-openai", "worker-1", (_model("gpt-6-sol", ("low",)),))
         )
         registrations = registry.derived_registrations()
@@ -523,14 +523,16 @@ class DaybreakRemediationTests(unittest.TestCase):
         registry.sync_configuration((_config(),))
         for generation in range(80):
             slug = f"gpt-{generation}-sol"
-            registry.apply_inventory(
+            _ = registry.apply_inventory(
                 _inventory(
                     "personal-openai", "worker-1", (_model(slug, ("high",)),)
                 )
             )
             for _ in range(RETIRE_AFTER_MISSES):
-                registry.apply_inventory(
+                _ = registry.apply_inventory(
                     _inventory("personal-openai", "worker-1", ())
                 )
         view = registry.source_view()[0]
-        self.assertLessEqual(len(view["retired"]), 64)  # type: ignore[arg-type]
+        self.assertLessEqual(
+            len(cast("list[object]", view["retired"])), 64
+        )

@@ -1758,11 +1758,7 @@ class CodexLocalAdapter:
             # Daybreak finding 3: the resource is variant-qualified — a
             # selected variant other than the resource's own effort is a
             # DIFFERENT resource (typed rejection, never a dispatch).
-            if (
-                binding is not None
-                and call.model.variant is not None
-                and call.model.variant != binding[1]
-            ):
+            if binding is not None and call.model.variant != binding[1]:
                 raise CodexIneligible("resource_not_served")
             if binding is not None and call.reasoning_effort is None:
                 # The resource IS the effort contract: an effort-less
@@ -2307,7 +2303,7 @@ class CodexLocalAdapter:
             ),
         )
 
-    def _discovered_resource_ids_locked_call(self) -> dict[str, str]:
+    def _discovered_resource_ids_locked_call(self) -> dict[str, tuple[str, str]]:
         with self._inventory_lock:
             return self._discovered_resource_ids_locked()
 

@@ -307,7 +307,6 @@ class SessionTests(EndpointTestCase):
             SourceInventory,
         )
 
-        owner_id, _worker = None, None
         worker = self.connect_worker()
         worker_id, _credential = self.pair_worker(worker)
         inventory = ModelInventoryReport(

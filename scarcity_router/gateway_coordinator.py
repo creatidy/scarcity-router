@@ -249,6 +249,30 @@ RequestFactory = Callable[[], str]
 StreamEmitter = Callable[[AdapterStreamChunk], None]
 
 
+def _carry_concurrency_state(
+    replaced: "GatewayApplication | None", limits: GatewayLimits
+) -> tuple[threading.BoundedSemaphore, threading.Lock, dict[str, int]]:
+    """Carry admission accounting across application rebuilds (Daybreak
+    finding 5) when the limits are unchanged; otherwise fresh state."""
+    if (
+        isinstance(replaced, GatewayApplication)
+        and replaced.limits.max_concurrent_executions
+        == limits.max_concurrent_executions
+        and replaced.limits.max_concurrent_executions_per_client
+        == limits.max_concurrent_executions_per_client
+    ):
+        return (
+            replaced._global_slots,  # pyright: ignore[reportPrivateUsage] - same-module carry
+            replaced._client_lock,  # pyright: ignore[reportPrivateUsage] - same-module carry
+            replaced._client_active,  # pyright: ignore[reportPrivateUsage] - same-module carry
+        )
+    return (
+        threading.BoundedSemaphore(limits.max_concurrent_executions),
+        threading.Lock(),
+        {},
+    )
+
+
 class GatewayApplication:
     """Process-configured dependencies and runtime state of the gateway.
 
@@ -355,29 +379,10 @@ class GatewayApplication:
         # state is carried over from the replaced application whenever
         # the limits are unchanged, so in-flight executions keep their
         # accounting and limits cannot be reset by a rebuild.
-        previous = (
-            replaced_application
-            if isinstance(replaced_application, GatewayApplication)
-            else None
-        )
-        if (
-            previous is not None
-            and previous.limits.max_concurrent_executions
-            == self.limits.max_concurrent_executions
-            and previous.limits.max_concurrent_executions_per_client
-            == self.limits.max_concurrent_executions_per_client
-        ):
-            self._global_slots: threading.BoundedSemaphore = (
-                previous._global_slots  # pyright: ignore[reportPrivateUsage] - deliberate carry-over
-            )
-            self._client_lock: threading.Lock = previous._client_lock  # pyright: ignore[reportPrivateUsage] - deliberate carry-over
-            self._client_active: dict[str, int] = previous._client_active  # pyright: ignore[reportPrivateUsage] - deliberate carry-over
-        else:
-            self._global_slots: threading.BoundedSemaphore = threading.BoundedSemaphore(
-                self.limits.max_concurrent_executions
-            )
-            self._client_lock: threading.Lock = threading.Lock()
-            self._client_active: dict[str, int] = {}
+        carry = _carry_concurrency_state(replaced_application, self.limits)
+        self._global_slots: threading.BoundedSemaphore = carry[0]
+        self._client_lock: threading.Lock = carry[1]
+        self._client_active: dict[str, int] = carry[2]
 
     # ── Shared seams ─────────────────────────────────────────────────────
 
@@ -690,10 +695,7 @@ class GatewayApplication:
         # is the catalog configuration identity).
         selected_variant = target.model.variant
         dispatched_effort = request.reasoning_effort
-        if (
-            resolved.pinned_target is not None
-            and selected_variant is not None
-        ):
+        if resolved.pinned_target is not None:
             if (
                 dispatched_effort is not None
                 and dispatched_effort != selected_variant

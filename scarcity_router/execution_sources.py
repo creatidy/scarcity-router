@@ -280,16 +280,16 @@ class SourceRegistry:
                 if misses >= RETIRE_AFTER_MISSES:
                     track_id, _efforts = state.adopted.pop(slug, ("", ()))
                     state.retired[slug] = track_id
-                    state.miss_counts.pop(slug, None)
+                    _ = state.miss_counts.pop(slug, None)
                     # Bounded history (Daybreak finding 4): drop the OLDEST
                     # retired entry beyond the cap.
                     while len(state.retired) > MAX_RETAINED_RETIRED:
-                        state.retired.pop(next(iter(state.retired)))
+                        _ = state.retired.pop(next(iter(state.retired)))
                 else:
                     state.miss_counts[slug] = misses
             for slug in present & set(state.adopted):
-                state.miss_counts.pop(slug, None)
-                state.retired.pop(slug, None)
+                _ = state.miss_counts.pop(slug, None)
+                _ = state.retired.pop(slug, None)
             state.routable = routable_now
         state.decisions = tuple(decisions)
         return tuple(decisions)
