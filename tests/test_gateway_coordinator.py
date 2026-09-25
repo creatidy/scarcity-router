@@ -736,3 +736,53 @@ class ModelResolutionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     _ = unittest.main()
+
+
+class PinnedEffortConflictTests(unittest.TestCase):
+    """Daybreak finding 2: a pin's variant is the execution contract."""
+
+    def test_pin_with_conflicting_effort_is_rejected_before_dispatch(self) -> None:
+        application = make_application()
+        reference, _ = PinnedExecutionTests._route_first(self, application)
+        # The prior recommendation's variant, with a CONFLICTING request
+        # effort: typed 400 rejection, zero dispatch, no audit target.
+        provider_model_variant = reference.split("/")[2].split("@")[0]
+        variant = reference.split("/")[3].split("@")[0]
+        conflicting = "low" if variant == "high" else "high"
+        _ = provider_model_variant
+        request = parse_chat_request(
+            {
+                "model": f"{reference.rsplit('@', 1)[0]}",
+                "messages": [_USER_ONLY],
+                "reasoning_effort": conflicting,
+            }
+        )
+        adapter = application.adapters.resolve("server_direct_http")
+        assert adapter is not None
+        scripted = cast(ScriptedAdapter, adapter)
+        before = scripted.dispatch_count
+        with self.assertRaises(GatewayError) as caught:
+            _ = application.execute(client_id=CLIENT_ID, request=request)
+        self.assertEqual(400, caught.exception.http_status)
+        self.assertEqual(
+            "effort_conflicts_with_target", caught.exception.code
+        )
+        self.assertEqual(before, scripted.dispatch_count)
+        audit = audit_records(application)[-1]
+        self.assertEqual(audit.result_status, RESULT_REJECTED)
+        self.assertIsNone(audit.executed_target)
+
+    def test_pin_without_effort_dispatches_the_pinned_variant(self) -> None:
+        application = make_application()
+        reference, _ = PinnedExecutionTests._route_first(self, application)
+        request = parse_chat_request(
+            {"model": reference.rsplit("@", 1)[0], "messages": [_USER_ONLY]}
+        )
+        _ = application.execute(client_id=CLIENT_ID, request=request)
+        adapter = application.adapters.resolve("server_direct_http")
+        assert adapter is not None
+        scripted = cast(ScriptedAdapter, adapter)
+        # _route_first already dispatched once (the recommendation run).
+        self.assertEqual(2, scripted.dispatch_count)
+        variant = reference.split("/")[3].split("@")[0]
+        self.assertEqual(variant, scripted.dispatches[1].reasoning_effort)

@@ -77,19 +77,22 @@ SOURCE_ID_MAX_LENGTH = 20
 SLUG_MAX_LENGTH = 40
 
 
-def source_resource_id(source_id: str, slug: str) -> str:
+def source_resource_id(source_id: str, slug: str, effort: str | None = None) -> str:
     """The deterministic derived resource id (D-053 point 6).
 
-    Both sides (worker discovery and server adoption) compute the same
-    id from the same inventory, so no extra protocol state is needed.
-    The combined form must stay a valid safe identifier.
+    Per-effort materialization (Daybreak finding 3): one exact resource
+    per (source, model, ADVERTISED effort) so a resource can never bind a
+    variant its runtime did not advertise. Both sides (worker discovery
+    and server adoption) compute the same id from the same inventory, so
+    no extra protocol state is needed. The combined form must stay a
+    valid safe identifier.
     """
     if len(source_id) > SOURCE_ID_MAX_LENGTH:
         raise ModelInventoryError(
             f"source_id {source_id!r}: longer than {SOURCE_ID_MAX_LENGTH} chars; "
             + "derived resource ids would exceed the safe-id contract"
         )
-    combined = f"{source_id}:{slug}"
+    combined = f"{source_id}:{slug}" + (f":{effort}" if effort else "")
     _ = v_safe_id(combined, "source_resource_id")
     return combined
 

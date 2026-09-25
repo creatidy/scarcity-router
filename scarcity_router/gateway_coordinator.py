@@ -288,6 +288,7 @@ class GatewayApplication:
         client_authorizations: Mapping[str, ClientAuthorization] | None = None,
         clock: Callable[[], datetime] | None = None,
         request_id_factory: RequestFactory | None = None,
+        replaced_application: "GatewayApplication | None" = None,
     ) -> None:
         _ = v_instance(catalog, ModelCatalog, "gateway_application.catalog")
         _ = v_instance(profiles, TaskProfileCatalog, "gateway_application.profiles")
@@ -348,11 +349,35 @@ class GatewayApplication:
         )
         self.clock: Callable[[], datetime] | None = clock
         self.request_id_factory: RequestFactory | None = request_id_factory
-        self._global_slots: threading.BoundedSemaphore = threading.BoundedSemaphore(
-            self.limits.max_concurrent_executions
+        # Daybreak finding 5: concurrency enforcement must SURVIVE
+        # application rebuilds (a state-report adoption rebuilds the
+        # application while executions are in flight). The reservation
+        # state is carried over from the replaced application whenever
+        # the limits are unchanged, so in-flight executions keep their
+        # accounting and limits cannot be reset by a rebuild.
+        previous = (
+            replaced_application
+            if isinstance(replaced_application, GatewayApplication)
+            else None
         )
-        self._client_lock: threading.Lock = threading.Lock()
-        self._client_active: dict[str, int] = {}
+        if (
+            previous is not None
+            and previous.limits.max_concurrent_executions
+            == self.limits.max_concurrent_executions
+            and previous.limits.max_concurrent_executions_per_client
+            == self.limits.max_concurrent_executions_per_client
+        ):
+            self._global_slots: threading.BoundedSemaphore = (
+                previous._global_slots  # pyright: ignore[reportPrivateUsage] - deliberate carry-over
+            )
+            self._client_lock: threading.Lock = previous._client_lock  # pyright: ignore[reportPrivateUsage] - deliberate carry-over
+            self._client_active: dict[str, int] = previous._client_active  # pyright: ignore[reportPrivateUsage] - deliberate carry-over
+        else:
+            self._global_slots: threading.BoundedSemaphore = threading.BoundedSemaphore(
+                self.limits.max_concurrent_executions
+            )
+            self._client_lock: threading.Lock = threading.Lock()
+            self._client_active: dict[str, int] = {}
 
     # ── Shared seams ─────────────────────────────────────────────────────
 
@@ -489,7 +514,7 @@ class GatewayApplication:
         try:
             return self._dispatch(
                 request=request, target=target, state=state,
-                emit_chunk=emit_chunk, started=started,
+                emit_chunk=emit_chunk, started=started, resolved=resolved,
             )
         finally:
             reservation.release()
@@ -641,6 +666,7 @@ class GatewayApplication:
         state: _LifecycleState,
         emit_chunk: StreamEmitter | None,
         started: datetime,
+        resolved: ResolvedModel,
     ) -> CompletionOutcome:
         adapter = self.adapters.resolve(target.resource.channel)
         if adapter is None:
@@ -651,10 +677,37 @@ class GatewayApplication:
             )
         state.adapter_name = adapter.adapter_name
         state.adapter_version = adapter.adapter_version
-        state.executed_target = state.selected_target
         deadline = started + timedelta(seconds=self.limits.execution_time_limit_seconds)
         context = self._build_context(state, emit_chunk, deadline)
         state.context = context
+        # Exact-execution discipline (D-042/D-053, Daybreak finding 2):
+        # a PINNED request is admission-only — the pinned variant is part
+        # of the execution contract, so a conflicting request effort is a
+        # typed rejection before dispatch, never a silent downgrade while
+        # the audit records the selected variant. Non-pinned profile
+        # requests keep the carried-control semantics pinned by the
+        # existing contract (the effort is a request control; the variant
+        # is the catalog configuration identity).
+        selected_variant = target.model.variant
+        dispatched_effort = request.reasoning_effort
+        if (
+            resolved.pinned_target is not None
+            and selected_variant is not None
+        ):
+            if (
+                dispatched_effort is not None
+                and dispatched_effort != selected_variant
+            ):
+                # Before executed_target is recorded: nothing dispatched,
+                # so the audit stays a REJECTION with no executed target.
+                raise GatewayError.invalid_request(
+                    "the requested reasoning effort "
+                    + f"{dispatched_effort!r} conflicts with the pinned "
+                    + f"target's effort {selected_variant!r}",
+                    code="effort_conflicts_with_target",
+                )
+            dispatched_effort = selected_variant
+        state.executed_target = state.selected_target
         call = AdapterCall(
             resource=target.resource,
             model=target.model,
@@ -663,7 +716,7 @@ class GatewayApplication:
             tools=request.tools,
             tool_choice=request.tool_choice,
             response_format=request.response_format,
-            reasoning_effort=request.reasoning_effort,
+            reasoning_effort=dispatched_effort,
             max_output_tokens=request.capabilities.requested_output_tokens,
             generation_params=request.generation_params or {},
         )

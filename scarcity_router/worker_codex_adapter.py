@@ -106,6 +106,7 @@ from .model_inventory import (
     ModelInventoryError,
     SourceInventory,
 )
+from .selection_types import REASONING_EFFORTS
 from .providers.openai_codex import classify_app_server_message
 from .providers.openai_codex_acquisition import (
     BoundedLineReader,
@@ -554,7 +555,61 @@ class ControlledCodexHome:
             config = self._home / CONTROLLED_CONFIG_NAME
             if not config.exists():
                 _write_private(config, _CONTROLLED_CONFIG_NOTICE)
+            elif not self._config_is_contained(config.read_bytes()):
+                # The REAL runtime appends project-trust entries for the
+                # directories it works in (observed live: scratch turns,
+                # review workspaces). Entries OUTSIDE this source's own
+                # scratch root break the isolation containment — drop
+                # them (config only; credentials are NEVER touched), and
+                # keep scratch-root entries so executions don't churn.
+                self._rewrite_config_dropping_foreign_projects()
             self._prune_stale_scratch()
+
+    def _config_is_contained(self, content: bytes) -> bool:
+        """True when the config starts with the generated notice and every
+        project-trust entry stays inside this source's scratch root."""
+        text = content.decode("utf-8", errors="replace")
+        if not text.startswith(_CONTROLLED_CONFIG_NOTICE):
+            return False
+        for match in re.finditer(r'\[projects\."([^"\]]+)"\]', text):
+            project = match.group(1)
+            if not project.startswith(str(self._scratch_root)):
+                return False
+        return True
+
+    def _rewrite_config_dropping_foreign_projects(self) -> None:
+        config = self._home / CONTROLLED_CONFIG_NAME
+        text = config.read_bytes().decode("utf-8", errors="replace")
+        blocks: list[str] = []
+        kept: list[str] = [_CONTROLLED_CONFIG_NOTICE]
+        current: list[str] = []
+        current_foreign = False
+        for line in text.splitlines(keepends=True):
+            if line.startswith("[projects."):
+                if current:
+                    blocks.append("".join(current))
+                current = [line]
+                match = re.match(r'\[projects\."([^"\]]+)"\]', line)
+                current_foreign = not (
+                    match is not None
+                    and match.group(1).startswith(str(self._scratch_root))
+                )
+                continue
+            if current:
+                if not current_foreign:
+                    current.append(line)
+            else:
+                kept.append(line)
+        if current and not current_foreign:
+            blocks.append("".join(current))
+        _ = blocks
+        # Rewrite in place (truncate): the initial _write_private O_EXCL
+        # discipline applies only to first creation.
+        fd = os.open(config, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            _ = os.write(fd, "".join(kept).encode("utf-8"))
+        finally:
+            os.close(fd)
 
     def validate(self) -> str | None:
         """``None`` when the controlled home is intact, else a safe reason."""
@@ -566,10 +621,14 @@ class ControlledCodexHome:
                 if st.st_mode & _HOME_MODE_OK_MASK:
                     return "codex_home_invalid"
                 config = self._home / CONTROLLED_CONFIG_NAME
-                if (
-                    not config.is_file()
-                    or config.read_bytes() != _CONTROLLED_CONFIG_NOTICE.encode("utf-8")
-                ):
+                if not config.is_file():
+                    return "codex_home_invalid"
+                # The REAL runtime appends project-trust entries for the
+                # directories it works in; the home is intact when the
+                # generated notice prefixes the file and every project
+                # entry stays inside this source's scratch root
+                # (containment, not byte-identity).
+                if not self._config_is_contained(config.read_bytes()):
                     return "codex_home_invalid"
             except OSError:
                 return "codex_home_invalid"
@@ -1501,14 +1560,21 @@ class CodexLocalAdapter:
         with self._inventory_lock:
             return tuple(sorted(self._discovered_resource_ids_locked()))
 
-    def _discovered_resource_ids_locked(self) -> dict[str, str]:
-        """resource_id -> physical slug from the latest inventory."""
+    def _discovered_resource_ids_locked(self) -> dict[str, tuple[str, str]]:
+        """resource_id -> (physical slug, effort) from the latest inventory.
+
+        Daybreak finding 3: one exact resource per ADVERTISED effort —
+        the resource's variant is bound to what the runtime itself
+        reported, never to the whole calibrated catalog.
+        """
         if self._source_id is None or self._inventory is None:
             return {}
-        return {
-            source_resource_id(self._source_id, model.slug): model.slug
-            for model in self._inventory.models
-        }
+        bound: dict[str, tuple[str, str]] = {}
+        for model in self._inventory.models:
+            for effort in model.reasoning_efforts:
+                rid = source_resource_id(self._source_id, model.slug, effort)
+                bound[rid] = (model.slug, effort)
+        return bound
 
     # ── D-053 runtime discovery ───────────────────────────────────────
 
@@ -1686,8 +1752,18 @@ class CodexLocalAdapter:
         else:
             assert self._source_id is not None
             discovered = self._discovered_resource_ids_locked_call()
-            served_model = discovered.get(call.resource.resource_id)
+            binding = discovered.get(call.resource.resource_id)
+            served_model = binding[0] if binding is not None else None
             served_provider = CODEX_PROVIDER
+            # Daybreak finding 3: the resource is variant-qualified — a
+            # selected variant other than the resource's own effort is a
+            # DIFFERENT resource (typed rejection, never a dispatch).
+            if (
+                binding is not None
+                and call.model.variant is not None
+                and call.model.variant != binding[1]
+            ):
+                raise CodexIneligible("resource_not_served")
         if (
             call.model.provider != served_provider
             or served_model is None
@@ -2236,31 +2312,37 @@ class CodexLocalAdapter:
         status, code = status_by_auth[inventory.auth_state]
         snapshots: list[ResourceStateSnapshot] = []
         for model in inventory.models:
-            identity = ResourceIdentity(
-                resource_id=source_resource_id(self._source_id, model.slug),
-                channel="worker_bridged",
-                provider=CODEX_PROVIDER,
-                model=model.slug,
-                entitlement="subscription_included",
-            )
-            snapshot = CapacitySnapshot(
-                schema_version=SCHEMA_VERSION,
-                provider=CODEX_PROVIDER,
-                source=f"worker-local:{self.adapter_id}",
-                retrieved_at=inventory.observed_at,
-                status=status,  # type: ignore[arg-type]
-                windows=(),
-                diagnostics=(
-                    () if code is None else (CapacityDiagnostic(code=code),)
-                ),
-            )
-            snapshots.append(
-                resource_snapshot_from_capacity(
-                    snapshot,
-                    identity=identity,
-                    quota_observation_class="unknown",
+            for effort in sorted(
+                e for e in model.reasoning_efforts if e in REASONING_EFFORTS
+            ):
+                identity = ResourceIdentity(
+                    resource_id=source_resource_id(
+                        self._source_id, model.slug, effort
+                    ),
+                    channel="worker_bridged",
+                    provider=CODEX_PROVIDER,
+                    model=model.slug,
+                    variant=effort,
+                    entitlement="subscription_included",
                 )
-            )
+                snapshot = CapacitySnapshot(
+                    schema_version=SCHEMA_VERSION,
+                    provider=CODEX_PROVIDER,
+                    source=f"worker-local:{self.adapter_id}",
+                    retrieved_at=inventory.observed_at,
+                    status=status,  # type: ignore[arg-type]
+                    windows=(),
+                    diagnostics=(
+                        () if code is None else (CapacityDiagnostic(code=code),)
+                    ),
+                )
+                snapshots.append(
+                    resource_snapshot_from_capacity(
+                        snapshot,
+                        identity=identity,
+                        quota_observation_class="unknown",
+                    )
+                )
         return tuple(snapshots)
 
     def _eligibility_reason(self) -> str | None:

@@ -297,6 +297,50 @@ class SessionTests(EndpointTestCase):
         assert isinstance(answer, ErrorMessage)
         self.assertIsInstance(ack, StateReportAckMessage)
 
+    def test_foreign_source_inventory_is_rejected_whole(self) -> None:
+        # Daybreak finding 1: an authenticated worker naming ANOTHER
+        # worker's source in its inventory is rejected whole — it can
+        # never adopt, poison or retire that source.
+        from scarcity_router.model_inventory import (
+            DiscoveredModel,
+            ModelInventoryReport,
+            SourceInventory,
+        )
+
+        owner_id, _worker = None, None
+        worker = self.connect_worker()
+        worker_id, _credential = self.pair_worker(worker)
+        inventory = ModelInventoryReport(
+            worker_id=worker_id,
+            sources=(
+                SourceInventory(
+                    source_id="victims-source",
+                    adapter_id="codex:victims-source",
+                    kind="codex_subscription",
+                    observed_at="2026-09-16T12:00:00.000Z",
+                    auth_state="authenticated",
+                    runtime_name="codex",
+                    runtime_version="0.155.0",
+                    models=(
+                        DiscoveredModel("gpt-6-sol", ("high",)),
+                    ),
+                ),
+            ),
+        )
+        answer = worker.send_state_report(
+            {
+                "schema_version": 1,
+                "worker_id": worker_id,
+                "reported_at": "2026-09-16T12:00:00.000Z",
+                "resources": [],
+            },
+            inventories=(inventory.to_dict(),),
+        )
+        assert isinstance(answer, ErrorMessage)
+        self.assertFalse(answer.fatal)
+        # The session survives; nothing was adopted for the victim.
+        self.assertIn(worker_id, self.endpoint.connected_worker_ids())
+
     def test_liveness_closes_silent_sessions(self) -> None:
         worker = self.connect_worker()
         worker_id, _ = self.pair_worker(worker)

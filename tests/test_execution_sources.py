@@ -107,9 +107,15 @@ class AdoptionTests(unittest.TestCase):
         self.assertEqual("routable", decisions[0].state)
         self.assertEqual("openai/sol", decisions[0].track_id)
         registrations = self.registry.derived_registrations()
-        self.assertEqual(1, len(registrations))
+        # Per-effort materialization (Daybreak finding 3): one exact
+        # resource per advertised effort, in the runtime's effort order.
+        self.assertEqual(
+            ("high", "low"),
+            tuple(r.identity.variant for r in registrations),
+        )
         identity = registrations[0].identity
-        self.assertEqual("personal-openai:gpt-6.1-sol", identity.resource_id)
+        self.assertEqual("personal-openai:gpt-6.1-sol:high", identity.resource_id)
+        self.assertEqual("high", identity.variant)
         self.assertEqual("worker_bridged", identity.channel)
         self.assertEqual("openai", identity.provider)
         self.assertEqual("gpt-6.1-sol", identity.model)
@@ -207,7 +213,7 @@ class LifecycleTests(unittest.TestCase):
         )
 
     def test_disappearance_is_deterministic_unavailable_then_retired(self) -> None:
-        rid = "personal-openai:gpt-6-sol"
+        rid = "personal-openai:gpt-6-sol:high"
         # Miss 1 and 2: still registered (bounded grace), but the NEXT
         # authenticated observation's derived set is recomputed from what
         # the runtime lists — the resource remains registered until the
@@ -226,13 +232,13 @@ class LifecycleTests(unittest.TestCase):
         for _ in range(RETIRE_AFTER_MISSES):
             self._apply_without("gpt-6-luna")
         rids = {r.identity.resource_id for r in self.registry.derived_registrations()}
-        self.assertNotIn("personal-openai:gpt-6-luna", rids)
+        self.assertNotIn("personal-openai:gpt-6-luna:low", rids)
         # The provider restores it.
         _ = self.registry.apply_inventory(
             _inventory("personal-openai", "worker-1", SIX_GEN)
         )
         rids = {r.identity.resource_id for r in self.registry.derived_registrations()}
-        self.assertIn("personal-openai:gpt-6-luna", rids)
+        self.assertIn("personal-openai:gpt-6-luna:low", rids)
 
     def test_retire_constant_is_bounded(self) -> None:
         self.assertEqual(3, RETIRE_AFTER_MISSES)
@@ -260,11 +266,11 @@ class QuotaPoolTests(unittest.TestCase):
         }
         self.assertEqual(
             ("pool-second-openai",),
-            pools["second-openai:gpt-6-sol"],
+            pools["second-openai:gpt-6-sol:high"],
         )
         self.assertEqual(
             ("pool-personal-openai",),
-            pools["personal-openai:gpt-6-sol"],
+            pools["personal-openai:gpt-6-sol:high"],
         )
         # Same physical model, two independent targets (D-042/D-053).
         self.assertEqual(
@@ -290,8 +296,8 @@ class QuotaPoolTests(unittest.TestCase):
             r.identity.resource_id: r.identity.quota_pool_ids
             for r in registry.derived_registrations()
         }
-        self.assertEqual(("shared-family",), pools["a:gpt-6-sol"])
-        self.assertEqual(("shared-family",), pools["b:gpt-6-sol"])
+        self.assertEqual(("shared-family",), pools["a:gpt-6-sol:high"])
+        self.assertEqual(("shared-family",), pools["b:gpt-6-sol:high"])
 
 
 class OwnershipTests(unittest.TestCase):
@@ -304,12 +310,13 @@ class OwnershipTests(unittest.TestCase):
             _inventory("personal-openai", "worker-1", (_model("gpt-6-sol", ("high",)),))
         )
         self.assertEqual(
-            "worker-1", registry.owner_of("personal-openai:gpt-6-sol")
+            "worker-1", registry.owner_of("personal-openai:gpt-6-sol:high")
         )
         self.assertIsNone(registry.owner_of("unknown-source:gpt-6-sol"))
         self.assertIsNone(registry.owner_of("zai-plan-1"))
         self.assertEqual(
-            "codex:personal-openai", registry.adapter_of("personal-openai:gpt-6-sol")
+            "codex:personal-openai",
+            registry.adapter_of("personal-openai:gpt-6-sol:high"),
         )
 
 
@@ -456,9 +463,9 @@ class UpgradeSimulationTests(unittest.TestCase):
         _ = registry.apply_inventory(
             _inventory("personal-openai", "worker-1", (_model("gpt-6-sol", ("high",)),))
         )
-        self.assertEqual(
-            ("personal-openai:gpt-6-sol",),
-            tuple(r.identity.resource_id for r in registry.derived_registrations()),
+        self.assertIn(
+            "personal-openai:gpt-6-sol:high",
+            {r.identity.resource_id for r in registry.derived_registrations()},
         )
         # T1: the provider adds gpt-6.1-sol. The SERVER CONFIGURATION IS
         # UNTOUCHED — the same registry, the same config object.
@@ -470,8 +477,8 @@ class UpgradeSimulationTests(unittest.TestCase):
             )
         )
         rids = {r.identity.resource_id for r in registry.derived_registrations()}
-        self.assertIn("personal-openai:gpt-6-sol", rids)
-        self.assertIn("personal-openai:gpt-6.1-sol", rids)
+        self.assertIn("personal-openai:gpt-6-sol:high", rids)
+        self.assertIn("personal-openai:gpt-6.1-sol:high", rids)
         # The new generation routes at floor level only.
         merged = registry.derived_catalog_entries(_base_catalog())
         new_entries = [
@@ -489,3 +496,41 @@ class UpgradeSimulationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     _ = unittest.main()
+
+
+class DaybreakRemediationTests(unittest.TestCase):
+    """Regression pins for the Daybreak review findings 3 and 4."""
+
+    def test_resource_binding_is_limited_to_advertised_efforts(self) -> None:
+        # Daybreak finding 3: a source advertising ONLY low materializes
+        # ONLY a low-variant resource — never a binding for a variant its
+        # runtime did not advertise.
+        registry = SourceRegistry(track_registry=load_track_registry())
+        registry.sync_configuration((_config(),))
+        registry.apply_inventory(
+            _inventory("personal-openai", "worker-1", (_model("gpt-6-sol", ("low",)),))
+        )
+        registrations = registry.derived_registrations()
+        variants = {r.identity.variant for r in registrations}
+        self.assertEqual({"low"}, variants)
+        rids = {r.identity.resource_id for r in registrations}
+        self.assertEqual({"personal-openai:gpt-6-sol:low"}, rids)
+
+    def test_retired_history_is_bounded(self) -> None:
+        # Daybreak finding 4: repeated discover/retire cycles cannot grow
+        # the retained history without bound.
+        registry = SourceRegistry(track_registry=load_track_registry())
+        registry.sync_configuration((_config(),))
+        for generation in range(80):
+            slug = f"gpt-{generation}-sol"
+            registry.apply_inventory(
+                _inventory(
+                    "personal-openai", "worker-1", (_model(slug, ("high",)),)
+                )
+            )
+            for _ in range(RETIRE_AFTER_MISSES):
+                registry.apply_inventory(
+                    _inventory("personal-openai", "worker-1", ())
+                )
+        view = registry.source_view()[0]
+        self.assertLessEqual(len(view["retired"]), 64)  # type: ignore[arg-type]

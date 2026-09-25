@@ -389,6 +389,9 @@ class ControlPlane:
         self._worker_endpoint.inventory_sink = self._apply_source_inventory
         self._worker_endpoint.is_registered = self._registry_is_registered
         self._worker_endpoint.is_source_bound = self._registry_is_source_bound
+        self._worker_endpoint.is_source_bound_source = (
+            self._registry_is_source_bound_source
+        )
         document = store.load_configuration_document()
         self._config = (
             ServerConfiguration.from_document(document)
@@ -470,6 +473,10 @@ class ControlPlane:
         source = self._config.source_by_id(resource_id.partition(":")[0])
         return source is not None and source.worker_id == worker_id
 
+    def _registry_is_source_bound_source(self, source_id: str, worker_id: str) -> bool:
+        source = self._config.source_by_id(source_id)
+        return source is not None and source.worker_id == worker_id
+
     def _apply_source_inventory(self, inventory: ModelInventoryReport) -> None:
         """The endpoint's validated inventory sink (D-053).
 
@@ -480,6 +487,20 @@ class ControlPlane:
         """
         self._source_registry.sync_configuration(self._config.sources)
         _ = self._source_registry.apply_inventory(inventory)
+        # Daybreak finding 3 (second half): an inventory that is NOT
+        # authenticated contradicts every observation this source's
+        # resources still hold — a previously-healthy snapshot must not
+        # keep a closed source looking available. Purge them; the next
+        # authenticated report re-applies fresh observations.
+        if inventory_sources := {
+            s.source_id for s in inventory.sources if s.auth_state != "authenticated"
+        }:
+            for resource_id in [
+                rid
+                for rid in self._observations
+                if rid.partition(":")[0] in inventory_sources
+            ]:
+                self._observations.pop(resource_id, None)
         self._rebuild_application()
 
     def apply_worker_report(self, report: WorkerStateReport) -> None:
@@ -2064,6 +2085,7 @@ class ControlPlane:
         )
         self._application = GatewayApplication(
             catalog=catalog,
+            replaced_application=self._application,
             profiles=profiles,
             profile_policy_version=profile_policy_version,
             policy=policy,

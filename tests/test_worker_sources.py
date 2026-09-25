@@ -201,11 +201,19 @@ class SourceAdapterTests(unittest.TestCase):
         # The runtime is authoritative: efforts are exactly what the fake
         # runtime advertised (including ultra — no static vocabulary).
         self.assertIn("ultra", sol.reasoning_efforts)
-        # Discovered models become served resources deterministically.
+        # Discovered models become PER-EFFORT served resources
+        # deterministically (Daybreak finding 3).
         self.assertEqual(
             (
-                source_resource_id("personal-openai", "gpt-6-luna"),
-                source_resource_id("personal-openai", "gpt-6-sol"),
+                source_resource_id("personal-openai", "gpt-6-luna", "high"),
+                source_resource_id("personal-openai", "gpt-6-luna", "low"),
+                source_resource_id("personal-openai", "gpt-6-luna", "medium"),
+                source_resource_id("personal-openai", "gpt-6-sol", "high"),
+                source_resource_id("personal-openai", "gpt-6-sol", "low"),
+                source_resource_id("personal-openai", "gpt-6-sol", "max"),
+                source_resource_id("personal-openai", "gpt-6-sol", "medium"),
+                source_resource_id("personal-openai", "gpt-6-sol", "ultra"),
+                source_resource_id("personal-openai", "gpt-6-sol", "xhigh"),
             ),
             adapter.resource_ids,
         )

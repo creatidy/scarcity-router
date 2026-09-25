@@ -62,6 +62,12 @@ from .server_config import SourceConfig
 #: the counter is deterministic and bounded.
 RETIRE_AFTER_MISSES = 3
 
+#: Lifetime cap on retained retirement history per source (Daybreak
+#: finding 4): retired slugs beyond the cap drop the OLDEST entry first.
+#: Audit records are immutable and are NOT the retention mechanism here —
+#: this bounds only the in-memory bookkeeping.
+MAX_RETAINED_RETIRED = 64
+
 #: Closed adoption states for the source view.
 ADOPTION_STATES: tuple[str, ...] = (
     "discovered",
@@ -250,15 +256,17 @@ class SourceRegistry:
                 )
                 continue
             routable_now.add(slug)
-            derived_id = _resource_id(config.source_id, slug)
             state.adopted[slug] = (track.track_id(), model.reasoning_efforts)
+            policy_efforts = sorted(
+                e for e in model.reasoning_efforts if e in REASONING_EFFORTS
+            )
             decisions.append(
                 AdoptionDecision(
                     slug,
                     "routable",
                     track.track_id(),
                     None,
-                    derived_id,
+                    _resource_id(config.source_id, slug, policy_efforts[0]),
                     model.reasoning_efforts,
                 )
             )
@@ -271,13 +279,17 @@ class SourceRegistry:
                 misses = state.miss_counts.get(slug, 0) + 1
                 if misses >= RETIRE_AFTER_MISSES:
                     track_id, _efforts = state.adopted.pop(slug, ("", ()))
-                    _ = state.retired.setdefault(slug, track_id)
-                    _ = state.miss_counts.pop(slug, None)
+                    state.retired[slug] = track_id
+                    state.miss_counts.pop(slug, None)
+                    # Bounded history (Daybreak finding 4): drop the OLDEST
+                    # retired entry beyond the cap.
+                    while len(state.retired) > MAX_RETAINED_RETIRED:
+                        state.retired.pop(next(iter(state.retired)))
                 else:
                     state.miss_counts[slug] = misses
             for slug in present & set(state.adopted):
-                _ = state.miss_counts.pop(slug, None)
-                _ = state.retired.pop(slug, None)
+                state.miss_counts.pop(slug, None)
+                state.retired.pop(slug, None)
             state.routable = routable_now
         state.decisions = tuple(decisions)
         return tuple(decisions)
@@ -299,26 +311,33 @@ class SourceRegistry:
             if state.inventory is None:
                 continue
             for slug in sorted(state.adopted):
-                identity = ResourceIdentity(
-                    resource_id=_resource_id(source_id, slug),
-                    channel="worker_bridged",
-                    provider=state.config.provider(),
-                    model=slug,
-                    entitlement=state.config.entitlement,
-                    quota_pool_ids=(state.config.pool_id(),),
-                )
-                registrations.append(
-                    ResourceRegistration(
-                        identity=identity,
-                        freshness_ttl_seconds=self._ttl,
-                        # Registration-owned capability facts of the CODEX
-                        # EXECUTION SURFACE (evidenced, model-independent):
-                        # the D-043 matrix stays the per-request authority.
-                        capabilities=ExecutionCapabilities.from_dict(
-                            dict(CODEX_SURFACE_CAPABILITIES)
-                        ),
+                _track_id, efforts = state.adopted[slug]
+                # Daybreak finding 3: ONE exact resource per ADVERTISED
+                # effort, variant-qualified, so a resource can never bind
+                # a variant its own runtime did not advertise.
+                for effort in sorted(e for e in efforts if e in REASONING_EFFORTS):
+                    identity = ResourceIdentity(
+                        resource_id=_resource_id(source_id, slug, effort),
+                        channel="worker_bridged",
+                        provider=state.config.provider(),
+                        model=slug,
+                        variant=effort,
+                        entitlement=state.config.entitlement,
+                        quota_pool_ids=(state.config.pool_id(),),
                     )
-                )
+                    registrations.append(
+                        ResourceRegistration(
+                            identity=identity,
+                            freshness_ttl_seconds=self._ttl,
+                            # Registration-owned capability facts of the
+                            # CODEX EXECUTION SURFACE (evidenced,
+                            # model-independent): the D-043 matrix stays
+                            # the per-request authority.
+                            capabilities=ExecutionCapabilities.from_dict(
+                                dict(CODEX_SURFACE_CAPABILITIES)
+                            ),
+                        )
+                    )
         return tuple(registrations)
 
     def derived_catalog_entries(self, base: ModelCatalog) -> ModelCatalog:
@@ -447,14 +466,14 @@ def _decision_for(
     return None
 
 
-def _resource_id(source_id: str, slug: str) -> str:
+def _resource_id(source_id: str, slug: str, effort: str | None = None) -> str:
     if len(slug) > _MAX_SLUG_LENGTH:
         # Deterministic and honest: an over-long slug stays undiscovered
         # rather than being mangled into a different identity.
         raise SourceAdoptionError(
             f"discovered slug {slug!r} exceeds {_MAX_SLUG_LENGTH} chars"
         )
-    return source_resource_id(source_id, slug)
+    return source_resource_id(source_id, slug, effort)
 
 
 def _split_resource_id(resource_id: str) -> tuple[str, str] | None:

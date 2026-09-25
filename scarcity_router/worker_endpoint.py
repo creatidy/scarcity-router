@@ -566,6 +566,20 @@ class WorkerSession:
                     raise ModelInventoryError(
                         "inventory.worker_id does not match the authenticated identity"
                     )
+                # D-053 authorization (Daybreak finding 1): EVERY source
+                # named by the inventory must be configured on THIS
+                # authenticated worker. A report naming another worker's
+                # source is rejected whole — an authenticated worker can
+                # never mutate, adopt or retire another worker's source.
+                for source_inventory in inventory.sources:
+                    if not endpoint.is_source_bound_source(
+                        source_inventory.source_id, worker_id
+                    ):
+                        raise ModelInventoryError(
+                            "source "
+                            + repr(source_inventory.source_id)
+                            + " is not configured for this worker"
+                        )
             except (ModelInventoryError, ValueError) as exc:
                 self._send_error(
                     ErrorMessage(
@@ -778,6 +792,11 @@ class WorkerEndpoint:
         self.is_registered: Callable[[str], bool] = lambda resource_id: False
         self.is_source_bound: Callable[[str, str], bool] = (
             lambda resource_id, worker_id: False
+        )
+        #: Source-id-level ownership probe (Daybreak finding 1): does THIS
+        #: worker own the named execution source?
+        self.is_source_bound_source: Callable[[str, str], bool] = (
+            lambda source_id, worker_id: False
         )
         self.heartbeat_interval_seconds: int = heartbeat_interval_seconds
         self._monotonic: Callable[[], float] = monotonic
