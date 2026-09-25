@@ -706,7 +706,6 @@ class GatewayApplication:
                     + f"target's effort {selected_variant!r}",
                     code="effort_conflicts_with_target",
                 )
-            dispatched_effort = selected_variant
         state.executed_target = state.selected_target
         call = AdapterCall(
             resource=target.resource,

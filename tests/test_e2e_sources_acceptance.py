@@ -44,8 +44,9 @@ from tests.test_e2e_codex_acceptance import (
 
 SOURCE_ID = "personal-openai"
 SECOND_SOURCE_ID = "second-openai"
-DERIVED_SOL = f"{SOURCE_ID}:gpt-6-sol"
-DERIVED_NEW_GEN = f"{SOURCE_ID}:gpt-6.1-sol"
+DERIVED_SOL = f"{SOURCE_ID}:gpt-6-sol:high"
+DERIVED_SOL_PREFIX = f"{SOURCE_ID}:gpt-6-sol:"
+DERIVED_NEW_GEN = f"{SOURCE_ID}:gpt-6.1-sol:high"
 
 _SOL_EFFORTS = ("low", "medium", "high", "xhigh", "max", "ultra")
 
@@ -197,6 +198,21 @@ class SourcesComposedWorld(CodexComposedTlsWorld):
             + "with a fresh observation in the routing registry",
         )
 
+    def wait_for_model(self, slug: str) -> None:
+        """Wait until ANY per-effort resource of the model is fresh."""
+        wait_until(
+            lambda: any(
+                entry.identity.model == slug
+                and entry.freshness == "fresh"
+                and entry.observation is not None
+                for entry in (
+                    self.plane.current_application().registry.registry_snapshot().entries
+                )
+            ),
+            timeout=45,
+            message=f"model {slug} never materialized fresh",
+        )
+
     def _last_executed_record(self) -> dict[str, object]:
         records = [
             record
@@ -259,7 +275,7 @@ class SourceUpgradeAcceptanceTests(SourcesComposedWorld):
         worker.start()
         try:
             self.wait_for_derived(DERIVED_SOL)
-            self.assertEqual({DERIVED_SOL}, self.derived_resource_ids())
+            self.assertEqual(6, len(self.derived_resource_ids()))
             # The user executes one REAL request through the normal
             # OpenAI-compatible surface, pinned to the derived resource.
             pin = f"sr-pin:{DERIVED_SOL}/openai/gpt-6-sol/high"
@@ -342,8 +358,14 @@ class UnknownAndRestrictedModelsTests(SourcesComposedWorld):
         worker.start()
         try:
             self.wait_for_derived(DERIVED_SOL)
-            # ONLY the known-track model materializes.
-            self.assertEqual({DERIVED_SOL}, self.derived_resource_ids())
+            # ONLY the known-track model materializes (as its per-effort
+            # resources).
+            self.assertTrue(
+                all(
+                    rid.startswith(DERIVED_SOL_PREFIX)
+                    for rid in self.derived_resource_ids()
+                )
+            )
             view = self.source_view(SOURCE_ID)
             self.assertEqual(1, view["routable"])
             self.assertEqual(1, view["restricted"])  # Daybreak, honestly shown
@@ -389,12 +411,21 @@ class TwoSourcesOneWorkerTests(SourcesComposedWorld):
         )
         worker.start()
         try:
-            derived_a = f"{SOURCE_ID}:gpt-6-sol"
-            derived_b = f"{SECOND_SOURCE_ID}:gpt-6-sol"
-            self.wait_for_derived(derived_a)
-            self.wait_for_derived(derived_b)
+            derived_a = f"{SOURCE_ID}:gpt-6-sol:high"
+            derived_b = f"{SECOND_SOURCE_ID}:gpt-6-sol:high"
+            self.wait_for_model("gpt-6-sol")
+            wait_until(
+                lambda: len(self.derived_resource_ids()) >= 12, timeout=45
+            )
             # Same physical model, TWO exact resources on ONE worker.
-            self.assertEqual({derived_a, derived_b}, self.derived_resource_ids())
+            self.assertEqual(
+                {derived_a, derived_b},
+                {
+                    rid
+                    for rid in self.derived_resource_ids()
+                    if rid.endswith(":gpt-6-sol:high")
+                },
+            )
 
             registry = self.plane._source_registry  # pyright: ignore[reportPrivateUsage] - acceptance seam
             registrations = {
@@ -448,8 +479,8 @@ class TwoSourcesOneWorkerTests(SourcesComposedWorld):
         )
         worker.start()
         try:
-            self.wait_for_derived(f"{SOURCE_ID}:gpt-6-sol")
-            self.wait_for_derived(f"{SECOND_SOURCE_ID}:gpt-6-sol")
+            self.wait_for_model("gpt-6-sol")
+            self.wait_for_model("gpt-6-sol")
             views = self.plane.sources_view()
             self.assertEqual(2, len(views))
             for view in views:

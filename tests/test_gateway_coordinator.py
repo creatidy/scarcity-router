@@ -772,7 +772,10 @@ class PinnedEffortConflictTests(unittest.TestCase):
         self.assertEqual(audit.result_status, RESULT_REJECTED)
         self.assertIsNone(audit.executed_target)
 
-    def test_pin_without_effort_dispatches_the_pinned_variant(self) -> None:
+    def test_pin_without_effort_keeps_carried_control_semantics(self) -> None:
+        # Effort-less pins carry NO wire effort through HTTP presets (the
+        # preset's evidenced mapping is authoritative); source resources
+        # bind their own effort at the worker (D-053 per-effort resources).
         application = make_application()
         reference, _ = PinnedExecutionTests._route_first(self, application)
         request = parse_chat_request(
@@ -784,5 +787,4 @@ class PinnedEffortConflictTests(unittest.TestCase):
         scripted = cast(ScriptedAdapter, adapter)
         # _route_first already dispatched once (the recommendation run).
         self.assertEqual(2, scripted.dispatch_count)
-        variant = reference.split("/")[3].split("@")[0]
-        self.assertEqual(variant, scripted.dispatches[1].reasoning_effort)
+        self.assertIsNone(scripted.dispatches[1].reasoning_effort)

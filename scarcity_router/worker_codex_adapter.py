@@ -1764,6 +1764,22 @@ class CodexLocalAdapter:
                 and call.model.variant != binding[1]
             ):
                 raise CodexIneligible("resource_not_served")
+            if binding is not None and call.reasoning_effort is None:
+                # The resource IS the effort contract: an effort-less
+                # request dispatches the resource's bound effort, never
+                # a runtime default.
+                call = AdapterCall(
+                    resource=call.resource,
+                    model=call.model,
+                    messages=call.messages,
+                    stream=call.stream,
+                    tools=call.tools,
+                    tool_choice=call.tool_choice,
+                    response_format=call.response_format,
+                    reasoning_effort=binding[1],
+                    max_output_tokens=call.max_output_tokens,
+                    generation_params=call.generation_params,
+                )
         if (
             call.model.provider != served_provider
             or served_model is None
