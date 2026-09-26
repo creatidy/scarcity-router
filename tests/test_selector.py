@@ -107,7 +107,6 @@ LUNA = BY_IDENTITY[("openai", "gpt-5.6-luna", "max")]
 SOL = BY_IDENTITY[("openai", "gpt-5.6-sol", "high")]
 GLM53 = BY_IDENTITY[("zai", "glm-5.3", "max")]
 FLASH = BY_IDENTITY[("zai", "glm-5.3-flash", "max")]
-LUNA_MEDIUM = BY_IDENTITY[("openai", "gpt-5.6-luna", "medium")]
 TERRA_MEDIUM = BY_IDENTITY[("openai", "gpt-5.6-terra", "medium")]
 SOL_MEDIUM = BY_IDENTITY[("openai", "gpt-5.6-sol", "medium")]
 GPT6_IDENTITIES = frozenset(
@@ -246,7 +245,7 @@ class ScenarioTests(unittest.TestCase):
 
     def test_five_openai_configuration_outcomes(self) -> None:
         expected = {
-            "routine_coding": LUNA_MEDIUM, "deep_coding": TERRA_MEDIUM,
+            "routine_coding": LUNA, "deep_coding": TERRA_MEDIUM,
             "scientific_review": SOL, "orchestration": LUNA, "translation": SOL,
         }
         for profile, winner in expected.items():
@@ -270,7 +269,9 @@ class ScenarioTests(unittest.TestCase):
                     )
                     self.assertEqual(decision.alternatives[0].capability_margin,
                                      decision.alternatives[1].capability_margin)
-                    for entry in (LUNA_MEDIUM, LUNA):
+                    # D-054: Luna Medium no longer exists; Luna Max is the
+                    # remaining luna entry failing the coding-5 minimum.
+                    for entry in (LUNA,):
                         self.assertIn("capability_failed", excluded[entry.identity].reason_codes)
                         self.assertIn(("coding", 4, 5), {
                             (f.dimension, f.actual_rating, f.required_rating)
@@ -285,7 +286,9 @@ class ScenarioTests(unittest.TestCase):
                         })
                 elif profile == "orchestration":
                     for entry, dimension, actual in (
-                        (LUNA_MEDIUM, "reasoning", 3), (TERRA_MEDIUM, "writing_editorial", 4)
+                        # D-054 removed Luna Medium (reasoning 3); the
+                        # remaining openai capability failure is Terra writing 4.
+                        (TERRA_MEDIUM, "writing_editorial", 4),
                     ):
                         self.assertIn((dimension, actual), {
                             (f.dimension, f.actual_rating)
@@ -296,7 +299,7 @@ class ScenarioTests(unittest.TestCase):
         snapshots = [_snap("openai", 98, 20), _snap("zai", 90, 80)]
         original = [snapshot.to_dict() for snapshot in snapshots]
         assessments = [assess_scarcity(entry, snapshots) for entry in
-                       (LUNA_MEDIUM, LUNA, TERRA_MEDIUM, SOL_MEDIUM, SOL)]
+                       (LUNA, TERRA_MEDIUM, SOL_MEDIUM, SOL)]
         self.assertTrue(all(value == assessments[0] for value in assessments))
         # D-037 blend: (98 + 5*20) // 6 = 33 -> penalty 4489.
         self.assertEqual(4489, assessments[0].penalty_units)
@@ -306,7 +309,7 @@ class ScenarioTests(unittest.TestCase):
         decision = _select(PROFILES.resolve("routine_coding"),
                            [_snap("openai", 80, 50), _snap("zai", 98, 0)])
         assert decision.selected is not None
-        self.assertEqual(LUNA_MEDIUM.identity, decision.selected.identity)
+        self.assertEqual(LUNA.identity, decision.selected.identity)
         zai_excluded = {
             c.identity
             for c in decision.excluded
@@ -346,8 +349,9 @@ class ScenarioTests(unittest.TestCase):
         # GLM-5.3 low-effort variant is the smallest adequate capable
         # candidate since issue #79 added the effort identities.
         self.assertEqual(
-            [GLM53_HIGH.identity, FLASH.identity, GLM53.identity, LUNA_MEDIUM.identity,
-             LUNA.identity, TERRA_MEDIUM.identity, SOL_MEDIUM.identity, SOL.identity],
+            # D-054: the OpenAI block starts at Luna Max (margin 5).
+            [GLM53_HIGH.identity, FLASH.identity, GLM53.identity, LUNA.identity,
+             TERRA_MEDIUM.identity, SOL_MEDIUM.identity, SOL.identity],
             [c.identity for c in decision.alternatives],
         )
 
@@ -399,7 +403,8 @@ class ScenarioTests(unittest.TestCase):
         assert decision.selected is not None
         self.assertEqual("gpt-5.6-sol", decision.selected.identity.model)
         self.assertEqual((), decision.alternatives)
-        self.assertEqual(11, len(decision.excluded))
+        # D-054: catalog v5 has one entry fewer than v4.
+        self.assertEqual(10, len(decision.excluded))
         self.assertTrue(
             all(c.exclusion_stage == "capability" for c in decision.excluded)
         )
@@ -420,9 +425,11 @@ class ScenarioTests(unittest.TestCase):
         )
         assert decision.selected is not None
         self.assertEqual("gpt-5.6-luna", decision.selected.identity.model)
-        self.assertEqual(0, decision.selected.capability_margin)
+        # D-054: Luna Medium (margin 0) is gone; Luna Max (margin 1) is
+        # now the smallest-margin editorial candidate, ahead of Sol (2).
+        self.assertEqual(1, decision.selected.capability_margin)
         assert decision.alternatives
-        self.assertEqual(1, decision.alternatives[0].capability_margin)
+        self.assertEqual(2, decision.alternatives[0].capability_margin)
 
     def test_scenario_8_orchestration_prefers_smaller_margin_luna(self) -> None:
         decision = _select(
@@ -504,7 +511,8 @@ class ScenarioTests(unittest.TestCase):
         )
         self.assertIsNone(decision.selected)
         self.assertEqual(("no_eligible_candidate",), decision.reason_codes)
-        self.assertEqual(12, len(decision.excluded))
+        # D-054: catalog v5 has one entry fewer than v4.
+        self.assertEqual(11, len(decision.excluded))
         by_identity = {c.identity: c for c in decision.excluded}
         for identity, candidate in by_identity.items():
             if identity in GPT6_IDENTITIES:
@@ -709,7 +717,8 @@ class ScenarioTests(unittest.TestCase):
         )
         self.assertIsNone(decision.selected)
         self.assertEqual((), decision.alternatives)
-        self.assertEqual(12, len(decision.excluded))
+        # D-054: catalog v5 has one entry fewer than v4.
+        self.assertEqual(11, len(decision.excluded))
         self.assertEqual(("no_eligible_candidate",), decision.reason_codes)
         self.assertTrue(
             all(c.exclusion_stage == "hard_constraint" for c in decision.excluded)
@@ -764,7 +773,8 @@ class ScenarioTests(unittest.TestCase):
             requirement, [_snap("openai", 40, 40), _snap("zai", 80, 80)]
         )
         self.assertIsNone(decision.selected)
-        self.assertEqual(12, len(decision.excluded))
+        # D-054: catalog v5 has one entry fewer than v4.
+        self.assertEqual(11, len(decision.excluded))
         for candidate in decision.excluded:
             self.assertEqual("hard_constraint", candidate.exclusion_stage)
             failure = candidate.hard_constraint_failures[0]
@@ -1129,10 +1139,13 @@ class RankingTests(unittest.TestCase):
                 self.assertEqual(known.identity, decision.selected.identity)
 
     def test_capability_failure_cannot_be_rescued_by_lower_effort(self) -> None:
-        decision = self._effort_pair(SOL, LUNA_MEDIUM, requirement=PROFILES.resolve("deep_coding"))
+        # D-054: Luna Medium (the original lower-effort loser) was
+        # removed; the GLM-5.3 effort identities keep the same gradient —
+        # high would win on effort/preference but fails coding 5.
+        decision = self._effort_pair(GLM53, GLM53_HIGH, requirement=PROFILES.resolve("deep_coding"))
         assert decision.selected is not None
-        self.assertEqual(SOL.identity, decision.selected.identity)
-        self.assertEqual(LUNA_MEDIUM.identity, decision.excluded[0].identity)
+        self.assertEqual(GLM53.identity, decision.selected.identity)
+        self.assertEqual(GLM53_HIGH.identity, decision.excluded[0].identity)
         self.assertIn("capability_failed", decision.excluded[0].reason_codes)
 
     def test_scarcity_before_margin(self) -> None:
@@ -1147,8 +1160,9 @@ class RankingTests(unittest.TestCase):
         assert decision.selected is not None
         order = [decision.selected] + list(decision.alternatives)
         self.assertEqual(
+            # D-054: Luna Medium gone; the OpenAI block starts at Luna Max.
             [GLM53_LOW.identity, GLM53_HIGH.identity, FLASH.identity, GLM53.identity,
-             LUNA_MEDIUM.identity, LUNA.identity, TERRA_MEDIUM.identity,
+             LUNA.identity, TERRA_MEDIUM.identity,
              SOL_MEDIUM.identity, SOL.identity],
             [c.identity for c in order],
         )

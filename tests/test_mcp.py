@@ -482,7 +482,7 @@ class SelectTests(McpTestCase):
         catalog, profiles, version = load_configured_artifacts(CATALOG_PATH, POLICY_PATH)
         harness = self._rest(application)
         expected = {
-            "routine_coding": ("gpt-5.6-luna", "medium"),
+            "routine_coding": ("gpt-5.6-luna", "max"),
             "deep_coding": ("gpt-5.6-terra", "medium"),
             "scientific_review": ("gpt-5.6-sol", "high"),
             "orchestration": ("gpt-5.6-luna", "max"),

@@ -3785,6 +3785,71 @@ what M4.1 forbids); a configurable per-provider eligibility policy
   point 6, and the M01 identity-match note above narrows the
   observation/registration equality to the observation-relevant fields.
 
+### D-054 — Max-only reasoning effort for light model families
+
+- **Status:** Accepted (issue #126; branch `calibration/max-only-light-families`,
+  stacked on open PR #124 / `program/dynamic-execution-sources` because the
+  track registry and `execution_sources.py` it amends are D-053 artifacts not
+  yet on `develop`)
+- **Date:** 2026-09-26
+- **Confidence:** High for the rule and its enforcement; the outcome deltas
+  are deterministic selector runs, not live-traffic claims.
+- **Context:** Owner investigation (2026-09-26) of the recommendation engine
+  showed `gpt-5.6-luna/medium` winning the `editorial` profile in every
+  capacity scenario and `routine_coding` whenever OpenAI capacity was
+  proportionally lighter — a direct consequence of the frozen `balanced`
+  minimal-capability-margin ranking over the D-032 medium-confidence
+  effort-specific vector (reasoning 3, writing 5). The result contradicted
+  the owner's accepted workflow roles (`EDITORIAL_AUTHOR` and
+  `PROGRAM_ORCHESTRATOR` are Luna **Max**; role assignments are explicitly
+  not selector-facing). The owner judged weak models suitable for max
+  effort only and directed the estimation-mechanism change.
+- **Decision:**
+  1. **Light families are an explicit, owner-reviewed designation** — a new
+     optional `effort_restriction: "max_only"` field on `ModelTrack`
+     (`model-tracks.json`), never inferred from ratings, names or size.
+     `openai/luna` is designated light. GLM Flash (`glm-5.3-flash`) is
+     already max-only in the catalog (no zai track exists; ratified as-is).
+     `sol`, `astra`, `daybreak` and the GLM-5.3 base family stay
+     unrestricted — GLM-5.3 base must remain multi-effort because
+     `m31-repo-review-low` is calibrated against `glm-5.3/low`.
+  2. **Static catalog:** a light family carries `max`-effort entries only.
+     Catalog v4 → v5: `gpt-5.6-luna/medium` is removed;
+     `gpt-6-luna/high` is re-labelled `gpt-6-luna/max` with the capability
+     vector unchanged (the ratings are the reviewed D-053 luna track floor,
+     confidence low, carried at the family's single allowed effort —
+     re-label over deletion, keeping GPT-6 Luna selector-visible).
+  3. **Dynamic floor expansion:** `derived_catalog_entries` expands a
+     `max_only` track at `max` only, and only when the runtime itself
+     reports a `max` effort — never invented from other efforts.
+  4. **Static conformance:** `validate_catalog_effort_restriction` fails
+     closed when a light-family catalog entry carries a non-`max` effort;
+     enforced on the gateway composition path and pinned by tests over the
+     shipped artifacts.
+  5. **Policy artifact:** `model-policy.json` `reasoning_effort_policy`
+     records the rule (policy_version 8 → 9, schema stays v1).
+  6. **No selector-engine changes.** Ranking order, minima evaluation and
+     margin semantics are untouched; only the calibrated input set changes.
+- **Alternatives considered:** (a) raise the `editorial` profile's
+  reasoning minimum — rejected: it would silently narrow the profile for
+  every model, not just light families; (b) `preference_order` entries for
+  Luna Max — rejected: a ranking tie-break, not a rule, and invisible to
+  floor expansion; (c) delete `gpt-6-luna` until direct evidence —
+  rejected: removes an owner-visible model the track floor already
+  conservatively covers; (d) wait for PR #124 to merge — rejected by the
+  owner's direct go-ahead; the stacked PR makes the dependency explicit.
+- **Verified outcome deltas** (deterministic selector runs, user policy,
+  4 synthetic capacity scenarios × 9 profiles): `editorial` selects Luna
+  Max in all scenarios (previously Luna Medium); `routine_coding` changes
+  only in the OpenAI-lighter branch (Luna Medium → Luna Max); `mechanical`
+  changes one runner-up in one scenario (re-labelled GPT-6 Luna loses the
+  effort tie-break); all other profiles select identically.
+- **Boundary:** Calibration and track-governance change only. No profile
+  minima, no frozen interface, no ranking semantics, no GLM-5.3 base
+  entry, and no zai track are changed. The D-032 historical record and the
+  Astra evidence packet in `docs/model-calibration.md` are preserved as
+  provenance; current-state tables move to the new section.
+
 ## Superseding a decision
 
 Add a new numbered entry with its status, date, evidence and `Supersedes: D-nnn`.

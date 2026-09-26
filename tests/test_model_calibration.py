@@ -14,9 +14,15 @@ from __future__ import annotations
 import json
 import unittest
 from pathlib import Path
-from typing import cast
+from typing import cast, override
 
 from scarcity_router.errors import SelectionContractValidationError
+from scarcity_router.model_tracks import (
+    TrackRegistry,
+    TrackRegistryError,
+    load_track_registry,
+    validate_catalog_effort_restriction,
+)
 from scarcity_router.selection_types import (
     CAPABILITY_DIMENSIONS,
     CapabilityAssessment,
@@ -36,25 +42,30 @@ POLICY_PATH = REPO / "model-policy.json"
 ASSESSED_ON = "2026-09-06"
 EFFORT_ASSESSED_ON = "2026-09-08"
 VARIANTS_ASSESSED_ON = "2026-09-15"
-POLICY_UPDATED_ON = "2026-09-15"
+# D-054 (issue #126, 2026-09-26): light families become max-only —
+# gpt-5.6-luna/medium is removed and gpt-6-luna/high is re-labelled /max.
+POLICY_UPDATED_ON = "2026-09-26"
 # The GPT-6 generation onboarding (D-053 point 8, issue #119): live
 # controlled-runtime inventory evidence dated 2026-09-24, floor-level
 # ratings via the reviewed track artifact.
 GPT6_ASSESSED_ON = "2026-09-24"
-CATALOG_UPDATED_ON = "2026-09-24"
+CATALOG_UPDATED_ON = "2026-09-26"
 
 LUNA = ("openai", "gpt-5.6-luna", "max")
 SOL = ("openai", "gpt-5.6-sol", "high")
 GLM53 = ("zai", "glm-5.3", "max")
 FLASH = ("zai", "glm-5.3-flash", "max")
-LUNA_MEDIUM = ("openai", "gpt-5.6-luna", "medium")
 TERRA_MEDIUM = ("openai", "gpt-5.6-terra", "medium")
 SOL_MEDIUM = ("openai", "gpt-5.6-sol", "medium")
 GLM53_HIGH = ("zai", "glm-5.3", "high")
 GLM53_LOW = ("zai", "glm-5.3", "low")
-NEW_CONFIGURATIONS = frozenset({LUNA_MEDIUM, TERRA_MEDIUM, SOL_MEDIUM})
+# D-032 medium configurations MINUS gpt-5.6-luna/medium, which D-054
+# removed: Luna is a light family, represented at max effort only.
+NEW_CONFIGURATIONS = frozenset({TERRA_MEDIUM, SOL_MEDIUM})
 ZAI_VARIANTS = frozenset({GLM53_HIGH, GLM53_LOW})
-GPT6_LUNA = ("openai", "gpt-6-luna", "high")
+# D-054: the GPT-6 Luna floor vector (identical to the track floor) is
+# carried at the family's single allowed effort (max), not high.
+GPT6_LUNA = ("openai", "gpt-6-luna", "max")
 GPT6_SOL = ("openai", "gpt-6-sol", "high")
 GPT6_ASTRA = ("openai", "gpt-6-astra", "low")
 GPT6_IDENTITIES = frozenset({GPT6_LUNA, GPT6_SOL, GPT6_ASTRA})
@@ -76,10 +87,6 @@ ACCEPTED_RATINGS: dict[tuple[str, str, str], dict[str, int]] = {
     GLM53_LOW: {
         "reasoning": 2, "coding": 3, "scientific_methodological": 2,
         "writing_editorial": 3, "tool_use": 3, "translation_multilingual": 3,
-    },
-    LUNA_MEDIUM: {
-        "reasoning": 3, "coding": 4, "scientific_methodological": 3,
-        "writing_editorial": 5, "tool_use": 5, "translation_multilingual": 4,
     },
     TERRA_MEDIUM: {
         "reasoning": 4, "coding": 5, "scientific_methodological": 4,
@@ -224,7 +231,8 @@ for configuration in NEW_CONFIGURATIONS:
 # writing-5 / translation-5 minima by construction.
 ACCEPTED_ELIGIBLE_SETS: dict[str, frozenset[tuple[str, str, str]]] = {
     "mechanical": frozenset(ALL_MODELS),
-    # M3.1 production floor: excludes the low effort and Luna Medium.
+    # M3.1 production floor: excludes the low effort (Luna Medium was
+    # removed entirely by D-054).
     "repository_review": frozenset(
         {LUNA, SOL, SOL_MEDIUM, TERRA_MEDIUM, GLM53, GLM53_HIGH, FLASH}
         | (GPT6_IDENTITIES - {GPT6_LUNA})
@@ -235,10 +243,12 @@ ACCEPTED_ELIGIBLE_SETS: dict[str, frozenset[tuple[str, str, str]]] = {
     # and neither do the GPT-6 floors (coding floor 4).
     "deep_coding": frozenset({TERRA_MEDIUM, SOL_MEDIUM, SOL, GLM53}),
     "scientific_review": frozenset({SOL}),
-    "editorial": frozenset({LUNA_MEDIUM, LUNA, SOL_MEDIUM, SOL}),
+    # D-054: Luna Medium is gone, so editorial's minimal vector is now
+    # Luna Max (margin 1) — matching the owner's EDITORIAL_AUTHOR role.
+    "editorial": frozenset({LUNA, SOL_MEDIUM, SOL}),
     # glm-5.3 high (reasoning 4) qualifies; low (reasoning 2) does not.
     "general_reasoning": (
-        ALL_MODELS - {LUNA_MEDIUM, GLM53_LOW, GPT6_LUNA}
+        ALL_MODELS - {GLM53_LOW, GPT6_LUNA}
     ),
     "orchestration": frozenset({LUNA, SOL_MEDIUM, SOL}),
     "translation": frozenset({SOL}),
@@ -349,7 +359,7 @@ _PROFILES = _policy_profile_entries()
 
 class ModelCatalogCalibration(unittest.TestCase):
     def test_catalog_parses_with_accepted_version_and_dates(self) -> None:
-        self.assertEqual(_CATALOG.catalog_version, 4)
+        self.assertEqual(_CATALOG.catalog_version, 5)
         self.assertEqual(_CATALOG.updated_on, CATALOG_UPDATED_ON)
         for entry in _CATALOG.entries:
             identity = (entry.identity.provider, entry.identity.model, entry.identity.variant)
@@ -370,9 +380,11 @@ class ModelCatalogCalibration(unittest.TestCase):
             )
             self.assertIsNone(entry.model_version)
 
-    def test_exactly_twelve_accepted_identities(self) -> None:
-        self.assertEqual(len(_CATALOG.entries), 12)
+    def test_exactly_eleven_accepted_identities(self) -> None:
+        # D-054 removed gpt-5.6-luna/medium from the twelve v4 entries.
+        self.assertEqual(len(_CATALOG.entries), 11)
         self.assertEqual(set(_BY_IDENTITY), set(ALL_MODELS))
+        self.assertNotIn(("openai", "gpt-5.6-luna", "medium"), set(_BY_IDENTITY))
 
     def test_no_additional_model_slipped_into_catalog(self) -> None:
         # "astra" was deliberately removed from the forbidden list by the
@@ -431,8 +443,9 @@ class ModelCatalogCalibration(unittest.TestCase):
 
     def test_explicit_efforts_and_new_configuration_provenance(self) -> None:
         efforts = {LUNA: "max", SOL: "high", GLM53: "max", FLASH: "max",
-                   LUNA_MEDIUM: "medium", TERRA_MEDIUM: "medium", SOL_MEDIUM: "medium",
-                   GLM53_HIGH: "high", GLM53_LOW: "low"}
+                   TERRA_MEDIUM: "medium", SOL_MEDIUM: "medium",
+                   GLM53_HIGH: "high", GLM53_LOW: "low",
+                   GPT6_LUNA: "max", GPT6_SOL: "high", GPT6_ASTRA: "low"}
         for identity, expected in efforts.items():
             self.assertEqual(_BY_IDENTITY[identity].reasoning_effort, expected)
         for identity in NEW_CONFIGURATIONS:
@@ -602,11 +615,17 @@ class TaskProfileCalibration(unittest.TestCase):
     def test_policy_version_incremented_and_calibrated(self) -> None:
         policy = _load_policy()
         self.assertEqual(policy["schema_version"], 1)
-        self.assertEqual(policy["policy_version"], 8)
+        self.assertEqual(policy["policy_version"], 9)
         self.assertEqual(policy["updated_at"], POLICY_UPDATED_ON)
         task_policy = _mapping(policy["task_profile_policy"], "task_profile_policy")
         self.assertTrue(task_policy["numeric_minima_included"])
         self.assertEqual(task_policy["numeric_minima_status"], "calibrated_m2c")
+        effort_policy = _mapping(
+            policy["reasoning_effort_policy"], "reasoning_effort_policy"
+        )
+        light = _mapping(effort_policy["light_family_restriction"], "light_family_restriction")
+        self.assertIn("max_only", cast(str, light["rule"]))
+        self.assertIn("openai/luna", cast("list[str]", light["designated_families"]))
 
     def test_exactly_nine_formal_profiles_aligned_with_vocabulary(self) -> None:
         self.assertEqual(len(_PROFILES), 9)
@@ -796,6 +815,79 @@ class TaskProfileCalibration(unittest.TestCase):
         self.assertEqual(
             TaskProfileDefinition.from_dict(definition.to_dict()), definition
         )
+
+
+class LightFamilyRestrictionTests(unittest.TestCase):
+    """D-054: a light family (effort_restriction max_only) exists at max only."""
+
+    def __init__(self, method_name: str = "runTest") -> None:
+        self.registry: TrackRegistry = load_track_registry()
+        super().__init__(method_name)
+
+    @override
+    def setUp(self) -> None:
+        self.registry = load_track_registry()
+
+    def test_shipped_registry_designates_only_luna_as_light(self) -> None:
+        restrictions = {
+            f"{t.provider}/{t.track}": t.effort_restriction
+            for t in self.registry.tracks
+        }
+        self.assertEqual(restrictions.get("openai/luna"), "max_only")
+        self.assertIsNone(restrictions.get("openai/sol"))
+        self.assertIsNone(restrictions.get("openai/astra"))
+        self.assertIsNone(restrictions.get("openai/daybreak"))
+
+    def test_shipped_catalog_conforms_to_light_family_rule(self) -> None:
+        # Fails closed on ANY light-family entry at a non-max effort.
+        _ = validate_catalog_effort_restriction(_CATALOG, self.registry)
+        luna_max = _BY_IDENTITY[("openai", "gpt-6-luna", "max")]
+        self.assertEqual(luna_max.reasoning_effort, "max")
+        for entry in _CATALOG.entries:
+            if entry.identity.model == "gpt-6-luna":
+                self.assertEqual(entry.identity.variant, "max", entry.display_name)
+            if entry.identity.model == "gpt-5.6-luna":
+                self.assertEqual(entry.identity.variant, "max", entry.display_name)
+
+    def _luna_entry_at_effort(self, variant: str, effort: str) -> ModelCatalog:
+        template = _BY_IDENTITY[LUNA].to_dict()
+        identity = cast("dict[str, object]", template["identity"])
+        identity["variant"] = variant
+        template["reasoning_effort"] = effort
+        template["display_name"] = f"GPT-5.6 Luna {variant.capitalize()}"
+        entry = ModelCatalogEntry.from_dict(cast(object, template))
+        return ModelCatalog(
+            catalog_version=5,
+            updated_on=CATALOG_UPDATED_ON,
+            entries=(entry,),
+        )
+
+    def test_non_max_light_family_entry_is_rejected(self) -> None:
+        for variant, effort in (("medium", "medium"), ("high", "high")):
+            with self.subTest(variant=variant):
+                bad = self._luna_entry_at_effort(variant, effort)
+                with self.assertRaises(TrackRegistryError):
+                    _ = validate_catalog_effort_restriction(bad, self.registry)
+
+    def test_max_light_family_entry_passes_validation(self) -> None:
+        _ = validate_catalog_effort_restriction(
+            self._luna_entry_at_effort("max", "max"), self.registry
+        )
+
+    def test_unclassified_model_is_unrestricted_by_the_validator(self) -> None:
+        # A foreign slug matches no track pattern: the validator must not
+        # invent a restriction for it.
+        template = _BY_IDENTITY[LUNA].to_dict()
+        identity = cast("dict[str, object]", template["identity"])
+        identity["model"] = "some-foreign-model"
+        identity["variant"] = "low"
+        template["reasoning_effort"] = "low"
+        catalog = ModelCatalog(
+            catalog_version=5,
+            updated_on=CATALOG_UPDATED_ON,
+            entries=(ModelCatalogEntry.from_dict(cast(object, template)),),
+        )
+        _ = validate_catalog_effort_restriction(catalog, self.registry)
 
 
 if __name__ == "__main__":

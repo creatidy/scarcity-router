@@ -79,7 +79,9 @@
           "output_tokens": 128000
         },
         "continuity_rationale": "Family-continuity assumption (gpt-5.6 evidenced values), deliberately conservative pending direct evidence for the new generation. The runtime remains the true enforcement boundary: an over-limit request fails honestly at the source."
-      }
+      },
+      "effort_restriction": "max_only",
+      "notes": "D-054 (2026-09-26): light family \u2014 weak models are represented and floor-expanded at max reasoning effort only (effort_restriction max_only). GLM Flash (zai) is already max-only in the catalog; sol, astra, daybreak and the GLM-5.3 base family stay unrestricted."
     },
     {
       "provider": "openai",

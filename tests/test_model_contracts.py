@@ -26,6 +26,7 @@ from scarcity_router.model_inventory import (  # noqa: E402
     DiscoveredModel,
     SourceInventory,
 )
+from scarcity_router.model_tracks import TrackFloor  # noqa: E402
 
 OBSERVED = "2026-09-24T12:00:00.000Z"
 
@@ -276,6 +277,82 @@ class TrackRegistryArtifactTests(unittest.TestCase):
         )
         with self.assertRaises(TrackRegistryError):
             _ = overlapping.classify("p", "gpt-a-x")
+
+    def _test_floor(self) -> TrackFloor:
+        return TrackFloor(
+            ratings={dim: 3 for dim in (
+                "reasoning",
+                "coding",
+                "scientific_methodological",
+                "writing_editorial",
+                "tool_use",
+                "translation_multilingual",
+            )},
+            assessed_on="2026-09-26",
+            confidence="low",
+            decision="test",
+            rationale="test floor",
+        )
+
+    def test_effort_restriction_designation_and_clamp(self) -> None:
+        # D-054: max_only is an explicit owner-reviewed designation; the
+        # floor-expansion clamp keeps only the max effort, and never
+        # invents it when the runtime did not report one.
+        from scarcity_router.model_tracks import ModelTrack
+
+        unrestricted = ModelTrack(
+            "openai", "sol", "GPT Sol", "^gpt-[0-9.]+-sol$", "standard", self._test_floor()
+        )
+        self.assertIsNone(unrestricted.effort_restriction)
+        self.assertEqual(
+            ("low", "high"),
+            unrestricted.restrict_floor_efforts(("low", "high")),
+        )
+
+        light = ModelTrack(
+            "openai", "luna", "GPT Luna", "^gpt-[0-9.]+-luna$", "standard",
+            self._test_floor(), effort_restriction="max_only",
+        )
+        self.assertEqual(
+            ("max",), light.restrict_floor_efforts(("low", "medium", "high", "max"))
+        )
+        self.assertEqual((), light.restrict_floor_efforts(("low", "high")))
+        # "ultra" is a distinct effort above max: not part of the restriction.
+        self.assertEqual((), light.restrict_floor_efforts(("low", "ultra")))
+        # Unrestricted tracks pass the reported efforts through unchanged.
+        self.assertEqual(
+            ("max", "ultra"),
+            unrestricted.restrict_floor_efforts(("max", "ultra")),
+        )
+
+    def test_effort_restriction_validation_fails_closed(self) -> None:
+        from scarcity_router.model_tracks import ModelTrack, TrackRegistryError
+
+        with self.assertRaises(TrackRegistryError):
+            _ = ModelTrack(
+                "openai", "luna", "GPT Luna", "^gpt-[0-9.]+-luna$", "standard",
+                self._test_floor(), effort_restriction="low_only",
+            )
+        # A restricted track never routes, so restricting its effort is
+        # meaningless and rejected.
+        with self.assertRaises(TrackRegistryError):
+            _ = ModelTrack(
+                "openai", "daybreak", "Daybreak", "^gpt-daybreak.*$", "restricted",
+                None, effort_restriction="max_only",
+            )
+
+    def test_track_registry_round_trips_effort_restriction(self) -> None:
+        from scarcity_router.model_tracks import ModelTrack
+
+        light = ModelTrack(
+            "openai", "luna", "GPT Luna", "^gpt-[0-9.]+-luna$", "standard",
+            self._test_floor(), notes="D-054 light family",
+            effort_restriction="max_only",
+        )
+        rebuilt = ModelTrack.from_dict(light.to_dict())
+        self.assertEqual(rebuilt.to_dict(), light.to_dict())
+        self.assertEqual(rebuilt.effort_restriction, "max_only")
+        self.assertEqual(rebuilt.notes, "D-054 light family")
 
 
 if __name__ == "__main__":
