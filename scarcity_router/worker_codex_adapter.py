@@ -592,6 +592,12 @@ class ControlledCodexHome:
         for key, value in cast("dict[str, object]", projects).items():
             if not isinstance(value, dict):
                 return False, []
+            # A project table may carry ONLY trust_level: anything nested
+            # deeper (e.g. mcp_servers under a contained path) is rejected
+            # so a contained path can never host injected runtime config
+            # (Daybreak verification finding).
+            if set(cast("dict[str, object]", value).keys()) - {"trust_level"}:
+                return False, []
             paths.append(key)
         return True, paths
 
