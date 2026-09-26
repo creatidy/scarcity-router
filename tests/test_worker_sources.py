@@ -726,5 +726,3 @@ class ContainmentHardeningTests(unittest.TestCase):
             ).read_text()
             self.assertNotIn("mcp_servers", text)
             self.assertEqual(None, home.validate())
-
-
