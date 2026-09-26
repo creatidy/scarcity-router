@@ -174,6 +174,51 @@ def make_codex_registry(
     return registry, spawner
 
 
+def make_codex_source_registry(
+    scenario: dict[str, object] | None,
+    *,
+    state_dir: Path,
+    trace_path: Path,
+    source_id: str,
+    inventory_ttl_seconds: float = 300.0,
+) -> tuple[LocalAdapterRegistry, FakeCodexSpawner]:
+    """A registry holding one SOURCE-INSTANCE Codex adapter (D-053).
+
+    Same construction discipline as ``make_codex_registry``, in source
+    mode: adapter id ``codex:<source_id>``, per-source controlled home
+    under ``state_dir/codex-sources/<source_id>/``, resources discovered
+    from the runtime's own listing — nothing configured by hand.
+    """
+    from scarcity_router.worker_codex_adapter import CodexLocalAdapter
+    from scarcity_router.worker_local_adapters import LocalAdapterRegistry
+
+    spawner = FakeCodexSpawner(scenario, trace_path=str(trace_path))
+    adapter = CodexLocalAdapter(
+        source_id=source_id,
+        state_dir=state_dir,
+        discovery_roots=(),
+        path_lookup=fixture_path_lookup,
+        spawner=spawner,
+        inventory_ttl_seconds=inventory_ttl_seconds,
+        platform_name="linux",
+        platform_release="6.x-generic",
+    )
+    registry = LocalAdapterRegistry()
+    registry.register(adapter)
+    return registry, spawner
+
+
+def codex_source_document(worker_id: str, *, source_id: str) -> dict[str, object]:
+    """The administrator SOURCE configuration (no model slug anywhere)."""
+    return {
+        "source_id": source_id,
+        "kind": "codex_subscription",
+        "label": "Personal ChatGPT Pro",
+        "worker_id": worker_id,
+        "entitlement": "subscription_included",
+    }
+
+
 def read_trace(path: Path) -> list[dict[str, object]]:
     """The fake App Server's trace records (empty when nothing ran)."""
     if not path.exists():

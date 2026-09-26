@@ -111,6 +111,27 @@ without provenance, date/version, confidence, rationale and a human-reviewable
 diff. Public CLI, REST, MCP and serialized contracts require backwards
 compatibility or an explicit versioned migration and decision.
 
+## Preserve proven operational properties
+
+When replacing, generalizing or abstracting an existing working path, first
+establish how that path currently works in the relevant real environment.
+Relevant properties, when applicable, include: local vs remote operation;
+interactive vs headless operation; authentication mechanism and credential
+boundary; network topology; filesystem/isolation assumptions; process/service
+lifecycle; deployment ordering; external tool/runtime behavior; and required
+operator/manual steps. These are property classes, not permanent facts about
+any installation.
+
+An architectural abstraction may change implementation structure, but it does
+not erase operational constraints of a proven working path. Existing working
+behavior is a compatibility requirement unless the selected issue or the owner
+explicitly authorizes changing it.
+
+Do not promote transient environment observations into durable repository
+policy merely because they were true during one implementation. Record such
+facts as task/issue/PR evidence unless the owner explicitly declares them a
+durable product or deployment contract.
+
 ## Bounded review lifecycle
 
 Multi-model work is bounded by default. Before any worker or reviewer starts,
@@ -128,6 +149,21 @@ remediation. Final verification checks identified blockers and obvious
 remediation regressions, not a new architecture review. Budget exhaustion,
 stalled progress after the retry budget or a complexity breach stops work and
 escalates to a human. Workers, reviewers and orchestrators never merge.
+
+**UX is a mandatory review dimension.** Every review answers
+`UX impact: none` or assesses the user-facing consequences (first-run, happy
+path, recovery, upgrade/model-change, unnecessary technical IDs, automatic
+configuration discovery, actionable errors, necessary security friction,
+repeated manual work, understandable state). A material UX regression is
+`CHANGES_REQUESTED` even when the implementation is technically correct — see
+[`docs/llm-operating-policy.md`](docs/llm-operating-policy.md).
+
+**Security-critical work carries an additional independent
+`gpt-daybreak-blue-latest` review gate** when the work is explicitly
+classified `security_critical`. If that restricted access is unavailable the
+record states `SECURITY_REVIEW_UNAVAILABLE` and the gate stays open at the
+human decision point; no substitute model may close it — see
+[`docs/llm-operating-policy.md`](docs/llm-operating-policy.md).
 
 The detailed operating policy is
 [`docs/llm-operating-policy.md`](docs/llm-operating-policy.md), and its

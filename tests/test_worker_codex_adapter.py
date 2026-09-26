@@ -45,6 +45,7 @@ from scarcity_router.worker_client import (  # noqa: E402
 from scarcity_router.worker_codex_adapter import (  # noqa: E402
     CODEX_ADAPTER_ID,
     CONTROLLED_CONFIG_NAME,
+    MAX_MODEL_PAGES,
     CodexLocalAdapter,
     CodexSpawnSpec,
     check_sandbox_availability,
@@ -295,7 +296,7 @@ class Harness:
             spawner=self.spawner,
             platform_name="linux",
             platform_release="6.x-generic",
-            **adapter_kwargs,
+            **adapter_kwargs,  # pyright: ignore[reportArgumentType] - typed keyword helper
         )
 
     def cleanup(self) -> None:
@@ -350,7 +351,7 @@ class CodexAdapterTests(unittest.TestCase):
         pinned: bool = True,
         path_lookup: Callable[[str], str | None] | None = None,
         discovery_roots: tuple[Path, ...] | None = (),
-        **adapter_kwargs: float,
+        **adapter_kwargs: object,
     ) -> Harness:
         harness = Harness(
             scenario,
@@ -358,7 +359,7 @@ class CodexAdapterTests(unittest.TestCase):
             pinned=pinned,
             path_lookup=path_lookup,
             discovery_roots=discovery_roots,
-            **adapter_kwargs,
+            **adapter_kwargs,  # pyright: ignore[reportArgumentType] - typed keyword helper
         )
         self._harnesses.append(harness)
         return harness
@@ -677,12 +678,132 @@ class CodexAdapterTests(unittest.TestCase):
             params = cast("dict[str, object]", record.get("params") or {})
             self.assertIsNone(params.get("refreshToken"))
 
+    # ── codex 0.155 explicit-params contract (issue #118) ──────────────
+
+    def test_account_read_and_first_model_list_page_carry_empty_params(self) -> None:
+        # Live evidence 2026-09-24 (issue #118): codex-cli 0.155 rejects an
+        # ABSENT params member on `account/read` / `model/list` with JSON-RPC
+        # -32600, so the pre-repair adapter (params omitted) degraded every
+        # probe to `auth_unverified`/unknown health. The wire must carry the
+        # explicit empty object. Asserted against the RAW trace records —
+        # `trace_request`'s `or {}` would mask absent-vs-empty.
+        harness = self._harness()
+        result = harness.adapter.invoke(
+            _call(),
+            cancel_event=threading.Event(),
+            deadline=_future_deadline(),
+            emit=lambda chunk: None,
+        )
+        self.assertEqual("completed", result.status)
+        account_reads = [
+            record
+            for record in harness.trace()
+            if record.get("event") == "request"
+            and record.get("method") == "account/read"
+        ]
+        self.assertEqual(1, len(account_reads))
+        self.assertEqual({}, account_reads[0].get("params"))
+        model_lists = [
+            record
+            for record in harness.trace()
+            if record.get("event") == "request"
+            and record.get("method") == "model/list"
+        ]
+        self.assertEqual(1, len(model_lists))
+        self.assertEqual({}, model_lists[0].get("params"))
+
+    def test_model_list_later_pages_carry_cursor_params_object(self) -> None:
+        # The first page carries the explicit empty object; every later
+        # page carries `{"cursor": ...}` — method-specific evidenced
+        # shapes, never a global params-forcing rule.
+        harness = self._harness(_scenario(modelCursorLoop=True))
+        result = harness.adapter.invoke(
+            _call(),
+            cancel_event=threading.Event(),
+            deadline=_future_deadline(),
+            emit=lambda chunk: None,
+        )
+        self.assertEqual("failed", result.status)
+        assert result.calls[0].note is not None
+        self.assertEqual("model_listing_budget_exceeded", result.calls[0].note)
+        model_lists = [
+            record
+            for record in harness.trace()
+            if record.get("event") == "request"
+            and record.get("method") == "model/list"
+        ]
+        self.assertEqual(MAX_MODEL_PAGES, len(model_lists))
+        self.assertEqual({}, model_lists[0].get("params"))
+        for page_record in model_lists[1:]:
+            self.assertEqual(
+                {"cursor": "synthetic-next-page"}, page_record.get("params")
+            )
+        account_reads = [
+            record
+            for record in harness.trace()
+            if record.get("event") == "request"
+            and record.get("method") == "account/read"
+        ]
+        self.assertEqual(1, len(account_reads))
+        self.assertEqual({}, account_reads[0].get("params"))
+
+    def test_fake_runtime_rejects_absent_params_with_32600(self) -> None:
+        # The discriminating half of the repair: the fake App Server mirrors
+        # the real codex-cli 0.155 behavior and answers an ABSENT params
+        # member on these methods with -32600 — so a regression back to the
+        # omitted-params wire shape fails every auth/model test above
+        # instead of passing silently.
+        scenario = json.dumps(_default_scenario())
+        proc = subprocess.Popen(  # noqa: S603 - test-controlled fixed argv
+            [sys.executable, str(FAKE), "--app-server", scenario],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=None,
+        )
+        try:
+            assert proc.stdin is not None and proc.stdout is not None
+            for method in ("account/read", "model/list"):
+                line = json.dumps({"id": 1, "method": method}) + "\n"
+                _ = proc.stdin.write(line.encode("utf-8"))
+                proc.stdin.flush()
+                response = cast(
+                    "dict[str, object]",
+                    json.loads(cast("bytes", proc.stdout.readline()).decode("utf-8")),
+                )
+                self.assertEqual(1, response.get("id"))
+                error = response.get("error")
+                assert isinstance(error, dict)
+                self.assertEqual(-32600, cast("dict[str, object]", error).get("code"))
+            # And the explicit empty object is accepted again (the repair's
+            # exact wire shape).
+            line = json.dumps({"id": 2, "method": "account/read", "params": {}}) + "\n"
+            _ = proc.stdin.write(line.encode("utf-8"))
+            proc.stdin.flush()
+            response = cast(
+                "dict[str, object]",
+                json.loads(cast("bytes", proc.stdout.readline()).decode("utf-8")),
+            )
+            self.assertEqual(2, response.get("id"))
+            self.assertNotIn("error", response)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+            _ = proc.wait(timeout=5)
+            for stream in (proc.stdin, proc.stdout, proc.stderr):
+                if stream is not None:
+                    try:
+                        stream.close()
+                    except (OSError, ValueError):
+                        pass
+
     # ── (6)+(19) model/effort binding ──────────────────────────────────
 
     def test_pinned_model_and_effort_are_sent_exactly(self) -> None:
+        # Daybreak blocker 7: the selected variant IS the effort — a
+        # matching explicit effort is dispatched exactly as requested.
         harness = self._harness()
         result = harness.adapter.invoke(
-            _call(reasoning_effort="low"),
+            _call(reasoning_effort="high"),
             cancel_event=threading.Event(),
             deadline=_future_deadline(),
             emit=lambda chunk: None,
@@ -691,7 +812,40 @@ class CodexAdapterTests(unittest.TestCase):
         params = harness.trace_request("turn/start")
         assert params is not None
         self.assertEqual(SLUG, params.get("model"))
-        self.assertEqual("low", params.get("effort"))
+        self.assertEqual("high", params.get("effort"))
+
+    def test_omitted_effort_binds_the_selected_variant(self) -> None:
+        # Daybreak blocker 7: an effort-less request dispatches the
+        # selected variant — never a runtime default — while the audit
+        # records that same variant.
+        harness = self._harness()
+        result = harness.adapter.invoke(
+            _call(),
+            cancel_event=threading.Event(),
+            deadline=_future_deadline(),
+            emit=lambda chunk: None,
+        )
+        self.assertEqual("completed", result.status)
+        params = harness.trace_request("turn/start")
+        assert params is not None
+        self.assertEqual("high", params.get("effort"))
+
+    def test_conflicting_effort_is_rejected_before_the_turn(self) -> None:
+        # Daybreak blocker 7: a request effort conflicting with the
+        # selected variant is a typed rejection — the executed effort can
+        # never diverge from the audited variant.
+        harness = self._harness()
+        result = harness.adapter.invoke(
+            _call(reasoning_effort="low"),
+            cancel_event=threading.Event(),
+            deadline=_future_deadline(),
+            emit=lambda chunk: None,
+        )
+        self.assertEqual("failed", result.status)
+        assert result.calls[0].note is not None
+        self.assertEqual("effort_conflicts_with_pin", result.calls[0].note)
+        params = harness.trace_request("turn/start")
+        self.assertIsNone(params)
 
     def test_unlisted_model_is_rejected_before_execution(self) -> None:
         # The runtime's own model/list is the exact-binding authority for
@@ -768,8 +922,16 @@ class CodexAdapterTests(unittest.TestCase):
 
     def test_unsupported_effort_is_rejected_before_execution(self) -> None:
         harness = self._harness()
+        # The selected variant IS the effort (xhigh), so the pin/effort
+        # binding passes; the RUNTIME LISTING then rejects xhigh — the
+        # listing remains the effort authority for bound efforts.
         result = harness.adapter.invoke(
-            _call(reasoning_effort="xhigh"),
+            _call(
+                reasoning_effort="xhigh",
+                model=ModelIdentity(
+                    provider="openai", model=SLUG, variant="xhigh"
+                ),
+            ),
             cancel_event=threading.Event(),
             deadline=_future_deadline(),
             emit=lambda chunk: None,
@@ -954,7 +1116,7 @@ class CodexAdapterTests(unittest.TestCase):
         # final equality below covers the ENTIRE allowlist.
         _ = happy.adapter.invoke(
             _call(
-                reasoning_effort="low",
+                reasoning_effort="high",
                 messages=(
                     AdapterMessage(role="system", content="be brief"),
                     AdapterMessage(role="user", content="first"),

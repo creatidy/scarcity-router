@@ -140,6 +140,47 @@ immutable reviewed head, serialize worker/reviewer/remediation phases, allow
 one initial review, at most one remediation and one narrow final verification,
 then stop at the human merge gate. Review independence does not expand scope.
 
+## UX is a mandatory review dimension (D-053, #121)
+
+Every review — independent review, remediation verification, PR review — must
+answer `UX impact: none` or assess the user-facing consequences of the change.
+For a user-facing change the reviewer inspects, at minimum: the first-run
+experience; the normal happy path; the recovery/error path; the
+upgrade/model-change path; whether technical IDs are exposed unnecessarily;
+whether configuration can be discovered automatically; whether errors tell the
+user what to do; whether security friction is necessary and understandable;
+whether the change adds repeated manual work; and whether the user can
+understand current system state. A material UX regression is
+`CHANGES_REQUESTED` even when the implementation is technically correct. This
+is deliberately not a bureaucracy: no separate UX review phase, no UX
+checklist artifacts — one verdict line in the review.
+
+## Security-critical review gate (D-053 point 9, #122)
+
+Work explicitly classified `security_critical` requires an INDEPENDENT
+`gpt-daybreak-blue-latest` review before the platform claims completion of
+that workflow. The gate is a durable contract of Program Execution Mode:
+
+```text
+security_critical -> independent Daybreak Blue review required
+```
+
+Discipline:
+
+- Daybreak Blue (`gpt-daybreak-blue-latest`) is a RESTRICTED security-review
+  capability: discovery in some runtime's inventory never proves execution
+  authorization, restricted models are never general-routed, and there is NO
+  silent fallback from a required Daybreak review to an ordinary model.
+- The review is independent — routing one primary request through Daybreak is
+  NOT a review. Scarcity Router stays a routing/execution system; the
+  multi-stage review itself lives OUTSIDE the Routing Core as a human-owned
+  process. The router's honest duty is restricted-access representation and
+  audit correctness, not orchestration.
+- If the required access cannot be exercised, the record states
+  `SECURITY_REVIEW_UNAVAILABLE` and the gate remains OPEN/FAILED — final
+  completion pauses at that external/human gate. Substituting another model
+  and claiming the gate passed is forbidden.
+
 ## Evidence work
 
 **LLM OUTPUT IS NEVER EVIDENCE.** Models may locate, extract, organize, build
@@ -228,6 +269,31 @@ mechanical where possible and is limited to the one permitted round. Final
 verification checks the identified blockers and obvious remediation
 regressions; it is not an invitation to start a new architecture review. A
 moving branch invalidates a review result.
+
+## Operational UX and compatibility review
+
+Review of a material refactor, redesign or generalization additionally
+assesses operational compatibility. The reviewer asks: what was the actual
+working operator journey before this change, what is it after the change, and
+which operational properties changed? Verify that the change did not silently
+add manual work; that an interactive/browser assumption did not replace a
+working headless path, or vice versa, without authority; that authentication
+and credential boundaries did not change accidentally; that network,
+filesystem and process assumptions were not lost during abstraction; and that
+environment-sensitive behavior has appropriate real-environment evidence.
+
+Synthetic tests prove the behavior of the synthetic boundary they exercise.
+They do not by themselves prove an environment-dependent workflow. When
+acceptance materially depends on an external runtime, authentication flow,
+network topology, filesystem behavior, process supervisor, hardware or a
+comparable environment property, obtain bounded evidence from the relevant
+real environment or leave that acceptance gate explicitly OPEN. Do not
+fabricate closure from passing synthetic E2E tests.
+
+Environment observations collected during review are evidence for that
+change; they become durable repository assumptions only through an explicit
+product/architecture/deployment decision. A material unapproved regression in
+an existing operator path is `CHANGES_REQUESTED`.
 
 ## Completed work stays completed
 

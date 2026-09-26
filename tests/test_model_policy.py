@@ -61,8 +61,8 @@ class ModelPolicyContract(unittest.TestCase):
         self.assertIsInstance(policy, dict)
         parsed = cast(dict[str, object], policy)
         self.assertEqual(parsed["schema_version"], 1)
-        self.assertEqual(parsed["policy_version"], 8)
-        self.assertEqual(parsed["updated_at"], "2026-09-15")
+        self.assertEqual(parsed["policy_version"], 9)
+        self.assertEqual(parsed["updated_at"], "2026-09-26")
         self.assertEqual(json.loads(json.dumps(parsed)), parsed)
 
     def test_versioning_semantics_are_documented(self) -> None:
@@ -714,8 +714,28 @@ class ModelPolicyContract(unittest.TestCase):
             },
         )
 
-    def test_reference_only_astra_is_absent_from_active_catalog(self) -> None:
-        self.assertNotIn("astra", CATALOG_PATH.read_text(encoding="utf-8").lower())
+    def test_astra_onboarded_only_through_the_reviewed_evidence_gate(self) -> None:
+        # D-053 point 8 (issue #119) reconciles the D-033 gate: Astra is
+        # onboarded with dated live-inventory evidence, floor-level ratings
+        # and the reviewed track artifact — and still only at its reviewed
+        # configuration (never a full-ratings copy).
+        text = CATALOG_PATH.read_text(encoding="utf-8").lower()
+        self.assertIn("gpt-6-astra", text)
+        document = cast(
+            "dict[str, object]", json.loads(CATALOG_PATH.read_text(encoding="utf-8"))
+        )
+        entries = [
+            entry
+            for entry in cast("list[dict[str, object]]", document["entries"])
+            if cast("dict[str, object]", entry["identity"])["model"] == "gpt-6-astra"
+        ]
+        self.assertEqual(1, len(entries))
+        entry = entries[0]
+        identity = cast("dict[str, object]", entry["identity"])
+        capabilities = cast("dict[str, object]", entry["capabilities"])
+        reasoning = cast("dict[str, object]", capabilities["reasoning"])
+        self.assertEqual("low", identity["variant"])
+        self.assertLessEqual(cast("int", reasoning["rating"]), 4)
 
 
 if __name__ == "__main__":

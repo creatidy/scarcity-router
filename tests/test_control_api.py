@@ -55,7 +55,7 @@ class FirstRunTests(ServerHarness):
         self.assertEqual(["/admin/onboarding"], locations)
         # The default configuration is the neutral one.
         self.assertEqual(
-            {"schema_version": 1}, self.plane.configuration.to_document()
+            {"schema_version": 2}, self.plane.configuration.to_document()
         )
 
     def test_bootstrap_sets_up_and_second_bootstrap_conflicts(self) -> None:

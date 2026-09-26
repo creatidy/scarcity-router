@@ -54,7 +54,25 @@ from .routing_core import (
 
 #: The configuration document's own version (server-internal, like the
 #: store schema; changes only through an explicit migration).
-CONFIG_SCHEMA_VERSION = 1
+#: Version 2 (D-053) adds the additive ``sources`` domain; a version-1
+#: document remains valid and parses as zero sources.
+CONFIG_SCHEMA_VERSION = 2
+
+#: Closed execution-source kinds (D-053). ``codex_subscription`` is the
+#: first evidenced kind; new kinds arrive only through an explicit
+#: decision with their own provider/adapter evidence.
+SOURCE_KINDS: tuple[str, ...] = ("codex_subscription",)
+
+#: The provider each source kind executes through.
+_SOURCE_KIND_PROVIDER: dict[str, str] = {"codex_subscription": "openai"}
+
+#: Upper bound for source ids: the derived resource id
+#: ``<source_id>:<slug>`` must stay inside the safe-id contract.
+SOURCE_ID_MAX_LENGTH = 20
+
+#: Configuration document versions this build parses: v2 (current) and
+#: v1 (pre-sources documents remain valid and mean zero sources).
+_SUPPORTED_CONFIG_SCHEMA_VERSIONS: tuple[int, ...] = (1, 2)
 
 _LOOPBACK_HOSTS: frozenset[str] = frozenset({"127.0.0.1", "::1", "localhost"})
 
@@ -295,6 +313,153 @@ def _registration_from_document(d: object) -> ResourceRegistration:
 
 
 @dataclass(frozen=True)
+class SourceConfig:
+    """One execution source's administrator configuration (D-053).
+
+    One source = one configured, independently authenticated source of
+    executable model capacity: ``source_id`` (the identity), ``kind``
+    (closed vocabulary; determines the provider and worker adapter
+    kind), a human ``label``, the owning ``worker_id`` (the M05-paired
+    device whose controlled homes serve this source), the
+    ``entitlement`` its capacity draws from, and the adoption policy.
+    Physical models are NOT configured here — they are discovered and
+    adopted per D-053; an exact model pin stays an ADVANCED routing
+    concern, never a source-setup requirement.
+
+    The optional explicit ``quota_pool_id`` is the ONLY way two sources
+    ever share a quota pool: absent it, every source derives its own
+    pool (``pool-<source_id>``) and unconfirmed sharing is never
+    assumed (D-042).
+    """
+
+    source_id: str
+    kind: str
+    label: str
+    worker_id: str
+    entitlement: str = "subscription_included"
+    quota_pool_id: str | None = None
+    auto_adopt: bool = True
+    allowed_tracks: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if len(self.source_id) > SOURCE_ID_MAX_LENGTH:
+            raise ServerConfigError(
+                f"source.source_id: longer than {SOURCE_ID_MAX_LENGTH} "
+                + "characters (derived resource ids must stay safe ids)"
+            )
+        _ = v_safe_id(self.source_id, "source.source_id")
+        if ":" in self.source_id:
+            # The derived namespace partitions on the first colon; a colon
+            # inside a source id would make ownership ambiguous.
+            raise ServerConfigError(
+                "source.source_id: ':' is not allowed (the derived resource "
+                + "namespace is <source_id>:<slug>)"
+            )
+        if self.kind not in SOURCE_KINDS:
+            raise ServerConfigError(f"source.kind: unknown kind {self.kind!r}")
+        if self.kind == "codex_subscription" and self.entitlement != "subscription_included":
+            raise ServerConfigError(
+                "source.entitlement: codex_subscription capacity is "
+                + "subscription_included by the evidenced provider terms"
+            )
+        if not self.label or len(self.label) > 200:
+            raise ServerConfigError("source.label: required, <= 200 chars")
+        _ = v_safe_id(self.worker_id, "source.worker_id")
+        from .resource_state import ENTITLEMENT_CLASSES
+
+        if self.entitlement not in ENTITLEMENT_CLASSES:
+            raise ServerConfigError(
+                f"source.entitlement: unknown entitlement {self.entitlement!r}"
+            )
+        if self.quota_pool_id is not None:
+            _ = v_safe_id(self.quota_pool_id, "source.quota_pool_id")
+        for track_id in self.allowed_tracks:
+            provider, sep, track = track_id.partition("/")
+            if not sep:
+                raise ServerConfigError(
+                    f"source.allowed_tracks: track ids look like "
+                    + f"'provider/track', got {track_id!r}"
+                )
+            _ = v_safe_id(provider, "source.allowed_tracks.provider")
+            _ = v_safe_id(track, "source.allowed_tracks.track")
+
+    def provider(self) -> str:
+        """The provider this source kind executes through."""
+        return _SOURCE_KIND_PROVIDER[self.kind]
+
+    def pool_id(self) -> str:
+        """The quota pool this source's capacity draws from (D-042)."""
+        if self.quota_pool_id is not None:
+            return self.quota_pool_id
+        return f"pool-{self.source_id}"
+
+    def to_dict(self) -> dict[str, object]:
+        out: dict[str, object] = {
+            "source_id": self.source_id,
+            "kind": self.kind,
+            "label": self.label,
+            "worker_id": self.worker_id,
+            "entitlement": self.entitlement,
+            "auto_adopt": self.auto_adopt,
+        }
+        if self.quota_pool_id is not None:
+            out["quota_pool_id"] = self.quota_pool_id
+        if self.allowed_tracks:
+            out["allowed_tracks"] = list(self.allowed_tracks)
+        return out
+
+    @classmethod
+    def from_dict(cls, d: object) -> "SourceConfig":
+        dd = exact_shape(
+            d,
+            ("source_id", "kind", "label", "worker_id"),
+            (
+                "entitlement",
+                "quota_pool_id",
+                "auto_adopt",
+                "allowed_tracks",
+            ),
+            "source",
+        )
+        allowed_raw = dd.get("allowed_tracks")
+        allowed: tuple[str, ...] = ()
+        if allowed_raw is not None:
+            if not isinstance(allowed_raw, list):
+                raise ServerConfigError("source.allowed_tracks must be an array")
+            allowed = tuple(
+                v_str(item, "source.allowed_tracks")
+                for item in cast("list[object]", allowed_raw)
+            )
+        try:
+            return cls(
+                source_id=v_str(dd["source_id"], "source.source_id"),
+                kind=v_str(dd["kind"], "source.kind"),
+                label=v_str(dd["label"], "source.label"),
+                worker_id=v_str(dd["worker_id"], "source.worker_id"),
+                entitlement=(
+                    v_str(dd["entitlement"], "source.entitlement")
+                    if "entitlement" in dd
+                    else "subscription_included"
+                ),
+                quota_pool_id=(
+                    v_str(dd["quota_pool_id"], "source.quota_pool_id")
+                    if "quota_pool_id" in dd
+                    else None
+                ),
+                auto_adopt=(
+                    v_bool(dd["auto_adopt"], "source.auto_adopt")
+                    if "auto_adopt" in dd
+                    else True
+                ),
+                allowed_tracks=allowed,
+            )
+        except ServerConfigError:
+            raise
+        except ValueError as exc:
+            raise ServerConfigError(f"source: {exc}") from None
+
+
+@dataclass(frozen=True)
 class AuditRetention:
     """Bounded audit retention (D-043/D-044): count and age, both bounded."""
 
@@ -334,6 +499,7 @@ class ServerConfiguration:
 
     providers: tuple[ProviderEndpointConfig, ...] = ()
     resources: tuple[ResourceConfig, ...] = ()
+    sources: tuple[SourceConfig, ...] = ()
     aliases: Mapping[str, ClientRoutingProfile] = field(
         default=_EMPTY_ALIAS_BINDINGS
     )
@@ -364,6 +530,18 @@ class ServerConfiguration:
         }
         if len(resource_ids) != len(self.resources):
             raise ServerConfigError("duplicate resource_id in configuration")
+        source_ids = {source.source_id for source in self.sources}
+        if len(source_ids) != len(self.sources):
+            raise ServerConfigError("duplicate source_id in configuration")
+        from .model_inventory import is_source_resource_id
+
+        for resource in self.resources:
+            if is_source_resource_id(resource.registration.identity.resource_id):
+                raise ServerConfigError(
+                    f"resource {resource.registration.identity.resource_id!r}: "
+                    + "'<source_id>:<slug>' ids are derived from execution "
+                    + "sources and must never be configured by hand (D-053)"
+                )
         for resource in self.resources:
             if resource.endpoint_id is not None and (
                 resource.endpoint_id not in provider_ids
@@ -393,6 +571,7 @@ class ServerConfiguration:
             (
                 "providers",
                 "resources",
+                "sources",
                 "aliases",
                 "client_authorizations",
                 "admin_constraints",
@@ -404,7 +583,7 @@ class ServerConfiguration:
             "server_configuration",
         )
         version = v_int(dd["schema_version"], "server_configuration.schema_version")
-        if version != CONFIG_SCHEMA_VERSION:
+        if version not in _SUPPORTED_CONFIG_SCHEMA_VERSIONS:
             raise ServerConfigError(
                 f"server_configuration.schema_version {version} is not "
                 + f"supported (expected {CONFIG_SCHEMA_VERSION})"
@@ -416,6 +595,13 @@ class ServerConfiguration:
         resources = tuple(
             ResourceConfig.from_dict(item) for item in _object_list(dd, "resources")
         )
+        sources = tuple(
+            SourceConfig.from_dict(item) for item in _object_list(dd, "sources")
+        )
+        if version < 2 and sources:
+            raise ServerConfigError(
+                "server_configuration.sources requires schema_version 2"
+            )
         aliases: dict[str, ClientRoutingProfile] = {}
         raw_aliases: Mapping[str, object] = (
             cast("Mapping[str, object]", dd.get("aliases")) or {}
@@ -440,6 +626,7 @@ class ServerConfiguration:
         return cls(
             providers=providers,
             resources=resources,
+            sources=sources,
             aliases=aliases,
             client_authorizations=authorizations,
             admin_constraints=(
@@ -484,6 +671,8 @@ class ServerConfiguration:
             document["resources"] = [
                 resource.to_dict() for resource in self.resources
             ]
+        if self.sources:
+            document["sources"] = [source.to_dict() for source in self.sources]
         if self.aliases:
             document["aliases"] = {
                 alias: profile.to_dict() for alias, profile in self.aliases.items()
@@ -515,6 +704,12 @@ class ServerConfiguration:
         for resource in self.resources:
             if resource.registration.identity.resource_id == resource_id:
                 return resource
+        return None
+
+    def source_by_id(self, source_id: str) -> SourceConfig | None:
+        for source in self.sources:
+            if source.source_id == source_id:
+                return source
         return None
 
     def enabled_registrations(self) -> tuple[ResourceRegistration, ...]:
@@ -574,6 +769,9 @@ def _instance_of(value: object, expected: type) -> None:
 __all__ = [
     "AuditRetention",
     "CONFIG_SCHEMA_VERSION",
+    "SOURCE_ID_MAX_LENGTH",
+    "SOURCE_KINDS",
+    "SourceConfig",
     "ProviderEndpointConfig",
     "SERVER_DIRECT_DEFAULT_POLL_INTERVAL_SECONDS",
     "ResourceConfig",

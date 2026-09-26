@@ -227,6 +227,73 @@ class UiMutationFlowTests(ServerHarness):
         )
         self.assertEqual(200, status)
 
+    def _pair_worker(self, cookie: str, csrf: str, label: str) -> str:
+        """Initiate pairing in the UI and redeem it over the M05 protocol."""
+        import re as _re
+        import threading
+
+        from scarcity_router.worker_protocol import PairResultMessage
+        from tests.worker_fixtures import MemoryTransport, ScriptedWorker
+
+        status, html, _headers = _form(
+            self.port, "/admin/workers/initiate", {"csrf": csrf, "label": label}, cookie
+        )
+        assert status == 200
+        match = _re.search(r"<pre>([A-Za-z0-9_\-]{16,})</pre>", html)
+        assert match is not None, "pairing page did not render the code"
+        code = match.group(1)
+        server_side, worker_side = MemoryTransport.pair()
+        endpoint = self.plane.worker_endpoint
+        session = endpoint.attach_transport(server_side)
+        endpoint.register_attached(session)
+        thread = threading.Thread(target=session.run, daemon=True)
+        thread.start()
+        worker = ScriptedWorker(worker_side)
+        result = worker.send_pair(code)
+        worker.transport.close()
+        _ = thread.join(timeout=5)
+        assert isinstance(result, PairResultMessage), result
+        return result.worker_id
+
+    def test_sources_page_flow_and_label_first_workers(self) -> None:
+        cookie, csrf = self._session()
+        worker_id = self._pair_worker(cookie, csrf, "Precision Codex")
+        # The workers page shows the FRIENDLY label first, the technical
+        # id beneath it (D-053 point 10).
+        status, html, _headers = _get(self.port, "/admin/workers", cookie)
+        self.assertEqual(200, status)
+        self.assertLess(
+            html.index("Precision Codex"), html.index(worker_id),
+            "the technical worker id must not precede the friendly label",
+        )
+        # Add a source through the form: label + worker, NO model slug.
+        status, _html, _headers = _form(
+            self.port,
+            "/admin/sources/add",
+            {"csrf": csrf, "label": "Personal ChatGPT Pro", "worker_id": worker_id},
+            cookie,
+        )
+        self.assertEqual(303, status)
+        status, html, _headers = _get(self.port, "/admin/sources", cookie)
+        self.assertEqual(200, status)
+        self.assertIn("Personal ChatGPT Pro", html)
+        self.assertIn("codex-login --source", html)
+        self.assertIn("not connected", html)
+        self.assertIn("source auth:", html)
+        # The source view never asks for or shows a model slug input.
+        self.assertNotIn('name="model"', html)
+        # The source is removable.
+        source_id = self.plane.configuration.sources[0].source_id
+        status, _html, _headers = _form(
+            self.port,
+            "/admin/sources/delete",
+            {"csrf": csrf, "source_id": source_id},
+            cookie,
+        )
+        self.assertEqual(303, status)
+        status, html, _headers = _get(self.port, "/admin/sources", cookie)
+        self.assertIn("No execution sources configured", html)
+
     def test_worker_pairing_shows_code_once(self) -> None:
         import threading
 

@@ -39,6 +39,7 @@ _NAV = (
     ("/admin/aliases", "Aliases"),
     ("/admin/clients", "Client keys"),
     ("/admin/workers", "Workers"),
+    ("/admin/sources", "Sources"),
     ("/admin/diagnostics", "Diagnostics"),
     ("/admin/client-config", "Client configuration"),
 )
@@ -146,6 +147,9 @@ def _route(
         "/admin/aliases": _aliases,
         "/admin/clients": _clients,
         "/admin/workers": _workers,
+        "/admin/sources": _sources,
+        "/admin/sources/add": _sources_add,
+        "/admin/sources/delete": _sources_delete,
         "/admin/diagnostics": _diagnostics,
         "/admin/client-config": _client_config,
         "/admin/providers/add": _providers_add,
@@ -571,15 +575,16 @@ def _resources(
     )
     worker_options = "".join(
         f"<option value=\"{_esc(worker['worker_id'])}\">"
-        + f"{_esc(worker['worker_id'])} ({_esc(worker['status'])})</option>"
+        + f"{_esc(worker.get('label') or worker['worker_id'])} "
+        + f"({_esc(worker['worker_id'])})</option>"
         for worker in plane.workers_view()
         if worker.get("status") == "active"
     )
     body = (
         "<div class=\"notice\">The ladder shows, for each resource: detected, "
-        + "authenticated, protocol-compatible, available, eligible and "
-        + "promotion-confirmed. Health checks and discovery never consume "
-        + "inference quota.</div>"
+        + "authenticated (the WORKER pairing — not the provider account), "
+        + "protocol-compatible, available, eligible and promotion-confirmed. "
+        + "Health checks and discovery never consume inference quota.</div>"
         + "<table><tr><th>Resource</th><th>State</th><th>Ladder</th><th></th></tr>"
         + rows
         + "</table>"
@@ -998,8 +1003,8 @@ def _workers(
         connected = bool(worker.get("connected"))
         rows += (
             "<tr>"
-            + f"<td><code>{_esc(worker['worker_id'])}</code><br>"
-            + f"<span class=\"muted\">{_esc(worker.get('label') or '')}</span></td>"
+            + f"<td><strong>{_esc(worker.get('label') or worker['worker_id'])}</strong><br>"
+            + f"<span class=\"muted\"><code>{_esc(worker['worker_id'])}</code></span></td>"
             + f"<td><span class=\"badge {badge_class}\">{_esc(status)}</span>"
             + (
                 " <span class=\"badge on\">connected</span>"
@@ -1045,6 +1050,143 @@ def _workers(
         + "<button type=\"submit\">Generate one-time pairing code</button></form></fieldset>"
     )
     plane.send_html(handler, 200, _page(plane, handler, "Workers and pairing", body))
+
+
+def _sources(
+    plane: "ControlPlane", method: str, handler: "GatewayRequestHandler"
+) -> None:
+    _ = method
+    _ = plane.require_admin_session(handler, mutating=False)
+    csrf = _csrf_of(plane, handler)
+    rows = ""
+    for source in plane.sources_view():
+        connected = bool(source.get("connected"))
+        auth = str(source.get("source_authenticated", "unverified"))
+        models = cast("list[dict[str, object]]", source.get("detected_models") or [])
+        model_lines = "".join(
+            "<li>"
+            + _esc(str(model.get("slug")))
+            + f' <span class="muted">{_esc(str(model.get("state")))}</span></li>'
+            for model in models
+        )
+        counts = (
+            f"{_esc(str(source.get('routable', 0)))} routable &middot; "
+            + f"{_esc(str(source.get('restricted', 0)))} restricted &middot; "
+            + f"{_esc(str(source.get('errors', 0)))} errors"
+        )
+        rows += (
+            "<tr>"
+            + f"<td><strong>{_esc(str(source.get('label')))}</strong><br>"
+            + f"<span class=\"muted\"><code>{_esc(str(source.get('source_id')))}</code></span></td>"
+            + f"<td>{'connected' if connected else 'not connected'} &middot; "
+            + f"source auth: {_esc(auth)}<br>"
+            + f"<span class=\"muted\">on the worker host (SSH) run once: "
+            + f"<code>{_esc(str(source.get('login_command')))}</code> — a device "
+            + f"code prints; complete it in any browser — then "
+            + f"<code>{_esc(str(source.get('run_command')))}</code></span></td>"
+            + (
+                f"<td><ul>{model_lines}</ul><p class=\"muted\">{counts}</p></td>"
+                if models
+                else f"<td class=\"muted\">{counts}</td>"
+            )
+            + "<td>"
+            + "<form class=\"inline\" method=\"post\" action=\"/admin/sources/delete\">"
+            + f"<input type=\"hidden\" name=\"csrf\" value=\"{_esc(csrf)}\">"
+            + f"<input type=\"hidden\" name=\"source_id\" value=\"{_esc(str(source.get('source_id')))}\">"
+            + '<button class="secondary" type="submit">Remove</button></form>'
+            + "</td></tr>"
+        )
+    if not rows:
+        rows = '<tr><td colspan="4" class="muted">No execution sources configured.</td></tr>'
+    worker_options = "".join(
+        f"<option value=\"{_esc(worker['worker_id'])}\">"
+        + f"{_esc(worker.get('label') or worker['worker_id'])} "
+        + f"({_esc(worker['worker_id'])})</option>"
+        for worker in plane.workers_view()
+        if worker.get("status") == "active"
+    )
+    body = (
+        "<div class=\"notice\">A source is one authenticated execution account. "
+        + "Scarcity Router discovers its models automatically — you never "
+        + "configure a model slug here. \"source auth\" is the PROVIDER "
+        + "account sign-in; the worker pairing is shown on the Workers page.</div>"
+        + "<table><tr><th>Source</th><th>State</th><th>Detected models</th><th></th></tr>"
+        + rows
+        + "</table>"
+        + "<h2>Add a Codex source</h2>"
+        + '<form method="post" action="/admin/sources/add">'
+        + f"<input type=\"hidden\" name=\"csrf\" value=\"{_esc(csrf)}\">"
+        + '<label>Label <input name="label" required maxlength="200" '
+        + 'placeholder="Personal ChatGPT Pro"></label> '
+        + "<label>Worker <select name=\"worker_id\" required>"
+        + worker_options
+        + "</select></label> "
+        + '<button type="submit">Add source</button></form>'
+        + "<p class=\"muted\">After adding, run BOTH printed commands once on the "
+        + "worker host over SSH: the login prints a device code to complete in "
+        + "any browser (no browser needed on the host), then run the worker "
+        + "with the source flag — the models appear here automatically.</p>"
+        + "</div>"
+    )
+    plane.send_html(handler, 200, _page(plane, handler, "Sources", body))
+
+
+def _sources_add(
+    plane: "ControlPlane", method: str, handler: "GatewayRequestHandler"
+) -> None:
+    _ = method
+    try:
+        _ = plane.require_admin_session(handler, mutating=True)
+        form = plane.read_form(handler)
+        label = str(form.get("label") or "").strip()
+        worker_id = form.get("worker_id")
+        # The source_id derives from the label (friendly UX); the user
+        # never invents technical identifiers. Collisions are explicit.
+        import unicodedata
+
+        folded = unicodedata.normalize("NFKD", label)
+        folded = "".join(ch for ch in folded if not unicodedata.combining(ch))
+        base = (
+            "".join(
+                ch if ch.isascii() and (ch.isalnum() or ch in "-._") else "-"
+                for ch in folded.lower().replace(" ", "-")
+            ).strip("-")[:20]
+            or "codex-source"
+        )
+        source_id = base
+        suffix = 2
+        while plane.configuration.source_by_id(source_id) is not None:
+            source_id = f"{base[:17]}-{suffix}"
+            suffix += 1
+        _ = plane.service_add_source(
+            {
+                "source_id": source_id,
+                "kind": "codex_subscription",
+                "label": label,
+                "worker_id": worker_id,
+            }
+        )
+    except ControlHTTPError as exc:
+        _render_banner_page(plane, handler, "Sources", "/admin/sources", exc.message, error=True, status=exc.status)
+        return
+    _redirect(plane, handler, "/admin/sources")
+
+
+def _sources_delete(
+    plane: "ControlPlane", method: str, handler: "GatewayRequestHandler"
+) -> None:
+    _ = method
+    try:
+        _ = plane.require_admin_session(handler, mutating=True)
+        form = plane.read_form(handler)
+        source_id = form.get("source_id")
+        if not isinstance(source_id, str) or not source_id:
+            raise ControlHTTPError.invalid_request("source_id is required")
+        _ = plane.service_remove_source(source_id)
+    except ControlHTTPError as exc:
+        _render_banner_page(plane, handler, "Sources", "/admin/sources", exc.message, error=True, status=exc.status)
+        return
+    _redirect(plane, handler, "/admin/sources")
 
 
 def _workers_initiate(
@@ -1159,7 +1301,7 @@ def _diagnostics(
             stage
             for stage, value in (
                 ("detected", resource.detected),
-                ("authenticated", resource.authenticated),
+                ("worker authenticated (pairing)", resource.authenticated),
                 ("protocol_compatible", resource.protocol_compatible),
                 ("available", resource.available),
                 ("eligible", resource.eligible),

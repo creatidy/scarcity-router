@@ -249,6 +249,30 @@ RequestFactory = Callable[[], str]
 StreamEmitter = Callable[[AdapterStreamChunk], None]
 
 
+def _carry_concurrency_state(
+    replaced: "GatewayApplication | None", limits: GatewayLimits
+) -> tuple[threading.BoundedSemaphore, threading.Lock, dict[str, int]]:
+    """Carry admission accounting across application rebuilds (Daybreak
+    finding 5) when the limits are unchanged; otherwise fresh state."""
+    if (
+        isinstance(replaced, GatewayApplication)
+        and replaced.limits.max_concurrent_executions
+        == limits.max_concurrent_executions
+        and replaced.limits.max_concurrent_executions_per_client
+        == limits.max_concurrent_executions_per_client
+    ):
+        return (
+            replaced._global_slots,  # pyright: ignore[reportPrivateUsage] - same-module carry
+            replaced._client_lock,  # pyright: ignore[reportPrivateUsage] - same-module carry
+            replaced._client_active,  # pyright: ignore[reportPrivateUsage] - same-module carry
+        )
+    return (
+        threading.BoundedSemaphore(limits.max_concurrent_executions),
+        threading.Lock(),
+        {},
+    )
+
+
 class GatewayApplication:
     """Process-configured dependencies and runtime state of the gateway.
 
@@ -288,6 +312,7 @@ class GatewayApplication:
         client_authorizations: Mapping[str, ClientAuthorization] | None = None,
         clock: Callable[[], datetime] | None = None,
         request_id_factory: RequestFactory | None = None,
+        replaced_application: "GatewayApplication | None" = None,
     ) -> None:
         _ = v_instance(catalog, ModelCatalog, "gateway_application.catalog")
         _ = v_instance(profiles, TaskProfileCatalog, "gateway_application.profiles")
@@ -348,11 +373,16 @@ class GatewayApplication:
         )
         self.clock: Callable[[], datetime] | None = clock
         self.request_id_factory: RequestFactory | None = request_id_factory
-        self._global_slots: threading.BoundedSemaphore = threading.BoundedSemaphore(
-            self.limits.max_concurrent_executions
-        )
-        self._client_lock: threading.Lock = threading.Lock()
-        self._client_active: dict[str, int] = {}
+        # Daybreak finding 5: concurrency enforcement must SURVIVE
+        # application rebuilds (a state-report adoption rebuilds the
+        # application while executions are in flight). The reservation
+        # state is carried over from the replaced application whenever
+        # the limits are unchanged, so in-flight executions keep their
+        # accounting and limits cannot be reset by a rebuild.
+        carry = _carry_concurrency_state(replaced_application, self.limits)
+        self._global_slots: threading.BoundedSemaphore = carry[0]
+        self._client_lock: threading.Lock = carry[1]
+        self._client_active: dict[str, int] = carry[2]
 
     # ── Shared seams ─────────────────────────────────────────────────────
 
@@ -489,7 +519,7 @@ class GatewayApplication:
         try:
             return self._dispatch(
                 request=request, target=target, state=state,
-                emit_chunk=emit_chunk, started=started,
+                emit_chunk=emit_chunk, started=started, resolved=resolved,
             )
         finally:
             reservation.release()
@@ -641,6 +671,7 @@ class GatewayApplication:
         state: _LifecycleState,
         emit_chunk: StreamEmitter | None,
         started: datetime,
+        resolved: ResolvedModel,
     ) -> CompletionOutcome:
         adapter = self.adapters.resolve(target.resource.channel)
         if adapter is None:
@@ -651,10 +682,50 @@ class GatewayApplication:
             )
         state.adapter_name = adapter.adapter_name
         state.adapter_version = adapter.adapter_version
-        state.executed_target = state.selected_target
         deadline = started + timedelta(seconds=self.limits.execution_time_limit_seconds)
         context = self._build_context(state, emit_chunk, deadline)
         state.context = context
+        # Exact-execution discipline (D-042/D-053, Daybreak finding 2):
+        # a PINNED request is admission-only — the pinned variant is part
+        # of the execution contract, so a conflicting request effort is a
+        # typed rejection before dispatch, never a silent downgrade while
+        # the audit records the selected variant. Non-pinned profile
+        # requests keep the carried-control semantics pinned by the
+        # existing contract (the effort is a request control; the variant
+        # is the catalog configuration identity).
+        # Daybreak blocker 7: for a PINNED request the selected variant is
+        # part of the execution contract — a request effort conflicting
+        # with it is a typed rejection BEFORE anything is dispatched
+        # (executed_target stays unset, the audit stays a rejection). For
+        # the codex path an effort-less pin binds the selected variant
+        # (codex variants are native runtime efforts); server-direct
+        # presets keep their evidenced wire mapping as the authority.
+        selected_variant = target.model.variant
+        dispatched_effort = request.reasoning_effort
+        if (
+            resolved.pinned_target is not None
+            and dispatched_effort is not None
+            and dispatched_effort != selected_variant
+        ):
+            raise GatewayError.invalid_request(
+                "the requested reasoning effort "
+                + f"{dispatched_effort!r} conflicts with the pinned "
+                + f"target's effort {selected_variant!r}",
+                code="effort_conflicts_with_target",
+            )
+        if (
+            resolved.pinned_target is not None
+            and dispatched_effort is None
+            and target.resource.variant is not None
+        ):
+            # Only EFFORT-QUALIFIED resources (variant bound in the
+            # registration identity — the derived source resources) force
+            # the selected variant onto the wire. Plain resources (e.g.
+            # loopback Ollama) keep carried-control semantics: their
+            # preset's evidenced wire mapping is the authority and may
+            # have no mapping for catalog variants.
+            dispatched_effort = selected_variant
+        state.executed_target = state.selected_target
         call = AdapterCall(
             resource=target.resource,
             model=target.model,
@@ -663,7 +734,7 @@ class GatewayApplication:
             tools=request.tools,
             tool_choice=request.tool_choice,
             response_format=request.response_format,
-            reasoning_effort=request.reasoning_effort,
+            reasoning_effort=dispatched_effort,
             max_output_tokens=request.capabilities.requested_output_tokens,
             generation_params=request.generation_params or {},
         )

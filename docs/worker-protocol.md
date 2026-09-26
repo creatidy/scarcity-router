@@ -1,4 +1,4 @@
-# Worker Protocol v1 (native worker transport)
+# Worker Protocol v2 (native worker transport)
 
 This document is the authoritative contract for the Scarcity Router
 worker protocol, implemented by M05 (#90). It defines the transport, the
@@ -84,6 +84,28 @@ Scarcity Router Server  <── outbound TLS ──  Native Worker  ──  loca
   `protocol_version_unsupported` on both ends: the worker stops (fail
   closed, no retry storm), the server closes the connection. Incompatible
   versions never fall back to guessing.
+
+## Version 2: the state-report inventory section (D-053, #120)
+
+Version 2 adds ONE optional member and changes nothing else:
+
+- `state_report` MAY carry `inventories` (protocol version 2 sessions
+  only): a bounded list (≤ 8) of discovery documents, each validated
+  fail-closed by the `model_inventory` contract (`schema_version` 1,
+  `worker_id` equal to the authenticated identity, ≤ 64 models per
+  source, closed auth-state vocabulary, no credentials, no account
+  metadata, no raw provider payloads).
+- A version-1 worker never sends the member; the server still accepts
+  version-1 peers (`SERVER_SUPPORTED_PROTOCOL_VERSIONS = (2, 1)`), so an
+  old worker negotiates v1 and behaves exactly as before. A v2 worker
+  against a v1-only server fails cleanly at the handshake — deploy the
+  server first.
+- Source-derived snapshots in the `resources` section follow the same
+  ownership rules as every other report (administrator grant at source
+  granularity); snapshots for discovered-but-not-adopted models of a
+  configured source are dropped from the applied set (their state lives
+  in the source view, never the resource registry) — every other
+  unregistered resource still rejects the whole report.
 
 ## Pairing, identity, rotation, revocation (D-044)
 

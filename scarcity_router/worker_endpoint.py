@@ -64,7 +64,16 @@ from typing import Protocol, cast
 
 from .errors import CapacityValidationError
 from .gateway_validation import v_int
-from .resource_state import ResourceRegistry, WorkerStateReport
+from .model_inventory import (
+    ModelInventoryError,
+    ModelInventoryReport,
+    is_source_resource_id,
+)
+from .resource_state import (
+    ResourceRegistry,
+    ResourceStateSnapshot,
+    WorkerStateReport,
+)
 from .worker_identity_store import (
     ERR_CREDENTIAL_REVOKED,
     ERR_PAIRING_EXPIRED,
@@ -99,6 +108,7 @@ from .worker_protocol import (
     SocketTransport,
     StateReportAckMessage,
     StateReportMessage,
+    SERVER_SUPPORTED_PROTOCOL_VERSIONS,
     WORKER_PROTOCOL_VERSION,
     WorkerProtocolError,
     negotiate_version,
@@ -428,7 +438,10 @@ class WorkerSession:
 
     def _negotiate_or_die(self, offered: tuple[int, ...]) -> None:
         try:
-            version = negotiate_version((WORKER_PROTOCOL_VERSION,), offered)
+            # D-053: the server still accepts version-1 workers (they
+            # never send the version-2 inventory section); negotiation
+            # picks the highest mutually supported version.
+            version = negotiate_version(SERVER_SUPPORTED_PROTOCOL_VERSIONS, offered)
         except WorkerProtocolError:
             # The fatal error frame is sent by the run() error handler.
             raise
@@ -538,10 +551,88 @@ class WorkerSession:
                 )
             )
             return
+        # D-053 (protocol version 2): optional bounded discovery
+        # documents, validated and applied BEFORE the resource section:
+        # adoption may materialize derived resources that THIS report's
+        # snapshots then reference. Every document is validated
+        # fail-closed by the inventory contract and must name the
+        # authenticated worker; a bad document rejects the whole report
+        # (same atomicity as the resource section). No sink wired means
+        # inventories are acknowledged and dropped — never applied.
+        applied_inventories: list[ModelInventoryReport] = []
+        for raw_inventory in message.inventories:
+            try:
+                inventory = ModelInventoryReport.from_dict(dict(raw_inventory))
+                if inventory.worker_id != worker_id:
+                    raise ModelInventoryError(
+                        "inventory.worker_id does not match the authenticated identity"
+                    )
+                # D-053 authorization (Daybreak finding 1): EVERY source
+                # named by the inventory must be configured on THIS
+                # authenticated worker. A report naming another worker's
+                # source is rejected whole — an authenticated worker can
+                # never mutate, adopt or retire another worker's source.
+                for source_inventory in inventory.sources:
+                    if not endpoint.is_source_bound_source(
+                        source_inventory.source_id, worker_id
+                    ):
+                        raise ModelInventoryError(
+                            "source "
+                            + repr(source_inventory.source_id)
+                            + " is not configured for this worker"
+                        )
+            except (ModelInventoryError, ValueError) as exc:
+                self._send_error(
+                    ErrorMessage(
+                        code=ERR_MALFORMED,
+                        message=f"the state report's inventory was rejected: {exc}",
+                        fatal=False,
+                    )
+                )
+                return
+            applied_inventories.append(inventory)
+        # Daybreak blocker 4: a source may occur at most once across the
+        # ENTIRE state report. Duplicates would multiply absence/miss
+        # counting (instant retirement) — reject the whole report.
+        seen_source_ids: set[str] = set()
+        for inventory in applied_inventories:
+            for source_inventory in inventory.sources:
+                if source_inventory.source_id in seen_source_ids:
+                    self._send_error(
+                        ErrorMessage(
+                            code=ERR_MALFORMED,
+                            message="the state report carries duplicate "
+                            + "inventories for source "
+                            + repr(source_inventory.source_id),
+                            fatal=False,
+                        )
+                    )
+                    return
+                seen_source_ids.add(source_inventory.source_id)
+        for inventory in applied_inventories:
+            sink = endpoint.inventory_sink
+            if sink is not None:
+                # The sink (server-side adoption) is guarded exactly like
+                # the resource section: a server-side adoption failure is
+                # a non-fatal, client-classifiable error frame — never an
+                # unhandled exception on the session thread (D-053 point
+                # 11: a discovery failure isolates to its source).
+                try:
+                    sink(inventory)
+                except ValueError as exc:
+                    self._send_error(
+                        ErrorMessage(
+                            code=ERR_INTERNAL,
+                            message=f"the inventory could not be adopted: {exc}",
+                            fatal=False,
+                        )
+                    )
+                    return
         # AUTHORIZATION (D-049 amendment): current administrator
         # configuration is the only source of resource-to-worker
         # ownership. Every reported resource must be configured to THIS
-        # authenticated worker; otherwise the ENTIRE report is rejected
+        # authenticated worker (or derived from a source configured on
+        # it, D-053); otherwise the ENTIRE report is rejected
         # fail-closed — the M01 registry and the observed/live bindings
         # change nothing (atomic, matching apply_worker_report), so an
         # unauthorized report can never overwrite a previously valid one.
@@ -559,6 +650,44 @@ class WorkerSession:
                     )
                 )
                 return
+        # D-053 reconciliation: a source worker honestly reports EVERY
+        # model its runtime lists, but only ADOPTED models are registered
+        # (restricted/unclassified models never materialize). A
+        # source-derived snapshot for this authenticated worker that has
+        # no registration is therefore DROPPED from the applied set — its
+        # state lives in the source view, never the resource registry —
+        # while every other unregistered resource still rejects the whole
+        # report (the spoof-protection atomicity is unchanged), and any
+        # failure among the applied snapshots remains atomic.
+        applied: list[ResourceStateSnapshot] = []
+        # Daybreak blocker 8: a source whose applied inventory is NOT
+        # authenticated cannot have healthy snapshots in the same report —
+        # they would be stale pre-auth-loss state contradicting the
+        # inventory. Drop them so a closed source never looks routable.
+        unauthenticated_sources = {
+            s.source_id
+            for inv in applied_inventories
+            for s in inv.sources
+            if s.auth_state != "authenticated"
+        }
+        for snapshot in report.resources:
+            rid = snapshot.identity.resource_id
+            if not endpoint.is_registered(rid) and endpoint.is_source_bound(
+                rid, worker_id
+            ):
+                continue
+            if is_source_resource_id(rid):
+                source_id = rid.partition(":")[0]
+                if source_id in unauthenticated_sources:
+                    continue
+            applied.append(snapshot)
+        if len(applied) != len(report.resources):
+            report = WorkerStateReport(
+                schema_version=report.schema_version,
+                worker_id=report.worker_id,
+                reported_at=report.reported_at,
+                resources=tuple(applied),
+            )
         try:
             endpoint.registry.apply_worker_report(report)
         except (CapacityValidationError, ValueError) as exc:
@@ -686,6 +815,22 @@ class WorkerEndpoint:
         # callable so the supplier (the M09 control plane) can rebind its
         # configuration atomically — the endpoint never caches ownership.
         self.configured_owner: OwnerResolver = configured_owner
+        # D-053: optional sink for validated source-inventory documents
+        # (wired by the composed server; None means inventories are
+        # accepted-and-dropped for v2 workers with no source domain).
+        self.inventory_sink: Callable[[ModelInventoryReport], None] | None = None
+        #: D-053 seams (wired by the composed server): membership over the
+        #: live M01 registry, and the source-derived-binding test for the
+        #: authenticated worker. Defaults deny everything.
+        self.is_registered: Callable[[str], bool] = lambda resource_id: False
+        self.is_source_bound: Callable[[str, str], bool] = (
+            lambda resource_id, worker_id: False
+        )
+        #: Source-id-level ownership probe (Daybreak finding 1): does THIS
+        #: worker own the named execution source?
+        self.is_source_bound_source: Callable[[str, str], bool] = (
+            lambda source_id, worker_id: False
+        )
         self.heartbeat_interval_seconds: int = heartbeat_interval_seconds
         self._monotonic: Callable[[], float] = monotonic
         self._wall_clock: Callable[[], datetime] = (

@@ -68,7 +68,9 @@ TASK_LEVELS: tuple[str, ...] = ("L0", "L1", "L2", "L3", "L4", "L5")
 
 CONFIDENCE_VALUES: frozenset[str] = frozenset({"low", "medium", "high"})
 
-REASONING_EFFORTS: tuple[str, ...] = ("none", "low", "medium", "high", "xhigh", "max")
+# Ordered low to high; "ultra" arrived with the newest provider
+# generation (D-053) and appends after "max".
+REASONING_EFFORTS: tuple[str, ...] = ("none", "low", "medium", "high", "xhigh", "max", "ultra")
 
 MIN_RATING = 1
 MAX_RATING = 5

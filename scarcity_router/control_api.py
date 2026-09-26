@@ -95,6 +95,10 @@ from .machine_api import (
 )
 from .capacity import CapacityDiagnostic, CapacitySnapshot
 from .eligibility import ExecutionEligibility
+from .execution_sources import SourceRegistry
+from .model_inventory import is_source_resource_id
+from .model_inventory import ModelInventoryReport
+from .model_tracks import load_track_registry
 from .resource_state import (
     RESOURCE_STATE_SCHEMA_VERSION,
     ResourceHealth,
@@ -128,6 +132,7 @@ from .server_composition import (
 from .server_config import (
     AuditRetention,
     ProviderEndpointConfig,
+    SourceConfig,
     ResourceConfig,
     ServerConfigError,
     ServerConfiguration,
@@ -370,10 +375,22 @@ class ControlPlane:
         # document. The resolver is re-read on every call, so each
         # configuration change (add/remove/enable/unassign) is
         # authoritative immediately — no pushed-copy staleness window.
+        # D-053: the server-side execution-source registry (derived
+        # resources, track-floor catalog entries, source views). The
+        # reviewed track artifact loads with the other calibrated inputs.
+        self._source_registry: SourceRegistry = SourceRegistry(
+            track_registry=load_track_registry()
+        )
         self._worker_endpoint = WorkerEndpoint(
             identity_store=self._worker_identity_store,
             registry=self,
             configured_owner=self._configured_worker_owner,
+        )
+        self._worker_endpoint.inventory_sink = self._apply_source_inventory
+        self._worker_endpoint.is_registered = self._registry_is_registered
+        self._worker_endpoint.is_source_bound = self._registry_is_source_bound
+        self._worker_endpoint.is_source_bound_source = (
+            self._registry_is_source_bound_source
         )
         document = store.load_configuration_document()
         self._config = (
@@ -428,11 +445,63 @@ class ControlPlane:
         amendment).
         """
         resource = self._config.resource_by_id(resource_id)
-        if resource is None or not resource.enabled:
-            return None
-        if resource.registration.identity.channel != "worker_bridged":
-            return None
-        return resource.worker_id
+        if resource is not None:
+            if not resource.enabled:
+                return None
+            if resource.registration.identity.channel != "worker_bridged":
+                return None
+            return resource.worker_id
+        # D-053: source-derived resources are owned by their source's
+        # configured worker — the administrator granted ownership at
+        # source granularity; the report only supplies the inventory.
+        # A pure configuration read: authoritative on the FIRST report,
+        # before any derived state exists.
+        if is_source_resource_id(resource_id):
+            source = self._config.source_by_id(
+                resource_id.partition(":")[0]
+            )
+            if source is not None:
+                return source.worker_id
+        return None
+
+    def _registry_is_registered(self, resource_id: str) -> bool:
+        return self.current_application().registry.is_registered(resource_id)
+
+    def _registry_is_source_bound(self, resource_id: str, worker_id: str) -> bool:
+        if not is_source_resource_id(resource_id):
+            return False
+        source = self._config.source_by_id(resource_id.partition(":")[0])
+        return source is not None and source.worker_id == worker_id
+
+    def _registry_is_source_bound_source(self, source_id: str, worker_id: str) -> bool:
+        source = self._config.source_by_id(source_id)
+        return source is not None and source.worker_id == worker_id
+
+    def _apply_source_inventory(self, inventory: ModelInventoryReport) -> None:
+        """The endpoint's validated inventory sink (D-053).
+
+        Applies the discovery document to the source registry (adopt /
+        retire decisions) and rebuilds the routing artifacts so the
+        derived registrations, adapter bindings, compatibility cells and
+        catalog view all change atomically with the configuration.
+        """
+        self._source_registry.sync_configuration(self._config.sources)
+        _ = self._source_registry.apply_inventory(inventory)
+        # Daybreak finding 3 (second half): an inventory that is NOT
+        # authenticated contradicts every observation this source's
+        # resources still hold — a previously-healthy snapshot must not
+        # keep a closed source looking available. Purge them; the next
+        # authenticated report re-applies fresh observations.
+        if inventory_sources := {
+            s.source_id for s in inventory.sources if s.auth_state != "authenticated"
+        }:
+            for resource_id in [
+                rid
+                for rid in self._observations
+                if rid.partition(":")[0] in inventory_sources
+            ]:
+                _ = self._observations.pop(resource_id, None)
+        self._rebuild_application()
 
     def apply_worker_report(self, report: WorkerStateReport) -> None:
         """The M05 endpoint's report sink (the one normalization path).
@@ -926,6 +995,20 @@ class ControlPlane:
             self.service_remove_resource(parts[1])
             self._send_json(handler, HTTPStatus.OK, {"status": "ok"})
             return
+        if parts == ["sources"] and method == "GET":
+            self._send_json(handler, HTTPStatus.OK, {"sources": self.sources_view()})
+            return
+        if parts == ["sources"] and method == "POST":
+            document = self._require_json_body(handler)
+            source_id = self.service_add_source(document)
+            self._send_json(
+                handler, HTTPStatus.OK, {"status": "ok", "source_id": source_id}
+            )
+            return
+        if len(parts) == 2 and parts[0] == "sources" and method == "DELETE":
+            self.service_remove_source(parts[1])
+            self._send_json(handler, HTTPStatus.OK, {"status": "ok"})
+            return
         if len(parts) == 3 and parts[0] == "resources":
             resource_id = parts[1]
             if parts[2] == "enabled" and method == "POST":
@@ -1145,6 +1228,92 @@ class ControlPlane:
             # remediation-bearing message — never a bare 500.
             raise ControlHTTPError.invalid_request(str(exc)) from None
         return resource_id
+
+    def service_add_source(self, document: Mapping[str, object]) -> str:
+        """Add one execution source (D-053). No model slugs here."""
+        try:
+            source = SourceConfig.from_dict(document)
+        except (ValueError, ServerConfigError) as exc:
+            raise ControlHTTPError.invalid_request(str(exc)) from None
+        if self._config.source_by_id(source.source_id) is not None:
+            raise ControlHTTPError.conflict(
+                f"source {source.source_id!r} already exists"
+            )
+        worker = self._worker_identity_store.get_identity(source.worker_id)
+        if worker is None:
+            raise ControlHTTPError.invalid_request(
+                "source references an unknown worker; pair the worker "
+                + "first (workers page)"
+            )
+        if worker.status != "active":
+            raise ControlHTTPError.invalid_request(
+                "source references a revoked worker"
+            )
+        per_worker = sum(
+            1
+            for existing in self._config.sources
+            if existing.worker_id == source.worker_id
+        )
+        if per_worker >= 8:
+            # The worker protocol carries at most 8 inventory documents per
+            # state report; a 9th source would make every report malformed.
+            raise ControlHTTPError.invalid_request(
+                "this worker already serves the maximum of 8 sources"
+            )
+        try:
+            self._save_config(self._updated(sources=self._config.sources + (source,)))
+        except (ServerConfigError, ServerStoreError):
+            raise
+        except ValueError as exc:
+            raise ControlHTTPError.invalid_request(str(exc)) from None
+        return source.source_id
+
+    def service_remove_source(self, source_id: str) -> None:
+        if self._config.source_by_id(source_id) is None:
+            raise ControlHTTPError.not_found("unknown source")
+        sources = tuple(
+            source for source in self._config.sources if source.source_id != source_id
+        )
+        self._save_config(self._updated(sources=sources))
+
+    def sources_view(self) -> list[dict[str, object]]:
+        """The read-only source view (D-053 point 10): no raw payloads."""
+        views = {view["source_id"]: view for view in self._source_registry.source_view()}
+        out: list[dict[str, object]] = []
+        for source in self._config.sources:
+            live = views.get(source.source_id, {})
+            out.append(
+                {
+                    "source_id": source.source_id,
+                    "label": source.label or source.source_id,
+                    "kind": source.kind,
+                    "worker_id": source.worker_id,
+                    "auto_adopt": source.auto_adopt,
+                    "connected": bool(live.get("connected")),
+                    "source_authenticated": live.get(
+                        "source_authenticated", "unverified"
+                    ),
+                    "detected_models": live.get("models", []),
+                    "routable": live.get("routable", 0),
+                    "restricted": live.get("restricted", 0),
+                    "errors": live.get("errors", 0),
+                    "retired": live.get("retired", []),
+                    "observed_at": live.get("observed_at"),
+                    # The worker-side actions are printed, never derived
+                    # by the user: the ONE login command, and the run flag
+                    # that connects the source's adapter (both required —
+                    # logging in alone never materializes models).
+                    "login_command": (
+                        "scarcity-router-worker codex-login --source "
+                        + source.source_id
+                    ),
+                    "run_command": (
+                        "scarcity-router-worker run --codex-source "
+                        + source.source_id
+                    ),
+                }
+            )
+        return out
 
     def service_remove_resource(self, resource_id: str) -> None:
         if self._config.resource_by_id(resource_id) is None:
@@ -1785,6 +1954,7 @@ class ControlPlane:
         *,
         providers: tuple[ProviderEndpointConfig, ...] | None = None,
         resources: tuple[ResourceConfig, ...] | None = None,
+        sources: tuple[SourceConfig, ...] | None = None,
         aliases: Mapping[str, ClientRoutingProfile] | None = None,
         client_authorizations: Mapping[str, ClientAuthorization] | None = None,
         admin_constraints: AdministratorConstraints | None = None,
@@ -1801,6 +1971,7 @@ class ControlPlane:
             resources=(
                 self._config.resources if resources is None else resources
             ),
+            sources=(self._config.sources if sources is None else sources),
             aliases=self._config.aliases if aliases is None else aliases,
             client_authorizations=(
                 self._config.client_authorizations
@@ -1885,8 +2056,20 @@ class ControlPlane:
         catalog, profiles, profile_policy_version = load_configured_artifacts(
             self._catalog_path, self._model_policy_path
         )
+        # D-053: source-derived state participates like configured
+        # registrations — the derived set is recomputed from the latest
+        # inventories, then the catalog view gains the conservative
+        # track-floor entries for adopted models.
+        self._source_registry.sync_configuration(self._config.sources)
+        catalog = self._source_registry.derived_catalog_entries(catalog)
         registry = ResourceRegistry(clock=self._registry_clock)
         for registration in self._config.enabled_registrations():
+            resource_id = registration.identity.resource_id
+            registry.register(registration)
+            observation = self._observations.get(resource_id)
+            if observation is not None:
+                registry.apply_snapshot(observation)
+        for registration in self._source_registry.derived_registrations():
             resource_id = registration.identity.resource_id
             registry.register(registration)
             observation = self._observations.get(resource_id)
@@ -1898,9 +2081,11 @@ class ControlPlane:
             self._config,
             provider_secret_reader=self._store.get_provider_secret,
             worker_endpoint=self._worker_endpoint,
+            source_registry=self._source_registry,
         )
         self._application = GatewayApplication(
             catalog=catalog,
+            replaced_application=self._application,
             profiles=profiles,
             profile_policy_version=profile_policy_version,
             policy=policy,
@@ -1909,6 +2094,7 @@ class ControlPlane:
             compatibility_cells=build_compatibility_cells(
                 self._config,
                 provider_secret_reader=self._store.get_provider_secret,
+                source_registry=self._source_registry,
             ),
             admin_constraints=self._config.admin_constraints,
             aliases=RoutingAliasTable(dict(self._config.aliases)),

@@ -1610,24 +1610,28 @@ class CodexStreamingExecutionTests(CodexComposedTlsWorld):
                 headers={"Authorization": f"Bearer {self.client_key}"},
                 timeout=60,
             )
-            self.assertEqual(502, status)
+            # Daybreak finding 2: the pin-conflict gate rejects this
+            # BEFORE the turn (typed 400, zero wire traffic).
+            self.assertEqual(400, status)
             error_body = cast(
                 "dict[str, object]", cast("dict[str, object]", payload)["error"]
             )
-            self.assertEqual("backend_failure", error_body["code"])
+            self.assertEqual(
+                "effort_conflicts_with_target", error_body["code"]
+            )
             methods = trace_methods(worker.trace_path)
-            # The binding verdict needs the runtime's own model/list, but
-            # the TURN never starts: no thread, no turn, nothing executed.
-            self.assertIn("model/list", methods)
+            # Daybreak finding 2: the pin-conflict gate rejects BEFORE any
+            # dispatch — not even the listing probe runs for the turn (the
+            # initialize/account/read entries are the snapshot probe's).
             self.assertNotIn("thread/start", methods)
             self.assertNotIn("turn/start", methods)
+            # Nothing executed: the rejection precedes dispatch entirely.
             executed = [
                 record
                 for record in self.audit_records()
                 if record.get("executed_target") is not None
             ]
-            self.assertEqual(1, len(executed))
-            self.assertEqual("failed", executed[0]["result_status"])
+            self.assertEqual([], executed)
         finally:
             worker.stop()
 
@@ -1792,7 +1796,10 @@ class CodexStreamingExecutionTests(CodexComposedTlsWorld):
                 },
                 turn_params.get("sandboxPolicy"),
             )
-            self.assertNotIn("effort", turn_params)
+            # Daybreak blocker 7: the selected variant (high) is now always
+            # bound — an effort-less request dispatches the variant, never
+            # a runtime default.
+            self.assertEqual("high", turn_params.get("effort"))
             self.assertNotIn("outputSchema", turn_params)
 
             # The scratch directory is cleaned up after the call.

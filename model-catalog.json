@@ -1,6 +1,6 @@
 {
-  "catalog_version": 3,
-  "updated_on": "2026-09-15",
+  "catalog_version": 5,
+  "updated_on": "2026-09-26",
   "entries": [
     {
       "identity": {
@@ -125,130 +125,6 @@
       ],
       "model_version_date": "2026-07-09",
       "last_reviewed_on": "2026-09-06"
-    },
-    {
-      "identity": {
-        "provider": "openai",
-        "model": "gpt-5.6-luna",
-        "variant": "medium"
-      },
-      "display_name": "GPT-5.6 Luna Medium",
-      "reasoning_effort": "medium",
-      "hard_properties": {
-        "input_context_tokens": 1050000,
-        "output_tokens": 128000,
-        "supports_tool_use": true,
-        "supports_vision": true,
-        "supports_reasoning_mode": true
-      },
-      "capabilities": {
-        "reasoning": {
-          "rating": 3,
-          "evidence": [
-            {
-              "source": "official_docs",
-              "identifier": "https://openai.com/index/gpt-5-6/",
-              "date": "2026-07-09"
-            },
-            {
-              "source": "owner_observation",
-              "identifier": "accepted_reasoning_effort_calibration_2026-09-08_issue_57_D-032",
-              "date": "2026-09-08"
-            }
-          ],
-          "confidence": "medium",
-          "assessed_on": "2026-09-08",
-          "rationale": "Initial Medium-specific calibration: solid routine reasoning in the cost-sensitive tier, below reasoning-4 deep-work and orchestration minima; Max retains higher reasoning capability."
-        },
-        "coding": {
-          "rating": 4,
-          "evidence": [
-            {
-              "source": "official_docs",
-              "identifier": "https://openai.com/index/gpt-5-6/",
-              "date": "2026-07-09"
-            },
-            {
-              "source": "owner_observation",
-              "identifier": "accepted_reasoning_effort_calibration_2026-09-08_issue_57_D-032",
-              "date": "2026-09-08"
-            }
-          ],
-          "confidence": "medium",
-          "assessed_on": "2026-09-08",
-          "rationale": "Owner-approved initial Medium configuration remains strong for routine coding; family evidence informs but does not mechanically determine this effort-specific rating."
-        },
-        "scientific_methodological": {
-          "rating": 3,
-          "evidence": [
-            {
-              "source": "owner_observation",
-              "identifier": "accepted_reasoning_effort_calibration_2026-09-08_issue_57_D-032",
-              "date": "2026-09-08"
-            }
-          ],
-          "confidence": "medium",
-          "assessed_on": "2026-09-08",
-          "rationale": "Initial Medium calibration supports ordinary methodological execution, not specialist scientific adjudication."
-        },
-        "writing_editorial": {
-          "rating": 5,
-          "evidence": [
-            {
-              "source": "official_docs",
-              "identifier": "https://developers.openai.com/api/docs/models",
-              "date": "2026-09-08"
-            },
-            {
-              "source": "owner_observation",
-              "identifier": "accepted_reasoning_effort_calibration_2026-09-08_issue_57_D-032",
-              "date": "2026-09-08"
-            }
-          ],
-          "confidence": "medium",
-          "assessed_on": "2026-09-08",
-          "rationale": "Excellent routine editorial execution is explicitly approved at Medium; this does not establish orchestration sufficiency without reasoning 4."
-        },
-        "tool_use": {
-          "rating": 5,
-          "evidence": [
-            {
-              "source": "official_docs",
-              "identifier": "https://developers.openai.com/api/docs/models",
-              "date": "2026-09-08"
-            },
-            {
-              "source": "owner_observation",
-              "identifier": "accepted_reasoning_effort_calibration_2026-09-08_issue_57_D-032",
-              "date": "2026-09-08"
-            }
-          ],
-          "confidence": "medium",
-          "assessed_on": "2026-09-08",
-          "rationale": "Family agentic support plus owner-approved initial calibration supports excellent tool execution at Medium, independently of reasoning depth."
-        },
-        "translation_multilingual": {
-          "rating": 4,
-          "evidence": [
-            {
-              "source": "owner_observation",
-              "identifier": "accepted_reasoning_effort_calibration_2026-09-08_issue_57_D-032",
-              "date": "2026-09-08"
-            }
-          ],
-          "confidence": "medium",
-          "assessed_on": "2026-09-08",
-          "rationale": "Strong professional multilingual execution at Medium; publication-quality translation remains outside this initial calibration."
-        }
-      },
-      "capacity_bindings": [
-        {
-          "provider": "openai",
-          "scope_id": "codex"
-        }
-      ],
-      "model_version_date": "2026-07-09",
-      "last_reviewed_on": "2026-09-08"
     },
     {
       "identity": {
@@ -641,6 +517,402 @@
       ],
       "model_version_date": "2026-07-09",
       "last_reviewed_on": "2026-09-08"
+    },
+    {
+      "identity": {
+        "provider": "openai",
+        "model": "gpt-6-astra",
+        "variant": "low"
+      },
+      "display_name": "GPT-6 Astra Low",
+      "reasoning_effort": "low",
+      "hard_properties": {
+        "input_context_tokens": 1050000,
+        "output_tokens": 128000,
+        "supports_reasoning_mode": true
+      },
+      "capabilities": {
+        "reasoning": {
+          "rating": 4,
+          "evidence": [
+            {
+              "source": "owner_observation",
+              "identifier": "controlled_codex_0.155.0-alpha.16.3_model_list_2026-09-24_issue_116",
+              "date": "2026-09-24"
+            },
+            {
+              "source": "model-tracks.json",
+              "identifier": "openai-track-floor-D-053",
+              "date": "2026-09-24"
+            }
+          ],
+          "confidence": "low",
+          "assessed_on": "2026-09-24",
+          "rationale": "Track-floor rating (cross-generation reasoning depth), deliberately one level below the reviewed gpt-5.6 family evidence: the live runtime listing proves availability, never capability (D-053 point 5). Stronger ratings require direct dated evidence for this exact model."
+        },
+        "coding": {
+          "rating": 4,
+          "evidence": [
+            {
+              "source": "owner_observation",
+              "identifier": "controlled_codex_0.155.0-alpha.16.3_model_list_2026-09-24_issue_116",
+              "date": "2026-09-24"
+            },
+            {
+              "source": "model-tracks.json",
+              "identifier": "openai-track-floor-D-053",
+              "date": "2026-09-24"
+            }
+          ],
+          "confidence": "low",
+          "assessed_on": "2026-09-24",
+          "rationale": "Track-floor rating (cross-generation coding strength), deliberately one level below the reviewed gpt-5.6 family evidence: the live runtime listing proves availability, never capability (D-053 point 5). Stronger ratings require direct dated evidence for this exact model."
+        },
+        "scientific_methodological": {
+          "rating": 4,
+          "evidence": [
+            {
+              "source": "owner_observation",
+              "identifier": "controlled_codex_0.155.0-alpha.16.3_model_list_2026-09-24_issue_116",
+              "date": "2026-09-24"
+            },
+            {
+              "source": "model-tracks.json",
+              "identifier": "openai-track-floor-D-053",
+              "date": "2026-09-24"
+            }
+          ],
+          "confidence": "low",
+          "assessed_on": "2026-09-24",
+          "rationale": "Track-floor rating (cross-generation scientific/methodological rigor), deliberately one level below the reviewed gpt-5.6 family evidence: the live runtime listing proves availability, never capability (D-053 point 5). Stronger ratings require direct dated evidence for this exact model."
+        },
+        "writing_editorial": {
+          "rating": 4,
+          "evidence": [
+            {
+              "source": "owner_observation",
+              "identifier": "controlled_codex_0.155.0-alpha.16.3_model_list_2026-09-24_issue_116",
+              "date": "2026-09-24"
+            },
+            {
+              "source": "model-tracks.json",
+              "identifier": "openai-track-floor-D-053",
+              "date": "2026-09-24"
+            }
+          ],
+          "confidence": "low",
+          "assessed_on": "2026-09-24",
+          "rationale": "Track-floor rating (cross-generation writing/editorial quality), deliberately one level below the reviewed gpt-5.6 family evidence: the live runtime listing proves availability, never capability (D-053 point 5). Stronger ratings require direct dated evidence for this exact model."
+        },
+        "tool_use": {
+          "rating": 4,
+          "evidence": [
+            {
+              "source": "owner_observation",
+              "identifier": "controlled_codex_0.155.0-alpha.16.3_model_list_2026-09-24_issue_116",
+              "date": "2026-09-24"
+            },
+            {
+              "source": "model-tracks.json",
+              "identifier": "openai-track-floor-D-053",
+              "date": "2026-09-24"
+            }
+          ],
+          "confidence": "low",
+          "assessed_on": "2026-09-24",
+          "rationale": "Track-floor rating (cross-generation tool-use reliability), deliberately one level below the reviewed gpt-5.6 family evidence: the live runtime listing proves availability, never capability (D-053 point 5). Stronger ratings require direct dated evidence for this exact model."
+        },
+        "translation_multilingual": {
+          "rating": 4,
+          "evidence": [
+            {
+              "source": "owner_observation",
+              "identifier": "controlled_codex_0.155.0-alpha.16.3_model_list_2026-09-24_issue_116",
+              "date": "2026-09-24"
+            },
+            {
+              "source": "model-tracks.json",
+              "identifier": "openai-track-floor-D-053",
+              "date": "2026-09-24"
+            }
+          ],
+          "confidence": "low",
+          "assessed_on": "2026-09-24",
+          "rationale": "Track-floor rating (cross-generation multilingual/translation quality), deliberately one level below the reviewed gpt-5.6 family evidence: the live runtime listing proves availability, never capability (D-053 point 5). Stronger ratings require direct dated evidence for this exact model."
+        }
+      },
+      "capacity_bindings": [
+        {
+          "provider": "openai",
+          "scope_id": "codex"
+        }
+      ],
+      "model_version_date": "2026-09-24",
+      "last_reviewed_on": "2026-09-24"
+    },
+    {
+      "identity": {
+        "provider": "openai",
+        "model": "gpt-6-luna",
+        "variant": "max"
+      },
+      "display_name": "GPT-6 Luna Max",
+      "reasoning_effort": "max",
+      "hard_properties": {
+        "input_context_tokens": 1050000,
+        "output_tokens": 128000,
+        "supports_reasoning_mode": true
+      },
+      "capabilities": {
+        "reasoning": {
+          "rating": 3,
+          "evidence": [
+            {
+              "source": "owner_observation",
+              "identifier": "controlled_codex_0.155.0-alpha.16.3_model_list_2026-09-24_issue_116",
+              "date": "2026-09-24"
+            },
+            {
+              "source": "model-tracks.json",
+              "identifier": "openai-track-floor-D-053",
+              "date": "2026-09-24"
+            }
+          ],
+          "confidence": "low",
+          "assessed_on": "2026-09-24",
+          "rationale": "Track-floor rating (cross-generation reasoning depth), deliberately one level below the reviewed gpt-5.6 family evidence: the live runtime listing proves availability, never capability (D-053 point 5). Stronger ratings require direct dated evidence for this exact model."
+        },
+        "coding": {
+          "rating": 3,
+          "evidence": [
+            {
+              "source": "owner_observation",
+              "identifier": "controlled_codex_0.155.0-alpha.16.3_model_list_2026-09-24_issue_116",
+              "date": "2026-09-24"
+            },
+            {
+              "source": "model-tracks.json",
+              "identifier": "openai-track-floor-D-053",
+              "date": "2026-09-24"
+            }
+          ],
+          "confidence": "low",
+          "assessed_on": "2026-09-24",
+          "rationale": "Track-floor rating (cross-generation coding strength), deliberately one level below the reviewed gpt-5.6 family evidence: the live runtime listing proves availability, never capability (D-053 point 5). Stronger ratings require direct dated evidence for this exact model."
+        },
+        "scientific_methodological": {
+          "rating": 2,
+          "evidence": [
+            {
+              "source": "owner_observation",
+              "identifier": "controlled_codex_0.155.0-alpha.16.3_model_list_2026-09-24_issue_116",
+              "date": "2026-09-24"
+            },
+            {
+              "source": "model-tracks.json",
+              "identifier": "openai-track-floor-D-053",
+              "date": "2026-09-24"
+            }
+          ],
+          "confidence": "low",
+          "assessed_on": "2026-09-24",
+          "rationale": "Track-floor rating (cross-generation scientific/methodological rigor), deliberately one level below the reviewed gpt-5.6 family evidence: the live runtime listing proves availability, never capability (D-053 point 5). Stronger ratings require direct dated evidence for this exact model."
+        },
+        "writing_editorial": {
+          "rating": 4,
+          "evidence": [
+            {
+              "source": "owner_observation",
+              "identifier": "controlled_codex_0.155.0-alpha.16.3_model_list_2026-09-24_issue_116",
+              "date": "2026-09-24"
+            },
+            {
+              "source": "model-tracks.json",
+              "identifier": "openai-track-floor-D-053",
+              "date": "2026-09-24"
+            }
+          ],
+          "confidence": "low",
+          "assessed_on": "2026-09-24",
+          "rationale": "Track-floor rating (cross-generation writing/editorial quality), deliberately one level below the reviewed gpt-5.6 family evidence: the live runtime listing proves availability, never capability (D-053 point 5). Stronger ratings require direct dated evidence for this exact model."
+        },
+        "tool_use": {
+          "rating": 4,
+          "evidence": [
+            {
+              "source": "owner_observation",
+              "identifier": "controlled_codex_0.155.0-alpha.16.3_model_list_2026-09-24_issue_116",
+              "date": "2026-09-24"
+            },
+            {
+              "source": "model-tracks.json",
+              "identifier": "openai-track-floor-D-053",
+              "date": "2026-09-24"
+            }
+          ],
+          "confidence": "low",
+          "assessed_on": "2026-09-24",
+          "rationale": "Track-floor rating (cross-generation tool-use reliability), deliberately one level below the reviewed gpt-5.6 family evidence: the live runtime listing proves availability, never capability (D-053 point 5). Stronger ratings require direct dated evidence for this exact model."
+        },
+        "translation_multilingual": {
+          "rating": 3,
+          "evidence": [
+            {
+              "source": "owner_observation",
+              "identifier": "controlled_codex_0.155.0-alpha.16.3_model_list_2026-09-24_issue_116",
+              "date": "2026-09-24"
+            },
+            {
+              "source": "model-tracks.json",
+              "identifier": "openai-track-floor-D-053",
+              "date": "2026-09-24"
+            }
+          ],
+          "confidence": "low",
+          "assessed_on": "2026-09-24",
+          "rationale": "Track-floor rating (cross-generation multilingual/translation quality), deliberately one level below the reviewed gpt-5.6 family evidence: the live runtime listing proves availability, never capability (D-053 point 5). Stronger ratings require direct dated evidence for this exact model."
+        }
+      },
+      "capacity_bindings": [
+        {
+          "provider": "openai",
+          "scope_id": "codex"
+        }
+      ],
+      "model_version_date": "2026-09-24",
+      "last_reviewed_on": "2026-09-24"
+    },
+    {
+      "identity": {
+        "provider": "openai",
+        "model": "gpt-6-sol",
+        "variant": "high"
+      },
+      "display_name": "GPT-6 Sol High",
+      "reasoning_effort": "high",
+      "hard_properties": {
+        "input_context_tokens": 1050000,
+        "output_tokens": 128000,
+        "supports_reasoning_mode": true
+      },
+      "capabilities": {
+        "reasoning": {
+          "rating": 4,
+          "evidence": [
+            {
+              "source": "owner_observation",
+              "identifier": "controlled_codex_0.155.0-alpha.16.3_model_list_2026-09-24_issue_116",
+              "date": "2026-09-24"
+            },
+            {
+              "source": "model-tracks.json",
+              "identifier": "openai-track-floor-D-053",
+              "date": "2026-09-24"
+            }
+          ],
+          "confidence": "low",
+          "assessed_on": "2026-09-24",
+          "rationale": "Track-floor rating (cross-generation reasoning depth), deliberately one level below the reviewed gpt-5.6 family evidence: the live runtime listing proves availability, never capability (D-053 point 5). Stronger ratings require direct dated evidence for this exact model."
+        },
+        "coding": {
+          "rating": 4,
+          "evidence": [
+            {
+              "source": "owner_observation",
+              "identifier": "controlled_codex_0.155.0-alpha.16.3_model_list_2026-09-24_issue_116",
+              "date": "2026-09-24"
+            },
+            {
+              "source": "model-tracks.json",
+              "identifier": "openai-track-floor-D-053",
+              "date": "2026-09-24"
+            }
+          ],
+          "confidence": "low",
+          "assessed_on": "2026-09-24",
+          "rationale": "Track-floor rating (cross-generation coding strength), deliberately one level below the reviewed gpt-5.6 family evidence: the live runtime listing proves availability, never capability (D-053 point 5). Stronger ratings require direct dated evidence for this exact model."
+        },
+        "scientific_methodological": {
+          "rating": 4,
+          "evidence": [
+            {
+              "source": "owner_observation",
+              "identifier": "controlled_codex_0.155.0-alpha.16.3_model_list_2026-09-24_issue_116",
+              "date": "2026-09-24"
+            },
+            {
+              "source": "model-tracks.json",
+              "identifier": "openai-track-floor-D-053",
+              "date": "2026-09-24"
+            }
+          ],
+          "confidence": "low",
+          "assessed_on": "2026-09-24",
+          "rationale": "Track-floor rating (cross-generation scientific/methodological rigor), deliberately one level below the reviewed gpt-5.6 family evidence: the live runtime listing proves availability, never capability (D-053 point 5). Stronger ratings require direct dated evidence for this exact model."
+        },
+        "writing_editorial": {
+          "rating": 4,
+          "evidence": [
+            {
+              "source": "owner_observation",
+              "identifier": "controlled_codex_0.155.0-alpha.16.3_model_list_2026-09-24_issue_116",
+              "date": "2026-09-24"
+            },
+            {
+              "source": "model-tracks.json",
+              "identifier": "openai-track-floor-D-053",
+              "date": "2026-09-24"
+            }
+          ],
+          "confidence": "low",
+          "assessed_on": "2026-09-24",
+          "rationale": "Track-floor rating (cross-generation writing/editorial quality), deliberately one level below the reviewed gpt-5.6 family evidence: the live runtime listing proves availability, never capability (D-053 point 5). Stronger ratings require direct dated evidence for this exact model."
+        },
+        "tool_use": {
+          "rating": 4,
+          "evidence": [
+            {
+              "source": "owner_observation",
+              "identifier": "controlled_codex_0.155.0-alpha.16.3_model_list_2026-09-24_issue_116",
+              "date": "2026-09-24"
+            },
+            {
+              "source": "model-tracks.json",
+              "identifier": "openai-track-floor-D-053",
+              "date": "2026-09-24"
+            }
+          ],
+          "confidence": "low",
+          "assessed_on": "2026-09-24",
+          "rationale": "Track-floor rating (cross-generation tool-use reliability), deliberately one level below the reviewed gpt-5.6 family evidence: the live runtime listing proves availability, never capability (D-053 point 5). Stronger ratings require direct dated evidence for this exact model."
+        },
+        "translation_multilingual": {
+          "rating": 4,
+          "evidence": [
+            {
+              "source": "owner_observation",
+              "identifier": "controlled_codex_0.155.0-alpha.16.3_model_list_2026-09-24_issue_116",
+              "date": "2026-09-24"
+            },
+            {
+              "source": "model-tracks.json",
+              "identifier": "openai-track-floor-D-053",
+              "date": "2026-09-24"
+            }
+          ],
+          "confidence": "low",
+          "assessed_on": "2026-09-24",
+          "rationale": "Track-floor rating (cross-generation multilingual/translation quality), deliberately one level below the reviewed gpt-5.6 family evidence: the live runtime listing proves availability, never capability (D-053 point 5). Stronger ratings require direct dated evidence for this exact model."
+        }
+      },
+      "capacity_bindings": [
+        {
+          "provider": "openai",
+          "scope_id": "codex"
+        }
+      ],
+      "model_version_date": "2026-09-24",
+      "last_reviewed_on": "2026-09-24"
     },
     {
       "identity": {

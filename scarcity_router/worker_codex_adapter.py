@@ -100,6 +100,13 @@ from .gateway_adapters import (
     FINISH_STOP,
 )
 from .gateway_contracts import UsageTokens
+from .gateway_validation import v_safe_id
+from .model_inventory import (
+    DiscoveredModel,
+    ModelInventoryError,
+    SourceInventory,
+)
+from .selection_types import REASONING_EFFORTS
 from .providers.openai_codex import classify_app_server_message
 from .providers.openai_codex_acquisition import (
     BoundedLineReader,
@@ -115,6 +122,16 @@ from .worker_identity_store import ensure_private_tree
 # ── Adapter identity and version contract ─────────────────────────────────────
 
 CODEX_ADAPTER_ID = "codex"
+
+#: The default discovery refresh cadence for source-mode adapters
+#: (D-053): bounded, deterministic, and only observed through the
+#: worker's own state-report path — no background poller exists.
+INVENTORY_DEFAULT_TTL_SECONDS = 300.0
+
+# The derived-resource id derivation lives with the inventory contract
+# (model_inventory.source_resource_id); re-exported here for the worker
+# surface that discovers and serves those ids.
+from .model_inventory import SOURCE_ID_MAX_LENGTH, source_resource_id  # noqa: E402
 
 #: The provider identity shared with the existing Codex collector
 #: (``providers/openai_codex.py``); resource identity and snapshots must use
@@ -515,8 +532,13 @@ class ControlledCodexHome:
     every session so silent tampering fails closed.
     """
 
-    def __init__(self, state_dir: str | os.PathLike[str]) -> None:
-        root = Path(state_dir) / "codex"
+    def __init__(
+        self,
+        state_dir: str | os.PathLike[str],
+        *,
+        name: str = "codex",
+    ) -> None:
+        root = Path(state_dir) / name
         self._home: Path = root / "codex-home"
         self._scratch_root: Path = root / "scratch"
         self._lock: threading.Lock = threading.Lock()
@@ -533,22 +555,121 @@ class ControlledCodexHome:
             config = self._home / CONTROLLED_CONFIG_NAME
             if not config.exists():
                 _write_private(config, _CONTROLLED_CONFIG_NOTICE)
+            elif not self._config_is_contained(config.read_bytes()):
+                # The REAL runtime appends project-trust entries for the
+                # directories it works in (observed live: scratch turns).
+                # ONLY scratch-root project tables survive; EVERY other
+                # construct (mcp_servers, plugins, apps, foreign project
+                # paths) is dropped — the home keeps ONLY Scarcity
+                # Router-approved configuration plus provider-managed
+                # state. Credentials are never read or rewritten.
+                self._regenerate_config_keeping_contained_projects()
             self._prune_stale_scratch()
 
+    def _config_projects(self, content: bytes) -> tuple[bool, list[str]]:
+        """Parse the config with the stdlib TOML parser.
+
+        Returns ``(wellformed, project_paths)``. ``wellformed`` requires
+        that EVERY top-level table is a ``projects`` table — anything else
+        (mcp_servers, plugins, apps, model overrides, ...) makes the home
+        invalid. The generated notice comment is not required to survive:
+        the vendor runtime legitimately rewrites and reorders this file
+        when it records trusted projects.
+        """
+        import tomllib
+
+        text = content.decode("utf-8", errors="replace")
+        try:
+            parsed: dict[str, object] = tomllib.loads(text)
+        except tomllib.TOMLDecodeError:
+            return False, []
+        if set(parsed.keys()) - {"projects"}:
+            return False, []
+        projects: object = parsed.get("projects", {})
+        if not isinstance(projects, dict):
+            return False, []
+        paths: list[str] = []
+        for key, value in cast("dict[str, object]", projects).items():
+            if not isinstance(value, dict):
+                return False, []
+            # A project table may carry ONLY trust_level: anything nested
+            # deeper (e.g. mcp_servers under a contained path) is rejected
+            # so a contained path can never host injected runtime config
+            # (Daybreak verification finding).
+            if set(cast("dict[str, object]", value).keys()) - {"trust_level"}:
+                return False, []
+            paths.append(key)
+        return True, paths
+
+    def _config_is_contained(self, content: bytes) -> bool:
+        """True when the config is wellformed and every project-trust
+        entry RESOLVES inside this source's scratch root."""
+        wellformed, project_paths = self._config_projects(content)
+        if not wellformed:
+            return False
+        scratch_root = os.path.realpath(self._scratch_root)
+        for project in project_paths:
+            if not os.path.realpath(project).startswith(scratch_root + os.sep):
+                return False
+        return True
+
+    def _regenerate_config_keeping_contained_projects(self) -> None:
+        """Reset the config to the generated notice, preserving ONLY the
+        project-trust tables that resolve inside this source's scratch
+        root. Never touches credential material (auth.json et al)."""
+        config = self._home / CONTROLLED_CONFIG_NAME
+        try:
+            wellformed, project_paths = self._config_projects(
+                config.read_bytes()
+            )
+        except OSError:
+            wellformed, project_paths = False, []
+        kept = _CONTROLLED_CONFIG_NOTICE
+        if wellformed:
+            scratch_root = os.path.realpath(self._scratch_root)
+            for project in project_paths:
+                if os.path.realpath(project).startswith(scratch_root + os.sep):
+                    kept += (
+                        f'\n[projects."{project}"]\ntrust_level = "trusted"\n'
+                    )
+        # Rewrite in place (truncate): the initial _write_private O_EXCL
+        # discipline applies only to first creation.
+        fd = os.open(config, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            _ = os.write(fd, kept.encode("utf-8"))
+        finally:
+            os.close(fd)
+
     def validate(self) -> str | None:
-        """``None`` when the controlled home is intact, else a safe reason."""
+        """``None`` when the controlled home is intact, else a safe reason.
+
+        Symlink-resistant (Daybreak blocker 1): the home, scratch root and
+        config are checked with ``lstat`` — a symlink or equivalent
+        aliasing anywhere in the chain invalidates the home, so one
+        source's controlled home can never resolve into another's."""
         with self._lock:
             try:
-                st = os.stat(self._home)
+                st = os.lstat(self._home)
                 if not stat.S_ISDIR(st.st_mode):
                     return "codex_home_invalid"
                 if st.st_mode & _HOME_MODE_OK_MASK:
                     return "codex_home_invalid"
+                # The scratch root may not exist yet (created on demand
+                # by ensure); when present it must be a real directory,
+                # never a symlink alias.
+                try:
+                    scratch_st = os.lstat(self._scratch_root)
+                    if not stat.S_ISDIR(scratch_st.st_mode):
+                        return "codex_home_invalid"
+                except OSError:
+                    pass
                 config = self._home / CONTROLLED_CONFIG_NAME
-                if (
-                    not config.is_file()
-                    or config.read_bytes() != _CONTROLLED_CONFIG_NOTICE.encode("utf-8")
-                ):
+                config_st = os.lstat(config)
+                if not stat.S_ISREG(config_st.st_mode):
+                    return "codex_home_invalid"
+                if config_st.st_mode & _HOME_MODE_OK_MASK:
+                    return "codex_home_invalid"
+                if not self._config_is_contained(config.read_bytes()):
                     return "codex_home_invalid"
             except OSError:
                 return "codex_home_invalid"
@@ -1267,7 +1388,11 @@ def verify_account_auth(session: CodexSession, deadline: float) -> AuthVerdict:
     official sign-in remediation. Email/plan content is never retained.
     """
     try:
-        result = session.request(_METHOD_ACCOUNT_READ, None, deadline)
+        # codex-cli 0.155 rejects an ABSENT params member on this method
+        # with JSON-RPC -32600 (live evidence 2026-09-24); the explicit
+        # empty object is required. This is a method-specific evidenced
+        # shape, never a global params-forcing rule.
+        result = session.request(_METHOD_ACCOUNT_READ, {}, deadline)
     except _ProtocolError:
         # Fail closed, read-only: no refresh, no retry, no mutation. The
         # error's free text is never inspected (it may carry sensitive
@@ -1393,7 +1518,8 @@ class CodexLocalAdapter:
     def __init__(
         self,
         *,
-        resource: ResourceIdentity,
+        resource: ResourceIdentity | None = None,
+        source_id: str | None = None,
         state_dir: str | os.PathLike[str],
         pinned_binary: Path | None = None,
         discovery_roots: Sequence[Path] | None = None,
@@ -1402,17 +1528,40 @@ class CodexLocalAdapter:
         startup_timeout: float = STARTUP_TIMEOUT_SECONDS,
         version_probe_timeout: float = VERSION_PROBE_TIMEOUT_SECONDS,
         interrupt_ack_seconds: float = INTERRUPT_ACK_SECONDS,
+        inventory_ttl_seconds: float = INVENTORY_DEFAULT_TTL_SECONDS,
+        clock: Callable[[], float] = time.monotonic,
         platform_name: str = sys.platform,
         platform_release: str | None = None,
     ) -> None:
-        if resource.provider != CODEX_PROVIDER:
-            raise ValueError(
-                "codex_adapter: the resource provider must be "
-                + f"{CODEX_PROVIDER!r}, got {resource.provider!r}"
-            )
-        self.resource_ids: tuple[str, ...] = (resource.resource_id,)
-        self._resource: ResourceIdentity = resource
-        self._home: ControlledCodexHome = ControlledCodexHome(state_dir)
+        if source_id is not None:
+            # D-053 source mode: the adapter is one SOURCE INSTANCE
+            # (adapter id ``codex:<source_id>``) and serves the resources
+            # it discovers in its own controlled home — never a
+            # hand-configured single model.
+            self._source_id: str | None = v_safe_id(source_id, "codex_source_id")
+            if resource is not None:
+                raise ValueError(
+                    "codex_adapter: source mode discovers its resources; "
+                    + "pass either source_id or resource, never both"
+                )
+            self.adapter_id = f"{CODEX_ADAPTER_ID}:{self._source_id}"
+            self._resource: ResourceIdentity | None = None
+            home_name = f"codex-sources/{self._source_id}"
+        else:
+            if resource is None:
+                raise ValueError(
+                    "codex_adapter: one of source_id or resource is required"
+                )
+            if resource.provider != CODEX_PROVIDER:
+                raise ValueError(
+                    "codex_adapter: the resource provider must be "
+                    + f"{CODEX_PROVIDER!r}, got {resource.provider!r}"
+                )
+            self._source_id = None
+            self.adapter_id = CODEX_ADAPTER_ID
+            self._resource = resource
+            home_name = "codex"
+        self._home: ControlledCodexHome = ControlledCodexHome(state_dir, name=home_name)
         self._pinned_binary: Path | None = pinned_binary
         self._discovery_roots: Sequence[Path] | None = discovery_roots
         self._path_lookup: Callable[[str], str | None] = path_lookup
@@ -1422,11 +1571,171 @@ class CodexLocalAdapter:
         self._interrupt_ack_seconds: float = interrupt_ack_seconds
         self._platform_name: str = platform_name
         self._platform_release: str | None = platform_release
+        # D-053 discovery state (source mode): the latest bounded runtime
+        # observation and the derived served resources. Written only by
+        # the observation path; reads are from the worker's own session
+        # thread plus snapshot/report paths.
+        self._inventory_lock: threading.Lock = threading.Lock()
+        self._inventory: SourceInventory | None = None
+        self._inventory_monotonic: float | None = None
+        self._inventory_ttl: float = inventory_ttl_seconds
+        self._clock: Callable[[], float] = clock
+
+    @property
+    def source_id(self) -> str | None:
+        """The execution-source instance id, when in source mode."""
+        return self._source_id
 
     @property
     def resource(self) -> ResourceIdentity:
-        """The resource identity this adapter serves (its physical model)."""
+        """The legacy-mode resource identity this adapter serves."""
+        if self._resource is None:
+            raise RuntimeError("codex_adapter: source mode serves discovered resources")
         return self._resource
+
+    @property
+    def resource_ids(self) -> tuple[str, ...]:
+        """The served resources: the legacy identity, or the discovered set."""
+        if self._resource is not None:
+            return (self._resource.resource_id,)
+        with self._inventory_lock:
+            return tuple(sorted(self._discovered_resource_ids_locked()))
+
+    def _discovered_resource_ids_locked(self) -> dict[str, tuple[str, str]]:
+        """resource_id -> (physical slug, effort) from the latest inventory.
+
+        Daybreak finding 3: one exact resource per ADVERTISED effort —
+        the resource's variant is bound to what the runtime itself
+        reported, never to the whole calibrated catalog.
+        """
+        if self._source_id is None or self._inventory is None:
+            return {}
+        bound: dict[str, tuple[str, str]] = {}
+        for model in self._inventory.models:
+            for effort in model.reasoning_efforts:
+                rid = source_resource_id(self._source_id, model.slug, effort)
+                bound[rid] = (model.slug, effort)
+        return bound
+
+    # ── D-053 runtime discovery ───────────────────────────────────────
+
+    def observe_inventory(self, now: float | None = None) -> SourceInventory:
+        """One bounded discovery observation (handshake + auth + listing).
+
+        Deterministic and bounded: every step uses the existing session
+        budgets, and any failure maps to an honest closed-vocabulary auth
+        state with an EMPTY model list — never a partial or stale mix.
+        The result replaces the previous observation atomically.
+        """
+        moment = self._clock() if now is None else now
+        auth_state = "unavailable"
+        runtime_version = ""
+        models: dict[str, tuple[str, ...]] = {}
+        try:
+            binary = self._discover()
+            version, version_reason = probe_codex_version(
+                binary.path,
+                spawner=self._spawner,
+                timeout=self._version_probe_timeout,
+            )
+            if version is None or version_reason is not None:
+                raise CodexIneligible(version_reason or "version_unsupported")
+            runtime_version = ".".join(str(part) for part in version)
+            sandbox_reason = check_sandbox_availability(
+                platform_name=self._platform_name,
+                release=self._platform_release,
+                path_lookup=self._path_lookup,
+            )
+            if sandbox_reason is not None:
+                raise CodexIneligible(sandbox_reason)
+            self._home.ensure()
+            home_invalid = self._home.validate()
+            if home_invalid is not None:
+                raise CodexIneligible(home_invalid)
+            scratch = self._home.new_scratch_dir()
+            session: CodexSession | None = None
+            try:
+                spec = CodexSpawnSpec(
+                    argv=(str(binary.path), "app-server"),
+                    env=_minimal_environment(codex_home=str(self._home.path)),
+                    cwd=str(scratch),
+                )
+                proc = self._spawner(spec)
+                session = CodexSession(proc)
+                session.start()
+                deadline = time.monotonic() + self._startup_timeout
+                self._handshake(session, deadline, threading.Event())
+                verdict = verify_account_auth(session, deadline)
+                if not verdict.ok:
+                    auth_state = (
+                        "auth_required"
+                        if verdict.reason in ("auth_missing", "auth_payg_unsupported")
+                        else "unverified"
+                    )
+                    raise CodexIneligible(verdict.reason or "auth_unverified")
+                auth_state = "authenticated"
+                models = self._load_models(session, deadline, threading.Event())
+                # The derived-id bound is part of the inventory contract:
+                # a listing carrying an over-long slug is structural drift
+                # and fails the whole observation closed HERE, at the
+                # worker — it can never reach the server.
+                for slug in models:
+                    _ = DiscoveredModel(slug=slug, reasoning_efforts=())
+            finally:
+                if session is not None:
+                    _ = session.close()
+                shutil.rmtree(scratch, ignore_errors=True)
+        except CodexIneligible:
+            pass
+        except (CodexProtocolFailure, ModelInventoryError):
+            auth_state = "unverified"
+            models = {}  # an unverifiable listing is never partially kept
+        except (CodexProcessLost, OSError, RuntimeError):
+            auth_state = "unavailable"
+        assert self._source_id is not None  # source mode only
+        inventory = SourceInventory(
+            source_id=self._source_id,
+            adapter_id=self.adapter_id,
+            kind="codex_subscription",
+            observed_at=_canonical_now(),
+            auth_state=auth_state,  # type: ignore[arg-type]
+            runtime_name="codex",
+            runtime_version=runtime_version,
+            models=tuple(
+                DiscoveredModel(slug=slug, reasoning_efforts=efforts)
+                for slug, efforts in sorted(models.items())
+            ),
+        )
+        with self._inventory_lock:
+            self._inventory = inventory
+            self._inventory_monotonic = moment
+        return inventory
+
+    def inventory_if_due(self) -> bool:
+        """Whether a discovery observation is due (bounded cadence)."""
+        with self._inventory_lock:
+            if self._inventory_monotonic is None:
+                return True
+            return (self._clock() - self._inventory_monotonic) >= self._inventory_ttl
+
+    def refresh_inventory_if_due(self) -> None:
+        """One due discovery observation; failures isolate to this source."""
+        if self._source_id is None or not self.inventory_if_due():
+            return
+        try:
+            _ = self.observe_inventory()
+        except (OSError, RuntimeError, CodexProtocolFailure):
+            # observe_inventory maps failures into honest auth states; a
+            # raise here would risk the worker's report loop, which is
+            # exactly the isolation this program forbids.
+            return
+
+    def inventory_report(self) -> SourceInventory | None:
+        """The latest observation for the worker-protocol inventory section."""
+        if self._source_id is None:
+            return None
+        with self._inventory_lock:
+            return self._inventory
 
     # ── The LocalAdapter entry point ──────────────────────────────────
 
@@ -1474,19 +1783,70 @@ class CodexLocalAdapter:
         if cancel_event.is_set():
             return self._cancelled_result(started)
         if call.resource.resource_id not in self.resource_ids:
-            # The adapter serves only its configured resource id (M05/M09
-            # ownership stays authoritative in the server composition).
+            # The adapter serves only its configured (or currently
+            # discovered) resource ids; ownership stays authoritative in
+            # the server composition and discovery (M05/M09/D-053).
             raise CodexIneligible("resource_not_served")
+        if self._resource is not None:
+            served_model = self._resource.model
+            served_provider = self._resource.provider
+        else:
+            assert self._source_id is not None
+            discovered = self._discovered_resource_ids_locked_call()
+            binding = discovered.get(call.resource.resource_id)
+            served_model = binding[0] if binding is not None else None
+            served_provider = CODEX_PROVIDER
+            # Daybreak finding 3: the resource is variant-qualified — a
+            # selected variant other than the resource's own effort is a
+            # DIFFERENT resource (typed rejection, never a dispatch).
+            if binding is not None and call.model.variant != binding[1]:
+                raise CodexIneligible("resource_not_served")
+            if binding is not None and call.reasoning_effort is None:
+                # The resource IS the effort contract: an effort-less
+                # request dispatches the resource's bound effort, never
+                # a runtime default.
+                call = AdapterCall(
+                    resource=call.resource,
+                    model=call.model,
+                    messages=call.messages,
+                    stream=call.stream,
+                    tools=call.tools,
+                    tool_choice=call.tool_choice,
+                    response_format=call.response_format,
+                    reasoning_effort=binding[1],
+                    max_output_tokens=call.max_output_tokens,
+                    generation_params=call.generation_params,
+                )
+        # Daybreak blocker 7: the selected variant IS the codex effort.
+        # Bind it when the request omits an effort; reject a present
+        # conflict — the executed effort can never diverge from the
+        # audited selected variant.
+        if call.reasoning_effort is None:
+            call = AdapterCall(
+                resource=call.resource,
+                model=call.model,
+                messages=call.messages,
+                stream=call.stream,
+                tools=call.tools,
+                tool_choice=call.tool_choice,
+                response_format=call.response_format,
+                reasoning_effort=call.model.variant,
+                max_output_tokens=call.max_output_tokens,
+                generation_params=call.generation_params,
+            )
+        elif call.reasoning_effort != call.model.variant:
+            raise CodexIneligible("effort_conflicts_with_pin")
         if (
-            call.model.provider != self._resource.provider
-            or call.model.model != self._resource.model
+            call.model.provider != served_provider
+            or served_model is None
+            or call.model.model != served_model
         ):
-            # D-042: this adapter's resource represents ONE physical model
-            # (its ResourceIdentity). A selected identity outside it is
-            # never mapped or substituted — typed rejection BEFORE any
-            # turn (and before any thread): the runtime's model/list
-            # verification below stays the exact-binding check for the
-            # effort within that model, never a model selector.
+            # D-042: the resource represents ONE physical model. A
+            # selected identity outside it is never mapped or substituted
+            # — typed rejection BEFORE any turn (and before any thread):
+            # the runtime's model/list verification below stays the
+            # exact-binding check for the effort within that model, never
+            # a model selector.
             raise CodexIneligible("model_not_served")
         remaining = self._deadline_remaining(deadline)
         if remaining is None or remaining <= 0.0:
@@ -1664,8 +2024,12 @@ class CodexLocalAdapter:
         models: dict[str, tuple[str, ...]] = {}
         cursor: str | None = None
         for _page in range(MAX_MODEL_PAGES):
-            params: dict[str, object] | None = (
-                {"cursor": cursor} if cursor is not None else None
+            # codex-cli 0.155 rejects an ABSENT params member on this
+            # method with JSON-RPC -32600 (live evidence 2026-09-24): the
+            # first page carries the explicit empty object; later pages
+            # carry the cursor. Method-specific evidenced shapes only.
+            params: dict[str, object] = (
+                {"cursor": cursor} if cursor is not None else {}
             )
             result = session.request(
                 _METHOD_MODEL_LIST, params, deadline, abort=cancel_event.is_set
@@ -1951,20 +2315,29 @@ class CodexLocalAdapter:
     def resource_snapshots(self, observed_at: str) -> tuple[ResourceStateSnapshot, ...]:
         """One safe eligibility observation; installed is not eligible.
 
-        The probe walks the same closed gates as execution (discovery,
-        version, sandbox, controlled home, and the bounded ``account/read``
-        auth verdict) and reports honest diagnostics in the closed capacity
-        v3 vocabulary (the detailed reason maps onto the closest status-level
-        code; the remediation steps live in docs/providers.md). No quota
-        telemetry is observed here — the existing collector owns it — and
-        nothing about a successful probe proves promotional eligibility
-        (D-042).
+        Legacy mode (one configured resource): the probe walks the same
+        closed gates as execution (discovery, version, sandbox, controlled
+        home, and the bounded ``account/read`` auth verdict) and reports
+        honest diagnostics in the closed capacity v3 vocabulary (the
+        detailed reason maps onto the closest status-level code; the
+        remediation steps live in docs/providers.md). No quota telemetry
+        is observed here — the existing collector owns it — and nothing
+        about a successful probe proves promotional eligibility (D-042).
+
+        Source mode (D-053): one snapshot per CURRENTLY discovered model,
+        health derived from the source's own auth state; before the first
+        discovery this is honestly empty (the source reports nothing it
+        has not observed).
         """
+        if self._source_id is not None:
+            return self._source_mode_snapshots()
+        resource = self._resource
+        assert resource is not None  # legacy mode always has a resource
         reason = self._eligibility_reason()
         if reason is None:
             snapshot = CapacitySnapshot(
                 schema_version=SCHEMA_VERSION,
-                provider=self._resource.provider,
+                provider=resource.provider,
                 source=f"worker-local:{CODEX_ADAPTER_ID}",
                 retrieved_at=observed_at,
                 status="ok",
@@ -1975,7 +2348,7 @@ class CodexLocalAdapter:
             status, code = _snapshot_class(reason)
             snapshot = CapacitySnapshot(
                 schema_version=SCHEMA_VERSION,
-                provider=self._resource.provider,
+                provider=resource.provider,
                 source=f"worker-local:{CODEX_ADAPTER_ID}",
                 retrieved_at=observed_at,
                 status=status,
@@ -1985,10 +2358,64 @@ class CodexLocalAdapter:
         return (
             resource_snapshot_from_capacity(
                 snapshot,
-                identity=self._resource,
+                identity=resource,
                 quota_observation_class="unknown",
             ),
         )
+
+    def _discovered_resource_ids_locked_call(self) -> dict[str, tuple[str, str]]:
+        with self._inventory_lock:
+            return self._discovered_resource_ids_locked()
+
+    def _source_mode_snapshots(self) -> tuple[ResourceStateSnapshot, ...]:
+        """Per-model snapshots from the latest discovery (source mode)."""
+        assert self._source_id is not None
+        with self._inventory_lock:
+            inventory = self._inventory
+            _resources = self._discovered_resource_ids_locked()
+        if inventory is None:
+            return ()
+        status_by_auth = {
+            "authenticated": ("ok", None),
+            "auth_required": ("auth_required", "auth_required"),
+            "unverified": ("unknown", "telemetry_unknown"),
+            "unavailable": ("unavailable", "source_unavailable"),
+        }
+        status, code = status_by_auth[inventory.auth_state]
+        snapshots: list[ResourceStateSnapshot] = []
+        for model in inventory.models:
+            for effort in sorted(
+                e for e in model.reasoning_efforts if e in REASONING_EFFORTS
+            ):
+                identity = ResourceIdentity(
+                    resource_id=source_resource_id(
+                        self._source_id, model.slug, effort
+                    ),
+                    channel="worker_bridged",
+                    provider=CODEX_PROVIDER,
+                    model=model.slug,
+                    variant=effort,
+                    entitlement="subscription_included",
+                )
+                snapshot = CapacitySnapshot(
+                    schema_version=SCHEMA_VERSION,
+                    provider=CODEX_PROVIDER,
+                    source=f"worker-local:{self.adapter_id}",
+                    retrieved_at=inventory.observed_at,
+                    status=status,  # type: ignore[arg-type]
+                    windows=(),
+                    diagnostics=(
+                        () if code is None else (CapacityDiagnostic(code=code),)
+                    ),
+                )
+                snapshots.append(
+                    resource_snapshot_from_capacity(
+                        snapshot,
+                        identity=identity,
+                        quota_observation_class="unknown",
+                    )
+                )
+        return tuple(snapshots)
 
     def _eligibility_reason(self) -> str | None:
         """The first failing eligibility gate, or ``None`` when eligible."""
@@ -2047,10 +2474,150 @@ class CodexLocalAdapter:
             shutil.rmtree(scratch, ignore_errors=True)
 
 
+#: The SSH-safe login mode of the OFFICIAL CLI, verified against the
+#: installed binary (`codex login --help` on codex-cli
+#: 0.155.0-alpha.16.3 advertises ``--device-auth``; the flow prints the
+#: https://auth.openai.com/codex/device URL plus a one-time code and
+#: polls — no localhost callback server, no browser spawn), so it works
+#: unchanged over SSH. The capability is checked on the INSTALLED CLI at
+#: run time; it is never assumed and never fallen back from.
+DEVICE_AUTH_FLAG = "--device-auth"
+
+
+class LoginRunResult:
+    """The slice of a completed login subprocess the flow may inspect."""
+
+    __slots__: tuple[str, ...] = ("returncode", "stdout")
+
+    def __init__(self, returncode: int, stdout: str) -> None:
+        self.returncode: int = returncode
+        self.stdout: str = stdout
+
+
+class LoginRunner(Protocol):
+    """One official-CLI login command runner (the injectable test seam)."""
+
+    def __call__(
+        self, argv: Sequence[str], env: Mapping[str, str], *, capture: bool
+    ) -> LoginRunResult: ...
+
+
+def _default_login_runner(
+    argv: Sequence[str], env: Mapping[str, str], *, capture: bool
+) -> LoginRunResult:
+    """Run one official-CLI login command (the injectable seam).
+
+    ``capture=True`` is the bounded capability probe (help text); the
+    login itself inherits stdio so the device code reaches the user's
+    SSH terminal exactly as the vendor prints it.
+    """
+    try:
+        if capture:
+            completed = subprocess.run(  # noqa: S603 - fixed argv, user-initiated
+                list(argv),
+                env=dict(env),
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            raw_stdout = completed.stdout
+        else:
+            completed = subprocess.run(  # noqa: S603 - fixed argv, user-initiated
+                list(argv),
+                env=dict(env),
+                check=False,
+            )
+            raw_stdout = None
+    except OSError as exc:
+        _ = sys.stderr.write(f"codex login failed to start: {type(exc).__name__}\n")
+        return LoginRunResult(1, "")
+    stdout = raw_stdout if isinstance(raw_stdout, str) else ""
+    return LoginRunResult(completed.returncode, stdout)
+
+
+def run_official_codex_login(
+    *,
+    source_id: str,
+    state_dir: str | os.PathLike[str] | None = None,
+    pinned_binary: str | None = None,
+    runner: LoginRunner | None = None,
+) -> int:
+    """The ONE clear SSH-safe login action for a source (D-053 source UX).
+
+    Creates/validates the SOURCE's own controlled home
+    (``codex-sources/<source_id>/``) and runs the official CLI's
+    device-auth login against it (``CODEX_HOME`` pointed at that home;
+    the URL + one-time code print on the user's terminal and complete in
+    any browser — no localhost callback, so it works over SSH).
+
+    Strictly no fallbacks: the browser/localhost login is never
+    attempted; the legacy ``codex`` home and ``~/.codex`` are never
+    touched; no credential material is ever read, copied, parsed or
+    migrated between homes (the provider manages it inside the
+    controlled home, D-018/D-044). If the installed CLI does not support
+    the SSH-safe mode, or the login does not complete, this fails closed
+    with an actionable message and the source stays ``auth_required``.
+    """
+    run_proc: LoginRunner = runner if runner is not None else _default_login_runner
+    resolved_source = v_safe_id(source_id, "codex_source")
+    if len(resolved_source) > SOURCE_ID_MAX_LENGTH:
+        raise ValueError(
+            f"source_id {source_id!r}: longer than {SOURCE_ID_MAX_LENGTH} chars"
+        )
+    from .worker_local_store import default_worker_state_dir
+
+    resolved_state = (
+        Path(state_dir)
+        if state_dir is not None
+        else Path(default_worker_state_dir())
+    )
+    home = ControlledCodexHome(resolved_state, name=f"codex-sources/{resolved_source}")
+    home.ensure()
+    invalid = home.validate()
+    if invalid is not None:
+        raise CodexIneligible(invalid)
+    binary, reason = discover_codex_binary(
+        pinned_binary=Path(pinned_binary) if pinned_binary else None,
+        path_lookup=shutil.which,
+    )
+    if binary is None or reason is not None:
+        _ = sys.stderr.write("codex binary not found; install the official codex CLI\n")
+        return 1
+    env = dict(os.environ)
+    env["CODEX_HOME"] = str(home.path)
+    # Capability gate on the INSTALLED CLI (verified, never assumed): a
+    # CLI without the SSH-safe device mode fails closed here — the
+    # browser/localhost login is never attempted as a fallback.
+    probe = run_proc([str(binary.path), "login", "--help"], env, capture=True)
+    if probe.returncode != 0 or DEVICE_AUTH_FLAG not in probe.stdout:
+        _ = sys.stderr.write(
+            "this codex CLI does not support the SSH-safe --device-auth "
+            + "login; upgrade the official codex CLI (no fallback login "
+            + "is attempted)\n"
+        )
+        return 1
+    completed = run_proc(
+        [str(binary.path), "login", DEVICE_AUTH_FLAG], env, capture=False
+    )
+    if completed.returncode != 0:
+        _ = sys.stderr.write(
+            "the device-code login did not complete; the source stays "
+            + "closed (auth_required) — rerun the login command and enter "
+            + "the code before it expires\n"
+        )
+        return 1
+    return 0
+
+
 __all__ = [
     "AuthVerdict",
     "CODEX_ADAPTER_ID",
     "CODEX_PROVIDER",
+    "DEVICE_AUTH_FLAG",
+    "LoginRunResult",
+    "LoginRunner",
+    "INVENTORY_DEFAULT_TTL_SECONDS",
+    "SOURCE_ID_MAX_LENGTH",
     "CONTROLLED_CONFIG_NAME",
     "CodexBinary",
     "CodexIneligible",
@@ -2061,10 +2628,12 @@ __all__ = [
     "CodexSession",
     "CodexSpawnSpec",
     "CodexSpawner",
+    "source_resource_id",
     "ControlledCodexHome",
     "MIN_SUPPORTED_CODEX_VERSION",
     "MappedConversation",
     "check_sandbox_availability",
+    "run_official_codex_login",
     "default_codex_spawner",
     "discover_codex_binary",
     "map_conversation",

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "policy_version": 8,
-  "updated_at": "2026-09-15",
+  "policy_version": 9,
+  "updated_at": "2026-09-26",
   "versioning": {
     "schema_version": {
       "meaning": "The machine-readable artifact shape.",
@@ -122,6 +122,13 @@
       "additional reasoning depth is likely to materially help"
     ],
     "selector_support": "calibrated_configurations",
+    "light_family_restriction": {
+      "rule": "A model family designated effort_restriction max_only in model-tracks.json (a light family, e.g. openai/luna) is represented in the catalog and floor-expanded at max reasoning effort only; other efforts are not calibrated for it and never enter the selector.",
+      "designated_families": [
+        "openai/luna"
+      ],
+      "rationale": "Owner decision D-054 (2026-09-26): weak models are approved for max-effort use only, so sub-max configurations of a light family must not win recommendations through the minimal-margin rule. GLM Flash (zai) is max-only in the catalog without a track; GLM-5.3 base stays multi-effort (m31-repo-review-low is calibrated on glm-5.3/low)."
+    },
     "current_reference_defaults": [
       {
         "model_name": "GPT-6 Astra",

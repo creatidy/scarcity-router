@@ -736,3 +736,73 @@ class ModelResolutionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     _ = unittest.main()
+
+
+class PinnedEffortConflictTests(unittest.TestCase):
+    """Daybreak finding 2: a pin's variant is the execution contract."""
+
+    def _route_first_own(self, application: GatewayApplication) -> tuple[str, str]:
+        request = parse_chat_request(
+            {
+                "model": "deep-coding",
+                "messages": [{"role": "user", "content": "route me"}],
+                "reasoning_effort": "high",
+            }
+        )
+        _ = application.execute(client_id=CLIENT_ID, request=request)
+        audit = audit_records(application)[-1]
+        assert audit.selected_target is not None and audit.decision_id is not None
+        target = audit.selected_target
+        reference = (
+            f"sr-pin:{target.resource_id}/{target.provider}"
+            + f"/{target.model}/{target.variant}@{audit.decision_id}"
+        )
+        return reference, audit.decision_id
+
+    def test_pin_with_conflicting_effort_is_rejected_before_dispatch(self) -> None:
+        application = make_application()
+        reference, _ = self._route_first_own(application)
+        # The prior recommendation's variant, with a CONFLICTING request
+        # effort: typed 400 rejection, zero dispatch, no audit target.
+        provider_model_variant = reference.split("/")[2].split("@")[0]
+        variant = reference.split("/")[3].split("@")[0]
+        conflicting = "low" if variant == "high" else "high"
+        _ = provider_model_variant
+        request = parse_chat_request(
+            {
+                "model": f"{reference.rsplit('@', 1)[0]}",
+                "messages": [_USER_ONLY],
+                "reasoning_effort": conflicting,
+            }
+        )
+        adapter = application.adapters.resolve("server_direct_http")
+        assert adapter is not None
+        scripted = cast(ScriptedAdapter, adapter)
+        before = scripted.dispatch_count
+        with self.assertRaises(GatewayError) as caught:
+            _ = application.execute(client_id=CLIENT_ID, request=request)
+        self.assertEqual(400, caught.exception.http_status)
+        self.assertEqual(
+            "effort_conflicts_with_target", caught.exception.code
+        )
+        self.assertEqual(before, scripted.dispatch_count)
+        audit = audit_records(application)[-1]
+        self.assertEqual(audit.result_status, RESULT_REJECTED)
+        self.assertIsNone(audit.executed_target)
+
+    def test_pin_without_effort_keeps_carried_control_semantics(self) -> None:
+        # Effort-less pins carry NO wire effort through HTTP presets (the
+        # preset's evidenced mapping is authoritative); source resources
+        # bind their own effort at the worker (D-053 per-effort resources).
+        application = make_application()
+        reference, _ = self._route_first_own(application)
+        request = parse_chat_request(
+            {"model": reference.rsplit("@", 1)[0], "messages": [_USER_ONLY]}
+        )
+        _ = application.execute(client_id=CLIENT_ID, request=request)
+        adapter = application.adapters.resolve("server_direct_http")
+        assert adapter is not None
+        scripted = cast(ScriptedAdapter, adapter)
+        # _route_first already dispatched once (the recommendation run).
+        self.assertEqual(2, scripted.dispatch_count)
+        self.assertIsNone(scripted.dispatches[1].reasoning_effort)

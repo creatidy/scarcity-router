@@ -966,7 +966,12 @@ class CapacityBindingsContract(unittest.TestCase):
 
 class ModelCatalogEntryContract(unittest.TestCase):
     def test_reasoning_effort_vocabulary_round_trip(self) -> None:
-        self.assertEqual(st.REASONING_EFFORTS, ("none", "low", "medium", "high", "xhigh", "max"))
+        # "ultra" is the additive D-053 extension (runtime-reported on the
+        # newest provider generation).
+        self.assertEqual(
+            st.REASONING_EFFORTS,
+            ("none", "low", "medium", "high", "xhigh", "max", "ultra"),
+        )
         for provider in ("openai", "zai"):
             for effort in st.REASONING_EFFORTS:
                 with self.subTest(provider=provider, effort=effort):

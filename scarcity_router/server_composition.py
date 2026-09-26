@@ -23,6 +23,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 
 from .codex_worker_evidence import default_codex_worker_cells
+from .execution_sources import SourceRegistry
 from .gateway_adapters import AdapterRegistry
 from .providers.http_origin import ProviderCredential, ProviderOrigin
 from .providers.openai_http_adapter import OpenAICompatibleHttpAdapter, ResourceBinding
@@ -141,6 +142,13 @@ def validate_execution_configuration(
     """
     for provider in configuration.providers:
         _validate_provider_endpoint(provider)
+    for source in configuration.sources:
+        if not worker_id_exists(source.worker_id):
+            raise CompositionError(
+                f"source {source.source_id!r} references worker "
+                + f"{source.worker_id!r}, which has no identity in the "
+                + "worker pairing store; pair the worker first (workers page)"
+            )
     for resource in configuration.resources:
         resource_id = resource.registration.identity.resource_id
         if resource.worker_id is not None and not worker_id_exists(resource.worker_id):
@@ -218,6 +226,7 @@ def build_adapter_registry(
     *,
     provider_secret_reader: ProviderSecretReader,
     worker_endpoint: WorkerEndpoint,
+    source_registry: SourceRegistry | None = None,
 ) -> AdapterRegistry:
     """Compose the channel-keyed adapter registry from configuration.
 
@@ -245,6 +254,15 @@ def build_adapter_registry(
         worker_adapter_map[resource.registration.identity.resource_id] = (
             resource.local_adapter_id
         )
+    # D-053: derived resources dispatch to their source's adapter
+    # INSTANCE (codex:<source_id>) on the owning worker.
+    if source_registry is not None:
+        for registration in source_registry.derived_registrations():
+            adapter_id = source_registry.adapter_of(
+                registration.identity.resource_id
+            )
+            if adapter_id is not None:
+                worker_adapter_map[registration.identity.resource_id] = adapter_id
     registry = AdapterRegistry()
     if bindings:
         registry.register(OpenAICompatibleHttpAdapter(bindings))
@@ -262,6 +280,7 @@ def build_compatibility_cells(
     configuration: ServerConfiguration,
     *,
     provider_secret_reader: ProviderSecretReader,
+    source_registry: SourceRegistry | None = None,
 ) -> tuple[CompatibilityCell, ...]:
     """Build the production compatibility matrix from administrator
     configuration and the existing evidence modules.
@@ -325,4 +344,21 @@ def build_compatibility_cells(
                 provider=identity.provider, model=identity.model
             )
         )
+    # D-053: adopted source-derived models are served through the SAME
+    # worker-local adapter translation surface, whose evidence is about
+    # the adapter's OpenAI-compatibility mapping (model-independent code
+    # path), so adopted slugs get the same reviewed cells. This is the
+    # explicit D-053 reconciliation of the per-model evidence keying.
+    if source_registry is not None:
+        for registration in source_registry.derived_registrations():
+            identity = registration.identity
+            if source_registry.adapter_of(identity.resource_id) is None:
+                continue
+            if identity.provider != "openai":
+                continue
+            cells.extend(
+                default_codex_worker_cells(
+                    provider=identity.provider, model=identity.model
+                )
+            )
     return _canonical_cells(cells)
