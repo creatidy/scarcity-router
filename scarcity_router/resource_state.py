@@ -1588,7 +1588,28 @@ class ResourceRegistry:
         return resource_id in self._registrations
 
     def apply_snapshot(self, snapshot: ResourceStateSnapshot) -> None:
-        """Record one normalized observation for a registered resource."""
+        """Record one normalized observation for a registered resource.
+
+        Daybreak blocker 5: the stored observation's identity is
+        CANONICALIZED to the registration's identity — the pool ids are
+        registration-owned policy, so a worker-supplied observation can
+        never leave a document whose serialized pool assignment
+        contradicts the registration.
+        """
+        registration = self._registrations.get(snapshot.identity.resource_id)
+        if (
+            registration is not None
+            and snapshot.identity.quota_pool_ids
+            != registration.identity.quota_pool_ids
+        ):
+            snapshot = ResourceStateSnapshot(
+                schema_version=snapshot.schema_version,
+                identity=registration.identity,
+                observed_at=snapshot.observed_at,
+                health=snapshot.health,
+                quota_facts=snapshot.quota_facts,
+                promotions=snapshot.promotions,
+            )
         self._checked_observation(snapshot)
         self._observations[snapshot.identity.resource_id] = snapshot
         self._revision += 1
@@ -1605,9 +1626,27 @@ class ResourceRegistry:
         documents carry none.
         """
         _v_instance_of(report, WorkerStateReport, "worker_report")
+        canonical: list[ResourceStateSnapshot] = []
         for snapshot in report.resources:
+            registration = self._registrations.get(snapshot.identity.resource_id)
+            if (
+                registration is not None
+                and snapshot.identity.quota_pool_ids
+                != registration.identity.quota_pool_ids
+            ):
+                # Daybreak blocker 5: pools are registration-owned — the
+                # stored document cannot contradict the registration.
+                snapshot = ResourceStateSnapshot(
+                    schema_version=snapshot.schema_version,
+                    identity=registration.identity,
+                    observed_at=snapshot.observed_at,
+                    health=snapshot.health,
+                    quota_facts=snapshot.quota_facts,
+                    promotions=snapshot.promotions,
+                )
             self._checked_observation(snapshot)
-        for snapshot in report.resources:
+            canonical.append(snapshot)
+        for snapshot in canonical:
             self._observations[snapshot.identity.resource_id] = snapshot
         self._revision += 1
 

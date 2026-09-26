@@ -693,21 +693,34 @@ class GatewayApplication:
         # requests keep the carried-control semantics pinned by the
         # existing contract (the effort is a request control; the variant
         # is the catalog configuration identity).
+        # Daybreak blocker 7: for a PINNED request the selected variant is
+        # part of the execution contract — a request effort conflicting
+        # with it is a typed rejection BEFORE anything is dispatched
+        # (executed_target stays unset, the audit stays a rejection). For
+        # the codex path an effort-less pin binds the selected variant
+        # (codex variants are native runtime efforts); server-direct
+        # presets keep their evidenced wire mapping as the authority.
         selected_variant = target.model.variant
         dispatched_effort = request.reasoning_effort
-        if resolved.pinned_target is not None:
-            if (
-                dispatched_effort is not None
-                and dispatched_effort != selected_variant
-            ):
-                # Before executed_target is recorded: nothing dispatched,
-                # so the audit stays a REJECTION with no executed target.
-                raise GatewayError.invalid_request(
-                    "the requested reasoning effort "
-                    + f"{dispatched_effort!r} conflicts with the pinned "
-                    + f"target's effort {selected_variant!r}",
-                    code="effort_conflicts_with_target",
-                )
+        if (
+            resolved.pinned_target is not None
+            and selected_variant is not None
+            and dispatched_effort is not None
+            and dispatched_effort != selected_variant
+        ):
+            raise GatewayError.invalid_request(
+                "the requested reasoning effort "
+                + f"{dispatched_effort!r} conflicts with the pinned "
+                + f"target's effort {selected_variant!r}",
+                code="effort_conflicts_with_target",
+            )
+        if (
+            resolved.pinned_target is not None
+            and dispatched_effort is None
+            and selected_variant is not None
+            and target.resource.channel == "worker_bridged"
+        ):
+            dispatched_effort = selected_variant
         state.executed_target = state.selected_target
         call = AdapterCall(
             resource=target.resource,

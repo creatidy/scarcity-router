@@ -46,7 +46,6 @@ MAX_SOURCES_PER_REPORT = 8
 MAX_MODELS_PER_SOURCE = 64
 MAX_EFFORTS_PER_MODEL = 8
 _MAX_RUNTIME_VERSION = 64
-_MAX_DISPLAY_NAME = 128
 
 #: Closed auth-state vocabulary for one source's observation. The worker
 #: reports exactly one state per source per report:
@@ -71,10 +70,12 @@ SOURCE_KINDS: tuple[str, ...] = ("codex_subscription",)
 SOURCE_ID_MAX_LENGTH = 20
 
 #: Upper bound for a runtime-reported slug: ``<source_id>:<slug>`` must
-#: stay inside the safe-id contract (20 + 1 + 40 <= 64). A longer slug is
-#: structural listing drift and fails closed at the worker, before any
-#: report — it can never poison adoption or the registry read model.
-SLUG_MAX_LENGTH = 40
+#: stay inside the safe-id contract. A longer slug is structural listing
+#: drift and fails closed at the worker, before any report — it can never
+#: poison adoption or the server's read model. Per-effort derived ids add
+#: ``:<effort>`` (longest policy effort is 7 chars), so the slug itself is
+#: capped at 35: 20 + 1 + 35 + 1 + 7 = 64.
+SLUG_MAX_LENGTH = 35
 
 
 def source_resource_id(source_id: str, slug: str, effort: str | None = None) -> str:
@@ -93,6 +94,9 @@ def source_resource_id(source_id: str, slug: str, effort: str | None = None) -> 
             + "derived resource ids would exceed the safe-id contract"
         )
     combined = f"{source_id}:{slug}" + (f":{effort}" if effort else "")
+    # The COMPLETE identity — including the effort suffix — must fit the
+    # safe-id contract (Daybreak blocker 2): validated here, before any
+    # adoption state can reference the id.
     _ = v_safe_id(combined, "source_resource_id")
     return combined
 
@@ -173,13 +177,12 @@ class DiscoveredModel:
     here fails closed at the worker AND at the server.
     """
 
-    __slots__: tuple[str, ...] = ("slug", "reasoning_efforts", "display_name")
+    __slots__: tuple[str, ...] = ("slug", "reasoning_efforts")
 
     def __init__(
         self,
         slug: str,
         reasoning_efforts: tuple[str, ...],
-        display_name: str = "",
     ) -> None:
         try:
             if len(slug) > SLUG_MAX_LENGTH:
@@ -188,6 +191,13 @@ class DiscoveredModel:
                     + "derived resource ids would exceed the safe-id contract"
                 )
             checked_slug = v_safe_id(slug, "discovered_model.slug")
+            # Daybreak blocker 3: cardinality bound BEFORE materializing
+            # attacker-controlled effort objects.
+            if len(reasoning_efforts) > MAX_EFFORTS_PER_MODEL:
+                raise ModelInventoryError(
+                    f"discovered_model {slug!r}: more than "
+                    + f"{MAX_EFFORTS_PER_MODEL} reasoning efforts"
+                )
             seen: set[str] = set()
             efforts: list[str] = []
             for effort in reasoning_efforts:
@@ -203,16 +213,12 @@ class DiscoveredModel:
                     f"discovered_model {slug!r}: more than "
                     + f"{MAX_EFFORTS_PER_MODEL} reasoning efforts"
                 )
-            checked_display = display_name if display_name else ""
-            if len(checked_display) > _MAX_DISPLAY_NAME:
-                raise ModelInventoryError("discovered_model.display_name too long")
         except ModelInventoryError:
             raise
         except ValueError as exc:
             raise ModelInventoryError(f"discovered_model: {exc}") from None
         self.slug: str = checked_slug
         self.reasoning_efforts: tuple[str, ...] = tuple(efforts)
-        self.display_name: str = checked_display
 
     @override
     def __eq__(self, other: object) -> bool:
@@ -220,7 +226,6 @@ class DiscoveredModel:
             isinstance(other, DiscoveredModel)
             and self.slug == other.slug
             and self.reasoning_efforts == other.reasoning_efforts
-            and self.display_name == other.display_name
         )
 
     @override
@@ -228,19 +233,14 @@ class DiscoveredModel:
         return f"DiscoveredModel(slug={self.slug!r}, efforts={self.reasoning_efforts!r})"
 
     def to_dict(self) -> dict[str, object]:
-        out: dict[str, object] = {
+        return {
             "slug": self.slug,
             "reasoning_efforts": list(self.reasoning_efforts),
         }
-        if self.display_name:
-            out["display_name"] = self.display_name
-        return out
 
     @classmethod
     def from_dict(cls, d: object) -> "DiscoveredModel":
-        dd = exact_shape(
-            d, ("slug", "reasoning_efforts"), ("display_name",), "discovered_model"
-        )
+        dd = exact_shape(d, ("slug", "reasoning_efforts"), (), "discovered_model")
         efforts_raw = dd["reasoning_efforts"]
         if not isinstance(efforts_raw, list):
             raise ModelInventoryError("discovered_model.reasoning_efforts must be a list")
@@ -249,11 +249,6 @@ class DiscoveredModel:
             reasoning_efforts=tuple(
                 v_str(item, "discovered_model.reasoning_efforts")
                 for item in cast("list[object]", efforts_raw)
-            ),
-            display_name=(
-                v_str(dd["display_name"], "discovered_model.display_name")
-                if "display_name" in dd
-                else ""
             ),
         )
 
@@ -364,6 +359,12 @@ class SourceInventory:
         models_raw = dd["models"]
         if not isinstance(models_raw, list):
             raise ModelInventoryError("source_inventory.models must be an array")
+        # Daybreak blocker 3: bound BEFORE materializing objects.
+        if len(models_raw) > MAX_MODELS_PER_SOURCE:
+            raise ModelInventoryError(
+                "source_inventory: more than "
+                + f"{MAX_MODELS_PER_SOURCE} models"
+            )
         try:
             return cls(
                 source_id=v_str(dd["source_id"], "source_inventory.source_id"),
@@ -455,6 +456,11 @@ class ModelInventoryReport:
         sources_raw = dd["sources"]
         if not isinstance(sources_raw, list):
             raise ModelInventoryError("inventory.sources must be an array")
+        # Daybreak blocker 3: bound BEFORE materializing objects.
+        if len(sources_raw) > MAX_SOURCES_PER_REPORT:
+            raise ModelInventoryError(
+                f"inventory: more than {MAX_SOURCES_PER_REPORT} sources"
+            )
         try:
             return cls(
                 worker_id=v_str(dd["worker_id"], "inventory.worker_id"),

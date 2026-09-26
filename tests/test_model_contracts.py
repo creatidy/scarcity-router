@@ -31,7 +31,7 @@ OBSERVED = "2026-09-24T12:00:00.000Z"
 
 
 def _model(slug: str = "gpt-6-sol", efforts: tuple[str, ...] = ("low", "high")) -> DiscoveredModel:
-    return DiscoveredModel(slug, efforts, "GPT-6 Sol")
+    return DiscoveredModel(slug, efforts)
 
 
 def _source(**overrides: object) -> SourceInventory:
@@ -62,15 +62,12 @@ def _report(**overrides: object) -> ModelInventoryReport:
 
 class DiscoveredModelTests(unittest.TestCase):
     def test_serialization_shape_is_exactly_the_contract(self) -> None:
+        # No free-text field exists: display_name was removed (Daybreak
+        # blocker 6) — the wire cannot carry account-identifying text.
         self.assertEqual(
-            {
-                "slug": "gpt-6-sol",
-                "reasoning_efforts": ["low", "high"],
-                "display_name": "GPT-6 Sol",
-            },
+            {"slug": "gpt-6-sol", "reasoning_efforts": ["low", "high"]},
             _model().to_dict(),
         )
-        # display_name stays absent when empty (no raw provider payload).
         self.assertEqual(
             {"slug": "m", "reasoning_efforts": ["low"]},
             DiscoveredModel("m", ("low",)).to_dict(),
@@ -295,8 +292,9 @@ class SlugBoundTests(unittest.TestCase):
         # server can never be poisoned by one.
         with self.assertRaises(ModelInventoryError):
             _ = DiscoveredModel("a" * 41, ("low",))
-        # Exactly at the bound is legal.
-        self.assertEqual("b" * 40, DiscoveredModel("b" * 40, ("low",)).slug)
+        # Exactly at the bound is legal (35 + source 20 + effort 7 + 2
+        # separators = 64, exactly the safe-id contract).
+        self.assertEqual("b" * 35, DiscoveredModel("b" * 35, ("low",)).slug)
 
     def test_source_resource_id_rejects_unfit_combinations(self) -> None:
         from scarcity_router.model_inventory import source_resource_id

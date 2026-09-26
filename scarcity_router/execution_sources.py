@@ -256,10 +256,16 @@ class SourceRegistry:
                 )
                 continue
             routable_now.add(slug)
-            state.adopted[slug] = (track.track_id(), model.reasoning_efforts)
             policy_efforts = sorted(
                 e for e in model.reasoning_efforts if e in REASONING_EFFORTS
             )
+            # Daybreak blocker 2: validate EVERY per-effort derived id
+            # BEFORE any adoption state is mutated — an over-long combo
+            # fails the whole model closed instead of poisoning partial
+            # state.
+            for effort in policy_efforts:
+                _resource_id(config.source_id, slug, effort)
+            state.adopted[slug] = (track.track_id(), model.reasoning_efforts)
             decisions.append(
                 AdoptionDecision(
                     slug,

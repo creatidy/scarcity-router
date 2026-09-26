@@ -799,9 +799,11 @@ class CodexAdapterTests(unittest.TestCase):
     # ── (6)+(19) model/effort binding ──────────────────────────────────
 
     def test_pinned_model_and_effort_are_sent_exactly(self) -> None:
+        # Daybreak blocker 7: the selected variant IS the effort — a
+        # matching explicit effort is dispatched exactly as requested.
         harness = self._harness()
         result = harness.adapter.invoke(
-            _call(reasoning_effort="low"),
+            _call(reasoning_effort="high"),
             cancel_event=threading.Event(),
             deadline=_future_deadline(),
             emit=lambda chunk: None,
@@ -810,7 +812,40 @@ class CodexAdapterTests(unittest.TestCase):
         params = harness.trace_request("turn/start")
         assert params is not None
         self.assertEqual(SLUG, params.get("model"))
-        self.assertEqual("low", params.get("effort"))
+        self.assertEqual("high", params.get("effort"))
+
+    def test_omitted_effort_binds_the_selected_variant(self) -> None:
+        # Daybreak blocker 7: an effort-less request dispatches the
+        # selected variant — never a runtime default — while the audit
+        # records that same variant.
+        harness = self._harness()
+        result = harness.adapter.invoke(
+            _call(),
+            cancel_event=threading.Event(),
+            deadline=_future_deadline(),
+            emit=lambda chunk: None,
+        )
+        self.assertEqual("completed", result.status)
+        params = harness.trace_request("turn/start")
+        assert params is not None
+        self.assertEqual("high", params.get("effort"))
+
+    def test_conflicting_effort_is_rejected_before_the_turn(self) -> None:
+        # Daybreak blocker 7: a request effort conflicting with the
+        # selected variant is a typed rejection — the executed effort can
+        # never diverge from the audited variant.
+        harness = self._harness()
+        result = harness.adapter.invoke(
+            _call(reasoning_effort="low"),
+            cancel_event=threading.Event(),
+            deadline=_future_deadline(),
+            emit=lambda chunk: None,
+        )
+        self.assertEqual("failed", result.status)
+        assert result.calls[0].note is not None
+        self.assertEqual("effort_conflicts_with_pin", result.calls[0].note)
+        params = harness.trace_request("turn/start")
+        self.assertIsNone(params)
 
     def test_unlisted_model_is_rejected_before_execution(self) -> None:
         # The runtime's own model/list is the exact-binding authority for
@@ -887,8 +922,16 @@ class CodexAdapterTests(unittest.TestCase):
 
     def test_unsupported_effort_is_rejected_before_execution(self) -> None:
         harness = self._harness()
+        # The selected variant IS the effort (xhigh), so the pin/effort
+        # binding passes; the RUNTIME LISTING then rejects xhigh — the
+        # listing remains the effort authority for bound efforts.
         result = harness.adapter.invoke(
-            _call(reasoning_effort="xhigh"),
+            _call(
+                reasoning_effort="xhigh",
+                model=ModelIdentity(
+                    provider="openai", model=SLUG, variant="xhigh"
+                ),
+            ),
             cancel_event=threading.Event(),
             deadline=_future_deadline(),
             emit=lambda chunk: None,
@@ -1073,7 +1116,7 @@ class CodexAdapterTests(unittest.TestCase):
         # final equality below covers the ENTIRE allowlist.
         _ = happy.adapter.invoke(
             _call(
-                reasoning_effort="low",
+                reasoning_effort="high",
                 messages=(
                     AdapterMessage(role="system", content="be brief"),
                     AdapterMessage(role="user", content="first"),

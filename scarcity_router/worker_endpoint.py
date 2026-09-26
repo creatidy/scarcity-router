@@ -65,8 +65,11 @@ from typing import Protocol, cast
 from .errors import CapacityValidationError
 from .gateway_validation import v_int
 from .model_inventory import (
+    DiscoveredModel,
     ModelInventoryError,
     ModelInventoryReport,
+    SourceInventory,
+    is_source_resource_id,
 )
 from .resource_state import (
     ResourceRegistry,
@@ -590,6 +593,24 @@ class WorkerSession:
                 )
                 return
             applied_inventories.append(inventory)
+        # Daybreak blocker 4: a source may occur at most once across the
+        # ENTIRE state report. Duplicates would multiply absence/miss
+        # counting (instant retirement) — reject the whole report.
+        seen_source_ids: set[str] = set()
+        for inventory in applied_inventories:
+            for source_inventory in inventory.sources:
+                if source_inventory.source_id in seen_source_ids:
+                    self._send_error(
+                        ErrorMessage(
+                            code=ERR_MALFORMED,
+                            message="the state report carries duplicate "
+                            + "inventories for source "
+                            + repr(source_inventory.source_id),
+                            fatal=False,
+                        )
+                    )
+                    return
+                seen_source_ids.add(source_inventory.source_id)
         for inventory in applied_inventories:
             sink = endpoint.inventory_sink
             if sink is not None:
@@ -641,12 +662,26 @@ class WorkerSession:
         # report (the spoof-protection atomicity is unchanged), and any
         # failure among the applied snapshots remains atomic.
         applied: list[ResourceStateSnapshot] = []
+        # Daybreak blocker 8: a source whose applied inventory is NOT
+        # authenticated cannot have healthy snapshots in the same report —
+        # they would be stale pre-auth-loss state contradicting the
+        # inventory. Drop them so a closed source never looks routable.
+        unauthenticated_sources = {
+            s.source_id
+            for inv in applied_inventories
+            for s in inv.sources
+            if s.auth_state != "authenticated"
+        }
         for snapshot in report.resources:
             rid = snapshot.identity.resource_id
             if not endpoint.is_registered(rid) and endpoint.is_source_bound(
                 rid, worker_id
             ):
                 continue
+            if is_source_resource_id(rid):
+                source_id = rid.partition(":")[0]
+                if source_id in unauthenticated_sources:
+                    continue
             applied.append(snapshot)
         if len(applied) != len(report.resources):
             report = WorkerStateReport(

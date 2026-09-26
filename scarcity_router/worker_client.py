@@ -870,7 +870,30 @@ class _ActiveSession:
         self._send_state_report()
 
     def _send_state_report(self) -> None:
-        """Build and send one M01 worker report (the shared path)."""
+        """Build and send one M01 worker report (the shared path).
+
+        Daybreak blocker 8: source inventories are REFRESHED FIRST, and
+        snapshots are collected AFTER the refresh — so one report can
+        never carry fresh-healthy snapshots alongside an inventory that
+        just reported auth loss. Snapshots and inventory always describe
+        the same observation instant.
+        """
+        # Daybreak blocker 8: the refresh runs BEFORE `now` is captured so
+        # the report's reported_at is never earlier than the inventory's
+        # observed_at (a future-dated observation fails closed).
+        if self._negotiated_version() is not None and self._negotiated_version() >= 2:
+            for adapter_id in self._runtime.local_adapters.adapter_ids():
+                adapter = self._runtime.local_adapters.resolve(adapter_id)
+                refresher = getattr(adapter, "refresh_inventory_if_due", None)
+                if refresher is None:
+                    continue
+                try:
+                    refresher()
+                except (OSError, ValueError, WorkerProtocolError) as exc:
+                    self._runtime.note(
+                        "warn",
+                        f"inventory refresh failed for {adapter_id}: {type(exc).__name__}",
+                    )
         now = _canonical_now()
         snapshots: list[ResourceStateSnapshot] = []
         for adapter_id in self._runtime.local_adapters.adapter_ids():
@@ -907,18 +930,6 @@ class _ActiveSession:
         if negotiated is not None and negotiated >= 2:
             for adapter_id in self._runtime.local_adapters.adapter_ids():
                 adapter = self._runtime.local_adapters.resolve(adapter_id)
-                # A due discovery observation happens HERE, inside the
-                # state-report path: bounded, deterministic, and failures
-                # are isolated inside the adapter (D-053 reliability).
-                refresher = getattr(adapter, "refresh_inventory_if_due", None)
-                if refresher is not None:
-                    try:
-                        refresher()
-                    except (OSError, ValueError, WorkerProtocolError) as exc:
-                        self._runtime.note(
-                            "warn",
-                            f"inventory refresh failed for {adapter_id}: {type(exc).__name__}",
-                        )
                 report_source = getattr(adapter, "inventory_report", None)
                 if report_source is None:
                     continue

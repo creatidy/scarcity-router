@@ -557,77 +557,113 @@ class ControlledCodexHome:
                 _write_private(config, _CONTROLLED_CONFIG_NOTICE)
             elif not self._config_is_contained(config.read_bytes()):
                 # The REAL runtime appends project-trust entries for the
-                # directories it works in (observed live: scratch turns,
-                # review workspaces). Entries OUTSIDE this source's own
-                # scratch root break the isolation containment — drop
-                # them (config only; credentials are NEVER touched), and
-                # keep scratch-root entries so executions don't churn.
-                self._rewrite_config_dropping_foreign_projects()
+                # directories it works in (observed live: scratch turns).
+                # ONLY scratch-root project tables survive; EVERY other
+                # construct (mcp_servers, plugins, apps, foreign project
+                # paths) is dropped — the home keeps ONLY Scarcity
+                # Router-approved configuration plus provider-managed
+                # state. Credentials are never read or rewritten.
+                self._regenerate_config_keeping_contained_projects()
             self._prune_stale_scratch()
 
-    def _config_is_contained(self, content: bytes) -> bool:
-        """True when the config starts with the generated notice and every
-        project-trust entry stays inside this source's scratch root."""
+    def _config_projects(self, content: bytes) -> tuple[bool, list[str]]:
+        """Parse the config with the stdlib TOML parser.
+
+        Returns ``(wellformed, project_paths)``. ``wellformed`` requires
+        that EVERY top-level table is a ``projects`` table — anything else
+        (mcp_servers, plugins, apps, model overrides, ...) makes the home
+        invalid. The generated notice comment is not required to survive:
+        the vendor runtime legitimately rewrites and reorders this file
+        when it records trusted projects.
+        """
+        import tomllib
+
         text = content.decode("utf-8", errors="replace")
-        if not text.startswith(_CONTROLLED_CONFIG_NOTICE):
+        try:
+            parsed = tomllib.loads(text)
+        except tomllib.TOMLDecodeError:
+            return False, []
+        unknown = set(parsed) - {"projects"}
+        if unknown:
+            return False, []
+        projects = parsed.get("projects", {})
+        if not isinstance(projects, dict):
+            return False, []
+        paths: list[str] = []
+        for key, value in projects.items():
+            if not isinstance(value, dict):
+                return False, []
+            paths.append(key)
+        return True, paths
+
+    def _config_is_contained(self, content: bytes) -> bool:
+        """True when the config is wellformed and every project-trust
+        entry RESOLVES inside this source's scratch root."""
+        wellformed, project_paths = self._config_projects(content)
+        if not wellformed:
             return False
-        for match in re.finditer(r'\[projects\."([^"\]]+)"\]', text):
-            project = match.group(1)
-            if not project.startswith(str(self._scratch_root)):
+        scratch_root = os.path.realpath(self._scratch_root)
+        for project in project_paths:
+            if not os.path.realpath(project).startswith(scratch_root + os.sep):
                 return False
         return True
 
-    def _rewrite_config_dropping_foreign_projects(self) -> None:
+    def _regenerate_config_keeping_contained_projects(self) -> None:
+        """Reset the config to the generated notice, preserving ONLY the
+        project-trust tables that resolve inside this source's scratch
+        root. Never touches credential material (auth.json et al)."""
         config = self._home / CONTROLLED_CONFIG_NAME
-        text = config.read_bytes().decode("utf-8", errors="replace")
-        blocks: list[str] = []
-        kept: list[str] = [_CONTROLLED_CONFIG_NOTICE]
-        current: list[str] = []
-        current_foreign = False
-        for line in text.splitlines(keepends=True):
-            if line.startswith("[projects."):
-                if current:
-                    blocks.append("".join(current))
-                current = [line]
-                match = re.match(r'\[projects\."([^"\]]+)"\]', line)
-                current_foreign = not (
-                    match is not None
-                    and match.group(1).startswith(str(self._scratch_root))
-                )
-                continue
-            if current:
-                if not current_foreign:
-                    current.append(line)
-            else:
-                kept.append(line)
-        if current and not current_foreign:
-            blocks.append("".join(current))
-        _ = blocks
+        try:
+            wellformed, project_paths = self._config_projects(
+                config.read_bytes()
+            )
+        except OSError:
+            wellformed, project_paths = False, []
+        kept = _CONTROLLED_CONFIG_NOTICE
+        if wellformed:
+            scratch_root = os.path.realpath(self._scratch_root)
+            for project in project_paths:
+                if os.path.realpath(project).startswith(scratch_root + os.sep):
+                    kept += (
+                        f'\n[projects."{project}"]\ntrust_level = "trusted"\n'
+                    )
         # Rewrite in place (truncate): the initial _write_private O_EXCL
         # discipline applies only to first creation.
         fd = os.open(config, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         try:
-            _ = os.write(fd, "".join(kept).encode("utf-8"))
+            _ = os.write(fd, kept.encode("utf-8"))
         finally:
             os.close(fd)
 
     def validate(self) -> str | None:
-        """``None`` when the controlled home is intact, else a safe reason."""
+        """``None`` when the controlled home is intact, else a safe reason.
+
+        Symlink-resistant (Daybreak blocker 1): the home, scratch root and
+        config are checked with ``lstat`` — a symlink or equivalent
+        aliasing anywhere in the chain invalidates the home, so one
+        source's controlled home can never resolve into another's."""
         with self._lock:
             try:
-                st = os.stat(self._home)
+                st = os.lstat(self._home)
                 if not stat.S_ISDIR(st.st_mode):
                     return "codex_home_invalid"
                 if st.st_mode & _HOME_MODE_OK_MASK:
                     return "codex_home_invalid"
+                # The scratch root may not exist yet (created on demand
+                # by ensure); when present it must be a real directory,
+                # never a symlink alias.
+                try:
+                    scratch_st = os.lstat(self._scratch_root)
+                    if not stat.S_ISDIR(scratch_st.st_mode):
+                        return "codex_home_invalid"
+                except OSError:
+                    pass
                 config = self._home / CONTROLLED_CONFIG_NAME
-                if not config.is_file():
+                config_st = os.lstat(config)
+                if not stat.S_ISREG(config_st.st_mode):
                     return "codex_home_invalid"
-                # The REAL runtime appends project-trust entries for the
-                # directories it works in; the home is intact when the
-                # generated notice prefixes the file and every project
-                # entry stays inside this source's scratch root
-                # (containment, not byte-identity).
+                if config_st.st_mode & _HOME_MODE_OK_MASK:
+                    return "codex_home_invalid"
                 if not self._config_is_contained(config.read_bytes()):
                     return "codex_home_invalid"
             except OSError:
@@ -1776,6 +1812,26 @@ class CodexLocalAdapter:
                     max_output_tokens=call.max_output_tokens,
                     generation_params=call.generation_params,
                 )
+        # Daybreak blocker 7: the selected variant IS the codex effort.
+        # Bind it when the request omits an effort; reject a present
+        # conflict — the executed effort can never diverge from the
+        # audited selected variant.
+        if call.model.variant is not None:
+            if call.reasoning_effort is None:
+                call = AdapterCall(
+                    resource=call.resource,
+                    model=call.model,
+                    messages=call.messages,
+                    stream=call.stream,
+                    tools=call.tools,
+                    tool_choice=call.tool_choice,
+                    response_format=call.response_format,
+                    reasoning_effort=call.model.variant,
+                    max_output_tokens=call.max_output_tokens,
+                    generation_params=call.generation_params,
+                )
+            elif call.reasoning_effort != call.model.variant:
+                raise CodexIneligible("effort_conflicts_with_pin")
         if (
             call.model.provider != served_provider
             or served_model is None
