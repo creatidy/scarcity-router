@@ -82,6 +82,13 @@ class _Fake:
             {"id": request_id, "error": {"code": code, "message": "synthetic"}}
         )
 
+    def _require_params(self, request: dict[str, object]) -> bool:
+        """Reject an absent params member with -32600 (codex 0.155 drift)."""
+        if "params" in request:
+            return True
+        self._respond_error(request.get("id"), -32600)
+        return False
+
     def _notify(self, method: str, params: dict[str, object]) -> None:
         self._write({"method": method, "params": params})
 
@@ -244,8 +251,17 @@ class _Fake:
             elif method == "initialized":
                 continue
             elif method == "account/read":
+                # Real codex-cli 0.155 behavior (live evidence 2026-09-24):
+                # these methods REQUIRE a params member; an absent member
+                # is rejected with JSON-RPC -32600. The fake is strict so
+                # adapter regressions back to the pre-0.155 wire shape
+                # fail here instead of silently passing.
+                if not self._require_params(request):
+                    continue
                 self._answer_account(request)
             elif method == "model/list":
+                if not self._require_params(request):
+                    continue
                 self._respond(request.get("id"), self._models_page())
             elif method == "thread/start":
                 if self._scenario.get("thread") == "drift":

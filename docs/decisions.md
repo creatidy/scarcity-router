@@ -3588,6 +3588,203 @@ what M4.1 forbids); a configurable per-provider eligibility policy
   server-side or CLI change; the onboarding semantics, pairing path,
   store schema and persistence formats are untouched.
 
+### D-053 — Dynamic execution sources: ExecutionSource, ModelInventory, track-floor adoption and multi-source workers
+
+- **Status:** Accepted (program `program/dynamic-execution-sources`, umbrella
+  issue #116; children #117–#123)
+- **Date:** 2026-09-24
+- **Base:** `develop` @ `98dd25a` (canonical Forgejo; the owner merged
+  develop→main as PR #115 immediately before program start)
+- **Confidence:** High for the contracts and invariants below; module-level
+  mechanics (parser shapes, UI layouts) carry normal implementation risk and
+  are covered by the program's discriminating tests.
+- **Context:** Live controlled-Codex evidence (2026-09-24, `codex-cli
+  0.155.0-alpha.16.3`): with explicit `{}` params the real runtime answers
+  `account/read` (`account.type=chatgpt`) and `model/list` (advertising
+  `gpt-6-luna`, `gpt-6-sol`, `gpt-6-astra`, `gpt-5.5`, `gpt-5.6-luna/sol/
+  terra`, `gpt-daybreak-blue-latest`), while Scarcity Router's adapter omits
+  the `params` member for argument-less methods and receives `JSON-RPC
+  -32600` — the evidenced cause of `Codex snapshot health = unknown` on a
+  logged-in home. Requiring a manual physical-model slug per resource
+  (`gpt-5.6-sol`) ages badly: each provider generation would otherwise need
+  manual reconfiguration.
+- **Decision:**
+  1. **ExecutionSource is a first-class administrator configuration.** One
+     source = one configured, independently authenticated source of
+     executable model capacity (`source_id`, `kind` — `codex_subscription`
+     first, `label`, owning `worker_id`, `entitlement`, optional explicit
+     `quota_pool_id`, adoption policy). The configuration document gains an
+     additive `sources` domain (`CONFIG_SCHEMA_VERSION` 1 → 2; a v1 document
+     remains valid and means zero sources). The user configures the SOURCE;
+     the source discovers physical models; physical models remain the exact
+     execution targets. The three concepts (source / physical model /
+     derived resource) are never collapsed.
+  2. **Codex request shapes are repaired method-specifically.** The adapter
+     sends an explicit `params` object exactly where the evidenced runtime
+     schema requires one — `account/read` → `{}`; `model/list` first page →
+     `{}`; later pages → `{"cursor": "..."}` — and never globally forces
+     `{}` onto every JSON-RPC method. Tests reject an absent `params`
+     member for these methods with `-32600`. Reasoning-effort vocabulary is
+     extended additively with `ultra` (runtime-reported on GPT-6 Sol/Astra);
+     all existing vocabulary members are unchanged.
+  3. **Discovery runs on the worker; inventory crosses the worker protocol
+     as a typed, bounded document.** `WORKER_PROTOCOL_VERSION` 1 → 2 under
+     the existing hello negotiation: at negotiated version 2 the state
+     report carries an optional bounded `inventories` section (per source:
+     `source_id`, `adapter_id`, `observed_at`, closed-vocabulary auth state,
+     runtime name/version, per-model slug + runtime-reported reasoning
+     efforts; bounded entries/pages; no credentials, no account metadata
+     such as email or raw account ids, no raw provider payloads — only the
+     normalized fields the router needs). A v1 peer pair behaves exactly as
+     today (no inventories); a v2 worker against a v1 server negotiates 1
+     and honestly reports nothing new. The runtime is authoritative for
+     availability: no static duplication of currently available models or
+     efforts.
+  4. **Adapter KIND is separated from adapter INSTANCE.** The worker may
+     run several instances of the `codex` adapter kind, one per enabled
+     source: instance id `codex:<source_id>` (the legacy bare `codex` id
+     remains the v1-compatible default instance). Each instance owns an
+     isolated controlled CODEX home (`state_dir/codex-sources/<source_id>/`,
+     `0o700`), its own auth probe, its own inventory and its own execution
+     identity; no credential or home is ever shared between sources and no
+     source can execute through another's home. The `LocalAdapterRegistry`
+     duplicate-id rule is unchanged (ids differ by instance); the worker
+     allowlist stays local authority (D-044/D-051). One native worker
+     process serves any number of sources.
+  5. **Tracks are stable capability families; adoption is conservative and
+     floor-based.** A reviewed, versioned track registry
+     (`model-tracks.json`) maps slug structure to tracks (`openai/luna`,
+     `openai/sol`, `openai/astra`, restricted `daybreak`). A discovered
+     model is DISCOVERED → CLASSIFIED (track known, naming structure safely
+     parsed) → ROUTABLE only when: the track has an approved conservative
+     capability FLOOR; the runtime reports the requested effort; the
+     source/auth/health gates pass; and compatibility evidence permits the
+     requested feature. Inheritance is ONLY the deliberately approved track
+     floor — never a copy of an older generation's full ratings; stronger
+     ratings arrive later through explicit, provenance-bearing catalog
+     updates. Unclassified models stay discovered/not-routable; nothing is
+     routed merely because the runtime lists it.
+  6. **Derived exact resources.** The server materializes one exact,
+     deterministic executable resource per adopted model per source
+     (`resource_id = <source_id>:<slug>`, `worker_bridged`, exact slug and
+     runtime-advertised efforts, entitlement from the source, quota pool =
+     the source's pool — two independent accounts therefore default to two
+     pools with unknown sharing, and the same physical model via two
+     sources stays two targets, per D-042). Deterministic lifecycle: absent
+     from an authenticated inventory → health `unavailable`
+     (`model_absent_from_source`); absent from `RETIRE_AFTER_MISSES = 3`
+     consecutive authenticated inventories → retired (deregistered; audit
+     history and existing pins remain interpretable; reappearance
+     re-materializes). No pinned request is ever rewritten. Derived
+     registrations are in-memory derived state like every worker-reported
+     observation (U-003/D-041): the source, not a second durable store, is
+     their origin, and a restart re-derives them from the next inventory.
+     D-049's "state reports never confer ownership" is reconciled
+     explicitly: ownership remains administrator-granted at SOURCE
+     granularity (the source names its worker); the report only supplies
+     discovered inventory inside that grant, subject to adoption policy.
+  7. **Routing and exact binding are untouched.** The routing core, its
+     frozen gate order, pin/admission semantics (`admit_pinned_target`
+     never re-ranks) and the D-043 audit field set are unchanged; selection
+     consumes one catalog view whose derived entries carry the track floor
+     with explicit `derived_from_track` provenance — no second scoring
+     system. Discovery happens strictly BEFORE selection; execution remains
+     exact (`source`, resource, provider, physical model, effort,
+     entitlement, pool, worker, surface all fixed at dispatch; selected vs
+     executed target stay equal in audit).
+  8. **GPT-6 reconciliation.** `model-catalog.json` gains reviewed,
+     provenance-bearing entries for `gpt-6-luna`, `gpt-6-sol`,
+     `gpt-6-astra` (conservative ratings, dated 2026-09-24 evidence: the
+     live controlled runtime inventory plus re-verified official
+     documentation; this entry exercises D-033's evidence gate for Astra).
+     GPT-5.6 entries remain while still available and useful; no mechanical
+     rename. Default policy no longer requires obsolete GPT-5.6 manual
+     configuration.
+  9. **Daybreak Blue is a restricted track, not a routable family member.**
+     `gpt-daybreak-blue-latest` classifies `security_review /
+     restricted_access / defensive_security`: discovery never proves
+     execution authorization; restricted models are visible in the source
+     view but never materialized as routable resources and never silently
+     substituted for any request. The durable security-review gate is a
+     governance contract (Program Execution Mode): work classified
+     `security_critical` requires an independent `gpt-daybreak-blue-latest`
+     review; when access is unavailable the record states
+     `SECURITY_REVIEW_UNAVAILABLE` and the gate stays open. Scarcity Router
+     does not gain a multi-stage orchestration engine; the independent
+     review lives outside the routing core, and this program's own gate is
+     recorded in the program report.
+  10. **UX is a mandatory review dimension with named fixes in this
+      program:** friendly worker labels shown before opaque ids (ids stay
+      available for audit); `worker authenticated` (pairing) distinguished
+      from `provider/source authenticated` (provider login) everywhere the
+      ladder is rendered; normal source setup never asks for a physical
+      model slug (exact pins are an explicit ADVANCED mode); a read-only
+      source view shows connected/auth state, detected models and
+      routable/restricted/error counts without raw protocol structures;
+      errors are actionable. Governance (AGENTS.md +
+      `docs/llm-operating-policy.md`) makes every future review answer
+      `UX impact: none` or assess the ten-point UX checklist, with a
+      material UX regression being `CHANGES_REQUESTED`. Windows private-CA
+      friction is recorded; TLS is not weakened and no certificate-ignore
+      path is added.
+  11. **Reliability envelope.** Discovery is bounded and deterministic per
+      source (bounded timeout, pages — the existing `MAX_MODEL_PAGES`
+      discipline —, inventory size and refresh cadence via the source's
+      registration policy); a discovery failure isolates to its source
+      (never the worker, other sources, the server or recommendation-only
+      mode); failures back off with bounds, never loop unbounded, never
+      hide a fallback.
+- **Reason:** The product's recurring manual step — configuring exact
+  physical slugs per resource — is the direct consequence of a
+  resource-shaped configuration model. Naming the SOURCE and deriving
+  exact resources from a typed runtime inventory removes the recurring
+  work while strengthening, not weakening, the exact-binding discipline:
+  every dispatch still names and executes one exact physical target, now
+  guaranteed present in a fresh authenticated inventory.
+- **Alternatives considered:** server-side discovery through a new
+  provider API (rejected: the local runtime is the authoritative,
+  already-authenticated availability surface, and server-side collection
+  would duplicate provider credentials server-side against D-044's
+  minimal-storage rule); auto-adopting "latest model always wins"
+  (rejected: fabricates capability; violates quota-never-changes-
+  capability's sibling principle that runtime listing never proves
+  capability); writing derived resources into the administrator
+  configuration document (rejected: the config document is
+  administrator-owned; derived state would corrupt export/review
+  semantics); a new inventory worker-protocol message family with its own
+  ack (rejected: the state report already has the ack path and atomic
+  application; version-2 fields are the smallest honest carrier); one
+  worker process per source (rejected: multiplies pairing, transports and
+  host footprint for what is an instance-addressing problem); collapsing
+  source and resource into one entity with a wildcard model (rejected:
+  destroys the exact-target contract D-042 freezes).
+- **Reconciliation note (implementation, owner acceptance 2026-09-24):
+  SSH-safe source login.** Precision hosts run over SSH, so the one
+  explicit login per source uses the OFFICIAL CLI's device-auth mode —
+  `codex login --device-auth`, verified against the installed binary
+  (codex-cli 0.155.0-alpha.16.3 `login --help`; the flow prints
+  https://auth.openai.com/codex/device plus a one-time code and polls —
+  no localhost callback, no browser on the host). The capability is
+  checked on the installed CLI at run time and there are NO fallbacks:
+  never the browser/localhost login, never the legacy `codex` home,
+  never `~/.codex`, and never any credential copy/import/inspection
+  between homes. A CLI without the mode, or an incomplete login, fails
+  closed with the source staying `auth_required`.
+- **Reconciliation note (implementation, same review):** quota-pool
+  membership is registration-owned policy, exactly like freshness/polling
+  policy: the M01 observation check compares identities EXCLUDING
+  `quota_pool_ids`, and the read model composes pools from the
+  registration alone. A worker-reported observation therefore can never
+  alter pool membership — including the default `pool-<source_id>`
+  derivation and any administrator override — which is what makes the
+  D-042 sharing rule enforceable on derived resources.
+- **Boundary:** Program architecture decision for #116. Frozen v1 machine
+  interfaces stay byte-compatible (additive `ultra` effort vocabulary
+  only); the worker protocol moves to negotiated version 2 with v1 peers
+  unaffected; D-049's ownership clause is amended only as stated in
+  point 6, and the M01 identity-match note above narrows the
+  observation/registration equality to the observation-relevant fields.
+
 ## Superseding a decision
 
 Add a new numbered entry with its status, date, evidence and `Supersedes: D-nnn`.

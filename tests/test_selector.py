@@ -110,6 +110,11 @@ FLASH = BY_IDENTITY[("zai", "glm-5.3-flash", "max")]
 LUNA_MEDIUM = BY_IDENTITY[("openai", "gpt-5.6-luna", "medium")]
 TERRA_MEDIUM = BY_IDENTITY[("openai", "gpt-5.6-terra", "medium")]
 SOL_MEDIUM = BY_IDENTITY[("openai", "gpt-5.6-sol", "medium")]
+GPT6_IDENTITIES = frozenset(
+    entry.identity
+    for key, entry in BY_IDENTITY.items()
+    if key[1].startswith("gpt-6")
+)
 
 
 def _snap(
@@ -302,11 +307,21 @@ class ScenarioTests(unittest.TestCase):
                            [_snap("openai", 80, 50), _snap("zai", 98, 0)])
         assert decision.selected is not None
         self.assertEqual(LUNA_MEDIUM.identity, decision.selected.identity)
+        zai_excluded = {
+            c.identity
+            for c in decision.excluded
+            if c.identity.provider == "zai"
+        }
         self.assertEqual(
             {GLM53.identity, GLM53_HIGH.identity, GLM53_LOW.identity, FLASH.identity},
-            {c.identity for c in decision.excluded},
+            zai_excluded,
         )
+        # Every exhausted-Z.ai candidate is blocked by capacity (the D-053
+        # GPT-6 floor identities may add openai-side exclusions for their
+        # own reasons; the Z.ai capacity discipline is what this pins).
         for candidate in decision.excluded:
+            if candidate.identity.provider != "zai":
+                continue
             self.assertEqual(candidate.exclusion_stage, "capacity")
             assert candidate.scarcity_assessment is not None
             self.assertIn("capacity_exhausted", candidate.scarcity_assessment.reason_codes)
@@ -384,7 +399,7 @@ class ScenarioTests(unittest.TestCase):
         assert decision.selected is not None
         self.assertEqual("gpt-5.6-sol", decision.selected.identity.model)
         self.assertEqual((), decision.alternatives)
-        self.assertEqual(8, len(decision.excluded))
+        self.assertEqual(11, len(decision.excluded))
         self.assertTrue(
             all(c.exclusion_stage == "capability" for c in decision.excluded)
         )
@@ -489,14 +504,18 @@ class ScenarioTests(unittest.TestCase):
         )
         self.assertIsNone(decision.selected)
         self.assertEqual(("no_eligible_candidate",), decision.reason_codes)
-        self.assertEqual(9, len(decision.excluded))
-        self.assertTrue(
-            all(
-                c.exclusion_stage == "capacity"
-                and c.reason_codes == ("capacity_unknown_blocked",)
-                for c in decision.excluded
-            )
-        )
+        self.assertEqual(12, len(decision.excluded))
+        by_identity = {c.identity: c for c in decision.excluded}
+        for identity, candidate in by_identity.items():
+            if identity in GPT6_IDENTITIES:
+                # Unknown tool support fails the hard-constraint stage
+                # before capacity is even consulted (D-053 honesty).
+                self.assertEqual("hard_constraint", candidate.exclusion_stage, identity)
+            else:
+                self.assertEqual("capacity", candidate.exclusion_stage, identity)
+                self.assertEqual(
+                    ("capacity_unknown_blocked",), candidate.reason_codes, identity
+                )
 
     def _reservation_policy(self) -> SelectorPolicy:
         return SelectorPolicy(
@@ -690,7 +709,7 @@ class ScenarioTests(unittest.TestCase):
         )
         self.assertIsNone(decision.selected)
         self.assertEqual((), decision.alternatives)
-        self.assertEqual(9, len(decision.excluded))
+        self.assertEqual(12, len(decision.excluded))
         self.assertEqual(("no_eligible_candidate",), decision.reason_codes)
         self.assertTrue(
             all(c.exclusion_stage == "hard_constraint" for c in decision.excluded)
@@ -745,10 +764,14 @@ class ScenarioTests(unittest.TestCase):
             requirement, [_snap("openai", 40, 40), _snap("zai", 80, 80)]
         )
         self.assertIsNone(decision.selected)
-        self.assertEqual(9, len(decision.excluded))
+        self.assertEqual(12, len(decision.excluded))
         for candidate in decision.excluded:
             self.assertEqual("hard_constraint", candidate.exclusion_stage)
             failure = candidate.hard_constraint_failures[0]
+            if candidate.identity in GPT6_IDENTITIES:
+                # Unknown tool support fails first for the floor entries.
+                self.assertEqual("requires_tool_use", failure.constraint)
+                continue
             self.assertEqual("privacy_constraint", failure.constraint)
             self.assertEqual("privacy_unknown", failure.reason)
 

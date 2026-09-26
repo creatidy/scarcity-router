@@ -57,6 +57,7 @@ from typing import cast
 from .errors import CapacityValidationError
 from .gateway_adapters import AdapterResult, AdapterStreamChunk
 from .gateway_validation import v_safe_id, v_text
+from .model_inventory import ModelInventoryReport, SourceInventory
 from .resource_state import ResourceStateSnapshot, WorkerStateReport
 from .worker_local_adapters import (
     AdapterNotAllowedError,
@@ -861,11 +862,39 @@ class _ActiveSession:
                 next_report = now + self._runtime.state_report_interval
             _ = self._stop_session.wait(0.05)
 
+    def _negotiated_version(self) -> int | None:
+        # _ActiveSession holds the negotiated protocol version.
+        return getattr(self, "_version", None)
+
     def _send_initial_state_report(self) -> None:
         self._send_state_report()
 
     def _send_state_report(self) -> None:
-        """Build and send one M01 worker report (the shared path)."""
+        """Build and send one M01 worker report (the shared path).
+
+        Daybreak blocker 8: source inventories are REFRESHED FIRST, and
+        snapshots are collected AFTER the refresh — so one report can
+        never carry fresh-healthy snapshots alongside an inventory that
+        just reported auth loss. Snapshots and inventory always describe
+        the same observation instant.
+        """
+        # Daybreak blocker 8: the refresh runs BEFORE `now` is captured so
+        # the report's reported_at is never earlier than the inventory's
+        # observed_at (a future-dated observation fails closed).
+        negotiated = self._negotiated_version()
+        if negotiated is not None and negotiated >= 2:
+            for adapter_id in self._runtime.local_adapters.adapter_ids():
+                adapter = self._runtime.local_adapters.resolve(adapter_id)
+                refresher = getattr(adapter, "refresh_inventory_if_due", None)
+                if refresher is None:
+                    continue
+                try:
+                    refresher()
+                except (OSError, ValueError, WorkerProtocolError) as exc:
+                    self._runtime.note(
+                        "warn",
+                        f"inventory refresh failed for {adapter_id}: {type(exc).__name__}",
+                    )
         now = _canonical_now()
         snapshots: list[ResourceStateSnapshot] = []
         for adapter_id in self._runtime.local_adapters.adapter_ids():
@@ -893,8 +922,41 @@ class _ActiveSession:
         except (CapacityValidationError, ValueError) as exc:
             self._runtime.note("error", f"state report construction failed: {type(exc).__name__}")
             return
+        # D-053: source-mode adapters carry their latest discovery in the
+        # version-2 inventory section. A v1 session (an old server) never
+        # receives it; discovery failures already isolated inside the
+        # adapter's own observation path.
+        inventories: list[dict[str, object]] = []
+        negotiated = self._negotiated_version()
+        if negotiated is not None and negotiated >= 2:
+            for adapter_id in self._runtime.local_adapters.adapter_ids():
+                adapter = self._runtime.local_adapters.resolve(adapter_id)
+                report_source = getattr(adapter, "inventory_report", None)
+                if report_source is None:
+                    continue
+                try:
+                    inventory = cast(
+                        "SourceInventory | None", report_source()
+                    )
+                except (OSError, ValueError, WorkerProtocolError) as exc:
+                    self._runtime.note(
+                        "warn",
+                        f"inventory collection failed for {adapter_id}: {type(exc).__name__}",
+                    )
+                    continue
+                if inventory is not None:
+                    inventories.append(
+                        ModelInventoryReport(
+                            worker_id=self._identity.worker_id,
+                            sources=(inventory,),
+                        ).to_dict()
+                    )
         try:
-            self._sender.send(StateReportMessage(report=report.to_dict()).to_payload())
+            self._sender.send(
+                StateReportMessage(
+                    report=report.to_dict(), inventories=tuple(inventories)
+                ).to_payload()
+            )
         except (ConnectionError, OSError, WorkerProtocolError):
             pass
 
@@ -970,10 +1032,24 @@ def build_parser() -> argparse.ArgumentParser:
                          help="the registry resource id the Codex adapter serves "
                               + "(required with --resource when both adapters are "
                               + "enabled)")
+    _ = run.add_argument("--codex-source", action="append", default=None,
+                              metavar="SOURCE_ID", dest="codex_sources",
+                              help="enable a codex execution SOURCE instance "
+                                   + "(repeatable; D-053 dynamic discovery "
+                                   + "replaces --codex-model/--codex-resource)")
     _ = run.add_argument("--codex-bin", default=None, metavar="PATH",
                          help="pin the Codex binary path (regular executable "
                               + "file; discovery falls back to PATH and the "
                               + "VS Code extension layout)")
+    login = commands.add_parser(
+        "codex-login",
+        help="run the OFFICIAL codex login against one source's controlled home",
+    )
+    _ = login.add_argument("--source", required=True, metavar="SOURCE_ID",
+                           help="the execution-source instance to log in "
+                                + "(the same id given to run --codex-source)")
+    _ = login.add_argument("--state-dir", default=None, metavar="DIR")
+    _ = login.add_argument("--codex-bin", default=None, metavar="PATH")
     return parser
 
 
@@ -1022,7 +1098,15 @@ def build_registry(
 ) -> LocalAdapterRegistry | None:
     allow_ollama = bool(arguments.get("allow_ollama"))
     allow_codex = bool(arguments.get("allow_codex"))
-    if not allow_ollama and not allow_codex:
+    codex_sources = arguments.get("codex_sources")
+    source_ids: tuple[str, ...] = ()
+    if isinstance(codex_sources, list):
+        source_ids = tuple(
+            item
+            for item in cast("list[object]", codex_sources)
+            if isinstance(item, str) and item
+        )
+    if not allow_ollama and not allow_codex and not source_ids:
         return None
     from .resource_state import ResourceIdentity
 
@@ -1048,6 +1132,45 @@ def build_registry(
             port=int(port) if isinstance(port, int) and not isinstance(port, bool) else 11434,
         )
         registry.register(adapter)
+    if source_ids:
+        from pathlib import Path
+
+        from .worker_codex_adapter import (
+            SOURCE_ID_MAX_LENGTH,
+            CodexLocalAdapter,
+        )
+
+        if allow_codex:
+            raise WorkerConfigError(
+                "--codex-source and --allow-codex are mutually exclusive: "
+                + "source mode discovers its resources; the legacy flags "
+                + "configure exactly one"
+            )
+        if state_dir is None:
+            from .worker_local_store import default_worker_state_dir
+
+            state_dir = default_worker_state_dir()
+        pinned = arguments.get("codex_bin")
+        for source_id in source_ids:
+            if len(source_id) > SOURCE_ID_MAX_LENGTH:
+                raise WorkerConfigError(
+                    f"--codex-source {source_id!r}: longer than "
+                    + f"{SOURCE_ID_MAX_LENGTH} characters"
+                )
+            try:
+                checked = v_safe_id(source_id, "codex_source")
+            except ValueError as exc:
+                raise WorkerConfigError(str(exc)) from None
+            adapter = CodexLocalAdapter(
+                source_id=checked,
+                state_dir=state_dir,
+                pinned_binary=(
+                    Path(str(pinned))
+                    if isinstance(pinned, str) and pinned
+                    else None
+                ),
+            )
+            registry.register(adapter)
     if allow_codex:
         from pathlib import Path
 
@@ -1115,6 +1238,21 @@ def main(argv: list[str] | None = None) -> int:
                 identity = runtime.pair(str(arguments["code"]))
                 print(f"paired as {identity.worker_id}; identity stored")
                 return 0
+            if command == "codex-login":
+                from .worker_codex_adapter import run_official_codex_login
+
+                code = run_official_codex_login(
+                    source_id=str(arguments["source"]),
+                    state_dir=str(arguments["state_dir"])
+                    if arguments.get("state_dir")
+                    else None,
+                    pinned_binary=(
+                        str(arguments["codex_bin"])
+                        if arguments.get("codex_bin")
+                        else None
+                    ),
+                )
+                return code
             if command == "run":
                 server_value = arguments.get("server")
                 if server_value is not None:

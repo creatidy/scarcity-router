@@ -323,7 +323,9 @@ class ServerReportTests(unittest.TestCase):
         self.assertIn("resource zai-plan-1", text)
         self.assertIn("blocked at authenticated", text)
         self.assertIn("remediation:", text)
-        self.assertIn("worker w1", text)
+        # Label-first UX (D-053 point 10): the friendly label leads, the
+        # technical id stays available for audit.
+        self.assertIn("worker rig (w1)", text)
 
 
 class DoctorCliTests(unittest.TestCase):

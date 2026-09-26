@@ -39,6 +39,7 @@ from scarcity_router.worker_endpoint import (
 from scarcity_router.worker_protocol import (
     ERR_ATTEMPT_UNKNOWN,
     ERR_CREDENTIAL_REVOKED,
+    ERR_INTERNAL,
     ERR_MALFORMED,
     ERR_PAIRING_EXPIRED,
     ERR_PAIRING_USED,
@@ -253,6 +254,90 @@ class SessionTests(EndpointTestCase):
         self.assertEqual(ERR_MALFORMED, answer.code)
         self.assertFalse(answer.fatal)
         # The session survives.
+        self.assertIn(worker_id, self.endpoint.connected_worker_ids())
+
+    def test_raising_inventory_sink_is_a_nonfatal_error_session_survives(self) -> None:
+        # Review finding 1 (remediation): a SERVER-side adoption failure
+        # must behave like the resource section — a non-fatal error frame,
+        # the session stays answerable — never an unhandled exception on
+        # the session thread.
+        from scarcity_router.model_inventory import ModelInventoryReport
+
+        worker = self.connect_worker()
+        worker_id, _ = self.pair_worker(worker)
+
+        def _boom(_inventory: object) -> None:
+            raise ValueError("synthetic adoption failure")
+
+        self.endpoint.inventory_sink = _boom
+        inventory = ModelInventoryReport(worker_id=worker_id)
+        answer = worker.send_state_report(
+            {
+                "schema_version": 1,
+                "worker_id": worker_id,
+                "reported_at": "2026-09-24T12:00:00.000Z",
+                "resources": [],
+            },
+            inventories=(inventory.to_dict(),),
+        )
+        assert isinstance(answer, ErrorMessage)
+        self.assertFalse(answer.fatal)
+        self.assertEqual(ERR_INTERNAL, answer.code)
+        # The session survived and can still be answered.
+        self.assertIn(worker_id, self.endpoint.connected_worker_ids())
+        self.endpoint.inventory_sink = None
+        ack = worker.send_state_report(
+            {
+                "schema_version": 1,
+                "worker_id": worker_id,
+                "reported_at": "2026-09-24T12:00:00.000Z",
+                "resources": [],
+            }
+        )
+        assert isinstance(answer, ErrorMessage)
+        self.assertIsInstance(ack, StateReportAckMessage)
+
+    def test_foreign_source_inventory_is_rejected_whole(self) -> None:
+        # Daybreak finding 1: an authenticated worker naming ANOTHER
+        # worker's source in its inventory is rejected whole — it can
+        # never adopt, poison or retire that source.
+        from scarcity_router.model_inventory import (
+            DiscoveredModel,
+            ModelInventoryReport,
+            SourceInventory,
+        )
+
+        worker = self.connect_worker()
+        worker_id, _credential = self.pair_worker(worker)
+        inventory = ModelInventoryReport(
+            worker_id=worker_id,
+            sources=(
+                SourceInventory(
+                    source_id="victims-source",
+                    adapter_id="codex:victims-source",
+                    kind="codex_subscription",
+                    observed_at="2026-09-16T12:00:00.000Z",
+                    auth_state="authenticated",
+                    runtime_name="codex",
+                    runtime_version="0.155.0",
+                    models=(
+                        DiscoveredModel("gpt-6-sol", ("high",)),
+                    ),
+                ),
+            ),
+        )
+        answer = worker.send_state_report(
+            {
+                "schema_version": 1,
+                "worker_id": worker_id,
+                "reported_at": "2026-09-16T12:00:00.000Z",
+                "resources": [],
+            },
+            inventories=(inventory.to_dict(),),
+        )
+        assert isinstance(answer, ErrorMessage)
+        self.assertFalse(answer.fatal)
+        # The session survives; nothing was adopted for the victim.
         self.assertIn(worker_id, self.endpoint.connected_worker_ids())
 
     def test_liveness_closes_silent_sessions(self) -> None:
