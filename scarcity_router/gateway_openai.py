@@ -193,6 +193,24 @@ class RequestCapabilities:
 
 
 @dataclass(frozen=True)
+class LogicalModelInfo:
+    """One exposed logical model for ``GET /v1/models`` (D-055).
+
+    An adopted source model selectable by its bare physical-model id.
+    ``reasoning_efforts`` are the calibrated efforts the catalog carries
+    for the exact identity; ``effective_context_limit_tokens`` is the
+    honest intersection of the model's hard context and the bound
+    execution channel's known context ceiling — ``None`` when the channel
+    ceiling is UNKNOWN (never advertised as a number)."""
+
+    model: str
+    provider: str
+    reasoning_efforts: tuple[str, ...]
+    effective_context_limit_tokens: int | None
+    max_output_tokens: int
+
+
+@dataclass(frozen=True)
 class ChatCompletionRequest:
     """One strictly parsed ``chat/completions`` request."""
 
@@ -636,20 +654,55 @@ def estimate_input_tokens(
 # ── Response rendering ────────────────────────────────────────────────────────
 
 
-def models_list_payload(aliases: tuple[str, ...]) -> dict[str, object]:
-    """The ``GET /v1/models`` payload: one entry per configured alias."""
-    return {
-        "object": "list",
-        "data": [
+def models_list_payload(
+    aliases: tuple[str, ...],
+    logical_models: tuple["LogicalModelInfo", ...] = (),
+) -> dict[str, object]:
+    """The ``GET /v1/models`` payload (D-055).
+
+    One entry per configured routing alias, then one entry per exposed
+    logical model — an adopted source model selectable by its normal
+    OpenAI model id. Administrator aliases take precedence: an alias
+    whose name equals an exposed logical model id produces exactly one
+    entry (the alias, flagged ``logical_model_shadowed``) and the logical
+    entry is omitted — the shadowing is visible, never accidental. Every
+    entry carries the additive ``x_scarcity_router`` metadata block.
+    """
+    logical_by_id = {info.model: info for info in logical_models}
+    data: list[dict[str, object]] = []
+    for alias in aliases:
+        entry: dict[str, object] = {
+            "id": alias,
+            "object": "model",
+            "created": 0,
+            "owned_by": OWNED_BY,
+        }
+        metadata: dict[str, object] = {"kind": "routing_alias"}
+        if alias in logical_by_id:
+            metadata["logical_model_shadowed"] = True
+        entry["x_scarcity_router"] = metadata
+        data.append(entry)
+    for info in logical_models:
+        if info.model in aliases:
+            continue
+        data.append(
             {
-                "id": alias,
+                "id": info.model,
                 "object": "model",
                 "created": 0,
                 "owned_by": OWNED_BY,
+                "x_scarcity_router": {
+                    "kind": "logical_model",
+                    "provider": info.provider,
+                    "reasoning_efforts": list(info.reasoning_efforts),
+                    "effective_context_limit_tokens": (
+                        info.effective_context_limit_tokens
+                    ),
+                    "max_output_tokens": info.max_output_tokens,
+                },
             }
-            for alias in aliases
-        ],
-    }
+        )
+    return {"object": "list", "data": data}
 
 
 def _message_payload(message: AdapterMessage) -> dict[str, object]:
@@ -774,6 +827,7 @@ __all__ = [
     "MESSAGE_ROLES",
     "REASONING_EFFORTS",
     "ChatCompletionRequest",
+    "LogicalModelInfo",
     "RequestCapabilities",
     "chat_completion_payload",
     "chunk_payload",

@@ -206,7 +206,9 @@ class SurfaceTests(ServerHarness):
         payload = cast("dict[str, object]", json.loads(response.read()))
         self.assertEqual(payload["object"], "list")
         ids = [as_dict(entry)["id"] for entry in as_list(payload["data"])]
-        self.assertEqual(ids, ["deep-coding", "zai-only"])
+        # D-055: configured aliases first, then the adopted logical models
+        # bound to registered resources (both fixture identities bind).
+        self.assertEqual(ids, ["deep-coding", "zai-only", "glm-5.3", "gpt-5.6-luna"])
 
     def test_models_listing_ignores_query_string(self) -> None:
         port = self.make_server()

@@ -30,6 +30,7 @@ from tests.gateway_fixtures import (
     CLIENT_KEY,
     GatewayApplication,
     ScriptedAdapter,
+    audit_records,
     build_cells,
     make_application,
 )
@@ -81,31 +82,51 @@ class CurrentStateFailurePins(RepresentativeHarness):
         # Deterministic: the first extra key in sorted order.
         self.assertEqual(error["param"], "enable_thinking")
 
-    def test_bare_logical_model_is_currently_not_resolvable(self) -> None:
-        """FAILURE 4 of the acceptance report — flipped by child #134.
+    def test_bare_logical_model_resolves_to_the_exact_identity(self) -> None:
+        """FAILURE 4 of the acceptance report — FIXED by child #134 (D-055).
 
-        A discovered, routable physical model cannot be selected by its
-        normal OpenAI model id: resolution understands only administrator
-        aliases and ``sr-pin:`` references, so the bare logical id is a
-        404 ``model_not_found`` today.
+        A discovered, routable physical model is selected by its normal
+        OpenAI model id: the bare logical id resolves to the EXACT
+        ``(provider, model, effort)`` identity, routes among the resources
+        that provide exactly it, and the audit shows selected == executed.
         """
+        port = self.make_server()
+        body = representative_request(
+            include_reasoning_dialects=False, include_output_limit=False
+        )
+        body["reasoning_effort"] = "max"
+        response = self.post_chat(port, body)
+        self.assertEqual(response.status, 200)
+        frames = self.read_sse_frames(response)
+        self.assertEqual(frames[-1], "[DONE]")
+        audit = audit_records(self.application)[-1]
+        self.assertEqual(audit.selected_target, audit.executed_target)
+        selected = audit.selected_target
+        assert selected is not None
+        self.assertEqual(selected.provider, "openai")
+        self.assertEqual(selected.model, REPRESENTATIVE_MODEL)
+        self.assertEqual(selected.variant, "max")
+
+    def test_genuinely_unknown_model_remains_model_not_found(self) -> None:
+        """The other half of the #134 contract: resolution never guesses."""
         port = self.make_server()
         response = self.post_chat(
             port,
-            representative_request(
-                include_reasoning_dialects=False, include_output_limit=False
-            ),
+            {
+                "model": "never-heard-of-it",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
         )
         self.assertEqual(response.status, 404)
         payload = cast("dict[str, object]", json.loads(response.read()))
         self.assertEqual(as_dict(payload["error"])["code"], "model_not_found")
 
-    def test_models_listing_currently_exposes_aliases_only(self) -> None:
-        """FAILURE 4 counterpart — flipped by child #134.
+    def test_models_listing_exposes_aliases_and_adopted_logical_models(self) -> None:
+        """FAILURE 4 counterpart — FIXED by child #134 (D-055).
 
-        ``GET /v1/models`` lists configured routing aliases only; adopted
-        source-derived logical models are invisible to OpenAI-compatible
-        discovery.
+        ``GET /v1/models`` lists the configured aliases first, then the
+        adopted logical models bound to registered resources, each with
+        the additive ``x_scarcity_router`` metadata.
         """
         port = self.make_server()
         connection = self.client(port)
@@ -115,9 +136,16 @@ class CurrentStateFailurePins(RepresentativeHarness):
         response = connection.getresponse()
         self.assertEqual(response.status, 200)
         payload = cast("dict[str, object]", json.loads(response.read()))
-        ids = [as_dict(entry)["id"] for entry in as_list(payload["data"])]
-        self.assertEqual(ids, ["deep-coding", "zai-only"])
-        self.assertNotIn(REPRESENTATIVE_MODEL, ids)
+        entries = [as_dict(entry) for entry in as_list(payload["data"])]
+        ids = [entry["id"] for entry in entries]
+        self.assertEqual(ids, ["deep-coding", "zai-only", "glm-5.3", "gpt-5.6-luna"])
+        luna = next(entry for entry in entries if entry["id"] == REPRESENTATIVE_MODEL)
+        metadata = as_dict(luna["x_scarcity_router"])
+        self.assertEqual(metadata["kind"], "logical_model")
+        self.assertEqual(metadata["provider"], "openai")
+        self.assertEqual(metadata["reasoning_efforts"], ["max", "medium"])
+        self.assertEqual(metadata["effective_context_limit_tokens"], 272_000)
+        self.assertEqual(metadata["max_output_tokens"], 128_000)
 
     def test_representative_output_ceiling_is_currently_rejected(self) -> None:
         """FAILURE 3 of the acceptance report — flipped by child #136.
@@ -143,9 +171,11 @@ class CurrentStateFailurePins(RepresentativeHarness):
         """FAILURE 5 of the acceptance report — the hard blocker, flipped
         by child #137 only to the evidenced level.
 
-        With an exact pinned Codex-path target whose compatibility matrix
-        marks ``tool_calls`` UNSUPPORTED (the shipped Codex evidence), the
-        representative request fails closed with
+        With a pinned target whose compatibility matrix marks
+        ``tool_calls`` UNSUPPORTED for its exact (channel, provider,
+        model) identity — the shipped Codex source evidence, applied here
+        to the fixture's server-direct identity with the codex capacity
+        scope — the representative request fails closed with
         ``compatibility_unsupported``; the router never executes the
         client's tools. The output ceiling is absent here because the
         limits gate runs first (that ordering is exactly what the real
