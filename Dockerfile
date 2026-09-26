@@ -34,8 +34,10 @@ WORKDIR /build
 
 # The minimal wheel build set (mirrors the sdist contract): the package, the
 # root-authoritative artifacts hatchling force-includes, and packaging metadata.
+# tests/test_docker_packaging.py pins this parity: every wheel force-include
+# source must be present in this build stage.
 COPY pyproject.toml README.md LICENSE ./
-COPY model-catalog.json model-policy.json ./
+COPY model-catalog.json model-policy.json model-tracks.json ./
 COPY examples/selector-policy.json examples/selector-policy.json
 COPY scarcity_router/ scarcity_router/
 
