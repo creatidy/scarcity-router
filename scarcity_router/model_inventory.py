@@ -360,7 +360,7 @@ class SourceInventory:
         if not isinstance(models_raw, list):
             raise ModelInventoryError("source_inventory.models must be an array")
         # Daybreak blocker 3: bound BEFORE materializing objects.
-        if len(models_raw) > MAX_MODELS_PER_SOURCE:
+        if len(cast("list[object]", models_raw)) > MAX_MODELS_PER_SOURCE:
             raise ModelInventoryError(
                 "source_inventory: more than "
                 + f"{MAX_MODELS_PER_SOURCE} models"
@@ -457,7 +457,7 @@ class ModelInventoryReport:
         if not isinstance(sources_raw, list):
             raise ModelInventoryError("inventory.sources must be an array")
         # Daybreak blocker 3: bound BEFORE materializing objects.
-        if len(sources_raw) > MAX_SOURCES_PER_REPORT:
+        if len(cast("list[object]", sources_raw)) > MAX_SOURCES_PER_REPORT:
             raise ModelInventoryError(
                 f"inventory: more than {MAX_SOURCES_PER_REPORT} sources"
             )

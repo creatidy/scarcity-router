@@ -65,10 +65,8 @@ from typing import Protocol, cast
 from .errors import CapacityValidationError
 from .gateway_validation import v_int
 from .model_inventory import (
-    DiscoveredModel,
     ModelInventoryError,
     ModelInventoryReport,
-    SourceInventory,
     is_source_resource_id,
 )
 from .resource_state import (

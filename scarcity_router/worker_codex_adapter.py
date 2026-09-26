@@ -583,14 +583,13 @@ class ControlledCodexHome:
             parsed = tomllib.loads(text)
         except tomllib.TOMLDecodeError:
             return False, []
-        unknown = set(parsed) - {"projects"}
-        if unknown:
+        if set(parsed.keys()) - {"projects"}:
             return False, []
         projects = parsed.get("projects", {})
         if not isinstance(projects, dict):
             return False, []
         paths: list[str] = []
-        for key, value in projects.items():
+        for key, value in cast("dict[str, object]", projects).items():
             if not isinstance(value, dict):
                 return False, []
             paths.append(key)
@@ -1816,22 +1815,21 @@ class CodexLocalAdapter:
         # Bind it when the request omits an effort; reject a present
         # conflict — the executed effort can never diverge from the
         # audited selected variant.
-        if call.model.variant is not None:
-            if call.reasoning_effort is None:
-                call = AdapterCall(
-                    resource=call.resource,
-                    model=call.model,
-                    messages=call.messages,
-                    stream=call.stream,
-                    tools=call.tools,
-                    tool_choice=call.tool_choice,
-                    response_format=call.response_format,
-                    reasoning_effort=call.model.variant,
-                    max_output_tokens=call.max_output_tokens,
-                    generation_params=call.generation_params,
-                )
-            elif call.reasoning_effort != call.model.variant:
-                raise CodexIneligible("effort_conflicts_with_pin")
+        if call.reasoning_effort is None:
+            call = AdapterCall(
+                resource=call.resource,
+                model=call.model,
+                messages=call.messages,
+                stream=call.stream,
+                tools=call.tools,
+                tool_choice=call.tool_choice,
+                response_format=call.response_format,
+                reasoning_effort=call.model.variant,
+                max_output_tokens=call.max_output_tokens,
+                generation_params=call.generation_params,
+            )
+        elif call.reasoning_effort != call.model.variant:
+            raise CodexIneligible("effort_conflicts_with_pin")
         if (
             call.model.provider != served_provider
             or served_model is None

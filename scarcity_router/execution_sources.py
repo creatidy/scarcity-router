@@ -264,7 +264,7 @@ class SourceRegistry:
             # fails the whole model closed instead of poisoning partial
             # state.
             for effort in policy_efforts:
-                _resource_id(config.source_id, slug, effort)
+                _ = _resource_id(config.source_id, slug, effort)
             state.adopted[slug] = (track.track_id(), model.reasoning_efforts)
             decisions.append(
                 AdoptionDecision(

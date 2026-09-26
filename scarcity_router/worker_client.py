@@ -881,7 +881,8 @@ class _ActiveSession:
         # Daybreak blocker 8: the refresh runs BEFORE `now` is captured so
         # the report's reported_at is never earlier than the inventory's
         # observed_at (a future-dated observation fails closed).
-        if self._negotiated_version() is not None and self._negotiated_version() >= 2:
+        negotiated = self._negotiated_version()
+        if negotiated is not None and negotiated >= 2:
             for adapter_id in self._runtime.local_adapters.adapter_ids():
                 adapter = self._runtime.local_adapters.resolve(adapter_id)
                 refresher = getattr(adapter, "refresh_inventory_if_due", None)

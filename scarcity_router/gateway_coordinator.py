@@ -704,7 +704,6 @@ class GatewayApplication:
         dispatched_effort = request.reasoning_effort
         if (
             resolved.pinned_target is not None
-            and selected_variant is not None
             and dispatched_effort is not None
             and dispatched_effort != selected_variant
         ):
@@ -717,9 +716,14 @@ class GatewayApplication:
         if (
             resolved.pinned_target is not None
             and dispatched_effort is None
-            and selected_variant is not None
-            and target.resource.channel == "worker_bridged"
+            and target.resource.variant is not None
         ):
+            # Only EFFORT-QUALIFIED resources (variant bound in the
+            # registration identity — the derived source resources) force
+            # the selected variant onto the wire. Plain resources (e.g.
+            # loopback Ollama) keep carried-control semantics: their
+            # preset's evidenced wire mapping is the authority and may
+            # have no mapping for catalog variants.
             dispatched_effort = selected_variant
         state.executed_target = state.selected_target
         call = AdapterCall(

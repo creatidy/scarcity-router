@@ -1796,7 +1796,10 @@ class CodexStreamingExecutionTests(CodexComposedTlsWorld):
                 },
                 turn_params.get("sandboxPolicy"),
             )
-            self.assertNotIn("effort", turn_params)
+            # Daybreak blocker 7: the selected variant (high) is now always
+            # bound — an effort-less request dispatches the variant, never
+            # a runtime default.
+            self.assertEqual("high", turn_params.get("effort"))
             self.assertNotIn("outputSchema", turn_params)
 
             # The scratch directory is cleaned up after the call.
