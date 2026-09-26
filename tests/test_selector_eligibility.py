@@ -161,7 +161,7 @@ class EligibilityGateTests(unittest.TestCase):
         )
         assert decision.selected is not None
         self.assertEqual(decision.selected.identity.provider, "zai")
-        evaluation = _excluded(decision)[("openai", "gpt-5.6-luna", "medium")]
+        evaluation = _excluded(decision)[("openai", "gpt-5.6-luna", "max")]
         self.assertEqual(evaluation.exclusion_stage, "execution")
         self.assertEqual(evaluation.reason_codes, ("execution_unverified",))
         self.assertIsNotNone(evaluation.execution_eligibility)
@@ -173,7 +173,7 @@ class EligibilityGateTests(unittest.TestCase):
         )
         assert decision.selected is not None
         self.assertEqual(decision.selected.identity.provider, "zai")
-        evaluation = _excluded(decision)[("openai", "gpt-5.6-luna", "medium")]
+        evaluation = _excluded(decision)[("openai", "gpt-5.6-luna", "max")]
         self.assertEqual(
             evaluation.reason_codes, ("execution_allowance_unavailable",)
         )

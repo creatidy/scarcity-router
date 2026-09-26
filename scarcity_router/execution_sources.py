@@ -36,7 +36,7 @@ from .model_inventory import (
     is_source_resource_id,
     source_resource_id,
 )
-from .model_tracks import TrackRegistry
+from .model_tracks import TrackRegistry, validate_catalog_effort_restriction
 from .resource_state import (
     ExecutionCapabilities,
     ResourceRegistration,
@@ -353,8 +353,11 @@ class SourceRegistry:
         entries fill ONLY the (model, effort) pairs the built-in catalog
         does not calibrate. Hard properties and capacity applicability
         stay UNKNOWN — a floor is a capability floor, not evidence about
-        context limits or quota consumption.
+        context limits or quota consumption. D-054: a track marked
+        ``max_only`` (light family) expands at ``max`` only, and only when
+        the runtime itself reports a ``max`` effort — never invented.
         """
+        validate_catalog_effort_restriction(base, self._tracks)
         extra: list[ModelCatalogEntry] = []
         existing = {
             (entry.identity.provider, entry.identity.model, entry.identity.variant)
@@ -371,7 +374,8 @@ class SourceRegistry:
                 )
                 if track is None or track.floor is None:
                     continue
-                for effort in [e for e in efforts if e in REASONING_EFFORTS]:
+                allowed = track.restrict_floor_efforts(tuple(efforts))
+                for effort in [e for e in allowed if e in REASONING_EFFORTS]:
                     key = (state.config.provider(), slug, effort)
                     if key in existing:
                         continue

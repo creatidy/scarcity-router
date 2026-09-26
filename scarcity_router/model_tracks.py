@@ -26,6 +26,11 @@ Discipline:
   access): discovery never proves execution authorization, so restricted
   models are surfaced honestly in inventory but never materialized as
   executable resources.
+- **Light families are max-only (D-054).** ``effort_restriction:
+  "max_only"`` marks a weak family (e.g. ``openai/luna``): its catalog
+  representation and floor expansion exist at the ``max`` reasoning effort
+  only. The designation is owner-reviewed registry data, never inferred
+  from ratings, names or size.
 """
 
 from __future__ import annotations
@@ -36,12 +41,28 @@ from pathlib import Path
 from typing import cast
 
 from .gateway_validation import exact_shape, v_str
-from .selection_types import CAPABILITY_DIMENSIONS, CONFIDENCE_VALUES
+from .selection_types import (
+    CAPABILITY_DIMENSIONS,
+    CONFIDENCE_VALUES,
+    ModelCatalog,
+)
 
 TRACK_REGISTRY_SCHEMA_VERSION = 1
 
 #: Closed classification vocabulary.
 TRACK_CLASSIFICATIONS: tuple[str, ...] = ("standard", "restricted")
+
+#: Closed effort-restriction vocabulary (D-054). ``max_only`` marks a light
+#: family: its catalog representation and floor expansion exist at the
+#: ``max`` reasoning effort only. Unrestricted (``None``) is the default.
+EFFORT_RESTRICTION_MAX_ONLY = "max_only"
+
+EFFORT_RESTRICTIONS: frozenset[str] = frozenset({EFFORT_RESTRICTION_MAX_ONLY})
+
+#: The exact effort a ``max_only`` light family is restricted to. Named
+#: literally (not the vocabulary maximum): ``ultra`` is a distinct reported
+#: effort above ``max`` and is not part of the restriction.
+EFFORT_RESTRICTION_MAX_EFFORT = "max"
 
 _MAX_PATTERN = 256
 _MAX_RATIONALE = 1500
@@ -177,6 +198,7 @@ class ModelTrack:
         "classification",
         "floor",
         "notes",
+        "effort_restriction",
     )
 
     def __init__(
@@ -188,6 +210,7 @@ class ModelTrack:
         classification: str,
         floor: TrackFloor | None,
         notes: str = "",
+        effort_restriction: str | None = None,
     ) -> None:
         from .gateway_validation import v_safe_id
 
@@ -223,12 +246,40 @@ class ModelTrack:
         if len(notes) > _MAX_RATIONALE:
             raise TrackRegistryError("model_track.notes too long")
         self.notes: str = notes
+        if effort_restriction is not None:
+            if effort_restriction not in EFFORT_RESTRICTIONS:
+                raise TrackRegistryError(
+                    f"model_track {provider}/{track}: unknown effort_restriction "
+                    + f"{effort_restriction!r}"
+                )
+            if classification == "restricted":
+                raise TrackRegistryError(
+                    f"model_track {provider}/{track}: restricted tracks never "
+                    + "route, so an effort_restriction is meaningless"
+                )
+        self.effort_restriction: str | None = effort_restriction
 
     def matches(self, slug: str) -> bool:
         return self.slug_pattern.fullmatch(slug) is not None
 
     def track_id(self) -> str:
         return f"{self.provider}/{self.track}"
+
+    def restrict_floor_efforts(self, reported: tuple[str, ...]) -> tuple[str, ...]:
+        """The reported efforts that may receive a floor entry (D-054).
+
+        Unrestricted tracks expand at every reported effort (unchanged
+        behavior). A ``max_only`` light family expands at ``max`` only — and
+        only when the runtime itself reports ``max``; a runtime listing
+        without ``max`` receives no floor entry (never invented).
+        """
+        if self.effort_restriction != EFFORT_RESTRICTION_MAX_ONLY:
+            return reported
+        return (
+            (EFFORT_RESTRICTION_MAX_EFFORT,)
+            if EFFORT_RESTRICTION_MAX_EFFORT in reported
+            else ()
+        )
 
     def to_dict(self) -> dict[str, object]:
         out: dict[str, object] = {
@@ -242,6 +293,8 @@ class ModelTrack:
             out["floor"] = self.floor.to_dict()
         if self.notes:
             out["notes"] = self.notes
+        if self.effort_restriction is not None:
+            out["effort_restriction"] = self.effort_restriction
         return out
 
     @classmethod
@@ -255,7 +308,7 @@ class ModelTrack:
                 "slug_pattern",
                 "classification",
             ),
-            ("floor", "notes"),
+            ("floor", "notes", "effort_restriction"),
             "model_track",
         )
         floor_raw = dd.get("floor")
@@ -272,6 +325,11 @@ class ModelTrack:
             ),
             notes=(
                 v_str(dd["notes"], "model_track.notes") if "notes" in dd else ""
+            ),
+            effort_restriction=(
+                v_str(dd["effort_restriction"], "model_track.effort_restriction")
+                if "effort_restriction" in dd
+                else None
             ),
         )
 
@@ -354,7 +412,34 @@ def _default_registry_path() -> Path:
     return resolve_default_artifact("model-tracks.json")
 
 
+def validate_catalog_effort_restriction(
+    catalog: ModelCatalog, registry: TrackRegistry
+) -> None:
+    """D-054 static conformance: light-family entries exist at ``max`` only.
+
+    Cross-artifact check between the reviewed catalog and the reviewed
+    registry: every catalog entry whose model classifies into a track with
+    ``effort_restriction == "max_only"`` must carry exactly the restricted
+    effort. A violation means the owner-reviewed artifacts disagree — a
+    fail-closed contract error, never silently routed around.
+    """
+    for entry in catalog.entries:
+        track = registry.classify(entry.identity.provider, entry.identity.model)
+        if track is None or track.effort_restriction is None:
+            continue
+        if entry.reasoning_effort != EFFORT_RESTRICTION_MAX_EFFORT:
+            raise TrackRegistryError(
+                f"catalog entry {entry.identity.provider}/"
+                + f"{entry.identity.model}/{entry.identity.variant}: light "
+                + f"family {track.track_id()} is {track.effort_restriction} "
+                + f"but the entry effort is {entry.reasoning_effort!r}"
+            )
+
+
 __all__ = [
+    "EFFORT_RESTRICTIONS",
+    "EFFORT_RESTRICTION_MAX_EFFORT",
+    "EFFORT_RESTRICTION_MAX_ONLY",
     "ModelTrack",
     "TRACK_CLASSIFICATIONS",
     "TRACK_REGISTRY_SCHEMA_VERSION",
@@ -362,4 +447,5 @@ __all__ = [
     "TrackRegistry",
     "TrackRegistryError",
     "load_track_registry",
+    "validate_catalog_effort_restriction",
 ]

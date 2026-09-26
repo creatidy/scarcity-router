@@ -61,8 +61,8 @@ class ModelPolicyContract(unittest.TestCase):
         self.assertIsInstance(policy, dict)
         parsed = cast(dict[str, object], policy)
         self.assertEqual(parsed["schema_version"], 1)
-        self.assertEqual(parsed["policy_version"], 8)
-        self.assertEqual(parsed["updated_at"], "2026-09-15")
+        self.assertEqual(parsed["policy_version"], 9)
+        self.assertEqual(parsed["updated_at"], "2026-09-26")
         self.assertEqual(json.loads(json.dumps(parsed)), parsed)
 
     def test_versioning_semantics_are_documented(self) -> None:

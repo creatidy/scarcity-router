@@ -452,6 +452,70 @@ class DerivedCatalogTests(unittest.TestCase):
             any(e.identity.model == "gpt-6.1-sol" for e in base.entries)
         )
 
+    def test_light_family_floor_expansion_is_max_only(self) -> None:
+        # D-054: luna is effort_restriction max_only — the floor entry is
+        # generated at max only, and only when the runtime REPORTS a max
+        # effort. Non-max efforts of a light family never become entries.
+        registry = SourceRegistry(track_registry=load_track_registry())
+        registry.sync_configuration((_config(),))
+        _ = registry.apply_inventory(
+            _inventory(
+                "personal-openai",
+                "worker-1",
+                (_model("gpt-6.5-luna", ("low", "medium", "high", "max")),),
+            )
+        )
+        merged = registry.derived_catalog_entries(_base_catalog())
+        luna_entries = [
+            e for e in merged.entries if e.identity.model == "gpt-6.5-luna"
+        ]
+        self.assertEqual(("max",), tuple(e.identity.variant for e in luna_entries))
+        floor = load_track_registry().classify("openai", "gpt-6.5-luna")
+        assert floor is not None and floor.floor is not None
+        self.assertEqual(
+            floor.floor.ratings["reasoning"], luna_entries[0].capabilities.reasoning.rating
+        )
+
+    def test_light_family_without_reported_max_gets_no_floor_entry(self) -> None:
+        registry = SourceRegistry(track_registry=load_track_registry())
+        registry.sync_configuration((_config(),))
+        _ = registry.apply_inventory(
+            _inventory(
+                "personal-openai",
+                "worker-1",
+                (_model("gpt-6.5-luna", ("low", "medium", "high")),),
+            )
+        )
+        merged = registry.derived_catalog_entries(_base_catalog())
+        self.assertFalse(
+            any(e.identity.model == "gpt-6.5-luna" for e in merged.entries)
+        )
+        # The model itself stays adopted and routable — only the floor
+        # catalog entry is withheld; the D-043 matrix remains the
+        # per-request authority.
+        self.assertIn(
+            "personal-openai:gpt-6.5-luna:high",
+            {r.identity.resource_id for r in registry.derived_registrations()},
+        )
+
+    def test_unrestricted_track_still_expands_every_reported_effort(self) -> None:
+        registry = SourceRegistry(track_registry=load_track_registry())
+        registry.sync_configuration((_config(),))
+        _ = registry.apply_inventory(
+            _inventory(
+                "personal-openai",
+                "worker-1",
+                (_model("gpt-6.5-sol", ("low", "high")),),
+            )
+        )
+        merged = registry.derived_catalog_entries(_base_catalog())
+        sol_entries = [
+            e for e in merged.entries if e.identity.model == "gpt-6.5-sol"
+        ]
+        self.assertEqual(
+            {"high", "low"}, {e.identity.variant for e in sol_entries}
+        )
+
 
 class UpgradeSimulationTests(unittest.TestCase):
     """The central acceptance criterion: T0/T1 without user edits."""

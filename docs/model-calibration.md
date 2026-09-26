@@ -84,7 +84,7 @@ tool/vision/reasoning support true, family version date 2026-07-09 and binding
 original vectors, hard properties, assessment provenance and dates are unchanged;
 their configured max/high/max/max effort is now explicit catalog data.
 
-Current capability-only eligible sets, pinned by calibration tests:
+Catalog-v2 (D-032) capability-only eligible sets as pinned at that time:
 
 | Profile | Eligible configurations |
 | --- | --- |
@@ -200,6 +200,59 @@ Terra Medium/Astra Low/Sol Medium/Sol High ordering test, all-profile eligible
 sets, five main outcomes, exact legitimate capacity assessment sharing and
 direct/CLI/REST/MCP parity. A bounded live selector check follows deterministic
 tests, never model execution merely to probe quota.
+
+## Catalog v5 correction (D-054)
+
+Issue #126 (2026-09-26) changes the effort-calibration mechanism: a
+**light family** — designated `effort_restriction: "max_only"` in
+[`model-tracks.json`](../model-tracks.json) — is represented in the catalog
+and floor-expanded at `max` reasoning effort only. The designation is
+owner-reviewed registry data, never inferred. `openai/luna` is designated
+light; GLM Flash (`glm-5.3-flash`) was already max-only in the catalog and
+is ratified as-is; `sol`, `astra`, `daybreak` and the GLM-5.3 base family
+stay unrestricted (GLM-5.3 base must remain multi-effort because
+`m31-repo-review-low` is calibrated on `glm-5.3/low`).
+
+Catalog version 4 → 5, `updated_on` 2026-09-26:
+
+- `gpt-5.6-luna/medium` is **removed**. Its D-032 vector (3/4/3/5/5/4)
+  remains historical provenance above and in the v2-era tables.
+- `gpt-6-luna/high` is **re-labelled `gpt-6-luna/max`** with the vector
+  unchanged — the ratings are the reviewed luna track floor (3/3/2/4/4/3,
+  confidence low), carried at the family's single allowed effort. The
+  re-label was chosen over deletion to keep the owner-visible GPT-6 Luna
+  selector-addressable. Per-dimension `assessed_on` values are unchanged.
+
+The floor-expansion clamp (`max_only` tracks expand at `max` only, and only
+when the runtime itself reports a `max` effort) and the fail-closed
+cross-artifact conformance check live in
+`scarcity_router/model_tracks.py` and `scarcity_router/execution_sources.py`.
+`model-policy.json` records the rule in `reasoning_effort_policy`
+(policy_version 9). No task-profile minimum and no selector ranking rule
+changed.
+
+Current capability-only eligible sets, pinned by calibration tests
+(changed rows versus the v2-era table: `editorial` loses Luna Medium;
+`general_reasoning`'s exclusion set loses the removed entry; GPT-6 Luna is
+the `max` configuration):
+
+| Profile | Eligible configurations |
+| --- | --- |
+| mechanical / routine_coding | All eleven v5 entries |
+| deep_coding | Terra Medium, Sol Medium, Sol High, GLM-5.3 Max |
+| scientific_review / translation | Sol High |
+| editorial | Luna Max, Sol Medium, Sol High |
+| general_reasoning | All except GLM-5.3 Low and GPT-6 Luna Max |
+| orchestration | Luna Max, Sol Medium, Sol High |
+
+Expected selection deltas under the frozen balanced ranking (verified by
+deterministic selector runs over synthetic capacity scenarios; not
+live-traffic claims): `editorial` now selects **Luna Max** in every
+capacity scenario — matching the owner's accepted `EDITORIAL_AUTHOR` role
+that the selector previously could not see — and `routine_coding` selects
+Luna Max in the branch where OpenAI capacity is proportionally lighter
+(`glm-5.3/low` still wins the other scenarios). Every other profile
+selects identically to the v4 catalog.
 
 ## Historical M2c calibration
 
