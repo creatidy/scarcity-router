@@ -580,12 +580,12 @@ class ControlledCodexHome:
 
         text = content.decode("utf-8", errors="replace")
         try:
-            parsed = tomllib.loads(text)
+            parsed: dict[str, object] = tomllib.loads(text)
         except tomllib.TOMLDecodeError:
             return False, []
         if set(parsed.keys()) - {"projects"}:
             return False, []
-        projects = parsed.get("projects", {})
+        projects: object = parsed.get("projects", {})
         if not isinstance(projects, dict):
             return False, []
         paths: list[str] = []
