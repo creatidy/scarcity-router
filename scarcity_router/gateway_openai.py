@@ -72,6 +72,13 @@ CHAT_COMPLETION_ALLOWED_KEYS: frozenset[str] = frozenset({
     "tool_choice",
     "response_format",
     "reasoning_effort",
+    # Reasoning-dialect compatibility forms (D-055 program, child #135):
+    # accepted ONLY through the bounded normalization layer, which folds
+    # them into the canonical ``reasoning_effort`` intent — never stored,
+    # forwarded or re-interpreted downstream.
+    "reasoning",
+    "thinking",
+    "enable_thinking",
     "max_completion_tokens",
     "max_tokens",
     "temperature",
@@ -322,6 +329,7 @@ def parse_chat_completion_request(document: object) -> ChatCompletionRequest:
                 param="reasoning_effort",
             )
         reasoning_effort = raw_effort
+    reasoning_effort = _normalize_reasoning_dialects(document, reasoning_effort)
 
     requested_output = _parse_output_limit(document)
 
@@ -584,6 +592,136 @@ def _parse_tool_choice(value: object, *, present: bool) -> tuple[object, bool]:
             )
         return narrowed, True
     raise _err("tool_choice must be a string or an object", param="tool_choice")
+
+
+THINKING_TYPES: frozenset[str] = frozenset({"enabled", "disabled"})
+
+_CONFLICT_CODE = "conflicting_reasoning_parameters"
+
+
+def _normalize_reasoning_dialects(
+    document: Mapping[str, object], canonical_effort: str | None
+) -> str | None:
+    """Fold the evidenced reasoning-dialect forms into one canonical intent.
+
+    The bounded compatibility layer (child #135 of program #132): the
+    observed client dialects — ``reasoning: {"effort": ...}``,
+    ``thinking: {"type": "enabled"|"disabled"}`` and
+    ``enable_thinking: true|false`` — are accepted alongside
+    ``reasoning_effort`` and normalized ONCE into the canonical
+    ``reasoning_effort`` value. Strictness is preserved, not relaxed:
+
+    - the objects are CLOSED shapes (unknown nested keys are rejected);
+    - the two effort-bearing forms must agree — a contradiction is the
+      typed 400 ``conflicting_reasoning_parameters``;
+    - enable/disable forms are consistency ASSERTIONS, never effort
+      selectors: ``enabled`` alongside an explicit effort is consistent,
+      a disabled flag alongside any effort is a conflict, contradictory
+      flags conflict;
+    - an enabled assertion with no effort anywhere fails explicitly
+      (``reasoning_effort_required``) — no effort is ever guessed;
+    - disabled-only forms mean "no reasoning requested" and normalize to
+      no effort.
+
+    The dialect fields are consumed here and never reach routing,
+    adapters or generation params: one canonical reasoning intent.
+    """
+    effort = canonical_effort
+    thinking_enabled: bool | None = None
+    enable_thinking: bool | None = None
+
+    if "reasoning" in document:
+        raw_value = document.get("reasoning")
+        if not isinstance(raw_value, Mapping):
+            raise _err(
+                "reasoning must be an object",
+                code="invalid_request",
+                param="reasoning",
+            )
+        raw_reasoning = cast("Mapping[str, object]", raw_value)
+        extra = set(raw_reasoning) - {"effort"}
+        if extra:
+            raise _err(
+                "unknown request parameter",
+                code="unknown_parameter",
+                param=f"reasoning.{sorted(extra)[0]}",
+            )
+        raw_effort = raw_reasoning.get("effort")
+        if raw_effort is not None:
+            if not isinstance(raw_effort, str) or raw_effort not in REASONING_EFFORTS:
+                raise _err(
+                    "unsupported reasoning.effort value",
+                    code="unsupported_parameter",
+                    param="reasoning.effort",
+                )
+            if effort is not None and raw_effort != effort:
+                raise _err(
+                    "conflicting reasoning effort values",
+                    code=_CONFLICT_CODE,
+                    param="reasoning.effort",
+                )
+            effort = effort if effort is not None else raw_effort
+
+    if "thinking" in document:
+        raw_value = document.get("thinking")
+        if not isinstance(raw_value, Mapping):
+            raise _err(
+                "thinking must be an object",
+                code="invalid_request",
+                param="thinking",
+            )
+        raw_thinking = cast("Mapping[str, object]", raw_value)
+        extra = set(raw_thinking) - {"type"}
+        if extra:
+            raise _err(
+                "unknown request parameter",
+                code="unknown_parameter",
+                param=f"thinking.{sorted(extra)[0]}",
+            )
+        raw_type = raw_thinking.get("type")
+        if raw_type is not None:
+            if not isinstance(raw_type, str) or raw_type not in THINKING_TYPES:
+                raise _err(
+                    "unsupported thinking.type value",
+                    code="unsupported_parameter",
+                    param="thinking.type",
+                )
+            thinking_enabled = raw_type == "enabled"
+
+    if "enable_thinking" in document:
+        raw_flag = document.get("enable_thinking")
+        if not isinstance(raw_flag, bool):
+            raise _err(
+                "enable_thinking must be a boolean",
+                code="invalid_request",
+                param="enable_thinking",
+            )
+        enable_thinking = raw_flag
+
+    if (
+        thinking_enabled is not None
+        and enable_thinking is not None
+        and thinking_enabled != enable_thinking
+    ):
+        raise _err(
+            "contradictory reasoning enable/disable assertions",
+            code=_CONFLICT_CODE,
+            param="thinking",
+        )
+    enabled = thinking_enabled if thinking_enabled is not None else enable_thinking
+    if effort is not None and enabled is False:
+        raise _err(
+            "a disabled reasoning flag conflicts with an explicit reasoning effort",
+            code=_CONFLICT_CODE,
+            param="reasoning_effort",
+        )
+    if effort is None and enabled is True:
+        raise _err(
+            "reasoning is enabled but no reasoning effort can be determined",
+            code="reasoning_effort_required",
+            param="reasoning_effort",
+        )
+    return effort
 
 
 def _parse_output_limit(document: Mapping[str, object]) -> int | None:
