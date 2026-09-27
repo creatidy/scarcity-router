@@ -98,7 +98,7 @@ from .gateway_contracts import (
     GatewayError,
     GatewayLimits,
 )
-from .gateway_coordinator import GatewayApplication
+from .gateway_coordinator import GatewayApplication, exposed_logical_models
 from .gateway_validation import v_str_object_mapping
 from .gateway_openai import (
     ChatCompletionRequest,
@@ -418,7 +418,10 @@ class GatewayRequestHandler(BaseHTTPRequestHandler):
 
     def _route_models(self) -> None:
         application = self._application()
-        payload = models_list_payload(application.aliases.aliases)
+        payload = models_list_payload(
+            application.aliases.aliases,
+            exposed_logical_models(application.catalog, application.registry),
+        )
         self._send_json(HTTPStatus.OK, payload)
 
     def _route_chat_completions(self, client_id: str) -> None:

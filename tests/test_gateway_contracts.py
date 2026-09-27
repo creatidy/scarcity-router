@@ -349,8 +349,10 @@ class BoundedAuditTrailTests(unittest.TestCase):
 class ModelFieldResolutionTests(unittest.TestCase):
     def test_unknown_model_is_model_not_found(self) -> None:
         application = make_application()
+        # D-055: "gpt-5.6-luna" now resolves as a logical model; a slug no
+        # alias and no catalog entry carries stays model_not_found.
         request = parse_chat_request(
-            {"model": "gpt-5.6-luna", "messages": [_USER_ONLY]}
+            {"model": "never-heard-of-it", "messages": [_USER_ONLY]}
         )
         with self.assertRaises(GatewayError) as caught:
             _ = application.execute(client_id=CLIENT_ID, request=request)

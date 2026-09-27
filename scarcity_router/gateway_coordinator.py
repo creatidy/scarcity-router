@@ -106,7 +106,11 @@ from .gateway_contracts import (
     UsageAccounting,
     UsageTokens,
 )
-from .gateway_openai import ChatCompletionRequest, RequestCapabilities
+from .gateway_openai import (
+    ChatCompletionRequest,
+    LogicalModelInfo,
+    RequestCapabilities,
+)
 from .resource_state import ResourceRegistry
 from .gateway_validation import v_instance, v_int, v_safe_id
 from .routing_core import (
@@ -125,7 +129,7 @@ from .routing_core import (
 )
 from .selector import canonical_instant
 from .selector import SelectorPolicy
-from .selection_types import ModelCatalog, ModelIdentity, TaskProfileCatalog
+from .selection_types import ModelCatalog, ModelIdentity, ModelRef, TaskProfileCatalog
 
 # ── Model-field resolution ────────────────────────────────────────────────────
 
@@ -133,16 +137,29 @@ PIN_PREFIX = "sr-pin:"
 
 PIN_KIND = "pin"
 ALIAS_KIND = "alias"
+LOGICAL_KIND = "logical_model"
 
 
 @dataclass(frozen=True)
 class ResolvedModel:
-    """The one resolution of a client ``model`` string (D-042 layers 4/5)."""
+    """The one resolution of a client ``model`` string (D-042/D-055).
+
+    Three kinds: an exact ``sr-pin:`` reference, an administrator routing
+    alias, or (D-055) a logical model — an adopted source model requested
+    by its bare physical-model id, resolved to the exact
+    ``(provider, model)`` identity plus the resolved reasoning-effort
+    variant. The logical kind never substitutes another model: the
+    routing core narrows to exactly that identity and competes only the
+    resources that provide it.
+    """
 
     kind: str
     alias: str | None = None
     profile: ClientRoutingProfile | None = None
     pinned_target: PinnedTarget | None = None
+    explicit_model: ModelRef | None = None
+    explicit_variant: str | None = None
+    available_variants: tuple[str, ...] = ()
 
 
 class RoutingAliasTable:
@@ -221,23 +238,176 @@ def parse_pinned_reference(model: str) -> PinnedTarget:
     )
 
 
-def resolve_model_string(model: str, aliases: RoutingAliasTable) -> ResolvedModel:
-    """Resolve the client ``model`` field: alias or exact pinned reference.
+def _logical_matches(
+    model: str, catalog: ModelCatalog
+) -> tuple[str, tuple[str, ...]]:
+    """Resolve a bare model id against the composed catalog (D-055).
 
-    Anything else is ``model_not_found``: the execution surface invents no
-    implicit routing and never guesses a bare model name into a target.
+    Returns the owning provider and the sorted calibrated variants for
+    the exact identity. A slug no catalog entry carries is not exposed
+    (the caller rejects with ``model_not_found``); a slug two providers
+    carry is ambiguous and fails loudly — never resolved by accidental
+    precedence.
+    """
+    matches = [
+        entry.identity
+        for entry in catalog.entries
+        if entry.identity.model == model and entry.identity.variant
+    ]
+    if not matches:
+        raise GatewayError.not_found(
+            "the requested model does not exist on this gateway",
+            code="model_not_found",
+        )
+    providers = sorted({identity.provider for identity in matches})
+    if len(providers) > 1:
+        raise GatewayError.invalid_request(
+            "the requested model id is ambiguous on this gateway",
+            code="ambiguous_logical_model",
+            param="model",
+        )
+    return providers[0], tuple(sorted({identity.variant for identity in matches}))
+
+
+def resolve_model_string(
+    model: str,
+    aliases: RoutingAliasTable,
+    catalog: ModelCatalog | None = None,
+) -> ResolvedModel:
+    """Resolve the client ``model`` field (D-055 resolution order).
+
+    Exact pinned reference → administrator routing alias → logical
+    adopted model → ``model_not_found``. The execution surface invents no
+    implicit routing: a logical resolution names the EXACT
+    ``(provider, model)`` identity and never another model. Without a
+    catalog the logical layer is unavailable and the historical
+    alias-or-pin behavior applies unchanged.
     """
     if model.startswith(PIN_PREFIX):
         return ResolvedModel(
             kind=PIN_KIND, pinned_target=parse_pinned_reference(model)
         )
     profile = aliases.resolve(model)
-    if profile is None:
+    if profile is not None:
+        return ResolvedModel(kind=ALIAS_KIND, alias=model, profile=profile)
+    if catalog is None:
         raise GatewayError.not_found(
             "the requested model does not exist on this gateway",
             code="model_not_found",
         )
-    return ResolvedModel(kind=ALIAS_KIND, alias=model, profile=profile)
+    provider, variants = _logical_matches(model, catalog)
+    return ResolvedModel(
+        kind=LOGICAL_KIND,
+        explicit_model=ModelRef(provider=provider, model=model),
+        available_variants=variants,
+    )
+
+
+def _resolve_logical_effort(
+    resolved: ResolvedModel, requested_effort: str | None
+) -> str:
+    """Resolve the reasoning-effort variant of a logical-model request.
+
+    An explicitly requested effort is honored exactly: a variant the
+    identity does not offer is an explicit typed rejection, never a
+    downgrade and never a substitution. An omitted effort uses the
+    identity's single legal calibrated variant (a max-only family uses
+    ``max``, consistent with D-054) and fails explicitly when several
+    variants exist — no effort is ever invented.
+    """
+    variants = resolved.available_variants
+    if requested_effort is not None:
+        if requested_effort not in variants:
+            raise GatewayError.invalid_request(
+                "the requested reasoning effort is not offered by this model",
+                code="unsupported_reasoning_effort",
+                param="reasoning_effort",
+            )
+        return requested_effort
+    if len(variants) == 1:
+        return variants[0]
+    raise GatewayError.invalid_request(
+        "this model requires an explicit reasoning_effort",
+        code="reasoning_effort_required",
+        param="reasoning_effort",
+    )
+
+
+def exposed_logical_models(
+    catalog: ModelCatalog, registry: ResourceRegistry
+) -> tuple[LogicalModelInfo, ...]:
+    """The logical models ``GET /v1/models`` exposes (D-055).
+
+    Exposure is resource-aware and adoption-honest: a catalog identity is
+    exposed only when at least one registered resource binds that exact
+    ``(provider, model)`` — an empty deployment exposes nothing, a
+    retired model disappears, and a registered-but-currently-unavailable
+    resource still exposes the id (requests then get the explicit
+    no-eligible-target outcome, never a misleading ``model_not_found``).
+    Restricted and unclassified models never have catalog entries here
+    and are never exposed. The advertised context ceiling is the honest
+    intersection of the model's hard context and the bound channels'
+    known context ceilings; an UNKNOWN channel ceiling stays UNKNOWN
+    (``None``). Ambiguous multi-provider slugs are not advertised.
+    """
+    try:
+        snapshot = registry.registry_snapshot()
+    except CapacityValidationError:
+        return ()
+    channel_contexts: dict[tuple[str, str], list[int]] = {}
+    bound: set[tuple[str, str]] = set()
+    for entry in snapshot.entries:
+        key = (entry.identity.provider, entry.identity.model)
+        bound.add(key)
+        context = entry.capabilities.context_limit_tokens
+        if context is not None:
+            channel_contexts.setdefault(key, []).append(context)
+    by_model: dict[str, list[ModelIdentity]] = {}
+    for catalog_entry in catalog.entries:
+        identity = catalog_entry.identity
+        if (identity.provider, identity.model) not in bound:
+            continue
+        by_model.setdefault(identity.model, []).append(identity)
+    infos: list[LogicalModelInfo] = []
+    for model in sorted(by_model):
+        identities = by_model[model]
+        providers = sorted({identity.provider for identity in identities})
+        if len(providers) != 1:
+            continue
+        model_entries = [
+            catalog_entry
+            for catalog_entry in catalog.entries
+            if catalog_entry.identity.model == model
+        ]
+        contexts = [
+            catalog_entry.hard_properties.input_context_tokens
+            for catalog_entry in model_entries
+            if catalog_entry.hard_properties.input_context_tokens is not None
+        ]
+        channels = channel_contexts.get((providers[0], model), ())
+        effective_context: int | None = None
+        if channels:
+            effective_context = min([*contexts, *channels])
+        outputs = [
+            catalog_entry.hard_properties.output_tokens
+            for catalog_entry in model_entries
+            if catalog_entry.hard_properties.output_tokens is not None
+        ]
+        efforts = tuple(
+            sorted({identity.variant for identity in identities if identity.variant})
+        )
+        if not outputs:
+            continue
+        infos.append(
+            LogicalModelInfo(
+                model=model,
+                provider=providers[0],
+                reasoning_efforts=efforts,
+                effective_context_limit_tokens=effective_context,
+                max_output_tokens=min(outputs),
+            )
+        )
+    return tuple(infos)
 
 
 # ── The application (server configuration + runtime state) ────────────────────
@@ -507,7 +677,7 @@ class GatewayApplication:
         emit_chunk: StreamEmitter | None,
     ) -> CompletionOutcome:
         self._enforce_request_limits(request.capabilities)
-        resolved = resolve_model_string(request.model, self.aliases)
+        resolved = resolve_model_string(request.model, self.aliases, self.catalog)
         self._admit(started=started, request=request, resolved=resolved, state=state)
         target = state.target
         if target is None:  # pragma: no cover - admission sets it or raises
@@ -566,6 +736,15 @@ class GatewayApplication:
             ) from None
         state.registry_revision = registry_snapshot.revision
         state.registry_generated_at = registry_snapshot.generated_at
+        explicit_model = None
+        explicit_variant = None
+        if resolved.kind == LOGICAL_KIND:
+            # D-055: the effort variant is resolved (or explicitly
+            # rejected) BEFORE any admission I/O — never guessed.
+            explicit_model = resolved.explicit_model
+            explicit_variant = _resolve_logical_effort(
+                resolved, request.reasoning_effort
+            )
         if resolved.profile is not None:
             state.routing_profile = resolved.profile.profile_id
             state.routing_policy_version = self.profile_policy_version
@@ -578,6 +757,8 @@ class GatewayApplication:
             minimum_input_context_tokens=caps.estimated_input_tokens,
             maximum_output_tokens=caps.requested_output_tokens,
             profile_alias=resolved.alias,
+            explicit_model=explicit_model,
+            explicit_variant=explicit_variant,
             pinned_target=resolved.pinned_target,
         )
         routing_profile = resolved.profile

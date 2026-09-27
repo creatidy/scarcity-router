@@ -87,27 +87,52 @@ owned by their existing authoritative documents
   handler is quiet by design; every error message is a safe structural
   message. Diagnostics are redacted and allowlisted.
 
-## Model-field resolution (D-042)
+## Model-field resolution (D-042, amended by D-055)
 
-The `model` field of every request resolves in exactly one of two ways;
-anything else is `model_not_found`:
+The `model` field of every request resolves in exactly one of three
+ways; anything else is `model_not_found`. The resolution order is:
+pinned reference, then alias, then logical model.
 
-1. **Routing-profile alias** — an administrator-configured name bound to
-   an EXISTING profile id in the task-profile catalog (for example
-   `deep-coding`). Aliases are bindings into the existing
-   requirement/policy model, never a second scoring system.
-2. **Pinned executable-target reference** — the exact reference syntax
+1. **Pinned executable-target reference** — the exact reference syntax
    `sr-pin:<resource_id>/<provider>/<model>/<variant>`, optionally
    carrying `@<decision_id>` audit provenance from a prior
    recommendation. The reference is EXACT: all four identifier components
    are required and admission approves exactly that resource and variant.
    A no-longer-bound identity is the explicit `pinned_model_not_bound`
    rejection — never a substitution, never a re-ranking.
+2. **Routing-profile alias** — an administrator-configured name bound to
+   an EXISTING profile id in the task-profile catalog (for example
+   `deep-coding`). Aliases are bindings into the existing
+   requirement/policy model, never a second scoring system. Aliases take
+   precedence over logical model ids (see below); an alias shadowing a
+   logical model is visible in `GET /v1/models`
+   (`logical_model_shadowed`), never accidental.
+3. **Logical model (D-055)** — an adopted source model requested by its
+   bare physical-model id (`gpt-5.6-luna`). Resolution binds the exact
+   `(provider, model)` identity and constrains routing to exactly that
+   identity; normal capacity/scarcity/authorization policy chooses among
+   the resources providing it. No cross-model substitution exists; no
+   exact match fails explicitly. The reasoning effort is exact:
+   `unsupported_reasoning_effort` for a variant the identity does not
+   offer, `reasoning_effort_required` when no effort is requested and
+   several calibrated variants exist (a max-only family's single legal
+   effort — `max` — is used, per D-054). A slug carried by two providers
+   is `ambiguous_logical_model`.
 
-`GET /v1/models` lists exactly the configured aliases (one OpenAI `model`
-object per alias, `owned_by: "scarcity-router"`). A recommendation is not
-a reservation: pinned admission re-checks current state and may reject
-explicitly.
+`GET /v1/models` lists the configured aliases first, then the exposed
+logical models: a calibrated model identity is exposed only when at
+least one registered resource binds it. An empty deployment exposes
+nothing; a retired model disappears; a registered-but-unavailable model
+still appears and yields `no_eligible_target` on request (never a
+misleading `model_not_found`). Restricted and unclassified models are
+never exposed or resolvable. Every entry carries the additive
+`x_scarcity_router` metadata block: `kind`
+(`routing_alias`/`logical_model`), and for logical models `provider`,
+`reasoning_efforts`, `effective_context_limit_tokens` (model hard
+context intersected with the bound channels' known context ceilings;
+`null` = unknown, never guessed) and `max_output_tokens`. A
+recommendation is not a reservation: pinned admission re-checks current
+state and may reject explicitly.
 
 ## Requests
 
@@ -259,7 +284,7 @@ Errors use the OpenAI envelope
 
 | HTTP | type                  | typical codes                                      |
 | ---- | --------------------- | -------------------------------------------------- |
-| 400  | `invalid_request_error` | `unknown_parameter`, `invalid_json`, `invalid_pin_reference`, `pinned_model_not_bound`, `compatibility_unsupported`, `compatibility_unknown`, `context_length_exceeded`, `output_limit_exceeded`, `router_loop_detected`, `invalid_host` |
+| 400  | `invalid_request_error` | `unknown_parameter`, `invalid_json`, `invalid_pin_reference`, `pinned_model_not_bound`, `compatibility_unsupported`, `compatibility_unknown`, `context_length_exceeded`, `output_limit_exceeded`, `router_loop_detected`, `invalid_host`, `unsupported_reasoning_effort`, `reasoning_effort_required`, `ambiguous_logical_model` |
 | 401  | `authentication_error`  | (no code)                                          |
 | 403  | `permission_error`      | `unauthorized_target`, `spend_limit_exceeded`      |
 | 404  | `not_found_error`       | `model_not_found`, `pin_target_not_found`          |

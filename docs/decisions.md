@@ -3854,3 +3854,85 @@ what M4.1 forbids); a configurable per-provider eligibility policy
 
 Add a new numbered entry with its status, date, evidence and `Supersedes: D-nnn`.
 Do not rewrite history or change an accepted decision silently.
+
+### D-055 — Logical model resolution and adoption-aware discovery on the execution surface
+
+- **Status:** Accepted (issue #134; child B of program #132, branch
+  `compat/logical-model-resolution`, stacked on PR #142)
+- **Date:** 2026-09-26
+- **Confidence:** High for the contract; the representative-client
+  evidence is the 2026-09-26 ZCode acceptance capture (program #132).
+- **Context:** The first real representative-client test failed at the
+  model field: a normal OpenAI-compatible client sends
+  `"model": "gpt-5.6-luna"`, but the execution surface resolved only
+  administrator routing aliases and exact `sr-pin:` references, so the
+  discovered, routable physical model was answered `model_not_found`;
+  `GET /v1/models` exposed aliases only. Requiring `sr-pin:` strings in
+  ZCode is not acceptable product UX, and advertising nothing is not
+  acceptable OpenAI-compatible discovery.
+- **Decision:**
+  1. **Resolution order** on the execution surface becomes: exact
+     `sr-pin:` reference → administrator routing alias → logical model →
+     `model_not_found`. A LOGICAL request names an adopted physical
+     model by its bare id and resolves to the EXACT `(provider, model)`
+     identity; the routing core's existing explicit-model/variant
+     narrowing (never a second engine) constrains candidates to exactly
+     that identity, and normal capacity/scarcity/authorization policy
+     chooses among the resources providing it. No cross-model
+     substitution exists for a logical request; no exact match fails
+     explicitly.
+  2. **Reasoning effort on a logical request is exact.** An explicitly
+     requested effort is honored exactly; a variant the identity does
+     not offer is the typed rejection `unsupported_reasoning_effort` —
+     never a downgrade, never a reroute. An omitted effort uses the
+     identity's single legal calibrated variant (a max-only family uses
+     `max`, consistent with D-054) and is the typed rejection
+     `reasoning_effort_required` when several variants exist — no effort
+     is invented. A slug two providers carry is `ambiguous_logical_model`
+     — never resolved by accidental precedence.
+  3. **Discovery is adoption-aware and honest.** `GET /v1/models` lists
+     configured aliases first, then exposed logical models: a catalog
+     identity is exposed only when at least one registered resource
+     binds it. An empty deployment exposes nothing (the honest-empty
+     contract stands); a retired model disappears; a registered but
+     currently unavailable model still appears and requests yield the
+     explicit `no_eligible_target` outcome — never a misleading
+     `model_not_found`. Restricted (`daybreak`) and unclassified models
+     never have catalog entries here and are never exposed or resolvable.
+  4. **Alias collisions are explicit.** Administrator aliases take
+     precedence over logical ids; an alias shadowing a logical model
+     produces exactly one models-list entry, flagged
+     `logical_model_shadowed` in its metadata. Creation-time refusal is
+     not relied upon (adoption can create a collision later); visibility
+     plus deterministic precedence is the contract.
+  5. **Additive `x_scarcity_router` model metadata** on every models-list
+     entry: `kind` (`routing_alias` / `logical_model`), and for logical
+     models `provider`, `reasoning_efforts` (calibrated variants),
+     `effective_context_limit_tokens` — the intersection of the model's
+     hard context and the bound channels' KNOWN context ceilings, `null`
+     when the channel ceiling is UNKNOWN (never advertised as a number)
+     — and `max_output_tokens` (the model's hard property; channel-level
+     output capability arrives with the effective-limits work, #136).
+  6. **Error vocabulary additions** (closed, additive):
+     `unsupported_reasoning_effort`, `reasoning_effort_required`,
+     `ambiguous_logical_model` (all 400 `invalid_request_error`).
+- **Reconciliation with D-042:** D-042 froze model-field resolution to
+  exactly two readings (alias, pin). This decision amends that contract
+  additively with the third (logical) reading; the pin and alias paths
+  are byte-identical to before, `sr-pin:` remains the exact auditable
+  escape hatch, and the frozen audit field set is unchanged (logical
+  requests audit like unprofiled routes: selected == executed exact
+  target, `routing_profile` null).
+- **Alternatives considered:** synthetic per-model aliases generated at
+  adoption (rejected: a second alias namespace with silent precedence
+  and stale entries after retirement); wildcard/prefix model matching
+  (rejected: invents routing semantics the client cannot audit);
+  exposing restricted/unclassified inventory entries for transparency
+  (rejected: discovery must never advertise what cannot be executed);
+  per-target 404s for adopted-but-unavailable models (rejected: hides
+  an availability state the operator and client must distinguish).
+- **Boundary:** Execution-surface contract change only (v1-additive:
+  previously-valid requests behave identically). No routing-engine,
+  selector, compatibility-matrix or worker-protocol change; no
+  reasoning-dialect parsing (child C, #135); no limits semantics
+  (child D, #136).
