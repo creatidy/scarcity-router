@@ -54,8 +54,8 @@ reasoning-dialect layer below is the precedent).
 | Role history | `system`/`developer`/`user`/`assistant`/`tool`, admission-gated per matrix cell | Implemented (text-only in v1) |
 | Streaming | SSE `chat.completion.chunk` frames, optional usage chunk, `[DONE]` | Implemented |
 | Client-owned tool declarations | `tools[]` validated at ingress; capability-gated before inference | Implemented |
-| Tool calls returned to the client | `tool_calls` always return to the CLIENT; the router/worker never executes them (D-043) | Contract frozen; end-to-end round trip pending where channels do not evidence it (#137) |
-| Client tool-result continuation | `role: "tool"` results transported back into the backend's continuation | Pending #137 |
+| Tool calls returned to the client | `tool_calls` always return to the CLIENT; the router/worker never executes them (D-043); admitted per source only where the matrix evidences it | Implemented on evidenced server-direct channels (`tool_calls` PASS/PARTIAL cells); Codex worker source UNSUPPORTED — #137 |
+| Client tool-result continuation | `role: "tool"` results with `tool_call_id` transported back into the backend's continuation | Implemented on evidenced server-direct channels (`tool_results` PASS/PARTIAL cells); Codex worker source UNSUPPORTED — #137 |
 | Structured output | `response_format` text/`json_object`/`json_schema`, matrix-gated | Implemented |
 | Max output semantics | effective output ceiling = model ∩ channel ∩ administrator allowance; honest, visible, rejection-based | Architecture accepted (D-056); implementation #136 |
 | Context capability | effective context = model ∩ channel; UNKNOWN never guessed | Metadata implemented (D-055); #136 completes enforcement |
@@ -63,7 +63,7 @@ reasoning-dialect layer below is the precedent).
 | Usage | provider-reported vs estimated kept distinct (`usage_source`) | Implemented |
 | Typed errors | closed OpenAI-compatible vocabulary; fail-closed semantics | Implemented |
 | Authentication | one bearer client key per inference identity (D-044) | Implemented |
-| Transport security | loopback plain HTTP supported; same-host container tier accepted not implemented; TLS required otherwise (D-056) | Partially implemented |
+| Transport security | loopback plain HTTP supported (incl. host-network containers); same-host container tier accepted, implemented under #139, applies to the whole composed listener; TLS required otherwise (D-056) | Partially implemented |
 
 The client-owned tool lifecycle (D-056):
 
@@ -81,10 +81,15 @@ harness advertises tools
 Scarcity Router and its worker never execute a client-owned tool.
 Backend-native tools (for example a backend's own command-execution or
 file-change facilities) are a different capability domain and are never
-presented to the client as if they were client tool calls. An execution
-source that cannot implement this lifecycle is ineligible for
-tool-requiring requests — a limitation of that source recorded in the
-compatibility matrix, never a limitation of the architecture (#137).
+presented to the client as if they were client tool calls. The lifecycle
+is a per-source capability: server-direct OpenAI-compatible presets
+already evidence `tool_calls`/`tool_results` (PASS/PARTIAL cells with
+dated evidence), so tool-requiring requests execute there today. An
+execution source that cannot implement the lifecycle — currently the
+Codex worker source, whose evidence records both cells UNSUPPORTED — is
+ineligible for tool-requiring requests, a limitation of that source
+recorded in the compatibility matrix, never a limitation of the
+architecture (#137).
 
 ### Effective capability (D-056; architecture for #136)
 
@@ -108,9 +113,11 @@ model-catalog maximum is never evidence that every execution source
 provides it, and an unknown input yields an unknown effective value —
 `null` in metadata, fail-closed in admission — never a guessed number. A
 request routes only to a source whose evidenced capability satisfies the
-full semantic request. D-055's `effective_context_limit_tokens` metadata is
-the context-dimension precedent; #136 implements the output/context/limits
-dimensions end to end.
+full semantic request. D-055's `effective_context_limit_tokens` metadata
+is the context-dimension precedent. How multiple routes with differing
+per-route ceilings aggregate into one advertised model-level number is
+explicitly #136 scope; this section fixes only the per-route intersection
+rule, which #136 implements end to end.
 
 ## Versioning and coexistence (D-045)
 
@@ -146,14 +153,21 @@ dimensions end to end.
 - **Listener defaults.** Default bind is `127.0.0.1:8787`. Plain-HTTP
   loopback is a SUPPORTED LOCAL TRANSPORT, not an insecure-debug escape
   hatch (D-056): no certificates are required for a locally running
-  harness or a Docker-published router port bound only to loopback. A
-  non-loopback bind requires explicit TLS (`--tls-certfile`/
+  harness or client against a locally running router, including a
+  container sharing the host network namespace (native Linux
+  `--network host` shares the host loopback). A standard Docker bridge
+  publish of a loopback port (`-p 127.0.0.1:8787:8787`) is NOT currently
+  supported in plaintext — published traffic reaches the container on a
+  non-loopback interface, where a plaintext bind is refused — and
+  belongs to the accepted container-transport tier, implemented under
+  #139. A non-loopback bind requires explicit TLS (`--tls-certfile`/
   `--tls-keyfile`) and is refused otherwise; there is no plaintext
-  non-loopback mode and no `verify=false` anywhere. The accepted but not
-  implemented same-host container-transport tier (D-056) will arrive as an
-  explicitly bounded deployment mode, never as a global non-loopback
-  plaintext listener; until it lands, non-loopback plaintext is refused
-  exactly as today.
+  non-loopback mode and no `verify=false` anywhere. When the container
+  tier lands it will be an explicitly bounded deployment mode applying
+  to the entire composed HTTP listener (execution, machine-interface,
+  control and administration surfaces ride one listener, D-041), never a
+  global non-loopback plaintext listener; until it lands, non-loopback
+  plaintext is refused exactly as today.
 - **Host discipline.** Exactly one `Host` header is required; on a
   loopback bind its value must identify the loopback listener
   (DNS-rebinding guard). No CORS headers are ever emitted.

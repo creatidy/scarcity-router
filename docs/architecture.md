@@ -705,22 +705,24 @@ were client tool calls.
 
 #### Semantic execution model and protocol adapters
 
-External protocols are adapters around ONE internal semantic execution
-contract; routing and selection policy lives once in the core (the D-007/
-D-028 one-core parity rule, extended to the execution surface) and is never
-duplicated into an HTTP API. The adapter inventory:
+Two distinct relations must not be conflated:
 
-- **OpenAI Chat Completions** — implemented (execution surface v1,
-  [`docs/execution-surface.md`](execution-surface.md)).
-- **OpenAI Responses** — a future explicit adapter with its own documented
-  supported subset; not implemented, never faked through Chat Completions
-  (D-043), and its later addition must reuse the same
-  resolution/selection/admission core without duplication.
-- **Scarcity Router machine/control interfaces** — the frozen
-  recommendation surfaces and the authenticated control API; consumers of
-  the same core, never a second policy home.
-- **Internal first-party agent algorithms** — future consumers of the same
-  semantic contract; they gain no private routing paths.
+- **One selection/routing core.** Every surface — the frozen
+  recommendation interfaces (CLI, loopback REST, MCP), the authenticated
+  machine/control surfaces and the execution gateway — consumes the same
+  selection/routing core (the D-007/D-028 parity rule extended to the
+  execution era). Recommendation and machine/control surfaces are
+  consumers of that core; they are NOT adapters of the semantic chat/tool
+  execution contract and own no selection policy of their own.
+- **Execution-protocol adapters around the semantic execution model.**
+  The OpenAI Chat Completions surface (implemented, execution surface v1,
+  [`docs/execution-surface.md`](execution-surface.md)), a future explicit
+  OpenAI Responses surface (not implemented, never faked through Chat
+  Completions per D-043; its later addition must reuse the same
+  resolution/selection/admission core without duplication), and internal
+  first-party execution consumers are adapters around the internal
+  semantic execution contract; none duplicates routing or selection
+  policy into its own HTTP API.
 
 The contract a harness may rely on is semantic — model discovery, logical
 model selection, reasoning controls, role history, streaming, client-owned
@@ -767,8 +769,10 @@ model-catalog maximum is never evidence that every execution source provides
 it, and an unknown input yields an unknown effective value — `null` in
 metadata, fail-closed in admission — never a guessed number. A request
 routes only to a source whose evidenced capability satisfies the full
-semantic request. (#136 implements the limits dimensions of this
-intersection.)
+semantic request. #136 implements the limits dimensions of this
+intersection and also settles how multiple routes with differing per-route
+effective ceilings aggregate into one advertised model-level number; this
+section fixes only the per-route rule.
 
 #### Client-owned tool lifecycle
 
@@ -793,12 +797,13 @@ architecture. #137 investigates the Codex source under exactly this rule.
 
 Plain HTTP is a SUPPORTED LOCAL TRANSPORT, not an insecure-debug escape
 hatch; HTTPS/TLS remains required for traffic crossing a host trust
-boundary. The authoritative tier policy — loopback (supported), same-host
-container transport under deployment isolation (architecturally permitted,
-explicitly bounded, never a global non-loopback plaintext listener),
-cross-host/LAN/VPN/remote (TLS required), remote TLS UX (public CA normal,
-private CA advanced), and the unchanged worker transport — is
-[`docs/security.md`](security.md) (D-056).
+boundary. The authoritative tier policy — loopback (supported, including
+host-network containers), same-host container transport under deployment
+isolation (architecturally permitted, implemented under #139, a property
+of the entire composed HTTP listener rather than a per-surface mix, never
+a global non-loopback plaintext listener), cross-host/LAN/VPN/remote (TLS
+required), remote TLS UX (public CA normal, private CA advanced), and the
+unchanged worker transport — is [`docs/security.md`](security.md) (D-056).
 
 #### Representative-harness acceptance
 
@@ -814,15 +819,17 @@ common contract and never adds a client-specific adapter.
 
 Implemented today: execution surface v1 (models discovery with logical
 models per D-055, reasoning-effort exactness with bounded dialect
-normalization, streaming, typed errors, bearer authentication), loopback
-plain HTTP plus TLS-required non-loopback binds, compatibility-matrix
-admission gating per source (tool-requiring requests fail closed where the
-source does not evidence `tool_calls`), and D-055's
-`effective_context_limit_tokens` metadata intersection. Accepted here and
-not yet implemented: the effective-limits intersection (#136), the client
-tool round trip (#137), the same-host container plaintext tier (needs its
-own explicit implementation issue), a Responses adapter, and Tier 3 harness
-evidence.
+normalization, streaming, typed errors, bearer authentication), the
+client-owned tool round trip on server-direct channels whose presets
+evidence it (`tool_calls`/`tool_results` PASS/PARTIAL cells; fail-closed
+admission elsewhere), loopback plain HTTP (native loopback and containers
+sharing the host network namespace), TLS-required non-loopback binds, and
+D-055's `effective_context_limit_tokens` metadata intersection. Accepted
+here and not yet implemented: the effective-limits intersection and its
+model-level aggregation (#136), the client tool round trip on the Codex
+worker source (#137), the same-host container plaintext tier including
+bridge loopback-publish support (implemented under #139), a Responses
+adapter, and Tier 3 harness evidence.
 
 ### Migration plan
 
