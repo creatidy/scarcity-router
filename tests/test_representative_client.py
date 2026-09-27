@@ -9,7 +9,7 @@ cannot reappear independently and each program child flips exactly its
 own pin:
 
 - #134 flips the model-resolution pins (bare logical model, models list),
-- #135 flips the reasoning-dialect pin,
+- #135 FIXED the reasoning-dialect pin (dialects normalize to max),
 - #136 flips the output-ceiling pin,
 - #137 flips the client-tools pin.
 
@@ -62,25 +62,33 @@ class RepresentativeHarness(ServerHarness):
 
 
 class CurrentStateFailurePins(RepresentativeHarness):
-    """One pin per observed acceptance failure; each child flips its own."""
+    """One test per observed acceptance failure; each child flips its own.
 
-    def test_reasoning_dialect_fields_are_currently_unknown_parameters(self) -> None:
-        """FAILURE 2 of the acceptance report — flipped by child #135.
+    Flipped so far: #134 (model resolution), #135 (reasoning dialects).
+    Still pinned as current-state: #136 (output ceiling), #137 (client
+    tools, only to the evidenced level).
+    """
+
+    def test_reasoning_dialect_fields_normalize_and_execute(self) -> None:
+        """FAILURE 2 of the acceptance report — FIXED by child #135.
 
         The real client emitted ``thinking``, ``enable_thinking`` and
-        ``reasoning`` alongside ``reasoning_effort``; the strict top-level
-        allowlist currently rejects the request with
-        ``unknown_parameter``.
+        ``reasoning`` alongside ``reasoning_effort``; the bounded
+        normalization layer folds them into the single canonical ``max``
+        intent and the request streams exactly like the canonical
+        control (parser semantics live in tests/test_reasoning_dialects.py).
         """
         port = self.make_server()
-        response = self.post_chat(port, representative_request())
-        self.assertEqual(response.status, 400)
-        payload = cast("dict[str, object]", json.loads(response.read()))
-        error = as_dict(payload["error"])
-        self.assertEqual(error["type"], "invalid_request_error")
-        self.assertEqual(error["code"], "unknown_parameter")
-        # Deterministic: the first extra key in sorted order.
-        self.assertEqual(error["param"], "enable_thinking")
+        body = representative_request(model="deep-coding", include_output_limit=False)
+        self.assertEqual(body["thinking"], {"type": "enabled"})
+        response = self.post_chat(port, body)
+        self.assertEqual(response.status, 200)
+        frames = self.read_sse_frames(response)
+        self.assertEqual(frames[-1], "[DONE]")
+        chunks = [cast("dict[str, object]", json.loads(frame)) for frame in frames[:-1]]
+        usage_chunks = [chunk for chunk in chunks if not as_list(chunk["choices"])]
+        self.assertEqual(len(usage_chunks), 1)
+        self.assertEqual(as_dict(usage_chunks[0]["usage"])["prompt_tokens"], 11)
 
     def test_bare_logical_model_resolves_to_the_exact_identity(self) -> None:
         """FAILURE 4 of the acceptance report — FIXED by child #134 (D-055).

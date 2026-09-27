@@ -143,9 +143,9 @@ allowlist of the fields execution surface v1 defines:
 
 ```text
 model, messages, stream, stream_options, tools, tool_choice,
-response_format, reasoning_effort, max_completion_tokens, max_tokens,
-temperature, top_p, stop, seed, frequency_penalty, presence_penalty,
-parallel_tool_calls, user, metadata
+response_format, reasoning_effort, reasoning, thinking, enable_thinking,
+max_completion_tokens, max_tokens, temperature, top_p, stop, seed,
+frequency_penalty, presence_penalty, parallel_tool_calls, user, metadata
 ```
 
 Anything else is rejected as `unknown_parameter` — the surface never
@@ -166,7 +166,30 @@ strictness:
   `tool_choice` accepts `"none"`, `"auto"`, `"required"` or a forced
   `{"type": "function", "function": {"name": ...}}`.
 - `response_format` accepts `"text"`, `"json_object"` and `"json_schema"`.
-- `reasoning_effort` accepts `minimal`, `low`, `medium`, `high`.
+- `reasoning_effort` accepts `minimal`, `low`, `medium`, `high`,
+  `xhigh`, `max`, `ultra` (the runtime-reported GPT-6-generation efforts
+  entered additively with D-053).
+
+### Reasoning-dialect normalization (#135)
+
+Three additional forms are accepted ONLY through a bounded
+normalization layer observed from real representative clients; they are
+consumed at parse time and never forwarded, stored or re-interpreted:
+
+- `reasoning: {"effort": "<effort>"}` — closed object (`effort` only);
+  an effort-bearing form that must agree with `reasoning_effort`.
+- `thinking: {"type": "enabled"|"disabled"}` — closed object (`type`
+  only); a consistency assertion, never an effort selector.
+- `enable_thinking: true|false` — a consistency assertion.
+
+Semantics: the two effort-bearing forms must agree (`conflicting_reasoning_parameters`
+on contradiction); a disabled flag alongside any explicit effort is a
+conflict; contradictory flags conflict; enabled assertions with no
+effort anywhere fail explicitly (`reasoning_effort_required`) — no
+effort is ever guessed; disabled-only forms mean no reasoning requested;
+unknown keys inside the objects are rejected as `unknown_parameter`.
+Routing and adapters see exactly one canonical reasoning intent
+(`reasoning_effort`).
 
 ### Capability validation before inference (D-043)
 
@@ -284,7 +307,7 @@ Errors use the OpenAI envelope
 
 | HTTP | type                  | typical codes                                      |
 | ---- | --------------------- | -------------------------------------------------- |
-| 400  | `invalid_request_error` | `unknown_parameter`, `invalid_json`, `invalid_pin_reference`, `pinned_model_not_bound`, `compatibility_unsupported`, `compatibility_unknown`, `context_length_exceeded`, `output_limit_exceeded`, `router_loop_detected`, `invalid_host`, `unsupported_reasoning_effort`, `reasoning_effort_required`, `ambiguous_logical_model` |
+| 400  | `invalid_request_error` | `unknown_parameter`, `invalid_json`, `invalid_pin_reference`, `pinned_model_not_bound`, `compatibility_unsupported`, `compatibility_unknown`, `context_length_exceeded`, `output_limit_exceeded`, `router_loop_detected`, `invalid_host`, `unsupported_reasoning_effort`, `reasoning_effort_required`, `ambiguous_logical_model`, `conflicting_reasoning_parameters` |
 | 401  | `authentication_error`  | (no code)                                          |
 | 403  | `permission_error`      | `unauthorized_target`, `spend_limit_exceeded`      |
 | 404  | `not_found_error`       | `model_not_found`, `pin_target_not_found`          |
