@@ -3936,3 +3936,187 @@ Do not rewrite history or change an accepted decision silently.
   selector, compatibility-matrix or worker-protocol change; no
   reasoning-dialect parsing (child C, #135); no limits semantics
   (child D, #136).
+
+### D-056 — Harness-independent execution backend: responsibility boundary, semantic harness contract and local transport
+
+- **Status:** Accepted (issue #146; architecture-only child of program
+  #132; branch `arch/harness-independent-backend`)
+- **Date:** 2026-09-27
+- **Base:** `develop` @ `a573af5` (children A–C of program #132 merged as
+  PRs #142/#144/#145)
+- **Confidence:** High for the responsibility boundary, the semantic
+  contract and the transport tiers. The same-host container tier carries
+  normal design risk at implementation time; no implementation is authorized
+  by this record alone.
+- **Context:** Program #132 was discovered through ZCode, and its children
+  are naturally ZCode-shaped. The product is not a backend for ZCode: ZCode
+  is the first demanding representative harness that exposed gaps in the
+  execution contract. The intended client population includes ZCode, Kilo,
+  Cline, other coding-agent harnesses, OpenAI-compatible SDK clients,
+  simple scripts and Scarcity Router's own future agent/orchestration
+  algorithms. A harness must not need Scarcity-Router-specific hacks merely
+  to use a model.
+- **Decision:**
+  1. **Product identity.** Scarcity Router is a harness-independent
+     execution backend. Every execution-surface capability is defined and
+     evaluated against the semantic contract below, never against one
+     client's payload shape; ZCode is the current representative fixture,
+     not the design target.
+  2. **Responsibility boundary.** The HARNESS owns user interaction,
+     conversation UX, the workspace, tools and tool permissions, local
+     shell/editor/browser/file actions, presentation of intermediate
+     actions and the confirmation policy. SCARCITY ROUTER owns logical
+     model resolution, resource selection, scarcity/capacity policy,
+     authorization, exact model and reasoning-effort preservation,
+     execution-source capability admission, transport of model semantics,
+     evidence, usage accounting, the selected-vs-executed audit and typed
+     failure semantics. The EXECUTION SOURCE/BACKEND owns actual model
+     execution and only the backend capabilities it explicitly evidences.
+     A client-owned tool never becomes worker-owned merely because the
+     backend has its own internal tool system.
+  3. **Exact model/effort identity is the invariant, unchanged.** A request
+     for a `(model, reasoning_effort)` pair may select among multiple
+     eligible resources providing exactly that logical
+     provider/model/effort identity, and may never silently substitute
+     another model, family, effort, restricted model, or a resource that
+     cannot satisfy the request semantics. D-054 max-only semantics and
+     D-055 logical resolution stand unchanged; `sr-pin:` remains the
+     explicit exact-resource escape hatch; logical model ids are the normal
+     harness path.
+  4. **Semantic harness compatibility contract.** Compatibility with
+     harnesses is a first-class SEMANTIC contract — model discovery,
+     logical model selection, reasoning controls, system/developer/user/
+     assistant history, streaming, client-owned tool declarations, tool
+     calls returned to the client, client tool-result continuation,
+     structured output, max output semantics, context capability,
+     cancellation, usage, typed errors, authentication and transport
+     security — not a list of client-specific payload quirks. ZCode, Kilo,
+     Cline and first-party algorithms consume the same semantics. A
+     client's harmless additional syntax may be normalized at the protocol
+     edge only when its semantics are unambiguous and bounded (the #135
+     reasoning-dialect precedent); the routing core never branches on
+     client identity.
+  5. **Client-owned tool lifecycle.** Harness advertises tools → Scarcity
+     Router transports the tool definitions → the backend/model requests a
+     client tool → Scarcity Router returns a `tool_call` to the harness →
+     the harness executes it under the HARNESS permission model → the
+     harness sends the tool result → Scarcity Router transports the
+     continuation → the backend/model continues. Scarcity Router and its
+     worker never execute a client-owned Bash/Edit/Read/browser-style
+     tool. Backend-native tools are a different capability domain and are
+     never presented as if they were client tool calls. An execution
+     source that cannot implement this contract is INELIGIBLE for
+     tool-requiring requests: a limitation of that source, never of the
+     architecture (#137 investigates the Codex case under exactly this
+     rule).
+  6. **Capability layers and the effective intersection.** Four distinct
+     layers: (a) logical model hard capabilities (catalog,
+     provenance-bearing); (b) execution-source/channel capabilities — what
+     the route evidences it can carry (context ceiling, output ceiling,
+     tool round trip, streaming, cancellation); (c) administrator
+     policy/limits (authoritative ceilings that only narrow); (d)
+     client-request requirements (which may only narrow, never expand,
+     D-042). The effective executable capability is
+     `model capability ∩ execution-channel capability ∩ administrator
+     allowance`; a powerful model reached through a weaker execution
+     channel exposes the weaker effective capability for that route.
+     UNKNOWN stays UNKNOWN: a model-catalog maximum is never evidence
+     that an execution source provides it, and an unknown input yields an
+     unknown effective value, never a guessed number. A request routes
+     only to a source whose evidenced capability satisfies the full
+     semantic request. Implementation of the limits dimensions is #136.
+  7. **Protocol adapters around one semantic execution model.** External
+     protocols are adapters over the internal semantic execution contract;
+     routing and selection policy stays in the one core and is never
+     duplicated into an HTTP API. Today that adapter is OpenAI Chat
+     Completions (execution surface v1). A future explicit OpenAI
+     Responses surface, the Scarcity Router machine/control interfaces and
+     internal first-party agent algorithms are further consumers/adapters
+     of the same semantics. No Responses API is implemented or implied by
+     this record; faking Responses through Chat Completions and promising
+     protocol support that does not exist remain forbidden (D-043).
+  8. **Local transport policy.** HTTPS/TLS remains required for traffic
+     crossing a host trust boundary, but plain HTTP is a SUPPORTED LOCAL
+     TRANSPORT, not an insecure-debug escape hatch. Tiers: (A) LOOPBACK
+     (`http://127.0.0.1` / `http://[::1]` / `http://localhost`) — a
+     normal supported configuration (locally running harness or client,
+     including a Docker-published router port bound only to loopback);
+     no certificates required. (B) SAME-HOST CONTAINER TRANSPORT —
+     plaintext HTTP between containers on one physical host is
+     architecturally permitted only where deployment isolation makes the
+     transport host-local and non-routable from external networks (a
+     dedicated or `internal: true` Docker network, no externally
+     published plaintext application port); it is NEVER solved by a
+     global non-loopback `0.0.0.0` plaintext listener, the implementation
+     must keep explicitly-local container transport meaningfully distinct
+     from arbitrary non-loopback exposure, and an explicit deployment/
+     local-transport mode may be defined but must make accidentally
+     turning a LAN-facing endpoint into plaintext difficult. (C)
+     CROSS-HOST / LAN / VPN / REMOTE — TLS required; plain HTTP over a
+     VPN is not automatically local merely because the VPN may encrypt
+     traffic; TLS-by-default stays predictable. (D) REMOTE TLS UX — a
+     public FQDN with a publicly trusted certificate and automated
+     renewal (for example `https://scarcity-router.creatidy.com:8787`) is
+     the preferred normal path; a private CA is a supported advanced
+     option and is never required for ordinary localhost operation;
+     `verify=false`, certificate-verification bypass, TOFU and silent
+     HTTPS→HTTP fallback never exist, and a scheme change is always
+     explicit. (E) WORKER TRANSPORT — unchanged: the local-HTTP tiers
+     govern external inference-API client traffic; the worker protocol
+     keeps its separate authentication/transport security semantics
+     unless a separate explicit decision changes them.
+  9. **Harness-independent configuration target.** The normal harness
+     configuration is base URL + API key + logical model id (local:
+     `http://localhost:8787/v1`; remote:
+     `https://scarcity-router.example.com:8787/v1`). The normal path
+     requires no `sr-pin:` strings, worker ids, shell-environment CA
+     hacks, custom reasoning JSON, hidden output-limit reductions or
+     knowledge of which source implements the model.
+  10. **Layered representative-harness acceptance.** Tier 1:
+      protocol-level generic clients — deterministic OpenAI-compatible
+      request fixtures (#133) and SDK-level smoke tests where practical.
+      Tier 2: one representative coding harness — ZCode, the primary
+      demanding fixture because a real request capture exists. Tier 3:
+      broader harness evidence — Kilo, Cline and additional harnesses as
+      practical. No harness compatibility is claimed without evidence.
+      Adding a harness validates the common contract; it never adds a
+      client-specific adapter and never introduces
+      `if zcode`/`if kilo`/`if cline` behavior in the routing core.
+- **Reason:** The gaps program #132 exposed are correctly read as gaps in a
+  harness-independent execution contract, not as ZCode integration work.
+  Naming the boundary, the semantic contract, the capability intersection
+  and the local-transport tiers keeps each remaining child (#136, #137,
+  #139, #141) from growing a client-shaped or deployment-shaped special
+  case, and keeps future protocol adapters and first-party algorithms from
+  duplicating selection logic.
+- **Alternatives considered:** keep the ZCode-shaped program framing
+  (rejected: silently narrows the product to one client and invites
+  client-specific hacks); per-harness adapters or client detection
+  (rejected: violates the one-core rule and the no-client-specific-code
+  boundary); a global plaintext non-loopback listener for Docker
+  convenience (rejected: erases the local/LAN trust distinction D-044
+  exists to protect); relaxing exact model/effort identity to widen the
+  eligible set (rejected: D-054/D-055 invariants); starting a Responses
+  adapter now (rejected: no evidence; explicitly deferred by D-043 and
+  #137's non-goals).
+- **Reconciliation:** D-044's "verified TLS everywhere / plain-HTTP
+  loopback as a bounded exception" rule is amended for the external
+  inference-API surface exactly by the tier policy in point 8: loopback
+  becomes a supported local transport and a bounded same-host container
+  tier is architecturally permitted; everything non-local still requires
+  TLS, `verify=false` never exists, and the worker protocol, control API
+  and machine interfaces keep their existing transport rules. D-042
+  (precedence), D-043 (execution contracts and the compatibility matrix),
+  D-045 (surface versioning), D-053/D-054/D-055 (sources, efforts,
+  logical resolution) are unchanged; this record adds the
+  harness-independence framing, the semantic contract, the
+  capability-intersection statement and the acceptance tiers on top of
+  them.
+- **Boundary:** Architecture-only. This record amends authoritative
+  documents and settles direction; it implements nothing. The
+  effective-limits intersection and the client tool round trip land in
+  #136 and #137; the same-host container tier requires its own explicit
+  implementation issue before any non-loopback plaintext bind exists.
+  Until then the implemented rule stays "non-loopback bind requires TLS",
+  and tool-requiring requests to sources without an evidenced
+  `tool_calls` capability fail closed.
