@@ -82,9 +82,11 @@ Scarcity Router and its worker never execute a client-owned tool.
 Backend-native tools (for example a backend's own command-execution or
 file-change facilities) are a different capability domain and are never
 presented to the client as if they were client tool calls. The lifecycle
-is a per-source capability: server-direct OpenAI-compatible presets
-already evidence `tool_calls`/`tool_results` (PASS/PARTIAL cells with
-dated evidence), so tool-requiring requests execute there today. An
+is a per-source capability: evidence-backed server-direct presets already
+evidence `tool_calls`/`tool_results` (PASS/PARTIAL cells with dated
+evidence; the evidence-free generic OpenAI-compatible preset defaults
+every cell to UNKNOWN and stays fail-closed), so tool-requiring requests
+execute there today. An
 execution source that cannot implement the lifecycle — currently the
 Codex worker source, whose evidence records both cells UNSUPPORTED — is
 ineligible for tool-requiring requests, a limitation of that source

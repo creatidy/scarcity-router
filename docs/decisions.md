@@ -2364,7 +2364,10 @@ what M4.1 forbids); a configurable per-provider eligibility policy
 
 - **Status:** Accepted (explicit security decision required by D-009's
   extension rule and AGENTS.md for new network exposure, credential storage
-  and write access)
+  and write access); non-loopback transport rule amended in part by D-056
+  (2026-09-27) — the explicit bounded same-host composed-listener
+  local-transport tier only; worker transport and all cross-host traffic
+  unchanged
 - **Date:** 2026-09-19
 - **Issue:** BioMedical-IT/scarcity-router#85 (A0); distributed to M03 (#88)
   ingress, M04 (#89) outbound provider HTTP, M05 (#90) worker transport,
@@ -4009,10 +4012,11 @@ Do not rewrite history or change an accepted decision silently.
      tool-requiring requests: a limitation of that source, never of the
      architecture (#137 investigates the Codex case under exactly this
      rule). This is a per-source capability, already met where evidence
-     exists: server-direct OpenAI-compatible presets carry
-     `tool_calls`/`tool_results` PASS/PARTIAL cells with dated evidence,
-     so #137 is specifically the Codex worker-source gap
-     (`tool_calls`/`tool_results` UNSUPPORTED there), not a
+     exists: evidence-backed server-direct presets carry
+     `tool_calls`/`tool_results` PASS/PARTIAL cells with dated evidence
+     (the evidence-free generic OpenAI-compatible preset defaults every
+     cell to UNKNOWN), so #137 is specifically the Codex worker-source
+     gap (`tool_calls`/`tool_results` UNSUPPORTED there), not a
      contract-wide gap.
   6. **Capability layers and the effective intersection.** Four distinct
      layers: (a) logical model hard capabilities (catalog,
@@ -4064,9 +4068,18 @@ Do not rewrite history or change an accepted decision silently.
      whose deployment tooling/docs scope covers it (no new issue).
      Plaintext HTTP between containers on one physical host is permitted
      only where deployment isolation makes the transport host-local and
-     non-routable from external networks (a dedicated or `internal: true`
-     Docker network, no externally published plaintext application port).
-     The tier is a property of the COMPOSED HTTP LISTENER, never a
+     non-routable from external networks: a dedicated or `internal: true`
+     Docker network, and a host publication bound ONLY to loopback (for
+     example `-p 127.0.0.1:8787:8787`) as an allowed target of the
+     explicit local-container mode. Plaintext publication reachable from
+     LAN/WAN is forbidden. The implementation may need the server to bind
+     a non-loopback address INSIDE the container in that explicit mode
+     (today's code refuses any non-loopback plaintext bind); what is
+     forbidden is a general/default non-loopback plaintext bind with no
+     deployment-boundary enforcement — #139's implementation must prove
+     the deployment remains host-local and fail closed when the bounded
+     mode is not explicitly selected. The tier is a property of the
+     COMPOSED HTTP LISTENER, never a
      per-surface mix: the server component serves execution,
      machine-interface, control and administration endpoints on one
      listener (D-041 one-process composition), so a host-local trust
@@ -4089,10 +4102,16 @@ Do not rewrite history or change an accepted decision silently.
      option and is never required for ordinary localhost operation;
      `verify=false`, certificate-verification bypass, TOFU and silent
      HTTPS→HTTP fallback never exist, and a scheme change is always
-     explicit. (E) WORKER TRANSPORT — unchanged: the local-HTTP tiers
-     govern external inference-API client traffic; the worker protocol
+     explicit. (E) WORKER TRANSPORT — unchanged. The local-HTTP tiers
+     govern CLIENT traffic to the COMPOSED HTTP LISTENER as a whole: in
+     an explicit host-local mode that listener may carry execution,
+     machine, control and administration HTTP over plaintext inside the
+     accepted local trust boundary, with authentication, authorization,
+     CSRF and credential separation fully enforced — only the transport
+     confidentiality requirement changes inside that bounded boundary,
+     and cross-host traffic remains TLS-required. The worker protocol
      keeps its separate authentication/transport security semantics
-     unless a separate explicit decision changes them.
+     unchanged unless a separate explicit decision changes them.
   9. **Harness-independent configuration target.** The normal harness
      configuration is base URL + API key + logical model id (local:
      `http://localhost:8787/v1`; remote:
@@ -4128,12 +4147,19 @@ Do not rewrite history or change an accepted decision silently.
   adapter now (rejected: no evidence; explicitly deferred by D-043 and
   #137's non-goals).
 - **Reconciliation:** D-044's "verified TLS everywhere / plain-HTTP
-  loopback as a bounded exception" rule is amended for the external
-  inference-API surface exactly by the tier policy in point 8: loopback
-  becomes a supported local transport and a bounded same-host container
-  tier is architecturally permitted; everything non-local still requires
-  TLS, `verify=false` never exists, and the worker protocol, control API
-  and machine interfaces keep their existing transport rules. D-042
+  loopback as a bounded exception" rule is amended exactly by the tier
+  policy in point 8: loopback becomes a supported local transport and a
+  bounded same-host container tier is architecturally permitted. The
+  tiers govern CLIENT traffic to the COMPOSED HTTP LISTENER as a whole —
+  in an explicit host-local mode that listener may carry execution,
+  machine, control and administration HTTP over plaintext inside the
+  accepted local trust boundary, with authentication, authorization, CSRF
+  and credential separation fully enforced; only transport
+  confidentiality relaxes inside that bounded boundary. Everything
+  cross-host still requires TLS, `verify=false` never exists, no
+  per-surface TLS/plaintext mixing exists on one listener, and the worker
+  protocol transport keeps its existing rules completely unchanged.
+  D-042
   (precedence), D-043 (execution contracts and the compatibility matrix),
   D-045 (surface versioning), D-053/D-054/D-055 (sources, efforts,
   logical resolution) are unchanged; this record adds the

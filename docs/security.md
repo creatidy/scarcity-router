@@ -241,10 +241,10 @@ provider access or spending ceilings (D-042).
 
 ### Client-transport tiers (D-056)
 
-Plain HTTP is a SUPPORTED LOCAL TRANSPORT for inference-API client traffic,
-not an insecure-debug escape hatch; TLS remains required whenever a
-connection crosses a host trust boundary. The tiers, from
-[`docs/decisions.md`](decisions.md) D-056:
+Plain HTTP is a SUPPORTED LOCAL TRANSPORT for client traffic to the
+composed HTTP listener, not an insecure-debug escape hatch; TLS remains
+required whenever a connection crosses a host trust boundary. The tiers,
+from [`docs/decisions.md`](decisions.md) D-056:
 
 - **A. Loopback — supported, implemented.** `http://127.0.0.1:<port>`,
   `http://[::1]:<port>`, `http://localhost:<port>` are normal supported
@@ -262,8 +262,16 @@ connection crosses a host trust boundary. The tiers, from
   HTTP between containers on one physical host is permitted only where
   deployment isolation makes the transport host-local and non-routable
   from external networks: a dedicated Docker network, an `internal: true`
-  Docker network, and no externally published plaintext application port.
-  The tier applies to the ENTIRE COMPOSED HTTP LISTENER, never a
+  Docker network, and a host publication bound ONLY to loopback (for
+  example `-p 127.0.0.1:8787:8787`) as an allowed target of the explicit
+  local-container mode. Plaintext publication reachable from LAN/WAN is
+  forbidden. The implementation may need the server to bind a non-loopback
+  address INSIDE the container in that explicit mode (today's code refuses
+  any non-loopback plaintext bind); what is forbidden is a general/default
+  non-loopback plaintext bind with no deployment-boundary enforcement —
+  #139's implementation must prove the deployment remains host-local and
+  fail closed when the bounded mode is not explicitly selected. The tier
+  applies to the ENTIRE COMPOSED HTTP LISTENER, never a
   per-surface mix: the server component serves execution,
   machine-interface, control and administration endpoints on one listener
   (D-041 one-process composition), so a host-local trust exception that
@@ -289,12 +297,18 @@ connection crosses a host trust boundary. The tiers, from
   (issue #139 implements the lifecycle). Never introduced in any tier:
   `verify=false`, certificate-verification bypass, trust-on-first-use, or
   silent HTTPS→HTTP fallback; a scheme change is explicit.
-- **E. Worker transport — unchanged.** These tiers govern external
-  inference-API client traffic. The worker protocol keeps its separate
-  authentication and transport security semantics (verified TLS
-  `srws://`, loopback-plaintext only as the bounded dev/test exception
-  recorded in [`docs/worker-protocol.md`](worker-protocol.md)) unless a
-  separate explicit decision changes them.
+- **E. Worker transport — unchanged.** These tiers govern CLIENT traffic
+  to the composed HTTP listener as a whole: in an explicit host-local mode
+  that listener may carry execution, machine, control and administration
+  HTTP over plaintext within the accepted local trust boundary, while
+  authentication, authorization, CSRF and credential separation remain
+  fully enforced — only transport confidentiality changes inside that
+  bounded boundary, and cross-host traffic remains TLS-required. The
+  worker protocol keeps its separate authentication and transport security
+  semantics (verified TLS `srws://`, loopback-plaintext only as the
+  bounded dev/test exception recorded in
+  [`docs/worker-protocol.md`](worker-protocol.md)) unless a separate
+  explicit decision changes them.
 
 ### Local runtime and adapter isolation
 

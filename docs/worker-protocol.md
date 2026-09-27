@@ -57,7 +57,11 @@ Scarcity Router Server  <── outbound TLS ──  Native Worker  ──  loca
   hostname verification; `srws://` origins). Plaintext (`srw://`) is
   refused for every non-loopback host; the bounded loopback exception
   remains dev/tests-only for the worker. D-056's local-transport tiers
-  govern external inference-API client traffic and deliberately do NOT
+  govern CLIENT traffic to the composed HTTP listener as a whole (in an
+  explicit host-local mode that listener's execution, machine, control
+  and administration HTTP may ride plaintext inside the bounded local
+  trust boundary, with authentication/authorization/CSRF/credential
+  separation still fully enforced) and deliberately do NOT
   weaken worker transport: this protocol keeps its separate
   authentication and transport security semantics (D-044) unless a
   separate explicit decision changes them. The server endpoint requires
