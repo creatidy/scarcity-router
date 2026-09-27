@@ -34,6 +34,93 @@ owned by their existing authoritative documents
   execution channel exists for it, and the `local_app_adapter` channel
   itself remains unregistered. API-only operation works without a worker.
 
+## Harness compatibility contract (D-056)
+
+This surface is the first protocol adapter over Scarcity Router's
+harness-independent semantic execution contract. Compatibility is defined
+SEMANTICALLY — what any conforming harness may rely on — never as a list of
+client-specific payload quirks. ZCode, Kilo, Cline, other coding-agent
+harnesses, OpenAI-compatible SDK clients, scripts and first-party
+algorithms consume the same semantics; the routing core never branches on
+client identity, and a client's harmless additional syntax is normalized at
+this protocol edge only when its semantics are unambiguous and bounded (the
+reasoning-dialect layer below is the precedent).
+
+| Semantic area | Contract | Status on this surface |
+| --- | --- | --- |
+| Model discovery | adoption-aware `GET /v1/models` with `x_scarcity_router` metadata (D-055) | Implemented |
+| Logical model selection | bare logical ids resolve to the exact `(provider, model)` identity; no cross-model substitution (D-055) | Implemented |
+| Reasoning controls | exact `reasoning_effort`; bounded dialect normalization (#135); D-054 max-only intact | Implemented |
+| Role history | `system`/`developer`/`user`/`assistant`/`tool`, admission-gated per matrix cell | Implemented (text-only in v1) |
+| Streaming | SSE `chat.completion.chunk` frames, optional usage chunk, `[DONE]` | Implemented |
+| Client-owned tool declarations | `tools[]` validated at ingress; capability-gated before inference | Implemented |
+| Tool calls returned to the client | `tool_calls` always return to the CLIENT; the router/worker never executes them (D-043); admitted per source only where the matrix evidences it | Implemented on evidenced server-direct channels (`tool_calls` PASS/PARTIAL cells); Codex worker source UNSUPPORTED — #137 |
+| Client tool-result continuation | `role: "tool"` results with `tool_call_id` transported back into the backend's continuation | Implemented on evidenced server-direct channels (`tool_results` PASS/PARTIAL cells); Codex worker source UNSUPPORTED — #137 |
+| Structured output | `response_format` text/`json_object`/`json_schema`, matrix-gated | Implemented |
+| Max output semantics | effective output ceiling = model ∩ channel ∩ administrator allowance; honest, visible, rejection-based | Architecture accepted (D-056); implementation #136 |
+| Context capability | effective context = model ∩ channel; UNKNOWN never guessed | Metadata implemented (D-055); #136 completes enforcement |
+| Cancellation | propagates to the backend where the channel supports it; client disconnects detected | Implemented |
+| Usage | provider-reported vs estimated kept distinct (`usage_source`) | Implemented |
+| Typed errors | closed OpenAI-compatible vocabulary; fail-closed semantics | Implemented |
+| Authentication | one bearer client key per inference identity (D-044) | Implemented |
+| Transport security | loopback plain HTTP supported (incl. host-network containers); same-host container tier accepted, implemented under #139, applies to the whole composed listener; TLS required otherwise (D-056) | Partially implemented |
+
+The client-owned tool lifecycle (D-056):
+
+```text
+harness advertises tools
+  -> Scarcity Router transports tool definitions
+  -> backend/model requests a client tool
+  -> Scarcity Router returns a tool_call to the harness
+  -> harness executes it under the HARNESS permission model
+  -> harness sends the tool result
+  -> Scarcity Router transports the continuation
+  -> backend/model continues
+```
+
+Scarcity Router and its worker never execute a client-owned tool.
+Backend-native tools (for example a backend's own command-execution or
+file-change facilities) are a different capability domain and are never
+presented to the client as if they were client tool calls. The lifecycle
+is a per-source capability: evidence-backed server-direct presets already
+evidence `tool_calls`/`tool_results` (PASS/PARTIAL cells with dated
+evidence; the evidence-free generic OpenAI-compatible preset defaults
+every cell to UNKNOWN and stays fail-closed), so tool-requiring requests
+execute there today. An
+execution source that cannot implement the lifecycle — currently the
+Codex worker source, whose evidence records both cells UNSUPPORTED — is
+ineligible for tool-requiring requests, a limitation of that source
+recorded in the compatibility matrix, never a limitation of the
+architecture (#137).
+
+### Effective capability (D-056; architecture for #136)
+
+A route's executable capability is the intersection of four distinct
+layers: logical model hard capabilities (catalog, provenance-bearing);
+execution-source/channel capabilities — what the route evidences it can
+carry (context ceiling, output ceiling, tool round trip, streaming,
+cancellation); administrator policy/limits — authoritative ceilings that
+only narrow; and client-request requirements, which may only narrow, never
+expand (D-042). In short:
+
+```text
+effective capability = model capability
+                     ∩ execution-channel capability
+                     ∩ administrator allowance
+```
+
+A powerful model reached through a weaker execution channel exposes the
+weaker effective capability for that route. UNKNOWN stays UNKNOWN: a
+model-catalog maximum is never evidence that every execution source
+provides it, and an unknown input yields an unknown effective value —
+`null` in metadata, fail-closed in admission — never a guessed number. A
+request routes only to a source whose evidenced capability satisfies the
+full semantic request. D-055's `effective_context_limit_tokens` metadata
+is the context-dimension precedent. How multiple routes with differing
+per-route ceilings aggregate into one advertised model-level number is
+explicitly #136 scope; this section fixes only the per-route intersection
+rule, which #136 implements end to end.
+
 ## Versioning and coexistence (D-045)
 
 - The execution surface is its own contract family starting at version 1
@@ -65,11 +152,24 @@ owned by their existing authoritative documents
   authorize inference and nothing else.
 - **No bearer secrets in URLs.** Credentials are read from headers only;
   query strings and fragments are never interpreted.
-- **Listener defaults.** Default bind is `127.0.0.1:8787`. A non-loopback
-  bind requires explicit TLS (`--tls-certfile`/`--tls-keyfile`) and is
-  refused otherwise; there is no plaintext non-loopback mode and no
-  `verify=false` anywhere. Plain-HTTP loopback is the bounded localhost
-  exception for local clients.
+- **Listener defaults.** Default bind is `127.0.0.1:8787`. Plain-HTTP
+  loopback is a SUPPORTED LOCAL TRANSPORT, not an insecure-debug escape
+  hatch (D-056): no certificates are required for a locally running
+  harness or client against a locally running router, including a
+  container sharing the host network namespace (native Linux
+  `--network host` shares the host loopback). A standard Docker bridge
+  publish of a loopback port (`-p 127.0.0.1:8787:8787`) is NOT currently
+  supported in plaintext — published traffic reaches the container on a
+  non-loopback interface, where a plaintext bind is refused — and
+  belongs to the accepted container-transport tier, implemented under
+  #139. A non-loopback bind requires explicit TLS (`--tls-certfile`/
+  `--tls-keyfile`) and is refused otherwise; there is no plaintext
+  non-loopback mode and no `verify=false` anywhere. When the container
+  tier lands it will be an explicitly bounded deployment mode applying
+  to the entire composed HTTP listener (execution, machine-interface,
+  control and administration surfaces ride one listener, D-041), never a
+  global non-loopback plaintext listener; until it lands, non-loopback
+  plaintext is refused exactly as today.
 - **Host discipline.** Exactly one `Host` header is required; on a
   loopback bind its value must identify the loopback listener
   (DNS-rebinding guard). No CORS headers are ever emitted.

@@ -60,7 +60,14 @@ workflow reliably is more important than broad provider coverage.
 Potential later consumers include Kilo, Codex, Claude Code, OpenClaw, shell
 scripts, IDE extensions and dashboards. They integrate through stable
 interfaces; with the optional gateway they may additionally send execution
-traffic to the Scarcity Router endpoint itself.
+traffic to the Scarcity Router endpoint itself. In gateway mode the product
+is a **harness-independent execution backend** (D-056), not a backend for
+any one client: ZCode is the first demanding representative harness that
+exposed gaps in the execution contract, and the intended client population
+includes ZCode, Kilo, Cline, other coding-agent harnesses, OpenAI-compatible
+SDK clients, simple scripts and Scarcity Router's own future
+agent/orchestration algorithms. A harness must not need
+Scarcity-Router-specific hacks merely to use a model.
 
 ## In scope
 
@@ -130,9 +137,15 @@ the work is* and never performs the client's tool calls.
 
 The default product remains **“Not another AI proxy.”**: a safe local
 recommender that needs no model traffic. The optional execution gateway is a
-**personal execution gateway**, not a generic LLM gateway: one user's own
-authorized resources behind one OpenAI-compatible endpoint, chosen by the
-same explainable least-scarce-capable discipline. The eventual
+**personal, harness-independent execution backend**, not a generic LLM
+gateway: one user's own authorized resources behind one OpenAI-compatible
+endpoint, chosen by the same explainable least-scarce-capable discipline and
+consumable by any conforming harness through the same semantic contract
+(D-056). The normal harness configuration is base URL + API key + logical
+model id — local `http://localhost:8787/v1`, remote
+`https://scarcity-router.example.com:8787/v1` — with no `sr-pin:` strings,
+worker ids, CA workarounds, custom reasoning JSON or hidden output-limit
+reductions in the normal path. The eventual
 zero-configuration promise — **“Uses the AI subscriptions you're already
 logged into.”** — applies only to collectors and adapters proven safe and
 supportable.

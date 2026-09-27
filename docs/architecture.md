@@ -26,10 +26,18 @@ OpenAI-compatible endpoint so standard clients can have requests served from
 the best available authorized resource — API providers, Ollama/local
 inference, or the approved local Codex adapter — under the same
 least-scarce-capable discipline. The gateway reuses this recommendation core;
-it does not replace it. The full module map, contracts and security
-architecture of the gateway are in
+it does not replace it. The gateway is additionally a **harness-independent
+execution backend** (D-056): it is not a backend for any one client — ZCode
+is the first demanding representative harness that exposed gaps in the
+execution contract, and the intended client population also includes Kilo,
+Cline, other coding-agent harnesses, OpenAI-compatible SDK clients, simple
+scripts and Scarcity Router's own future agent/orchestration algorithms. The
+full module map, contracts and security architecture of the gateway are in
 [Execution-gateway architecture](#execution-gateway-architecture-a0-program)
-below and in [`docs/security.md`](security.md).
+below and in [`docs/security.md`](security.md); the harness responsibility
+boundary and semantic compatibility contract are in
+[Harness-independent execution backend](#harness-independent-execution-backend-d-056-146)
+below.
 
 ## Components
 
@@ -674,6 +682,154 @@ Contracts:
   clause is amended at source granularity: the administrator grants
   ownership by configuring the source; inventory expands what that grant
   covers, subject to adoption policy.
+
+### Harness-independent execution backend (D-056, #146)
+
+This section records the accepted architecture that generalizes program
+#132's representative-client work beyond any single harness. It is
+architecture, not implementation status; the current/deferred split is at
+the end of the section.
+
+#### Responsibility boundary
+
+| Layer | Owns | Never does |
+| --- | --- | --- |
+| HARNESS (ZCode, Kilo, Cline, scripts, first-party algorithms) | user interaction; conversation UX; the workspace; tools and tool permissions; local shell/editor/browser/file actions; presentation of intermediate actions; confirmation policy | logical model resolution, resource selection or capability admission (the router's ownership); model execution (the backend's ownership) |
+| SCARCITY ROUTER | logical model resolution; resource selection; scarcity/capacity policy; authorization; exact model and reasoning-effort preservation; execution-source capability admission; transport of model semantics; evidence; usage accounting; audit of selected vs executed target; typed failure semantics | execute a client-owned tool; own the conversation, workspace or confirmation policy |
+| EXECUTION SOURCE / BACKEND | actual model execution; only the backend capabilities it explicitly evidences | redefine capability, eligibility or policy from runtime listing |
+
+A client-owned tool never becomes a worker-owned tool merely because the
+backend has its own internal tool system; backend-native tools are a
+different capability domain and are never presented to a client as if they
+were client tool calls.
+
+#### Semantic execution model and protocol adapters
+
+Two distinct relations must not be conflated:
+
+- **One selection/routing core.** Every surface — the frozen
+  recommendation interfaces (CLI, loopback REST, MCP), the authenticated
+  machine/control surfaces and the execution gateway — consumes the same
+  selection/routing core (the D-007/D-028 parity rule extended to the
+  execution era). Recommendation and machine/control surfaces are
+  consumers of that core; they are NOT adapters of the semantic chat/tool
+  execution contract and own no selection policy of their own.
+- **Execution-protocol adapters around the semantic execution model.**
+  The OpenAI Chat Completions surface (implemented, execution surface v1,
+  [`docs/execution-surface.md`](execution-surface.md)), a future explicit
+  OpenAI Responses surface (not implemented, never faked through Chat
+  Completions per D-043; its later addition must reuse the same
+  resolution/selection/admission core without duplication), and internal
+  first-party execution consumers are adapters around the internal
+  semantic execution contract; none duplicates routing or selection
+  policy into its own HTTP API.
+
+The contract a harness may rely on is semantic — model discovery, logical
+model selection, reasoning controls, role history, streaming, client-owned
+tool declarations, tool calls returned to the client, tool-result
+continuation, structured output, max output semantics, context capability,
+cancellation, usage, typed errors, authentication and transport security —
+never a list of client-specific payload quirks. A client's harmless
+additional syntax may be normalized at a protocol edge only when its
+semantics are unambiguous and bounded (the #135 reasoning-dialect
+precedent); the routing core never branches on client identity
+(`if zcode`/`if kilo`/`if cline` behavior is forbidden).
+
+#### Model and execution identity
+
+A request for a `(model, reasoning_effort)` pair may select among multiple
+eligible resources providing exactly that logical provider/model/effort
+identity (D-055); it may never silently substitute another model, family,
+effort, restricted model, or a resource that cannot satisfy the request
+semantics. D-054 max-only semantics are untouched. `sr-pin:` remains the
+explicit exact-resource escape hatch; logical model ids are the normal
+harness path.
+
+#### Effective capability
+
+Four distinct capability layers feed admission:
+
+1. logical model hard capabilities (catalog, provenance-bearing);
+2. execution-source/channel capabilities — what the route evidences it can
+   carry (context ceiling, output ceiling, tool round trip, streaming,
+   cancellation);
+3. administrator policy/limits — authoritative ceilings that only narrow;
+4. client-request requirements — which may only narrow, never expand
+   (D-042).
+
+```text
+effective capability = model capability
+                     ∩ execution-channel capability
+                     ∩ administrator allowance
+```
+
+A powerful model reached through a weaker execution channel exposes the
+weaker effective capability for that route. UNKNOWN stays UNKNOWN: a
+model-catalog maximum is never evidence that every execution source provides
+it, and an unknown input yields an unknown effective value — `null` in
+metadata, fail-closed in admission — never a guessed number. A request
+routes only to a source whose evidenced capability satisfies the full
+semantic request. #136 implements the limits dimensions of this
+intersection and also settles how multiple routes with differing per-route
+effective ceilings aggregate into one advertised model-level number; this
+section fixes only the per-route rule.
+
+#### Client-owned tool lifecycle
+
+```text
+harness advertises tools
+  -> Scarcity Router transports tool definitions
+  -> backend/model requests a client tool
+  -> Scarcity Router returns a tool_call to the harness
+  -> harness executes it under the HARNESS permission model
+  -> harness sends the tool result
+  -> Scarcity Router transports the continuation
+  -> backend/model continues
+```
+
+Scarcity Router and its worker never execute a client-owned tool. An
+execution source that cannot implement this lifecycle is ineligible for
+tool-requiring requests — a limitation of that source recorded in the
+compatibility matrix (admission fails closed), never a limitation of the
+architecture. #137 investigates the Codex source under exactly this rule.
+
+#### Transport tiers
+
+Plain HTTP is a SUPPORTED LOCAL TRANSPORT, not an insecure-debug escape
+hatch; HTTPS/TLS remains required for traffic crossing a host trust
+boundary. The authoritative tier policy — loopback (supported, including
+host-network containers), same-host container transport under deployment
+isolation (architecturally permitted, implemented under #139, a property
+of the entire composed HTTP listener rather than a per-surface mix, never
+a global non-loopback plaintext listener), cross-host/LAN/VPN/remote (TLS
+required), remote TLS UX (public CA normal, private CA advanced), and the
+unchanged worker transport — is [`docs/security.md`](security.md) (D-056).
+
+#### Representative-harness acceptance
+
+Tier 1: protocol-level generic clients — deterministic OpenAI-compatible
+request fixtures (#133) and SDK-level smoke tests where practical. Tier 2:
+one representative coding harness — ZCode, the primary demanding fixture
+because a real request capture exists. Tier 3: broader harness evidence —
+Kilo, Cline and additional harnesses as practical. Compatibility with a
+harness is never claimed without evidence; adding a harness validates the
+common contract and never adds a client-specific adapter.
+
+#### Current state versus accepted architecture
+
+Implemented today: execution surface v1 (models discovery with logical
+models per D-055, reasoning-effort exactness with bounded dialect
+normalization, streaming, typed errors, bearer authentication), the
+client-owned tool round trip on server-direct channels whose presets
+evidence it (`tool_calls`/`tool_results` PASS/PARTIAL cells; fail-closed
+admission elsewhere), loopback plain HTTP (native loopback and containers
+sharing the host network namespace), TLS-required non-loopback binds, and
+D-055's `effective_context_limit_tokens` metadata intersection. Accepted
+here and not yet implemented: the effective-limits intersection and its
+model-level aggregation (#136), the client tool round trip on the Codex
+worker source (#137), the same-host container plaintext tier including
+bridge loopback-publish support (implemented under #139), a Responses
+adapter, and Tier 3 harness evidence.
 
 ### Migration plan
 

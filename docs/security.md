@@ -189,11 +189,16 @@ notes.
   authentication fields, never in query strings, path segments or logs.
 - **Verified TLS everywhere; `verify=false` does not exist as an option.**
   Non-loopback listeners require TLS with verified certificates; workers
-  verify the server identity on their outbound connection. Plain-HTTP
-  localhost is permitted only as an explicit, bounded,
-  administrator-configured exception for origins where it is justified
-  (e.g. a loopback or explicitly trusted LAN Ollama endpoint) and never for
-  credential-bearing requests to non-local origins.
+  verify the server identity on their outbound connection. Plain HTTP is a
+  SUPPORTED LOCAL TRANSPORT, not an insecure-debug escape hatch (D-056):
+  loopback origins are a normal supported configuration for local clients
+  (including a container sharing the host network namespace), and the
+  bounded same-host container tier below is architecturally permitted;
+  everything that leaves the host trust boundary requires TLS, and
+  credential-bearing requests to non-local origins are never plaintext.
+  Never `verify=false`, never certificate-verification bypass, never
+  trust-on-first-use, never a silent HTTPS→HTTP fallback; a scheme change
+  is always explicit.
 - **Simple trust bootstrap:** the administrator starts pairing in the server
   UI, receives a short-lived one-time code, enters it plus the server URL on
   the worker, and the worker receives a per-device credential with rotation.
@@ -233,6 +238,77 @@ provider access or spending ceilings (D-042).
   (or another router instance's endpoint) as a provider backend is refused,
   and gateway-originated traffic is identifiable on ingress so
   router → router → router chains fail loudly instead of looping.
+
+### Client-transport tiers (D-056)
+
+Plain HTTP is a SUPPORTED LOCAL TRANSPORT for client traffic to the
+composed HTTP listener, not an insecure-debug escape hatch; TLS remains
+required whenever a connection crosses a host trust boundary. The tiers,
+from [`docs/decisions.md`](decisions.md) D-056:
+
+- **A. Loopback — supported, implemented.** `http://127.0.0.1:<port>`,
+  `http://[::1]:<port>`, `http://localhost:<port>` are normal supported
+  configurations for a locally running harness, a locally running Scarcity
+  Router, and a container sharing the host network namespace (native
+  Linux `--network host` shares the host loopback; for example ZCode →
+  `http://127.0.0.1:8787/v1` → a local Scarcity Router container). No
+  certificates are required. A standard Docker bridge publish of a
+  loopback port (`-p 127.0.0.1:8787:8787`) is NOT currently supported in
+  plaintext — the published traffic reaches the container on a
+  non-loopback interface, where a plaintext bind is refused — and is part
+  of the accepted container tier in B, implemented under #139.
+- **B. Same-host container transport — architecturally permitted, NOT
+  implemented; implementation assigned to existing child #139.** Plaintext
+  HTTP between containers on one physical host is permitted only where
+  deployment isolation makes the transport host-local and non-routable
+  from external networks: a dedicated Docker network, an `internal: true`
+  Docker network, and a host publication bound ONLY to loopback (for
+  example `-p 127.0.0.1:8787:8787`) as an allowed target of the explicit
+  local-container mode. Plaintext publication reachable from LAN/WAN is
+  forbidden. The implementation may need the server to bind a non-loopback
+  address INSIDE the container in that explicit mode (today's code refuses
+  any non-loopback plaintext bind); what is forbidden is a general/default
+  non-loopback plaintext bind with no deployment-boundary enforcement —
+  #139's implementation must prove the deployment remains host-local and
+  fail closed when the bounded mode is not explicitly selected. The tier
+  applies to the ENTIRE COMPOSED HTTP LISTENER, never a
+  per-surface mix: the server component serves execution,
+  machine-interface, control and administration endpoints on one listener
+  (D-041 one-process composition), so a host-local trust exception that
+  covers inference traffic covers that whole listener; splitting an
+  execution-only plaintext listener off the composed server would be a
+  separate explicit decision, not part of this tier. This is never solved
+  by globally allowing a non-loopback `0.0.0.0` plaintext listener. The
+  implementation must keep explicitly-local container transport
+  meaningfully distinct from arbitrary non-loopback exposure — an
+  explicit deployment/local-transport mode may be defined, but it must be
+  difficult to accidentally turn a LAN-facing endpoint into plaintext.
+  Until that mode lands, non-loopback binds require TLS exactly as today.
+- **C. Cross-host / LAN / VPN / remote — TLS REQUIRED (implemented).**
+  Windows-to-LAN, laptop-to-server over VPN, any other machine, and
+  internet-facing deployments use HTTPS. Plain HTTP over a VPN is not
+  automatically local merely because the VPN itself may encrypt traffic;
+  the cross-host policy stays TLS-by-default and predictable.
+- **D. Remote TLS UX.** The preferred normal path for remote/self-hosted
+  deployments is a public FQDN with a publicly trusted certificate and
+  automated renewal (for example
+  `https://scarcity-router.creatidy.com:8787`); a private CA is a supported
+  advanced option and is never required for ordinary localhost operation
+  (issue #139 implements the lifecycle). Never introduced in any tier:
+  `verify=false`, certificate-verification bypass, trust-on-first-use, or
+  silent HTTPS→HTTP fallback; a scheme change is explicit.
+- **E. Worker transport — unchanged.** These tiers govern CLIENT traffic
+  to the composed HTTP listener as a whole: in an explicit host-local mode
+  that listener may carry execution, machine, control and administration
+  HTTP over plaintext within the accepted local trust boundary, while
+  authentication, authorization, CSRF and credential separation remain
+  fully enforced — only transport confidentiality changes inside that
+  bounded boundary, and cross-host traffic remains TLS-required. The
+  worker protocol keeps its separate authentication and transport security
+  semantics (verified TLS `srws://`, loopback-plaintext only as the
+  bounded dev/test exception recorded in
+  [`docs/worker-protocol.md`](worker-protocol.md)) unless a separate
+  explicit decision changes them.
 
 ### Local runtime and adapter isolation
 

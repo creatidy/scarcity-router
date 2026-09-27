@@ -55,9 +55,17 @@ Scarcity Router Server  <── outbound TLS ──  Native Worker  ──  loca
 - **Verified TLS; `verify=false` does not exist.** The worker builds its
   TLS context with `ssl.create_default_context()` (certificate AND
   hostname verification; `srws://` origins). Plaintext (`srw://`) is
-  refused for every non-loopback host — the bounded localhost exception
-  for dev/tests only, mirroring the execution surface's rule (D-044).
-  The server endpoint requires explicit TLS for any non-loopback bind.
+  refused for every non-loopback host; the bounded loopback exception
+  remains dev/tests-only for the worker. D-056's local-transport tiers
+  govern CLIENT traffic to the composed HTTP listener as a whole (in an
+  explicit host-local mode that listener's execution, machine, control
+  and administration HTTP may ride plaintext inside the bounded local
+  trust boundary, with authentication/authorization/CSRF/credential
+  separation still fully enforced) and deliberately do NOT
+  weaken worker transport: this protocol keeps its separate
+  authentication and transport security semantics (D-044) unless a
+  separate explicit decision changes them. The server endpoint requires
+  explicit TLS for any non-loopback bind.
 - **Framing.** One frame is a 4-byte big-endian unsigned length followed
   by exactly that many bytes of UTF-8 JSON, at most
   `MAX_FRAME_BYTES = 16 MiB`. Payloads are parsed strictly (duplicate
