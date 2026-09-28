@@ -142,9 +142,14 @@ weakest such variant (the detail never over-advertises any variant it
 serves). The headline is never presented as if every
 route supports it (the detail exposes the spread), a request is never
 constrained to the weakest route's ceiling, and UNKNOWN never becomes a
-number. A capability-shortfall request (above the model's calibrated
-maximum) finds no eligible target at routing; an administrator- or
-channel-shortfall request is rejected with the typed limits errors.
+number. A request whose output semantics no route can satisfy — above
+every route's evidenced output, or a binding explicit limit on channels
+without an output-limit control — finds no eligible target and is
+rejected with the TYPED limits 400 (`output_limit_insufficient` /
+`output_limit_unenforceable` / `output_limit_unknown`; mapped for
+pinned and unpinned decisions alike), never a generic
+retry-suggesting error; an administrator- or channel-shortfall request
+on the selected route takes the same typed rejections.
 
 **Channels without an output-limit control.** A channel that evidences
 `output_limit_control: false` (today the Codex execution surface,

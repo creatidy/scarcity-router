@@ -178,21 +178,20 @@ class CurrentStateFailurePins(RepresentativeHarness):
         """The #136 counterpart: raising the defaults removed the hidden
         ceiling, not the rejection semantics. A request above the model's
         evidenced 128k output is never admitted: the routing core's
-        calibrated-capability requirement (the request's output minimum
-        vs the model's hard maximum) finds no eligible target — the
-        honest 503, never clipping, never a silent downgrade. (Requests
-        between the capability and administrator ceilings — or above a
-        channel's own ceiling — take the typed 400 limits rejections
-        pinned in tests/test_effective_limits.py.)
+        pre-ranking output eligibility (the request's output minimum vs
+        the exact variant's hard maximum) finds no eligible target, and
+        the mapped TYPED rejection is actionable — 400
+        ``output_limit_insufficient``, never clipping, never a silent
+        downgrade, never a generic retry-suggesting 503.
         """
         port = self.make_server()
         body = representative_request()
         body["max_completion_tokens"] = 128_001
         response = self.post_chat(port, body)
-        self.assertEqual(response.status, 503)
+        self.assertEqual(response.status, 400)
         payload = cast("dict[str, object]", json.loads(response.read()))
         error = as_dict(payload["error"])
-        self.assertEqual(error["code"], "no_eligible_target")
+        self.assertEqual(error["code"], "output_limit_insufficient")
 
     def test_pinned_request_with_client_tools_is_currently_incompatible(
         self,

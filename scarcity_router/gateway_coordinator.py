@@ -131,6 +131,7 @@ from .routing_core import (
     CompatibilityCell,
     PinnedTarget,
     RequestBinding,
+    RouteDecision,
     RouteRequest,
     RouteTarget,
     _lookup_cell,  # pyright: ignore[reportPrivateUsage] -- the M02 matrix lookup is the single authority; reimplementing it here would fork D-043 compatibility semantics
@@ -497,9 +498,14 @@ def exposed_logical_models(
             if route.effective_output_limit_tokens is not None
         ]
         if not known_outputs:
-            # Unreachable: exposure requires a calibrated hard output, so
-            # every route's intersection includes at least one known
-            # capability input.
+            # Reachable corner case (deliberate, documented skip): exposure
+            # requires SOME variant of the model to carry a calibrated hard
+            # output, but every BOUND route may still bind only variants
+            # whose own hard output is UNKNOWN (e.g. a floor-derived effort
+            # on a control=False channel). D-055's `max_output_tokens` is a
+            # hard number — the model stays unadvertised rather than
+            # guessing one, even though it remains routable; the metadata
+            # contract never advertises what no bound route evidences.
             continue
         efforts = tuple(
             sorted({identity.variant for identity in identities if identity.variant})
@@ -915,11 +921,7 @@ class GatewayApplication:
         decision = route_request(request_obj)
         state.decision_id = decision.decision_id
         if decision.status != "selected" or decision.target is None:
-            raise GatewayError.api(
-                "no authorized execution target satisfies this request",
-                code="no_eligible_target",
-                http_status=503,
-            )
+            raise _no_eligible_target_error(decision)
         state.target = decision.target
         state.selected_target = _audit_target(decision.target)
         state.target_capabilities = _target_capabilities(
@@ -1304,6 +1306,44 @@ def _target_capabilities(
         if entry.identity == target.resource:
             return entry
     return None
+
+
+def _no_eligible_target_error(decision: RouteDecision) -> GatewayError:
+    """The typed failure for an unpinned decision with no selected target.
+
+    When the decision's target exclusions show that routes were excluded
+    purely on the OUTPUT dimension (D-058 pre-ranking eligibility), the
+    client gets the actionable typed 400 — the same code the pinned path
+    maps — instead of a retry-suggesting generic 503: the limit itself is
+    the problem (omit it, raise it to the proven maximum, or lower it).
+    Priority matches :func:`_admission_rejection`
+    (insufficient > unenforceable > unknown); any other exclusion shape
+    keeps the honest 503 ``no_eligible_target``.
+    """
+    output_codes: set[str] = set()
+    for exclusion in decision.target_exclusions:
+        output_codes |= set(exclusion.reason_codes) & {
+            "output_limit_unknown",
+            "output_limit_insufficient",
+            "output_limit_unenforceable",
+        }
+    if output_codes:
+        if "output_limit_insufficient" in output_codes:
+            code = "output_limit_insufficient"
+        elif "output_limit_unenforceable" in output_codes:
+            code = "output_limit_unenforceable"
+        else:
+            code = "output_limit_unknown"
+        return GatewayError.invalid_request(
+            "no execution route can satisfy this request's output "
+            + "requirements",
+            code=code,
+        )
+    return GatewayError.api(
+        "no authorized execution target satisfies this request",
+        code="no_eligible_target",
+        http_status=503,
+    )
 
 
 def _admission_rejection(admission: AdmissionDecision) -> GatewayError:

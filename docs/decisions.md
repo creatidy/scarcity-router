@@ -4317,8 +4317,9 @@ Do not rewrite history or change an accepted decision silently.
      ceilings; admission stays route-specific. `GET /v1/models`
      advertises as the headline (`effective_context_limit_tokens`,
      `max_output_tokens`) the STRONGEST bound route's effective ceiling
-     — a request within it is executable on this gateway through that
-     route — plus an additive `x_scarcity_router.routes` array carrying
+     — pre-ranking eligibility routes each request to a route whose
+     evidenced capability satisfies its semantics — plus an additive
+     `x_scarcity_router.routes` array carrying
      every bound resource's own effective ceilings (`null` when
      unknown), so the spread is visible: the headline is never presented
      as if every route supports it, requests are never constrained to
@@ -4327,7 +4328,14 @@ Do not rewrite history or change an accepted decision silently.
      (point 2) routes each request to a route that actually satisfies
      it. Each route's detail is computed per exact calibrated variant it
      binds (point 1) and reports the WEAKEST such variant, so the detail
-     never over-advertises any variant the route serves. This
+     never over-advertises any variant the route serves. One boundary
+     of the headline's executability claim: on channels without an
+     output-limit control (point 3), an explicit binding limit below the
+     exact variant's proven maximum cannot be carried by any route and
+     finds no eligible target — the typed `output_limit_unenforceable`
+     400 (mapped for pinned and unpinned decisions alike), with the
+     remediations being to omit the limit or request at or above the
+     advertised maximum. This
      supersedes the D-055 interim reading of `max_output_tokens` as the
      bare model hard property (D-055 explicitly deferred channel-level
      output capability to this child); the UNKNOWN→`null` rule is

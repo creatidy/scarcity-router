@@ -536,11 +536,14 @@ class OutputSteeringTests(LimitsHarness):
         )
 
     def test_weak_only_world_is_explicitly_rejected(self) -> None:
+        """With no route satisfying the output requirement, the rejection
+        is the TYPED output 400 (mapped from the pre-ranking exclusions,
+        pinned and unpinned alike) — not a generic 503."""
         port = self._world(weak_only=True)
         response = self.post_chat(port, chat_body(max_completion_tokens=64_000))
-        self.assertEqual(response.status, 503)
+        self.assertEqual(response.status, 400)
         error = as_dict(cast("dict[str, object]", json.loads(response.read()))["error"])
-        self.assertEqual(error["code"], "no_eligible_target")
+        self.assertEqual(error["code"], "output_limit_insufficient")
         self.assertEqual(
             self.adapter_for("server_direct_http").dispatch_count, 0
         )
@@ -620,6 +623,79 @@ class OutputSteeringTests(LimitsHarness):
         error = as_dict(cast("dict[str, object]", json.loads(response.read()))["error"])
         self.assertEqual(error["code"], "output_limit_unknown")
         self.assertEqual(self.adapter_for("worker_bridged").dispatch_count, 0)
+
+
+class UnpinnedNoControlChannelTests(LimitsHarness):
+    """Exact-head review blocker regression: on the shipped no-control
+    channel shape (CODEX_SURFACE_CAPABILITIES), an unpinned request with an
+    explicit BINDING sub-maximum limit finds no eligible route pre-ranking
+    and is rejected with the TYPED, actionable 400 — never the generic
+    retry-suggesting 503 no_eligible_target."""
+
+    _CODEX: ResourceIdentity = ResourceIdentity(
+        resource_id="codex-luna",
+        channel="worker_bridged",
+        provider="openai",
+        model="gpt-5.6-luna",
+        entitlement="subscription_included",
+        variant="max",
+    )
+
+    def _world(self) -> int:
+        return self.make_world(
+            registry=bare_registry(
+                (
+                    self._CODEX,
+                    ExecutionCapabilities(
+                        context_limit_tokens=272_000,
+                        output_limit_control=False,
+                    ),
+                )
+            ),
+            channels=("worker_bridged",),
+        )
+
+    def test_binding_limit_without_eligible_route_is_typed(self) -> None:
+        port = self._world()
+        # 64000 binds against the exact variant's 128000 proven maximum on
+        # the only (control=False) route: excluded everywhere pre-ranking.
+        response = self.post_chat(
+            port, chat_body(max_completion_tokens=64_000)
+        )
+        self.assertEqual(response.status, 400)
+        error = as_dict(
+            cast("dict[str, object]", json.loads(response.read()))["error"]
+        )
+        self.assertEqual(error["code"], "output_limit_unenforceable")
+        self.assertEqual(
+            self.adapter_for("worker_bridged").dispatch_count, 0
+        )
+
+    def test_unpinned_non_binding_limit_still_normalizes(self) -> None:
+        """The same unpinned path normalizes a provably non-binding limit
+        (at the exact variant's hard maximum) and executes — the honest
+        headline boundary: at/above the maximum the request executes."""
+        port = self._world()
+        response = self.post_chat(
+            port, chat_body(max_completion_tokens=128_000)
+        )
+        self.assertEqual(response.status, 200)
+        bridged = self.adapter_for("worker_bridged")
+        self.assertEqual(bridged.dispatch_count, 1)
+        self.assertIsNone(bridged.dispatches[0].max_output_tokens)
+        record = audit_records(self.application)[-1]
+        self.assertEqual(
+            record.reason_codes, ("completed", "output_limit_normalized")
+        )
+
+    def test_omitting_the_limit_executes(self) -> None:
+        """The advertised remediation works: a request without an explicit
+        output limit routes and executes on the no-control channel."""
+        port = self._world()
+        response = self.post_chat(port, chat_body())
+        self.assertEqual(response.status, 200)
+        record = audit_records(self.application)[-1]
+        self.assertEqual(record.reason_codes, ("completed",))
 
 
 class ExactVariantTests(LimitsHarness):
