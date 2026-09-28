@@ -1189,5 +1189,267 @@ class TestResourceRegistration(unittest.TestCase):
         self.assertIsNone(config.poll_interval_seconds)
 
 
+# ── reset-crossing freshness (#151) ───────────────────────────────────────────
+
+# Additional synthetic instants around T0 = 2026-09-15T12:00:00.000Z.
+RESET_CROSSED = T_MINUS_1  # one second before T0
+RESET_AT_NOW = T0
+RESET_FAR_FUTURE = "2026-09-22T12:00:00.000Z"  # one weekly window ahead
+T0_PLUS_2H30M = "2026-09-15T14:30:00.000Z"
+
+
+def _reset_fact(
+    resets_at: str | None,
+    *,
+    kind: str = "five_hour",
+    used: int | None = 6,
+    remaining: int | None = 94,
+    duration_seconds: int | None = 18_000,
+) -> QuotaFact:
+    fields = window(
+        kind=kind,
+        used=used,
+        remaining=remaining,
+        duration_seconds=duration_seconds,
+    )
+    if resets_at is not None:
+        fields["resets_at"] = resets_at
+    return QuotaFact(
+        observation_class="provider_telemetry",
+        window=CapacityWindow.from_dict(fields),
+    )
+
+
+class TestClassifyFreshnessResetCrossing(unittest.TestCase):
+    """A window reset instant bounds how long its quota fact stays trusted."""
+
+    def test_reset_crossed_is_stale_inside_ttl(self) -> None:
+        # Age 59s of a 300s TTL would be fresh on age alone; the crossed
+        # five-hour window reset makes the observation stale.
+        self.assertEqual(
+            classify_freshness(
+                observed_at=T0,
+                now=T0_PLUS_59,
+                freshness_ttl_seconds=TTL,
+                earliest_reset_at=RESET_CROSSED,
+            ),
+            "stale",
+        )
+
+    def test_reset_exactly_at_now_is_stale(self) -> None:
+        self.assertEqual(
+            classify_freshness(
+                observed_at=T0,
+                now=T0,
+                freshness_ttl_seconds=TTL,
+                earliest_reset_at=RESET_AT_NOW,
+            ),
+            "stale",
+        )
+
+    def test_future_reset_is_fresh_inside_ttl(self) -> None:
+        self.assertEqual(
+            classify_freshness(
+                observed_at=T0,
+                now=T0_PLUS_59,
+                freshness_ttl_seconds=TTL,
+                earliest_reset_at=T0_PLUS_2H30M,
+            ),
+            "fresh",
+        )
+
+    def test_no_reset_keeps_ttl_only_semantics(self) -> None:
+        # The reset rule never fires without a reset fact: unknown resets
+        # cannot be known to have passed, so the age rule stands alone.
+        self.assertEqual(
+            classify_freshness(
+                observed_at=T0, now=T0_PLUS_300, freshness_ttl_seconds=TTL
+            ),
+            "fresh",
+        )
+        self.assertEqual(
+            classify_freshness(
+                observed_at=T0,
+                now=T0_PLUS_301,
+                freshness_ttl_seconds=TTL,
+                earliest_reset_at=None,
+            ),
+            "stale",
+        )
+
+    def test_ttl_staleness_is_independent_of_future_reset(self) -> None:
+        self.assertEqual(
+            classify_freshness(
+                observed_at=T0,
+                now=T0_PLUS_301,
+                freshness_ttl_seconds=TTL,
+                earliest_reset_at=RESET_FAR_FUTURE,
+            ),
+            "stale",
+        )
+
+    def test_malformed_reset_is_rejected(self) -> None:
+        with self.assertRaises(CapacityValidationError):
+            _ = classify_freshness(
+                observed_at=T0,
+                now=T0_PLUS_59,
+                freshness_ttl_seconds=TTL,
+                earliest_reset_at="2026-09-15T11:59:59Z",
+            )
+
+
+class TestRegistryResetCrossing(unittest.TestCase):
+    """Registry reads and polling honor the reset-crossing rule."""
+
+    def test_exhausted_window_past_reset_reads_stale(self) -> None:
+        # A 0% window whose reset passed is no longer trustworthy capacity
+        # evidence: the observation is stale even though it was observed
+        # "just now" relative to the read.
+        registry = ResourceRegistry()
+        registry.register(registration())
+        registry.apply_snapshot(
+            resource_snapshot(
+                quota_facts=(
+                    _reset_fact(
+                        RESET_CROSSED,
+                        used=100,
+                        remaining=0,
+                    ),
+                )
+            )
+        )
+        entry = registry.registry_snapshot(now=T0).entries[0]
+        self.assertEqual(entry.freshness, "stale")
+
+    def test_future_reset_reads_fresh(self) -> None:
+        registry = ResourceRegistry()
+        registry.register(registration())
+        registry.apply_snapshot(
+            resource_snapshot(
+                quota_facts=(_reset_fact(T0_PLUS_2H30M),)
+            )
+        )
+        entry = registry.registry_snapshot(now=T0_PLUS_59).entries[0]
+        self.assertEqual(entry.freshness, "fresh")
+
+    def test_multi_window_earliest_reset_governs(self) -> None:
+        registry = ResourceRegistry()
+        registry.register(registration())
+        registry.apply_snapshot(
+            resource_snapshot(
+                quota_facts=(
+                    _reset_fact(
+                        RESET_CROSSED,
+                        kind="five_hour",
+                        duration_seconds=18_000,
+                    ),
+                    _reset_fact(
+                        RESET_FAR_FUTURE,
+                        kind="weekly",
+                        duration_seconds=604_800,
+                    ),
+                )
+            )
+        )
+        entry = registry.registry_snapshot(now=T0).entries[0]
+        self.assertEqual(entry.freshness, "stale")
+
+    def test_all_future_resets_read_fresh(self) -> None:
+        registry = ResourceRegistry()
+        registry.register(registration())
+        registry.apply_snapshot(
+            resource_snapshot(
+                quota_facts=(
+                    _reset_fact(
+                        T0_PLUS_2H30M,
+                        kind="five_hour",
+                        duration_seconds=18_000,
+                    ),
+                    _reset_fact(
+                        RESET_FAR_FUTURE,
+                        kind="weekly",
+                        duration_seconds=604_800,
+                    ),
+                )
+            )
+        )
+        entry = registry.registry_snapshot(now=T0_PLUS_59).entries[0]
+        self.assertEqual(entry.freshness, "fresh")
+
+    def test_refresh_due_on_crossed_reset_despite_young_interval(self) -> None:
+        # Age 59s < poll 60s, but the crossed reset makes the resource due.
+        registry = ResourceRegistry()
+        registry.register(registration())
+        registry.apply_snapshot(
+            resource_snapshot(quota_facts=(_reset_fact(RESET_CROSSED),))
+        )
+        self.assertEqual(
+            registry.refresh_due(now=T0_PLUS_59), ("openai-codex-sub",)
+        )
+        self.assertEqual(
+            registry.registry_snapshot(now=T0_PLUS_59).entries[0].refresh_due,
+            True,
+        )
+
+    def test_refresh_not_due_when_reset_in_future(self) -> None:
+        registry = ResourceRegistry()
+        registry.register(registration())
+        registry.apply_snapshot(
+            resource_snapshot(quota_facts=(_reset_fact(T0_PLUS_2H30M),))
+        )
+        self.assertEqual(registry.refresh_due(now=T0_PLUS_59), ())
+        self.assertEqual(
+            registry.registry_snapshot(now=T0_PLUS_59).entries[0].refresh_due,
+            False,
+        )
+
+    def test_no_poll_cadence_is_never_due_but_reads_stale(self) -> None:
+        # Polling cadence and freshness are independent: without a cadence
+        # nothing is due, yet the crossed-reset observation is still stale.
+        registry = ResourceRegistry()
+        registry.register(registration(poll=None))
+        registry.apply_snapshot(
+            resource_snapshot(quota_facts=(_reset_fact(RESET_CROSSED),))
+        )
+        entry = registry.registry_snapshot(now=T0).entries[0]
+        self.assertEqual(entry.freshness, "stale")
+        self.assertFalse(entry.refresh_due)
+        self.assertEqual(registry.refresh_due(now=T0), ())
+
+    def test_worker_report_path_honors_reset_crossing(self) -> None:
+        registry = ResourceRegistry()
+        registry.register(registration(identity=ollama_identity()))
+        report = WorkerStateReport(
+            schema_version=WORKER_REPORT_SCHEMA_VERSION,
+            worker_id="lab-worker-01",
+            reported_at=T0,
+            resources=(
+                resource_snapshot(
+                    ollama_identity(),
+                    quota_facts=(_reset_fact(RESET_CROSSED),),
+                ),
+            ),
+        )
+        registry.apply_worker_report(report)
+        entry = registry.registry_snapshot(now=T0).entries[0]
+        self.assertEqual(entry.freshness, "stale")
+        self.assertTrue(entry.refresh_due)
+
+    def test_windows_without_resets_are_unaffected(self) -> None:
+        # The pre-#151 shape: no window carries a reset fact, so freshness
+        # and refresh-due follow the configured TTL and poll interval only.
+        registry = ResourceRegistry()
+        registry.register(registration())
+        registry.apply_snapshot(
+            resource_snapshot(quota_facts=(_reset_fact(None),))
+        )
+        fresh_entry = registry.registry_snapshot(now=T0_PLUS_59).entries[0]
+        self.assertEqual(fresh_entry.freshness, "fresh")
+        self.assertFalse(fresh_entry.refresh_due)
+        stale_entry = registry.registry_snapshot(now=T0_PLUS_301).entries[0]
+        self.assertEqual(stale_entry.freshness, "stale")
+        self.assertTrue(stale_entry.refresh_due)
+
+
 if __name__ == "__main__":
     _ = unittest.main()

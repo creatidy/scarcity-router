@@ -17,6 +17,20 @@ sanitized to structure before recording.
   sources — evidence of implementation, not of documented stability),
   `local-probe` (read-only/structural probes on this machine),
   `secondary` (community/unofficial — none used)
+- **Revalidation (2026-09-28, reuse program issue #150):** the schema pin
+  remains `rust-v0.155.1`; every app-server surface the adapter consumes
+  (`turn/start`, `turn/interrupt`, `turn/completed`,
+  `item/agentMessage/delta`, `thread/tokenUsage/updated`, `account/read`,
+  `account/rateLimits/read`, both approval server-requests, the token-usage
+  schema, the turn-status vocabulary) was diffed against stable
+  `rust-v0.157.1` (@ `36650394c5b38c2990ccf2a3457165ca3e9d9726`) and found
+  unchanged. Deltas in the window are additive or on unused surfaces:
+  `thread/rollback` removed (never used here), `account/gatewayOAuth/*`
+  added (unused), `promax` plan enum, `turn/start.disabledPluginIds`,
+  `AccountRoutingOverride` in `account/read`. The additional finding that
+  client-owned dynamic tools (`thread/start.dynamicTools` +
+  `item/tool/call`, experimental, no protocol-side timeout) exist at both
+  tags is recorded in issue #150 for the planned client-tool lifecycle.
 
 ## Method
 

@@ -142,6 +142,18 @@ and `percentage` is the used percentage. Both are provider evidence, not a
 permanent contract; the authoritative record and fail-safe fixtures live in
 `docs/poc-evidence.md` and `tests/fixtures/zai-coding-plan/`.
 
+Reset plausibility (2026-09-28, issue #151): for a window with an evidenced
+duration (the five-hour and weekly token windows), a claimed reset beyond
+that duration plus a 60-second margin ahead of the retrieval instant is
+implausible provider drift (e.g. a timezone-shifted value). The parser omits
+`resets_at` with the existing `reset_unknown` window diagnostic — never
+corrects or reinterprets it; the pattern is corroborated by CodexBar's
+independent Z.ai parser (MIT, inspected at `491ae68`, 2026-09-28), which
+drops a five-hour reset "ten hours away" for the same reason. A reset at or
+before the retrieval instant is preserved verbatim; whether its window has
+already reset is the resource-state layer's reset-crossing freshness rule,
+not a parsing decision.
+
 The currently observed Kilo auth location is `~/.local/share/kilo/auth.json`.
 Discovery reads only the bounded auth file and selects only the
 `zai-coding-plan` entry with the evidenced `type == "api"` and non-empty `key`
