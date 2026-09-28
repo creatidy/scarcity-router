@@ -292,7 +292,12 @@ class ResponseParseTest(unittest.TestCase):
         assert parsed.usage is not None
         self.assertEqual(parsed.usage.total_tokens, 5)
 
-    def test_reasoning_content_is_tolerated_and_ignored(self) -> None:
+    def test_reasoning_content_is_preserved_not_ignored(self) -> None:
+        """D-062 (#158): the deepseek preset's evidenced reasoning-output
+        field is preserved on the normalized message — this test once
+        pinned the OLD silent-discard behavior and now pins its opposite;
+        it would fail loudly if preservation ever regressed to a silent
+        content-only drop."""
         document = {
             "choices": [
                 {
@@ -308,6 +313,7 @@ class ResponseParseTest(unittest.TestCase):
         }
         parsed = parse_chat_completion_response(document, preset("deepseek").policy)
         self.assertEqual(parsed.message.content, "answer")
+        self.assertEqual(parsed.message.reasoning, "hidden chain")
 
     def test_tool_call_response_normalizes_empty_arguments(self) -> None:
         document = {

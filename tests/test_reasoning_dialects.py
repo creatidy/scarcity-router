@@ -143,6 +143,28 @@ class DialectNormalizationTests(unittest.TestCase):
                 with self.assertRaises(GatewayError):
                     _ = parse_chat_request(_body(**extra))
 
+    def test_echoed_reasoning_output_is_unknown_parameter(self) -> None:
+        """D-062 (#158): reasoning output is response-only. A client that
+        echoes `reasoning_content` back in message history receives the
+        standard typed rejection — never a silent drop and never an
+        unexplained forward to the backend."""
+        echo: dict[str, object] = {
+            "model": "deep-coding",
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {
+                    "role": "assistant",
+                    "content": "answer",
+                    "reasoning_content": "hidden chain",
+                },
+                {"role": "user", "content": "again"},
+            ],
+        }
+        with self.assertRaises(GatewayError) as caught:
+            _ = parse_chat_request(echo)
+        self.assertEqual(caught.exception.code, "unknown_parameter")
+        self.assertEqual(caught.exception.param, "messages[1].reasoning_content")
+
     def test_unknown_top_level_keys_stay_unknown_parameter(self) -> None:
         with self.assertRaises(GatewayError) as caught:
             _ = parse_chat_request(_body(bogus_dialect={"type": "enabled"}))

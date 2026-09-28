@@ -480,6 +480,7 @@ def echo_behavior(
 def chunkless_behavior(
     *,
     content: str = "synthetic reply",
+    reasoning: str | None = None,
     reported_usage: tuple[int, int] | None = (11, 7),
 ) -> Callable[[AdapterCall, ExecutionContext], AdapterResult]:
     """A completed whole-message result for a streaming call: no chunks.
@@ -505,7 +506,9 @@ def chunkless_behavior(
                     ),
                 ),
             ),
-            message=AdapterMessage(role="assistant", content=content),
+            message=AdapterMessage(
+                role="assistant", content=content, reasoning=reasoning
+            ),
             finish_reason="stop",
         )
 
