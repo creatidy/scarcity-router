@@ -4522,3 +4522,165 @@ Do not rewrite history or change an accepted decision silently.
   give the all-day campaign as calendar dates without an hour-level
   boundary; the inclusive local-calendar-date encoding follows the D-035
   convention and is recorded here as the resolved interpretation.
+
+### D-061 — M07 Stage 2 reopen evaluation: all gates pass under single-owner scope; Stage 2 REOPENED
+
+- **Status:** Accepted (owner-authorized reopen evaluation; gate C
+  re-evaluated the same day on the owner's direction; issue #92)
+- **Date:** 2026-09-28
+- **Issue:** BioMedical-IT/scarcity-router#92 (M07); executes the D-047
+  point-4 reopen procedure; evidence:
+  [`docs/zcode-adapter-stage2-evidence.md`](zcode-adapter-stage2-evidence.md)
+- **Confidence:** High for the interface, permission and live findings
+  (first-party source at a pinned release plus a live probe). High for
+  the terms verdict within its method: a clause-by-clause textual
+  analysis of current official ZCode/Z.ai sources (ZCode ToS effective
+  2026-06-15, Z.AI ToU 2026-04-14, GLM Coding Plan Usage Policy,
+  Subscription Terms, devpack overview and ZCode tool guide; all
+  retrieved 2026-09-28), quoted verbatim in the evidence document. The
+  two interpretive readings (network-proxy scope; third-party scope)
+  are interpretations of official text, not vendor statements; the
+  verdict is scoped to the recorded single-owner deployment scope and
+  voided by any widening of it.
+- **Context:** D-047 closed M07 Stage 2 with a reopen condition: M07 may
+  be reconsidered only when ZCode ships an official supported
+  programmatic interface AND the applicable vendor terms permit the
+  intended use, through a new superseding decision. The owner authorized
+  a re-evaluation after ZCode published an open-source CLI. The first
+  pass of this evaluation (this decision as originally recorded, head
+  `112e950`) accepted the interface and permission evidence but
+  concluded the terms gate unresolved, reading Scarcity Router's
+  execution-routing role as "proxy-style use" lacking vendor
+  authorization. The owner directed a re-evaluation of the terms gate
+  only, against the concrete deployment scope (one natural-person
+  account owner; the owner's own paid GLM Coding Plan; supported
+  installation and authentication; local subprocess launch of the
+  official CLI; credentials local; no third party, no public or
+  multi-user gateway, no resale, no pooling, no quota circumvention, no
+  scraping/IPC/reverse engineering/spoofing), noting that D-047 was
+  written when no supported external interface existed and the
+  contemplated path was undocumented desktop IPC — a materially
+  different fact pattern. The decision id leaves D-060 unassigned on
+  purpose: open issue #156 reserves D-060 for the delegated-model-
+  governance record (the same gap-handling precedent as the
+  D-057/D-058 renumber in PR #152).
+- **Decision:**
+  1. **D-047 reopen condition 1 is now MET.** ZCode release v3.14.3
+     (2026-09-24, commit `29628c9`) ships a first-party Apache-2.0 CLI
+     (`apps/zcode-cli`) with an officially documented non-interactive
+     path: `--prompt`/`-p`, `--target`, `--cwd`, `--mode`, strict
+     `--output-format text|json|stream-json` (unknown values are
+     rejected, never silently downgraded to text), NDJSON session events
+     terminated by a typed final result, `--disallowed-tools`,
+     `--resume`, `app-server`/`agent-server` and `doctor --json`.
+     `NOTICE.md` documents the non-interactive `--prompt` path and the
+     automation-risk table in the vendor's own words. Stage 1's
+     "no supported programmatic surface" finding no longer holds.
+  2. **A supported safe permission model exists**, satisfying the
+     evaluation's requirement that the integration must not rely
+     silently on an unsafe unrestricted execution mode. Headless
+     `--prompt` defaults to yolo — confirmed in help text,
+     `NOTICE.md` and source (`DEFAULT_HEADLESS_PROMPT_MODE`) — but
+     `--mode build|plan|edit` is first-party supported, and under
+     non-yolo modes every side-effecting/high/critical tool returns an
+     `ask` decision that a headless run cannot answer: the default
+     `DenyPermissionBroker` denies it. The failure mode is fail-closed.
+     Any future adapter must always pass an explicit safe mode, never
+     rely on the default.
+  3. **D-047 reopen condition 2 is MET under the recorded single-owner
+     deployment scope.** Clause-by-clause analysis of the official
+     sources (quotes and retrieval dates in the evidence document,
+     section 5): the "unauthorized proxy server" prohibition (ZCode ToS
+     §IV) targets network-infrastructure misuse — "using ZCode as a
+     virtual server, unauthorized proxy server, or mail server" — and
+     the proposed architecture has no proxied resource, no proxy
+     beneficiary and no network/service boundary: the only model client
+     is the owner's own authenticated CLI process launched locally.
+     The third-party clauses (ZCode ToS §III–§IV; Coding Plan Usage
+     Policy; Subscription Terms §4.3) address other persons or
+     organizations receiving account access — "anyone other than the
+     original registrant", "bulk or automated usage on behalf of
+     others" — and the ZCode ToS itself deems account activities the
+     owner's own actions and CLI operations "an extension of your own
+     actions"; owner-controlled software is the owner's instrument, not
+     a third party. The automated-means clauses are purpose-bound to
+     scraping and unauthorized access, not to invoking the vendor's own
+     product. The commercial-use limitation (ZCode ToS §VI.2) is
+     expressly lifted when the user "subscribed to the corresponding
+     services on ZCode and paid the applicable fees"; official
+     documentation (devpack overview; the vendor's "Using GLM Coding
+     Plan in ZCode" guide) establishes the paid GLM Coding Plan as that
+     corresponding service for coding through ZCode, so no separate
+     written vendor authorization is required for the subscribed coding
+     use. The supported-tools rule (Usage Policy; Subscription Terms
+     §4.2) is satisfied by construction — the only model client is the
+     official tool. No remaining clause clearly prohibits the exact
+     deployment; generic reservations are insufficient under the
+     evaluation rule.
+  4. **Live feasibility (recorded as gate D in the evidence document;
+     advisory — points 1–3 govern).** The CLI
+     was built from the pinned official source and probed in a
+     disposable workspace: headless invocation without a shell wrapper, structured
+     event stream, typed provider-error attribution, meaningful exit
+     status, timeout bounding, stderr separation and OS-boundary SIGTERM
+     cancellation all demonstrated; `doctor --json` is a usable
+     capability probe. A successful completion was not observed because
+     this workstation's shared configuration pins a custom provider
+     endpoint that currently fails the CLI's TLS validation — the CLI
+     refused it instead of bypassing validation, which is itself
+     favorable evidence. The interface carried the spike; the
+     environment did not.
+  5. **M07 Stage 2 is REOPENED; D-047's Stage-2 NO-GO is superseded**
+     through the point-4 reopen procedure D-047 itself defined — both
+     conjuncts of the reopen condition are met. Implementation of the
+     ZCode CLI execution adapter is authorized subject to (a) the
+     already-established technical constraints: explicit safe
+     permission mode always passed (never the yolo default), typed
+     denial outcomes, bounded runtimes, cancellation, redaction,
+     dated-version capability pinning; and (b) the retained exclusions
+     in point 6. The implementation is a follow-up task; the change
+     recording this decision is documentation-only.
+  6. **Scope boundary of this PASS (retained exclusions).** The terms
+     verdict covers exactly the single-owner local integration. Outside
+     the evaluation — each requiring a new decision before any such
+     use — are: sharing credentials or account access with any third
+     party; a public or multi-user ZCode gateway; resale or repackaging
+     of access; account pooling; quota circumvention; use of the plan
+     outside officially supported tools (the adapter must never extract
+     plan credentials or call the coding endpoints directly from
+     Scarcity Router); modifying or bypassing ZCode security-
+     restriction or permission configuration; providing model
+     capabilities as a service to third parties (Subscription Terms
+     §4.2). Any widening of the deployment scope voids this evaluation.
+- **Reason:** The reopen condition was written as a conjunction and
+  both conjuncts are now met. The first pass preserved NO-GO by reading
+  the router's local process orchestration as "proxy-style use" —
+  an inference from the product's routing function that the
+  re-evaluation retracts — without analyzing the third-party clauses'
+  person-focused objects or the ToS §VI.2 paid-subscription exception
+  at all. D-047's caution was formed under a materially different fact
+  pattern (no official external interface; undocumented desktop IPC);
+  its own point-4 procedure requires a superseding decision on current
+  facts, which this record provides with verbatim official quotations.
+- **Alternatives considered:** (a) keeping NO-GO pending written vendor
+  authorization — rejected: the Terms themselves provide the
+  paid-subscription exception (§VI.2) and no analyzed clause reaches
+  the described architecture; inventing a written-authorization
+  requirement for this path would contradict the official text, which
+  reserves written agreements for use outside supported tools
+  (Subscription Terms §4.2); (b) recording UNCLEAR — rejected: UNCLEAR
+  requires an applicable clause whose scope is genuinely ambiguous for
+  this architecture; the clause-by-clause review found none, and the
+  two readings the verdict relies on are supported by the clauses'
+  objects and the ToS's own deeming language; (c) implementing the
+  adapter in this same change — rejected: the owner scoped this
+  remediation to the evidence record, D-061 and existing M07
+  cross-references; the implementation follows as its own task; (d)
+  recording no decision and only keeping the evidence doc — rejected:
+  D-047 requires reopenings to go through an explicit decision.
+- **Boundary:** Documentation only — this record,
+  `docs/zcode-adapter-stage2-evidence.md`, and dated cross-reference
+  updates in `docs/roadmap.md`, `docs/architecture.md` and
+  `docs/providers.md`. No code, no catalog ratings, no capability
+  claims, no serialized contracts, no execution-surface behavior. M04's
+  Z.ai HTTP/API path (D-047 point 5) is unaffected.
