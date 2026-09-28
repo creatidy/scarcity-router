@@ -212,6 +212,10 @@ and contracts are in [`docs/architecture.md`](architecture.md).
   after Stage-1 evidence found no official supported programmatic surface;
   U-013 is resolved and the evidence is preserved in
   [`docs/zcode-adapter-stage1-evidence.md`](zcode-adapter-stage1-evidence.md).
+  The 2026-09-28 reopen re-evaluation (D-061) found the interface condition
+  now satisfied by the official ZCode CLI but left the vendor-terms
+  condition unresolved — the NO-GO stands
+  ([`docs/zcode-adapter-stage2-evidence.md`](zcode-adapter-stage2-evidence.md)).
 - **Contract tests:** every execution adapter ships redacted fixtures,
   parser/protocol tests and compatibility-matrix evidence with dated
   versions; provider drift disables the affected adapter safely while the

@@ -285,7 +285,7 @@ issue.
 | M04 | #89 | Generic OpenAI-compatible HTTP adapter and Ollama integration |
 | M05 | #90 | Native worker, pairing, and execution transport |
 | M06 | #91 | Codex adapter: CLI/App Server with Desktop and VS Code installations |
-| M07 | #92 | ZCode adapter feasibility — Stage 1 complete; Stage 2 cancelled (D-047) |
+| M07 | #92 | ZCode adapter feasibility — Stage 1 complete; Stage 2 cancelled (D-047); reopen re-evaluated 2026-09-28 (D-061): interface gate passes, terms gate unresolved — remains NO-GO |
 | M08 | #93 | MCP, REST, and CLI compatibility; optional remote mode |
 | M09 | #94 | Configuration, web UX, and diagnostics |
 | M10 | #95 | Distribution, installation, update, and end-to-end acceptance |
@@ -341,7 +341,7 @@ service.
 | HTTP execution adapters | M04 (#89) | One generic OpenAI-compatible HTTP adapter with evidence-based provider presets; Ollama (direct + worker-bridged transport) | Coordinator dispatch, admin-configured origins/credentials | Provider requests/responses, capability reports | Per-provider gateways; sourcing configuration from client requests |
 | Native worker + transport | M05 (#90) | Outbound TLS/WSS connection, pairing identity, heartbeat, state reporting, local adapter invocation within allowlists, local diagnostics | Server worker-protocol messages, local resources | State reports, streams, usage reports | Routing decisions; generic shell/ssh; expanding its allowlist on request |
 | Codex adapter | M06 (#91) | Codex execution through the official CLI/App Server mechanisms on Desktop/CLI/VS Code installations (worker-side or server-reachable) | Stage-1 evidence, D-039 eligibility, worker isolation | Compatibility matrix entries, execution | GUI automation; token extraction; adopting user projects/plugins |
-| ZCode adapter | M07 (#92) | Closed (D-047, 2026-09-20): Stage 1 produced dated feasibility evidence; Stage 2 is cancelled — no execution adapter is planned | Stage-1 evidence, vendor terms | Dated feasibility evidence only; no execution | Assuming official APIs, promotional eligibility or redistribution rights |
+| ZCode adapter | M07 (#92) | Closed (D-047, 2026-09-20): Stage 1 produced dated feasibility evidence; Stage 2 is cancelled — no execution adapter is planned. Re-evaluated 2026-09-28 (D-061): an official CLI now exists and the interface/permission gates pass, but the terms gate is unresolved — still no adapter | Stage-1 evidence, stage-2 reopen evidence (D-061), vendor terms | Dated feasibility evidence only; no execution | Assuming official APIs, promotional eligibility or redistribution rights |
 | Interface compatibility | M08 (#93) | Frozen v1 guardrail suite; parity; optional remote bridge | Every module's changes | Green parity suite | Semantic drift in frozen surfaces |
 | Configuration, web UX, diagnostics | M09 (#94) | Admin onboarding, provider configuration, pairing UI, client keys, routing profiles, diagnostics/doctor | Admin actions, server state | Control API + UI; copyable client configuration | A second selector; exporting secrets; author-private defaults |
 | Distribution and acceptance | M10 (#95) | Server container, worker packaging, update path, E2E and security acceptance | All modules | Installable artifacts; honest acceptance matrix | Fictional artifacts; depending on private infrastructure |

@@ -4522,3 +4522,108 @@ Do not rewrite history or change an accepted decision silently.
   give the all-day campaign as calendar dates without an hour-level
   boundary; the inclusive local-calendar-date encoding follows the D-035
   convention and is recorded here as the resolved interpretation.
+
+### D-061 — M07 Stage 2 reopen evaluation: interface gate now passes, terms gate does not; Stage 2 remains NO-GO
+
+- **Status:** Accepted (owner-authorized reopen evaluation; issue #92)
+- **Date:** 2026-09-28
+- **Issue:** BioMedical-IT/scarcity-router#92 (M07); executes the D-047
+  point-4 reopen procedure; evidence:
+  [`docs/zcode-adapter-stage2-evidence.md`](zcode-adapter-stage2-evidence.md)
+- **Confidence:** High for the interface and permission findings
+  (first-party source at a pinned release plus a live probe). High that
+  the terms verdict is *unresolved*; the underlying licensing question
+  (whether the vendor would authorize proxy-style use) is not
+  answerable from the repository and stays open with the owner.
+- **Context:** D-047 closed M07 Stage 2 with a reopen condition: M07 may
+  be reconsidered only when ZCode ships an official supported
+  programmatic interface AND the applicable vendor terms permit the
+  intended use, through a new superseding decision. The owner authorized
+  a re-evaluation after ZCode published an open-source CLI. The decision
+  id leaves D-060 unassigned on purpose: open issue #156 reserves D-060
+  for the delegated-model-governance record (the same gap-handling
+  precedent as the D-057/D-058 renumber in PR #152).
+- **Decision:**
+  1. **D-047 reopen condition 1 is now MET.** ZCode release v3.14.3
+     (2026-09-24, commit `29628c9`) ships a first-party Apache-2.0 CLI
+     (`apps/zcode-cli`) with an officially documented non-interactive
+     path: `--prompt`/`-p`, `--target`, `--cwd`, `--mode`, strict
+     `--output-format text|json|stream-json` (unknown values are
+     rejected, never silently downgraded to text), NDJSON session events
+     terminated by a typed final result, `--disallowed-tools`,
+     `--resume`, `app-server`/`agent-server` and `doctor --json`.
+     `NOTICE.md` documents the non-interactive `--prompt` path and its
+     unattended-automation behavior in the vendor's own words. Stage 1's
+     "no supported programmatic surface" finding no longer holds.
+  2. **A supported safe permission model exists (the point-9 concern).**
+     Headless `--prompt` defaults to yolo — confirmed in help text,
+     `NOTICE.md` and source (`DEFAULT_HEADLESS_PROMPT_MODE`) — but
+     `--mode build|plan|edit` is first-party supported, and under
+     non-yolo modes every side-effecting/high/critical tool returns an
+     `ask` decision that a headless run cannot answer: the default
+     `DenyPermissionBroker` denies it. The failure mode is fail-closed.
+     Any future adapter must always pass an explicit safe mode, never
+     rely on the default.
+  3. **D-047 reopen condition 2 is NOT MET.** The ZCode Terms of Service
+     are still the version effective 2026-06-15 that Stage 1 analyzed
+     (re-retrieved 2026-09-28). Account exclusivity (III) and the
+     "unauthorized proxy server" prohibition (IV) are unchanged; no
+     written vendor authorization for proxy-style automation exists.
+     That prohibition was and remains "the central terms risk for the
+     M07 use case". Uncertainty is not permission: the intended
+     integration is not clearly licensed.
+  4. **Live feasibility (supporting evidence, not a gate).** The CLI was
+     built from the pinned official source and probed in a disposable
+     workspace: headless invocation without a shell wrapper, structured
+     event stream, typed provider-error attribution, meaningful exit
+     status, timeout bounding, stderr separation and OS-boundary SIGTERM
+     cancellation all demonstrated; `doctor --json` is a usable
+     capability probe. A successful completion was not observed because
+     this workstation's shared configuration pins a custom provider
+     endpoint that currently fails the CLI's TLS validation — the CLI
+     refused it instead of bypassing validation, which is itself
+     favorable evidence. The interface carried the spike; the
+     environment did not.
+  5. **M07 Stage 2 therefore REMAINS NO-GO**, and this record does not
+     supersede D-047's product decision — it updates its factual basis.
+     No ZCode execution adapter is planned while condition 2 stays
+     unmet. The Stage-2 reopen task's own rule is applied unchanged: a
+     clean BLOCKED result is preferable to an integration built on an
+     unsupported or unsafe contract.
+  6. **Reopen path preserved.** Stage 2 may proceed only with (a)
+     written vendor authorization for proxy-style automation of the
+     ZCode runtime — scoped at minimum to owner-account,
+     single-administrator deployments — or (b) a vendor-official
+     integration surface whose terms clearly cover router-style
+     execution. If that happens, the implementation reuses the D-056
+     responsibility boundary and capability intersection, the Codex
+     worker-adapter process/cancellation/failure-classification
+     patterns, and D-043 compatibility-matrix evidence discipline; the
+     explicit-safe-mode requirement in point 2 carries forward as a
+     design constraint. No repository-side polling of vendor state.
+- **Reason:** The reopen condition was written as a conjunction, and
+  only one conjunct changed. Recording the dated interface evidence now
+  (a) prevents re-litigating the interface question, (b) keeps the
+  terms blocker explicit instead of drifting into an integration by
+  accretion, and (c) gives the owner the exact ask (written vendor
+  authorization scope) that would change the answer.
+- **Alternatives considered:** (a) implementing the adapter now with a
+  documented terms caveat — rejected: D-047 exists precisely to stop
+  this, uncertainty must not silently become permission, and AGENTS.md
+  forbids inventing answers for unresolved issues; (b) closing the gap
+  by reading the account-exclusivity and proxy clauses as satisfied by
+  owner-only scoping — rejected: that is an interpretation only the
+  vendor (or a court) could confirm, and Stage 1 already recorded it as
+  unresolved; (c) a demo-only experimental adapter behind disable-by-
+  default configuration — rejected: same terms exposure, and it would
+  still be a production code path needing review and maintenance for a
+  use that is not authorized; (d) recording no decision and only
+  keeping the evidence doc — rejected: D-047 requires reopenings to go
+  through an explicit decision, and a dangling evidence file would not
+  update the NO-GO's factual basis.
+- **Boundary:** Documentation only — this record,
+  `docs/zcode-adapter-stage2-evidence.md`, and dated cross-reference
+  updates in `docs/roadmap.md`, `docs/architecture.md` and
+  `docs/providers.md`. No code, no catalog ratings, no capability
+  claims, no serialized contracts, no execution-surface behavior. M04's
+  Z.ai HTTP/API path (D-047 point 5) is unaffected.
