@@ -43,7 +43,7 @@ with the honest evidence and remaining external gates:
 | M04 | #89 | Generic OpenAI-compatible HTTP adapter and Ollama integration | Complete |
 | M05 | #90 | Native worker, pairing, and execution transport | Complete |
 | M06 | #91 | Codex adapter (Stage 1 evidence + Stage 2 implementation) | Complete subject to the recorded `EXTERNAL_ACCEPTANCE_GATE: LIVE_CODEX_SUBSCRIPTION` live-acceptance gate |
-| M07 | #92 | ZCode adapter feasibility | Stage 1 complete; Stage 2 cancelled (D-047); reopen re-evaluated 2026-09-28 (D-061): interface gate passes, terms gate unresolved — remains NO-GO |
+| M07 | #92 | ZCode adapter feasibility | Stage 1 complete; Stage 2 reopened 2026-09-28 (D-061, gate C re-evaluated): all gates pass under the recorded single-owner scope — adapter implementation authorized, to follow |
 | M08 | #93 | MCP, REST, and CLI compatibility; optional remote mode | Complete |
 | M09 | #94 | Configuration, web UX, and diagnostics | Complete |
 | M10 | #95 | Distribution, installation, update, and end-to-end acceptance | Implementation and deterministic acceptance complete subject to the explicit external gates in [`docs/m10-acceptance.md`](m10-acceptance.md) |

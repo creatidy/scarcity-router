@@ -197,7 +197,8 @@ and contracts are in [`docs/architecture.md`](architecture.md).
   features differ. The Z.ai preset is the vendor-documented
   OpenAI-compatible Coding Plan endpoint and is the supported
   subscription-backed Z.ai execution channel (D-047): the ZCode desktop
-  application is not an M04 backend, and the M07 NO-GO does not remove
+  application is not an M04 backend, and D-047's since-superseded M07
+  NO-GO never removed
   Z.ai HTTP/API support. PAYG and Coding-Plan/entitlement channels of the
   same vendor stay distinct resources with distinct entitlements and pools
   (D-042). Ollama is direct HTTP when network-accessible and
@@ -208,13 +209,19 @@ and contracts are in [`docs/architecture.md`](architecture.md).
   (U-001, D-019), respect the D-018 provider-managed auth boundary
   unchanged, and are bounded by the local-adapter isolation rules of
   D-044. Open uncertainties are registered, not guessed: U-012 (Codex).
-  The M07 ZCode execution adapter was cancelled by owner decision (D-047)
+  The M07 ZCode execution adapter was closed by owner decision (D-047)
   after Stage-1 evidence found no official supported programmatic surface;
   U-013 is resolved and the evidence is preserved in
   [`docs/zcode-adapter-stage1-evidence.md`](zcode-adapter-stage1-evidence.md).
-  The 2026-09-28 reopen re-evaluation (D-061) found the interface condition
-  now satisfied by the official ZCode CLI but left the vendor-terms
-  condition unresolved — the NO-GO stands
+  The 2026-09-28 reopen re-evaluation (D-061, gate C re-evaluated) found
+  the interface condition satisfied by the official ZCode CLI and, on
+  clause-by-clause analysis of the official ZCode/Z.ai terms and
+  paid-plan documentation, the vendor-terms condition met under the
+  recorded single-owner scope — Stage 2 is reopened, with retained
+  exclusions (third-party or multi-user exposure, credential
+  extraction, direct coding-endpoint calls, quota pooling) and the
+  explicit-safe-mode constraint; the adapter implementation follows as
+  its own task
   ([`docs/zcode-adapter-stage2-evidence.md`](zcode-adapter-stage2-evidence.md)).
 - **Contract tests:** every execution adapter ships redacted fixtures,
   parser/protocol tests and compatibility-matrix evidence with dated
