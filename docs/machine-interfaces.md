@@ -243,6 +243,20 @@ envelope:
 Reason codes are never translated, provenance is never removed and the result
 is never reduced to a model identifier.
 
+`reasoning_effort` (D-057) is an additive backwards-compatible v1 member of
+every serialized candidate evaluation — `selected`, `alternatives`, `excluded`,
+`closest_candidates` and `recoverable_candidates`: the exact normalized
+reasoning effort configured on that candidate's catalog entry, or an explicit
+`null` when the entry has no configured effort. `null` is materially distinct
+from the real configured effort `"none"`. The member is always present, is
+carried from the same catalog entry that participated in ranking, and is never
+derived from `identity.variant`, model name, display name or any other opaque
+identity. The envelope `schema_version` stays `1`; existing v1 clients that
+ignore the member remain valid. The same member appears unchanged in
+`scarcity_simulate` results and on every surface that serializes the
+`SelectionDecision` (CLI JSON, MCP, the authenticated control `/v1/select`
+and the remote bridge).
+
 ### POST /v1/simulate
 
 The request reuses the exact `/v1/select` request shape plus the typed
