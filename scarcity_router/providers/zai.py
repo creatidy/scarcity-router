@@ -44,7 +44,15 @@ fixtures under tests/fixtures/zai-coding-plan/:
 - ``nextResetTime`` is evidenced as a 13-digit epoch-millisecond integer;
   values outside that representation (epoch seconds, zero, negative, other
   digit counts) are rejected rather than misinterpreted, and convert to the
-  canonical UTC string only within that validated band.
+  canonical UTC string only within that validated band;
+- for a window with an evidenced duration (the five-hour and weekly token
+  windows), a claimed reset beyond that duration plus a bounded 60-second
+  margin ahead of the retrieval instant is implausible provider drift
+  (e.g. a timezone-shifted claim): ``resets_at`` is omitted and the window
+  degrades to the existing ``reset_unknown`` diagnostic — never corrected,
+  never reinterpreted (issue #151). A reset at or before the retrieval
+  instant is preserved verbatim; whether its window has already reset is
+  the state layer's reset-crossing rule, not a parsing decision.
 
 Structurally incompatible successful responses normalize to
 ``status="schema_changed"`` with no windows and no partial decoding. An HTTP
@@ -96,6 +104,14 @@ _EVIDENCED_PLANS: frozenset[str] = frozenset({"pro"})
 # Evidenced ``nextResetTime`` representation: 13-digit epoch milliseconds.
 _RESET_MS_MIN = 1_000_000_000_000
 _RESET_MS_MAX = 9_999_999_999_999
+
+# A window with an evidenced duration cannot claim a reset beyond that
+# duration plus this bounded margin (observed-provider-drift defense,
+# corroborated by CodexBar's independent Z.ai parser, which omits a
+# five-hour reset "ten hours away" rather than guessing a timezone
+# correction; issue #151). Beyond the horizon the claimed reset is treated
+# as an unknown reset: omitted, never corrected, never reinterpreted.
+_RESET_PLAUSIBILITY_MARGIN_SECONDS = 60
 
 # Window-ID identity components render as decimal digits only when small,
 # non-negative integers; everything else degrades to a fixed placeholder.
@@ -187,6 +203,48 @@ def _canonical_from_epoch_ms(value: object) -> str | None:
     )
 
 
+def _parse_canonical_ts(value: str) -> datetime | None:
+    """Parse one canonical UTC timestamp, or ``None`` if unparsable.
+
+    The plausibility comparison is best-effort on caller-supplied input: a
+    malformed ``retrieved_at`` is skipped here and rejected by the
+    snapshot constructor, which remains the validation boundary.
+    """
+    try:
+        parsed = datetime.fromisoformat(value[:-1] + "+00:00")
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed
+
+
+def _reset_implausible(
+    resets_at: str,
+    retrieved_at: str,
+    duration_seconds: int | None,
+) -> bool:
+    """True when a claimed reset lies beyond the evidenced window horizon.
+
+    Only windows with an evidenced ``duration_seconds`` (five-hour, weekly)
+    are bounded: for an unknown-kind window there is no evidenced duration
+    to compare against, so any well-formed reset stays. A reset at or
+    before the retrieval instant is never implausible here — it is
+    preserved verbatim, and whether its window has already reset is the
+    state layer's reset-crossing rule, not a parsing decision.
+    """
+    if duration_seconds is None:
+        return False
+    reset = _parse_canonical_ts(resets_at)
+    retrieved = _parse_canonical_ts(retrieved_at)
+    if reset is None or retrieved is None:
+        return False
+    horizon = timedelta(
+        seconds=duration_seconds + _RESET_PLAUSIBILITY_MARGIN_SECONDS
+    )
+    return (reset - retrieved) > horizon
+
+
 def _used_pair(percentage: object) -> tuple[int, int] | None:
     """Validate the used-oriented provider percentage; ``None`` if unusable."""
     if not _is_int(percentage):
@@ -215,6 +273,8 @@ def _failure(
 
 def _parse_limit(
     entry: Mapping[str, object],
+    *,
+    retrieved_at: str,
 ) -> tuple[CapacityWindow, list[CapacityDiagnostic]]:
     """Normalize one structurally validated ``data.limits`` object.
 
@@ -274,6 +334,16 @@ def _parse_limit(
 
     resets_at = _canonical_from_epoch_ms(entry.get("nextResetTime"))
     if resets_at is None:
+        diagnostics.append(
+            CapacityDiagnostic(code="reset_unknown", window_id=window_id)
+        )
+    elif _reset_implausible(resets_at, retrieved_at, duration_seconds):
+        # An evidenced-duration window cannot claim a reset beyond that
+        # duration plus a bounded margin; such a value is provider drift
+        # (e.g. a timezone-shifted claim), not a longer window. It is
+        # omitted with the existing unknown-reset diagnostic — never
+        # corrected, never reinterpreted.
+        resets_at = None
         diagnostics.append(
             CapacityDiagnostic(code="reset_unknown", window_id=window_id)
         )
@@ -344,7 +414,9 @@ def parse_zai_quota_response(
     windows: list[CapacityWindow] = []
     diagnostics: list[CapacityDiagnostic] = []
     for entry in entries:
-        window, window_diagnostics = _parse_limit(entry)
+        window, window_diagnostics = _parse_limit(
+            entry, retrieved_at=retrieved_at
+        )
         windows.append(window)
         diagnostics.extend(window_diagnostics)
 

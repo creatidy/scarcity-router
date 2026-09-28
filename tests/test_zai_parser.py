@@ -792,5 +792,110 @@ class PurityAndDeterminism(unittest.TestCase):
             self.assertNotIn(forbidden, source, msg=f"forbidden: {forbidden!r}")
 
 
+class TestResetPlausibility(unittest.TestCase):
+    """An evidenced-duration window bounds its claimed reset horizon (#151).
+
+    Epoch-ms values are precomputed from ``RETRIEVED_AT``
+    (2026-09-01T22:49:51.000Z = 1788302991000), never derived from a clock.
+    """
+
+    def _snap(
+        self,
+        limits: list[object],
+        retrieved_at: str = RETRIEVED_AT,
+    ) -> CapacitySnapshot:
+        return parse_zai_quota_response(
+            _limits_payload(limits), retrieved_at=retrieved_at
+        )
+
+    def _window(self, snap: CapacitySnapshot) -> CapacityWindow:
+        self.assertEqual(len(snap.windows), 1)
+        return snap.windows[0]
+
+    def test_far_future_five_hour_reset_is_omitted(self) -> None:
+        # +9h is beyond the five-hour horizon (+5h + 60s): provider drift,
+        # omitted with the unknown-reset diagnostic, never corrected.
+        snap = self._snap([_token_limit(3, 5, 5, 1788335391000)])
+        self.assertIsNone(self._window(snap).resets_at)
+        self.assertEqual(
+            {(d.code, d.window_id) for d in snap.diagnostics},
+            {("reset_unknown", "tokens_limit-3-5")},
+        )
+
+    def test_just_past_horizon_is_omitted(self) -> None:
+        # +5h + 61s: one second beyond the horizon is already implausible.
+        snap = self._snap([_token_limit(3, 5, 5, 1788321052000)])
+        self.assertIsNone(self._window(snap).resets_at)
+        self.assertIn("reset_unknown", _codes(snap))
+
+    def test_boundary_reset_is_kept(self) -> None:
+        # Exactly +5h + 60s: at the horizon, therefore plausible.
+        snap = self._snap([_token_limit(3, 5, 5, 1788321051000)])
+        window = self._window(snap)
+        self.assertIsNotNone(window.resets_at)
+        self.assertNotIn("reset_unknown", _codes(snap))
+
+    def test_near_future_reset_is_kept(self) -> None:
+        snap = self._snap([_token_limit(3, 5, 5, 1788310191000)])
+        self.assertIsNotNone(self._window(snap).resets_at)
+        self.assertNotIn("reset_unknown", _codes(snap))
+
+    def test_weekly_horizon_bounds_weekly_window(self) -> None:
+        # +6 days is inside the weekly horizon (+7d + 60s): kept.
+        snap = self._snap([_token_limit(6, 1, 5, 1788821391000)])
+        self.assertIsNotNone(self._window(snap).resets_at)
+        # +30 days is beyond it: omitted.
+        drifted = self._snap([_token_limit(6, 1, 5, 1790894991000)])
+        self.assertIsNone(self._window(drifted).resets_at)
+        self.assertIn("reset_unknown", _codes(drifted))
+
+    def test_unknown_kind_window_has_no_plausibility_check(self) -> None:
+        # TIME_LIMIT carries no evidenced duration, so there is no horizon
+        # to compare against: a well-formed reset 30 days ahead stays.
+        snap = self._snap(
+            [
+                {
+                    "type": "TIME_LIMIT",
+                    "unit": 3,
+                    "number": 5,
+                    "percentage": 5,
+                    "nextResetTime": 1790894991000,
+                }
+            ]
+        )
+        window = self._window(snap)
+        self.assertEqual(window.resource, "time")
+        self.assertIsNotNone(window.resets_at)
+        self.assertNotIn("reset_unknown", _codes(snap))
+
+    def test_past_reset_is_preserved(self) -> None:
+        # A reset at or before the retrieval instant is not a parsing
+        # problem: the window is preserved verbatim and obsolescence is the
+        # state layer's reset-crossing rule.
+        snap = self._snap([_token_limit(3, 5, 5, 1788000000000)])
+        self.assertIsNotNone(self._window(snap).resets_at)
+        self.assertNotIn("reset_unknown", _codes(snap))
+
+    def test_implausible_reset_keeps_the_rest_of_the_window(self) -> None:
+        # Omitting the reset degrades exactly that fact: the evidenced
+        # five-hour kind, duration and percentage pair stay intact.
+        snap = self._snap([_token_limit(3, 5, 5, 1788335391000)])
+        window = self._window(snap)
+        self.assertEqual(window.kind, "five_hour")
+        self.assertEqual(window.duration_seconds, 18_000)
+        self.assertEqual(window.used_percent, 5)
+        self.assertEqual(window.remaining_percent, 95)
+        self.assertEqual(window.scope_id, "coding_plan")
+
+    def test_malformed_retrieved_at_is_still_rejected(self) -> None:
+        # Plausibility evaluation is best-effort on caller-supplied input;
+        # input validation stays the snapshot constructor's boundary.
+        with self.assertRaises(CapacityError):
+            _ = parse_zai_quota_response(
+                _limits_payload([_token_limit(3, 5, 5, 1788335391000)]),
+                retrieved_at="not-a-timestamp",
+            )
+
+
 if __name__ == "__main__":
     _ = unittest.main(verbosity=2)

@@ -397,6 +397,14 @@ discipline as D-023. The semantics below are frozen by D-042 and detailed in
   `observed_at`, never policy fields, and the resource registry classifies
   `fresh`/`stale`/`never_observed` against an explicit injectable instant,
   rejecting future-dated observations rather than treating them as fresh
-  (`scarcity_router/resource_state.py`; `docs/decisions.md` U-003). The
-  synchronous fresh-collection
+  (`scarcity_router/resource_state.py`; `docs/decisions.md` U-003).
+  Amended 2026-09-28 (issue #151): an observation is additionally `stale`
+  — and refresh-due under a configured cadence — once the earliest
+  `resets_at` among its windows has arrived, even inside its TTL. A quota
+  fact stops describing the provider's window state at its reset instant
+  (the window has been refilled or re-bounded), so trusting it past that
+  moment would present obsolete capacity — including an exhausted window
+  that already reset — as current. No vocabulary or scoring semantics
+  changed: `stale` is an existing state and the D-026/D-037 ranking rules
+  are untouched. The synchronous fresh-collection
   behavior of the local recommendation-only surfaces is unchanged.

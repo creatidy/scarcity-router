@@ -34,7 +34,13 @@ Ollama instance or a CLI/app adapter surface — so the later routing core
   injected instant, and a future-dated observation is rejected rather than
   treated as fresh (producing server-comparable observation times is the
   reporting side's responsibility, M05; no clock-skew tolerance protocol is
-  invented here). There is no background refresh; the server's request loop
+  invented here). An observation whose earliest window ``resets_at``
+  instant has arrived is additionally classified ``stale`` (and reported
+  refresh-due when polling is configured) even inside its TTL: at its
+  reset instant a quota fact stops describing the provider's window
+  state, so trusting it further would present obsolete capacity — such as
+  an exhausted window that has already refilled — as current (#151).
+  There is no background refresh; the server's request loop
   (M03) calls :meth:`ResourceRegistry.refresh_due`;
 - promotions as separate observations (source, observation time,
   execution-channel/provider/model/plan scopes, validity period, timezone).
@@ -309,6 +315,28 @@ def _age_or_reject(later: str, earlier: str, *, context: str) -> float:
             + "silently evaluated"
         )
     return age
+
+
+def _window_reset_instants(observation: ResourceStateSnapshot) -> tuple[str, ...]:
+    """Every reset instant carried by the observation's windows, validated.
+
+    Windows without a reset fact (``resets_at is None``) contribute nothing:
+    an unknown reset cannot be known to have passed. Canonical v3 timestamps
+    are fixed-width UTC strings, so the returned tuple's lexicographic
+    minimum is its chronological minimum.
+    """
+    resets: list[str] = []
+    for fact in observation.quota_facts:
+        if fact.window.resets_at is not None:
+            resets.append(
+                _v_ts(fact.window.resets_at, "quota_fact.window.resets_at")
+            )
+    return tuple(resets)
+
+
+def _reset_crossed(resets: tuple[str, ...], now: str) -> bool:
+    """True when ``now`` has reached any of the given reset instants."""
+    return any(_age_seconds(now, reset) >= 0 for reset in resets)
 
 
 def _as_str_object_mapping(value: object) -> Mapping[str, object] | None:
@@ -1490,14 +1518,31 @@ def classify_freshness(
     observed_at: str,
     now: str,
     freshness_ttl_seconds: int,
+    earliest_reset_at: str | None = None,
 ) -> str:
     """Classify one observation as ``fresh`` or ``stale`` against ``now``.
 
-    The U-003 staleness rule, scoped to the server's state store: an
-    observation is fresh while its age is at most ``freshness_ttl_seconds``
-    and stale strictly beyond it. There is no default TTL, no score and no
-    partial freshness: the TTL is always the administrator registration's
-    explicit bound.
+    The U-003 staleness rule, scoped to the server's state store, with two
+    independent stale triggers (#151):
+
+    - the observation's age exceeds ``freshness_ttl_seconds``; or
+    - ``earliest_reset_at`` — the earliest reset instant among the
+      observation's windows — has arrived (``now`` at or after it). A
+      window's ``resets_at`` is the instant its remaining percentage stops
+      being true: the provider has refilled or re-bounded that window, so
+      at least one quota fact is obsolete from that moment on. Trusting
+      the observation past its reset would present obsolete capacity as
+      current — including an exhausted (0%) window whose reset has
+      already passed.
+
+    Both triggers enforce one contract: ``fresh`` means every quota fact
+    in the observation still describes the resource's current capacity.
+    There is no default TTL, no score and no partial freshness: the TTL is
+    always the administrator registration's explicit bound, and windows
+    without a reset fact never trigger the reset rule because an unknown
+    reset cannot be known to have passed. The reset trigger changes which
+    observations are trusted; it introduces no new vocabulary and no
+    scoring semantics.
 
     A future observation (``observed_at`` after ``now``) is rejected with
     :class:`CapacityValidationError` — it is never silently treated as
@@ -1512,6 +1557,10 @@ def classify_freshness(
     if _age_or_reject(now, observed_at, context="classify_freshness") > (
         freshness_ttl_seconds
     ):
+        return "stale"
+    if earliest_reset_at is not None and _age_seconds(
+        now, _v_ts(earliest_reset_at, "earliest_reset_at")
+    ) >= 0:
         return "stale"
     return "fresh"
 
@@ -1654,12 +1703,16 @@ class ResourceRegistry:
         """Resource ids whose bounded polling cadence says refresh now.
 
         A resource is due when polling is configured and either it has
-        never been observed or its last observation is at least
-        ``poll_interval_seconds`` old. Resources without a polling cadence
-        are never due. An observation dated after ``now`` fails closed
-        with :class:`CapacityValidationError`, consistent with freshness
-        evaluation — a future observation is never silently treated as
-        not due. Ordering is deterministic (resource id).
+        never been observed, its last observation is at least
+        ``poll_interval_seconds`` old, or an observed window's reset
+        instant has arrived (#151): after a reset at least one quota fact
+        is obsolete, so the observation is refreshed promptly instead of
+        serving stale capacity until the next cadence tick. Resources
+        without a polling cadence are never due. An observation dated
+        after ``now`` fails closed with :class:`CapacityValidationError`,
+        consistent with freshness evaluation — a future observation is
+        never silently treated as not due. Ordering is deterministic
+        (resource id).
         """
         current = self._clock() if now is None else _v_ts(now, "now")
         due: list[str] = []
@@ -1676,7 +1729,9 @@ class ResourceRegistry:
                 observation.observed_at,
                 context=f"refresh_due({resource_id!r})",
             )
-            if age >= registration.poll_interval_seconds:
+            if age >= registration.poll_interval_seconds or _reset_crossed(
+                _window_reset_instants(observation), current
+            ):
                 due.append(resource_id)
         return tuple(due)
 
@@ -1699,10 +1754,12 @@ class ResourceRegistry:
             if observation is None:
                 freshness = "never_observed"
             else:
+                resets = _window_reset_instants(observation)
                 freshness = classify_freshness(
                     observed_at=observation.observed_at,
                     now=generated_at,
                     freshness_ttl_seconds=registration.freshness_ttl_seconds,
+                    earliest_reset_at=min(resets) if resets else None,
                 )
             refresh_due = self._entry_refresh_due(
                 registration=registration,
@@ -1753,6 +1810,7 @@ class ResourceRegistry:
                 context=f"registry read of {registration.identity.resource_id!r}",
             )
             >= registration.poll_interval_seconds
+            or _reset_crossed(_window_reset_instants(observation), now)
         )
 
 
