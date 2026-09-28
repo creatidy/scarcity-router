@@ -4229,3 +4229,100 @@ Do not rewrite history or change an accepted decision silently.
   gateway behavior, provider telemetry or account/access-mode/business-model
   fields are changed. The D-032 deferral sentence in
   `docs/selection-policy.md` is updated accordingly.
+
+### D-059 — Dated blackout policy: temporary Z.ai campaigns ride the existing schedule machinery
+
+- **Status:** Accepted (issue #154; branch `policy/zai-temp-campaigns`)
+- **Date:** 2026-09-28
+- **Confidence:** High for the campaign facts themselves — they are quoted
+  from current official Z.ai documentation (fetched 2026-09-28): the Plan
+  Update Announcement
+  (https://docs.z.ai/devpack/notice/usage-revision.md): "From September 25
+  to October 7, 2026, all-day usage will be charged at the off-peak rate."
+  with "Peak hours: Monday to Friday, 14:00–18:00 Singapore Standard Time
+  (UTC+8)" and GLM-5.3 at "1× during off-peak hours and 3× during peak
+  hours" / GLM-5.3-Flash at "0.4× during off-peak hours and 1.2× during
+  peak hours"; and the GLM-5.3-Flash Usage Campaign notice
+  (https://docs.z.ai/devpack/notice/event-glm-5.3-flash.md): "Campaign
+  period: September 3, 2026 to October 7, 2026", "every day from 23:00 to
+  09:00 the following day" Singapore Time, "Zero quota consumption for
+  unlimited usage" via ZCode/AutoClaw, "Available quota is doubled based on
+  your plan's standard quota rules" via other supported agents, "This
+  campaign takes effect only in ZCode version 3.10 and later.", the 5
+  hours/week participation cap, and "This campaign applies only to
+  GLM-5.3-Flash."
+- **Context:** The shipped default selector policy
+  (`examples/selector-policy.json`, provisioned on first use) models Z.ai
+  peak hours as a standing weekly blackout `zai-peak-hours-sgt`
+  (Mon–Fri 14:00–18:00 Asia/Singapore, `preserve_zai_offpeak`). During the
+  vendor's all-day off-peak campaign the blackout still fires in every
+  nominal peak window, so an otherwise eligible request constrained to
+  `zai/glm-5.3` or `zai/glm-5.3-flash` is excluded as `policy_blocked`
+  even though the plan is billed at the cheap off-peak rate — the opposite
+  of the rule's conservation intent. Separately, the shipped Flash-campaign
+  happy hour `zai-flash-campaign-night-sgt` carried the stale
+  `end_date: 2026-09-20`; the vendor extended the campaign through
+  October 7, 2026.
+- **Decision:**
+  1. `WeeklyBlackoutRule` gains the same optional inclusive local calendar
+     bounds `start_date`/`end_date` (`YYYY-MM-DD`, in the rule's zone,
+     `start_date <= end_date`) that `WeeklyHappyHourRule` has had since
+     D-035, backed by shared helpers (`_v_date_bounds`,
+     `_date_bounds_contain`, `_date_bounds_expired`) so the two rule kinds
+     cannot drift at boundaries — the same one-shared-matcher principle
+     D-035 set for the weekly window. A blackout whose weekly window
+     covers an instant while its date bounds do not does not block: the
+     ordinary peak schedule is suspended, not enforced. This amends
+     D-026 additively.
+  2. Explanation symmetry with D-035: `WeeklyBlackoutRule` gains
+     `is_date_expired_at`, and `SelectionDecision` gains the additive
+     member `expired_blackout_rules` (sorted, serialized only when
+     non-empty, `--explain` lists it) naming parked rules — the
+     "campaign suspended my blackout" signal. It is explanation-only
+     provenance and never an eligibility input. Envelope `schema_version`
+     stays 1; documents without the new rule keys load and round-trip
+     unchanged (the D-039 `eligibility` / D-035 additive precedent).
+  3. The shipped default encodes the two temporary campaigns as dated
+     policy over the unchanged permanent baseline: the peak blackout is
+     split into `zai-peak-hours-sgt` (`end_date: 2026-09-24`) and
+     `zai-peak-hours-sgt-post-campaign` (`start_date: 2026-10-08`), both
+     otherwise identical, so the campaign is the dated gap between them
+     (September 25 through October 7 inclusive, calendar-date granular as
+     officially defined) and ordinary peak behavior resumes on October 8
+     without another change; `zai-flash-campaign-night-sgt` is extended to
+     `end_date: 2026-10-07`. The permanent weekly peak schedule is NOT
+     replaced by "always off-peak" and peak logic is not disabled.
+  4. Execution-method economics stay out of selection fact: the Flash
+     campaign's zero-quota-via-ZCode-≥-3.10/AutoClaw versus doubled-quota
+     distinction and its 5 h/week participation cap are NOT modeled as
+     routing inputs, because the selector has no authoritative per-request
+     execution-source identity or version (D-053 sources are
+     administrator grants bound to workers, not request attestation). The
+     happy-hour rule remains the honest representation — a ranking
+     preference inside the documented nightly window, never an
+     eligibility or zero-cost claim; capacity exhaustion still excludes.
+     If execution-source attestation becomes authoritative, that is a
+     separate decision.
+- **Alternatives considered:** (a) disabling or globally suspending the
+  peak blackout for the campaign — rejected: it erases the permanent
+  baseline and requires remembering to restore it; (b) a new generalized
+  "campaign" framework overriding blackouts — rejected: D-035's date
+  bounds already express a dated policy window and a second mechanism
+  would drift against it; (c) a dated happy hour to "lift" the blackout —
+  rejected: preferences never bypass eligibility stages and a 24-hour
+  preference window is inexpressible (`start == end` is invalid); (d)
+  modeling the Flash zero-quota benefit as selection fact keyed on a
+  guessed execution source — rejected: fabricated certainty, violates
+  harness-independence and the fail-closed evidence rules; (e) encoding
+  the campaign only in documentation without dated rules — rejected: the
+  selector would keep excluding Z.ai during the campaign.
+- **Boundary:** `scarcity_router/policy.py`, `scarcity_router/selector.py`,
+  `scarcity_router/selection_app.py` explanation rendering,
+  `examples/selector-policy.json`, tests, `README.md` and this record plus
+  `docs/selection-policy.md`. No catalog ratings, capability claims,
+  qualitative ranking semantics, model identity semantics, capacity
+  telemetry, execution gateway behavior, REST/MCP schema versions or
+  serialized-contract breaking changes. The official campaign documents
+  give the all-day campaign as calendar dates without an hour-level
+  boundary; the inclusive local-calendar-date encoding follows the D-035
+  convention and is recorded here as the resolved interpretation.

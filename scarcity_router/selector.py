@@ -1551,6 +1551,12 @@ class SelectionDecision:
     # bounds exclude it — the "campaign ended" signal. Never a ranking or
     # eligibility input; serialized only when non-empty.
     expired_happy_hour_rules: tuple[str, ...] = ()
+    # D-059 blackout-side counterpart: blackout rules whose weekly window
+    # would cover the evaluated instant but whose inclusive date bounds
+    # exclude it — the "campaign suspended my blackout" signal. Never an
+    # eligibility input (a non-blocking rule is simply not evaluated);
+    # explanation-only provenance; serialized only when non-empty.
+    expired_blackout_rules: tuple[str, ...] = ()
 
     _SELECTED_CODES: ClassVar[frozenset[str]] = frozenset({
         "selected_balanced",
@@ -1697,6 +1703,22 @@ class SelectionDecision:
             "expired_happy_hour_rules",
             tuple(sorted(self.expired_happy_hour_rules)),
         )
+        seen_expired_blackouts: set[str] = set()
+        for rule_id in self.expired_blackout_rules:
+            _ = _v_nonempty_str(
+                rule_id, "selection_decision.expired_blackout_rules"
+            )
+            if rule_id in seen_expired_blackouts:
+                raise SelectionContractValidationError(
+                    "selection_decision.expired_blackout_rules: "
+                    + f"duplicate rule id {rule_id!r}"
+                )
+            seen_expired_blackouts.add(rule_id)
+        object.__setattr__(
+            self,
+            "expired_blackout_rules",
+            tuple(sorted(self.expired_blackout_rules)),
+        )
         if self.profile_id is None and self.profile_policy_version is not None:
             raise SelectionContractValidationError(
                 "selection_decision: profile_policy_version requires a "
@@ -1736,6 +1758,11 @@ class SelectionDecision:
         if self.expired_happy_hour_rules:
             out["expired_happy_hour_rules"] = list(
                 self.expired_happy_hour_rules
+            )
+        # Additive D-059 member: absent from serialized output when empty.
+        if self.expired_blackout_rules:
+            out["expired_blackout_rules"] = list(
+                self.expired_blackout_rules
             )
         return out
 
@@ -1915,6 +1942,13 @@ def select_model(
             sorted(
                 rule.rule_id
                 for rule in policy.resource_policy.happy_hours
+                if rule.is_date_expired_at(evaluated_at)
+            )
+        ),
+        expired_blackout_rules=tuple(
+            sorted(
+                rule.rule_id
+                for rule in policy.resource_policy.blackouts
                 if rule.is_date_expired_at(evaluated_at)
             )
         ),

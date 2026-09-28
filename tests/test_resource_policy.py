@@ -550,6 +550,8 @@ class WeeklyBlackoutRuleContractTests(unittest.TestCase):
         start_local: str = "17:00",
         end_local: str = "03:00",
         reason_code: str = "preserve_zai",
+        start_date: str | None = None,
+        end_date: str | None = None,
     ) -> WeeklyBlackoutRule:
         return WeeklyBlackoutRule(
             rule_id=rule_id,
@@ -559,6 +561,8 @@ class WeeklyBlackoutRuleContractTests(unittest.TestCase):
             start_local=start_local,
             end_local=end_local,
             reason_code=reason_code,
+            start_date=start_date,
+            end_date=end_date,
         )
 
     def test_round_trip_and_canonical_weekday_order(self) -> None:
@@ -593,6 +597,28 @@ class WeeklyBlackoutRuleContractTests(unittest.TestCase):
             _ = self._rule(start_local="03:00", end_local="03:00")
         with self.assertRaises(SelectionContractValidationError):
             _ = self._rule(reason_code="Not Safe")
+
+    def test_date_bounds_validation(self) -> None:
+        with self.assertRaises(SelectionContractValidationError):
+            _ = self._rule(start_date="2026-09-20", end_date="2026-09-10")
+        with self.assertRaises(SelectionContractValidationError):
+            _ = self._rule(start_date="2026-13-01")
+        with self.assertRaises(SelectionContractValidationError):
+            _ = self._rule(end_date="20260910")
+
+    def test_date_bounds_round_trip_and_omitted_optionals(self) -> None:
+        undated = self._rule()
+        payload = undated.to_dict()
+        self.assertNotIn("start_date", payload)
+        self.assertNotIn("end_date", payload)
+        # Pre-D-059 documents (no date keys) load and round-trip unchanged.
+        self.assertEqual(WeeklyBlackoutRule.from_dict(payload), undated)
+        dated = self._rule(start_date="2026-09-01", end_date="2026-09-30")
+        self.assertEqual(
+            dated.to_dict(),
+            {**payload, "start_date": "2026-09-01", "end_date": "2026-09-30"},
+        )
+        self.assertEqual(WeeklyBlackoutRule.from_dict(dated.to_dict()), dated)
 
 
 class BlackoutEvaluationTests(unittest.TestCase):
@@ -840,6 +866,126 @@ class BlackoutEvaluationTests(unittest.TestCase):
         # The block is policy, not scarcity: the assessment stays healthy.
         self.assertEqual(before_assessment.state, "known")
         self.assertEqual(before_assessment.label, "plentiful")
+
+
+class BlackoutDateBoundsTests(unittest.TestCase):
+    """D-059: inclusive campaign date bounds park a blackout, visibly.
+
+    The same semantics D-035 gave happy hours: optional inclusive local
+    calendar bounds in the rule's zone restrict the rule to a dated period;
+    inside the gap the ordinary schedule is suspended, and the parked rule
+    is reportable through ``is_date_expired_at`` so it never goes quiet
+    silently.
+    """
+
+    def _dated_rule(
+        self,
+        start_date: str | None = "2026-09-20",
+        end_date: str | None = "2026-09-30",
+    ) -> WeeklyBlackoutRule:
+        return WeeklyBlackoutRule(
+            rule_id="zai-peak-campaign-bounded",
+            target=AvailabilityTarget(provider="zai"),
+            timezone="Europe/Warsaw",
+            weekdays=("mon",),
+            start_local="09:00",
+            end_local="17:00",
+            reason_code="preserve_zai",
+            start_date=start_date,
+            end_date=end_date,
+        )
+
+    def test_bounds_are_inclusive_on_both_ends(self) -> None:
+        rule = self._dated_rule()
+        # 2026-09-21 and 2026-09-28 are Mondays inside the bounds.
+        self.assertTrue(
+            rule.blocks_at(datetime(2026, 9, 21, 12, 0, tzinfo=WARSAW))
+        )
+        self.assertTrue(
+            rule.blocks_at(datetime(2026, 9, 28, 12, 0, tzinfo=WARSAW))
+        )
+        # 2026-09-14 and 2026-10-05 are Mondays the bounds exclude.
+        self.assertFalse(
+            rule.blocks_at(datetime(2026, 9, 14, 12, 0, tzinfo=WARSAW))
+        )
+        self.assertFalse(
+            rule.blocks_at(datetime(2026, 10, 5, 12, 0, tzinfo=WARSAW))
+        )
+
+    def test_one_sided_bounds(self) -> None:
+        open_ended = self._dated_rule(start_date="2026-09-21", end_date=None)
+        self.assertTrue(
+            open_ended.blocks_at(datetime(2026, 10, 5, 12, 0, tzinfo=WARSAW))
+        )
+        self.assertFalse(
+            open_ended.blocks_at(datetime(2026, 9, 14, 12, 0, tzinfo=WARSAW))
+        )
+        closed = self._dated_rule(start_date=None, end_date="2026-09-28")
+        self.assertTrue(
+            closed.blocks_at(datetime(2026, 9, 14, 12, 0, tzinfo=WARSAW))
+        )
+        self.assertFalse(
+            closed.blocks_at(datetime(2026, 10, 5, 12, 0, tzinfo=WARSAW))
+        )
+
+    def test_utc_instant_uses_local_calendar_date(self) -> None:
+        rule = self._dated_rule()
+        # 2026-09-21 10:00Z is Monday 2026-09-21 12:00 CEST: inside both
+        # the weekly window and the bounds.
+        self.assertTrue(
+            rule.blocks_at(datetime(2026, 9, 21, 10, 0, tzinfo=timezone.utc))
+        )
+        # 2026-10-05 10:00Z is Monday 2026-10-05 12:00 CEST: inside the
+        # weekly window but outside the bounds.
+        self.assertFalse(
+            rule.blocks_at(datetime(2026, 10, 5, 10, 0, tzinfo=timezone.utc))
+        )
+
+    def test_evaluate_blackouts_suspended_inside_the_gap(self) -> None:
+        rule = self._dated_rule()
+        suspended = evaluate_blackouts(
+            [rule], GLM53, datetime(2026, 10, 5, 12, 0, tzinfo=WARSAW)
+        )
+        self.assertFalse(suspended.blocked)
+        self.assertIsNone(suspended.rule_id)
+        self.assertEqual(suspended.reason_codes, ())
+        active = evaluate_blackouts(
+            [rule], GLM53, datetime(2026, 9, 28, 12, 0, tzinfo=WARSAW)
+        )
+        self.assertTrue(active.blocked)
+        self.assertEqual(active.reason_codes, ("policy_blocked",))
+
+    def test_date_expiry_signal(self) -> None:
+        rule = self._dated_rule()
+        # The weekly window covers Monday 12:00 on all three instants; only
+        # the calendar bounds differ.
+        self.assertTrue(
+            rule.is_date_expired_at(datetime(2026, 10, 5, 12, 0, tzinfo=WARSAW))
+        )
+        self.assertTrue(
+            rule.is_date_expired_at(datetime(2026, 9, 14, 12, 0, tzinfo=WARSAW))
+        )
+        self.assertFalse(
+            rule.is_date_expired_at(datetime(2026, 9, 28, 12, 0, tzinfo=WARSAW))
+        )
+        unbounded = self._dated_rule(start_date=None, end_date=None)
+        self.assertFalse(
+            unbounded.is_date_expired_at(
+                datetime(2026, 10, 5, 12, 0, tzinfo=WARSAW)
+            )
+        )
+        # Saturday is not a configured weekday: ordinary schedule behavior,
+        # never a notable expiry.
+        self.assertFalse(
+            rule.is_date_expired_at(datetime(2026, 10, 3, 12, 0, tzinfo=WARSAW))
+        )
+
+    def test_naive_instants_rejected(self) -> None:
+        rule = self._dated_rule()
+        with self.assertRaises(SelectionContractValidationError):
+            _ = rule.blocks_at(datetime(2026, 9, 28, 12, 0))
+        with self.assertRaises(SelectionContractValidationError):
+            _ = rule.is_date_expired_at(datetime(2026, 9, 28, 12, 0))
 
 
 # ── Replenishment state and visibility ────────────────────────────────────────

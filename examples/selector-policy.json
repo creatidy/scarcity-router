@@ -15,7 +15,20 @@
         "weekdays": ["mon", "tue", "wed", "thu", "fri"],
         "start_local": "14:00",
         "end_local": "18:00",
-        "reason_code": "preserve_zai_offpeak"
+        "reason_code": "preserve_zai_offpeak",
+        "end_date": "2026-09-24"
+      },
+      {
+        "rule_id": "zai-peak-hours-sgt-post-campaign",
+        "target": {
+          "provider": "zai"
+        },
+        "timezone": "Asia/Singapore",
+        "weekdays": ["mon", "tue", "wed", "thu", "fri"],
+        "start_local": "14:00",
+        "end_local": "18:00",
+        "reason_code": "preserve_zai_offpeak",
+        "start_date": "2026-10-08"
       }
     ],
     "happy_hours": [
@@ -31,7 +44,7 @@
         "end_local": "09:00",
         "reason_code": "glm53flash_campaign_zero_quota",
         "start_date": "2026-09-03",
-        "end_date": "2026-09-20"
+        "end_date": "2026-10-07"
       }
     ]
   }

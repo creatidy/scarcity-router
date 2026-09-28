@@ -627,7 +627,8 @@ class ExamplePolicyTests(unittest.TestCase):
             ("zai", "glm-5.3-flash"), (rule.target.provider, rule.target.model)
         )
         self.assertEqual("2026-09-03", rule.start_date)
-        self.assertEqual("2026-09-20", rule.end_date)
+        # The vendor extended the campaign through October 7, 2026 (D-059).
+        self.assertEqual("2026-10-07", rule.end_date)
         self.assertEqual(
             ("mon", "tue", "wed", "thu", "fri", "sat", "sun"), rule.weekdays
         )
@@ -646,14 +647,24 @@ class ExamplePolicyTests(unittest.TestCase):
         self.assertFalse(
             evaluate_happy_hours(happy_hours, GLM53, _at(2)).preferred
         )
-        # The end date is inclusive; the day after the campaign it is over
-        # (2026-09-20 18:30 UTC is 2026-09-21 02:30 SGT).
-        after = datetime(2026, 9, 20, 18, 30, tzinfo=timezone.utc)
-        self.assertFalse(evaluate_happy_hours(happy_hours, FLASH, after).preferred)
         # Before the campaign start it had not begun (2026-09-01 18:30 UTC
         # is 2026-09-02 02:30 SGT).
         before = datetime(2026, 9, 1, 18, 30, tzinfo=timezone.utc)
         self.assertFalse(evaluate_happy_hours(happy_hours, FLASH, before).preferred)
+        # The extension overlaps the all-day off-peak campaign: Saturday
+        # 2026-09-26 18:30 UTC is 2026-09-27 (Sun) 02:30 SGT — preferred.
+        overlap = datetime(2026, 9, 26, 18, 30, tzinfo=timezone.utc)
+        self.assertTrue(evaluate_happy_hours(happy_hours, FLASH, overlap).preferred)
+        # The end date is inclusive: 2026-10-06 18:30 UTC is 2026-10-07
+        # 02:30 SGT, the campaign's last documented night.
+        last_night = datetime(2026, 10, 6, 18, 30, tzinfo=timezone.utc)
+        self.assertTrue(
+            evaluate_happy_hours(happy_hours, FLASH, last_night).preferred
+        )
+        # The day after the campaign it is over (2026-10-07 18:30 UTC is
+        # 2026-10-08 02:30 SGT).
+        after = datetime(2026, 10, 7, 18, 30, tzinfo=timezone.utc)
+        self.assertFalse(evaluate_happy_hours(happy_hours, FLASH, after).preferred)
 
 
 if __name__ == "__main__":

@@ -425,6 +425,16 @@ The current mechanics are:
   as a 24-hour blackout; a cross-midnight interval (for example
   `17:00 -> 03:00` on Monday) blocks from Monday 17:00 inclusive through
   Tuesday 03:00 exclusive;
+- like a happy hour (D-035), a rule may be limited-time: the optional
+  inclusive local calendar bounds `start_date`/`end_date` (`YYYY-MM-DD`,
+  in the rule's zone, `start_date <= end_date`) restrict the blackout to a
+  dated period, both absent means a standing recurring window, and a rule
+  whose weekly window would cover the evaluated instant while its bounds
+  do not does not block — the ordinary peak schedule is suspended, not
+  enforced. Such a parked rule is named under the decision's additive
+  `expired_blackout_rules` member (explanation only, serialized only when
+  non-empty, and listed by `--explain`), so a conservation blackout never
+  goes quiet silently;
 - evaluation converts a caller-supplied timezone-aware instant into the
   configured zone, so DST transitions are handled by the time-zone database,
   never by constructing ambiguous local timestamps as the source of truth;
@@ -437,6 +447,39 @@ documentation describes off-peak benefits and dynamic resource behavior, and
 some off-peak/reset-card parameters are explicitly dynamic. The user's desired
 schedule therefore belongs in configuration and must carry an explicit timezone
 and deterministic boundary semantics.
+
+### Current vendor campaigns in the shipped default (D-059)
+
+The checked-in default `examples/selector-policy.json` encodes the two
+temporary Z.ai campaigns documented in late September 2026 as dated policy
+overrides over the permanent baseline schedule (official sources: the
+[Plan Update Announcement](https://docs.z.ai/devpack/notice/usage-revision.md)
+and the
+[GLM-5.3-Flash Usage Campaign](https://docs.z.ai/devpack/notice/event-glm-5.3-flash.md);
+billing calendar Asia/Singapore, UTC+8):
+
+- **All-day off-peak campaign** — per the vendor, "From September 25 to
+  October 7, 2026, all-day usage will be charged at the off-peak rate"
+  (GLM-5.3 consumes at 1× instead of 3×, GLM-5.3-Flash at 0.4× instead of
+  1.2×; the official definition is calendar-date granular, with no
+  hour-level boundary). The shipped policy represents this as the gap
+  between two dated halves of the ordinary peak blackout:
+  `zai-peak-hours-sgt` blocks Mon–Fri 14:00–18:00 SGT through `end_date`
+  2026-09-24 inclusive, and `zai-peak-hours-sgt-post-campaign` resumes the
+  identical window from `start_date` 2026-10-08 inclusive. Between those
+  dates an otherwise eligible Z.ai request is never excluded as
+  `preserve_zai_offpeak`, and the permanent baseline resumes automatically
+  after the campaign without another change.
+- **GLM-5.3-Flash Usage Campaign** — nightly 23:00–09:00 SGT,
+  2026-09-03 through 2026-10-07 inclusive: the
+  `zai-flash-campaign-night-sgt` happy hour prefers GLM-5.3-Flash inside
+  that window. The vendor's execution-method split behind it (zero quota
+  consumption via ZCode ≥ 3.10 and AutoClaw, doubled quota via other
+  supported agents, 5 h/week participation cap) is deliberately NOT modeled
+  as selection fact: the selector has no authoritative per-request
+  execution-source identity or version, so the preference stays a ranking
+  preference only — never an eligibility or zero-cost claim — and capacity
+  exhaustion (the weekly cap's effect on the account) still excludes.
 
 ## Happy hours (quota-preference windows)
 
@@ -460,17 +503,17 @@ happy_hours:
     end_local: "09:00"
     reason_code: glm53flash_campaign_zero_quota
     start_date: "2026-09-03"
-    end_date: "2026-09-20"
+    end_date: "2026-10-07"
 ```
 
 The schedule reuses the blackout mechanics exactly: an explicit IANA time
 zone, the duplicate-free `mon`–`sun` weekday vocabulary, strict 24-hour
 `HH:MM` local times, half-open `[start, end)` intervals with cross-midnight
 support (`start == end` is invalid), and evaluation of a caller-supplied
-timezone-aware instant converted into the rule's zone. Unlike a blackout, a
-happy hour may be limited-time: the optional inclusive local calendar bounds
-`start_date`/`end_date` restrict the window to a campaign period, and both
-absent means a standing recurring window.
+timezone-aware instant converted into the rule's zone. Like a blackout
+(since D-059), a happy hour may be limited-time: the optional inclusive
+local calendar bounds `start_date`/`end_date` restrict the window to a
+campaign period, and both absent means a standing recurring window.
 
 Semantics and boundaries:
 
@@ -502,7 +545,9 @@ Semantics and boundaries:
   evaluated instant but its inclusive date bounds do not (a campaign that
   has ended), the decision names it under `expired_happy_hour_rules` and
   `--explain` lists it — the "why did the preference disappear?" question
-  answers itself. A rule that is simply outside its weekly window is
+  answers itself. Blackouts carry the mirrored `expired_blackout_rules`
+  signal for the same reason: a parked conservation blackout must be
+  visible as parked. A rule that is simply outside its weekly window is
   ordinary schedule behavior and is never flagged.
 
 ## Replenishment and reset opportunities
