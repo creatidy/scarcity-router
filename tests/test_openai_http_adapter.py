@@ -921,7 +921,8 @@ class WorkerBridgedSeamTest(unittest.TestCase):
         wire = build_chat_completion_request(call, preset("openai-api").policy)
         self.assertEqual(wire["model"], "gpt-5.6-luna")
         view = interpret_stream_frame(
-            {"choices": [{"delta": {"content": "x"}, "finish_reason": None}]}
+            {"choices": [{"delta": {"content": "x"}, "finish_reason": None}]},
+            preset("openai-api").policy,
         )
         self.assertEqual(view.text_delta, "x")
         parsed = parse_chat_completion_response(

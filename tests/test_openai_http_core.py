@@ -474,7 +474,8 @@ class StreamInterpretationTest(unittest.TestCase):
 
     def test_openai_style_usage_chunk_with_empty_choices(self) -> None:
         view = interpret_stream_frame(
-            {"choices": [], "usage": {"prompt_tokens": 1, "completion_tokens": 2}}
+            {"choices": [], "usage": {"prompt_tokens": 1, "completion_tokens": 2}},
+            preset("openai-api").policy,
         )
         self.assertIsNone(view.text_delta)
         assert view.usage is not None
@@ -487,7 +488,7 @@ class StreamInterpretationTest(unittest.TestCase):
             ],
             "usage": {"prompt_tokens": 4, "completion_tokens": 0},
         }
-        view = interpret_stream_frame(frame)
+        view = interpret_stream_frame(frame, preset("openrouter").policy)
         self.assertEqual(view.finish_reason, "stop")
         assert view.usage is not None
 
@@ -510,7 +511,8 @@ class StreamInterpretationTest(unittest.TestCase):
                         }
                     }
                 ]
-            }
+            },
+            preset("openai-api").policy,
         )
         self.assertEqual(len(view.tool_fragments), 1)
 

@@ -73,17 +73,22 @@ from .selection_types import ModelIdentity
 
 #: The protocol version this build speaks. Version 2 (D-053, #120) adds
 #: the OPTIONAL bounded ``inventories`` section on state reports; every
-#: version-1 message shape is unchanged. The server still ACCEPTS v1
-#: peers (see :data:`SERVER_SUPPORTED_PROTOCOL_VERSIONS`), so an old
-#: worker negotiates version 1 and behaves exactly as before; a new
-#: worker against an old server fails cleanly at the handshake (deploy
-#: the server first, the standard rolling-upgrade order).
-WORKER_PROTOCOL_VERSION = 2
+#: version-1 message shape is unchanged. Version 3 (#158) adds the
+#: OPTIONAL bounded ``reasoning`` member on conversation messages (the
+#: assistant result's opaque reasoning output); every version-2 message
+#: shape is unchanged. The server still ACCEPTS older peers (see
+#: :data:`SERVER_SUPPORTED_PROTOCOL_VERSIONS`), so an old worker
+#: negotiates its own version and behaves exactly as before (it never
+#: sends the new member); a new worker against an old server fails
+#: cleanly at the handshake (deploy the server first, the standard
+#: rolling-upgrade order).
+WORKER_PROTOCOL_VERSION = 3
 
-#: Versions the server-side endpoint accepts from workers. Version 1
-#: workers never send the version-2 inventory section; version negotiation
-#: picks the highest mutually supported version.
-SERVER_SUPPORTED_PROTOCOL_VERSIONS: tuple[int, ...] = (2, 1)
+#: Versions the server-side endpoint accepts from workers. Version 1/2
+#: workers never send the version-3 message ``reasoning`` member (or the
+#: version-2 inventory section); version negotiation picks the highest
+#: mutually supported version.
+SERVER_SUPPORTED_PROTOCOL_VERSIONS: tuple[int, ...] = (3, 2, 1)
 
 # ── Framing bounds ────────────────────────────────────────────────────────────
 
@@ -374,6 +379,9 @@ def message_to_dict(message: AdapterMessage) -> dict[str, object]:
     out: dict[str, object] = {"role": message.role}
     if message.content is not None:
         out["content"] = message.content
+    if message.reasoning is not None:
+        # Version 3 (#158): the assistant result's opaque reasoning output.
+        out["reasoning"] = message.reasoning
     if message.tool_call_id is not None:
         out["tool_call_id"] = message.tool_call_id
     if message.name is not None:
@@ -395,7 +403,7 @@ def message_from_dict(d: object) -> AdapterMessage:
     dd = _payload_shape(
         d,
         ("role",),
-        ("content", "tool_calls", "tool_call_id", "name"),
+        ("content", "reasoning", "tool_calls", "tool_call_id", "name"),
         "protocol.message",
     )
     raw_calls = dd.get("tool_calls")
@@ -439,6 +447,11 @@ def message_from_dict(d: object) -> AdapterMessage:
                 None
                 if dd.get("name") is None
                 else v_text(dd["name"], "protocol.message.name", max_len=256)
+            ),
+            reasoning=(
+                None
+                if dd.get("reasoning") is None
+                else v_str(dd["reasoning"], "protocol.message.reasoning")
             ),
         )
     except ValueError as exc:

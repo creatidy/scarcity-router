@@ -22,7 +22,11 @@ Responsibilities:
 - **Response parse** (:func:`parse_chat_completion_response`): strict,
   schema-validating parse of one ``chat.completion`` object into the
   normalized assistant message, finish reason and provider-reported
-  usage. Unknown fields are tolerated; changed REQUIRED semantics are
+  usage. Reasoning output is represented per the preset's evidenced
+  ``reasoning_output_policy`` (issue #158): an evidenced field is
+  strictly typed and preserved as opaque reasoning; a known
+  reasoning-output shape a preset does not evidence is protocol drift.
+  Unknown other fields are tolerated; changed REQUIRED semantics are
   protocol drift (:class:`TranslationError`, fail closed).
 - **SSE parse** (:class:`SseStreamParser`): incremental, bounded
   ``text/event-stream`` framing into JSON frames, tolerating the
@@ -65,6 +69,37 @@ from ..gateway_contracts import UsageTokens
 
 #: The reasoning-effort values execution surface v1 accepts (M03 parser).
 REQUEST_EFFORTS: frozenset[str] = frozenset({"minimal", "low", "medium", "high"})
+
+#: The closed ``reasoning_output_policy`` vocabulary (issue #158): which
+#: reasoning-output response shape the preset's evidence documents.
+#: ``none`` — no reasoning output is evidenced for this preset; a response
+#: carrying a known reasoning-output field is protocol drift.
+#: ``reasoning_content`` — ``reasoning_content`` on the message and on the
+#: streaming delta is the evidenced reasoning-output field (DeepSeek, Z.ai).
+#: ``reasoning`` — ``reasoning`` on the message and on the streaming delta
+#: is the evidenced field, with ``reasoning_content`` accepted as the
+#: provider-documented identical alias (OpenRouter).
+REASONING_OUTPUT_POLICIES: frozenset[str] = frozenset({
+    "none",
+    "reasoning_content",
+    "reasoning",
+})
+
+#: The closed set of KNOWN reasoning-output field names in provider
+#: response positions (message/delta). These names are semantic content,
+#: never decorative unknown fields: each is either the preset's evidenced
+#: mapping or explicit protocol drift — never silently discarded.
+REASONING_OUTPUT_FIELDS: frozenset[str] = frozenset({
+    "reasoning_content",
+    "reasoning",
+    "reasoning_details",
+})
+
+#: The structured reasoning representations (OpenRouter's documented
+#: ``reasoning_details`` objects). Scarcity Router transports opaque
+#: reasoning TEXT only; a structured representation is never flattened,
+#: so its presence is protocol drift under every policy.
+_STRUCTURED_REASONING_FIELDS: frozenset[str] = frozenset({"reasoning_details"})
 
 _FINISH_MAP: Mapping[str, str] = {
     "stop": FINISH_STOP,
@@ -149,6 +184,15 @@ class TranslationPolicy:
     - ``reasoning_policy`` / ``reasoning_value_map`` — the evidenced
       reasoning-control parameter shape and the documented value mapping
       from the surface's closed effort set.
+    - ``reasoning_output_policy`` — which reasoning-output RESPONSE shape
+      the preset's evidence documents (issue #158): ``none`` (no
+      reasoning output evidenced; a known reasoning field in a response
+      is protocol drift), ``reasoning_content`` (the DeepSeek/Z.ai
+      ``reasoning_content`` message/delta field), or ``reasoning`` (the
+      OpenRouter ``reasoning`` message/delta field; ``reasoning_content``
+      is accepted as the provider-documented identical alias, conflicting
+      values fail closed). The preset decides; there is no payload-shape
+      auto-detection.
     - ``unevidenced_generation_params`` — generation parameters the
       preset's evidence does not document; sending one is an explicit
       request-shape refusal (fail closed), never a silent forward.
@@ -167,6 +211,7 @@ class TranslationPolicy:
     tool_choice_policy: str
     response_format_policy: str
     reasoning_policy: str
+    reasoning_output_policy: str = "none"
     reasoning_value_map: Mapping[str, str] = field(
         default_factory=lambda: dict[str, str]()
     )
@@ -193,6 +238,7 @@ class TranslationPolicy:
         "thinking_deepseek",
         "thinking_zai",
     })
+    _REASONING_OUTPUT_POLICIES: ClassVar[frozenset[str]] = REASONING_OUTPUT_POLICIES
     _STREAM_OPTIONS: ClassVar[frozenset[str]] = frozenset({
         "request_include_usage",
         "omit",
@@ -222,6 +268,10 @@ class TranslationPolicy:
             )
         if self.reasoning_policy not in self._REASONING_POLICIES:
             raise ValueError("translation_policy.reasoning_policy: unsupported policy")
+        if self.reasoning_output_policy not in self._REASONING_OUTPUT_POLICIES:
+            raise ValueError(
+                "translation_policy.reasoning_output_policy: unsupported policy"
+            )
         for requested, provider_value in self.reasoning_value_map.items():
             if requested not in REQUEST_EFFORTS:
                 raise ValueError(
@@ -255,6 +305,14 @@ def _wire_message(message: AdapterMessage, policy: TranslationPolicy) -> dict[st
         raise TranslationError(
             "preset does not evidence the 'developer' role; the message was "
             + "refused rather than silently rewritten"
+        )
+    if message.reasoning is not None:
+        # Reasoning output is response-only (issue #158): no preset
+        # evidences reasoning re-injection into request history, so a
+        # dispatch carrying it is refused rather than silently dropped.
+        raise TranslationError(
+            "reasoning output is response-only; request history carries no "
+            + "evidenced reasoning field"
         )
     wire: dict[str, object] = {"role": role, "content": message.content}
     if message.name is not None:
@@ -396,6 +454,86 @@ def _as_str(value: object) -> str | None:
     return None
 
 
+def _extract_reasoning(
+    fields: Mapping[str, object], policy: TranslationPolicy
+) -> str | None:
+    """Extract evidenced reasoning output from a message/delta mapping.
+
+    The preset's ``reasoning_output_policy`` decides which known
+    reasoning-output field (if any) carries evidenced semantics; the
+    mapping is strict and fail closed (issue #158):
+
+    - a structured reasoning representation (``reasoning_details``) is
+      protocol drift under every policy — it is never flattened;
+    - a known reasoning field the preset does not evidence is protocol
+      drift — never silently discarded and never reconciled by guess;
+    - the evidenced field (or, for the ``reasoning`` policy, its
+      provider-documented identical alias) must be a string or null;
+      any other type is drift and is never stringified;
+    - the empty string and null both mean absence — absence is never
+      fabricated into a value and a value is never fabricated from
+      absence.
+
+    Error messages carry parameter NAMES only, never content values.
+    """
+    for structured in _STRUCTURED_REASONING_FIELDS:
+        if structured in fields:
+            raise TranslationError(
+                f"provider response field {structured!r} is a structured "
+                + "reasoning representation; preset "
+                + f"{policy.preset_id!r} evidences no mapping for it"
+            )
+    if policy.reasoning_output_policy == "none":
+        for name in ("reasoning_content", "reasoning"):
+            if name in fields:
+                raise TranslationError(
+                    f"provider response field {name!r} carries reasoning "
+                    + "output; preset "
+                    + f"{policy.preset_id!r} evidences no reasoning-output "
+                    + "representation"
+                )
+        return None
+    if policy.reasoning_output_policy == "reasoning_content":
+        if "reasoning" in fields:
+            raise TranslationError(
+                "provider response field 'reasoning' carries reasoning "
+                + "output; preset "
+                + f"{policy.preset_id!r} evidences only 'reasoning_content'"
+            )
+        return _reasoning_string(fields.get("reasoning_content"), "reasoning_content")
+    # policy == "reasoning": the evidenced field, with 'reasoning_content'
+    # accepted as the provider-documented identical alias (OpenRouter);
+    # conflicting values are drift — one is never chosen silently.
+    primary = fields.get("reasoning")
+    alias = fields.get("reasoning_content")
+    if primary is None and alias is None:
+        return None
+    primary_text = _reasoning_string(primary, "reasoning")
+    alias_text = _reasoning_string(alias, "reasoning_content")
+    if primary_text is None:
+        return alias_text
+    if alias_text is None:
+        return primary_text
+    if primary_text != alias_text:
+        raise TranslationError(
+            "provider response carries conflicting reasoning values in "
+            + "'reasoning' and 'reasoning_content'"
+        )
+    return primary_text
+
+
+def _reasoning_string(value: object, name: str) -> str | None:
+    """A strict string-or-null reasoning value; the empty string is absence."""
+    if value is None:
+        return None
+    text = _as_str(value)
+    if text is None:
+        raise TranslationError(
+            f"provider reasoning field {name!r} is not a string"
+        )
+    return text if text else None
+
+
 def safe_diagnostic_token(value: object, *, max_len: int = _MAX_ERROR_TOKEN_LENGTH) -> str | None:
     """A bounded, vocabulary-checked provider-supplied token (never free text).
 
@@ -516,11 +654,13 @@ def parse_chat_completion_response(
 ) -> ParsedCompletion:
     """Strictly parse one ``chat.completion`` object; drift fails closed.
 
-    The policy is accepted for seam symmetry (every translation entry
-    point takes the preset's policy) even though the non-streaming
-    response schema is provider-independent today.
+    Reasoning output is extracted per the preset's evidenced
+    ``reasoning_output_policy`` (issue #158) and preserved as the
+    normalized message's opaque ``reasoning`` member; an evidenced
+    reasoning-only response (reasoning present, content null, no tool
+    calls) is a valid response, and its reasoning is never merged into
+    content.
     """
-    _ = policy
     body = _as_mapping(document)
     if body is None:
         raise TranslationError("provider response is not a JSON object")
@@ -539,13 +679,14 @@ def parse_chat_completion_response(
     content = message.get("content")
     if content is not None and not isinstance(content, str):
         raise TranslationError("provider message content is not a string or null")
+    reasoning = _extract_reasoning(message, policy)
     raw_calls = _as_list(message.get("tool_calls"))
     tool_calls: tuple[AdapterToolCall, ...] = ()
     if raw_calls is not None:
         tool_calls = tuple(
             _wire_tool_call_to_normalized(raw_call) for raw_call in raw_calls
         )
-    if content is None and not tool_calls:
+    if content is None and reasoning is None and not tool_calls:
         raise TranslationError(
             "provider message carries neither content nor tool_calls"
         )
@@ -558,6 +699,7 @@ def parse_chat_completion_response(
             role="assistant",
             content=content,
             tool_calls=tool_calls,
+            reasoning=reasoning,
         ),
         finish_reason=finish_reason,
         usage=usage,
@@ -775,12 +917,15 @@ class StreamFrameView:
     """One parsed SSE frame's meaning for the adapter."""
 
     text_delta: str | None = None
+    reasoning_delta: str | None = None
     tool_fragments: tuple[object, ...] = ()
     finish_reason: str | None = None
     usage: UsageTokens | None = None
 
 
-def interpret_stream_frame(frame: Mapping[str, object]) -> StreamFrameView:
+def interpret_stream_frame(
+    frame: Mapping[str, object], policy: TranslationPolicy
+) -> StreamFrameView:
     """Extract one frame's deltas, finish reason and usage (tolerant).
 
     Shape differences the evidence documents are all tolerated here:
@@ -788,9 +933,12 @@ def interpret_stream_frame(frame: Mapping[str, object]) -> StreamFrameView:
     on a final frame whose choices repeat the finish reason (OpenRouter),
     or on the last content frame (DeepSeek). Content beyond the first
     choice is ignored (the surface executes exactly one choice, ``n`` is
-    not accepted at ingress).
+    not accepted at ingress). Reasoning deltas are extracted per the
+    preset's evidenced ``reasoning_output_policy`` (issue #158) and stay
+    a distinct ``reasoning_delta`` — never a text delta.
     """
     text_delta: str | None = None
+    reasoning_delta: str | None = None
     tool_fragments: list[object] = []
     finish_reason: str | None = None
     usage = extract_usage(frame.get("usage"))
@@ -808,6 +956,7 @@ def interpret_stream_frame(frame: Mapping[str, object]) -> StreamFrameView:
                             "provider stream content delta is not a string"
                         )
                     text_delta = content
+                reasoning_delta = _extract_reasoning(delta, policy)
                 raw_tool_calls = _as_list(delta.get("tool_calls"))
                 if raw_tool_calls is not None:
                     tool_fragments = list(raw_tool_calls)
@@ -816,6 +965,7 @@ def interpret_stream_frame(frame: Mapping[str, object]) -> StreamFrameView:
                 finish_reason = normalize_finish_reason(raw_finish)
     return StreamFrameView(
         text_delta=text_delta,
+        reasoning_delta=reasoning_delta,
         tool_fragments=tuple(tool_fragments),
         finish_reason=finish_reason,
         usage=usage,
@@ -852,6 +1002,8 @@ def provider_error_note(status: int, document: object) -> str:
 __all__ = [
     "EMPTY_ARGUMENTS",
     "MAX_SSE_FRAME_BYTES",
+    "REASONING_OUTPUT_FIELDS",
+    "REASONING_OUTPUT_POLICIES",
     "REQUEST_EFFORTS",
     "RESERVED_REQUEST_KEYS",
     "ParsedCompletion",

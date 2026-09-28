@@ -67,6 +67,7 @@ from .gateway_adapters import (
     AdapterMessage,
     AdapterStreamChunk,
     CHUNK_FINISH,
+    CHUNK_REASONING_DELTA,
     CHUNK_TEXT_DELTA,
     CHUNK_TOOL_CALL,
     CHUNK_USAGE,
@@ -205,11 +206,21 @@ class _CoreStreamSession:
         chunks: list[AdapterStreamChunk] = []
         for frame in frames:
             try:
-                view = interpret_stream_frame(frame)
+                view = interpret_stream_frame(frame, self._policy)
                 for fragment in view.tool_fragments:
                     self._accumulator.add_fragment(fragment)
             except (TranslationError, RecursionError) as exc:
                 raise WorkerProtocolError("internal_error", str(exc)) from None
+            if view.reasoning_delta:
+                # Reasoning stays a distinct normalized kind; it is never
+                # merged into text (issue #158). Within one frame the
+                # reasoning delta is emitted before the text delta — the
+                # deterministic evidenced order.
+                chunks.append(
+                    AdapterStreamChunk(
+                        kind=CHUNK_REASONING_DELTA, text=view.reasoning_delta
+                    )
+                )
             if view.text_delta:
                 chunks.append(
                     AdapterStreamChunk(kind=CHUNK_TEXT_DELTA, text=view.text_delta)

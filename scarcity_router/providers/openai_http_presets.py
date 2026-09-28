@@ -53,7 +53,10 @@ DEEPSEEK_EVIDENCE = EvidenceRef(
     identifier=(
         "https://api-docs.deepseek.com/ and "
         + "https://api-docs.deepseek.com/api/create-chat-completion and "
-        + "https://api-docs.deepseek.com/quick_start/error_codes"
+        + "https://api-docs.deepseek.com/quick_start/error_codes "
+        + "(reasoning-output fields re-retrieved 2026-09-28: "
+        + "message.reasoning_content and delta.reasoning_content, string "
+        + "nullable, thinking mode only)"
     ),
     date=EVIDENCE_DATE,
 )
@@ -62,7 +65,11 @@ OPENROUTER_EVIDENCE = EvidenceRef(
     source="official_docs",
     identifier=(
         "https://openrouter.ai/docs/api-reference/overview and "
-        + "https://openrouter.ai/docs/use-cases/reasoning-tokens"
+        + "https://openrouter.ai/docs/use-cases/reasoning-tokens "
+        + "(reasoning-output fields re-retrieved 2026-09-28: "
+        + "message.reasoning with reasoning_content as the documented "
+        + "identical alias; delta.reasoning in streaming; structured "
+        + "reasoning_details arrays, unmapped)"
     ),
     date=EVIDENCE_DATE,
 )
@@ -73,7 +80,9 @@ ZAI_CODING_EVIDENCE = EvidenceRef(
         "https://docs.z.ai/devpack/quick-start (Coding Plan OpenAI "
         + "Chat Completions base URL https://api.z.ai/api/coding/paas/v4) and "
         + "https://docs.z.ai/api-reference/llm/chat-completion and "
-        + "https://docs.z.ai/guides/llm/glm-4.6"
+        + "https://docs.z.ai/guides/llm/glm-4.6 "
+        + "(reasoning-output field re-retrieved 2026-09-28: "
+        + "message.reasoning_content, string, GLM-4.5 series and above)"
     ),
     date=EVIDENCE_DATE,
 )
@@ -146,6 +155,11 @@ OPENAI_API_PRESET = ProviderPreset(
         tool_choice_policy="pass",
         response_format_policy="pass",
         reasoning_policy="reasoning_effort",
+        # OpenAI's chat completions reference exposes no reasoning-output
+        # field (reasoning summaries live on the Responses API only), so
+        # no reasoning output is evidenced: a response carrying a known
+        # reasoning-output field is protocol drift (fail closed, #158).
+        reasoning_output_policy="none",
         reasoning_value_map={
             "minimal": "minimal",
             "low": "low",
@@ -198,6 +212,12 @@ DEEPSEEK_PRESET = ProviderPreset(
         tool_choice_policy="pass",
         response_format_policy="json_object_only",
         reasoning_policy="thinking_deepseek",
+        # create-chat-completion reference (retrieved 2026-09-28):
+        # message.reasoning_content and delta.reasoning_content, string
+        # nullable, thinking mode only. Input reasoning_content is a BETA
+        # Chat-Prefix-Completion feature on the beta base URL only — the
+        # production surface is response-only.
+        reasoning_output_policy="reasoning_content",
         reasoning_value_map={
             "minimal": "low",  # DeepSeek's own documented mapping
             "low": "low",
@@ -254,6 +274,12 @@ OPENROUTER_PRESET = ProviderPreset(
         tool_choice_policy="pass",
         response_format_policy="pass",
         reasoning_policy="openrouter_reasoning",
+        # reasoning-tokens reference (retrieved 2026-09-28): plaintext
+        # reasoning rides in message.reasoning / delta.reasoning, with
+        # reasoning_content documented as the identical alias (reconciled,
+        # conflicting values fail closed). The structured reasoning_details
+        # representation is unmapped: its presence is protocol drift.
+        reasoning_output_policy="reasoning",
         reasoning_value_map={
             "minimal": "minimal",
             "low": "low",
@@ -313,6 +339,12 @@ ZAI_CODING_PLAN_PRESET = ProviderPreset(
         tool_choice_policy="auto_only",
         response_format_policy="json_object_only",
         reasoning_policy="thinking_zai",
+        # Platform chat-completion reference (retrieved 2026-09-28):
+        # message.reasoning_content, string, GLM-4.5 series and above.
+        # The coding endpoint's parity and the streaming delta schema are
+        # not separately evidenced — the reasoning cells stay PARTIAL on
+        # the same discipline as the reasoning-control cells above.
+        reasoning_output_policy="reasoning_content",
         reasoning_value_map={
             "minimal": "low",
             "low": "low",
@@ -373,6 +405,10 @@ OLLAMA_PRESET = ProviderPreset(
         tool_choice_policy="omit_auto",
         response_format_policy="json_object_only",
         reasoning_policy="reasoning_effort",
+        # The OpenAI-compatibility reference (retrieved 2026-09-28)
+        # documents reasoning effort CONTROLS only; no reasoning-output
+        # response field is documented — unevidenced (fail closed, #158).
+        reasoning_output_policy="none",
         reasoning_value_map={
             "minimal": "low",
             "low": "low",
@@ -420,6 +456,10 @@ GENERIC_PRESET = ProviderPreset(
         tool_choice_policy="pass",
         response_format_policy="pass",
         reasoning_policy="reasoning_effort",
+        # No vendor evidence exists at all: no reasoning output is
+        # evidenced (fail closed, #158); the administrator's own dated
+        # evidence and a preset re-classification would extend it.
+        reasoning_output_policy="none",
         reasoning_value_map={
             "minimal": "minimal",
             "low": "low",

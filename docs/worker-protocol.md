@@ -8,7 +8,7 @@ reconnect-safety semantics (D-043), and the state-report path. Nothing
 here changes selection, routing, capacity or provider semantics; those
 remain owned by their existing authoritative documents.
 
-- **Status:** Versioned contract, implemented ("worker protocol v1").
+- **Status:** Versioned contract, implemented ("worker protocol v1"; current version 3, #158).
   The protocol negotiates its own version independently of every other
   contract family (D-043/D-045).
 - **Implementation:** `scarcity_router/worker_protocol.py` (framing,
@@ -114,6 +114,27 @@ Version 2 adds ONE optional member and changes nothing else:
   configured source are dropped from the applied set (their state lives
   in the source view, never the resource registry) — every other
   unregistered resource still rejects the whole report.
+
+## Version 3: the message `reasoning` member (#158)
+
+Version 3 adds ONE optional member and changes nothing else:
+
+- A conversation `message` (the assistant result the worker returns)
+  MAY carry `reasoning`: the backend's opaque reasoning output, a
+  bounded string, translated per the resource preset's evidenced
+  reasoning-output policy (D-062). A v3 result that cannot represent
+  evidenced reasoning never negotiates down silently: reasoning-bearing
+  responses under a policy that does not evidence them fail the
+  execution closed worker-side (typed translation failure), so an old
+  negotiated schema can never silently drop reasoning.
+- A version-1/2 worker never sends the member; the server still accepts
+  those peers (`SERVER_SUPPORTED_PROTOCOL_VERSIONS = (3, 2, 1)`), so an
+  old worker negotiates its own version and behaves exactly as before.
+  A v3 worker against a v2-only server fails cleanly at the handshake —
+  deploy the server first.
+- The streamed `execute_chunk` vocabulary needs no new member: the
+  normalized `reasoning_delta` chunk kind (D-062) rides the existing
+  generic chunk serialization (`kind` + optional `text`).
 
 ## Pairing, identity, rotation, revocation (D-044)
 

@@ -51,6 +51,7 @@ from typing import cast
 from .gateway_validation import v_str_object_mapping
 from .gateway_adapters import (
     CHUNK_FINISH,
+    CHUNK_REASONING_DELTA,
     CHUNK_TEXT_DELTA,
     CHUNK_TOOL_CALL,
     CHUNK_USAGE,
@@ -881,6 +882,11 @@ def models_list_payload(
 def _message_payload(message: AdapterMessage) -> dict[str, object]:
     payload: dict[str, object] = {"role": message.role}
     payload["content"] = message.content if message.content is not None else None
+    if message.reasoning is not None:
+        # Additive reasoning semantics (issue #158): one documented
+        # client-facing field, present only when reasoning was preserved.
+        # Absence remains absence — no fabricated nulls.
+        payload["reasoning_content"] = message.reasoning
     if message.tool_calls:
         payload["tool_calls"] = [
             {
@@ -957,6 +963,9 @@ def chunk_payload(
     choices: list[dict[str, object]]
     if chunk.kind == CHUNK_TEXT_DELTA:
         delta["content"] = chunk.text
+        choices = [{"index": 0, "delta": delta, "finish_reason": None}]
+    elif chunk.kind == CHUNK_REASONING_DELTA:
+        delta["reasoning_content"] = chunk.text
         choices = [{"index": 0, "delta": delta, "finish_reason": None}]
     elif chunk.kind == CHUNK_TOOL_CALL:
         assert chunk.tool_call is not None

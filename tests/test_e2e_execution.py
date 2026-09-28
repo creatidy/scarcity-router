@@ -49,9 +49,14 @@ from scarcity_router.worker_endpoint import (
     build_tls_context as build_worker_tls,
 )
 from scarcity_router.worker_identity_store import WorkerIdentityStore
+from scarcity_router.providers.openai_http_core import TranslationPolicy
 from scarcity_router.worker_local_adapters import (
     LocalAdapterRegistry,
     LoopbackOllamaAdapter,
+)
+from scarcity_router.worker_local_translation import (
+    LoopbackTranslation,
+    OpenAICompatibleLoopbackTranslation,
 )
 from scarcity_router.worker_local_store import WorkerLocalStore
 from scarcity_router.worker_protocol import SocketTransport, StateReportAckMessage
@@ -69,11 +74,12 @@ from tests.gateway_fixtures import (
 from tests.m10_fixtures import (
     PROMPT_MARKER,
     RESPONSE_MARKER,
+    REASONING_MARKER,
     RealTimeServerHarness,
     TlsMaterials,
     wait_until,
 )
-from tests.openai_http_fixtures import ScriptedProviderServer
+from tests.openai_http_fixtures import ScriptedProviderServer, ScriptedResponse
 from tests.server_fixtures import FAKE_PROVIDER_SECRET
 from tests.worker_fixtures import MutableClock, ScriptedWorker, build_worker_report
 
@@ -118,6 +124,23 @@ def _bridged_resource_document(worker_id: str) -> dict[str, object]:
         "worker_id": worker_id,
         "local_adapter_id": "ollama",
     }
+
+
+def _reasoning_evidenced_ollama_policy() -> TranslationPolicy:
+    """The loopback policy shape extended with evidenced reasoning output.
+
+    The ``ollama`` preset documents no reasoning-output field and carries
+    no loopback probe gap (it has native health/discovery paths). The
+    composed parity test extends it with the DeepSeek-convention
+    ``reasoning_content`` fact — exactly what an administrator's own dated
+    evidence would establish for a local endpoint that demonstrably emits
+    that field (the preset-discipline extension path, issue #158).
+    """
+    from dataclasses import replace
+
+    from scarcity_router.providers.openai_http_presets import OLLAMA_PRESET
+
+    return replace(OLLAMA_PRESET.policy, reasoning_output_policy="reasoning_content")
 
 
 def _server_observation(
@@ -458,7 +481,12 @@ class WorkerBridgedExecutionTests(WorkerWorld):
         self.onboard()
         _ = self.attach_worker_listener()
 
-    def _ollama_registry(self, provider_port: int) -> LocalAdapterRegistry:
+    def _ollama_registry(
+        self,
+        provider_port: int,
+        *,
+        translation: LoopbackTranslation | None = None,
+    ) -> LocalAdapterRegistry:
         identity = ResourceIdentity(
             resource_id="e2e-ollama",
             channel="worker_bridged",
@@ -467,7 +495,10 @@ class WorkerBridgedExecutionTests(WorkerWorld):
             entitlement="subscription_included",
         )
         adapter = LoopbackOllamaAdapter(
-            resource=identity, host="127.0.0.1", port=provider_port
+            resource=identity,
+            host="127.0.0.1",
+            port=provider_port,
+            translation=translation,
         )
         registry = LocalAdapterRegistry()
         registry.register(adapter)
@@ -536,6 +567,159 @@ class WorkerBridgedExecutionTests(WorkerWorld):
                 if request.method == "POST" and request.path == "/v1/chat/completions"
             ]
             self.assertEqual(1, len(completions))
+        finally:
+            runtime.request_stop()
+            _ = session.join(timeout=15)
+            store.close()
+
+    def test_scenario_09b_worker_loopback_reasoning_preserved_end_to_end(self) -> None:
+        """Transport parity (issue #158): the SAME translation core serves
+        the worker-loopback path, so an evidenced reasoning-output field
+        survives the full composed path (server -> worker session ->
+        loopback adapter -> origin -> back) and reaches the client."""
+        provider = ScriptedProviderServer()
+        provider.start()
+        self.addCleanup(provider.stop)
+        store = self.open_worker_store("bridge")
+        runtime, worker_id = self.paired_runtime(
+            store=store,
+            label="gpu-box",
+            local_adapters=self._ollama_registry(
+                provider.port,
+                translation=OpenAICompatibleLoopbackTranslation(
+                    _reasoning_evidenced_ollama_policy()
+                ),
+            ),
+        )
+        self._configure_ollama_resource(worker_id)
+        provider.enqueue_json(200, {"version": "0.0.0-synthetic"})
+        session_reason: list[str] = []
+        session = threading.Thread(
+            target=lambda: session_reason.append(runtime.run()), daemon=True
+        )
+        session.start()
+        try:
+            wait_until(
+                lambda: any(
+                    snapshot.identity.resource_id == "e2e-ollama"
+                    for snapshot in self.plane._observations.values()  # pyright: ignore[reportPrivateUsage] - acceptance reads the seam
+                ),
+                timeout=15,
+                message="worker state report never landed",
+            )
+            provider.enqueue(
+                lambda _request: ScriptedResponse(
+                    200,
+                    {},
+                    json.dumps(
+                        {
+                            "choices": [
+                                {
+                                    "message": {
+                                        "role": "assistant",
+                                        "content": RESPONSE_MARKER,
+                                        "reasoning_content": REASONING_MARKER,
+                                    },
+                                    "finish_reason": "stop",
+                                }
+                            ],
+                            "usage": {
+                                "prompt_tokens": 6,
+                                "completion_tokens": 3,
+                            },
+                        }
+                    ).encode("utf-8"),
+                )
+            )
+            status, payload, _headers = self.exchange(
+                "POST",
+                "/v1/chat/completions",
+                {
+                    "model": "sr-pin:e2e-ollama/zai/glm-5.3/max",
+                    "messages": [{"role": "user", "content": PROMPT_MARKER}],
+                },
+                headers={"Authorization": f"Bearer {self.client_key}"},
+                timeout=60,
+            )
+            self.assertEqual(200, status, payload)
+            document = cast("dict[str, object]", payload)
+            choices = cast("list[object]", document["choices"])
+            message = cast(
+                "dict[str, object]", cast("dict[str, object]", choices[0])["message"]
+            )
+            self.assertEqual(RESPONSE_MARKER, message["content"])
+            self.assertEqual(REASONING_MARKER, message["reasoning_content"])
+        finally:
+            runtime.request_stop()
+            _ = session.join(timeout=15)
+            store.close()
+
+    def test_scenario_09c_worker_loopback_unevidenced_reasoning_fails_closed(self) -> None:
+        """Transport parity (issue #158): under the default ``ollama``
+        preset (no evidenced reasoning output) a reasoning-bearing loopback
+        response fails the execution closed through the FULL composed path
+        — the client never receives the answer with reasoning silently
+        discarded."""
+        provider = ScriptedProviderServer()
+        provider.start()
+        self.addCleanup(provider.stop)
+        store = self.open_worker_store("bridge")
+        runtime, worker_id = self.paired_runtime(
+            store=store,
+            label="gpu-box",
+            local_adapters=self._ollama_registry(provider.port),
+        )
+        self._configure_ollama_resource(worker_id)
+        provider.enqueue_json(200, {"version": "0.0.0-synthetic"})
+        session_reason: list[str] = []
+        session = threading.Thread(
+            target=lambda: session_reason.append(runtime.run()), daemon=True
+        )
+        session.start()
+        try:
+            wait_until(
+                lambda: any(
+                    snapshot.identity.resource_id == "e2e-ollama"
+                    for snapshot in self.plane._observations.values()  # pyright: ignore[reportPrivateUsage] - acceptance reads the seam
+                ),
+                timeout=15,
+                message="worker state report never landed",
+            )
+            provider.enqueue(
+                lambda _request: ScriptedResponse(
+                    200,
+                    {},
+                    json.dumps(
+                        {
+                            "choices": [
+                                {
+                                    "message": {
+                                        "role": "assistant",
+                                        "content": RESPONSE_MARKER,
+                                        "reasoning_content": REASONING_MARKER,
+                                    },
+                                    "finish_reason": "stop",
+                                }
+                            ]
+                        }
+                    ).encode("utf-8"),
+                )
+            )
+            status, payload, _headers = self.exchange(
+                "POST",
+                "/v1/chat/completions",
+                {
+                    "model": "sr-pin:e2e-ollama/zai/glm-5.3/max",
+                    "messages": [{"role": "user", "content": PROMPT_MARKER}],
+                },
+                headers={"Authorization": f"Bearer {self.client_key}"},
+                timeout=60,
+            )
+            self.assertEqual(502, status, payload)
+            encoded = json.dumps(payload)
+            self.assertNotIn(REASONING_MARKER, encoded)
+            self.assertNotIn(RESPONSE_MARKER, encoded)
+            self.assertIn("backend_failure", encoded)
         finally:
             runtime.request_stop()
             _ = session.join(timeout=15)

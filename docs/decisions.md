@@ -4522,3 +4522,128 @@ Do not rewrite history or change an accepted decision silently.
   give the all-day campaign as calendar dates without an hour-level
   boundary; the inclusive local-calendar-date encoding follows the D-035
   convention and is recorded here as the resolved interpretation.
+
+### D-062 — Provider reasoning output: preserve through one normalized representation or fail closed
+
+- **Status:** Accepted (issue #158; branch `translation/reasoning-output-semantics`)
+- **Date:** 2026-09-28
+- **Confidence:** High. Defect reproduced on canonical `develop` @
+  `6fec46ca82901a5fb8761909778c16d8322bbb97` before any change. Provider
+  evidence re-retrieved 2026-09-28 from official references: DeepSeek
+  create-chat-completion (https://api-docs.deepseek.com/api/create-chat-completion:
+  `message.reasoning_content` and `delta.reasoning_content`, "string
+  nullable, for thinking mode only"; input `reasoning_content` is a BETA
+  Chat-Prefix-Completion feature on the beta base URL only); OpenRouter
+  reasoning-tokens (https://openrouter.ai/docs/use-cases/reasoning-tokens:
+  plaintext `reasoning` on message and delta with `reasoning_content`
+  documented as an identical alias; structured `reasoning_details`
+  arrays); Z.ai chat-completion (https://docs.z.ai/api-reference/llm/chat-completion:
+  `message.reasoning_content`, "Reasoning content, supported by GLM-4.5
+  series"; streaming delta schema not separately documented — coding
+  endpoint parity stays PARTIAL as before). OpenAI's chat completions
+  reference exposes no reasoning-output field, and Ollama's
+  OpenAI-compatibility reference (retrieved 2026-09-28) documents
+  reasoning effort controls only.
+- **Context:** The translation core (D-055's request-side home,
+  `providers/openai_http_core.py`) accepted reasoning controls on
+  requests but had NO normalized representation for provider reasoning
+  output: `parse_chat_completion_response` read only `content`/`tool_calls`,
+  `interpret_stream_frame` read only `delta.content`, and
+  `AdapterMessage`/`AdapterStreamChunk` could not carry reasoning at all.
+  A backend returning reasoning was answered 200 with the reasoning
+  silently discarded — in both transports (server-direct HTTP,
+  worker-loopback), which share the one core. A reasoning-only response
+  even failed with the wrong error ("neither content nor tool_calls").
+  This violates the central translation rule: unsupported or
+  unrepresentable semantics are never silently discarded.
+- **Decision:**
+  1. **Normalized seam:** `AdapterMessage.reasoning: str | None` (bounded
+     16 MiB, the content bound) on the assistant result, and a new closed
+     stream-chunk kind `reasoning_delta` (bounded 1 MiB like `text_delta`).
+     Reasoning is opaque provider output: never parsed, never used for
+     routing, never telemetry, never merged into content, never rendered
+     as a tool call.
+  2. **Translation policy:** new closed per-preset fact
+     `reasoning_output_policy` ∈ {`none`, `reasoning_content`, `reasoning`}.
+     The preset decides which response shape is evidenced — DeepSeek and
+     Z.ai map `reasoning_content`; OpenRouter maps `reasoning` with
+     `reasoning_content` accepted as its documented identical alias
+     (conflicting values fail closed); OpenAI, Ollama and the generic
+     preset evidence none. Known reasoning-output field names
+     (`reasoning_content`, `reasoning`, `reasoning_details`) in a response
+     position are therefore either the evidenced mapping or explicit
+     protocol drift — never tolerated-unknown, never flattened, never
+     stringified, never auto-detected from payload shape.
+  3. **Public wire contract (additive):** ONE documented client-facing
+     representation — `choices[0].message.reasoning_content` (non-streaming)
+     and `choices[0].delta.reasoning_content` (streaming) — present only
+     when reasoning was preserved (absence stays absence; no fabricated
+     nulls or empty strings). The name follows the ecosystem-standard
+     DeepSeek-origin convention (native in DeepSeek and Z.ai; documented
+     by OpenRouter as an identical alias; LiteLLM's normalized
+     representation is exactly `reasoning_content`, with `delta.reasoning`
+     canonicalized into it). Existing non-reasoning responses are
+     byte-identical.
+  4. **Fail-closed behavior:** wrong type → `TranslationError` (never
+     stringified); conflicting equivalent fields → typed failure (one is
+     never chosen silently); the structured `reasoning_details`
+     representation → typed drift under every policy; an unevidenced
+     reasoning field (including an explicit null) → typed drift; a
+     reasoning-only evidenced response is valid and represented honestly;
+     reasoning is preserved independently alongside content and tool
+     calls; reasoning in REQUEST history is refused (no preset evidences
+     re-injection), and the client-facing ingress keeps its closed
+     message key set (an echoed `reasoning_content` is the existing typed
+     `unknown_parameter` 400).
+  5. **History/round-trip: response-only.** No supported preset accepts
+     reasoning re-injection (DeepSeek's input form is a beta base-URL
+     feature; OpenRouter's re-injection is its own router facility), so
+     the gateway does not emit a field clients are expected to echo.
+  6. **Streaming:** reasoning deltas stay a distinct normalized kind in
+     provider arrival order (reasoning precedes text within one frame);
+     fragmentation correctness is inherited from the authoritative SSE
+     parser; no full-stream buffering of reasoning.
+  7. **Worker transport:** worker protocol version 3 adds ONE optional
+     bounded `reasoning` member on conversation messages (the documented
+     v2 "one optional member" precedent); the server accepts v1/v2/v3
+     peers; an evidenced-reasoning response under a negotiated schema that
+     cannot represent it fails closed worker-side — never silently
+     dropped.
+- **Reuse (focused, #150 not repeated):** LiteLLM v1.102.1 @ `1ceeefbf`
+  (MIT), `litellm/types/utils.py` — ADOPTED the normalized semantics
+  (one `reasoning_content` field on message and delta; provider-variant
+  `reasoning` canonicalized into it), NOT the code (pydantic framework
+  idioms do not fit the stdlib translation core). CLIProxyAPI @
+  `4a2c8186` (MIT) — corroborates keeping provider-specific reasoning
+  knowledge at the translation edge; no reuse. Both remain REJECTed as
+  machinery (silent-drop design center, #150); our policy discipline is
+  strictly stronger than either.
+- **Privacy:** reasoning content flows ONLY through the bounded execution
+  response path. It never enters logs, audit notes or the SQLite audit
+  store (the audit record structurally cannot carry content), error
+  messages (drift errors name parameter structure, never values),
+  diagnostic notes, routing state, metrics or persisted configuration.
+- **Rejected alternatives:** (a) forwarding unknown upstream keys
+  verbatim — the silent-loss-by-design opposite of the fail-closed rule
+  and a nondeterministic public contract; (b) merging reasoning into
+  `content` — destroys the semantic distinction every reasoning-aware
+  client depends on; (c) per-provider response rendering at the gateway
+  (`reasoning` for OpenRouter-shaped backends) — leaks provider identity
+  into the public contract and makes the gateway's response shape depend
+  on the selected backend; (d) silently tolerating known reasoning fields
+  on non-evidencing presets — that IS the defect; (e) representing
+  structured `reasoning_details` objects — no evidenced consumer, a
+  speculative content-block abstraction, explicitly out of scope; (f)
+  auto-detecting reasoning fields by payload shape — violates the
+  no-auto-detection discipline that D-055 set for request controls.
+- **Boundary:** `providers/openai_http_core.py`,
+  `providers/openai_http_presets.py`, `providers/openai_http_adapter.py`,
+  `gateway_adapters.py`, `gateway_openai.py`, `gateway_server.py`,
+  `worker_local_translation.py`, `worker_local_adapters.py`,
+  `worker_protocol.py` (protocol version 3), tests,
+  `docs/execution-surface.md`, `docs/worker-protocol.md`, this record.
+  No selector, ranking, capability-rating, catalog or routing-core
+  change; no new admission dimension (reasoning output is response-side,
+  not a compatibility-matrix gate); the Codex (M06) adapter's
+  `item/reasoning/*` summary handling is adjacent observed behavior on a
+  different protocol/evidence path and is deliberately unchanged.

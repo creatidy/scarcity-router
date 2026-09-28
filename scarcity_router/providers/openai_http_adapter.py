@@ -79,6 +79,7 @@ from typing import cast
 
 from ..gateway_adapters import (
     CHUNK_FINISH,
+    CHUNK_REASONING_DELTA,
     CHUNK_TEXT_DELTA,
     CHUNK_TOOL_CALL,
     CHUNK_USAGE,
@@ -612,12 +613,13 @@ class OpenAICompatibleHttpAdapter:
         response: http.client.HTTPResponse,
         started_at: str,
     ) -> AdapterResult:
-        _ = binding  # the request was already built from this binding
+        policy = binding.preset.policy
         parser = SseStreamParser(max_total_bytes=MAX_STREAM_TOTAL_BYTES)
         accumulator = ToolCallAccumulator()
         finish_reason: str | None = None
         usage: UsageTokens | None = None
         text_parts: list[str] = []
+        reasoning_parts: list[str] = []
         emit = context.emit_chunk
         try:
             while not parser.finished:
@@ -640,7 +642,18 @@ class OpenAICompatibleHttpAdapter:
                 if not raw:
                     break
                 for frame in parser.feed(raw):
-                    view = interpret_stream_frame(frame)
+                    view = interpret_stream_frame(frame, policy)
+                    if view.reasoning_delta is not None:
+                        # Reasoning stays a distinct normalized kind; it is
+                        # never merged into text (issue #158).
+                        reasoning_parts.append(view.reasoning_delta)
+                        if emit is not None and view.reasoning_delta:
+                            emit(
+                                AdapterStreamChunk(
+                                    kind=CHUNK_REASONING_DELTA,
+                                    text=view.reasoning_delta,
+                                )
+                            )
                     if view.text_delta is not None:
                         # Empty-string deltas are valid provider framing but
                         # not a normalized text_delta (non-empty by contract).
@@ -658,7 +671,16 @@ class OpenAICompatibleHttpAdapter:
                     if view.usage is not None:
                         usage = view.usage
             for frame in parser.close():
-                view = interpret_stream_frame(frame)
+                view = interpret_stream_frame(frame, policy)
+                if view.reasoning_delta is not None:
+                    reasoning_parts.append(view.reasoning_delta)
+                    if emit is not None and view.reasoning_delta:
+                        emit(
+                            AdapterStreamChunk(
+                                kind=CHUNK_REASONING_DELTA,
+                                text=view.reasoning_delta,
+                            )
+                        )
                 if view.text_delta is not None:
                     text_parts.append(view.text_delta)
                     if emit is not None and view.text_delta:
@@ -686,6 +708,7 @@ class OpenAICompatibleHttpAdapter:
             )
         completed_calls = accumulator.complete()
         content = "".join(text_parts)
+        reasoning = "".join(reasoning_parts)
         observation = CallObservation(
             call_index=0,
             started_at=started_at,
@@ -706,6 +729,7 @@ class OpenAICompatibleHttpAdapter:
                 role="assistant",
                 content=content if content else None,
                 tool_calls=completed_calls,
+                reasoning=reasoning if reasoning else None,
             ),
             finish_reason=finish_reason,
         )
