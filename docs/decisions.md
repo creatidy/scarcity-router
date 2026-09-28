@@ -4326,3 +4326,84 @@ Do not rewrite history or change an accepted decision silently.
   give the all-day campaign as calendar dates without an hour-level
   boundary; the inclusive local-calendar-date encoding follows the D-035
   convention and is recorded here as the resolved interpretation.
+
+### D-060 — Dated governance overrides for delegated model use: GLM-5.3 campaign suspension
+
+- **Status:** Accepted (issue #156; branch `policy/zai-model-governance-campaign`)
+- **Date:** 2026-09-28
+- **Confidence:** High for the campaign economics (quoted from the same
+  official Z.ai notices as D-059, fetched 2026-09-28: all-day off-peak
+  2026-09-25..2026-10-07, GLM-5.3 1×, GLM-5.3-Flash 0.4×). High for the
+  standing rule's provenance: the owner's Flash-only delegated-use
+  instruction predates this record as an agent-session rule and is
+  codified here verbatim in intent, with its economics rationale.
+- **Context:** Development orchestration effectively prohibited delegating
+  any work to plain `GLM-5.3` (substituting GLM-5.3-Flash even when a task
+  named GLM-5.3), but that rule existed only in agent-session memory: it
+  was unreviewable, undated, and — because `workflow_role_assignments`
+  still lists GLM-5.3 Max as the DEEP_EXECUTION_WORKER alternate —
+  effectively undocumented in the repository. During the D-059 all-day
+  off-peak campaign the rule's economic basis (the 3× peak multiplier) is
+  temporarily false: GLM-5.3 consumes 1× all day. An independent review
+  that could legitimately use GLM-5.3 was substituted to Flash solely
+  because of the remembered rule.
+- **Decision:**
+  1. The governance layer gains its smallest dated-override mechanism:
+     an additive, non-selector-facing `delegated_model_policy` section in
+     `model-policy.json` holding `standing_rules` (rule id, statement,
+     restricted provider/model set, policy-directed substitute, and a
+     substitution policy that is never silent) and `temporary_overrides`
+     (id, `suspends` reference, inclusive `effective_from`/`effective_until`
+     calendar dates in the section calendar). The shape is reusable: a
+     future campaign is a new data entry, not new code.
+  2. The standing rule `zai_delegated_flash_only` (Flash-only delegated
+     Z.ai work, substitute `zai/glm-5.3-flash`, disclosure required on
+     substitution) and the dated suspension
+     `zai_glm53_all_day_off_peak_2026` (2026-09-28..2026-10-07 inclusive,
+     Asia/Singapore) are both codified. The override starts at the owner's
+     relaxation instruction — which falls inside the D-059 campaign — and
+     shares its end date, referencing D-059 by name instead of duplicating
+     the pricing calendar.
+  3. Boundary interpretation is reused from D-035/D-059, not reinvented:
+     inclusive local calendar dates (`YYYY-MM-DD`) in Asia/Singapore, with
+     aware instants converted into the section calendar and naive instants
+     rejected. The standing rule is in force again from 2026-10-08
+     (Asia/Singapore) automatically; no one must remember to revert.
+  4. `tools/model_governance.py` is the section's single deterministic
+     evaluator (validating loader, phase evaluation with an injectable
+     clock via `--at`, per-model verdicts naming governing rules, active
+     overrides, the substitute and the disclosure requirement; exit 0
+     allowed / 3 restricted / 2 artifact error). Allowing GLM-5.3 during
+     the override is labeled "eligibility and choice, not preference":
+     `preference_default` stays `zai/glm-5.3-flash`, and explicit
+     owner/task assignments remain authoritative in both directions.
+  5. Because this layer is enforced by agents rather than by runtime code,
+     discoverability is the enforcement path: `AGENTS.md` and
+     `.kilo/rules/40-llm-operating-policy.md` point to the section and the
+     evaluator; `docs/llm-operating-policy.md` gains the authoritative
+     prose section.
+- **Alternatives considered:** (a) relaxing the rule only in agent memory
+  again — rejected: unreviewable, undated, someone must remember to revert
+  it, and the prior substitution behavior was unauditable; (b) deleting
+  the standing rule and leaving GLM-5.3 permanently delegated-eligible —
+  rejected: the owner's instruction is standing policy outside the
+  campaign economics, and the post-campaign behavior would silently change
+  architecture; (c) reusing the D-059 selector-policy date-bound code —
+  rejected as a dependency: governance metadata should not construct
+  runtime blackout/happy-hour rule objects to interpret a governance
+  window; instead the same date-bound semantics are mirrored here and
+  pinned by boundary tests at the same instants; (d) encoding a second
+  pricing table — rejected: D-059 owns runtime economics; this layer
+  stores only the rule, the window and a reference.
+- **Boundary:** `model-policy.json` (additive section; `policy_version`
+  9→10), `tools/model_governance.py` (new, outside the basedpyright gate
+  scope by configuration but written to the recommended standard and
+  explicitly checked), `tests/test_model_governance.py` (new),
+  `tests/test_model_policy.py` (contract test + version assertions),
+  `docs/llm-operating-policy.md`, `AGENTS.md`,
+  `.kilo/rules/40-llm-operating-policy.md` and this record. No changes to
+  `scarcity_router/` runtime code, `examples/selector-policy.json`, catalog
+  ratings, capability claims, serialized contracts, or quota semantics;
+  GLM-5.3-Flash is never marked globally free and no harness assumptions
+  enter generic selector logic (ZCode-executed development work does not
+  imply routed requests execute through ZCode).

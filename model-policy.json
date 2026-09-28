@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "policy_version": 9,
-  "updated_at": "2026-09-26",
+  "policy_version": 10,
+  "updated_at": "2026-09-28",
   "versioning": {
     "schema_version": {
       "meaning": "The machine-readable artifact shape.",
@@ -238,6 +238,53 @@
             "provider": "openai",
             "reasoning_effort": "low"
           }
+        ]
+      }
+    ]
+  },
+  "delegated_model_policy": {
+    "status": "dated_governance_rules",
+    "selector_facing": false,
+    "establishes_selector_eligibility": false,
+    "establishes_capacity_binding": false,
+    "scope": "Delegated development orchestration on the owner's Z.ai plan: implementation agents, workflow workers, independent reviewers, confirmers and other sub-agents. Not runtime routing — selector eligibility, catalog ratings and quota calculations are governed elsewhere and are untouched by this section.",
+    "calendar": "Asia/Singapore",
+    "date_bounds_semantics": "effective_from/effective_until are inclusive local calendar dates (YYYY-MM-DD) in this section's calendar, mirroring the D-035/D-059 selector-policy date-bound convention; the rules in force at an instant are evaluated by converting the instant into this calendar. A window that has passed leaves the standing rule in force with no manual revert.",
+    "preference_default": {
+      "provider": "zai",
+      "model": "glm-5.3-flash",
+      "note": "The default delegated choice when its capability is adequate; explicit owner/task model assignments remain authoritative."
+    },
+    "standing_rules": [
+      {
+        "rule_id": "zai_delegated_flash_only",
+        "statement": "Delegated Z.ai work uses GLM-5.3-Flash variants only; plain GLM-5.3 (non-Flash) must not be delegated.",
+        "reason": "Owner instruction (standing form recorded 2026-09-28 from the preceding agent-session rule): Z.ai plan economics — plain GLM-5.3 is billed at the 3x peak multiplier in ordinary peak windows while Flash is 0.4x off-peak / 1.2x peak, so delegated volume belongs on Flash. The workflow_role_assignments above remain descriptive role references; this rule is the operational overlay constraining delegated use.",
+        "restricted_models": [
+          {
+            "provider": "zai",
+            "model": "glm-5.3"
+          }
+        ],
+        "substitute_model": {
+          "provider": "zai",
+          "model": "glm-5.3-flash"
+        },
+        "substitution_policy": "Outside any active override, an explicit owner/task selection of a restricted model is not honored silently: the orchestrator routes to substitute_model and states the substitution and the governing rule once. Substitution for any other concrete reason must state that reason; owner intent is never rewritten quietly."
+      }
+    ],
+    "temporary_overrides": [
+      {
+        "override_id": "zai_glm53_all_day_off_peak_2026",
+        "suspends": "zai_delegated_flash_only",
+        "effective_from": "2026-09-28",
+        "effective_until": "2026-10-07",
+        "campaign_reference": "D-059 all-day off-peak campaign (2026-09-25 through 2026-10-07: GLM-5.3 1x and Flash 0.4x all day, encoded as the dated blackout gap in examples/selector-policy.json). This override is bounded by the owner's 2026-09-28 relaxation instruction, which falls inside that campaign, and shares its end date; the pricing calendar itself is not duplicated here.",
+        "statement": "Plain GLM-5.3 is an allowed delegated model while this override is active. Allowing it restores eligibility and choice, not preference: GLM-5.3-Flash remains the preference default.",
+        "preference_guidance": [
+          "Prefer GLM-5.3-Flash when its capability is adequate: high-volume or repetitive work, token-economics-dominated work, eligible ZCode free-usage windows, or no demonstrated quality reason for the stronger model.",
+          "Plain GLM-5.3 is appropriate when the task materially benefits from the flagship model: reasoning or coding complexity warrants it, review quality outweighs the 2.5x relative off-peak quota cost versus Flash, or the owner/task explicitly selects it.",
+          "Explicit owner/task model assignments remain authoritative in both directions: an explicit GLM-5.3 selection is preserved while this override is active, and tasks assigned to Flash stay on Flash."
         ]
       }
     ]

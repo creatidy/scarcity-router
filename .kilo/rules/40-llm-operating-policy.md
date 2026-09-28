@@ -23,6 +23,11 @@ Follow the full policy in [`docs/llm-operating-policy.md`](../../docs/llm-operat
   `RUNTIME_UNOBSERVABLE` and `FAIL`. Never infer it from model self-report,
   prompts, task titles or UI labels alone.
 - Prefer a small ready queue; do not maximize concurrency.
+- Delegated worker/reviewer model choice follows the dated
+  `delegated_model_policy` in `model-policy.json` (D-060): evaluate with
+  `uv run python tools/model_governance.py` before dispatching; explicit
+  owner/task model assignments stay authoritative and any substitution
+  names its governing rule — never silent.
 
 The role-assignment metadata is descriptive and non-selector-facing. The
 active catalog remains authoritative for selector eligibility; D-017's

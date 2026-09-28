@@ -61,8 +61,8 @@ class ModelPolicyContract(unittest.TestCase):
         self.assertIsInstance(policy, dict)
         parsed = cast(dict[str, object], policy)
         self.assertEqual(parsed["schema_version"], 1)
-        self.assertEqual(parsed["policy_version"], 9)
-        self.assertEqual(parsed["updated_at"], "2026-09-26")
+        self.assertEqual(parsed["policy_version"], 10)
+        self.assertEqual(parsed["updated_at"], "2026-09-28")
         self.assertEqual(json.loads(json.dumps(parsed)), parsed)
 
     def test_versioning_semantics_are_documented(self) -> None:
@@ -713,6 +713,99 @@ class ModelPolicyContract(unittest.TestCase):
                 "PL_TRANSLATION_EDITOR",
             },
         )
+
+    def test_delegated_model_policy_section_is_dated_and_non_selector_facing(
+        self,
+    ) -> None:
+        # D-060 (#156): the standing delegated-use restriction and its dated
+        # campaign suspension live in the machine-readable artifact so the
+        # rule is reviewable, deterministic and expires without a manual
+        # revert. Governance metadata only — never a selector input.
+        section = _mapping(
+            _load_policy()["delegated_model_policy"], "delegated_model_policy"
+        )
+        self.assertEqual(section["status"], "dated_governance_rules")
+        self.assertFalse(section["selector_facing"])
+        self.assertFalse(section["establishes_selector_eligibility"])
+        self.assertFalse(section["establishes_capacity_binding"])
+        self.assertEqual(section["calendar"], "Asia/Singapore")
+        self.assertIn(
+            "inclusive local calendar dates",
+            _required_string(section, "date_bounds_semantics"),
+        )
+        preference = _mapping(
+            section["preference_default"], "delegated_model_policy.preference_default"
+        )
+        self.assertEqual(preference["provider"], "zai")
+        self.assertEqual(preference["model"], "glm-5.3-flash")
+        rules = _objects(
+            section["standing_rules"], "delegated_model_policy.standing_rules"
+        )
+        rule_ids = {_required_string(rule, "rule_id") for rule in rules}
+        self.assertEqual(rule_ids, {"zai_delegated_flash_only"})
+        for rule in rules:
+            self.assertRegex(_required_string(rule, "rule_id"), SNAKE_CASE)
+            self.assertIn(
+                "must not be delegated", _required_string(rule, "statement")
+            )
+            restricted = _objects(
+                rule["restricted_models"], "restricted_models"
+            )
+            for ref in restricted:
+                self.assertEqual(ref["provider"], "zai")
+                self.assertEqual(ref["model"], "glm-5.3")
+            substitute = _mapping(
+                rule["substitute_model"], "standing_rules.substitute_model"
+            )
+            self.assertEqual(substitute["model"], "glm-5.3-flash")
+            self.assertIn(
+                "never rewritten quietly",
+                _required_string(rule, "substitution_policy"),
+            )
+        overrides = _objects(
+            section["temporary_overrides"],
+            "delegated_model_policy.temporary_overrides",
+        )
+        override_ids = {
+            _required_string(override, "override_id") for override in overrides
+        }
+        self.assertEqual(
+            override_ids, {"zai_glm53_all_day_off_peak_2026"}
+        )
+        for override in overrides:
+            self.assertRegex(
+                _required_string(override, "override_id"), SNAKE_CASE
+            )
+            self.assertIn(_required_string(override, "suspends"), rule_ids)
+            self.assertRegex(
+                _required_string(override, "effective_from"),
+                r"^\d{4}-\d{2}-\d{2}$",
+            )
+            self.assertRegex(
+                _required_string(override, "effective_until"),
+                r"^\d{4}-\d{2}-\d{2}$",
+            )
+            self.assertLessEqual(
+                _required_string(override, "effective_from"),
+                _required_string(override, "effective_until"),
+            )
+            self.assertIn("D-059", _required_string(override, "campaign_reference"))
+            self.assertIn(
+                "not preference", _required_string(override, "statement")
+            )
+            guidance = _strings(
+                override["preference_guidance"], "preference_guidance"
+            )
+            self.assertEqual(3, len(guidance))
+            self.assertTrue(
+                any("Prefer GLM-5.3-Flash" in item for item in guidance)
+            )
+            self.assertTrue(
+                any("explicitly selects it" in item for item in guidance)
+            )
+            self.assertTrue(
+                any("remain authoritative" in item for item in guidance)
+            )
 
     def test_astra_onboarded_only_through_the_reviewed_evidence_gate(self) -> None:
         # D-053 point 8 (issue #119) reconciles the D-033 gate: Astra is

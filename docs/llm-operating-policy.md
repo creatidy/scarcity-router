@@ -403,6 +403,54 @@ PL_TRANSLATION_EDITOR -> GPT-5.6 Sol / OpenAI / high; GPT-6 Astra / OpenAI / low
 These references are not a promise that every named model is currently
 available or selector-eligible.
 
+## Delegated Z.ai model use (dated governance overrides)
+
+Which models development agents may be *delegated* to (implementation
+agents, workflow workers, independent reviewers, confirmers and other
+sub-agents) is governed by the dated `delegated_model_policy` section of
+[`model-policy.json`](../model-policy.json), not by this prose alone. The
+section is governance metadata: it is not selector-facing and changes no
+runtime routing, catalog rating or quota calculation.
+
+The standing rule is `zai_delegated_flash_only`: delegated Z.ai work uses
+GLM-5.3-Flash variants only; plain GLM-5.3 must not be delegated. Its
+economic basis is the ordinary plan pricing — GLM-5.3 at the 3× peak
+multiplier in nominal peak windows versus Flash at 0.4× off-peak / 1.2×
+peak — so delegated volume belongs on the cheaper adequate model. The
+`workflow_role_assignments` above remain descriptive role references;
+this rule is the operational overlay constraining delegated use.
+
+Through the Z.ai all-day off-peak campaign (decision D-059; the relaxation
+instruction is dated 2026-09-28, the window ends 2026-10-07, inclusive
+Asia/Singapore calendar dates) the temporary override
+`zai_glm53_all_day_off_peak_2026` suspends that rule: plain GLM-5.3 is an
+**allowed** delegated model when the task materially benefits from the
+flagship model — reasoning or coding complexity warrants it, review
+quality outweighs the 2.5× relative off-peak cost versus Flash, or the
+owner/task explicitly selects it. Allowing it restores eligibility and
+choice, not preference: Flash remains substantially cheaper (0.4× versus
+1×, potentially zero-quota in eligible ZCode campaign windows) and stays
+the preference default for high-volume, repetitive or
+token-economics-dominated work. Neither "always GLM-5.3" nor "always
+Flash" is the policy.
+
+Explicit owner/task model assignments remain authoritative in both
+directions. While the override is active an explicit GLM-5.3 selection is
+preserved, and tasks assigned to Flash stay on Flash. When the standing
+rule restricts a model, the orchestrator routes to the rule's substitute
+and states the substitution and the governing rule once — substitution is
+never silent, and a substitution made for any other concrete reason must
+state that reason.
+
+The window expires automatically: from 2026-10-08 (Asia/Singapore) the
+standing Flash-only rule is back in force with no manual revert, exactly
+as the runtime campaign blackouts resume in
+[`docs/selection-policy.md`](selection-policy.md). Evaluate the policy at
+any instant deterministically with
+`uv run python tools/model_governance.py --at <instant> --model zai/glm-5.3`
+(exit 0 allowed, 3 restricted, 2 artifact/usage error); boundary instants
+and the phase semantics are pinned by `tests/test_model_governance.py`.
+
 ## Scarcity Router product boundary
 
 Scarcity Router is two-mode (D-040). In the default recommendation-only mode

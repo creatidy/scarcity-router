@@ -165,6 +165,16 @@ record states `SECURITY_REVIEW_UNAVAILABLE` and the gate stays open at the
 human decision point; no substitute model may close it — see
 [`docs/llm-operating-policy.md`](docs/llm-operating-policy.md).
 
+**Delegated model choice is governed by dated repository policy, not
+memory.** Which models workers, reviewers and confirmers may be delegated
+to on the owner's Z.ai plan is defined by the `delegated_model_policy`
+section of [`model-policy.json`](model-policy.json) (standing rules plus
+dated overrides; D-060). Evaluate it before dispatching with
+`uv run python tools/model_governance.py --model zai/<model>` and never
+substitute a restricted model silently: state the governing rule and the
+substitution once. Explicit owner/task model assignments remain
+authoritative.
+
 The detailed operating policy is
 [`docs/llm-operating-policy.md`](docs/llm-operating-policy.md), and its
 machine-readable companion is [`model-policy.json`](model-policy.json).

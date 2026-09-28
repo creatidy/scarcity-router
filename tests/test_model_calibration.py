@@ -44,7 +44,7 @@ EFFORT_ASSESSED_ON = "2026-09-08"
 VARIANTS_ASSESSED_ON = "2026-09-15"
 # D-054 (issue #126, 2026-09-26): light families become max-only —
 # gpt-5.6-luna/medium is removed and gpt-6-luna/high is re-labelled /max.
-POLICY_UPDATED_ON = "2026-09-26"
+POLICY_UPDATED_ON = "2026-09-28"
 # The GPT-6 generation onboarding (D-053 point 8, issue #119): live
 # controlled-runtime inventory evidence dated 2026-09-24, floor-level
 # ratings via the reviewed track artifact.
@@ -615,7 +615,7 @@ class TaskProfileCalibration(unittest.TestCase):
     def test_policy_version_incremented_and_calibrated(self) -> None:
         policy = _load_policy()
         self.assertEqual(policy["schema_version"], 1)
-        self.assertEqual(policy["policy_version"], 9)
+        self.assertEqual(policy["policy_version"], 10)
         self.assertEqual(policy["updated_at"], POLICY_UPDATED_ON)
         task_policy = _mapping(policy["task_profile_policy"], "task_profile_policy")
         self.assertTrue(task_policy["numeric_minima_included"])
