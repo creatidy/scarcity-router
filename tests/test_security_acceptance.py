@@ -415,8 +415,9 @@ class AdmissionBoundTests(RealTimeServerHarness):
         self.onboard()
 
     def test_oversized_request_body_is_refused(self) -> None:
-        # Default limit is 1 MiB; a body over it is refused at the edge.
-        big = "x" * (1_048_576 + 1024)
+        # Default limit is the #136 honest 16 MiB; a body over it is
+        # refused at the edge.
+        big = "x" * (16_777_216 + 1024)
         status, payload, _headers = self.exchange(
             "POST",
             "/v1/chat/completions",

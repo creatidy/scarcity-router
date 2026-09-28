@@ -106,7 +106,7 @@ _LIMIT_FIELDS: tuple[str, ...] = (
 
 @dataclass(frozen=True)
 class GatewayLimits:
-    """Administrator-configurable admission limits with safe defaults (D-044).
+    """Administrator-configurable admission limits with honest defaults.
 
     Every limit is enforced at admission, before any dispatch: the request
     body against ``max_request_body_bytes`` (HTTP layer), the estimated
@@ -119,14 +119,40 @@ class GatewayLimits:
     (M02/D-042) — there is no second spending-limit system.
 
     There is no unlimited sentinel: every field is a positive integer.
+
+    The defaults are the #136 honest defaults (D-058) for the supported
+    coding-agent workload, and they are ADMINISTRATOR POLICY, deliberately
+    separate from execution-channel capability: what a route CAN do lives
+    in the model's hard properties and the channel's evidenced capability
+    facts (per-route), while these values are bounded operational guards
+    that only narrow. An administrator may lower any of them knowingly;
+    no default here is derived from one channel's registration fact.
+
+    - ``max_request_body_bytes = 16_777_216`` (16 MiB) — a bounded
+      operational guard with deliberate headroom above the largest
+      evidenced context: a full 1.05M-token conversation is ~4.2 MiB of
+      raw text at the documented chars/4 estimator, and JSON escaping,
+      tool schemas and framing inflate the wire body further. The byte
+      bound is intentionally tokenization-independent rather than
+      computed from tokens.
+    - ``max_input_context_tokens = 2_097_152`` (2^21) — one binary order
+      above the strongest evidenced model hard context in the current
+      catalog (1.05M), so administrator policy never silently narrows an
+      evidenced route; actual reachability is enforced per route from the
+      model/channel intersection.
+    - ``max_output_tokens = 131_072`` — covers the evidenced 128k-token
+      outputs of every supported model family.
+    - ``execution_time_limit_seconds = 1_200`` — max-effort reasoning
+      turns on the supported models routinely exceed 300 s; 20 minutes
+      bounds them without failing normal turns.
     """
 
-    max_request_body_bytes: int = 1_048_576
-    max_input_context_tokens: int = 131_072
-    max_output_tokens: int = 16_384
+    max_request_body_bytes: int = 16_777_216
+    max_input_context_tokens: int = 2_097_152
+    max_output_tokens: int = 131_072
     max_concurrent_executions: int = 4
     max_concurrent_executions_per_client: int = 2
-    execution_time_limit_seconds: int = 300
+    execution_time_limit_seconds: int = 1_200
 
     def __post_init__(self) -> None:
         values: tuple[tuple[str, int], ...] = (

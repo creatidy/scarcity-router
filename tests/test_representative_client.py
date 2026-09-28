@@ -10,7 +10,7 @@ own pin:
 
 - #134 flips the model-resolution pins (bare logical model, models list),
 - #135 FIXED the reasoning-dialect pin (dialects normalize to max),
-- #136 flips the output-ceiling pin,
+- #136 FIXED the output-ceiling pin (honest defaults + effective limits),
 - #137 flips the client-tools pin.
 
 The control tests prove the same harness executes the representative
@@ -64,9 +64,9 @@ class RepresentativeHarness(ServerHarness):
 class CurrentStateFailurePins(RepresentativeHarness):
     """One test per observed acceptance failure; each child flips its own.
 
-    Flipped so far: #134 (model resolution), #135 (reasoning dialects).
-    Still pinned as current-state: #136 (output ceiling), #137 (client
-    tools, only to the evidenced level).
+    Flipped so far: #134 (model resolution), #135 (reasoning dialects),
+    #136 (output ceiling / effective limits). Still pinned as
+    current-state: #137 (client tools, only to the evidenced level).
     """
 
     def test_reasoning_dialect_fields_normalize_and_execute(self) -> None:
@@ -155,23 +155,43 @@ class CurrentStateFailurePins(RepresentativeHarness):
         self.assertEqual(metadata["effective_context_limit_tokens"], 272_000)
         self.assertEqual(metadata["max_output_tokens"], 128_000)
 
-    def test_representative_output_ceiling_is_currently_rejected(self) -> None:
-        """FAILURE 3 of the acceptance report — flipped by child #136.
+    def test_representative_output_ceiling_passes_the_limits_gate(self) -> None:
+        """FAILURE 3 of the acceptance report — FIXED by child #136.
 
-        The client's model-default ``max_completion_tokens: 128000``
-        exceeds the hidden ``GatewayLimits.max_output_tokens = 16384``
-        default even though the catalog evidences 128k output for the
-        model; admission rejects instead of clipping.
+        The real client's ``max_completion_tokens: 128000`` no longer
+        hits a hidden generic ceiling: the #136 honest defaults
+        (``GatewayLimits.max_output_tokens = 131072``) sit above the
+        model's evidenced 128k output, the effective-limits gate admits
+        the representative request (the limit equals the model's hard
+        maximum), and the full representative shape — logical model,
+        dialects, tools, streaming with usage — executes end to end.
         """
         port = self.make_server()
-        response = self.post_chat(
-            port, representative_request(include_reasoning_dialects=False)
-        )
+        response = self.post_chat(port, representative_request())
+        self.assertEqual(response.status, 200)
+        frames = self.read_sse_frames(response)
+        self.assertEqual(frames[-1], "[DONE]")
+
+    def test_output_request_above_effective_capability_is_still_rejected(
+        self,
+    ) -> None:
+        """The #136 counterpart: raising the defaults removed the hidden
+        ceiling, not the rejection semantics. A request above the model's
+        evidenced 128k output is never admitted: the routing core's
+        pre-ranking output eligibility (the request's output minimum vs
+        the exact variant's hard maximum) finds no eligible target, and
+        the mapped TYPED rejection is actionable — 400
+        ``output_limit_insufficient``, never clipping, never a silent
+        downgrade, never a generic retry-suggesting 503.
+        """
+        port = self.make_server()
+        body = representative_request()
+        body["max_completion_tokens"] = 128_001
+        response = self.post_chat(port, body)
         self.assertEqual(response.status, 400)
         payload = cast("dict[str, object]", json.loads(response.read()))
         error = as_dict(payload["error"])
-        self.assertEqual(error["code"], "output_limit_exceeded")
-        self.assertEqual(error["param"], "max_completion_tokens")
+        self.assertEqual(error["code"], "output_limit_insufficient")
 
     def test_pinned_request_with_client_tools_is_currently_incompatible(
         self,
@@ -185,10 +205,10 @@ class CurrentStateFailurePins(RepresentativeHarness):
         to the fixture's server-direct identity with the codex capacity
         scope — the representative request fails closed with
         ``compatibility_unsupported``; the router never executes the
-        client's tools. The output ceiling is absent here because the
-        limits gate runs first (that ordering is exactly what the real
-        acceptance test observed: failure 3 masks failure 5 until the
-        operator lowers the ceiling).
+        client's tools. (At acceptance time the hidden 16384 output
+        ceiling masked this gate first; since #136's honest defaults the
+        compatibility gate is the first failure, which is the ordering
+        this pin exercises.)
         """
         cells = build_cells(
             overrides={

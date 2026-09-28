@@ -1069,8 +1069,10 @@ class CodexAdapterTests(unittest.TestCase):
         self.assertEqual([], harness.spawner.specs)
 
     def test_max_output_tokens_is_rejected_before_any_execution(self) -> None:
-        # No evidenced stable-surface mapping exists for an output ceiling:
-        # refuse-not-drop (the M04 precedent), before anything executes.
+        # No output-token control exists on the app-server turn contract
+        # (re-evidenced 2026-09-28, issue #136): refuse-not-drop, with the
+        # #136 typed reason, before anything executes. The composed path
+        # normalizes/binds-rejects earlier; this is the adapter backstop.
         harness = self._harness()
         call = AdapterCall(
             resource=_resource(),
@@ -1085,7 +1087,7 @@ class CodexAdapterTests(unittest.TestCase):
             emit=lambda chunk: None,
         )
         self.assertEqual("failed", result.status)
-        self.assertEqual("request_parameters_unsupported", result.calls[0].note)
+        self.assertEqual("output_limit_unenforceable", result.calls[0].note)
         self.assertEqual([], harness.spawner.specs)
 
     def test_generation_params_are_rejected_before_any_execution(self) -> None:

@@ -2274,14 +2274,13 @@ def _registration_copy(
         ),
         freshness_ttl_seconds=registration.freshness_ttl_seconds,
         poll_interval_seconds=registration.poll_interval_seconds,
-        capabilities=ExecutionCapabilities(
-            streaming=registration.capabilities.streaming,
-            tool_calls=registration.capabilities.tool_calls,
-            structured_output=registration.capabilities.structured_output,
-            reasoning_controls=registration.capabilities.reasoning_controls,
-            usage_reporting=registration.capabilities.usage_reporting,
-            cancellation=registration.capabilities.cancellation,
-            context_limit_tokens=registration.capabilities.context_limit_tokens,
+        # Serializer round-trip, not a field list: every ExecutionCapabilities
+        # fact — current and FUTURE additive ones — survives administrator
+        # mutations (enable/disable, endpoint reassignment), because
+        # ``to_dict`` serializes every set fact and ``from_dict`` validates
+        # against the class's own full option shape.
+        capabilities=ExecutionCapabilities.from_dict(
+            registration.capabilities.to_dict()
         ),
         cost=(
             ResourceCost(

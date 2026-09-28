@@ -200,21 +200,44 @@ class RequestCapabilities:
 
 
 @dataclass(frozen=True)
+class RouteEffectiveLimits:
+    """One bound route's effective limits for its model (#136/D-058).
+
+    ``effective_*_limit_tokens`` is that route's
+    ``min(known of: model hard, channel ceiling, administrator
+    allowance)`` — ``None`` when neither the model nor the channel
+    evidences a ceiling (an administrator allowance alone never
+    certifies a capability; UNKNOWN stays UNKNOWN, fail-closed in
+    admission).
+    """
+
+    resource_id: str
+    effective_context_limit_tokens: int | None
+    effective_output_limit_tokens: int | None
+
+
+@dataclass(frozen=True)
 class LogicalModelInfo:
-    """One exposed logical model for ``GET /v1/models`` (D-055).
+    """One exposed logical model for ``GET /v1/models`` (D-055, #136).
 
     An adopted source model selectable by its bare physical-model id.
     ``reasoning_efforts`` are the calibrated efforts the catalog carries
-    for the exact identity; ``effective_context_limit_tokens`` is the
-    honest intersection of the model's hard context and the bound
-    execution channel's known context ceiling — ``None`` when the channel
-    ceiling is UNKNOWN (never advertised as a number)."""
+    for the exact identity. ``effective_context_limit_tokens`` and
+    ``max_output_tokens`` are the model-level advertised ceilings: the
+    STRONGEST bound route's effective ceiling (D-056 intersection per
+    route, #136/D-058 aggregation) — a request within them is executable
+    on this gateway through that route; ``None`` when no bound route
+    evidences a ceiling (never advertised as a number). ``routes`` is
+    the honest per-route detail: every bound resource's own effective
+    ceilings, so a multi-route spread is visible instead of being
+    collapsed into "every route supports the strongest"."""
 
     model: str
     provider: str
     reasoning_efforts: tuple[str, ...]
     effective_context_limit_tokens: int | None
     max_output_tokens: int
+    routes: tuple[RouteEffectiveLimits, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -837,6 +860,18 @@ def models_list_payload(
                         info.effective_context_limit_tokens
                     ),
                     "max_output_tokens": info.max_output_tokens,
+                    "routes": [
+                        {
+                            "resource_id": route.resource_id,
+                            "effective_context_limit_tokens": (
+                                route.effective_context_limit_tokens
+                            ),
+                            "effective_output_limit_tokens": (
+                                route.effective_output_limit_tokens
+                            ),
+                        }
+                        for route in info.routes
+                    ],
                 },
             }
         )
@@ -967,6 +1002,7 @@ __all__ = [
     "ChatCompletionRequest",
     "LogicalModelInfo",
     "RequestCapabilities",
+    "RouteEffectiveLimits",
     "chat_completion_payload",
     "chunk_payload",
     "estimate_input_tokens",

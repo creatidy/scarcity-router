@@ -768,6 +768,16 @@ class ExecutionCapabilities:
     usage_reporting: bool | None = None
     cancellation: bool | None = None
     context_limit_tokens: int | None = None
+    #: Evidenced output ceiling of the channel (D-056 layer b; #136).
+    #: ``None`` is UNKNOWN, never "unlimited": consumers fail closed.
+    output_limit_tokens: int | None = None
+    #: Whether the channel evidences a control that HONORS an explicit
+    #: client output limit (maps/forwards it to the backend). ``False``
+    #: means the channel has no such control, so a requested explicit
+    #: limit can never be enforced there (the D-056/#136 normalization
+    #: rule applies). ``None`` is UNKNOWN — consumers keep the
+    #: refuse-not-drop backstop.
+    output_limit_control: bool | None = None
 
     _REQUIRED: ClassVar[tuple[str, ...]] = ()
     _OPTIONAL: ClassVar[tuple[str, ...]] = (
@@ -778,6 +788,8 @@ class ExecutionCapabilities:
         "usage_reporting",
         "cancellation",
         "context_limit_tokens",
+        "output_limit_tokens",
+        "output_limit_control",
     )
 
     def __post_init__(self) -> None:
@@ -788,6 +800,8 @@ class ExecutionCapabilities:
         _ = _v_opt_bool(self.usage_reporting, "capabilities.usage_reporting")
         _ = _v_opt_bool(self.cancellation, "capabilities.cancellation")
         _ = _v_opt_int(self.context_limit_tokens, "capabilities.context_limit_tokens", lo=1)
+        _ = _v_opt_int(self.output_limit_tokens, "capabilities.output_limit_tokens", lo=1)
+        _ = _v_opt_bool(self.output_limit_control, "capabilities.output_limit_control")
 
     @classmethod
     def from_dict(cls, d: object) -> "ExecutionCapabilities":
@@ -808,6 +822,12 @@ class ExecutionCapabilities:
             context_limit_tokens=_v_opt_int(
                 dd.get("context_limit_tokens"), "capabilities.context_limit_tokens", lo=1
             ),
+            output_limit_tokens=_v_opt_int(
+                dd.get("output_limit_tokens"), "capabilities.output_limit_tokens", lo=1
+            ),
+            output_limit_control=_v_opt_bool(
+                dd.get("output_limit_control"), "capabilities.output_limit_control"
+            ),
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -826,7 +846,104 @@ class ExecutionCapabilities:
             out["cancellation"] = self.cancellation
         if self.context_limit_tokens is not None:
             out["context_limit_tokens"] = self.context_limit_tokens
+        if self.output_limit_tokens is not None:
+            out["output_limit_tokens"] = self.output_limit_tokens
+        if self.output_limit_control is not None:
+            out["output_limit_control"] = self.output_limit_control
         return out
+
+
+# ── The D-058 output-eligibility rule (single source of truth) ────────────────
+
+#: Closed reason codes produced by :func:`route_output_code` when one route
+#: cannot satisfy a request's output semantics. ``UNKNOWN`` fails closed;
+#: nothing here is inferred from quota telemetry.
+OUTPUT_LIMIT_UNKNOWN = "output_limit_unknown"
+OUTPUT_LIMIT_INSUFFICIENT = "output_limit_insufficient"
+OUTPUT_LIMIT_UNENFORCEABLE = "output_limit_unenforceable"
+
+OUTPUT_LIMIT_CODES: frozenset[str] = frozenset({
+    OUTPUT_LIMIT_UNKNOWN,
+    OUTPUT_LIMIT_INSUFFICIENT,
+    OUTPUT_LIMIT_UNENFORCEABLE,
+})
+
+
+def route_output_code(
+    capabilities: ExecutionCapabilities,
+    *,
+    hard_output_tokens: int | None,
+    requested_output_tokens: int | None,
+    variant_resolved: bool,
+) -> str | None:
+    """Whether ONE route can satisfy a request's output semantics (D-058).
+
+    The single reusable source of the output-eligibility rule, applied
+    BOTH pre-ranking (per resource candidate, so a request never routes to
+    a route whose evidenced output capability cannot satisfy it — a
+    correctness requirement, not an optimization) and after admission (per
+    selected target, as enforcement). Returns ``None`` when the route is
+    admissible, else one of :data:`OUTPUT_LIMIT_UNKNOWN`,
+    :data:`OUTPUT_LIMIT_INSUFFICIENT`, :data:`OUTPUT_LIMIT_UNENFORCEABLE`.
+
+    Inputs: the route's channel facts (``output_limit_tokens``,
+    ``output_limit_control``), the EXACT selected/calibrated variant's
+    proven hard output maximum (``None`` = unknown — never a sibling
+    variant's calibration), the requested output minimum, and whether the
+    executing variant is resolved at this point (true for pinned and
+    logical requests, false for profile-alias requests whose variant the
+    selector resolves later). The administrator allowance is NOT an input:
+    it is uniform across routes, is enforced by the gateway's global
+    pre-check before routing, and only narrows — it can never
+    discriminate between routes.
+
+    Rules (D-056: a request routes only to a source whose evidenced
+    capability satisfies the full semantic request):
+
+    - no requested output → admissible (nothing to satisfy);
+    - no known capability input (hard and channel both UNKNOWN) →
+      ``output_limit_unknown`` (fail closed);
+    - known effective ceiling below the request →
+      ``output_limit_insufficient``;
+    - ``output_limit_control is False`` (the channel has no output-limit
+      control, e.g. the Codex execution surface): the explicit limit can
+      never be enforced on the wire, so the route is admissible ONLY when
+      the request is provably non-binding — at or above the exact
+      variant's proven hard maximum, so dropping the limit (audited
+      normalization) cannot change the executed semantics; a binding
+      limit, an unresolved variant or an UNKNOWN hard maximum →
+      ``output_limit_unenforceable``;
+    - ``output_limit_control`` ``True`` or UNKNOWN: the limit is carried
+      on the wire to the backend (server-direct presets evidence the
+      mapping; refuse-not-drop adapters reject what they cannot carry) —
+      admissible on the accommodation rule alone.
+    """
+    if requested_output_tokens is None:
+        return None
+    if variant_resolved:
+        known = [
+            value
+            for value in (hard_output_tokens, capabilities.output_limit_tokens)
+            if value is not None
+        ]
+    else:
+        known = (
+            [capabilities.output_limit_tokens]
+            if capabilities.output_limit_tokens is not None
+            else []
+        )
+    if not known:
+        return OUTPUT_LIMIT_UNKNOWN
+    if min(known) < requested_output_tokens:
+        return OUTPUT_LIMIT_INSUFFICIENT
+    if capabilities.output_limit_control is False:
+        if (
+            not variant_resolved
+            or hard_output_tokens is None
+            or requested_output_tokens < hard_output_tokens
+        ):
+            return OUTPUT_LIMIT_UNENFORCEABLE
+    return None
 
 
 @dataclass(frozen=True)
@@ -1816,6 +1933,10 @@ class ResourceRegistry:
 
 __all__ = [
     "ENTITLEMENT_CLASSES",
+    "OUTPUT_LIMIT_CODES",
+    "OUTPUT_LIMIT_INSUFFICIENT",
+    "OUTPUT_LIMIT_UNKNOWN",
+    "OUTPUT_LIMIT_UNENFORCEABLE",
     "EXECUTION_CHANNELS",
     "FRESHNESS_STATES",
     "OBSERVATION_CLASSES",
@@ -1840,4 +1961,5 @@ __all__ = [
     "WorkerStateReport",
     "classify_freshness",
     "resource_snapshot_from_capacity",
+    "route_output_code",
 ]

@@ -57,8 +57,8 @@ reasoning-dialect layer below is the precedent).
 | Tool calls returned to the client | `tool_calls` always return to the CLIENT; the router/worker never executes them (D-043); admitted per source only where the matrix evidences it | Implemented on evidenced server-direct channels (`tool_calls` PASS/PARTIAL cells); Codex worker source UNSUPPORTED — #137 |
 | Client tool-result continuation | `role: "tool"` results with `tool_call_id` transported back into the backend's continuation | Implemented on evidenced server-direct channels (`tool_results` PASS/PARTIAL cells); Codex worker source UNSUPPORTED — #137 |
 | Structured output | `response_format` text/`json_object`/`json_schema`, matrix-gated | Implemented |
-| Max output semantics | effective output ceiling = model ∩ channel ∩ administrator allowance; honest, visible, rejection-based | Architecture accepted (D-056); implementation #136 |
-| Context capability | effective context = model ∩ channel; UNKNOWN never guessed | Metadata implemented (D-055); #136 completes enforcement |
+| Max output semantics | effective output ceiling = model ∩ channel ∩ administrator allowance; honest, visible, rejection-based; a channel without an output-limit control normalizes away only a non-binding requested limit (audited) and rejects a binding one (`output_limit_unenforceable`) | Implemented (#136/D-058) |
+| Context capability | effective context = model ∩ channel ∩ administrator allowance; UNKNOWN never guessed | Implemented (#136/D-058; D-055 metadata) |
 | Cancellation | propagates to the backend where the channel supports it; client disconnects detected | Implemented |
 | Usage | provider-reported vs estimated kept distinct (`usage_source`) | Implemented |
 | Typed errors | closed OpenAI-compatible vocabulary; fail-closed semantics | Implemented |
@@ -93,15 +93,15 @@ ineligible for tool-requiring requests, a limitation of that source
 recorded in the compatibility matrix, never a limitation of the
 architecture (#137).
 
-### Effective capability (D-056; architecture for #136)
+### Effective capability (D-056; implemented by #136, D-058)
 
 A route's executable capability is the intersection of four distinct
 layers: logical model hard capabilities (catalog, provenance-bearing);
 execution-source/channel capabilities — what the route evidences it can
-carry (context ceiling, output ceiling, tool round trip, streaming,
-cancellation); administrator policy/limits — authoritative ceilings that
-only narrow; and client-request requirements, which may only narrow, never
-expand (D-042). In short:
+carry (context ceiling, output ceiling, output-limit control, tool round
+trip, streaming, cancellation); administrator policy/limits —
+authoritative ceilings that only narrow; and client-request requirements,
+which may only narrow, never expand (D-042). In short:
 
 ```text
 effective capability = model capability
@@ -109,17 +109,72 @@ effective capability = model capability
                      ∩ administrator allowance
 ```
 
-A powerful model reached through a weaker execution channel exposes the
-weaker effective capability for that route. UNKNOWN stays UNKNOWN: a
-model-catalog maximum is never evidence that every execution source
-provides it, and an unknown input yields an unknown effective value —
-`null` in metadata, fail-closed in admission — never a guessed number. A
-request routes only to a source whose evidenced capability satisfies the
-full semantic request. D-055's `effective_context_limit_tokens` metadata
-is the context-dimension precedent. How multiple routes with differing
-per-route ceilings aggregate into one advertised model-level number is
-explicitly #136 scope; this section fixes only the per-route intersection
-rule, which #136 implements end to end.
+The implemented per-route rule (#136/D-058): the route's effective
+ceiling in a limits dimension is `min(known of: the EXACT calibrated
+variant's hard property, channel ceiling, administrator allowance)` —
+never a sibling variant's calibration, never a minimum across variants —
+and it stays UNKNOWN when neither the variant nor the channel evidences a
+ceiling — an administrator allowance alone never certifies a capability
+(UNKNOWN → `null` in metadata, fail-closed in admission, never a guessed
+number). Output capability gates routes BEFORE competitive ranking
+(`output_limit_unknown` / `output_limit_insufficient` /
+`output_limit_unenforceable` reason codes, one shared rule with
+post-admission enforcement): a request never routes to a weaker route
+when another route serving the exact same identity can satisfy it; a
+pinned route is evaluated exactly and rejected with the mapped typed 400s.
+Admission then enforces the SELECTED route's effective ceilings with
+typed rejections (`context_length_exceeded`, `output_limit_exceeded`) —
+never silent clipping — and the administrator's global pre-check stays
+authoritative.
+
+**Model-level advertising (the #136 aggregation rule).** Multiple routes
+serving the same logical model may carry different effective ceilings;
+admission stays route-specific. `GET /v1/models` advertises as the
+model-level headline (`effective_context_limit_tokens`,
+`max_output_tokens`) the STRONGEST bound route's effective ceiling — a
+request within it is executable on this gateway through that route
+(pre-ranking output eligibility routes each request to a satisfying
+route) — and carries the honest per-route detail beside it: an
+`x_scarcity_router.routes` array with every bound resource's own
+effective ceilings (`null` when unknown for that route), each computed
+per exact calibrated variant the resource binds and reporting the
+weakest such variant (the detail never over-advertises any variant it
+serves). The headline is never presented as if every
+route supports it (the detail exposes the spread), a request is never
+constrained to the weakest route's ceiling, and UNKNOWN never becomes a
+number. A request whose output semantics no route can satisfy — above
+every route's evidenced output, or a binding explicit limit on channels
+without an output-limit control — finds no eligible target and is
+rejected with the TYPED limits 400 (`output_limit_insufficient` /
+`output_limit_unenforceable` / `output_limit_unknown`; mapped for
+pinned and unpinned decisions alike), never a generic
+retry-suggesting error; an administrator- or channel-shortfall request
+on the selected route takes the same typed rejections.
+
+**Channels without an output-limit control.** A channel that evidences
+`output_limit_control: false` (today the Codex execution surface,
+re-evidenced 2026-09-28: the app-server turn contract carries no
+output-token control) cannot honor an explicit client output limit. A
+requested limit on such a channel is normalized away ONLY when it is
+non-binding — at or above the model's proven hard maximum
+(`hard_properties.output_tokens` of the exact selected model) — and the
+normalization is audited (`output_limit_normalized`); a smaller, binding
+request is rejected `output_limit_unenforceable` rather than silently
+ignored; an UNKNOWN hard maximum is never normalized. Arbitrary
+`generation_params` stay refuse-not-drop everywhere.
+
+**Honest administrator defaults.** The shipped `GatewayLimits` defaults
+(16 MiB body, 2^21 input-context tokens, 131072 output tokens, 1200 s
+execution) are bounded operational guards that only narrow —
+ADMINISTRATOR POLICY, deliberately separate from execution-channel
+capability. No default is derived from a single channel's registration
+fact: the body bound carries headroom above the largest evidenced
+context (tokenization-independent), and the input guard sits above the
+strongest evidenced model hard context in the current catalog so policy
+never silently narrows an evidenced route; reachability is enforced per
+route from the intersection. An operator may knowingly lower any of
+them, and lowered (non-default) limits are exactly what the
+configuration export represents.
 
 ## Versioning and coexistence (D-045)
 

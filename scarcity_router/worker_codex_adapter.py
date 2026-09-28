@@ -1860,11 +1860,19 @@ class CodexLocalAdapter:
             # are not client tool calls, and the experimental dynamic-tools
             # surface is never enabled. Fail closed before execution.
             raise CodexIneligible("tool_calls_unsupported")
-        if call.max_output_tokens is not None or call.generation_params:
-            # No evidenced stable-surface mapping exists for an output token
-            # ceiling or extra generation parameters; silently dropping
-            # requested semantics is forbidden (the M04 refuse-not-drop
-            # precedent). Fail closed before execution.
+        if call.max_output_tokens is not None:
+            # Re-evidenced 2026-09-28 (issue #136, codex-cli
+            # 0.155.0-alpha.16.3): the app-server turn contract carries NO
+            # output-token control, so an explicit limit can never be
+            # honored here. The composed path settles this BEFORE dispatch
+            # (the #136 normalization rule: non-binding limits are dropped
+            # and audited, binding ones rejected output_limit_unenforceable);
+            # this backstop keeps the same refusal for any direct call that
+            # reaches the adapter with a limit — silently dropping requested
+            # semantics is forbidden (the M04 refuse-not-drop precedent).
+            raise CodexIneligible("output_limit_unenforceable")
+        if call.generation_params:
+            # No evidenced mapping exists for extra generation parameters.
             raise CodexIneligible("request_parameters_unsupported")
         conversation = map_conversation(call.messages)
         output_schema = validate_structured_schema(call.response_format)
