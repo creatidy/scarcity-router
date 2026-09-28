@@ -87,7 +87,7 @@ ADAPTER_VERSION = "1.0.0"
 # waiting for worker traffic (bounded polling, never a busy spin).
 DISPATCH_POLL_SECONDS = 0.05
 
-#: The bounded count of D-060 suspensions this adapter instance tracks at
+#: The bounded count of D-062 suspensions this adapter instance tracks at
 #: once. Each suspension also holds one endpoint pending-attempt slot (the
 #: tighter per-worker bound), so this only caps the shared table; a
 #: suspension arriving at the bound fails the attempt honestly instead of
@@ -137,7 +137,7 @@ class WorkerBridgedAdapter:
         self._attempt_id_factory: AttemptIdFactory = attempt_id_factory
         self._now: NowFactory = now if now is not None else _utcnow
         self._poll_seconds: float = poll_seconds
-        # D-060: the one suspended-execution table of this adapter
+        # D-062: the one suspended-execution table of this adapter
         # instance (token -> handle). Guarded by its own lock: the
         # dispatch threads, the continuation path and the registry's
         # reaper callbacks all touch it.
@@ -223,7 +223,7 @@ class WorkerBridgedAdapter:
                         raise
                 continue
             if kind == "suspension":
-                # D-060: the worker's backend turn suspended on a
+                # D-062: the worker's backend turn suspended on a
                 # CLIENT-owned tool call. Everything queued before this
                 # event belonged to the initial leg (already emitted);
                 # the attempt stays tracked endpoint-side until the
@@ -307,7 +307,7 @@ class WorkerBridgedAdapter:
                     "the worker-bridged execution exceeded its time limit"
                 )
 
-    # ── D-060 continuation surface (ContinuationCapableAdapter) ──────
+    # ── D-062 continuation surface (ContinuationCapableAdapter) ──────
 
     def _register_suspension(
         self, suspension: ExecuteToolCallMessage, resource_id: str
@@ -366,7 +366,7 @@ class WorkerBridgedAdapter:
         Loss BEFORE delivery raises :class:`ContinuationLostError`
         (nothing consumed the result); loss AFTER it raises
         :class:`AdapterAmbiguousError`. There is no retry, no
-        reconstruction and no fallback — D-060's sticky-exact discipline.
+        reconstruction and no fallback — D-062's sticky-exact discipline.
         """
         self._v_context(context)
         session = self._session_for(handle)

@@ -168,7 +168,7 @@ from .selection_types import ModelCatalog, ModelIdentity, ModelRef, TaskProfileC
 
 PIN_PREFIX = "sr-pin:"
 
-#: D-060: the maximum tool-result text a continuation may carry — the
+#: D-062: the maximum tool-result text a continuation may carry — the
 #: same bound the v3 worker frame enforces (a 4 MiB string stays under
 #: the 16 MiB frame bound even in the worst JSON-escaping case). Larger
 #: results are a typed pre-delivery rejection, never a truncated frame.
@@ -687,7 +687,7 @@ class GatewayApplication:
         )
         self.clock: Callable[[], datetime] | None = clock
         self.request_id_factory: RequestFactory | None = request_id_factory
-        #: D-060: the shared continuation registry (one instance per
+        #: D-062: the shared continuation registry (one instance per
         #: server process, owned by the composition so application
         #: rebuilds never orphan a pending continuation). ``None``
         #: (the default) means the deployment has no client-tool
@@ -768,7 +768,7 @@ class GatewayApplication:
         try:
             continuation_record = self._detect_continuation(request, client_id)
             if continuation_record is not None:
-                # D-060: this request IS the harness's tool result for a
+                # D-062: this request IS the harness's tool result for a
                 # suspended backend turn. It never routes, never
                 # re-ranks and never re-admits: it resolves into the
                 # exact continuation (sticky to its original target).
@@ -863,7 +863,7 @@ class GatewayApplication:
         finally:
             reservation.release()
 
-    # ── D-060 client-tool continuation ───────────────────────────────────
+    # ── D-062 client-tool continuation ───────────────────────────────────
 
     _CONTINUATION_TOKEN_PREFIX: str = "srct-"
 
@@ -929,7 +929,7 @@ class GatewayApplication:
 
     def _continuation_error(self, reason: str) -> GatewayError:
         """The typed failure for a tool result that cannot claim its
-        continuation (D-060: expired/not-found are distinct, replay and
+        continuation (D-062: expired/not-found are distinct, replay and
         double-delivery conflict)."""
         if reason == REJECT_EXPIRED:
             return GatewayError.not_found(
@@ -1597,7 +1597,7 @@ class GatewayApplication:
             and self.continuations is not None
             and isinstance(adapter, ContinuationCapableAdapter)
         ):
-            # D-060: a continuation-capable channel suspended for a
+            # D-062: a continuation-capable channel suspended for a
             # client tool. Bind the suspension BEFORE the response
             # leaves; server-direct adapters' own tool_calls legs never
             # enter this path (they replay history statelessly).
@@ -1753,7 +1753,7 @@ class _LifecycleState:
         self.target_capabilities: ResourceRegistryEntry | None = None
         self.limit_notes: tuple[str, ...] = ()
         self.normalized_output_limit: bool = False
-        #: D-060 flow provenance notes (appended to the audit reason
+        #: D-062 flow provenance notes (appended to the audit reason
         #: codes): ``suspended_for_client_tool``,
         #: ``continuation_resumed``, ``continuation_unavailable``.
         self.flow_notes: tuple[str, ...] = ()

@@ -1311,7 +1311,7 @@ class ProductionCompatibilityMatrixTests(CodexComposedTlsWorld):
                 cell.evidence.date,
                 f"M06 cell {cell.feature} must carry its dated evidence",
             )
-        # D-060: the bridge cells carry the 2026-09-28 evidence date.
+        # D-062: the bridge cells carry the 2026-09-28 evidence date.
         bridge_cells = [
             cell
             for cell in codex_cells
@@ -1685,7 +1685,7 @@ class CodexStreamingExecutionTests(CodexComposedTlsWorld):
         finally:
             worker.stop()
 
-    # ── D-060: the client-tool round trip (Family A suspended turn) ────
+    # ── D-062: the client-tool round trip (Family A suspended turn) ────
 
     _TOOL_NAME: str = "synthetic_lookup"
     _TOOL_RESULT_TEXT: str = "TOOL-RESULT-TEXT"

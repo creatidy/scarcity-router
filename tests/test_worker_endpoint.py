@@ -610,7 +610,7 @@ def request_call_resource(execute: ExecuteMessage) -> str:
 
 class EndpointContinuationTests(EndpointTestCase):
     """Protocol version 3 at the endpoint: suspension routing and
-    deterministic tool-result delivery (D-060)."""
+    deterministic tool-result delivery (D-062)."""
 
     def _connect_v3(self) -> ScriptedWorker:
         worker = self.connect_worker()

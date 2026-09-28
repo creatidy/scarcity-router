@@ -303,7 +303,7 @@ class AttemptIdentityTests(unittest.TestCase):
 
 
 class ToolContinuationMessageTests(unittest.TestCase):
-    """Protocol version 3: the D-060 suspension/result vocabulary."""
+    """Protocol version 3: the D-062 suspension/result vocabulary."""
 
     def test_tool_call_message_round_trip(self) -> None:
         message = ExecuteToolCallMessage(

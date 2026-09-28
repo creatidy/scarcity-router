@@ -48,7 +48,7 @@ Security boundary (docs/security.md, D-018/D-044, issue #91):
   config-mutating methods. Codex-internal tools (``commandExecution``,
   ``fileChange``, MCP) are never presented as client tool calls and
   approval server-requests are always answered ``cancel``. The STABLE
-  surface keeps ``initialize`` without ``experimentalApi``; the D-060
+  surface keeps ``initialize`` without ``experimentalApi``; the D-062
   client-tool bridge (#137) is the single, narrowly scoped exception:
   ONLY a request that carries client tools opts into the evidenced
   ``experimentalApi`` capability, declares the client's function tools
@@ -184,7 +184,7 @@ MAX_SCHEMA_BYTES = 64 * 1024
 MAX_SCHEMA_DEPTH = 32
 MAX_MODEL_PAGES = 10
 
-#: D-060 (#137) client-tool bridge bounds. Tool declarations are
+#: D-062 (#137) client-tool bridge bounds. Tool declarations are
 #: thread-scoped and become part of continuation identity, so they are
 #: mapped verbatim and bounded defensively: at most this many tools, each
 #: serialized form bounded like a structured-output schema, and the whole
@@ -235,7 +235,7 @@ _NOTIFICATION_AGENT_DELTA = "item/agentMessage/delta"
 _NOTIFICATION_TOKEN_USAGE = "thread/tokenUsage/updated"
 _SERVER_REQUEST_COMMAND_APPROVAL = "item/commandExecution/requestApproval"
 _SERVER_REQUEST_FILE_APPROVAL = "item/fileChange/requestApproval"
-#: D-060 (#137): the evidenced dynamic-tool server request. This is the
+#: D-062 (#137): the evidenced dynamic-tool server request. This is the
 #: ONLY server request that is ever held and answered with harness-owned
 #: content — and only on sessions that opted into the experimental client
 #: -tool bridge for a tool-bearing request. Approvals stay auto-cancelled.
@@ -885,7 +885,7 @@ class CodexSession:
         self._unknown_notifications: int = 0
         self._closed: bool = False
         self._drainer: threading.Thread | None = None
-        #: D-060: when set (tool-bridge sessions only), an
+        #: D-062: when set (tool-bridge sessions only), an
         #: ``item/tool/call`` server request is HELD for the turn loop —
         #: it is answered only with the harness's result, never refused
         #: inline. Approvals keep their unconditional cancel answer.
@@ -1029,7 +1029,7 @@ class CodexSession:
                 self._hold_tool_requests
                 and method == _SERVER_REQUEST_TOOL_CALL
             ):
-                # D-060: held for the turn loop; answered only with the
+                # D-062: held for the turn loop; answered only with the
                 # harness's result (never refused inline, never fabricated).
                 return "tool-request", envelope
             self._answer_server_request(envelope)
@@ -2055,7 +2055,7 @@ class CodexLocalAdapter:
         # 1. Preflight mapping — typed rejections BEFORE anything executes.
         dynamic_tools: MappedDynamicTools | None = None
         if call.tools:
-            # D-060: the evidenced client-tool bridge. It requires the v3
+            # D-062: the evidenced client-tool bridge. It requires the v3
             # continuation channel (a session that cannot carry the
             # suspension never runs the tool path — fail closed, never
             # silently drop the tools) and refuses tool_choice modes the
@@ -2221,7 +2221,7 @@ class CodexLocalAdapter:
         ``codexHome`` must equal the controlled home — proof the runtime
         adopted the adapter-owned isolation boundary. Values are validated
         and compared, never retained or logged. The capabilities object
-        stays EMPTY on the stable surface; a tool-bridge request (D-060)
+        stays EMPTY on the stable surface; a tool-bridge request (D-062)
         is the only caller that opts into the single evidenced
         ``experimentalApi`` capability — never a global opt-in.
         """
@@ -2297,7 +2297,7 @@ class CodexLocalAdapter:
     ) -> str:
         """The isolated ephemeral thread (official isolation knobs only).
 
-        ``dynamicTools`` (D-060) declares the CLIENT's function tools for
+        ``dynamicTools`` (D-062) declares the CLIENT's function tools for
         the thread's lifetime — the evidenced experimental mechanism.
         Declarations are thread-scoped upstream, which is exactly why the
         tool set is part of continuation identity gateway-side.
@@ -2436,7 +2436,7 @@ class CodexLocalAdapter:
                 if kind == "response":
                     continue  # no inline requests exist during the turn
                 if kind == "tool-request":
-                    # D-060: the backend suspended THIS turn to request a
+                    # D-062: the backend suspended THIS turn to request a
                     # CLIENT-owned tool. Validate against the pinned
                     # shape, surface the request to the harness through
                     # the worker's continuation channel, answer the held
@@ -2479,7 +2479,7 @@ class CodexLocalAdapter:
                     # message content maps to one inputText content item,
                     # and ``success: true`` asserts exactly what a valid
                     # ``role: "tool"`` message asserts — the client
-                    # successfully returned a result (D-060 recorded
+                    # successfully returned a result (D-062 recorded
                     # mapping; failure signalling stays the harness's
                     # content-level concern, as in every OpenAI-compatible
                     # chat pipeline).

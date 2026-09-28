@@ -65,7 +65,7 @@ ERROR_TYPE_NOT_FOUND = "not_found_error"
 ERROR_TYPE_RATE_LIMIT = "rate_limit_error"
 ERROR_TYPE_TIMEOUT = "timeout_error"
 ERROR_TYPE_API = "api_error"
-#: #137/D-060: replay/double-delivery of an exactly-once tool result.
+#: #137/D-062: replay/double-delivery of an exactly-once tool result.
 ERROR_TYPE_CONFLICT = "conflict_error"
 
 ERROR_TYPES: frozenset[str] = frozenset({
@@ -76,7 +76,7 @@ ERROR_TYPES: frozenset[str] = frozenset({
     ERROR_TYPE_RATE_LIMIT,
     ERROR_TYPE_TIMEOUT,
     ERROR_TYPE_API,
-    #: #137/D-060: replay/double-delivery of an exactly-once tool result.
+    #: #137/D-062: replay/double-delivery of an exactly-once tool result.
     ERROR_TYPE_CONFLICT,
 })
 
@@ -393,7 +393,7 @@ class GatewayError(Exception):
 
     @staticmethod
     def conflict(message: str, *, code: str | None = None) -> "GatewayError":
-        """409: the request contradicts committed state (#137/D-060 — a
+        """409: the request contradicts committed state (#137/D-062 — a
         replayed or double-delivered tool result against an
         exactly-once continuation)."""
         return GatewayError(

@@ -535,11 +535,11 @@ class ClientDisconnectedError(Exception):
 class ContinuationLostError(Exception):
     """The suspended execution is gone before its tool result reached it.
 
-    The D-060 suspension was lost (worker disconnect, App Server process
+    The D-062 suspension was lost (worker disconnect, App Server process
     death, gateway restart, expiry) BEFORE the harness's tool result was
     delivered, so nothing consumed it and nothing can be duplicated: the
     coordinator fails the continuation closed with a typed
-    not-found/lost error and never reconstructs or re-executes (D-060).
+    not-found/lost error and never reconstructs or re-executes (D-062).
     A loss AFTER delivery raises :class:`AdapterAmbiguousError` instead —
     the result may have been consumed.
     """
@@ -594,7 +594,7 @@ class ToolSuspension:
 
 @runtime_checkable
 class ContinuationCapableAdapter(Protocol):
-    """The D-060 continuation surface an adapter may additionally implement.
+    """The D-062 continuation surface an adapter may additionally implement.
 
     ``suspension_handle`` resolves a ``tool_call`` id the adapter issued
     on a suspension it produced. ``deliver_tool_result`` transports one

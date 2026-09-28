@@ -350,7 +350,7 @@ def _reap_liveness(
     """Close heartbeat-silent worker sessions (bounded liveness reaping).
 
     ``on_tick`` (when supplied) runs the composition's additional bounded
-    maintenance on the same cadence — the D-060 continuation reaper
+    maintenance on the same cadence — the D-062 continuation reaper
     (expire due continuations, cancelling their worker-side turns).
     """
     from .worker_endpoint import WorkerEndpoint

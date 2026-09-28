@@ -387,7 +387,7 @@ class ControlPlane:
             registry=self,
             configured_owner=self._configured_worker_owner,
         )
-        # D-060 (#137): the ONE client-tool continuation registry, owned
+        # D-062 (#137): the ONE client-tool continuation registry, owned
         # beside the worker endpoint so application rebuilds (which
         # recreate adapters and the coordinator) never orphan a pending
         # continuation.
@@ -2114,7 +2114,7 @@ class ControlPlane:
         )
 
     def expire_continuations(self) -> tuple[str, ...]:
-        """The D-060 continuation reaper tick (the liveness loop calls it):
+        """The D-062 continuation reaper tick (the liveness loop calls it):
         expire due continuations and cancel their worker-side turns."""
         return self._continuations.expire_due(
             datetime.now(timezone.utc)

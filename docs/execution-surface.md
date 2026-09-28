@@ -54,8 +54,8 @@ reasoning-dialect layer below is the precedent).
 | Role history | `system`/`developer`/`user`/`assistant`/`tool`, admission-gated per matrix cell | Implemented (text-only in v1) |
 | Streaming | SSE `chat.completion.chunk` frames, optional usage chunk, `[DONE]` | Implemented |
 | Client-owned tool declarations | `tools[]` validated at ingress; capability-gated before inference | Implemented |
-| Tool calls returned to the client | `tool_calls` always return to the CLIENT; the router/worker never executes them (D-043); admitted per source only where the matrix evidences it | Implemented on evidenced server-direct channels (`tool_calls` PASS/PARTIAL cells); Codex worker source PARTIAL (D-060: the protocol-v3-gated dynamic-tool bridge; live signed-in acceptance pending) |
-| Client tool-result continuation | `role: "tool"` results with `tool_call_id` transported back into the backend's continuation | Implemented on evidenced server-direct channels (`tool_results` PASS/PARTIAL cells); Codex worker source PARTIAL (D-060: the suspended-turn continuation; live signed-in acceptance pending) |
+| Tool calls returned to the client | `tool_calls` always return to the CLIENT; the router/worker never executes them (D-043); admitted per source only where the matrix evidences it | Implemented on evidenced server-direct channels (`tool_calls` PASS/PARTIAL cells); Codex worker source PARTIAL (D-062: the protocol-v3-gated dynamic-tool bridge; live signed-in acceptance pending) |
+| Client tool-result continuation | `role: "tool"` results with `tool_call_id` transported back into the backend's continuation | Implemented on evidenced server-direct channels (`tool_results` PASS/PARTIAL cells); Codex worker source PARTIAL (D-062: the suspended-turn continuation; live signed-in acceptance pending) |
 | Structured output | `response_format` text/`json_object`/`json_schema`, matrix-gated | Implemented |
 | Max output semantics | effective output ceiling = model ∩ channel ∩ administrator allowance; honest, visible, rejection-based; a channel without an output-limit control normalizes away only a non-binding requested limit (audited) and rejects a binding one (`output_limit_unenforceable`) | Implemented (#136/D-058) |
 | Context capability | effective context = model ∩ channel ∩ administrator allowance; UNKNOWN never guessed | Implemented (#136/D-058; D-055 metadata) |
@@ -87,11 +87,11 @@ evidence `tool_calls`/`tool_results` (PASS/PARTIAL cells with dated
 evidence; the evidence-free generic OpenAI-compatible preset defaults
 every cell to UNKNOWN and stays fail-closed), so tool-requiring requests
 execute there today. The Codex worker source implements the lifecycle
-through the D-060 client-tool bridge (#137): a PARTIAL, protocol-v3-gated
+through the D-062 client-tool bridge (#137): a PARTIAL, protocol-v3-gated
 suspended-turn continuation whose evidence and remaining live gate are
-recorded in `docs/codex-adapter-stage1-evidence.md` and D-060.
+recorded in `docs/codex-adapter-stage1-evidence.md` and D-062.
 
-### The Codex client-tool continuation (D-060, #137)
+### The Codex client-tool continuation (D-062, #137)
 
 On the Codex source, the lifecycle is a SUSPENDED TURN (Family A): the
 backend thread/turn stays alive while the harness executes its tool, and
@@ -515,7 +515,7 @@ Errors use the OpenAI envelope
 | 403  | `permission_error`      | `unauthorized_target`, `spend_limit_exceeded`      |
 | 404  | `not_found_error`       | `model_not_found`, `pin_target_not_found`, `continuation_not_found`, `continuation_expired` |
 | 408  | `timeout_error`         | `execution_time_limit_exceeded`                    |
-| 409  | `conflict_error`        | `continuation_already_resolved` (D-060 replay/double delivery) |
+| 409  | `conflict_error`        | `continuation_already_resolved` (D-062 replay/double delivery) |
 | 413  | `invalid_request_error` | `request_too_large`                                |
 | 429  | `rate_limit_error`      | `concurrency_limit_reached`                        |
 | 5xx  | `api_error`             | `no_eligible_target`, `adapter_unavailable`, `backend_failure`, `ambiguous_execution_state` |

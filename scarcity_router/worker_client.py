@@ -261,7 +261,7 @@ class _WorkerAttempt:
     """One in-flight local execution tracked by the runtime.
 
     ``tool_call_id``/``tool_result``/``tool_result_event`` carry the
-    D-060 continuation slot: while the adapter thread is blocked inside a
+    D-062 continuation slot: while the adapter thread is blocked inside a
     client-tool suspension, the session's read loop deposits exactly one
     harness tool result here (matched to the suspended ``call_id``);
     the blocked ``suspend`` call consumes it at most once.
@@ -278,7 +278,7 @@ class _WorkerAttempt:
 
 
 class _SessionToolBridge:
-    """The per-attempt D-060 continuation channel (protocol version 3).
+    """The per-attempt D-062 continuation channel (protocol version 3).
 
     The adapter calls :meth:`suspend` from its execution thread; the
     method publishes the suspension to the server (one bounded
@@ -326,7 +326,7 @@ class _SessionToolBridge:
                     self._attempt.tool_call_id = None
                     return delivered[1]
                 # A result for a different call id cannot continue this
-                # suspension (exact identity, D-060); keep waiting for
+                # suspension (exact identity, D-062); keep waiting for
                 # the real one — the deadline/cancel paths end the wait.
                 continue
             if self._attempt.cancel_event.is_set():
@@ -812,7 +812,7 @@ class _ActiveSession:
             attempt = _WorkerAttempt(message.attempt_id)
             self._attempts[message.attempt_id] = attempt
         if self._version >= 3:
-            # D-060: the continuation channel exists only on protocol
+            # D-062: the continuation channel exists only on protocol
             # version 3 sessions; on older sessions the adapter sees no
             # channel and fails tool-bearing calls closed.
             attempt.tool_bridge = _SessionToolBridge(self, attempt)

@@ -1,4 +1,4 @@
-"""Unit tests for the D-060 continuation registry (#137).
+"""Unit tests for the D-062 continuation registry (#137).
 
 Covers the exactly-once claim discipline, the bounded replay tombstones,
 the absolute lifetime expiry (with the worker-cancel callback running

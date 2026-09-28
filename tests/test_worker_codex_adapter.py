@@ -1066,7 +1066,7 @@ class CodexAdapterTests(unittest.TestCase):
             deadline=_future_deadline(),
             emit=lambda chunk: None,
         )
-        # D-060: without a v3 continuation channel the tool path fails
+        # D-062: without a v3 continuation channel the tool path fails
         # closed BEFORE any execution — the tools are never silently
         # dropped and the stable surface is never experimentalized.
         self.assertEqual("failed", result.status)
@@ -1976,7 +1976,7 @@ class WorkerWiringTests(unittest.TestCase):
         self.assertFalse(bool(arguments.get("allow_ollama")))
 
 
-# ── D-060: the client-tool bridge (suspended turn, harness result) ───────────
+# ── D-062: the client-tool bridge (suspended turn, harness result) ───────────
 
 
 class _ScriptedBridge:
@@ -2063,7 +2063,7 @@ def _tool_scenario(**turn_extra: object) -> dict[str, object]:
 
 
 class CodexToolBridgeTests(CodexAdapterTests):
-    """The D-060 suspension round trip at the adapter edge (fake server)."""
+    """The D-062 suspension round trip at the adapter edge (fake server)."""
 
     def test_suspension_relays_to_the_bridge_and_answers_the_same_turn(self) -> None:
         harness = self._harness(_tool_scenario())

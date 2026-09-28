@@ -1020,11 +1020,11 @@ the D-056 effective-output intersection.
 
 ---
 
-## D-060 addendum (2026-09-28, issue #137): the client-tool bridge — tool_calls/tool_results UNSUPPORTED → PARTIAL
+## D-062 addendum (2026-09-28, issue #137): the client-tool bridge — tool_calls/tool_results UNSUPPORTED → PARTIAL
 
 The Stage-2 matrix above recorded `tool_calls`/`tool_results` as
 UNSUPPORTED on the stable surface. Issue #137's investigation (verdict
-TOOL_BRIDGE_VIABLE, issue comment 2026-09-28) plus the D-060
+TOOL_BRIDGE_VIABLE, issue comment 2026-09-28) plus the D-062
 implementation move both cells to **PARTIAL (conditional)**, under
 exactly these evidenced conditions:
 
@@ -1041,7 +1041,7 @@ exactly these evidenced conditions:
   tool-set change is a typed fail-closed rejection, never a silent
   narrowing). No application-level timeout exists upstream for a
   pending call — the ONE absolute lifetime is Scarcity Router's
-  original admission deadline (D-060 pt 4).
+  original admission deadline (D-062 pt 4).
 - **Implementation evidence (this branch, deterministic):** the full
   round trip — Chat Completions with tools → gateway → real worker
   protocol v3 → real `CodexLocalAdapter` → deterministic fake App

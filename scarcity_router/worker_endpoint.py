@@ -219,7 +219,7 @@ class PendingAttempt:
     ``interrupted`` -- the honest ambiguous outcome. A suspension does
     NOT complete the attempt: the attempt stays tracked (and counted
     against the session's pending bound) until its terminal result, so
-    the D-060 continuation resolves into the exact same tracker.
+    the D-062 continuation resolves into the exact same tracker.
     """
 
     def __init__(self, attempt_id: str) -> None:
@@ -392,7 +392,7 @@ class WorkerSession:
         except (OSError, WorkerProtocolError):
             self.close(note="cancel delivery failed")
 
-    # ── D-060 continuation delivery (protocol version 3) ─────────────
+    # ── D-062 continuation delivery (protocol version 3) ─────────────
 
     TOOL_RESULT_SENT: str = "sent"
     TOOL_RESULT_NOT_SENT: str = "not_sent"

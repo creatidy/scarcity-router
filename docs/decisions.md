@@ -4685,10 +4685,17 @@ Do not rewrite history or change an accepted decision silently.
   claims, no serialized contracts, no execution-surface behavior. M04's
   Z.ai HTTP/API path (D-047 point 5) is unaffected.
 
-### D-060 — Client-owned tool continuation on the Codex execution source: the Family-A suspended turn, worker protocol v3 and the bounded continuation boundary
+### D-062 — Client-owned tool continuation on the Codex execution source: the Family-A suspended turn, worker protocol v3 and the bounded continuation boundary
 
 - **Status:** Accepted (issue #137; child E of program #132; branch
-  `gateway/codex-client-tools`)
+  `gateway/codex-client-tools`). Numbered D-062: open issue #156
+  reserves D-060 and D-061 is taken (now merged) while this branch was
+  in flight; the renumbering is a scoped substitution of this section
+  only — D-061's own reference to the D-060 reservation is history and
+  stays untouched.. Numbered D-062: D-060 is reserved by
+  open issue #156 and D-061 by open PR #157 while this branch was in
+  flight (canonical `develop` carried neither; the renumbering is a
+  whole-branch textual substitution, no history rewritten).
 - **Date:** 2026-09-28
 - **Base:** `develop` @ `6fec46c` (D-058/#136 and D-059/#154 merged;
   #150's Stage-A reuse evidence consumed as input, its program untouched)

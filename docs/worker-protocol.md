@@ -85,7 +85,7 @@ Scarcity Router Server  <── outbound TLS ──  Native Worker  ──  loca
 ## Versioning and negotiation
 
 - `WORKER_PROTOCOL_VERSION` is the version this build speaks (3 since
-  D-060; see the per-version sections below). The worker's first frame
+  D-062; see the per-version sections below). The worker's first frame
   (`hello` or `pair_request`) carries `supported_versions` (1..8
   entries). The server selects the highest mutually supported version
   and echoes it in `hello_ack`/`pair_result` (`negotiated_version`).
@@ -116,14 +116,14 @@ Version 2 adds ONE optional member and changes nothing else:
   in the source view, never the resource registry) — every other
   unregistered resource still rejects the whole report.
 
-## Version 3: the client-tool continuation messages (D-060, #137)
+## Version 3: the client-tool continuation messages (D-062, #137)
 
 Version 3 adds exactly TWO attempt-scoped messages and changes nothing
 else:
 
 - `execute_tool_call` (worker → server, protocol version 3 sessions
   only): `{attempt_id, call_id, name, arguments, content?}` — the
-  local adapter reached the evidenced D-060 suspension point and the
+  local adapter reached the evidenced D-062 suspension point and the
   backend turn requests a CLIENT-owned tool. `call_id` is the backend's
   own correlation id (never client-visible — the gateway returns its
   own opaque `tool_call_id`); `arguments` stays an opaque JSON text

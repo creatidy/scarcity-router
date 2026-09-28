@@ -17,7 +17,7 @@ the live half (confirmation against a signed-in subscription home) is
 still pending behind the recorded ``LIVE_CODEX_SUBSCRIPTION`` gate — no
 cell is upgraded above the reviewed matrix. ``tool_calls`` and
 ``tool_results`` moved from ``UNSUPPORTED`` to ``PARTIAL`` with the
-D-060 client-tool bridge (#137): the mechanism is evidenced at
+D-062 client-tool bridge (#137): the mechanism is evidenced at
 mechanism level on the current runtime (2026-09-28 probe of
 ``codex-cli 0.155.0-alpha.16.3`` + official docs + binary-pinned
 schemas, re-pinned upstream ``rust-v0.157.1`` by #150), the
@@ -54,7 +54,7 @@ CODEX_WORKER_ADAPTER_VERSION = "1.1.0"
 #: (docs/codex-adapter-stage1-evidence.md, Stage-2 matrix, 2026-09-20).
 _CODEX_TESTED_VERSION = "codex-cli 0.154.0-alpha.6.2 / schemas rust-v0.155.1"
 _EVIDENCE_DATE = "2026-09-20"
-#: The D-060 tool-bridge evidence date (#137): the 2026-09-28 mechanism
+#: The D-062 tool-bridge evidence date (#137): the 2026-09-28 mechanism
 #: re-evidence on the CURRENT runtime plus the deterministic
 #: implementation acceptance.
 _TOOL_BRIDGE_EVIDENCE_DATE = "2026-09-28"
@@ -78,7 +78,7 @@ CODEX_WORKER_CELL_VALUES: Mapping[str, tuple[str, str, str]] = {
     ),
     "tool_calls": (
         "PARTIAL",
-        "D-060 bridge: experimentalApi-gated dynamicTools declarations "
+        "D-062 bridge: experimentalApi-gated dynamicTools declarations "
         + "and item/tool/call suspensions relayed to the harness; "
         + "mechanism evidenced on codex-cli 0.155.0-alpha.16.3, round "
         + "trip test-verified on the deterministic App Server; live "
@@ -87,7 +87,7 @@ CODEX_WORKER_CELL_VALUES: Mapping[str, tuple[str, str, str]] = {
     ),
     "tool_results": (
         "PARTIAL",
-        "D-060 bridge: the harness's role:tool result answers the SAME "
+        "D-062 bridge: the harness's role:tool result answers the SAME "
         + "suspended turn (evidenced success/contentItems response, "
         + "text-only); round trip test-verified; live signed-in "
         + "acceptance pending; v3-worker-gated",

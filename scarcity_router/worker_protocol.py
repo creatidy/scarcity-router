@@ -73,14 +73,14 @@ from .selection_types import ModelIdentity
 
 #: The protocol version this build speaks. Version 2 (D-053, #120) adds
 #: the OPTIONAL bounded ``inventories`` section on state reports; every
-#: version-1 message shape is unchanged. Version 3 (#137, the D-060
+#: version-1 message shape is unchanged. Version 3 (#137, the D-062
 #: client-tool continuation) adds exactly two attempt-scoped messages:
 #: ``execute_tool_call`` (worker -> server: the suspended backend turn
 #: requests a CLIENT-owned tool) and ``execute_tool_result`` (server ->
 #: worker: the harness's tool result for that call). The vocabulary stays
 #: closed and version-gated: a v1/v2 session never carries the v3
 #: messages, and a v3 session carries them only for the continuation
-#: semantics D-060 defines — there is still no arbitrary-command surface.
+#: semantics D-062 defines — there is still no arbitrary-command surface.
 #: The server still ACCEPTS v1/v2 peers (see
 #: :data:`SERVER_SUPPORTED_PROTOCOL_VERSIONS`), so an old worker
 #: negotiates its own version and behaves exactly as before (and is never
@@ -189,7 +189,7 @@ _MAX_NOTE = 200
 _MAX_CHUNK_TEXT = 1_048_576
 _MAX_TOOL_ARGUMENTS = 1_048_576
 _MAX_IDENTIFIER_TEXT = 256
-#: D-060 (#137): the harness tool-result text bound for the v3
+#: D-062 (#137): the harness tool-result text bound for the v3
 #: ``execute_tool_result`` message. A 4 MiB string stays under the 16 MiB
 #: frame bound even in the worst JSON-escaping case, and no OpenAI
 #: text-only tool result admitted by the execution surface legitimately
@@ -1170,7 +1170,7 @@ class AttemptInterruptedMessage:
 class ExecuteToolCallMessage:
     """Worker -> server (protocol version 3): a CLIENT tool is requested.
 
-    The worker's local adapter reached the evidenced D-060 suspension
+    The worker's local adapter reached the evidenced D-062 suspension
     point: the backend turn is SUSPENDED and asks for a client-owned
     tool. ``call_id`` is the backend's own correlation id for the pending
     call (it never reaches any client — the gateway returns its own

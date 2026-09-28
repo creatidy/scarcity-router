@@ -1,14 +1,14 @@
-"""Gateway-side client-tool continuation registry (D-060, issue #137).
+"""Gateway-side client-tool continuation registry (D-062, issue #137).
 
 When the Codex execution source suspends one backend turn to request a
-CLIENT-owned tool (the D-056/D-060 lifecycle), the gateway must hold ONE
+CLIENT-owned tool (the D-056/D-062 lifecycle), the gateway must hold ONE
 bounded, exactly-once correlation between the OpenAI ``tool_call_id`` the
 harness sees and the suspended execution inside the worker. This module
 owns that state and nothing else: it performs no routing, never executes
 a tool, never touches worker sessions directly and never interprets tool
 content.
 
-Security and lifecycle invariants (frozen by #137/D-060):
+Security and lifecycle invariants (frozen by #137/D-062):
 
 - **Opaque correlation.** The externally visible ``tool_call_id`` is a
   server-issued random token (``srct-`` + 128 hex bits). It grants

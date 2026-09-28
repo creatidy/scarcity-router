@@ -101,7 +101,7 @@ ADOPTION_STATES: tuple[str, ...] = (
 #:   no experimental gate names one). An explicit client output limit can
 #:   never be enforced on this channel; the #136 coordinator normalization
 #:   rule governs.
-#: - ``tool_calls: True`` — re-evidenced 2026-09-28 (issue #137/D-060):
+#: - ``tool_calls: True`` — re-evidenced 2026-09-28 (issue #137/D-062):
 #:   the Codex execution surface carries the client-tool round trip
 #:   through the evidenced experimentalApi-gated ``dynamicTools`` /
 #:   ``item/tool/call`` bridge, relayed to the harness (never executed

@@ -1,4 +1,4 @@
-"""Coordinator-level D-060 continuation tests (#137).
+"""Coordinator-level D-062 continuation tests (#137).
 
 The composed HTTP -> worker -> fake-App-Server round trip lives in the
 Codex acceptance suite; this file pins the COORDINATOR continuation

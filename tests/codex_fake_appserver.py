@@ -211,7 +211,7 @@ class _Fake:
                 }
             )
             return
-        # D-060: a dynamic-tool answer (a plain JSON-RPC response whose id
+        # D-062: a dynamic-tool answer (a plain JSON-RPC response whose id
         # matches a pending ``item/tool/call``). Recorded so tests can pin
         # the exact answer shape the adapter returned.
         message_id = message.get("id")
@@ -447,7 +447,7 @@ class _Fake:
             )
         if self._stop_streaming.is_set():
             return
-        # D-060: the scripted client-tool suspension(s), after the turn's
+        # D-062: the scripted client-tool suspension(s), after the turn's
         # pre-tool text. The fake emits the evidenced ``item/tool/call``
         # server request and blocks until the adapter answers it with the
         # harness's result — the SAME turn continues afterwards.

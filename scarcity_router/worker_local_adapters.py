@@ -94,7 +94,7 @@ class LocalAdapter(Protocol):
     produces the safe normalized observations the worker reports through
     the M01 registry path.
 
-    ``tool_bridge`` is the OPTIONAL D-060 continuation channel (protocol
+    ``tool_bridge`` is the OPTIONAL D-062 continuation channel (protocol
     version 3 sessions only): an adapter that implements the evidenced
     client-tool suspension calls ``tool_bridge.suspend(...)`` at the
     backend's request and blocks until the harness's result arrives. A
@@ -140,7 +140,7 @@ class ToolBridgeUnavailable(Exception):
 
 
 class ToolBridgeChannel(Protocol):
-    """The worker-runtime side of the D-060 client-tool wait.
+    """The worker-runtime side of the D-062 client-tool wait.
 
     ``suspend`` is called by the adapter from its execution thread with
     the backend's own tool-call correlation (``call_id``) and the
@@ -296,7 +296,7 @@ class LoopbackOllamaAdapter:
     ) -> AdapterResult:
         # The loopback channel's tool round trip is the shared M04
         # translation core's own (the backend is an OpenAI-compatible
-        # HTTP endpoint, not a suspended app-server turn); the D-060
+        # HTTP endpoint, not a suspended app-server turn); the D-062
         # suspension channel is Codex-specific and unused here.
         _ = tool_bridge
         _ = deadline
