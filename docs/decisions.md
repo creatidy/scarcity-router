@@ -4684,3 +4684,180 @@ Do not rewrite history or change an accepted decision silently.
   `docs/providers.md`. No code, no catalog ratings, no capability
   claims, no serialized contracts, no execution-surface behavior. M04's
   Z.ai HTTP/API path (D-047 point 5) is unaffected.
+
+### D-063 — M07 Stage 2 implementation: the ZCode execution source behind the existing D-053 source architecture
+
+- **Status:** Accepted (issue #92; branch `task/92-zcode-stage2`;
+  implements the scope D-061 authorized)
+- **Date:** 2026-09-28
+- **Base:** `develop` @ `59538e9` (D-061 merged via PR #157)
+- **Confidence:** High for the integration shape (the D-053/D-056
+  mechanisms are reused unchanged); the honest-limitation choices below
+  follow directly from the D-061 evidence record's surface facts. The
+  decision id skips D-062 on purpose: two open PRs (#159, #160) both
+  carry D-062 records on their branches, and the collision is already
+  annotated on both; numbering this record D-063 avoids a third claim
+  on the same id.
+- **Context:** D-061 reopened M07 Stage 2 and authorized implementing
+  the ZCode CLI execution adapter under recorded constraints (explicit
+  safe permission mode always passed, typed denials, bounded runtimes,
+  cancellation, redaction, dated-version capability pinning; the
+  single-owner scope and retained exclusions). The evidence record
+  pins the executable surface facts this implementation had to fit:
+  headless `--prompt` (yolo default), `--mode build|edit|plan|yolo`,
+  `--cwd`, strict `--output-format text|json|stream-json`, NDJSON
+  events terminated by a typed final result, `doctor --json`, exit
+  semantics — and NO supported model listing, NO supported headless
+  model steering, and NO supported non-inference authentication probe.
+- **Decision:**
+  1. **One execution source kind behind the existing architecture.**
+     The adapter is a worker-side D-053 SOURCE INSTANCE
+     (`zcode:<source_id>`), the M05 `LocalAdapter` seam, the D-049
+     `worker_bridged` channel and the D-053 inventory/report path —
+     no second runtime architecture, no new execution channel, no
+     legacy hand-configured single-model mode. The closed kind
+     vocabulary gains `zcode_subscription` (provider `zai`) in both
+     the server configuration and the inventory contract; entitlement
+     is pinned to `subscription_included` like the codex kind (the
+     owner's own paid plan; any other billing class is a new
+     decision).
+  2. **No model identity is ever invented.** ZCode exposes no
+     supported listing or steering: the executed physical model is
+     plan-managed by the user's own ZCode configuration. The source's
+     inventory therefore carries exactly one effort-less reserved
+     descriptor slug (`plan-managed` — the plan lane), with no
+     variant and no reasoning-effort claims. Server-side adoption
+     stays CLOSED (visible, never routable) until owner-approved
+     `zai` track evidence lands in `model-tracks.json` — the normal
+     D-053 classification for unevidenced slugs; no hand-made
+     `zcode enabled` switch exists (the worker flag enables the
+     SOURCE INSTANCE, and eligibility is always the bounded probes).
+     If ZCode ever ships a real listing surface, listed models adopt
+     through the normal gates carrying the ZCODE surface facts.
+  3. **Registration-owned surface facts are honest and dated.**
+     `ZCODE_SURFACE_CAPABILITIES` (evidence 2026-09-28, CLI
+     v3.14.3 / bundle 0.16.9): streaming `False` (the stream carries
+     progress events; the single evidenced answer surface is the
+     terminal result line), `tool_calls` `False` (client tools return
+     to clients, D-043; ZCode's internal tools are its own under the
+     explicit safe mode), `structured_output`/`reasoning_controls`/
+     `output_limit_control` `False` (no supported control on the
+     evidenced surface), `usage_reporting` UNKNOWN (the result's
+     optional usage member has no evidenced internal field names —
+     nothing is mapped), context/output ceilings UNKNOWN. The
+     D-043 matrix stays the per-request admission authority.
+  4. **The invocation contract is one argv vector, one safe mode.**
+     Exactly one official `zcode` subprocess per dispatched call:
+     `zcode --prompt <text> --cwd <workspace> --mode build
+     --output-format stream-json --no-browser`, argv only (prompt and
+     path are data; no shell exists anywhere on the path), `--mode
+     build` always explicit (the yolo headless default is never
+     relied on). The prompt is bounded (encoded 64 KiB — safely under
+     the kernel's 128 KiB single-argument limit); larger
+     conversations are a typed rejection, never a truncation.
+     Representable input is exactly one non-empty user message — the
+     evidenced surface has no system/developer channel, no history
+     injection and no tool-result continuation, so every other
+     conversation shape, client tools, structured output, explicit
+     output limits, generation parameters and reasoning-effort
+     requests are typed rejections BEFORE any execution (the
+     refuse-not-drop precedent; D-056 exact-identity is never
+     silently substituted).
+  5. **Workspace authority is adapter-owned and explicit.** The CLI
+     executes only in a per-attempt directory the adapter creates
+     under the worker's state area (`zcode-sources/<source_id>/
+     workspaces/run-<uuid>`, `0o700`, fresh `mkdir`, symlink-checked
+     chain from the adapter-owned root), passed both as `--cwd` and
+     as the process cwd. Ambient cwd, request-supplied paths and
+     ZCode's implicit defaults are never trusted. Attempt directories
+     are removed after every run; stale ones are pruned on a bounded
+     cadence. Unlike the Codex adapter there is NO controlled config
+     home: ZCode runs with its own supported installation and login
+     state (D-061's supported-authentication scope), and the adapter
+     never reads or writes ZCode's configuration or security files.
+  6. **Auth is honest, never inferred.** No supported non-inference
+     auth probe exists on the evidenced surface, so a healthy CLI
+     reports `unverified` — never `authenticated` without evidence,
+     and never "healthy because the binary exists"
+     (`unavailable` covers discovery/version/doctor failures).
+     Capability probes are strictly non-inference (`--version`,
+     `doctor --json`, bounded; a nonzero probe exit is a probe
+     failure). The owner's official `zcode login zai` stays the only
+     sign-in path; the adapter never wraps, automates or fallbacks
+     login, and never extracts or logs credential material.
+  7. **The terminal contract is result line AND exit 0.** A completed
+     classification requires the documented `type:"result"` line
+     (response required, bounded; `sessionId` kept as bounded opaque
+     provenance) AND a proven exit 0. Result-with-failing-exit and
+     failing-exit-without-result are typed failures carrying only
+     closed safe notes (stderr is counted, never read — its text can
+     carry provider or prompt-derived content); clean-exit-without-
+     result and unprovable-exit-after-result are explicit `unknown`
+     observations. A process loss after spawn is ambiguous
+     (`unknown`), and nothing is ever retried (exactly one
+     invocation per dispatched call, the Codex honesty discipline).
+  8. **Process lifecycle is the Codex seam, reused.** The spawn spec,
+     process protocol, default spawner (argv-only `Popen`, new
+     session) and bounded terminate/kill/reap-proof helper are
+     imported unchanged from the Codex adapter under neutral names;
+     streaming budgets reuse the shared bounded reader
+     (per-line 8 MiB + 64 KiB sized by the terminal response bound,
+     32 MiB total, 20k events, 1024 unknown-event tolerance, 8 KiB
+     stderr cap). Discovery is pin-then-`PATH` only; the supported
+     generation floor is the evidenced bundle version (`0.16.9`);
+     pre-release suffixes are tolerated. The child environment is
+     `PATH`+`HOME` (Windows process basics defensively) — never the
+     full inherited environment.
+  9. **Server-side registry facts follow the kind.** Derived
+     registrations select their surface capabilities by source kind,
+     the adapter-instance prefix per kind is an explicit mapping
+     (`codex:<sid>` / `zcode:<sid>`), and the track-floor catalog
+     entry provider comes from the source configuration instead of a
+     hard-coded `openai` (a latent kind-correctness defect that only
+     a second provider kind could expose; corrected here).
+  10. **Enabling and diagnosing.** `scarcity-router-worker run
+      --zcode-source <id>` (repeatable, `--zcode-bin` pin) enables
+      the source instance; the server learns the kind through the
+      existing source configuration (`kind: "zcode_subscription"`);
+      source health converges through the existing inventory
+      TTL/report path (a newly installed, broken, upgraded or
+      logged-out ZCode installation changes the source's honest
+      state without router reconfiguration). An older server rejects
+      the whole report carrying the new kind's inventory document —
+      non-fatally, the same fail-closed atomicity every inventory
+      document already has (the closed vocabulary is versioned with
+      the protocol); single-owner deployments upgrade
+      worker and server together, and the kind arrives through this
+      explicit decision as the vocabulary requires.
+- **Reason:** Every choice above is forced by an evidenced surface
+  fact plus an existing project rule: no listing/steering (D-056
+  exact-identity) means no model claims and a closed adoption path;
+  no non-inference auth probe means `unverified`; the yolo default
+  means an explicit `--mode build` in every argv; the single-prompt
+  surface means typed rejections for everything else; and reuse-first
+  (D-061's implementation constraints) means the Codex process seam
+  and the D-053 source machinery are extended, not duplicated.
+- **Alternatives considered:** (a) an administrator-configured
+  physical-model resource (the codex legacy shape) — rejected: with
+  no `model/list`-style verification the resource would claim a
+  model identity the runtime cannot be held to, exactly what task
+  §11 and D-056 forbid; (b) mapping multi-message conversations by
+  concatenating them into the prompt — rejected: collapsing role
+  boundaries invents semantics (refuse-not-drop); (c) an auth probe
+  via a trivial paid prompt — rejected: the capability check must
+  not consume quota merely to prove availability; (d) reporting the
+  lane as `authenticated` after any successful run — rejected:
+  execution results are not inventory observations, and mixing them
+  would make the source state depend on usage; (e) implementing a
+  `zcode-login` wrapper — rejected: D-061 keeps authentication
+  inside the CLI's supported mechanisms, and unlike Codex there is
+  no adapter-owned home to log in against.
+- **Boundary:** Implementation only — the worker adapter module, the
+  kind vocabulary (configuration + inventory), the per-kind registry
+  facts/mappings, the worker CLI flags, deterministic fake-CLI tests
+  and documentation. No catalog ratings or capability claims change;
+  no frozen interface changes; no ZCode execution becomes routable
+  through the standard path until owner-approved `zai` track
+  evidence lands (a future decision + `model-tracks.json` change).
+  The single-owner scope, retained exclusions and all D-061
+  constraints carry over unchanged.

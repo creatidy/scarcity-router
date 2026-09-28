@@ -115,6 +115,54 @@ CODEX_SURFACE_CAPABILITIES: dict[str, object] = {
     "output_limit_control": False,
 }
 
+#: Registration-owned capability facts of the ZCODE EXECUTION SURFACE
+#: (D-061, evidence 2026-09-28, CLI v3.14.3 / bundle 0.16.9): derived
+#: resources served through this surface inherit exactly what the dated
+#: evidence supports and nothing about any specific model. The D-043
+#: matrix remains the per-request admission authority.
+#:
+#: - ``context_limit_tokens``/``output_limit_tokens`` — UNKNOWN: no
+#:   context or output ceiling is published on any supported surface,
+#:   and a missing number is never guessed (D-056 UNKNOWN discipline).
+#: - ``streaming: False`` — the stream carries progress events only; the
+#:   single evidenced answer surface is the terminal result line, so no
+#:   incremental text delivery is evidenced.
+#: - ``tool_calls: False`` — client tools return to clients (D-043); the
+#:   ZCode agent's internal tools are its own under the explicit safe
+#:   permission mode, never client tool calls.
+#: - ``structured_output: False`` / ``reasoning_controls: False`` /
+#:   ``output_limit_control: False`` — no supported control exists on the
+#:   evidenced headless surface (no model/effort steering, no output
+#:   schema, no output-token control).
+#: - ``usage_reporting: None`` — the terminal result carries an OPTIONAL
+#:   usage member whose internal field names are NOT evidenced; nothing
+#:   is mapped, and unknown stays unknown (never invented telemetry).
+ZCODE_SURFACE_CAPABILITIES: dict[str, object] = {
+    "context_limit_tokens": None,
+    "streaming": False,
+    "tool_calls": False,
+    "structured_output": False,
+    "reasoning_controls": False,
+    "usage_reporting": None,
+    "cancellation": True,
+    "output_limit_tokens": None,
+    "output_limit_control": False,
+}
+
+#: Per-kind registration-owned capability facts (D-053 sources; D-061
+#: added the zcode kind).
+_SURFACE_CAPABILITIES_BY_KIND: dict[str, dict[str, object]] = {
+    "codex_subscription": CODEX_SURFACE_CAPABILITIES,
+    "zcode_subscription": ZCODE_SURFACE_CAPABILITIES,
+}
+
+#: The worker-local adapter id prefix each source kind's instances use
+#: (``<prefix>:<source_id>``; the worker registers exactly these ids).
+_ADAPTER_PREFIX_BY_KIND: dict[str, str] = {
+    "codex_subscription": "codex",
+    "zcode_subscription": "zcode",
+}
+
 #: Closed reason codes for non-adopted models (audit + UX remediations).
 ADOPTION_EXCLUSION_CODES: frozenset[str] = frozenset(
     {
@@ -356,12 +404,17 @@ class SourceRegistry:
                         ResourceRegistration(
                             identity=identity,
                             freshness_ttl_seconds=self._ttl,
-                            # Registration-owned capability facts of the
-                            # CODEX EXECUTION SURFACE (evidenced,
+                            # Registration-owned capability facts of THIS
+                            # source kind's execution surface (evidenced,
                             # model-independent): the D-043 matrix stays
                             # the per-request authority.
                             capabilities=ExecutionCapabilities.from_dict(
-                                dict(CODEX_SURFACE_CAPABILITIES)
+                                dict(
+                                    _SURFACE_CAPABILITIES_BY_KIND.get(
+                                        state.config.kind,
+                                        CODEX_SURFACE_CAPABILITIES,
+                                    )
+                                )
                             ),
                         )
                     )
@@ -429,9 +482,13 @@ class SourceRegistry:
         if parsed is None:
             return None
         source_id, _slug = parsed
-        if source_id not in self._sources:
+        state = self._sources.get(source_id)
+        if state is None:
             return None
-        return f"codex:{source_id}"
+        prefix = _ADAPTER_PREFIX_BY_KIND.get(state.config.kind)
+        if prefix is None:
+            return None
+        return f"{prefix}:{source_id}"
 
     def source_view(self) -> tuple[dict[str, object], ...]:
         """The read-only per-source view (UI/diagnostics; no raw payloads)."""
@@ -543,10 +600,14 @@ def _floor_entry(
         )
         for dim in CAPABILITY_DIMENSIONS
     }
-    _ = config
     continuity = floor.hard_properties_continuity or {}
     return ModelCatalogEntry(
-        identity=ModelIdentity(provider="openai", model=slug, variant=effort),
+        # The floor entry serves THIS source kind's provider — never a
+        # hard-coded one (a zai-kind source's floor entry must be a zai
+        # identity, exactly like the codex kind's openai one).
+        identity=ModelIdentity(
+            provider=config.provider(), model=slug, variant=effort
+        ),
         display_name=slug,
         # supports_reasoning_mode is EVIDENCED, not inherited: the entry
         # exists because the runtime itself advertises this reasoning

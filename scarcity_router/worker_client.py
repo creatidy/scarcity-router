@@ -1041,6 +1041,16 @@ def build_parser() -> argparse.ArgumentParser:
                          help="pin the Codex binary path (regular executable "
                               + "file; discovery falls back to PATH and the "
                               + "VS Code extension layout)")
+    _ = run.add_argument("--zcode-source", action="append", default=None,
+                              metavar="SOURCE_ID", dest="zcode_sources",
+                              help="enable a ZCode execution SOURCE instance "
+                                   + "(repeatable; official ZCode CLI plan "
+                                   + "lane, D-061. Authentication is the "
+                                   + "official 'zcode login zai' — never "
+                                   + "wrapped or copied)")
+    _ = run.add_argument("--zcode-bin", default=None, metavar="PATH",
+                         help="pin the ZCode binary path (regular executable "
+                              + "file; discovery falls back to PATH)")
     login = commands.add_parser(
         "codex-login",
         help="run the OFFICIAL codex login against one source's controlled home",
@@ -1099,6 +1109,7 @@ def build_registry(
     allow_ollama = bool(arguments.get("allow_ollama"))
     allow_codex = bool(arguments.get("allow_codex"))
     codex_sources = arguments.get("codex_sources")
+    zcode_sources = arguments.get("zcode_sources")
     source_ids: tuple[str, ...] = ()
     if isinstance(codex_sources, list):
         source_ids = tuple(
@@ -1106,7 +1117,14 @@ def build_registry(
             for item in cast("list[object]", codex_sources)
             if isinstance(item, str) and item
         )
-    if not allow_ollama and not allow_codex and not source_ids:
+    zcode_source_ids: tuple[str, ...] = ()
+    if isinstance(zcode_sources, list):
+        zcode_source_ids = tuple(
+            item
+            for item in cast("list[object]", zcode_sources)
+            if isinstance(item, str) and item
+        )
+    if not allow_ollama and not allow_codex and not source_ids and not zcode_source_ids:
         return None
     from .resource_state import ResourceIdentity
 
@@ -1167,6 +1185,43 @@ def build_registry(
                 pinned_binary=(
                     Path(str(pinned))
                     if isinstance(pinned, str) and pinned
+                    else None
+                ),
+            )
+            registry.register(adapter)
+    if zcode_source_ids:
+        from pathlib import Path
+
+        from .model_inventory import SOURCE_ID_MAX_LENGTH
+        from .worker_zcode_adapter import ZCodeLocalAdapter
+
+        if state_dir is None:
+            from .worker_local_store import default_worker_state_dir
+
+            state_dir = default_worker_state_dir()
+        zcode_pinned = arguments.get("zcode_bin")
+        for zcode_source_id in zcode_source_ids:
+            if len(zcode_source_id) > SOURCE_ID_MAX_LENGTH:
+                raise WorkerConfigError(
+                    f"--zcode-source {zcode_source_id!r}: longer than "
+                    + f"{SOURCE_ID_MAX_LENGTH} characters"
+                )
+            try:
+                checked_zcode = v_safe_id(zcode_source_id, "zcode_source")
+            except ValueError as exc:
+                raise WorkerConfigError(str(exc)) from None
+            if ":" in checked_zcode:
+                # The derived resource namespace partitions on the first
+                # colon (the same rule as the server-side configuration).
+                raise WorkerConfigError(
+                    f"--zcode-source {zcode_source_id!r}: ':' is not allowed"
+                )
+            adapter = ZCodeLocalAdapter(
+                source_id=checked_zcode,
+                state_dir=state_dir,
+                pinned_binary=(
+                    Path(str(zcode_pinned))
+                    if isinstance(zcode_pinned, str) and zcode_pinned
                     else None
                 ),
             )

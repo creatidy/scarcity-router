@@ -61,8 +61,10 @@ SOURCE_AUTH_STATES: tuple[str, ...] = (
 )
 
 #: The closed adapter-kind vocabulary. ``codex_subscription`` is the first
-#: evidenced kind; new kinds arrive only through an explicit decision.
-SOURCE_KINDS: tuple[str, ...] = ("codex_subscription",)
+#: evidenced kind; ``zcode_subscription`` (the official ZCode CLI plan
+#: lane, provider ``zai``) arrived through decision D-061 (issue #92).
+#: New kinds arrive only through an explicit decision.
+SOURCE_KINDS: tuple[str, ...] = ("codex_subscription", "zcode_subscription")
 
 #: Upper bound for a source_id so the derived resource id
 #: ``<source_id>:<slug>`` always fits the safe-id contract (64 chars)

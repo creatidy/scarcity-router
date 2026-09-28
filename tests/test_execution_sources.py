@@ -558,6 +558,152 @@ class UpgradeSimulationTests(unittest.TestCase):
         )
 
 
+class ZCodeSourceTests(unittest.TestCase):
+    """The zcode_subscription kind (D-061): per-kind facts, honest gating.
+
+    The ZCode plan lane claims no physical model, variant or reasoning
+    effort, so it stays visible-but-never-routable until owner-approved
+    ``zai`` track evidence lands — the normal D-053 classification for
+    unevidenced slugs. The per-kind registration capabilities and the
+    adapter-instance mapping are pinned here so the kind is fully
+    specified even while adoption stays closed.
+    """
+
+    def _zcode_config(self, **overrides: object) -> SourceConfig:
+        return _config(
+            source_id="zai-plan-1",
+            kind="zcode_subscription",
+            label="Z.ai Coding Plan (ZCode)",
+            **overrides,
+        )
+
+    def _zcode_inventory(
+        self,
+        models: tuple[DiscoveredModel, ...],
+        auth_state: str = "unverified",
+    ) -> ModelInventoryReport:
+        return ModelInventoryReport(
+            worker_id="worker-1",
+            sources=(
+                SourceInventory(
+                    source_id="zai-plan-1",
+                    adapter_id="zcode:zai-plan-1",
+                    kind="zcode_subscription",
+                    observed_at=OBSERVED,
+                    auth_state=auth_state,  # type: ignore[arg-type]
+                    runtime_name="zcode",
+                    runtime_version="0.16.9",
+                    models=models,
+                ),
+            ),
+        )
+
+    def test_kind_maps_to_the_zai_provider(self) -> None:
+        config = self._zcode_config()
+        self.assertEqual("zai", config.provider())
+
+    def test_kind_requires_subscription_entitlement(self) -> None:
+        with self.assertRaises(ServerConfigError):
+            _ = self._zcode_config(entitlement="payg_metered")
+        with self.assertRaises(ServerConfigError):
+            _ = self._zcode_config(entitlement="promotional")
+
+    def test_adapter_instance_prefix_follows_the_kind(self) -> None:
+        registry = SourceRegistry(track_registry=load_track_registry())
+        registry.sync_configuration(
+            (
+                _config(source_id="personal-openai", worker_id="worker-1"),
+                self._zcode_config(),
+            )
+        )
+        self.assertEqual(
+            "codex:personal-openai",
+            registry.adapter_of("personal-openai:gpt-6-sol:high"),
+        )
+        self.assertEqual(
+            "zcode:zai-plan-1",
+            registry.adapter_of("zai-plan-1:plan-managed"),
+        )
+        self.assertIsNone(registry.adapter_of("unknown-src:slug"))
+
+    def test_plan_lane_is_visible_but_never_routable(self) -> None:
+        registry = SourceRegistry(track_registry=load_track_registry())
+        registry.sync_configuration((self._zcode_config(),))
+        decisions = registry.apply_inventory(
+            self._zcode_inventory(
+                (DiscoveredModel("plan-managed", ()),),
+            )
+        )
+        # No zai track exists in the reviewed registry: the lane slug
+        # stays DISCOVERED (visible, never routable).
+        self.assertEqual(len(decisions), 1)
+        self.assertEqual("discovered", decisions[0].state)
+        self.assertEqual("unclassified_track", decisions[0].reason)
+        self.assertIsNone(decisions[0].resource_id)
+        self.assertEqual((), registry.derived_registrations())
+        view = registry.source_view()[0]
+        self.assertEqual("zcode_subscription", view["kind"])
+        self.assertEqual(1, len(cast("list[object]", view["models"])))
+
+    def test_hypothetical_listed_model_adopts_with_zcode_surface_facts(self) -> None:
+        # If ZCode ever ships a real listing surface, a listed zai model
+        # with runtime-reported efforts would adopt through the normal
+        # gates — carrying the ZCODE surface facts, never the codex ones.
+        from scarcity_router.execution_sources import (
+            ZCODE_SURFACE_CAPABILITIES,
+        )
+        from scarcity_router.model_tracks import ModelTrack, TrackFloor, TrackRegistry
+        from scarcity_router.selection_types import CAPABILITY_DIMENSIONS
+
+        floor = TrackFloor(
+            ratings={dim: 3 for dim in CAPABILITY_DIMENSIONS},
+            assessed_on="2026-09-28",
+            confidence="low",
+            decision="D-061",
+            rationale="synthetic test floor",
+        )
+        track = ModelTrack(
+            provider="zai",
+            track="plan",
+            display_name="Z.ai Plan",
+            slug_pattern=r"^glm-[a-z0-9.-]+$",
+            classification="standard",
+            floor=floor,
+        )
+        registry = SourceRegistry(track_registry=TrackRegistry((track,)))
+        registry.sync_configuration((self._zcode_config(),))
+        decisions = registry.apply_inventory(
+            self._zcode_inventory(
+                (DiscoveredModel("glm-5.3", ("max",)),),
+                auth_state="authenticated",
+            )
+        )
+        self.assertEqual("routable", decisions[0].state)
+        registrations = registry.derived_registrations()
+        self.assertEqual(len(registrations), 1)
+        capabilities = registrations[0].capabilities
+        self.assertFalse(capabilities.streaming)
+        self.assertFalse(capabilities.tool_calls)
+        self.assertFalse(capabilities.reasoning_controls)
+        self.assertFalse(capabilities.structured_output)
+        self.assertFalse(capabilities.output_limit_control)
+        self.assertIsNone(capabilities.usage_reporting)
+        self.assertIsNone(capabilities.context_limit_tokens)
+        self.assertEqual(
+            ZCODE_SURFACE_CAPABILITIES["cancellation"],
+            capabilities.cancellation,
+        )
+        # The floor-derived catalog entry carries the SOURCE's provider,
+        # never a hard-coded one.
+        merged = registry.derived_catalog_entries(_base_catalog())
+        zai_entries = [
+            e
+            for e in merged.entries
+            if e.identity.provider == "zai" and e.identity.model == "glm-5.3"
+        ]
+        self.assertTrue(zai_entries)
+
+
 if __name__ == "__main__":
     _ = unittest.main()
 

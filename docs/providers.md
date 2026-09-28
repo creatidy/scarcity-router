@@ -220,9 +220,52 @@ and contracts are in [`docs/architecture.md`](architecture.md).
   recorded single-owner scope — Stage 2 is reopened, with retained
   exclusions (third-party or multi-user exposure, credential
   extraction, direct coding-endpoint calls, quota pooling) and the
-  explicit-safe-mode constraint; the adapter implementation follows as
-  its own task
+  explicit-safe-mode constraint
   ([`docs/zcode-adapter-stage2-evidence.md`](zcode-adapter-stage2-evidence.md)).
+
+### M07 status: ZCode execution source (issue #92, 2026-09-28)
+
+Implemented as ONE worker-side source adapter
+(`scarcity_router/worker_zcode_adapter.py`, design record **D-063**)
+behind the existing D-053 source architecture — the same
+source-instance / inventory / allowlist machinery as the Codex
+adapter, with the official ZCode CLI as the only execution boundary.
+
+- **Enablement.** `scarcity-router-worker run --zcode-source <id>`
+  (repeatable; `--zcode-bin` pins the binary) enables the source
+  instance; the server learns the kind through source configuration
+  (`kind: "zcode_subscription"`, provider `zai`). Authentication is
+  the owner's own official `zcode login zai` against ZCode's own
+  installation — the adapter never wraps login and never touches
+  credentials or ZCode's configuration/security files.
+- **Capability probing is non-inference only** (`--version`,
+  `doctor --json`, bounded; dated evidence: CLI v3.14.3 / bundle
+  0.16.9, D-061 evidence 2026-09-28). An installed-but-broken CLI is
+  `unavailable`; a healthy CLI is honestly `unverified` — no
+  supported non-inference auth probe exists on the evidenced surface,
+  and the binary's presence is never treated as health.
+- **Execution** is one headless run per dispatched call:
+  `--prompt <text> --cwd <adapter-owned workspace> --mode build
+  --output-format stream-json --no-browser`, argv only (no shell
+  exists anywhere on the path). `--mode build` is always explicit —
+  the headless default is yolo and is never relied on; side-effecting
+  tools are denied by the CLI's own fail-closed broker, and denials
+  are typed outcomes. The workspace is a per-attempt private
+  directory the adapter creates and removes; ambient cwd and
+  request-supplied paths are never trusted.
+- **Model identity is never invented** (D-063): ZCode exposes no
+  supported listing or steering, so the source serves exactly one
+  effort-less plan-lane descriptor (`<source_id>:plan-managed`, no
+  variant, no physical model claim). It is visible in the source view
+  and NOT routable server-side until owner-approved `zai` track
+  evidence lands in `model-tracks.json`. Usage stays unmapped (the
+  result's optional usage member has no evidenced field names);
+  unknown stays unknown.
+- **Honest endings:** completion requires the documented terminal
+  result line AND exit 0; every other ending is a typed failure or an
+  explicit `unknown` observation (stderr content is never read).
+  Exactly one invocation per dispatched call — no retry, no
+  fallback.
 - **Contract tests:** every execution adapter ships redacted fixtures,
   parser/protocol tests and compatibility-matrix evidence with dated
   versions; provider drift disables the affected adapter safely while the
