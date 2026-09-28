@@ -66,6 +66,9 @@ class _Fake:
         self._approval_decision: str | None = None
         self._pending_approval: bool = False
         self._refreshed: bool = False
+        self._experimental_api: bool = False
+        self._pending_tool_calls: dict[int, str] = {}
+        self._tool_answers: dict[str, object] = {}
 
     # -- output helpers ------------------------------------------------------
 
@@ -207,6 +210,21 @@ class _Fake:
                     "decision": str(decision),
                 }
             )
+            return
+        # D-060: a dynamic-tool answer (a plain JSON-RPC response whose id
+        # matches a pending ``item/tool/call``). Recorded so tests can pin
+        # the exact answer shape the adapter returned.
+        message_id = message.get("id")
+        if isinstance(message_id, int) and message_id in self._pending_tool_calls:
+            call_id = self._pending_tool_calls.pop(message_id)
+            self._tool_answers[call_id] = message.get("result")
+            _trace(
+                {
+                    "event": "tool_call_answer",
+                    "callId": call_id,
+                    "result": message.get("result"),
+                }
+            )
 
     def _next_request(self) -> dict[str, object] | None:
         while True:
@@ -245,6 +263,25 @@ class _Fake:
                 elif behavior == "stall":
                     self._stall()  # never answers: startup deadline fires
                 else:
+                    params_raw = request.get("params")
+                    params = _as_object(params_raw) if params_raw is not None else {}
+                    capabilities = (
+                        _as_object(params.get("capabilities")) if params else {}
+                    )
+                    self._experimental_api = bool(
+                        capabilities and capabilities.get("experimentalApi") is True
+                    )
+                    if self._scenario.get("experimentalGate") == "broken":
+                        # Simulate a runtime generation without the
+                        # experimental dynamic-tool surface (the adapter
+                        # must map the refusal to a typed failure).
+                        self._experimental_api = False
+                    _trace(
+                        {
+                            "event": "initialize",
+                            "experimentalApi": self._experimental_api,
+                        }
+                    )
                     self._respond(request.get("id"), self._initialize_result())
                     if behavior == "exit-after-init":
                         os._exit(3)
@@ -264,6 +301,14 @@ class _Fake:
                     continue
                 self._respond(request.get("id"), self._models_page())
             elif method == "thread/start":
+                params_raw = request.get("params")
+                params = _as_object(params_raw) if params_raw is not None else {}
+                dynamic_tools = params.get("dynamicTools") if params else None
+                if dynamic_tools is not None and not self._experimental_api:
+                    # Pinned upstream behavior (2026-09-28 live probe): the
+                    # field is RECOGNIZED and gated, not silently ignored.
+                    self._respond_error(request.get("id"), -32600)
+                    continue
                 if self._scenario.get("thread") == "drift":
                     self._respond(request.get("id"), {"unexpected": True})
                     return
@@ -402,6 +447,34 @@ class _Fake:
             )
         if self._stop_streaming.is_set():
             return
+        # D-060: the scripted client-tool suspension(s), after the turn's
+        # pre-tool text. The fake emits the evidenced ``item/tool/call``
+        # server request and blocks until the adapter answers it with the
+        # harness's result — the SAME turn continues afterwards.
+        tool_name = turn.get("dynamicTool")
+        if isinstance(tool_name, str) and tool_name:
+            malformed = turn.get("dynamicToolMalformed")
+            rounds_raw = turn.get("dynamicToolRounds", 1)
+            rounds = int(rounds_raw) if isinstance(rounds_raw, (int, float)) else 1
+            for round_index in range(rounds):
+                call_id = f"call-synthetic-{round_index + 1}"
+                name = (
+                    "undeclared_tool"
+                    if malformed == "undeclared-tool"
+                    else tool_name
+                )
+                arguments: object = {"n": round_index}
+                if malformed == "arguments-not-object":
+                    arguments = "SYNTHETIC-NOT-AN-OBJECT"
+                if not self._dynamic_tool_call(call_id, name, arguments):
+                    return
+        post_deltas_raw: object = turn.get("postDeltas") or []
+        post_deltas: list[object] = (
+            list(cast("list[object]", post_deltas_raw))
+            if isinstance(post_deltas_raw, list)
+            else []
+        )
+        post_text = [str(delta) for delta in post_deltas]
         usage = turn.get("usage")
         if usage is not None:
             self._notify(
@@ -410,6 +483,18 @@ class _Fake:
                     "threadId": "thr-synthetic-1",
                     "turnId": "turn-synthetic-1",
                     "tokenUsage": usage,
+                },
+            )
+        for index, delta in enumerate(post_text):
+            if self._stop_streaming.is_set():
+                return
+            self._notify(
+                "item/agentMessage/delta",
+                {
+                    "threadId": "thr-synthetic-1",
+                    "turnId": "turn-synthetic-1",
+                    "itemId": f"item-post-{index}",
+                    "delta": delta,
                 },
             )
         if turn.get("exitMidTurn"):
@@ -423,6 +508,68 @@ class _Fake:
         status = turn.get("status", "completed")
         assert isinstance(status, str)
         self._finish_turn(status)
+
+    def _dynamic_tool_call(
+        self, call_id: str, tool_name: str, arguments: object
+    ) -> bool:
+        """One scripted ``item/tool/call`` suspension; False on interrupt.
+
+        Emits the evidenced ``item/started`` (dynamicToolCall) item, then
+        the server request, then blocks until the adapter's answer
+        arrives or the turn is interrupted while pending.
+        """
+        request_id = 8800 + len(self._pending_tool_calls) + len(self._tool_answers)
+        self._pending_tool_calls[request_id] = call_id
+        self._notify(
+            "item/started",
+            {
+                "threadId": "thr-synthetic-1",
+                "turnId": "turn-synthetic-1",
+                "itemId": f"item-{call_id}",
+                "item": {
+                    "id": f"item-{call_id}",
+                    "type": "dynamicToolCall",
+                    "tool": tool_name,
+                    "status": "inProgress",
+                },
+            },
+        )
+        request: dict[str, object] = {
+            "id": request_id,
+            "method": "item/tool/call",
+            "params": {
+                "threadId": "thr-synthetic-1",
+                "turnId": "turn-synthetic-1",
+                "callId": call_id,
+                "tool": tool_name,
+                "arguments": arguments,
+            },
+        }
+        _trace({"event": "request", "method": "item/tool/call", "params": request["params"]})
+        self._write(request)
+        while True:
+            if call_id in self._tool_answers:
+                self._notify(
+                    "item/completed",
+                    {
+                        "threadId": "thr-synthetic-1",
+                        "turnId": "turn-synthetic-1",
+                        "itemId": f"item-{call_id}",
+                        "item": {
+                            "id": f"item-{call_id}",
+                            "type": "dynamicToolCall",
+                            "tool": tool_name,
+                            "status": "completed",
+                            "success": True,
+                        },
+                    },
+                )
+                return True
+            if self._stop_streaming.wait(timeout=0.02):
+                # Interrupted while pending: the terminal turn state is
+                # authoritative (the #137 interrupt edge case).
+                self._finish_turn("interrupted")
+                return False
 
     def _finish_turn(self, status: str) -> None:
         turn_raw = self._scenario.get("turn")

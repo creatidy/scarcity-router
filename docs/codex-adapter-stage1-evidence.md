@@ -1017,3 +1017,53 @@ by #136.
 Consequent #136 registration fact: `CODEX_SURFACE_CAPABILITIES` gains
 `output_limit_control: False` (Finding 1) — the channel-level input of
 the D-056 effective-output intersection.
+
+---
+
+## D-060 addendum (2026-09-28, issue #137): the client-tool bridge — tool_calls/tool_results UNSUPPORTED → PARTIAL
+
+The Stage-2 matrix above recorded `tool_calls`/`tool_results` as
+UNSUPPORTED on the stable surface. Issue #137's investigation (verdict
+TOOL_BRIDGE_VIABLE, issue comment 2026-09-28) plus the D-060
+implementation move both cells to **PARTIAL (conditional)**, under
+exactly these evidenced conditions:
+
+- **Mechanism evidence (2026-09-28, unchanged from the #137
+  investigation):** `dynamicTools` on `thread/start`, gated by the
+  single `capabilities.experimentalApi` opt-in, on the current runtime
+  (`codex-cli 0.155.0-alpha.16.3`; upstream schemas re-pinned
+  `rust-v0.157.1` @ `36650394` by #150 — the surface is stable through
+  that revision). Flow: `item/started` (`dynamicToolCall`, inProgress)
+  → `item/tool/call` server request (`threadId`, `turnId`, `callId`,
+  `tool`, `arguments`) → client answer
+  (`{success: boolean, contentItems: [inputText|inputImage|inputAudio]}`)
+  → `item/completed`. Declarations are THREAD-scoped (a mid-thread
+  tool-set change is a typed fail-closed rejection, never a silent
+  narrowing). No application-level timeout exists upstream for a
+  pending call — the ONE absolute lifetime is Scarcity Router's
+  original admission deadline (D-060 pt 4).
+- **Implementation evidence (this branch, deterministic):** the full
+  round trip — Chat Completions with tools → gateway → real worker
+  protocol v3 → real `CodexLocalAdapter` → deterministic fake App
+  Server → `item/tool/call` → OpenAI `tool_calls` response → ordinary
+  `role:"tool"` continuation → SAME thread/turn → final answer — is
+  test-pinned end to end (non-streaming and streaming), including the
+  negative matrix (foreign client, replay, expired, changed
+  model/tools/prefix, undeclared/malformed tool calls, cancel-while-
+  pending, old-protocol worker, experimental-gate refusal).
+- **`success` mapping (recorded):** a valid OpenAI `role:"tool"`
+  message maps to `{"success": true, "contentItems":
+  [{"type": "inputText", "text": <content>}]}` — text-only v1.
+  `success: true` asserts what a well-formed tool-result message
+  asserts: the client successfully returned a result for the requested
+  call. Failure signalling stays the harness's content-level concern,
+  as in every OpenAI-compatible chat pipeline; nothing is inferred
+  from result text and nothing is fabricated.
+- **What keeps the cells at PARTIAL:** the live signed-in round trip
+  (actual pause/resume timing, interrupt-while-pending behavior on the
+  real runtime, live streaming semantics) is still behind the recorded
+  `LIVE_CODEX_SUBSCRIPTION`-class gate, the same M10-class acceptance
+  the rest of the matrix awaits. No cell is claimed above PARTIAL, and
+  tool eligibility additionally requires the worker session to
+  negotiate protocol version 3 (an old worker is never
+  tool-continuation-capable regardless of this matrix).

@@ -45,6 +45,7 @@ from scarcity_router.gateway_contracts import (
     UsageTokens,
 )
 from scarcity_router.gateway_coordinator import GatewayApplication, RoutingAliasTable
+from scarcity_router.gateway_continuation import ContinuationRegistry
 from scarcity_router.gateway_openai import ChatCompletionRequest
 from scarcity_router.resource_state import (
     EXECUTION_CHANNELS,
@@ -676,6 +677,7 @@ def make_application(
     client_key_directory: ClientKeyDirectory | None = None,
     catalog: ModelCatalog | None = None,
     policy: SelectorPolicy | None = None,
+    continuations: "ContinuationRegistry | None" = None,
 ) -> GatewayApplication:
     """Assemble a fully injected GatewayApplication for tests."""
     adapter_registry = AdapterRegistry()
@@ -725,6 +727,7 @@ def make_application(
             if request_id_factory is not None
             else make_sequential_request_ids()
         ),
+        continuations=continuations,
     )
 
 

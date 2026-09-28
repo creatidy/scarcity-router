@@ -44,10 +44,18 @@ Security boundary (docs/security.md, D-018/D-044, issue #91):
   platforms make the resource ineligible (fail closed, with remediation
   documented in docs/providers.md).
 - **Forbidden surfaces are never called:** ``thread/shellCommand``,
-  ``process/*``, ``fs/*``, ``dynamicTools``/``item/tool/call``, the
-  ``chatgptAuthTokens`` login mode and config-mutating methods. The
-  ``initialize`` handshake omits ``experimentalApi`` (stable surface only).
-  Tool-bearing requests are rejected BEFORE any execution.
+  ``process/*``, ``fs/*``, the ``chatgptAuthTokens`` login mode and
+  config-mutating methods. Codex-internal tools (``commandExecution``,
+  ``fileChange``, MCP) are never presented as client tool calls and
+  approval server-requests are always answered ``cancel``. The STABLE
+  surface keeps ``initialize`` without ``experimentalApi``; the D-060
+  client-tool bridge (#137) is the single, narrowly scoped exception:
+  ONLY a request that carries client tools opts into the evidenced
+  ``experimentalApi`` capability, declares the client's function tools
+  verbatim as thread-scoped ``dynamicTools``, and relays the backend's
+  ``item/tool/call`` suspension to the HARNESS — the worker itself never
+  executes a client tool, and a session without the v3 continuation
+  protocol still rejects tool-bearing requests before execution.
 
 Protocol shapes implemented here follow the version-pinned generated schemas
 of the Stage-1 evidenced generation (``openai/codex`` tag ``rust-v0.155.1``,
@@ -96,6 +104,7 @@ from .gateway_adapters import (
     AdapterResult,
     AdapterStreamChunk,
     CallObservation,
+    CHUNK_FINISH,
     CHUNK_TEXT_DELTA,
     FINISH_STOP,
 )
@@ -118,6 +127,11 @@ from .resource_state import (
     resource_snapshot_from_capacity,
 )
 from .worker_identity_store import ensure_private_tree
+from .worker_local_adapters import (
+    ToolBridgeCancelled,
+    ToolBridgeChannel,
+    ToolBridgeUnavailable,
+)
 
 # ── Adapter identity and version contract ─────────────────────────────────────
 
@@ -170,6 +184,19 @@ MAX_SCHEMA_BYTES = 64 * 1024
 MAX_SCHEMA_DEPTH = 32
 MAX_MODEL_PAGES = 10
 
+#: D-060 (#137) client-tool bridge bounds. Tool declarations are
+#: thread-scoped and become part of continuation identity, so they are
+#: mapped verbatim and bounded defensively: at most this many tools, each
+#: serialized form bounded like a structured-output schema, and the whole
+#: declaration block bounded well under a protocol frame.
+MAX_DYNAMIC_TOOLS = 128
+MAX_DYNAMIC_TOOLS_BYTES = 4 * 1024 * 1024
+#: Bounded sequential client-tool rounds within ONE backend turn (the
+#: Family-A lifecycle: result -> same turn continues -> possibly another
+#: evidenced suspension). Exceeding the budget is a typed failure, never
+#: an unbounded loop.
+MAX_TOOL_ROUNDS = 32
+
 #: The documented ``codexErrorInfo`` discriminants (camelCase app-server
 #: encoding, ``rust-v0.155.1``) mapped onto CLOSED safe notes. Free-text error
 #: messages are never read: they can carry prompt content.
@@ -208,6 +235,19 @@ _NOTIFICATION_AGENT_DELTA = "item/agentMessage/delta"
 _NOTIFICATION_TOKEN_USAGE = "thread/tokenUsage/updated"
 _SERVER_REQUEST_COMMAND_APPROVAL = "item/commandExecution/requestApproval"
 _SERVER_REQUEST_FILE_APPROVAL = "item/fileChange/requestApproval"
+#: D-060 (#137): the evidenced dynamic-tool server request. This is the
+#: ONLY server request that is ever held and answered with harness-owned
+#: content — and only on sessions that opted into the experimental client
+#: -tool bridge for a tool-bearing request. Approvals stay auto-cancelled.
+_SERVER_REQUEST_TOOL_CALL = "item/tool/call"
+_ITEM_TYPE_DYNAMIC_TOOL_CALL = "dynamicToolCall"
+_CONTENT_ITEM_INPUT_TEXT = "inputText"
+#: The evidenced experimental capability that gates ``dynamicTools``
+#: (2026-09-28 probe: ``thread/start`` with ``dynamicTools`` without it is
+#: rejected ``thread/start.dynamicTools requires experimentalApi
+#: capability``). Narrowly opted into per request; the stable surface
+#: never sends it.
+_EXPERIMENTAL_API_CAPABILITY = "experimentalApi"
 
 _INITIALIZE_RESPONSE_FIELDS = ("userAgent", "codexHome", "platformFamily", "platformOs")
 
@@ -829,6 +869,7 @@ class CodexSession:
         max_total_bytes: int = MAX_SESSION_TOTAL_BYTES,
         max_events: int = MAX_SESSION_EVENTS,
         stderr_cap_bytes: int = MAX_STDERR_BYTES,
+        hold_tool_requests: bool = False,
     ) -> None:
         self._proc: CodexProcess = proc
         self._stdin: IO[bytes] | None = proc.stdin
@@ -844,6 +885,11 @@ class CodexSession:
         self._unknown_notifications: int = 0
         self._closed: bool = False
         self._drainer: threading.Thread | None = None
+        #: D-060: when set (tool-bridge sessions only), an
+        #: ``item/tool/call`` server request is HELD for the turn loop —
+        #: it is answered only with the harness's result, never refused
+        #: inline. Approvals keep their unconditional cancel answer.
+        self._hold_tool_requests: bool = hold_tool_requests
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -913,6 +959,13 @@ class CodexSession:
                 continue
             if kind == "notification":
                 continue
+            if kind == "tool-request":
+                # A held dynamic-tool request arriving while a response is
+                # awaited can only mean the turn is being torn down
+                # (interrupt); it is left unanswered on purpose — the
+                # interrupt path owns the turn's termination, and an
+                # unanswered request dies with the turn.
+                continue
             raise CodexProtocolFailure("protocol_timeout")
 
     def next_event(
@@ -920,9 +973,11 @@ class CodexSession:
     ) -> tuple[str, object]:
         """The next classified event, bounded by the absolute ``deadline``.
 
-        Returns ``("response", envelope)`` or ``("notification", envelope)``,
-        ``("timeout", None)`` when ``deadline`` passed, or raises the typed
-        failures. Server requests are answered inline (approvals cancelled).
+        Returns ``("response", envelope)``, ``("notification", envelope)``
+        or — on tool-bridge sessions — ``("tool-request", envelope)`` for
+        one HELD ``item/tool/call``; ``("timeout", None)`` when
+        ``deadline`` passed, or raises the typed failures. Other server
+        requests are answered inline (approvals cancelled).
         """
         while True:
             remaining = deadline - time.monotonic()
@@ -947,6 +1002,8 @@ class CodexSession:
                     return "response", envelope[1]
                 if message_kind == "notification":
                     return "notification", envelope[1]
+                if message_kind == "tool-request":
+                    return "tool-request", envelope[1]
                 continue  # server requests are answered inline
             if kind == "oversized":
                 raise CodexProtocolFailure("protocol_budget_exceeded")
@@ -967,6 +1024,14 @@ class CodexSession:
                 raise CodexProtocolFailure("protocol_malformed")
             return "response", envelope
         if message_kind == "request":
+            method = envelope.get("method")
+            if (
+                self._hold_tool_requests
+                and method == _SERVER_REQUEST_TOOL_CALL
+            ):
+                # D-060: held for the turn loop; answered only with the
+                # harness's result (never refused inline, never fabricated).
+                return "tool-request", envelope
             self._answer_server_request(envelope)
             return "server-request", envelope
         method = envelope.get("method")
@@ -1020,6 +1085,16 @@ class CodexSession:
 
     def notify(self, method: str) -> None:
         self.send({"method": method})
+
+    def answer_tool_call(self, request_id: object, result: Mapping[str, object]) -> None:
+        """Answer one HELD ``item/tool/call`` with the harness's result.
+
+        ``result`` is the evidenced dynamic-tool response shape (the
+        caller builds it from the harness's ``role: "tool"`` content only
+        — nothing is invented, repaired or executed). A dead process
+        raises :class:`CodexProcessLost` like any other send.
+        """
+        self.send({"id": request_id, "result": dict(result)})
 
     # -- shutdown ----------------------------------------------------------
 
@@ -1236,6 +1311,122 @@ def _json_depth(value: object, depth: int = 0) -> int:
         items = cast("list[object]", value)
         return max((_json_depth(item, depth + 1) for item in items), default=depth)
     return depth
+
+
+@dataclass(frozen=True)
+class MappedDynamicTools:
+    """The validated thread-scoped ``dynamicTools`` declaration block.
+
+    ``declarations`` carries the client's function tools VERBATIM — no
+    renaming, no truncation, no schema weakening, no sanitization that
+    changes a public name — and ``names`` is the exact declared set the
+    backend's ``item/tool/call`` requests are validated against.
+    """
+
+    declarations: tuple[dict[str, object], ...]
+    names: frozenset[str]
+
+
+def build_dynamic_tools(tools: Sequence[Mapping[str, object]]) -> MappedDynamicTools:
+    """Map the call's function tools onto the evidenced dynamic-tool shape.
+
+    The OpenAI execution surface v1 accepts function tools only, and the
+    evidenced dynamic-tool mechanism declares the same cognates (name,
+    description, parameters); anything else is a typed rejection BEFORE
+    any execution — never a best-effort conversion. Bounds are enforced
+    per declaration and for the whole block.
+    """
+    if not tools or len(tools) > MAX_DYNAMIC_TOOLS:
+        raise CodexIneligible("tool_declaration_unsupported")
+    declarations: list[dict[str, object]] = []
+    names: set[str] = set()
+    for tool in tools:
+        if tool.get("type") != "function":
+            raise CodexIneligible("tool_declaration_unsupported")
+        function = tool.get("function")
+        if not isinstance(function, Mapping):
+            raise CodexIneligible("tool_declaration_unsupported")
+        function_map = cast("Mapping[str, object]", function)
+        name = function_map.get("name")
+        if not isinstance(name, str) or not name or len(name) > 256:
+            raise CodexIneligible("tool_declaration_unsupported")
+        if name in names:
+            raise CodexIneligible("tool_declaration_duplicate")
+        declaration: dict[str, object] = {"name": name}
+        description = function_map.get("description")
+        if description is not None:
+            if not isinstance(description, str):
+                raise CodexIneligible("tool_declaration_unsupported")
+            declaration["description"] = description
+        parameters = function_map.get("parameters")
+        if parameters is not None:
+            if not isinstance(parameters, Mapping):
+                raise CodexIneligible("tool_declaration_unsupported")
+            parameter_map = cast("Mapping[str, object]", parameters)
+            try:
+                serialized = json.dumps(parameter_map)
+            except (TypeError, ValueError):
+                raise CodexIneligible("tool_declaration_unsupported") from None
+            if len(serialized) > MAX_SCHEMA_BYTES:
+                raise CodexIneligible("tool_declaration_too_large")
+            if _json_depth(parameter_map) > MAX_SCHEMA_DEPTH:
+                raise CodexIneligible("tool_declaration_too_deep")
+            declaration["parameters"] = dict(parameter_map)
+        names.add(name)
+        declarations.append(declaration)
+    try:
+        block_bytes = len(json.dumps(declarations))
+    except (TypeError, ValueError):
+        raise CodexIneligible("tool_declaration_unsupported") from None
+    if block_bytes > MAX_DYNAMIC_TOOLS_BYTES:
+        raise CodexIneligible("tool_declaration_too_large")
+    return MappedDynamicTools(
+        declarations=tuple(declarations), names=frozenset(names)
+    )
+
+
+def parse_tool_call_request(
+    envelope: Mapping[str, object],
+    *,
+    thread_id: str,
+    turn_id: str,
+    declared_names: frozenset[str],
+) -> tuple[object, str, str, str]:
+    """Validate one held ``item/tool/call`` against the pinned evidence.
+
+    Returns ``(request_id, call_id, tool_name, arguments_json_text)``.
+    The evidenced request shape (2026-09-28 binary-pinned schema) is
+    ``{threadId, turnId, callId, tool, arguments}`` (``namespace?``
+    tolerated); the correlation ids must match the live thread/turn, the
+    requested tool must be one this session DECLARED, and the arguments
+    must be a JSON object — structural drift, an undeclared tool or
+    non-object arguments are typed protocol failures, never repaired
+    output.
+    """
+    request_id = envelope.get("id")
+    if request_id is None:
+        raise CodexProtocolFailure("tool_call_malformed")
+    params = envelope.get("params")
+    params_map = _as_object(params)
+    if params_map is None:
+        raise CodexProtocolFailure("tool_call_malformed")
+    if params_map.get("threadId") != thread_id or params_map.get("turnId") != turn_id:
+        raise CodexProtocolFailure("tool_call_malformed")
+    call_id = params_map.get("callId")
+    tool_name = params_map.get("tool")
+    if not isinstance(call_id, str) or not call_id or len(call_id) > 256:
+        raise CodexProtocolFailure("tool_call_malformed")
+    if not isinstance(tool_name, str) or tool_name not in declared_names:
+        raise CodexProtocolFailure("tool_call_undeclared")
+    arguments = params_map.get("arguments")
+    arguments_map = _as_object(arguments)
+    if arguments_map is None:
+        raise CodexProtocolFailure("tool_call_malformed")
+    try:
+        arguments_text = json.dumps(arguments_map, allow_nan=False)
+    except (TypeError, ValueError):
+        raise CodexProtocolFailure("tool_call_malformed") from None
+    return request_id, call_id, tool_name, arguments_text
 
 
 # ── Model/effort verification (exact binding, never substitution) ─────────────
@@ -1746,6 +1937,7 @@ class CodexLocalAdapter:
         cancel_event: threading.Event,
         deadline: str,
         emit: Callable[[AdapterStreamChunk], None],
+        tool_bridge: "object | None" = None,
     ) -> AdapterResult:
         started = _canonical_now()
         try:
@@ -1754,9 +1946,14 @@ class CodexLocalAdapter:
                 cancel_event=cancel_event,
                 deadline=deadline,
                 emit=emit,
+                tool_bridge=tool_bridge,
                 started=started,
             )
         except _Cancelled:
+            return self._cancelled_result(started)
+        except ToolBridgeCancelled:
+            # The pending client-tool wait was cancelled (deadline timer
+            # or client disconnect): stop the turn, report cancelled.
             return self._cancelled_result(started)
         except CodexIneligible as exc:
             return self._failed_result(started, exc.reason, exc.remediation)
@@ -1778,6 +1975,7 @@ class CodexLocalAdapter:
         cancel_event: threading.Event,
         deadline: str,
         emit: Callable[[AdapterStreamChunk], None],
+        tool_bridge: "object | None",
         started: str,
     ) -> AdapterResult:
         if cancel_event.is_set():
@@ -1855,11 +2053,19 @@ class CodexLocalAdapter:
         call_deadline = now + remaining
 
         # 1. Preflight mapping — typed rejections BEFORE anything executes.
+        dynamic_tools: MappedDynamicTools | None = None
         if call.tools:
-            # Client tools return to clients (D-043); Codex-internal tools
-            # are not client tool calls, and the experimental dynamic-tools
-            # surface is never enabled. Fail closed before execution.
-            raise CodexIneligible("tool_calls_unsupported")
+            # D-060: the evidenced client-tool bridge. It requires the v3
+            # continuation channel (a session that cannot carry the
+            # suspension never runs the tool path — fail closed, never
+            # silently drop the tools) and refuses tool_choice modes the
+            # dynamic-tool surface cannot enforce. The stable non-tool
+            # path below is unchanged.
+            if tool_bridge is None:
+                raise CodexIneligible("tool_bridge_protocol_unsupported")
+            if call.tool_choice is not None and call.tool_choice != "auto":
+                raise CodexIneligible("tool_choice_unsupported")
+            dynamic_tools = build_dynamic_tools(call.tools)
         if call.max_output_tokens is not None:
             # Re-evidenced 2026-09-28 (issue #136, codex-cli
             # 0.155.0-alpha.16.3): the app-server turn contract carries NO
@@ -1913,10 +2119,17 @@ class CodexLocalAdapter:
         session: CodexSession | None = None
         try:
             proc = self._spawner(spec)
-            session = CodexSession(proc)
+            session = CodexSession(
+                proc, hold_tool_requests=dynamic_tools is not None
+            )
             session.start()
             startup_deadline = min(now + self._startup_timeout, call_deadline)
-            self._handshake(session, startup_deadline, cancel_event)
+            self._handshake(
+                session,
+                startup_deadline,
+                cancel_event,
+                experimental_api=dynamic_tools is not None,
+            )
 
             # 4. Auth verdict (chatgpt subscription path only).
             verdict = verify_account_auth(session, call_deadline)
@@ -1935,7 +2148,12 @@ class CodexLocalAdapter:
             # moment the turn/start request is SENT, a process loss is
             # ambiguous (the backend may have consumed the request).
             thread_id = self._start_thread(
-                session, conversation, call_deadline, cancel_event, scratch
+                session,
+                conversation,
+                call_deadline,
+                cancel_event,
+                scratch,
+                dynamic_tools=dynamic_tools,
             )
             if conversation.history_items:
                 self._inject_history(
@@ -1963,6 +2181,14 @@ class CodexLocalAdapter:
                 cancel_event=cancel_event,
                 emit=emit if call.stream else None,
                 started=started,
+                tool_bridge=(
+                    cast("ToolBridgeChannel", tool_bridge)
+                    if dynamic_tools is not None
+                    else None
+                ),
+                declared_names=(
+                    dynamic_tools.names if dynamic_tools is not None else frozenset()
+                ),
             )
         finally:
             if session is not None:
@@ -1986,14 +2212,22 @@ class CodexLocalAdapter:
         session: CodexSession,
         deadline: float,
         cancel_event: threading.Event,
+        *,
+        experimental_api: bool = False,
     ) -> None:
-        """``initialize`` (stable surface) + ``initialized`` notification.
+        """``initialize`` + ``initialized`` notification.
 
         The result must carry the four evidenced string members, and
         ``codexHome`` must equal the controlled home — proof the runtime
         adopted the adapter-owned isolation boundary. Values are validated
-        and compared, never retained or logged.
+        and compared, never retained or logged. The capabilities object
+        stays EMPTY on the stable surface; a tool-bridge request (D-060)
+        is the only caller that opts into the single evidenced
+        ``experimentalApi`` capability — never a global opt-in.
         """
+        capabilities: dict[str, object] = {}
+        if experimental_api:
+            capabilities[_EXPERIMENTAL_API_CAPABILITY] = True
         session.send(
             {
                 "id": 1,
@@ -2004,7 +2238,7 @@ class CodexLocalAdapter:
                         "title": "Scarcity Router",
                         "version": "0.0.0",
                     },
-                    "capabilities": {},
+                    "capabilities": capabilities,
                 },
             }
         )
@@ -2059,8 +2293,15 @@ class CodexLocalAdapter:
         deadline: float,
         cancel_event: threading.Event,
         scratch: Path,
+        dynamic_tools: MappedDynamicTools | None = None,
     ) -> str:
-        """The isolated ephemeral thread (official isolation knobs only)."""
+        """The isolated ephemeral thread (official isolation knobs only).
+
+        ``dynamicTools`` (D-060) declares the CLIENT's function tools for
+        the thread's lifetime — the evidenced experimental mechanism.
+        Declarations are thread-scoped upstream, which is exactly why the
+        tool set is part of continuation identity gateway-side.
+        """
         params: dict[str, object] = {
             "ephemeral": True,
             "cwd": str(scratch),
@@ -2071,9 +2312,20 @@ class CodexLocalAdapter:
             params["baseInstructions"] = conversation.base_instructions
         if conversation.developer_instructions is not None:
             params["developerInstructions"] = conversation.developer_instructions
-        result = session.request(
-            _METHOD_THREAD_START, params, deadline, abort=cancel_event.is_set
-        )
+        if dynamic_tools is not None:
+            params["dynamicTools"] = [
+                dict(declaration) for declaration in dynamic_tools.declarations
+            ]
+        try:
+            result = session.request(
+                _METHOD_THREAD_START, params, deadline, abort=cancel_event.is_set
+            )
+        except _ProtocolError:
+            # The runtime refused the thread (e.g. dynamicTools without
+            # the experimental capability on an unsupported generation):
+            # typed pre-inference rejection, never a fallback to the
+            # stable surface with the tools silently dropped.
+            raise CodexIneligible("dynamic_tools_runtime_refused") from None
         result_map = _as_object(result)
         thread = result_map.get("thread") if result_map else None
         thread_body = _as_object(thread) if thread is not None else None
@@ -2160,10 +2412,16 @@ class CodexLocalAdapter:
         cancel_event: threading.Event,
         emit: Callable[[AdapterStreamChunk], None] | None,
         started: str,
+        tool_bridge: ToolBridgeChannel | None = None,
+        declared_names: frozenset[str] | None = None,
     ) -> AdapterResult:
+        declared = (
+            declared_names if declared_names is not None else frozenset[str]()
+        )
         parts: list[str] = []
         message_chars = 0
         usage: UsageTokens | None = None
+        tool_rounds = 0
         try:
             while True:
                 kind, value = session.next_event(
@@ -2177,6 +2435,67 @@ class CodexLocalAdapter:
                     )
                 if kind == "response":
                     continue  # no inline requests exist during the turn
+                if kind == "tool-request":
+                    # D-060: the backend suspended THIS turn to request a
+                    # CLIENT-owned tool. Validate against the pinned
+                    # shape, surface the request to the harness through
+                    # the worker's continuation channel, answer the held
+                    # request with the harness's verbatim text result,
+                    # and keep consuming the SAME turn. Nothing here
+                    # executes a tool; a malformed or undeclared request
+                    # and a second CONCURRENT pending call are typed
+                    # failures.
+                    if tool_bridge is None:  # pragma: no cover - session gate
+                        raise CodexProtocolFailure("tool_call_unsupported")
+                    request_id, call_id, tool_name, arguments_text = (
+                        parse_tool_call_request(
+                            cast("dict[str, object]", value),
+                            thread_id=thread_id,
+                            turn_id=turn_id,
+                            declared_names=declared,
+                        )
+                    )
+                    tool_rounds += 1
+                    if tool_rounds > MAX_TOOL_ROUNDS:
+                        raise CodexProtocolFailure("tool_round_budget_exceeded")
+                    try:
+                        result_text = tool_bridge.suspend(
+                            call_id,
+                            tool_name,
+                            arguments_text,
+                            "".join(parts) or None,
+                        )
+                    except (ToolBridgeCancelled, ToolBridgeUnavailable) as exc:
+                        # Cancelled/deadlined/lost while waiting for the
+                        # harness: interrupt the pending turn, report
+                        # honestly — never fabricate a tool result.
+                        raise _Cancelled() from exc
+                    # The pre-suspension text already left with the
+                    # suspension leg; the resumed turn's message carries
+                    # only what the client has not seen yet.
+                    parts.clear()
+                    message_chars = 0
+                    # Text-only execution surface v1: the harness's tool
+                    # message content maps to one inputText content item,
+                    # and ``success: true`` asserts exactly what a valid
+                    # ``role: "tool"`` message asserts — the client
+                    # successfully returned a result (D-060 recorded
+                    # mapping; failure signalling stays the harness's
+                    # content-level concern, as in every OpenAI-compatible
+                    # chat pipeline).
+                    session.answer_tool_call(
+                        request_id,
+                        {
+                            "success": True,
+                            "contentItems": [
+                                {
+                                    "type": _CONTENT_ITEM_INPUT_TEXT,
+                                    "text": result_text,
+                                }
+                            ],
+                        },
+                    )
+                    continue
                 envelope = cast("dict[str, object]", value)
                 method = cast("str", envelope.get("method"))
                 params = _as_object(envelope.get("params")) or {}
@@ -2195,6 +2514,17 @@ class CodexLocalAdapter:
                     # confirmed cancellation.
                     if cancel_event.is_set():
                         return self._cancelled_result(started)
+                    if tool_bridge is not None and emit is not None:
+                        # A tool-bridge turn's terminal frame: the
+                        # resumed leg is a fresh streamed response and
+                        # the client needs its explicit stop frame (the
+                        # stable non-tool path keeps its recorded
+                        # no-finish-frame shape).
+                        emit(
+                            AdapterStreamChunk(
+                                kind=CHUNK_FINISH, finish_reason=FINISH_STOP
+                            )
+                        )
                     message = AdapterMessage(
                         role="assistant", content="".join(parts) or None
                     )

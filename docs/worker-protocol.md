@@ -1,4 +1,4 @@
-# Worker Protocol v2 (native worker transport)
+# Worker Protocol v3 (native worker transport)
 
 This document is the authoritative contract for the Scarcity Router
 worker protocol, implemented by M05 (#90). It defines the transport, the
@@ -84,10 +84,11 @@ Scarcity Router Server  <── outbound TLS ──  Native Worker  ──  loca
 
 ## Versioning and negotiation
 
-- `WORKER_PROTOCOL_VERSION = 1`. The worker's first frame (`hello` or
-  `pair_request`) carries `supported_versions` (1..8 entries). The server
-  selects the highest mutually supported version and echoes it in
-  `hello_ack`/`pair_result` (`negotiated_version`).
+- `WORKER_PROTOCOL_VERSION` is the version this build speaks (3 since
+  D-060; see the per-version sections below). The worker's first frame
+  (`hello` or `pair_request`) carries `supported_versions` (1..8
+  entries). The server selects the highest mutually supported version
+  and echoes it in `hello_ack`/`pair_result` (`negotiated_version`).
 - Disjoint version sets are an explicit, fatal
   `protocol_version_unsupported` on both ends: the worker stops (fail
   closed, no retry storm), the server closes the connection. Incompatible
@@ -114,6 +115,47 @@ Version 2 adds ONE optional member and changes nothing else:
   configured source are dropped from the applied set (their state lives
   in the source view, never the resource registry) — every other
   unregistered resource still rejects the whole report.
+
+## Version 3: the client-tool continuation messages (D-060, #137)
+
+Version 3 adds exactly TWO attempt-scoped messages and changes nothing
+else:
+
+- `execute_tool_call` (worker → server, protocol version 3 sessions
+  only): `{attempt_id, call_id, name, arguments, content?}` — the
+  local adapter reached the evidenced D-060 suspension point and the
+  backend turn requests a CLIENT-owned tool. `call_id` is the backend's
+  own correlation id (never client-visible — the gateway returns its
+  own opaque `tool_call_id`); `arguments` stays an opaque JSON text
+  string (≤ 1 MiB) that nothing in Scarcity Router parses, repairs or
+  executes; `content` optionally carries the assistant text produced
+  before the suspension. The adapter emits AT MOST ONE pending tool
+  call per attempt at a time: a second call arriving while the first is
+  unconsumed is refused with a non-fatal `malformed_message` (a
+  sequential tool round after the first was answered is a legitimate
+  new suspension on the same attempt).
+- `execute_tool_result` (server → worker, protocol version 3 sessions
+  only): `{attempt_id, call_id, content}` — the harness's tool result
+  for that exact call, text only (≤ 4 MiB), delivered at most once.
+  The worker answers the held backend request with it so the SAME
+  turn continues.
+- **Version gating is fatal.** A v1/v2 session carrying either message
+  is a fatal `malformed_message` (a well-behaved old worker never sends
+  them; a peer that does cannot be trusted with open attempts). A
+  tool-result delivery to a below-v3 session is refused server-side
+  before any frame is built.
+- **Rolling upgrade invariants.** Old workers negotiate v1/v2 and
+  behave exactly as before; they are never tool-continuation-capable —
+  a client-tool request dispatched to one fails closed with a typed
+  backend failure before any experimental API use. Ordinary non-tool
+  execution on old workers is unchanged. A new worker against a v2-only
+  server fails at the handshake (deploy the server first).
+- While an attempt is suspended, it REMAINS tracked in the session's
+  pending-attempt table (bounded by the same per-session bound), so the
+  continuation resolves into the exact tracker and the turn's terminal
+  result is routed where the initial execution went. Session loss
+  resolves suspended attempts as interrupted like any other in-flight
+  attempt — the honest ambiguous outcome, never a reconstruction.
 
 ## Pairing, identity, rotation, revocation (D-044)
 

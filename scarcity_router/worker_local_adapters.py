@@ -93,6 +93,14 @@ class LocalAdapter(Protocol):
     deadline, and returning the normalized result. ``resource_snapshots``
     produces the safe normalized observations the worker reports through
     the M01 registry path.
+
+    ``tool_bridge`` is the OPTIONAL D-060 continuation channel (protocol
+    version 3 sessions only): an adapter that implements the evidenced
+    client-tool suspension calls ``tool_bridge.suspend(...)`` at the
+    backend's request and blocks until the harness's result arrives. A
+    ``None`` channel means the session cannot carry continuations —
+    a tool-bearing call must fail closed in that case, never silently
+    drop the tools.
     """
 
     adapter_id: str
@@ -107,9 +115,50 @@ class LocalAdapter(Protocol):
         cancel_event: threading.Event,
         deadline: str,
         emit: Callable[[AdapterStreamChunk], None],
+        tool_bridge: "ToolBridgeChannel | None" = None,
     ) -> AdapterResult: ...
 
     def resource_snapshots(self, observed_at: str) -> tuple[ResourceStateSnapshot, ...]: ...
+
+
+class ToolBridgeCancelled(Exception):
+    """The pending client-tool wait was cancelled (deadline or disconnect).
+
+    Raised through ``ToolBridgeChannel.suspend``; the adapter stops the
+    backend turn cooperatively and reports ``cancelled`` — never a
+    fabricated tool result.
+    """
+
+
+class ToolBridgeUnavailable(Exception):
+    """The continuation channel died while a tool call was pending.
+
+    The worker's connection to the server was lost mid-suspension; the
+    attempt becomes an interrupted-report on reconnect (D-043) and the
+    suspended backend turn is stopped locally.
+    """
+
+
+class ToolBridgeChannel(Protocol):
+    """The worker-runtime side of the D-060 client-tool wait.
+
+    ``suspend`` is called by the adapter from its execution thread with
+    the backend's own tool-call correlation (``call_id``) and the
+    requested tool identity; it blocks until the harness's tool result
+    for THAT call arrives and returns the result text verbatim. The
+    runtime enforces the admission deadline and cancellation while the
+    adapter is blocked, raising :class:`ToolBridgeCancelled` or
+    :class:`ToolBridgeUnavailable` instead of returning a result the
+    backend never produced.
+    """
+
+    def suspend(
+        self,
+        call_id: str,
+        name: str,
+        arguments: str,
+        content: str | None,
+    ) -> str: ...
 
 
 class LocalAdapterRegistry:
@@ -164,6 +213,7 @@ def run_allowlisted(
     cancel_event: threading.Event,
     deadline: str,
     emit: Callable[[AdapterStreamChunk], None],
+    tool_bridge: "ToolBridgeChannel | None" = None,
 ) -> AdapterResult:
     """Run one call through the allowlist gate — the ONLY invoke path.
 
@@ -177,7 +227,11 @@ def run_allowlisted(
     if adapter is None:
         raise AdapterNotAllowedError(checked_id)
     return adapter.invoke(
-        call, cancel_event=cancel_event, deadline=deadline, emit=emit
+        call,
+        cancel_event=cancel_event,
+        deadline=deadline,
+        emit=emit,
+        tool_bridge=tool_bridge,
     )
 
 
@@ -238,7 +292,13 @@ class LoopbackOllamaAdapter:
         cancel_event: threading.Event,
         deadline: str,
         emit: Callable[[AdapterStreamChunk], None],
+        tool_bridge: "ToolBridgeChannel | None" = None,
     ) -> AdapterResult:
+        # The loopback channel's tool round trip is the shared M04
+        # translation core's own (the backend is an OpenAI-compatible
+        # HTTP endpoint, not a suspended app-server turn); the D-060
+        # suspension channel is Codex-specific and unused here.
+        _ = tool_bridge
         _ = deadline
         started = _canonical_now()
         try:

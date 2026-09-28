@@ -40,6 +40,7 @@ from __future__ import annotations
 import argparse
 import sys
 import threading
+from collections.abc import Callable
 from pathlib import Path
 from typing import cast
 
@@ -284,6 +285,7 @@ def main(argv: list[str] | None = None) -> int:
                     plane.worker_endpoint.heartbeat_interval_seconds,
                     worker_reaper_stop,
                 ),
+                kwargs={"on_tick": plane.expire_continuations},
                 name="worker-endpoint-liveness",
                 daemon=True,
             )
@@ -342,13 +344,25 @@ def _reap_liveness(
     endpoint: object,
     interval_seconds: int,
     stop: threading.Event,
+    *,
+    on_tick: "Callable[[], object] | None" = None,
 ) -> None:
-    """Close heartbeat-silent worker sessions (bounded liveness reaping)."""
+    """Close heartbeat-silent worker sessions (bounded liveness reaping).
+
+    ``on_tick`` (when supplied) runs the composition's additional bounded
+    maintenance on the same cadence — the D-060 continuation reaper
+    (expire due continuations, cancelling their worker-side turns).
+    """
     from .worker_endpoint import WorkerEndpoint
 
     assert isinstance(endpoint, WorkerEndpoint)
     while not stop.wait(timeout=max(1, interval_seconds)):
         _ = endpoint.enforce_liveness()
+        if on_tick is not None:
+            try:
+                _ = on_tick()
+            except Exception:  # noqa: BLE001 - the reaper never dies
+                return
 
 
 def _loopback(host: str) -> bool:

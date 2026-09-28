@@ -95,6 +95,8 @@ from .worker_protocol import (
     ExecuteChunkMessage,
     ExecuteMessage,
     ExecuteResultMessage,
+    ExecuteToolCallMessage,
+    ExecuteToolResultMessage,
     FrameReader,
     FrameTransport,
     FrameWriter,
@@ -210,23 +212,48 @@ class AttemptOutcome:
 class PendingAttempt:
     """The shared per-execution state between the read loop and a waiter.
 
-    The session's read loop appends arriving chunks and the terminal
-    result; the adapter thread (the coordinator's dispatch thread)
-    consumes them in order through :meth:`take`. A connection loss marks
-    the attempt ``interrupted`` -- the honest ambiguous outcome.
+    The session's read loop appends arriving stream chunks, at most one
+    v3 tool-call suspension, and the terminal result; the adapter thread
+    (the coordinator's dispatch thread) consumes them in arrival order
+    through :meth:`take`. A connection loss marks the attempt
+    ``interrupted`` -- the honest ambiguous outcome. A suspension does
+    NOT complete the attempt: the attempt stays tracked (and counted
+    against the session's pending bound) until its terminal result, so
+    the D-060 continuation resolves into the exact same tracker.
     """
 
     def __init__(self, attempt_id: str) -> None:
         self.attempt_id: str = attempt_id
         self._condition: threading.Condition = threading.Condition()
-        self._chunks: list[ExecuteChunkMessage] = []
+        self._items: list[tuple[str, ExecuteChunkMessage | ExecuteToolCallMessage]] = []
         self._outcome: AttemptOutcome | None = None
+        self._suspension_outstanding: bool = False
         self.cancel_requested: bool = False
 
     def push_chunk(self, message: ExecuteChunkMessage) -> None:
         with self._condition:
-            self._chunks.append(message)
+            self._items.append(("chunk", message))
             self._condition.notify_all()
+
+    def push_suspension(self, message: ExecuteToolCallMessage) -> bool:
+        """Record the v3 suspension; ``False`` while one is unconsumed.
+
+        The adapter-side state machine emits one pending client tool call
+        at a time; a SECOND call arriving while the first suspension is
+        still queued (unconsumed by the gateway leg) is a concurrent
+        duplicate and is refused — a suspended attempt can never grow a
+        second consumer. A suspension that the leg already CONSUMED was
+        answered through the continuation path, so a further suspension
+        on the same tracker is a legitimate sequential tool round of the
+        SAME turn (bounded adapter-side by the tool-round budget).
+        """
+        with self._condition:
+            if self._suspension_outstanding:
+                return False
+            self._suspension_outstanding = True
+            self._items.append(("suspension", message))
+            self._condition.notify_all()
+            return True
 
     def resolve(self, outcome: AttemptOutcome) -> None:
         with self._condition:
@@ -239,19 +266,25 @@ class PendingAttempt:
 
     def take(
         self, timeout_seconds: float
-    ) -> tuple[str, ExecuteChunkMessage | AttemptOutcome | None]:
-        """One chunk, the terminal outcome, or ``("timeout", None)``.
+    ) -> tuple[str, ExecuteChunkMessage | ExecuteToolCallMessage | AttemptOutcome | None]:
+        """One queued item, the terminal outcome, or ``("timeout", None)``.
 
-        Returns ``("chunk", message)`` for a stream chunk (in arrival
-        order), ``("outcome", outcome)`` once, then ``("outcome", None)``
-        forever after, and ``("timeout", None)`` when nothing arrived
-        within the budget.
+        Returns ``("chunk", message)`` for a stream chunk and
+        ``("suspension", message)`` for the v3 tool-call suspension (in
+        arrival order), ``("outcome", outcome)`` once, then
+        ``("outcome", None)`` forever after, and ``("timeout", None)``
+        when nothing arrived within the budget.
         """
         with self._condition:
-            if not self._chunks and self._outcome is None:
+            if not self._items and self._outcome is None:
                 _ = self._condition.wait(timeout_seconds)
-            if self._chunks:
-                return "chunk", self._chunks.pop(0)
+            if self._items:
+                kind, item = self._items.pop(0)
+                if kind == "suspension":
+                    # Consumed = answered through its continuation leg;
+                    # a further suspension is a sequential round.
+                    self._suspension_outstanding = False
+                return kind, item
             if self._outcome is not None:
                 outcome = self._outcome
                 return "outcome", outcome
@@ -358,6 +391,47 @@ class WorkerSession:
             self._state.writer.write_message(CancelMessage(attempt_id=attempt_id).to_payload())
         except (OSError, WorkerProtocolError):
             self.close(note="cancel delivery failed")
+
+    # ── D-060 continuation delivery (protocol version 3) ─────────────
+
+    TOOL_RESULT_SENT: str = "sent"
+    TOOL_RESULT_NOT_SENT: str = "not_sent"
+    TOOL_RESULT_AMBIGUOUS: str = "ambiguous"
+
+    def send_tool_result(self, attempt_id: str, call_id: str, content: str) -> str:
+        """Deliver one harness tool result into the suspended attempt.
+
+        Returns one of the ``TOOL_RESULT_*`` constants: ``sent`` (the
+        frame was written completely), ``not_sent`` (the session was
+        already closed — nothing was delivered, the continuation is
+        definitively dead), or ``ambiguous`` (the write failed mid-flight
+        — the result MAY have been consumed, so the outcome is honest
+        ambiguity, never a retry). A v1/v2 session refuses delivery by
+        contract: those workers are never tool-continuation-capable.
+        """
+        if self._state.negotiated_version is None or self._state.negotiated_version < 3:
+            return self.TOOL_RESULT_NOT_SENT
+        with self._endpoint._lock:  # pyright: ignore[reportPrivateUsage] - same-program endpoint seam
+            if self._state.closed:
+                return self.TOOL_RESULT_NOT_SENT
+        message = ExecuteToolResultMessage(
+            attempt_id=attempt_id, call_id=call_id, content=content
+        )
+        try:
+            self._state.writer.write_message(message.to_payload())
+        except (OSError, WorkerProtocolError):
+            self.close(note="tool result delivery failed")
+            return self.TOOL_RESULT_AMBIGUOUS
+        return self.TOOL_RESULT_SENT
+
+    def pending_attempt(self, attempt_id: str) -> PendingAttempt | None:
+        """The live tracker for ``attempt_id``, or ``None`` when the
+        attempt already resolved (terminal result, interruption, or a
+        closed session) — the continuation registry's liveness probe."""
+        with self._endpoint._lock:  # pyright: ignore[reportPrivateUsage] - same-program endpoint seam
+            if self._state.closed:
+                return None
+            return self._state.pending.get(attempt_id)
 
     def close(self, *, note: str) -> None:
         """Close the session and resolve every pending attempt as interrupted.
@@ -509,6 +583,9 @@ class WorkerSession:
             return
         if isinstance(message, ExecuteChunkMessage):
             self._route_to_attempt(message.attempt_id, message)
+            return
+        if isinstance(message, ExecuteToolCallMessage):
+            self._route_suspension(message)
             return
         if isinstance(message, ExecuteResultMessage):
             self._complete_attempt(message)
@@ -721,6 +798,44 @@ class WorkerSession:
             )
             return
         attempt.push_chunk(message)
+
+    def _route_suspension(self, message: ExecuteToolCallMessage) -> None:
+        """Route one v3 tool-call suspension to its attempt tracker.
+
+        The v3 vocabulary is version-gated: a session that negotiated
+        v1/v2 must never carry it, so the violation is a fatal protocol
+        failure exactly like an unknown message type (a well-behaved old
+        worker never sends it; a peer that does is broken and cannot be
+        trusted with open attempts). For a v3 session, a suspension for
+        an untracked attempt is the familiar non-fatal
+        ``attempt_unknown`` — never attributed to another request.
+        """
+        if self._state.negotiated_version is None or self._state.negotiated_version < 3:
+            raise WorkerProtocolError(
+                ERR_MALFORMED,
+                "execute_tool_call requires protocol version 3",
+            )
+        with self._endpoint._lock:  # pyright: ignore[reportPrivateUsage] - same-program endpoint seam
+            attempt = self._state.pending.get(message.attempt_id)
+        if attempt is None:
+            self._send_error(
+                ErrorMessage(
+                    code=ERR_ATTEMPT_UNKNOWN,
+                    message="a tool-call suspension arrived for an attempt this "
+                    + "session is not tracking",
+                    fatal=False,
+                )
+            )
+            return
+        if not attempt.push_suspension(message):
+            self._send_error(
+                ErrorMessage(
+                    code=ERR_MALFORMED,
+                    message="a second tool-call suspension arrived for an "
+                    + "attempt that already has one",
+                    fatal=False,
+                )
+            )
 
     def _complete_attempt(self, message: ExecuteResultMessage) -> None:
         with self._endpoint._lock:  # pyright: ignore[reportPrivateUsage] - same-program endpoint seam

@@ -84,6 +84,7 @@ from .gateway_contracts import (
     hash_client_key,
 )
 from .gateway_coordinator import GatewayApplication, RoutingAliasTable
+from .gateway_continuation import ContinuationRegistry
 from .gateway_server import GATEWAY_ORIGIN_HEADER, GatewayRequestHandler
 from .gateway_validation import v_safe_id
 from .machine_api import (
@@ -386,6 +387,11 @@ class ControlPlane:
             registry=self,
             configured_owner=self._configured_worker_owner,
         )
+        # D-060 (#137): the ONE client-tool continuation registry, owned
+        # beside the worker endpoint so application rebuilds (which
+        # recreate adapters and the coordinator) never orphan a pending
+        # continuation.
+        self._continuations: ContinuationRegistry = ContinuationRegistry()
         self._worker_endpoint.inventory_sink = self._apply_source_inventory
         self._worker_endpoint.is_registered = self._registry_is_registered
         self._worker_endpoint.is_source_bound = self._registry_is_source_bound
@@ -2104,6 +2110,14 @@ class ControlPlane:
             client_key_directory=directory,
             client_authorizations=self._config.client_authorizations,
             clock=self._clock,
+            continuations=self._continuations,
+        )
+
+    def expire_continuations(self) -> tuple[str, ...]:
+        """The D-060 continuation reaper tick (the liveness loop calls it):
+        expire due continuations and cancel their worker-side turns."""
+        return self._continuations.expire_due(
+            datetime.now(timezone.utc)
         )
 
     @staticmethod

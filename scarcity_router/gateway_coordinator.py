@@ -73,16 +73,22 @@ from .eligibility import ExecutionEligibility
 from .errors import CapacityValidationError, SelectionContractError
 from .gateway_adapters import (
     AdapterCall,
+    AdapterMessage,
     AdapterPermanentError,
     AdapterRegistry,
     AdapterResult,
     AdapterStreamChunk,
     AdapterTimeoutError,
     AdapterAmbiguousError,
+    AdapterToolCall,
     CallObservation,
     ClientDisconnectedError,
     CompletionOutcome,
+    ContinuationCapableAdapter,
+    ContinuationLostError,
     ExecutionContext,
+    FINISH_TOOL_CALLS,
+    ToolSuspension,
 )
 from .gateway_audit import (
     RESULT_CANCELLED,
@@ -94,6 +100,22 @@ from .gateway_audit import (
     AuditRecord,
     AuditSink,
     ExecutedTarget,
+)
+from .gateway_continuation import (
+    REJECT_ALREADY_RESOLVED,
+    REJECT_EXPIRED,
+    REJECT_NOT_FOUND,
+    CONTINUATION_CANCELLED,
+    CONTINUATION_COMPLETED,
+    CONTINUATION_EXPIRED,
+    CONTINUATION_LOST,
+    ContinuationRegistry,
+    ContinuationRejected,
+    PendingContinuation,
+    canonical_json_text,
+    message_fingerprint,
+    tool_calls_match,
+    tools_fingerprint,
 )
 from .gateway_contracts import (
     USAGE_SOURCE_ESTIMATED,
@@ -145,6 +167,12 @@ from .selection_types import ModelCatalog, ModelIdentity, ModelRef, TaskProfileC
 # ── Model-field resolution ────────────────────────────────────────────────────
 
 PIN_PREFIX = "sr-pin:"
+
+#: D-060: the maximum tool-result text a continuation may carry — the
+#: same bound the v3 worker frame enforces (a 4 MiB string stays under
+#: the 16 MiB frame bound even in the worst JSON-escaping case). Larger
+#: results are a typed pre-delivery rejection, never a truncated frame.
+MAX_TOOL_RESULT_TEXT = 4 * 1_048_576
 
 PIN_KIND = "pin"
 ALIAS_KIND = "alias"
@@ -597,6 +625,7 @@ class GatewayApplication:
         client_authorizations: Mapping[str, ClientAuthorization] | None = None,
         clock: Callable[[], datetime] | None = None,
         request_id_factory: RequestFactory | None = None,
+        continuations: ContinuationRegistry | None = None,
         replaced_application: "GatewayApplication | None" = None,
     ) -> None:
         _ = v_instance(catalog, ModelCatalog, "gateway_application.catalog")
@@ -658,6 +687,13 @@ class GatewayApplication:
         )
         self.clock: Callable[[], datetime] | None = clock
         self.request_id_factory: RequestFactory | None = request_id_factory
+        #: D-060: the shared continuation registry (one instance per
+        #: server process, owned by the composition so application
+        #: rebuilds never orphan a pending continuation). ``None``
+        #: (the default) means the deployment has no client-tool
+        #: continuation surface — suspensions then fail closed instead
+        #: of registering.
+        self.continuations: ContinuationRegistry | None = continuations
         # Daybreak finding 5: concurrency enforcement must SURVIVE
         # application rebuilds (a state-report adoption rebuilds the
         # application while executions are in flight). The reservation
@@ -730,10 +766,25 @@ class GatewayApplication:
             started_at=canonical_instant(started),
         )
         try:
-            outcome = self._run_lifecycle(
-                started=started, request=request, client_id=client_id,
-                state=state, emit_chunk=emit_chunk,
-            )
+            continuation_record = self._detect_continuation(request, client_id)
+            if continuation_record is not None:
+                # D-060: this request IS the harness's tool result for a
+                # suspended backend turn. It never routes, never
+                # re-ranks and never re-admits: it resolves into the
+                # exact continuation (sticky to its original target).
+                outcome = self._run_continuation(
+                    record=continuation_record,
+                    request=request,
+                    client_id=client_id,
+                    emit_chunk=emit_chunk,
+                    started=started,
+                    state=state,
+                )
+            else:
+                outcome = self._run_lifecycle(
+                    started=started, request=request, client_id=client_id,
+                    state=state, emit_chunk=emit_chunk,
+                )
             self._write_audit(state, RESULT_COMPLETED, ("completed",))
             return outcome
         except ClientDisconnectedError:
@@ -811,6 +862,383 @@ class GatewayApplication:
             )
         finally:
             reservation.release()
+
+    # ── D-060 client-tool continuation ───────────────────────────────────
+
+    def _detect_continuation(
+        self, request: ChatCompletionRequest, client_id: str
+    ) -> PendingContinuation | None:
+        """Whether this request IS a harness tool result for a suspension.
+
+        Detection keys on the request's ``role: "tool"`` message ids: a
+        request carrying NO tool messages, or only ids with no live
+        continuation, is a normal request (full-history paths stay
+        untouched). A request that matches a continuation but does not
+        carry the exact single-result shape is a typed mismatch — never
+        a silently half-continued turn.
+        """
+        registry = self.continuations
+        if registry is None:
+            return None
+        tokens = [
+            message.tool_call_id
+            for message in request.messages
+            if message.role == "tool" and message.tool_call_id is not None
+        ]
+        if not tokens:
+            return None
+        matched: PendingContinuation | None = None
+        for token in tokens:
+            candidate = registry.detect(token)
+            if candidate is None:
+                if registry.was_terminal_for(token, client_id):
+                    # A replayed/duplicate tool result after the
+                    # continuation already resolved: the explicit
+                    # conflict, never a silent re-interpretation. A
+                    # foreign client's replay stays not-found.
+                    raise GatewayError.conflict(
+                        "this continuation was already resolved by one tool result",
+                        code="continuation_already_resolved",
+                    )
+                continue
+            if matched is not None or len(tokens) != 1:
+                raise GatewayError.invalid_request(
+                    "a continuation request carries exactly one tool result "
+                    + "for its suspended execution",
+                    code="continuation_mismatch",
+                    param="messages",
+                )
+            matched = candidate
+        return matched
+
+    def _continuation_error(self, reason: str) -> GatewayError:
+        """The typed failure for a tool result that cannot claim its
+        continuation (D-060: expired/not-found are distinct, replay and
+        double-delivery conflict)."""
+        if reason == REJECT_EXPIRED:
+            return GatewayError.not_found(
+                "the continuation's lifetime has expired; restart the task "
+                + "with a fresh request",
+                code="continuation_expired",
+            )
+        if reason == REJECT_ALREADY_RESOLVED:
+            return GatewayError.conflict(
+                "this continuation was already resolved by one tool result",
+                code="continuation_already_resolved",
+            )
+        return GatewayError.not_found(
+            "no pending continuation exists for this tool result",
+            code="continuation_not_found",
+        )
+
+    def _validate_continuation_request(
+        self,
+        *,
+        record: PendingContinuation,
+        request: ChatCompletionRequest,
+    ) -> str:
+        """Validate the exact continuation shape; returns the tool content.
+
+        Fails closed on ANY drift: a changed model, effort, tool set or
+        tool_choice; a rewritten conversation prefix; a substituted
+        assistant tool_calls entry; more than the one expected new
+        tool-result message; or an over-bound result text. Fingerprints
+        are bounded digests — no prompt content is stored or compared in
+        the clear.
+        """
+        messages = request.messages
+        if (
+            record.client_id  # client equality checked by the caller
+            and request.model != record.model_echo
+        ):
+            raise GatewayError.invalid_request(
+                "a continuation must repeat the original model",
+                code="continuation_mismatch",
+                param="model",
+            )
+        if request.reasoning_effort != record.reasoning_effort:
+            raise GatewayError.invalid_request(
+                "a continuation must repeat the original reasoning effort",
+                code="continuation_mismatch",
+                param="reasoning_effort",
+            )
+        request_tools_fp = tools_fingerprint(request.tools)
+        if request_tools_fp != record.tools_fingerprint and request.tools:
+            # Normal harnesses resend the identical tools[]; an absent
+            # declaration means the unchanged thread-scoped set (the
+            # #137 evidence), never a substitution.
+            raise GatewayError.invalid_request(
+                "a continuation's tool declarations must match the "
+                + "suspended turn's declared set",
+                code="continuation_mismatch",
+                param="tools",
+            )
+        if canonical_json_text(request.tool_choice) != record.tool_choice_json:
+            raise GatewayError.invalid_request(
+                "a continuation must repeat the original tool_choice",
+                code="continuation_mismatch",
+                param="tool_choice",
+            )
+        if len(messages) < 3:
+            raise GatewayError.invalid_request(
+                "a continuation carries the conversation, the assistant "
+                + "tool_calls and the tool result",
+                code="continuation_mismatch",
+                param="messages",
+            )
+        final = messages[-1]
+        assistant = messages[-2]
+        if (
+            final.role != "tool"
+            or final.tool_call_id != record.continuation_token
+            or final.content is None
+            or assistant.role != "assistant"
+            or not tool_calls_match(record.assistant_tool_calls, assistant.tool_calls)
+        ):
+            raise GatewayError.invalid_request(
+                "the continuation's final messages must echo the returned "
+                + "tool_calls and address this tool result to them",
+                code="continuation_mismatch",
+                param="messages",
+            )
+        if message_fingerprint(messages[:-2]) != record.prefix_fingerprint:
+            raise GatewayError.invalid_request(
+                "the continued conversation prefix has changed since the "
+                + "model suspended",
+                code="continuation_mismatch",
+                param="messages",
+            )
+        if len(final.content) > MAX_TOOL_RESULT_TEXT:
+            raise GatewayError.invalid_request(
+                "the tool result exceeds the maximum continuation size",
+                code="tool_result_too_large",
+                param="messages",
+            )
+        return final.content
+
+    def _run_continuation(
+        self,
+        *,
+        record: PendingContinuation,
+        request: ChatCompletionRequest,
+        client_id: str,
+        emit_chunk: StreamEmitter | None,
+        started: datetime,
+        state: _LifecycleState,
+    ) -> CompletionOutcome:
+        """Resolve one suspended backend turn with the harness's result.
+
+        Sticky by construction: no competitive routing runs, the D-059
+        policy and scarcity state are never re-read for selection, and
+        the original selected/executed targets are the audit identity.
+        Only the hard gates recheck: the record's client, the absolute
+        lifetime, and the live worker session (revocation or session
+        loss fails closed — never a substitute execution).
+        """
+        registry = self.continuations
+        assert registry is not None
+        if record.client_id != client_id:
+            # Indistinguishable from an unknown id: a token never grants
+            # another client access to a pending execution.
+            raise self._continuation_error(REJECT_NOT_FOUND)
+        content = self._validate_continuation_request(
+            record=record, request=request
+        )
+        try:
+            record = registry.claim(record.continuation_token, client_id)
+        except ContinuationRejected as exc:
+            raise self._continuation_error(exc.reason) from None
+        remaining = (record.deadline - self._now()).total_seconds()
+        if remaining <= 0.0:
+            registry.close(record.continuation_token, CONTINUATION_EXPIRED)
+            if record.cancel_callback is not None:
+                record.cancel_callback(record)
+            raise self._continuation_error(REJECT_EXPIRED)
+        # Audit provenance repeats the ORIGINAL dispatch identity: the
+        # continuation is the same logical backend execution, so its one
+        # provider call is counted exactly once — on the terminal record.
+        state.decision_id = record.decision_id
+        state.selected_target = record.selected_target
+        state.executed_target = record.executed_target
+        state.adapter_name = record.adapter_name
+        state.adapter_version = record.adapter_version
+        state.registry_revision = record.registry_revision
+        state.registry_generated_at = record.registry_generated_at
+        adapter = self.adapters.resolve(record.channel)
+        if adapter is None or not isinstance(adapter, ContinuationCapableAdapter):
+            registry.close(record.continuation_token, CONTINUATION_LOST)
+            raise GatewayError.api(
+                "no continuation-capable adapter is configured for the "
+                + "suspended execution's channel",
+                code="adapter_unavailable",
+                http_status=503,
+            )
+        context = self._build_context(
+            state, emit_chunk, record.deadline
+        )
+        state.context = context
+        state.flow_notes = (*state.flow_notes, "continuation_resumed")
+        if record.handle is None:  # pragma: no cover - registration invariant
+            registry.close(record.continuation_token, CONTINUATION_LOST)
+            raise GatewayError.api(
+                "the continuation record is unusable",
+                code="invalid_state",
+                http_status=500,
+            )
+        try:
+            outcome = adapter.deliver_tool_result(record.handle, content, context)
+        except ContinuationLostError:
+            registry.close(record.continuation_token, CONTINUATION_LOST)
+            raise GatewayError.not_found(
+                "the suspended execution was lost before the tool result "
+                + "was delivered; nothing was consumed",
+                code="continuation_not_found",
+            ) from None
+        except AdapterAmbiguousError:
+            registry.close(record.continuation_token, CONTINUATION_LOST)
+            raise
+        except AdapterTimeoutError:
+            registry.close(record.continuation_token, CONTINUATION_EXPIRED)
+            raise
+        if isinstance(outcome, ToolSuspension):
+            # A sequential tool round on the SAME turn: register the next
+            # continuation and end this leg with the new tool_calls.
+            state.calls = (
+                CallObservation(
+                    call_index=0,
+                    started_at=state.started_at,
+                    ended_at=canonical_instant(self._now()),
+                    status="unknown",
+                    note=(
+                        "the backend turn is suspended for a client-owned "
+                        + "tool call"
+                    ),
+                ),
+            )
+            message = AdapterMessage(
+                role="assistant",
+                content=outcome.content,
+                tool_calls=(
+                    AdapterToolCall(
+                        id=outcome.continuation_token,
+                        name=outcome.tool_name,
+                        arguments=outcome.arguments,
+                    ),
+                ),
+            )
+            self._register_suspension_record(
+                adapter=adapter,
+                token=outcome.continuation_token,
+                request=request,
+                state=state,
+                deadline=record.deadline,
+                assistant_tool_calls=message.tool_calls,
+                channel=record.channel,
+            )
+            accounting = _unavailable_usage()
+            return CompletionOutcome(
+                request_id=state.request_id,
+                created=int(started.timestamp()),
+                model_echo=request.model,
+                message=message,
+                finish_reason=FINISH_TOOL_CALLS,
+                usage=accounting,
+                decision_id=record.decision_id,
+            )
+        result = outcome
+        state.calls = result.calls
+        if result.status == "cancelled":
+            registry.close(record.continuation_token, CONTINUATION_CANCELLED)
+            if context.cancelled:
+                raise ClientDisconnectedError()
+            raise AdapterTimeoutError(result_note(result))
+        if result.status == "failed":
+            registry.close(record.continuation_token, CONTINUATION_LOST)
+            raise AdapterPermanentError(result_note(result))
+        registry.close(record.continuation_token, CONTINUATION_COMPLETED)
+        accounting = _aggregate_usage(result)
+        message = result.message
+        finish_reason = result.finish_reason
+        if message is None or finish_reason is None:  # pragma: no cover - contract
+            raise AdapterPermanentError("adapter returned an incomplete result")
+        return CompletionOutcome(
+            request_id=state.request_id,
+            created=int(started.timestamp()),
+            model_echo=request.model,
+            message=message,
+            finish_reason=finish_reason,
+            usage=accounting,
+            decision_id=record.decision_id,
+        )
+
+    def _register_suspension_record(
+        self,
+        *,
+        adapter: ContinuationCapableAdapter,
+        token: str,
+        request: ChatCompletionRequest,
+        state: _LifecycleState,
+        deadline: datetime,
+        assistant_tool_calls: tuple[AdapterToolCall, ...],
+        channel: str,
+    ) -> None:
+        """Bind one suspension to its continuation record (bounded).
+
+        Called on the dispatch thread right after an adapter produced a
+        ``tool_calls`` leg — before any byte of the response reaches the
+        client, so no harness can observe a tool_call id that is not yet
+        registered. Records hold only identifiers and bounded
+        fingerprints. When the gateway is at its pending-continuation
+        bound the note records it honestly and the later tool result
+        receives the typed not-found failure.
+        """
+        registry = self.continuations
+        assert registry is not None
+        handle = adapter.suspension_handle(token)
+        if handle is None:
+            state.flow_notes = (*state.flow_notes, "continuation_unavailable")
+            return
+        record = PendingContinuation(
+            continuation_token=token,
+            attempt_id=handle.attempt_id,
+            resource_id=handle.resource_id,
+            channel=channel,
+            call_id=handle.call_id,
+            tool_name=handle.tool_name,
+            deadline=deadline,
+            created_at=canonical_instant(self._now()),
+            client_id=state.client_id,
+            model_echo=request.model,
+            reasoning_effort=request.reasoning_effort,
+            tools_fingerprint=tools_fingerprint(request.tools),
+            tool_choice_json=canonical_json_text(request.tool_choice),
+            prefix_fingerprint=message_fingerprint(request.messages),
+            assistant_tool_calls=assistant_tool_calls,
+            decision_id=state.decision_id,
+            adapter_name=state.adapter_name,
+            adapter_version=state.adapter_version,
+            registry_revision=state.registry_revision,
+            registry_generated_at=state.registry_generated_at,
+            selected_target=state.selected_target,
+            executed_target=state.executed_target,
+            handle=handle,
+            cancel_callback=lambda _record: adapter.cancel_suspension(handle),
+        )
+        if not registry.register(record):
+            state.flow_notes = (*state.flow_notes, "continuation_unavailable")
+            return
+        state.flow_notes = (*state.flow_notes, "suspended_for_client_tool")
+
+    def expire_continuations(self) -> tuple[str, ...]:
+        """Expire due continuations (the server's reaper loop calls this).
+
+        Each expiry cancels the worker-side turn best-effort and drops
+        the record, so later tool results receive the typed expired/
+        not-found response and no Codex process outlives its budget.
+        """
+        if self.continuations is None:
+            return ()
+        return self.continuations.expire_due(self._now())
 
     def _enforce_request_limits(self, caps: RequestCapabilities) -> None:
         """Body/context/output admission limits, before any routing I/O."""
@@ -1138,6 +1566,28 @@ class GatewayApplication:
             generation_params=request.generation_params or {},
         )
         result = adapter.execute(call, context)
+        if (
+            result.finish_reason == FINISH_TOOL_CALLS
+            and result.message is not None
+            and result.message.tool_calls
+            and self.continuations is not None
+            and isinstance(adapter, ContinuationCapableAdapter)
+        ):
+            # D-060: a continuation-capable channel suspended for a
+            # client tool. Bind the suspension BEFORE the response
+            # leaves; server-direct adapters' own tool_calls legs never
+            # enter this path (they replay history statelessly).
+            self._register_suspension_record(
+                adapter=adapter,
+                token=result.message.tool_calls[0].id,
+                request=request,
+                state=state,
+                deadline=datetime.fromisoformat(
+                    context.deadline[:-1] + "+00:00"
+                ),
+                assistant_tool_calls=result.message.tool_calls,
+                channel=target.resource.channel,
+            )
         state.calls = result.calls
         if result.status == "cancelled":
             if context.cancelled:
@@ -1222,7 +1672,9 @@ class GatewayApplication:
             # requests rejected BEFORE it are never tagged; the note is an
             # additional reason code and never replaces the primary
             # failure reason.
-            reason_codes=tuple(reason_codes) + tuple(state.limit_notes),
+            reason_codes=tuple(reason_codes)
+            + tuple(state.limit_notes)
+            + tuple(state.flow_notes),
             provider_reported_usage=reported,
             estimated_usage=estimated,
             call_count=len(state.calls),
@@ -1255,6 +1707,7 @@ class _LifecycleState:
         "target_capabilities",
         "limit_notes",
         "normalized_output_limit",
+        "flow_notes",
     )
 
     def __init__(self, *, request_id: str, client_id: str, started_at: str) -> None:
@@ -1276,12 +1729,27 @@ class _LifecycleState:
         self.target_capabilities: ResourceRegistryEntry | None = None
         self.limit_notes: tuple[str, ...] = ()
         self.normalized_output_limit: bool = False
+        #: D-060 flow provenance notes (appended to the audit reason
+        #: codes): ``suspended_for_client_tool``,
+        #: ``continuation_resumed``, ``continuation_unavailable``.
+        self.flow_notes: tuple[str, ...] = ()
 
 
 def _request_id(factory: RequestFactory | None) -> str:
     if factory is not None:
         return v_safe_id(factory(), "request_id")
     return f"chatcmpl-{uuid.uuid4().hex}"
+
+
+def _unavailable_usage() -> UsageAccounting:
+    """The honest accounting of a leg whose provider call is still open.
+
+    A tool_calls leg ends one HTTP response but NOT the backend turn:
+    no call observation exists yet (the single observation arrives with
+    the turn's terminal result), so the usage source is ``unavailable``
+    — structural absence, never a fabricated zero.
+    """
+    return UsageAccounting(usage_source=USAGE_SOURCE_UNAVAILABLE)
 
 
 def _audit_target(target: RouteTarget) -> ExecutedTarget:

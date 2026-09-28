@@ -65,6 +65,8 @@ ERROR_TYPE_NOT_FOUND = "not_found_error"
 ERROR_TYPE_RATE_LIMIT = "rate_limit_error"
 ERROR_TYPE_TIMEOUT = "timeout_error"
 ERROR_TYPE_API = "api_error"
+#: #137/D-060: replay/double-delivery of an exactly-once tool result.
+ERROR_TYPE_CONFLICT = "conflict_error"
 
 ERROR_TYPES: frozenset[str] = frozenset({
     ERROR_TYPE_INVALID_REQUEST,
@@ -74,6 +76,8 @@ ERROR_TYPES: frozenset[str] = frozenset({
     ERROR_TYPE_RATE_LIMIT,
     ERROR_TYPE_TIMEOUT,
     ERROR_TYPE_API,
+    #: #137/D-060: replay/double-delivery of an exactly-once tool result.
+    ERROR_TYPE_CONFLICT,
 })
 
 # Closed usage-source vocabulary for honest accounting (D-043).
@@ -388,6 +392,18 @@ class GatewayError(Exception):
         )
 
     @staticmethod
+    def conflict(message: str, *, code: str | None = None) -> "GatewayError":
+        """409: the request contradicts committed state (#137/D-060 — a
+        replayed or double-delivered tool result against an
+        exactly-once continuation)."""
+        return GatewayError(
+            http_status=409,
+            error_type=ERROR_TYPE_CONFLICT,
+            message=message,
+            code=code,
+        )
+
+    @staticmethod
     def timeout(message: str, *, code: str | None = None) -> "GatewayError":
         return GatewayError(
             http_status=408,
@@ -515,6 +531,7 @@ __all__ = [
     "ERROR_TYPES",
     "ERROR_TYPE_API",
     "ERROR_TYPE_AUTHENTICATION",
+    "ERROR_TYPE_CONFLICT",
     "ERROR_TYPE_INVALID_REQUEST",
     "ERROR_TYPE_NOT_FOUND",
     "ERROR_TYPE_PERMISSION",

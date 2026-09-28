@@ -108,6 +108,7 @@ from tests.m10_codex_fixtures import (
     make_codex_registry,
     start_worker_process,
     stop_worker_process,
+    trace_events,
     trace_methods,
     trace_request,
     worker_command,
@@ -785,7 +786,7 @@ class TwoCodexResourcesSamePhysicalModelTests(CodexComposedTlsWorld):
         self.assertEqual(
             {
                 feature: value
-                for feature, (value, _note) in CODEX_WORKER_CELL_VALUES.items()
+                for feature, (value, _note, _date) in CODEX_WORKER_CELL_VALUES.items()
             },
             {cell.feature: cell.value for cell in codex_cells},
         )
@@ -1266,7 +1267,7 @@ class ProductionCompatibilityMatrixTests(CodexComposedTlsWorld):
         worker = self.start_codex_worker(chatgpt_scenario())
         self.configure_codex_resource(worker.worker_id)
         values = _cell_map(self.application_cells())
-        for feature, (expected_value, _note) in CODEX_WORKER_CELL_VALUES.items():
+        for feature, (expected_value, _note, _date) in CODEX_WORKER_CELL_VALUES.items():
             key = ("worker_bridged", "openai", CODEX_CATALOG_MODEL, feature)
             self.assertIn(key, values, f"missing M06 cell for {feature}")
             self.assertEqual(
@@ -1296,15 +1297,30 @@ class ProductionCompatibilityMatrixTests(CodexComposedTlsWorld):
         for cell in codex_cells:
             self.assertIsNone(cell.variant)
             self.assertEqual("codex-worker-local", cell.adapter)
-            self.assertEqual("1.0.0", cell.adapter_version)
+            self.assertEqual("1.1.0", cell.adapter_version)
             self.assertEqual("codex_adapter_stage2", cell.evidence.source)
-            self.assertEqual("2026-09-20", cell.evidence.date)
-            self.assertIn(
-                "codex-cli 0.154.0-alpha.6.2", cell.evidence.identifier
-            )
             self.assertIn(
                 "docs/codex-adapter-stage1-evidence.md", cell.evidence.identifier
             )
+            expected_dates = {
+                feature: date
+                for feature, (_value, _note, date) in CODEX_WORKER_CELL_VALUES.items()
+            }
+            self.assertEqual(
+                expected_dates[cell.feature],
+                cell.evidence.date,
+                f"M06 cell {cell.feature} must carry its dated evidence",
+            )
+        # D-060: the bridge cells carry the 2026-09-28 evidence date.
+        bridge_cells = [
+            cell
+            for cell in codex_cells
+            if cell.feature in ("tool_calls", "tool_results")
+        ]
+        self.assertEqual(2, len(bridge_cells))
+        self.assertEqual(
+            {"2026-09-28"}, {cell.evidence.date for cell in bridge_cells}
+        )
 
     def test_evidence_backed_m04_resource_gets_its_preset_cells(self) -> None:
         worker = self.start_codex_worker(chatgpt_scenario())
@@ -1669,66 +1685,370 @@ class CodexStreamingExecutionTests(CodexComposedTlsWorld):
         finally:
             worker.stop()
 
-    def test_tools_bearing_request_rejected_before_dispatch(self) -> None:
-        """The REAL M06 ``UNSUPPORTED`` tool_calls cell fails the request
-        closed at admission — no execute message, no dispatch session,
-        no turn."""
-        worker = self.start_codex_worker(chatgpt_scenario())
+    # ── D-060: the client-tool round trip (Family A suspended turn) ────
+
+    _TOOL_NAME: str = "synthetic_lookup"
+    _TOOL_RESULT_TEXT: str = "TOOL-RESULT-TEXT"
+
+    def _tool_declaration(self) -> list[dict[str, object]]:
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": self._TOOL_NAME,
+                    "description": "synthetic client-owned tool",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ]
+
+    def _tool_turn_scenario(self) -> dict[str, object]:
+        return chatgpt_scenario(
+            turn={
+                "dynamicTool": self._TOOL_NAME,
+                "deltas": ["Checking "],
+                "postDeltas": ["Done."],
+                "usage": {"last": {"inputTokens": 11, "outputTokens": 7}},
+            }
+        )
+
+    def _exchange_tool_call_leg(
+        self, worker: CodexWorker
+    ) -> dict[str, object]:
+        _ = worker
+        status, payload, _headers = self.exchange(
+            "POST",
+            "/v1/chat/completions",
+            _pin_body(tools=self._tool_declaration()),
+            headers={"Authorization": f"Bearer {self.client_key}"},
+            timeout=60,
+        )
+        self.assertEqual(200, status, payload)
+        return cast("dict[str, object]", payload)
+
+    def _continuation_body(
+        self,
+        token: str,
+        *,
+        model: str | None = None,
+        include_tools: bool = False,
+        result_content: str | None = None,
+    ) -> dict[str, object]:
+        body: dict[str, object] = {
+            "model": model if model is not None else PIN_MODEL,
+            "messages": [
+                {"role": "user", "content": PROMPT},
+                {
+                    "role": "assistant",
+                    "content": "Checking ",
+                    "tool_calls": [
+                        {
+                            "id": token,
+                            "type": "function",
+                            "function": {
+                                "name": self._TOOL_NAME,
+                                "arguments": '{"n": 0}',
+                            },
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": token,
+                    "content": (
+                        result_content
+                        if result_content is not None
+                        else self._TOOL_RESULT_TEXT
+                    ),
+                },
+            ],
+        }
+        if include_tools:
+            body["tools"] = self._tool_declaration()
+        return body
+
+    def test_tool_round_trip_suspends_and_resumes_the_same_turn(self) -> None:
+        """The Family-A acceptance: request with tools -> suspension ->
+        OpenAI tool_call response -> role:tool result -> the SAME Codex
+        thread/turn continues -> final answer. One app-server process,
+        one thread/start, one turn/start across BOTH HTTP legs."""
+        worker = self.start_codex_worker(self._tool_turn_scenario())
         self.configure_codex_resource(worker.worker_id)
         worker.start()
         try:
             _ = self.wait_for_observation(RESOURCE_ID)
-            status, payload, _headers = self.exchange(
+            payload = self._exchange_tool_call_leg(worker)
+            choice = cast(
+                "dict[str, object]",
+                cast("list[object]", payload["choices"])[0],
+            )
+            self.assertEqual("tool_calls", choice["finish_reason"])
+            message = cast("dict[str, object]", choice["message"])
+            self.assertEqual("Checking ", message["content"])
+            tool_calls = cast("list[dict[str, object]]", message["tool_calls"])
+            self.assertEqual(1, len(tool_calls))
+            call = tool_calls[0]
+            token = call["id"]
+            self.assertIsInstance(token, str)
+            self.assertTrue(str(token).startswith("srct-"))
+            call_function = cast("dict[str, object]", call["function"])
+            self.assertEqual(self._TOOL_NAME, call_function["name"])
+            self.assertEqual('{"n": 0}', call_function["arguments"])
+
+            # The harness executes the tool and sends the ordinary
+            # Chat Completions continuation — no router-specific field.
+            status, payload2, _headers = self.exchange(
                 "POST",
                 "/v1/chat/completions",
-                _pin_body(
-                    tools=cast(
-                        "list[dict[str, object]]",
-                        [
-                            {
-                                "type": "function",
-                                "function": {
-                                    "name": "synthetic_lookup",
-                                    "parameters": {"type": "object", "properties": {}},
-                                },
-                            }
-                        ],
-                    )
-                ),
+                self._continuation_body(str(token)),
+                headers={"Authorization": f"Bearer {self.client_key}"},
+                timeout=60,
+            )
+            self.assertEqual(200, status, payload2)
+            body2 = cast("dict[str, object]", payload2)
+            choice2 = cast(
+                "dict[str, object]",
+                cast("list[object]", body2["choices"])[0],
+            )
+            self.assertEqual("stop", choice2["finish_reason"])
+            self.assertEqual(
+                "Done.", cast("dict[str, object]", choice2["message"])["content"]
+            )
+
+            # SAME suspended execution: exactly one app-server session,
+            # one thread/start (carrying the dynamicTools), one
+            # turn/start — and the harness result reached the original
+            # callId with the evidenced answer shape.
+            methods = trace_methods(worker.trace_path)
+            self.assertEqual(1, methods.count("thread/start"))
+            self.assertEqual(1, methods.count("turn/start"))
+            thread_params = trace_request(worker.trace_path, "thread/start")
+            assert thread_params is not None
+            declared = cast("list[dict[str, object]]", thread_params["dynamicTools"])
+            self.assertEqual(self._TOOL_NAME, declared[0]["name"])
+            answers = trace_events(worker.trace_path, "tool_call_answer")
+            self.assertEqual(1, len(answers))
+            self.assertEqual("call-synthetic-1", answers[0]["callId"])
+            answer = cast("dict[str, object]", answers[0]["result"])
+            self.assertIs(True, answer["success"])
+            content_items = cast("list[dict[str, object]]", answer["contentItems"])
+            self.assertEqual("inputText", content_items[0]["type"])
+            self.assertEqual(self._TOOL_RESULT_TEXT, content_items[0]["text"])
+            # No router-side or worker-side tool execution exists; the
+            # experimental capability was opted into ONLY for the
+            # tool-bearing dispatch session — the state-report probe
+            # session stays on the stable surface (capabilities: {}).
+            init_events = trace_events(worker.trace_path, "initialize")
+            experimental = [
+                event
+                for event in init_events
+                if event.get("experimentalApi") is True
+            ]
+            stable = [
+                event
+                for event in init_events
+                if event.get("experimentalApi") is False
+            ]
+            self.assertEqual(1, len(experimental))
+            self.assertGreaterEqual(len(stable), 1)
+
+            # Honest audit: the initial leg completed the suspension
+            # (provider call still open, zero observations); the
+            # continuation carries the ONE turn-level observation and
+            # resumes the original decision.
+            executed = [
+                record
+                for record in self.audit_records()
+                if record.get("executed_target") is not None
+            ]
+            self.assertEqual(2, len(executed))
+            first, second = executed[0], executed[1]
+            first_reasons = cast("list[str]", first["reason_codes"])
+            second_reasons = cast("list[str]", second["reason_codes"])
+            self.assertIn("suspended_for_client_tool", first_reasons)
+            self.assertEqual(1, first["call_count"])
+            self.assertEqual(
+                first["decision_id"], second["decision_id"]
+            )
+            self.assertIn("continuation_resumed", second_reasons)
+            self.assertEqual(1, second["call_count"])
+            # Usage is carried ONCE — on the terminal record only; the
+            # suspension leg's open call observation stays usage-free.
+            self.assertIsNone(first.get("provider_reported_usage"))
+            self.assertIsNotNone(second.get("provider_reported_usage"))
+        finally:
+            worker.stop()
+
+    def test_tool_round_trip_streaming(self) -> None:
+        """The streamed suspension leg carries the complete tool_call
+        delta and the tool_calls finish frame before [DONE]; the resumed
+        leg streams the turn's continuation into a fresh SSE response."""
+        worker = self.start_codex_worker(self._tool_turn_scenario())
+        self.configure_codex_resource(worker.worker_id)
+        worker.start()
+        try:
+            _ = self.wait_for_observation(RESOURCE_ID)
+            status, text, _headers = self.exchange(
+                "POST",
+                "/v1/chat/completions",
+                {**_pin_body(tools=self._tool_declaration()), "stream": True},
+                headers={"Authorization": f"Bearer {self.client_key}"},
+                timeout=60,
+            )
+            self.assertEqual(200, status)
+            frames = [
+                cast("dict[str, object]", json.loads(line[len("data: ") :]))
+                for line in str(text).splitlines()
+                if line.startswith("data: ") and line != "data: [DONE]"
+            ]
+            tool_tokens: list[str] = []
+            finish_reasons: list[object] = []
+            content = ""
+            for frame in frames:
+                for choice in cast("list[object]", frame.get("choices", [])):
+                    choice_map = cast("dict[str, object]", choice)
+                    delta = cast("dict[str, object]", choice_map.get("delta", {}))
+                    piece = delta.get("content")
+                    if piece:
+                        content += str(piece)
+                    for call in cast(
+                        "list[dict[str, object]]", delta.get("tool_calls") or []
+                    ):
+                        tool_tokens.append(cast("str", call["id"]))
+                    if choice_map.get("finish_reason") is not None:
+                        finish_reasons.append(choice_map["finish_reason"])
+            self.assertEqual("Checking ", content)
+            self.assertEqual(1, len(tool_tokens))
+            self.assertTrue(tool_tokens[0].startswith("srct-"))
+            self.assertEqual(["tool_calls"], finish_reasons)
+
+            status2, text2, _headers = self.exchange(
+                "POST",
+                "/v1/chat/completions",
+                {
+                    **self._continuation_body(tool_tokens[0]),
+                    "stream": True,
+                },
+                headers={"Authorization": f"Bearer {self.client_key}"},
+                timeout=60,
+            )
+            self.assertEqual(200, status2)
+            frames2 = [
+                cast("dict[str, object]", json.loads(line[len("data: ") :]))
+                for line in str(text2).splitlines()
+                if line.startswith("data: ") and line != "data: [DONE]"
+            ]
+            content2 = ""
+            finish2: list[object] = []
+            for frame in frames2:
+                for choice in cast("list[object]", frame.get("choices", [])):
+                    choice_map = cast("dict[str, object]", choice)
+                    delta = cast("dict[str, object]", choice_map.get("delta", {}))
+                    piece = delta.get("content")
+                    if piece:
+                        content2 += str(piece)
+                    if choice_map.get("finish_reason") is not None:
+                        finish2.append(choice_map["finish_reason"])
+            self.assertEqual("Done.", content2)
+            self.assertEqual(["stop"], finish2)
+            # ONE suspended execution across both streamed legs.
+            methods = trace_methods(worker.trace_path)
+            self.assertEqual(1, methods.count("thread/start"))
+            self.assertEqual(1, methods.count("turn/start"))
+        finally:
+            worker.stop()
+
+    def test_tool_result_replay_is_rejected(self) -> None:
+        worker = self.start_codex_worker(self._tool_turn_scenario())
+        self.configure_codex_resource(worker.worker_id)
+        worker.start()
+        try:
+            _ = self.wait_for_observation(RESOURCE_ID)
+            payload = self._exchange_tool_call_leg(worker)
+            token = self._tool_token(payload)
+            body = self._continuation_body(token)
+            status, payload2, _headers = self.exchange(
+                "POST",
+                "/v1/chat/completions",
+                body,
+                headers={"Authorization": f"Bearer {self.client_key}"},
+                timeout=60,
+            )
+            self.assertEqual(200, status, payload2)
+            status, payload3, _headers = self.exchange(
+                "POST",
+                "/v1/chat/completions",
+                body,
+                headers={"Authorization": f"Bearer {self.client_key}"},
+                timeout=60,
+            )
+            self.assertEqual(409, status)
+            error = cast(
+                "dict[str, object]", cast("dict[str, object]", payload3)["error"]
+            )
+            self.assertEqual("continuation_already_resolved", error["code"])
+        finally:
+            worker.stop()
+
+    def test_tool_result_from_another_client_is_not_found(self) -> None:
+        worker = self.start_codex_worker(self._tool_turn_scenario())
+        self.configure_codex_resource(worker.worker_id)
+        issued = self.plane.service_issue_client_key(
+            {"label": "second-inference-client"}
+        )
+        other_key = cast(str, issued["api_key"])
+        worker.start()
+        try:
+            _ = self.wait_for_observation(RESOURCE_ID)
+            payload = self._exchange_tool_call_leg(worker)
+            token = self._tool_token(payload)
+            status, payload2, _headers = self.exchange(
+                "POST",
+                "/v1/chat/completions",
+                self._continuation_body(token),
+                headers={"Authorization": f"Bearer {other_key}"},
+                timeout=60,
+            )
+            # A token never grants another client access; the failure is
+            # indistinguishable from an unknown continuation.
+            self.assertEqual(404, status)
+            error = cast(
+                "dict[str, object]", cast("dict[str, object]", payload2)["error"]
+            )
+            self.assertEqual("continuation_not_found", error["code"])
+        finally:
+            worker.stop()
+
+    def test_continuation_with_changed_model_is_rejected(self) -> None:
+        worker = self.start_codex_worker(self._tool_turn_scenario())
+        self.configure_codex_resource(worker.worker_id)
+        worker.start()
+        try:
+            _ = self.wait_for_observation(RESOURCE_ID)
+            payload = self._exchange_tool_call_leg(worker)
+            token = self._tool_token(payload)
+            status, payload2, _headers = self.exchange(
+                "POST",
+                "/v1/chat/completions",
+                self._continuation_body(token, model="sr-pin:not-the-same/target"),
                 headers={"Authorization": f"Bearer {self.client_key}"},
                 timeout=60,
             )
             self.assertEqual(400, status)
-            error_body = cast(
-                "dict[str, object]", cast("dict[str, object]", payload)["error"]
+            error = cast(
+                "dict[str, object]", cast("dict[str, object]", payload2)["error"]
             )
-            self.assertEqual("compatibility_unsupported", error_body["code"])
-            # Rejected at admission: no dispatch session, no turn — only
-            # the initial state-report probe ever runs.
-            wait_until(
-                lambda: len(worker.spawner.app_server_specs) >= 1,
-                timeout=15,
-                message="the state-report probe session never ran",
-            )
-            methods = trace_methods(worker.trace_path)
-            self.assertNotIn("thread/start", methods)
-            self.assertNotIn("turn/start", methods)
-            self.assertEqual(1, len(worker.spawner.app_server_specs))
-            # The rejection is audited as `rejected` (never dispatched, so
-            # the record carries no executed target).
-            rejected = [
-                record
-                for record in self.audit_records()
-                if record.get("result_status") == "rejected"
-            ]
-            self.assertEqual(1, len(rejected))
-            self.assertIn(
-                "compatibility_unsupported",
-                cast("list[str]", rejected[0]["reason_codes"]),
-            )
-            self.assertIsNone(rejected[0].get("executed_target"))
+            self.assertEqual("continuation_mismatch", error["code"])
         finally:
             worker.stop()
+
+    def _tool_token(self, payload: dict[str, object]) -> str:
+        choice = cast(
+            "dict[str, object]", cast("list[object]", payload["choices"])[0]
+        )
+        message = cast("dict[str, object]", choice["message"])
+        call = cast("list[dict[str, object]]", message["tool_calls"])[0]
+        return cast("str", call["id"])
 
     def test_isolation_profile_end_to_end(self) -> None:
         worker = self.start_codex_worker(chatgpt_scenario())
