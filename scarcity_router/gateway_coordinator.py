@@ -110,8 +110,9 @@ from .gateway_openai import (
     ChatCompletionRequest,
     LogicalModelInfo,
     RequestCapabilities,
+    RouteEffectiveLimits,
 )
-from .resource_state import ResourceRegistry
+from .resource_state import RegistrySnapshot, ResourceRegistry, ResourceRegistryEntry
 from .gateway_validation import v_instance, v_int, v_safe_id
 from .routing_core import (
     AdministratorConstraints,
@@ -333,10 +334,48 @@ def _resolve_logical_effort(
     )
 
 
+def _model_hard_limits(
+    catalog: ModelCatalog, provider: str, model: str
+) -> tuple[int | None, int | None]:
+    """The calibrated hard context/output ceilings of one physical model.
+
+    Takes the minimum across the identity's calibrated variant entries;
+    ``None`` stays UNKNOWN (never guessed, never zero).
+    """
+    contexts: list[int] = []
+    outputs: list[int] = []
+    for entry in catalog.entries:
+        if entry.identity.provider != provider or entry.identity.model != model:
+            continue
+        if entry.hard_properties.input_context_tokens is not None:
+            contexts.append(entry.hard_properties.input_context_tokens)
+        if entry.hard_properties.output_tokens is not None:
+            outputs.append(entry.hard_properties.output_tokens)
+    return (min(contexts) if contexts else None), (min(outputs) if outputs else None)
+
+
+def _effective_ceiling(capability_inputs: tuple[int | None, ...], admin: int) -> int | None:
+    """The D-056 intersection over one route's inputs (D-058 rule).
+
+    ``min`` over the KNOWN capability inputs (model hard, channel ceiling)
+    intersected with the administrator allowance; ``None`` when NO
+    capability input is known — an administrator allowance alone never
+    certifies a capability the model or the channel have not evidenced,
+    so an all-UNKNOWN input set yields an UNKNOWN effective value, never
+    a guessed number.
+    """
+    known = [value for value in capability_inputs if value is not None]
+    if not known:
+        return None
+    return min([*known, admin])
+
+
 def exposed_logical_models(
-    catalog: ModelCatalog, registry: ResourceRegistry
+    catalog: ModelCatalog,
+    registry: ResourceRegistry,
+    limits: GatewayLimits,
 ) -> tuple[LogicalModelInfo, ...]:
-    """The logical models ``GET /v1/models`` exposes (D-055).
+    """The logical models ``GET /v1/models`` exposes (D-055, #136/D-058).
 
     Exposure is resource-aware and adoption-honest: a catalog identity is
     exposed only when at least one registered resource binds that exact
@@ -345,23 +384,29 @@ def exposed_logical_models(
     resource still exposes the id (requests then get the explicit
     no-eligible-target outcome, never a misleading ``model_not_found``).
     Restricted and unclassified models never have catalog entries here
-    and are never exposed. The advertised context ceiling is the honest
-    intersection of the model's hard context and the bound channels'
-    known context ceilings; an UNKNOWN channel ceiling stays UNKNOWN
-    (``None``). Ambiguous multi-provider slugs are not advertised.
+    and are never exposed. Ambiguous multi-provider slugs are not
+    advertised.
+
+    Effective limits (D-056 intersection, #136/D-058): the per-route
+    effective ceiling is ``min(known of: model hard, channel ceiling,
+    administrator allowance)`` and stays UNKNOWN when neither the model
+    nor the channel evidences a ceiling. The ADVERTISED headline number
+    is the strongest bound route's effective ceiling — a request within
+    it is executable on this gateway through that route — and the
+    per-route ``routes`` detail carries every bound route's own effective
+    ceilings (``None`` when unknown), so a multi-route spread is never
+    collapsed into "every route supports the strongest".
     """
     try:
         snapshot = registry.registry_snapshot()
     except CapacityValidationError:
         return ()
-    channel_contexts: dict[tuple[str, str], list[int]] = {}
+    route_channels: dict[tuple[str, str], list[ResourceRegistryEntry]] = {}
     bound: set[tuple[str, str]] = set()
     for entry in snapshot.entries:
         key = (entry.identity.provider, entry.identity.model)
         bound.add(key)
-        context = entry.capabilities.context_limit_tokens
-        if context is not None:
-            channel_contexts.setdefault(key, []).append(context)
+        route_channels.setdefault(key, []).append(entry)
     by_model: dict[str, list[ModelIdentity]] = {}
     for catalog_entry in catalog.entries:
         identity = catalog_entry.identity
@@ -379,32 +424,57 @@ def exposed_logical_models(
             for catalog_entry in catalog.entries
             if catalog_entry.identity.model == model
         ]
-        contexts = [
-            catalog_entry.hard_properties.input_context_tokens
-            for catalog_entry in model_entries
-            if catalog_entry.hard_properties.input_context_tokens is not None
-        ]
-        channels = channel_contexts.get((providers[0], model), ())
-        effective_context: int | None = None
-        if channels:
-            effective_context = min([*contexts, *channels])
         outputs = [
             catalog_entry.hard_properties.output_tokens
             for catalog_entry in model_entries
             if catalog_entry.hard_properties.output_tokens is not None
         ]
+        if not outputs:
+            continue
+        hard_context, hard_output = _model_hard_limits(catalog, providers[0], model)
+        entries = route_channels.get((providers[0], model), ())
+        routes: list[RouteEffectiveLimits] = []
+        for entry in sorted(entries, key=lambda item: item.identity.resource_id):
+            route_context = _effective_ceiling(
+                (hard_context, entry.capabilities.context_limit_tokens),
+                limits.max_input_context_tokens,
+            )
+            route_output = _effective_ceiling(
+                (hard_output, entry.capabilities.output_limit_tokens),
+                limits.max_output_tokens,
+            )
+            routes.append(
+                RouteEffectiveLimits(
+                    resource_id=entry.identity.resource_id,
+                    effective_context_limit_tokens=route_context,
+                    effective_output_limit_tokens=route_output,
+                )
+            )
+        contexts = [route.effective_context_limit_tokens for route in routes]
+        known_contexts = [value for value in contexts if value is not None]
+        known_outputs = [
+            route.effective_output_limit_tokens
+            for route in routes
+            if route.effective_output_limit_tokens is not None
+        ]
+        if not known_outputs:
+            # Unreachable: exposure requires a calibrated hard output, so
+            # every route's intersection includes at least one known
+            # capability input.
+            continue
         efforts = tuple(
             sorted({identity.variant for identity in identities if identity.variant})
         )
-        if not outputs:
-            continue
         infos.append(
             LogicalModelInfo(
                 model=model,
                 provider=providers[0],
                 reasoning_efforts=efforts,
-                effective_context_limit_tokens=effective_context,
-                max_output_tokens=min(outputs),
+                effective_context_limit_tokens=(
+                    max(known_contexts) if known_contexts else None
+                ),
+                max_output_tokens=max(known_outputs),
+                routes=tuple(routes),
             )
         )
     return tuple(infos)
@@ -619,7 +689,7 @@ class GatewayApplication:
                 started=started, request=request, client_id=client_id,
                 state=state, emit_chunk=emit_chunk,
             )
-            self._write_audit(state, RESULT_COMPLETED, ("completed",))
+            self._write_audit(state, RESULT_COMPLETED, ("completed", *state.limit_notes))
             return outcome
         except ClientDisconnectedError:
             if state.context is not None:
@@ -685,6 +755,9 @@ class GatewayApplication:
                 "admission produced no target", code="invalid_state"
             )
         self._supplemental_capability_gate(target, request.capabilities)
+        state.normalized_output_limit = self._enforce_effective_limits(
+            target=target, caps=request.capabilities, state=state
+        )
         reservation = self._acquire_reservation(client_id)
         try:
             return self._dispatch(
@@ -796,6 +869,9 @@ class GatewayApplication:
             state.decision_id = admission.bound_decision_id
             state.target = admission.target
             state.selected_target = _audit_target(admission.target)
+            state.target_capabilities = _target_capabilities(
+                registry_snapshot, admission.target
+            )
             return
         decision = route_request(request_obj)
         state.decision_id = decision.decision_id
@@ -807,6 +883,9 @@ class GatewayApplication:
             )
         state.target = decision.target
         state.selected_target = _audit_target(decision.target)
+        state.target_capabilities = _target_capabilities(
+            registry_snapshot, decision.target
+        )
 
     def _supplemental_capability_gate(
         self, target: RouteTarget, caps: RequestCapabilities
@@ -843,6 +922,82 @@ class GatewayApplication:
                     code="compatibility_unsupported",
                     param=feature,
                 )
+
+    def _enforce_effective_limits(
+        self, *, target: RouteTarget, caps: RequestCapabilities, state: _LifecycleState
+    ) -> bool:
+        """The D-056 effective-capability intersection, per route (#136/D-058).
+
+        Runs AFTER admission selected the exact target, so enforcement is
+        route-specific: the request must fit the SELECTED route's
+        ``effective = model hard capability ∩ execution-channel capability
+        ∩ administrator allowance``. Administrator ceilings stay
+        authoritative (the global pre-check plus their place in the
+        intersection); no client request may increase any limit; every
+        violation is a typed rejection, never silent clipping.
+
+        When the selected channel evidences NO output-limit control
+        (``capabilities.output_limit_control is False`` — today the Codex
+        execution surface), an explicitly requested output limit cannot be
+        honored on that channel. It may be NORMALIZED AWAY only when it is
+        non-binding — at or above the model's proven hard maximum
+        (catalog ``hard_properties.output_tokens``) — and the
+        normalization is audited; a smaller (binding) request is rejected
+        ``output_limit_unenforceable`` rather than silently ignored; an
+        UNKNOWN hard maximum is never normalized. Channels that map
+        explicit limits or whose control fact is UNKNOWN keep the
+        adapters' own refuse-not-drop backstops.
+
+        Returns ``True`` when a requested output limit was normalized
+        away (the caller dispatches without it and the audit carries the
+        ``output_limit_normalized`` note).
+        """
+        entry = state.target_capabilities
+        hard_context, hard_output = _model_hard_limits(
+            self.catalog, target.resource.provider, target.model.model
+        )
+        channel = None if entry is None else entry.capabilities
+        effective_context = _effective_ceiling(
+            (hard_context, None if channel is None else channel.context_limit_tokens),
+            self.limits.max_input_context_tokens,
+        )
+        effective_output = _effective_ceiling(
+            (hard_output, None if channel is None else channel.output_limit_tokens),
+            self.limits.max_output_tokens,
+        )
+        if (
+            caps.estimated_input_tokens is not None
+            and effective_context is not None
+            and caps.estimated_input_tokens > effective_context
+        ):
+            raise GatewayError.invalid_request(
+                "the request exceeds the effective input context of the "
+                + "selected route",
+                code="context_length_exceeded",
+            )
+        requested = caps.requested_output_tokens
+        if requested is None:
+            return False
+        if effective_output is not None and requested > effective_output:
+            raise GatewayError.invalid_request(
+                "the requested output exceeds the effective output limit of "
+                + "the selected route",
+                code="output_limit_exceeded",
+                param="max_completion_tokens",
+            )
+        control = None if entry is None else entry.capabilities.output_limit_control
+        if control is not False:
+            return False
+        if hard_output is not None and requested >= hard_output:
+            state.limit_notes = (*state.limit_notes, "output_limit_normalized")
+            return True
+        raise GatewayError.invalid_request(
+            "the selected execution channel cannot enforce an output limit; "
+            + "a limit below the model's proven maximum is rejected instead "
+            + "of being silently ignored",
+            code="output_limit_unenforceable",
+            param="max_completion_tokens",
+        )
 
     def _dispatch(
         self,
@@ -916,7 +1071,14 @@ class GatewayApplication:
             tool_choice=request.tool_choice,
             response_format=request.response_format,
             reasoning_effort=dispatched_effort,
-            max_output_tokens=request.capabilities.requested_output_tokens,
+            # A normalized output limit dispatches WITHOUT the limit (the
+            # channel cannot honor it and it was non-binding); the audit
+            # carries the output_limit_normalized note.
+            max_output_tokens=(
+                None
+                if state.normalized_output_limit
+                else request.capabilities.requested_output_tokens
+            ),
             generation_params=request.generation_params or {},
         )
         result = adapter.execute(call, context)
@@ -1025,6 +1187,9 @@ class _LifecycleState:
         "context",
         "calls",
         "target",
+        "target_capabilities",
+        "limit_notes",
+        "normalized_output_limit",
     )
 
     def __init__(self, *, request_id: str, client_id: str, started_at: str) -> None:
@@ -1043,6 +1208,9 @@ class _LifecycleState:
         self.context: ExecutionContext | None = None
         self.calls: tuple[CallObservation, ...] = ()
         self.target: RouteTarget | None = None
+        self.target_capabilities: ResourceRegistryEntry | None = None
+        self.limit_notes: tuple[str, ...] = ()
+        self.normalized_output_limit: bool = False
 
 
 def _request_id(factory: RequestFactory | None) -> str:
@@ -1058,6 +1226,21 @@ def _audit_target(target: RouteTarget) -> ExecutedTarget:
         model=target.model.model,
         variant=target.model.variant,
     )
+
+
+def _target_capabilities(
+    snapshot: RegistrySnapshot, target: RouteTarget
+) -> ResourceRegistryEntry | None:
+    """The registry entry of the selected target, from admission's snapshot.
+
+    Admission reads exactly one snapshot; the effective-limits gate uses
+    the SAME snapshot's registration-owned capability facts (never a
+    second, later read).
+    """
+    for entry in snapshot.entries:
+        if entry.identity == target.resource:
+            return entry
+    return None
 
 
 def _admission_rejection(admission: AdmissionDecision) -> GatewayError:

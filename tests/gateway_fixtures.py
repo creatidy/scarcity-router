@@ -674,6 +674,7 @@ def make_application(
     client_authorizations: Mapping[str, ClientAuthorization] | None = None,
     capacity_snapshots: tuple[CapacitySnapshot, ...] | None = None,
     client_key_directory: ClientKeyDirectory | None = None,
+    catalog: ModelCatalog | None = None,
 ) -> GatewayApplication:
     """Assemble a fully injected GatewayApplication for tests."""
     adapter_registry = AdapterRegistry()
@@ -695,7 +696,7 @@ def make_application(
 
     policy: SelectorPolicy = neutral_selector_policy()
     return GatewayApplication(
-        catalog=build_catalog(),
+        catalog=catalog if catalog is not None else build_catalog(),
         profiles=build_profiles(),
         profile_policy_version=1,
         policy=policy,

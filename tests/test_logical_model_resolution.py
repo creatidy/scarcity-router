@@ -35,7 +35,7 @@ from scarcity_router.execution_sources import SourceRegistry
 from scarcity_router.gateway_adapters import AdapterRegistry
 from scarcity_router.gateway_audit import BoundedAuditTrail
 from scarcity_router.gateway_audit import ExecutedTarget
-from scarcity_router.gateway_contracts import ClientKeyDirectory, GatewayError
+from scarcity_router.gateway_contracts import ClientKeyDirectory, GatewayError, GatewayLimits
 from scarcity_router.gateway_coordinator import (
     GatewayApplication,
     RoutingAliasTable,
@@ -628,7 +628,7 @@ class AmbiguousSlugTests(unittest.TestCase):
                 _catalog_entry("zai", "shared-slug", "max"),
             ),
         )
-        self.assertEqual(exposed_logical_models(catalog, registry), ())
+        self.assertEqual(exposed_logical_models(catalog, registry, GatewayLimits()), ())
 
 
 class DiscoveryMetadataTests(DerivedHarness):

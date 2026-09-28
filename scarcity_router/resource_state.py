@@ -768,6 +768,16 @@ class ExecutionCapabilities:
     usage_reporting: bool | None = None
     cancellation: bool | None = None
     context_limit_tokens: int | None = None
+    #: Evidenced output ceiling of the channel (D-056 layer b; #136).
+    #: ``None`` is UNKNOWN, never "unlimited": consumers fail closed.
+    output_limit_tokens: int | None = None
+    #: Whether the channel evidences a control that HONORS an explicit
+    #: client output limit (maps/forwards it to the backend). ``False``
+    #: means the channel has no such control, so a requested explicit
+    #: limit can never be enforced there (the D-056/#136 normalization
+    #: rule applies). ``None`` is UNKNOWN — consumers keep the
+    #: refuse-not-drop backstop.
+    output_limit_control: bool | None = None
 
     _REQUIRED: ClassVar[tuple[str, ...]] = ()
     _OPTIONAL: ClassVar[tuple[str, ...]] = (
@@ -778,6 +788,8 @@ class ExecutionCapabilities:
         "usage_reporting",
         "cancellation",
         "context_limit_tokens",
+        "output_limit_tokens",
+        "output_limit_control",
     )
 
     def __post_init__(self) -> None:
@@ -788,6 +800,8 @@ class ExecutionCapabilities:
         _ = _v_opt_bool(self.usage_reporting, "capabilities.usage_reporting")
         _ = _v_opt_bool(self.cancellation, "capabilities.cancellation")
         _ = _v_opt_int(self.context_limit_tokens, "capabilities.context_limit_tokens", lo=1)
+        _ = _v_opt_int(self.output_limit_tokens, "capabilities.output_limit_tokens", lo=1)
+        _ = _v_opt_bool(self.output_limit_control, "capabilities.output_limit_control")
 
     @classmethod
     def from_dict(cls, d: object) -> "ExecutionCapabilities":
@@ -808,6 +822,12 @@ class ExecutionCapabilities:
             context_limit_tokens=_v_opt_int(
                 dd.get("context_limit_tokens"), "capabilities.context_limit_tokens", lo=1
             ),
+            output_limit_tokens=_v_opt_int(
+                dd.get("output_limit_tokens"), "capabilities.output_limit_tokens", lo=1
+            ),
+            output_limit_control=_v_opt_bool(
+                dd.get("output_limit_control"), "capabilities.output_limit_control"
+            ),
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -826,6 +846,10 @@ class ExecutionCapabilities:
             out["cancellation"] = self.cancellation
         if self.context_limit_tokens is not None:
             out["context_limit_tokens"] = self.context_limit_tokens
+        if self.output_limit_tokens is not None:
+            out["output_limit_tokens"] = self.output_limit_tokens
+        if self.output_limit_control is not None:
+            out["output_limit_control"] = self.output_limit_control
         return out
 
 

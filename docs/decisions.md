@@ -1947,7 +1947,6 @@ decision.
   `resource`/`kind`), no catalog ratings change, no REST/MCP
   schema-version change, no execution or gateway behavior.
 
-
 ### D-038 — GLM-5.3 reasoning-effort identities and evaluation-only profiles
 
 - **Status:** Accepted
@@ -4229,6 +4228,139 @@ Do not rewrite history or change an accepted decision silently.
   gateway behavior, provider telemetry or account/access-mode/business-model
   fields are changed. The D-032 deferral sentence in
   `docs/selection-policy.md` is updated accordingly.
+
+### D-058 — Effective limits: the capability intersection, honest defaults, unenforceable-output normalization and model-level aggregation
+
+- **Status:** Accepted (issue #136; child D of program #132; branch
+  `gateway/effective-limits`)
+- **Date:** 2026-09-28
+- **Base:** `develop` @ `f574e51` (D-056 merged as PR #147)
+- **Confidence:** High for the intersection, enforcement and
+  aggregation rules (implemented and test-pinned at the HTTP boundary).
+  The shipped default VALUES are evidence-based policy for the supported
+  coding-agent workload and remain administrator-owned configuration.
+- **Context:** D-056 fixed the per-route intersection rule
+  (`model capability ∩ execution-channel capability ∩ administrator
+  allowance`) and delegated to this child: the limits implementation,
+  the Codex output-token semantics, the 272k context re-evidence, and
+  the settlement of how per-route effective ceilings aggregate into one
+  advertised model-level number. Before touching the Codex semantics the
+  CURRENT runtime was re-evidenced (2026-09-28,
+  `codex-cli 0.155.0-alpha.16.3`, binary-generated schemas + structure-
+  only probes + official docs): the app-server turn contract carries NO
+  output-token control (stable or experimental), exposes no
+  context-ceiling discovery, and the 272000 registration fact could not
+  be re-established from any provider surface (its original M06 citation
+  never contained the number — provenance gap recorded in the evidence
+  doc).
+- **Decision:**
+  1. **Per-route effective ceilings.** For one registered route and one
+     limits dimension (context, output):
+     `effective = min(known of: model hard property, channel ceiling,
+     administrator allowance)`; UNKNOWN when neither the model nor the
+     channel evidences a ceiling — an administrator allowance alone
+     never certifies a capability, so an all-UNKNOWN input set yields
+     `null`, never a number. New channel facts in
+     `ExecutionCapabilities`: `output_limit_tokens` (evidenced output
+     ceiling; `None` is UNKNOWN, never unlimited) and
+     `output_limit_control` (`True` = the channel honors an explicit
+     output limit; `False` = no such control exists on the channel;
+     `None` = UNKNOWN, keeping the refuse-not-drop backstop).
+  2. **Route-specific, rejection-based enforcement.** After admission
+     selects the exact target, the coordinator enforces the SELECTED
+     route's effective ceilings: violations are typed 400s
+     (`context_length_exceeded`, `output_limit_exceeded`), never silent
+     clipping. The administrator's global pre-check stays authoritative
+     and runs first (fail-fast before routing I/O); a client request can
+     never raise any limit. Capability shortfalls (a requested output
+     minimum above the model's calibrated maximum) remain the routing
+     core's honest `no_eligible_target`.
+  3. **Unenforceable-output normalization (Codex rule).** On a channel
+     evidencing `output_limit_control: false` (today the Codex
+     execution surface), an explicitly requested output limit cannot be
+     honored. It is normalized away ONLY when non-binding — at or above
+     the exact selected model's proven hard maximum
+     (`hard_properties.output_tokens`) — and the normalization is
+     audited (`output_limit_normalized`); a smaller (binding) request is
+     rejected `output_limit_unenforceable` rather than silently ignored;
+     an UNKNOWN hard maximum is never normalized. Arbitrary
+     `generation_params` remain refuse-not-drop everywhere. The rule is
+     channel-fact-driven, never client-identity-driven; the Codex
+     adapter keeps the same typed refusal as its preflight backstop.
+  4. **Model-level aggregation (the delegated settlement).** Multiple
+     routes serving one logical model may carry different effective
+     ceilings; admission stays route-specific. `GET /v1/models`
+     advertises as the headline (`effective_context_limit_tokens`,
+     `max_output_tokens`) the STRONGEST bound route's effective ceiling
+     — a request within it is executable on this gateway through that
+     route — plus an additive `x_scarcity_router.routes` array carrying
+     every bound resource's own effective ceilings (`null` when
+     unknown), so the spread is visible: the headline is never presented
+     as if every route supports it, requests are never constrained to
+     the weakest route, and UNKNOWN never becomes a number. This
+     supersedes the D-055 interim reading of `max_output_tokens` as the
+     bare model hard property (D-055 explicitly deferred channel-level
+     output capability to this child); the UNKNOWN→`null` rule is
+     D-055's unchanged precedent.
+  5. **Honest defaults.** The shipped `GatewayLimits` defaults become
+     4 MiB request body, 272000 input-context tokens, 131072 output
+     tokens and 1200 s execution time — evidence-based for the supported
+     coding-agent workload (a full 272k-token conversation with protocol
+     overhead; the evidenced Codex channel ceiling; the evidenced 128k
+     model outputs; max-effort reasoning turn duration), so the generic
+     ceiling never sits invisibly below evidenced capability. They stay
+     administrator-owned: every value may be lowered knowingly,
+     non-default limits are exactly what the configuration export
+     represents, and an explicit legacy value (e.g. `max_output_tokens:
+     16384`) stays explicit after upgrade. Concurrency defaults are
+     unchanged.
+  6. **Context re-evidence outcome.** The 272000 Codex channel fact is
+     RETAINED as the owner-reviewed registration fact (not re-confirmed:
+     no provider surface publishes or exposes it today; the runtime's
+     `contextWindowExceeded` failure signal is the backstop), with the
+     provenance gap recorded. The effective context a client is shown or
+     admitted against is always the intersection above — never the bare
+     272000 claim.
+- **Reason:** Program #132's acceptance failure 3 (a normal supported
+  model unusable under an invisible generic ceiling) is a defaults and
+  visibility problem, not a safeguard problem: the safeguards
+  (rejection-based enforcement, administrator authority, UNKNOWN
+  fail-closed) are preserved and made visible. Delegating the
+  aggregation settlement here (D-056 pt 6) required choosing honestly
+  among per-route facts: strongest-only advertising lies about weak
+  routes, weakest-route aggregation needlessly constrains what stronger
+  routes execute, and UNKNOWN-to-number fabrication is forbidden —
+  strongest-headline + per-route detail + null-UNKNOWN satisfies all
+  three constraints and gives child H the exact per-route data its
+  operator surface consumes.
+- **Alternatives considered:** advertising the weakest route's ceiling
+  (rejected: hides capability stronger routes genuinely provide);
+  advertising the strongest route with no per-route detail (rejected:
+  reads as "every route supports it"); folding the administrator
+  allowance alone into UNKNOWN intersections to manufacture a number
+  (rejected: D-056's UNKNOWN discipline); mapping `max_output_tokens`
+  onto the Codex channel (rejected: no control exists to map —
+  re-evidenced 2026-09-28); enforcing effective limits in the routing
+  core's eligibility (deferred: the child's frozen complexity boundary
+  keeps the routing core unchanged; route-steering on output ceilings is
+  a future optimization, admission correctness does not depend on it);
+  dropping the 272000 fact to UNKNOWN (rejected: it is an
+  administrator-owned registration fact, and retracting it without new
+  contrary evidence would fail the supported workload closed for no
+  evidenced reason — the provenance gap is recorded instead).
+- **Reconciliation:** D-056 pt 6 (intersection; aggregation delegated
+  here) is implemented by points 1–4; D-055's `max_output_tokens`
+  interim semantics are superseded by point 4 as D-055 itself anticipated;
+  D-042 (request narrowing only), D-043 (matrix authority for
+  compatibility cells), D-044 (bounded limits discipline) and
+  D-053/D-054/D-055 are otherwise unchanged. The child-A acceptance pin
+  (representative output ceiling) flips to the new contract.
+- **Boundary:** Implementation of the limits dimensions of the D-056
+  intersection on the existing execution surface (v1-additive: a
+  headline whose value changes only where multi-route spreads or
+  channel facts now exist, plus one additive metadata array). No
+  routing-core change; no tool-call work (#137); no operator UI (child
+  H consumes `x_scarcity_router.routes`); no new execution channel.
 
 ### D-059 — Dated blackout policy: temporary Z.ai campaigns ride the existing schedule machinery
 

@@ -106,7 +106,7 @@ _LIMIT_FIELDS: tuple[str, ...] = (
 
 @dataclass(frozen=True)
 class GatewayLimits:
-    """Administrator-configurable admission limits with safe defaults (D-044).
+    """Administrator-configurable admission limits with honest defaults.
 
     Every limit is enforced at admission, before any dispatch: the request
     body against ``max_request_body_bytes`` (HTTP layer), the estimated
@@ -119,14 +119,31 @@ class GatewayLimits:
     (M02/D-042) — there is no second spending-limit system.
 
     There is no unlimited sentinel: every field is a positive integer.
+    The defaults are the #136 honest defaults (D-058) for the supported
+    coding-agent workload — chosen so the generic ceiling never sits
+    invisibly below evidenced capability, while staying bounded and
+    rejection-based:
+
+    - ``max_request_body_bytes = 4_194_304`` — admits a full
+      272k-token conversation (≈1.1 MiB of text at the documented chars/4
+      estimator) plus JSON structure and tool-definition overhead.
+    - ``max_input_context_tokens = 272_000`` — the evidenced Codex
+      execution-channel context ceiling (the tightest evidenced channel
+      on the supported surface); the administrator ceiling no longer
+      silently strangles it.
+    - ``max_output_tokens = 131_072`` — covers the evidenced 128k-token
+      outputs of every supported model family.
+    - ``execution_time_limit_seconds = 1200`` — max-effort reasoning
+      turns on the supported models routinely exceed 300 s; 20 minutes
+      bounds them without failing normal turns.
     """
 
-    max_request_body_bytes: int = 1_048_576
-    max_input_context_tokens: int = 131_072
-    max_output_tokens: int = 16_384
+    max_request_body_bytes: int = 4_194_304
+    max_input_context_tokens: int = 272_000
+    max_output_tokens: int = 131_072
     max_concurrent_executions: int = 4
     max_concurrent_executions_per_client: int = 2
-    execution_time_limit_seconds: int = 300
+    execution_time_limit_seconds: int = 1_200
 
     def __post_init__(self) -> None:
         values: tuple[tuple[str, int], ...] = (

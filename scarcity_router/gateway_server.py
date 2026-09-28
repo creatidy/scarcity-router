@@ -420,7 +420,9 @@ class GatewayRequestHandler(BaseHTTPRequestHandler):
         application = self._application()
         payload = models_list_payload(
             application.aliases.aliases,
-            exposed_logical_models(application.catalog, application.registry),
+            exposed_logical_models(
+                application.catalog, application.registry, application.limits
+            ),
         )
         self._send_json(HTTPStatus.OK, payload)
 

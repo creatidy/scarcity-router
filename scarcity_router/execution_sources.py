@@ -79,11 +79,31 @@ ADOPTION_STATES: tuple[str, ...] = (
 
 #: Registration-owned capability facts of the CODEX EXECUTION SURFACE
 #: (D-053): derived resources served through this surface inherit exactly
-#: what the reviewed M06 evidence supports (docs/codex-adapter-stage1-
-#: evidence.md) — the 272k thread context limit and reasoning controls —
-#: and nothing about any specific model. Tool calls stay false on the
-#: stable surface (client tools return to clients, D-043); the D-043
-#: matrix remains the per-request admission authority.
+#: what the reviewed M06 evidence supports and nothing about any specific
+#: model. The D-043 matrix remains the per-request admission authority.
+#:
+#: - ``context_limit_tokens`` — 272000 is the owner-reviewed registration
+#:   fact of the 2026-09-24 sources program (D-053). Re-evidenced
+#:   2026-09-28 (issue #136): the CURRENT runtime
+#:   (``codex-cli 0.155.0-alpha.16.3``) exposes no context-window
+#:   discovery on ``model/list`` or ``modelProvider/capabilities/read``
+#:   and current official documentation publishes no context-window
+#:   number, so the figure could NOT be re-established from provider
+#:   surfaces; it is retained exactly because it is the administrator's
+#:   registered fact, not because current docs confirm it. The runtime's
+#:   own ``contextWindowExceeded`` failure signal stays the enforcement
+#:   backstop. (The original M06 evidence doc never recorded the number —
+#:   a provenance gap now recorded here and in the evidence doc.)
+#: - ``output_limit_control: False`` — re-evidenced 2026-09-28 (issue
+#:   #136): the current app-server turn contract carries NO output-token
+#:   control (``TurnStartParams`` has no such field; candidate fields are
+#:   silently ignored — the protocol parses unknown fields leniently — and
+#:   no experimental gate names one). An explicit client output limit can
+#:   never be enforced on this channel; the #136 coordinator normalization
+#:   rule governs.
+#: - ``tool_calls: False`` — client tools return to clients (D-043); the
+#:   experimental dynamic-tools round trip is #137's investigation scope
+#:   and stays unaudited here.
 CODEX_SURFACE_CAPABILITIES: dict[str, object] = {
     "context_limit_tokens": 272_000,
     "streaming": True,
@@ -92,6 +112,7 @@ CODEX_SURFACE_CAPABILITIES: dict[str, object] = {
     "reasoning_controls": True,
     "usage_reporting": True,
     "cancellation": True,
+    "output_limit_control": False,
 }
 
 #: Closed reason codes for non-adopted models (audit + UX remediations).

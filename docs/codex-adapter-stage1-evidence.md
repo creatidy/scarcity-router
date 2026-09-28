@@ -954,3 +954,66 @@ suites entirely.
 - **Desktop-bundled Codex** remains UNKNOWN and undiscovered.
 - The guardrail extension (package-write scan) is the only existing-test
   change; it is documented in the guardrail docstring itself.
+
+## 2026-09-28 re-evidence: output limits and context (issue #136)
+
+Re-evidenced against the CURRENT controlled runtime before changing any
+limit semantics. Probes were bounded, structure-only, on a fresh
+controlled `CODEX_HOME` under `/tmp` (never the user home), synthetic
+strings only: no auth method was sent, no turn was executed, no inference
+was possible (unsigned-in turns fail closed at upstream 401), and no
+quota was consumed. Output sanitized to structure before recording.
+
+- **Runtime:** `codex-cli 0.155.0-alpha.16.3` (extension
+  `openai.chatgpt-26.917.62051-linux-x64`, U-001 discovery layout,
+  static musl ELF). NEWER lineage than both the 2026-09-20 probe
+  (`0.154.0-alpha.6.2`) and the `rust-v0.155.1` schema tag pinned above.
+- **Version-pinned schema** generated FROM THIS BINARY
+  (`codex app-server generate-json-schema`): 39 top-level + 271 v2
+  files. The bundle reflects the STABLE surface; live probing proved the
+  generator omits `experimentalApi`-gated fields (below), so schema
+  absence alone is not evidence of removal.
+
+**Finding 1 — no output-token control exists on the current turn path
+(stable or experimental).** `TurnStartParams` (this binary's own schema)
+carries no output-limit member. Live probes: candidate fields
+(`maxOutputTokens`, `maxTokens`) on `turn/start` are silently ignored —
+no `experimentalApi` gate error names them, while the same probe shows
+genuinely-gated fields error positively (`thread/start.dynamicTools`
+requires experimentalApi capability, `-32600`) and genuinely unknown
+fields are silently dropped (the protocol parses leniently; a garbage
+control field was accepted without effect). The adapter's preflight
+refusal therefore moves from `request_parameters_unsupported` to the
+#136 typed `output_limit_unenforceable` backstop, and the composed path
+applies the #136 normalization rule (D-058): a requested explicit limit
+on this channel is normalized away only when non-binding (at or above
+the catalog's proven `hard_properties.output_tokens` of the exact
+selected model, audited `output_limit_normalized`), rejected
+`output_limit_unenforceable` when binding, and never normalized against
+an UNKNOWN hard maximum.
+
+**Finding 2 — no context-ceiling discovery exists on the current
+runtime.** The `model/list` Model descriptor carries no context-window
+or output-token members, and `modelProvider/capabilities/read` returns
+only feature booleans (`imageGeneration`, `namespaceTools`,
+`webSearch`). Current official documentation (the models page, fetched
+2026-09-28) publishes no context-window numbers. The registration-owned
+`context_limit_tokens: 272000` fact (`CODEX_SURFACE_CAPABILITIES`) could
+NOT be re-established from any provider surface; it is retained exactly
+because it is the owner-reviewed registration fact of the 2026-09-24
+sources program — the original M06 evidence doc never recorded the
+number (a provenance gap now recorded here and in the code comment). The
+runtime's own `codexErrorInfo.contextWindowExceeded` failure signal
+(still present in this binary's schema) remains the enforcement
+backstop.
+
+**Finding 3 — the client-tool mechanism is unchanged in kind**
+(`dynamicTools` on `thread/start`, `experimentalApi`-gated; `item/tool/
+call` server request with `callId` correlation). Investigated separately
+under issue #137; see that issue's 2026-09-28 investigation report. The
+`tool_calls`/`tool_results` matrix cells for this adapter are unchanged
+by #136.
+
+Consequent #136 registration fact: `CODEX_SURFACE_CAPABILITIES` gains
+`output_limit_control: False` (Finding 1) — the channel-level input of
+the D-056 effective-output intersection.
