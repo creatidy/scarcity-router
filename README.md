@@ -161,15 +161,30 @@ selector policy data — never credentials.
 Availability windows such as personal peak-hour blackouts and campaign
 happy hours are user policy, not telemetry. The checked-in owner policy
 [`examples/selector-policy.json`](examples/selector-policy.json) contains
-two rules:
+the permanent baseline rules plus the currently documented temporary Z.ai
+campaigns (official sources: the
+[Plan Update Announcement](https://docs.z.ai/devpack/notice/usage-revision.md)
+and the
+[GLM-5.3-Flash Usage Campaign](https://docs.z.ai/devpack/notice/event-glm-5.3-flash.md);
+billing calendar Asia/Singapore, UTC+8):
 
-- a **blackout** blocks all Z.ai models (GLM-5.3, GLM-5.3-Flash)
-  Monday–Friday 14:00–18:00 Asia/Singapore to preserve the plan for
-  off-peak use;
+- a standing **blackout** pair blocks all Z.ai models (GLM-5.3,
+  GLM-5.3-Flash) Monday–Friday 14:00–18:00 Asia/Singapore to preserve the
+  plan for off-peak use — split into two dated halves around the vendor's
+  all-day off-peak campaign: `zai-peak-hours-sgt` ends 2026-09-24
+  (inclusive) and `zai-peak-hours-sgt-post-campaign` resumes the identical
+  window from 2026-10-08 (inclusive), so during the vendor's "September 25
+  to October 7, 2026" all-day off-peak-rate period an otherwise eligible
+  Z.ai request is not excluded as `preserve_zai_offpeak`, and ordinary
+  peak behavior resumes automatically afterwards;
 - a **happy hour** strongly prefers GLM-5.3-Flash daily 23:00–09:00
-  Asia/Singapore between 2026-09-03 and 2026-09-20, matching the vendor's
-  zero-quota usage campaign window, so cheap-quota work is absorbed by the
-  campaign model and paid plans are conserved.
+  Asia/Singapore between 2026-09-03 and 2026-10-07, matching the vendor's
+  extended usage-campaign window, so cheap-quota work is absorbed by the
+  campaign model and paid plans are conserved. The vendor's execution-method
+  split (zero quota via ZCode ≥ 3.10/AutoClaw, doubled quota via other
+  agents, weekly participation cap) is not modeled as selection fact — the
+  selector has no authoritative per-request execution-source identity — so
+  the rule stays a ranking preference and never fabricates availability.
 
 Use it with the CLI:
 

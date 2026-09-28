@@ -18,7 +18,10 @@ Implements the frozen M2d resource-policy contracts (D-026, D-021):
   model-specific reservation would incorrectly imply independent quota;
 - timezone-aware weekly blackout rules with half-open ``[start, end)``
   local-time semantics, cross-midnight support and no hard-coded vendor
-  schedule;
+  schedule, plus the same optional inclusive local date bounds as happy
+  hours: a limited-time vendor campaign (for example an all-day
+  off-peak-rate period) can suspend a standing peak blackout for the
+  campaign's duration without editing the permanent baseline schedule;
 - timezone-aware weekly happy-hour rules with the same schedule semantics
   plus optional inclusive local date bounds (limited-time vendor campaigns):
   a matching window marks candidates as quota-preferred for ranking only
@@ -303,6 +306,82 @@ def _weekly_window_contains(
     if day in configured and minute_of_day >= start:
         return True
     return previous_day in configured and minute_of_day < end
+
+
+def _v_date_bounds(
+    start_date: str | None, end_date: str | None, label: str
+) -> None:
+    """Validated inclusive campaign date bounds shared by both rule kinds.
+
+    The optional ``YYYY-MM-DD`` bounds must each be valid calendar dates
+    with ``start_date <= end_date``; both absent is the standing
+    (unbounded) rule. The ``label`` prefixes every message exactly as the
+    per-field validators do (``weekly_blackout_rule`` /
+    ``weekly_happy_hour_rule``).
+    """
+    if start_date is not None:
+        _ = _v_date(start_date, label + ".start_date")
+    if end_date is not None:
+        _ = _v_date(end_date, label + ".end_date")
+    if (
+        start_date is not None
+        and end_date is not None
+        and date.fromisoformat(start_date) > date.fromisoformat(end_date)
+    ):
+        raise SelectionContractValidationError(
+            label + f": start_date {start_date} is after end_date {end_date}"
+        )
+
+
+def _date_bounds_contain(
+    timezone: str,
+    start_date: str | None,
+    end_date: str | None,
+    at: datetime,
+) -> bool:
+    """Inclusive local-calendar date-bounds test for one aware instant.
+
+    Shared by blackout and happy-hour rules so both schedule kinds apply
+    limited-time campaign bounds with exactly the same semantics: the
+    optional bounds compare the instant's local calendar date (in the
+    rule's zone) inclusively on both ends, and both absent means always
+    contained.
+    """
+    if start_date is None and end_date is None:
+        return True
+    local_date = at.astimezone(_zone(timezone)).date()
+    if start_date is not None and (
+        local_date < date.fromisoformat(start_date)
+    ):
+        return False
+    if end_date is not None and (
+        local_date > date.fromisoformat(end_date)
+    ):
+        return False
+    return True
+
+
+def _date_bounds_expired(
+    timezone: str,
+    start_date: str | None,
+    end_date: str | None,
+    at: datetime,
+) -> bool:
+    """Whether the inclusive date bounds exclude one covered instant.
+
+    Explanation-only counterpart of :func:`_date_bounds_contain`: the
+    caller has already established that the weekly window covers ``at``,
+    so ``True`` here means the rule is inert purely because of its
+    calendar bounds. Rules without date bounds are never date-expired.
+    """
+    if start_date is None and end_date is None:
+        return False
+    local_date = at.astimezone(_zone(timezone)).date()
+    if start_date is not None and (
+        local_date < date.fromisoformat(start_date)
+    ):
+        return True
+    return end_date is not None and local_date > date.fromisoformat(end_date)
 
 
 def _v_weekdays(value: object, fld: str) -> tuple[str, ...]:
@@ -1000,6 +1079,18 @@ class WeeklyBlackoutRule:
     blocked, exactly at end is not. ``start == end`` is invalid — never a
     24-hour blackout. A cross-midnight interval (``start > end``) blocks
     from start on each configured weekday through end on the following day.
+
+    Like a happy hour (D-035), a blackout may be limited-time: the optional
+    inclusive local calendar bounds ``start_date``/``end_date``
+    (``YYYY-MM-DD`` in the rule's own zone, ``start_date <= end_date``)
+    restrict the rule to a dated period — a vendor campaign that suspends
+    the ordinary peak economics (for example an all-day off-peak-rate
+    period) parks the standing blackout for exactly that period, and both
+    bounds absent means a standing recurring window. A rule whose weekly
+    window would cover an instant while its date bounds exclude it is
+    date-expired (``is_date_expired_at``), the blackout-side counterpart of
+    the D-035 campaign-ended signal, so a conservation blackout never goes
+    quiet silently.
     """
 
     rule_id: str
@@ -1009,6 +1100,8 @@ class WeeklyBlackoutRule:
     start_local: str
     end_local: str
     reason_code: str
+    start_date: str | None = None
+    end_date: str | None = None
 
     _REQUIRED: ClassVar[tuple[str, ...]] = (
         "rule_id",
@@ -1019,7 +1112,7 @@ class WeeklyBlackoutRule:
         "end_local",
         "reason_code",
     )
-    _OPTIONAL: ClassVar[tuple[str, ...]] = ()
+    _OPTIONAL: ClassVar[tuple[str, ...]] = ("start_date", "end_date")
 
     def __post_init__(self) -> None:
         _ = _v_safe_id(self.rule_id, "weekly_blackout_rule.rule_id")
@@ -1041,6 +1134,9 @@ class WeeklyBlackoutRule:
                 + "empty interval is invalid and is never a 24-hour blackout"
             )
         _ = _v_safe_id(self.reason_code, "weekly_blackout_rule.reason_code")
+        _ = _v_date_bounds(
+            self.start_date, self.end_date, "weekly_blackout_rule"
+        )
 
     def blocks_at(self, at: datetime) -> bool:
         """Half-open ``[start, end)`` check for one timezone-aware instant.
@@ -1048,12 +1144,42 @@ class WeeklyBlackoutRule:
         The argument is validated here — a naive datetime is rejected with
         the contract error instead of being silently interpreted in the
         host's local timezone — so this public path stays deterministic
-        independently of :func:`evaluate_blackouts`.
+        independently of :func:`evaluate_blackouts`. A rule whose weekly
+        window covers the instant but whose inclusive date bounds do not
+        does not block: during a dated campaign override the ordinary peak
+        schedule is suspended, not enforced.
         """
         checked_at = _v_aware_datetime(at, "weekly_blackout_rule.blocks_at.at")
-        return _weekly_window_contains(
+        if not _weekly_window_contains(
             self.timezone, self.weekdays, self.start_local, self.end_local,
             checked_at,
+        ):
+            return False
+        return _date_bounds_contain(
+            self.timezone, self.start_date, self.end_date, checked_at
+        )
+
+    def is_date_expired_at(self, at: datetime) -> bool:
+        """Whether the weekly window would cover ``at`` but dates exclude it.
+
+        Explanation-only signal, the blackout-side counterpart of the
+        D-035 happy-hour expiry: a conservation blackout parked by its
+        campaign date bounds must be visible as parked, not silently
+        inert. A rule without date bounds and a rule whose weekly window
+        does not cover the instant are never date-expired; being outside
+        the weekly window is ordinary schedule behavior, not a notable
+        expiry.
+        """
+        checked_at = _v_aware_datetime(
+            at, "weekly_blackout_rule.is_date_expired_at.at"
+        )
+        if not _weekly_window_contains(
+            self.timezone, self.weekdays, self.start_local, self.end_local,
+            checked_at,
+        ):
+            return False
+        return _date_bounds_expired(
+            self.timezone, self.start_date, self.end_date, checked_at
         )
 
     @classmethod
@@ -1069,6 +1195,12 @@ class WeeklyBlackoutRule:
             _v_enum(item, frozenset(WEEKDAYS), "weekly_blackout_rule.weekdays")
             for item in cast("list[object]", weekdays_raw)
         )
+        start_date: str | None = None
+        if dd.get("start_date") is not None:
+            start_date = _v_date(dd["start_date"], "weekly_blackout_rule.start_date")
+        end_date: str | None = None
+        if dd.get("end_date") is not None:
+            end_date = _v_date(dd["end_date"], "weekly_blackout_rule.end_date")
         return cls(
             rule_id=_v_safe_id(dd["rule_id"], "weekly_blackout_rule.rule_id"),
             target=AvailabilityTarget.from_dict(dd["target"]),
@@ -1079,10 +1211,12 @@ class WeeklyBlackoutRule:
             reason_code=_v_safe_id(
                 dd["reason_code"], "weekly_blackout_rule.reason_code"
             ),
+            start_date=start_date,
+            end_date=end_date,
         )
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        out: dict[str, object] = {
             "rule_id": self.rule_id,
             "target": self.target.to_dict(),
             "timezone": self.timezone,
@@ -1091,6 +1225,11 @@ class WeeklyBlackoutRule:
             "end_local": self.end_local,
             "reason_code": self.reason_code,
         }
+        if self.start_date is not None:
+            out["start_date"] = self.start_date
+        if self.end_date is not None:
+            out["end_date"] = self.end_date
+        return out
 
 
 @dataclass(frozen=True)
@@ -1279,20 +1418,9 @@ class WeeklyHappyHourRule:
                 + "empty interval is invalid and is never a 24-hour window"
             )
         _ = _v_safe_id(self.reason_code, "weekly_happy_hour_rule.reason_code")
-        if self.start_date is not None:
-            _ = _v_date(self.start_date, "weekly_happy_hour_rule.start_date")
-        if self.end_date is not None:
-            _ = _v_date(self.end_date, "weekly_happy_hour_rule.end_date")
-        if (
-            self.start_date is not None
-            and self.end_date is not None
-            and date.fromisoformat(self.start_date)
-            > date.fromisoformat(self.end_date)
-        ):
-            raise SelectionContractValidationError(
-                "weekly_happy_hour_rule: start_date "
-                + f"{self.start_date} is after end_date {self.end_date}"
-            )
+        _ = _v_date_bounds(
+            self.start_date, self.end_date, "weekly_happy_hour_rule"
+        )
 
     def active_at(self, at: datetime) -> bool:
         """Whether the preference window covers one timezone-aware instant.
@@ -1308,18 +1436,9 @@ class WeeklyHappyHourRule:
             checked_at,
         ):
             return False
-        if self.start_date is None and self.end_date is None:
-            return True
-        local_date = checked_at.astimezone(_zone(self.timezone)).date()
-        if self.start_date is not None and (
-            local_date < date.fromisoformat(self.start_date)
-        ):
-            return False
-        if self.end_date is not None and (
-            local_date > date.fromisoformat(self.end_date)
-        ):
-            return False
-        return True
+        return _date_bounds_contain(
+            self.timezone, self.start_date, self.end_date, checked_at
+        )
 
     def is_date_expired_at(self, at: datetime) -> bool:
         """Whether the weekly window would cover ``at`` but dates exclude it.
@@ -1340,16 +1459,8 @@ class WeeklyHappyHourRule:
             checked_at,
         ):
             return False
-        if self.start_date is None and self.end_date is None:
-            return False
-        local_date = checked_at.astimezone(_zone(self.timezone)).date()
-        if self.start_date is not None and (
-            local_date < date.fromisoformat(self.start_date)
-        ):
-            return True
-        return (
-            self.end_date is not None
-            and local_date > date.fromisoformat(self.end_date)
+        return _date_bounds_expired(
+            self.timezone, self.start_date, self.end_date, checked_at
         )
 
     @classmethod

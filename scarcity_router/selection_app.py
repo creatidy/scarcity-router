@@ -915,6 +915,16 @@ def _explain_sections(decision: SelectionDecision) -> list[str]:
             for rule_id in decision.expired_happy_hour_rules
         )
 
+    if decision.expired_blackout_rules:
+        lines.append(
+            "Expired blackout rules (weekly window would cover now, "
+            + "date bounds do not — block not applied):"
+        )
+        lines.extend(
+            f"  - rule {rule_id}"
+            for rule_id in decision.expired_blackout_rules
+        )
+
     if decision.alternatives:
         lines.append("Alternatives (exact ranking order):")
         for index, alternative in enumerate(decision.alternatives, start=1):

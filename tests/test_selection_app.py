@@ -858,28 +858,47 @@ class StrictJsonAndRenderingTests(unittest.TestCase):
             self.assertIn(command, help_text)
 
 
+def _select_with_example_policy_at(
+    policy_path: Path, at: datetime, *extra: str
+) -> tuple[int, str, str]:
+    """Run one ``select`` against a policy file at an explicit instant."""
+    out = io.StringIO()
+    err = io.StringIO()
+    original_stderr = sys.stderr
+    sys.stderr = err
+    try:
+        code = main(
+            _select_args("--selector-policy", str(policy_path), *extra),
+            stdout=out,
+            collectors=_collectors(),
+            clock=lambda: at,
+        )
+    finally:
+        sys.stderr = original_stderr
+    return code, out.getvalue(), err.getvalue()
+
+
+def _policy_blocked_models(decision: dict[str, object]) -> set[str | None]:
+    """The models excluded at the ``policy_blackout`` stage of a decision."""
+    models: set[str | None] = set()
+    for entry in cast("list[object]", decision["excluded"]):
+        candidate = cast("dict[str, object]", entry)
+        if candidate.get("exclusion_stage") != "policy_blackout":
+            continue
+        identity = cast("dict[str, object]", candidate["identity"])
+        models.add(cast("str | None", identity["model"]))
+    return models
+
+
 class SelectorPolicyExampleTests(unittest.TestCase):
     """The checked-in owner policy blocks Z.ai Mon–Fri 14:00–18:00 SGT."""
 
     POLICY_PATH: Path = REPO / "examples" / "selector-policy.json"
 
     def _run_select_at(self, at: datetime, *extra: str) -> tuple[int, str, str]:
-        out = io.StringIO()
-        err = io.StringIO()
-        original_stderr = sys.stderr
-        sys.stderr = err
-        try:
-            code = main(
-                _select_args("--selector-policy", str(self.POLICY_PATH), *extra),
-                stdout=out,
-                collectors=_collectors(),
-                clock=lambda: at,
-            )
-        finally:
-            sys.stderr = original_stderr
-        return code, out.getvalue(), err.getvalue()
+        return _select_with_example_policy_at(self.POLICY_PATH, at, *extra)
 
-    def test_policy_document_loads_with_expected_rule(self) -> None:
+    def test_policy_document_loads_with_expected_rules(self) -> None:
         policy = load_selector_policy(self.POLICY_PATH)
         self.assertEqual("balanced", policy.mode)
         self.assertEqual((), policy.preference_order)
@@ -888,17 +907,30 @@ class SelectorPolicyExampleTests(unittest.TestCase):
         self.assertEqual("degraded", resource_policy.unknown_capacity_mode)
         self.assertEqual("advisory", resource_policy.replenishment_mode)
         self.assertEqual((), resource_policy.reservations)
-        self.assertEqual(1, len(resource_policy.blackouts))
-        rule = resource_policy.blackouts[0]
-        self.assertEqual("zai-peak-hours-sgt", rule.rule_id)
-        self.assertEqual("zai", rule.target.provider)
-        self.assertIsNone(rule.target.model)
-        self.assertIsNone(rule.target.variant)
-        self.assertEqual("Asia/Singapore", rule.timezone)
-        self.assertEqual(("mon", "tue", "wed", "thu", "fri"), rule.weekdays)
-        self.assertEqual("14:00", rule.start_local)
-        self.assertEqual("18:00", rule.end_local)
-        self.assertEqual("preserve_zai_offpeak", rule.reason_code)
+        # D-059: the ordinary peak blackout is split into two dated halves
+        # around the vendor's all-day off-peak campaign (Sep 25 – Oct 7,
+        # 2026); the campaign is the gap between them.
+        self.assertEqual(2, len(resource_policy.blackouts))
+        standing, resumption = resource_policy.blackouts
+        for rule in (standing, resumption):
+            self.assertEqual("zai", rule.target.provider)
+            self.assertIsNone(rule.target.model)
+            self.assertIsNone(rule.target.variant)
+            self.assertEqual("Asia/Singapore", rule.timezone)
+            self.assertEqual(
+                ("mon", "tue", "wed", "thu", "fri"), rule.weekdays
+            )
+            self.assertEqual("14:00", rule.start_local)
+            self.assertEqual("18:00", rule.end_local)
+            self.assertEqual("preserve_zai_offpeak", rule.reason_code)
+        self.assertEqual("zai-peak-hours-sgt", standing.rule_id)
+        self.assertIsNone(standing.start_date)
+        self.assertEqual("2026-09-24", standing.end_date)
+        self.assertEqual(
+            "zai-peak-hours-sgt-post-campaign", resumption.rule_id
+        )
+        self.assertEqual("2026-10-08", resumption.start_date)
+        self.assertIsNone(resumption.end_date)
 
     def test_rule_boundary_semantics_in_singapore_time(self) -> None:
         sgt = ZoneInfo("Asia/Singapore")
@@ -994,6 +1026,187 @@ class SelectorPolicyExampleTests(unittest.TestCase):
         self.assertIn(
             "blackout rule zai-peak-hours-sgt (preserve_zai_offpeak)", out
         )
+
+
+class SelectorPolicyCampaignTests(unittest.TestCase):
+    """The dated blackout pair encodes the Z.ai all-day off-peak campaign.
+
+    Official vendor policy (D-059): from September 25 through October 7,
+    2026 all-day Z.ai usage is billed at the off-peak rate, so the ordinary
+    Mon–Fri 14:00–18:00 Asia/Singapore peak blackout must not exclude Z.ai
+    during that period and must resume automatically afterwards. Every
+    instant below is constructed explicitly; the clock is injected.
+    """
+
+    POLICY_PATH: Path = REPO / "examples" / "selector-policy.json"
+
+    def _run(self, at: datetime, *extra: str) -> tuple[int, str, str]:
+        return _select_with_example_policy_at(self.POLICY_PATH, at, *extra)
+
+    @staticmethod
+    def _decision(out: str) -> dict[str, object]:
+        return cast("dict[str, object]", json.loads(out))
+
+    def test_last_pre_campaign_peak_still_blocks(self) -> None:
+        # Thursday 2026-09-24 06:00 UTC == 14:00 SGT: the last campaign-free
+        # peak window; the standing blackout still excludes Z.ai, and the
+        # not-yet-active resumption half is the named parked rule.
+        code, out, err = self._run(
+            datetime(2026, 9, 24, 6, 0, tzinfo=timezone.utc),
+            "--profile",
+            "routine_coding",
+            "--json",
+        )
+        self.assertEqual((0, ""), (code, err))
+        decision = self._decision(out)
+        selected = cast("dict[str, object]", decision["selected"])
+        identity = cast("dict[str, object]", selected["identity"])
+        self.assertEqual("openai", identity["provider"])
+        self.assertEqual(
+            {"glm-5.3", "glm-5.3-flash"}, _policy_blocked_models(decision)
+        )
+        self.assertEqual(
+            ["zai-peak-hours-sgt-post-campaign"],
+            decision["expired_blackout_rules"],
+        )
+
+    def test_campaign_first_day_peak_no_longer_blocks(self) -> None:
+        # Friday 2026-09-25 06:00 UTC == 14:00 SGT: the campaign's first
+        # nominal peak window — the regression that motivated #154. The
+        # request evaluates Z.ai at the effective off-peak economics
+        # instead of excluding it as preserve_zai_offpeak.
+        code, out, err = self._run(
+            datetime(2026, 9, 25, 6, 0, tzinfo=timezone.utc),
+            "--profile",
+            "routine_coding",
+            "--json",
+        )
+        self.assertEqual((0, ""), (code, err))
+        decision = self._decision(out)
+        selected = cast("dict[str, object]", decision["selected"])
+        identity = cast("dict[str, object]", selected["identity"])
+        self.assertEqual(("zai", "glm-5.3"), (identity["provider"], identity["model"]))
+        self.assertEqual(set(), _policy_blocked_models(decision))
+        # Both blackout halves are parked at this instant: one has ended,
+        # one has not begun. Explanation only, never an exclusion.
+        self.assertEqual(
+            ["zai-peak-hours-sgt", "zai-peak-hours-sgt-post-campaign"],
+            decision["expired_blackout_rules"],
+        )
+
+    def test_zai_constrained_request_survives_campaign_peak(self) -> None:
+        # The exact constrained shape from #154: provider = zai must not
+        # return no selection merely because the baseline calendar says
+        # peak. Before the fix this returned no_eligible_candidate with
+        # every Z.ai candidate policy-blocked.
+        with tempfile.TemporaryDirectory() as tmp:
+            requirement_path = Path(tmp) / "requirement.json"
+            _ = requirement_path.write_text(
+                json.dumps(
+                    {
+                        "task_level": "L1",
+                        "capability_minima": {},
+                        "hard_constraints": {"required_provider": "zai"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            code, out, err = self._run(
+                datetime(2026, 9, 25, 6, 0, tzinfo=timezone.utc),
+                "--requirement",
+                str(requirement_path),
+                "--json",
+            )
+            self.assertEqual((0, ""), (code, err))
+            decision = self._decision(out)
+            selected = cast("dict[str, object]", decision["selected"])
+            identity = cast("dict[str, object]", selected["identity"])
+            self.assertEqual("zai", identity["provider"])
+            self.assertEqual(set(), _policy_blocked_models(decision))
+
+    def test_campaign_first_minute_selects_zai(self) -> None:
+        # 2026-09-24 16:00 UTC == 2026-09-25 00:00 SGT: the campaign's
+        # first minute; no blackout half covers it.
+        code, out, _ = self._run(
+            datetime(2026, 9, 24, 16, 0, tzinfo=timezone.utc),
+            "--profile",
+            "routine_coding",
+            "--json",
+        )
+        self.assertEqual(0, code)
+        decision = self._decision(out)
+        selected = cast("dict[str, object]", decision["selected"])
+        identity = cast("dict[str, object]", selected["identity"])
+        self.assertEqual("zai", identity["provider"])
+        self.assertEqual(set(), _policy_blocked_models(decision))
+
+    def test_weekend_inside_campaign_is_unchanged(self) -> None:
+        # Saturday 2026-09-26 06:00 UTC == 14:00 SGT: weekends were never
+        # blacked out, and the campaign adds no double discount — the same
+        # ordinary ranking decides as outside the campaign.
+        code, out, _ = self._run(
+            datetime(2026, 9, 26, 6, 0, tzinfo=timezone.utc),
+            "--profile",
+            "routine_coding",
+            "--json",
+        )
+        self.assertEqual(0, code)
+        decision = self._decision(out)
+        selected = cast("dict[str, object]", decision["selected"])
+        identity = cast("dict[str, object]", selected["identity"])
+        self.assertEqual("zai", identity["provider"])
+        self.assertEqual(set(), _policy_blocked_models(decision))
+
+    def test_campaign_last_day_is_fully_covered(self) -> None:
+        # Wednesday 2026-10-07 06:00 UTC == 14:00 SGT: the campaign's last
+        # calendar day is still all-day off-peak.
+        code, out, _ = self._run(
+            datetime(2026, 10, 7, 6, 0, tzinfo=timezone.utc),
+            "--profile",
+            "routine_coding",
+            "--json",
+        )
+        self.assertEqual(0, code)
+        decision = self._decision(out)
+        selected = cast("dict[str, object]", decision["selected"])
+        identity = cast("dict[str, object]", selected["identity"])
+        self.assertEqual("zai", identity["provider"])
+        self.assertEqual(set(), _policy_blocked_models(decision))
+
+    def test_after_expiration_ordinary_peak_resumes(self) -> None:
+        # Thursday 2026-10-08 06:00 UTC == 14:00 SGT: the first post-
+        # campaign peak window. The resumption blackout half is active
+        # again without any configuration change; the expired standing
+        # half is the named parked rule.
+        code, out, _ = self._run(
+            datetime(2026, 10, 8, 6, 0, tzinfo=timezone.utc),
+            "--profile",
+            "routine_coding",
+            "--json",
+        )
+        self.assertEqual(0, code)
+        decision = self._decision(out)
+        selected = cast("dict[str, object]", decision["selected"])
+        identity = cast("dict[str, object]", selected["identity"])
+        self.assertEqual("openai", identity["provider"])
+        self.assertEqual(
+            {"glm-5.3", "glm-5.3-flash"}, _policy_blocked_models(decision)
+        )
+        self.assertEqual(
+            ["zai-peak-hours-sgt"], decision["expired_blackout_rules"]
+        )
+
+    def test_explain_lists_the_parked_blackout(self) -> None:
+        code, out, _ = self._run(
+            datetime(2026, 9, 25, 6, 30, tzinfo=timezone.utc),
+            "--profile",
+            "routine_coding",
+            "--explain",
+        )
+        self.assertEqual(0, code)
+        self.assertNotIn("policy_blackout:", out)
+        self.assertIn("Expired blackout rules", out)
+        self.assertIn("rule zai-peak-hours-sgt", out)
 
 
 if __name__ == "__main__":
