@@ -110,24 +110,36 @@ effective capability = model capability
 ```
 
 The implemented per-route rule (#136/D-058): the route's effective
-ceiling in a limits dimension is `min(known of: model hard, channel
-ceiling, administrator allowance)`, and it stays UNKNOWN when neither the
-model nor the channel evidences a ceiling — an administrator allowance
-alone never certifies a capability (UNKNOWN → `null` in metadata,
-fail-closed in admission, never a guessed number). Admission enforces the
-SELECTED route's effective ceilings with typed rejections
-(`context_length_exceeded`, `output_limit_exceeded`) — never silent
-clipping — and the administrator's global pre-check stays authoritative.
+ceiling in a limits dimension is `min(known of: the EXACT calibrated
+variant's hard property, channel ceiling, administrator allowance)` —
+never a sibling variant's calibration, never a minimum across variants —
+and it stays UNKNOWN when neither the variant nor the channel evidences a
+ceiling — an administrator allowance alone never certifies a capability
+(UNKNOWN → `null` in metadata, fail-closed in admission, never a guessed
+number). Output capability gates routes BEFORE competitive ranking
+(`output_limit_unknown` / `output_limit_insufficient` /
+`output_limit_unenforceable` reason codes, one shared rule with
+post-admission enforcement): a request never routes to a weaker route
+when another route serving the exact same identity can satisfy it; a
+pinned route is evaluated exactly and rejected with the mapped typed 400s.
+Admission then enforces the SELECTED route's effective ceilings with
+typed rejections (`context_length_exceeded`, `output_limit_exceeded`) —
+never silent clipping — and the administrator's global pre-check stays
+authoritative.
 
 **Model-level advertising (the #136 aggregation rule).** Multiple routes
 serving the same logical model may carry different effective ceilings;
 admission stays route-specific. `GET /v1/models` advertises as the
 model-level headline (`effective_context_limit_tokens`,
 `max_output_tokens`) the STRONGEST bound route's effective ceiling — a
-request within it is executable on this gateway through that route — and
-carries the honest per-route detail beside it: an `x_scarcity_router.routes`
-array with every bound resource's own effective ceilings (`null` when
-unknown for that route). The headline is never presented as if every
+request within it is executable on this gateway through that route
+(pre-ranking output eligibility routes each request to a satisfying
+route) — and carries the honest per-route detail beside it: an
+`x_scarcity_router.routes` array with every bound resource's own
+effective ceilings (`null` when unknown for that route), each computed
+per exact calibrated variant the resource binds and reporting the
+weakest such variant (the detail never over-advertises any variant it
+serves). The headline is never presented as if every
 route supports it (the detail exposes the spread), a request is never
 constrained to the weakest route's ceiling, and UNKNOWN never becomes a
 number. A capability-shortfall request (above the model's calibrated
@@ -147,11 +159,17 @@ ignored; an UNKNOWN hard maximum is never normalized. Arbitrary
 `generation_params` stay refuse-not-drop everywhere.
 
 **Honest administrator defaults.** The shipped `GatewayLimits` defaults
-(4 MiB body, 272000 input-context tokens, 131072 output tokens, 1200 s
-execution) are chosen so the generic ceiling never sits invisibly below
-the evidenced capability of the supported coding-agent workload; an
-operator may knowingly lower any of them, and lowered (non-default)
-limits are exactly what the configuration export represents.
+(16 MiB body, 2^21 input-context tokens, 131072 output tokens, 1200 s
+execution) are bounded operational guards that only narrow —
+ADMINISTRATOR POLICY, deliberately separate from execution-channel
+capability. No default is derived from a single channel's registration
+fact: the body bound carries headroom above the largest evidenced
+context (tokenization-independent), and the input guard sits above the
+strongest evidenced model hard context in the current catalog so policy
+never silently narrows an evidenced route; reachability is enforced per
+route from the intersection. An operator may knowingly lower any of
+them, and lowered (non-default) limits are exactly what the
+configuration export represents.
 
 ## Versioning and coexistence (D-045)
 

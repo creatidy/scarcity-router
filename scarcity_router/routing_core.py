@@ -149,6 +149,7 @@ from .resource_state import (
     RegistrySnapshot,
     ResourceIdentity,
     ResourceRegistryEntry,
+    route_output_code,
 )
 from .selector import (
     SelectionDecision,
@@ -214,6 +215,9 @@ TARGET_EXCLUSION_REASON_CODES: frozenset[str] = frozenset({
     "compatibility_unknown",
     "context_limit_unknown",
     "context_limit_insufficient",
+    "output_limit_unknown",
+    "output_limit_insufficient",
+    "output_limit_unenforceable",
 })
 
 _STAGE_REASONS: dict[str, frozenset[str]] = {
@@ -237,6 +241,9 @@ _STAGE_REASONS: dict[str, frozenset[str]] = {
         "compatibility_unknown",
         "context_limit_unknown",
         "context_limit_insufficient",
+        "output_limit_unknown",
+        "output_limit_insufficient",
+        "output_limit_unenforceable",
     }),
 }
 
@@ -1429,6 +1436,8 @@ def _compatibility_failure(
     request: RequestBinding,
     cells: tuple[CompatibilityCell, ...],
     requirement: TaskRequirement,
+    hard_output_tokens: int | None,
+    variant_resolved: bool,
 ) -> tuple[tuple[str, ...], str | None, str | None]:
     """Compatibility-stage failure codes plus the first failing feature.
 
@@ -1437,10 +1446,15 @@ def _compatibility_failure(
     distinguishing code. The numeric context ceiling is the M01
     registration's ``context_limit_tokens``: unknown fails closed when a
     context minimum is required, and a known ceiling below the requirement
-    is insufficient. Returns the sorted-duplicate-free code tuple in fixed
-    evaluation order together with the first failing matrix feature and its
-    cell value (``None`` when the failure is the context ceiling or the
-    cell is missing).
+    is insufficient. The output dimension applies the SAME pre-ranking
+    discipline through the shared :func:`route_output_code` rule (D-058):
+    a route whose evidenced output capability cannot satisfy the request's
+    output semantics is INELIGIBLE before ranking — a correctness
+    requirement, so a request never routes to a weaker route when another
+    route serving the exact same identity can satisfy it. Returns the
+    sorted-duplicate-free code tuple in fixed evaluation order together
+    with the first failing matrix feature and its cell value (``None``
+    when the failure is a numeric ceiling or the cell is missing).
     """
     codes: list[str] = []
     first_feature: str | None = None
@@ -1468,6 +1482,16 @@ def _compatibility_failure(
             codes.append("context_limit_unknown")
         elif context_limit < minimum_context:
             codes.append("context_limit_insufficient")
+    output_code = route_output_code(
+        entry.capabilities,
+        hard_output_tokens=hard_output_tokens,
+        requested_output_tokens=(
+            requirement.hard_constraints.minimum_output_tokens
+        ),
+        variant_resolved=variant_resolved,
+    )
+    if output_code is not None:
+        codes.append(output_code)
     return tuple(codes), first_feature, first_value
 
 
@@ -1540,6 +1564,40 @@ def _promotion_preference(
     return tuple(sorted(active)), tuple(sorted(expired))
 
 
+def _request_output_context(
+    request: RequestBinding,
+    entry: ResourceRegistryEntry,
+    catalog: ModelCatalog,
+) -> tuple[int | None, bool]:
+    """The exact-variant hard output fact for one candidate route.
+
+    The executing variant is resolved whenever the request names it
+    exactly — a pinned request carries the variant in its target identity,
+    a logical request resolves the effort variant before admission (D-055)
+    — and the returned hard output is THAT calibrated variant's own
+    ``hard_properties.output_tokens`` (D-058: never a sibling variant's
+    calibration, never a minimum across variants). For profile-alias
+    requests the variant is resolved later by the selector, so the hard
+    fact is reported unresolved (``variant_resolved=False``); the
+    selector's per-entry ``evaluate_hard_constraints`` still gates each
+    exact variant's hard properties there.
+    """
+    effective_variant = request.explicit_variant
+    if effective_variant is None and request.pinned_target is not None:
+        effective_variant = request.pinned_target.model.variant
+    if effective_variant is None:
+        return None, False
+    identity = entry.identity
+    for catalog_entry in catalog.entries:
+        if (
+            catalog_entry.identity.provider == identity.provider
+            and catalog_entry.identity.model == identity.model
+            and catalog_entry.identity.variant == effective_variant
+        ):
+            return catalog_entry.hard_properties.output_tokens, True
+    return None, True
+
+
 def _evaluate_resource(
     entry: ResourceRegistryEntry,
     catalog: ModelCatalog,
@@ -1602,7 +1660,11 @@ def _evaluate_resource(
             promotion_sources=promotion_sources,
         )
     compatibility_codes, first_feature, first_value = _compatibility_failure(
-        entry, request, cells, requirement
+        entry,
+        request,
+        cells,
+        requirement,
+        *_request_output_context(request, entry, catalog),
     )
     if compatibility_codes:
         return _ResourceGate(

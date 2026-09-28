@@ -553,7 +553,7 @@ class GatewayRequestHandler(BaseHTTPRequestHandler):
         if length > max_body_bytes:
             # Bounded best-effort drain so the client can still read the
             # 413 without a TCP reset; never stored, never logged.
-            self._drain_bounded(length)
+            self._drain_bounded(length, configured_limit=max_body_bytes)
             raise GatewayError.request_too_large(
                 "request body exceeds the maximum request size"
             )
@@ -571,8 +571,12 @@ class GatewayRequestHandler(BaseHTTPRequestHandler):
 
     _MAX_DRAIN_BYTES: int = 4 * 1_048_576
 
-    def _drain_bounded(self, declared_length: int) -> None:
-        remaining = min(declared_length, self._MAX_DRAIN_BYTES)
+    def _drain_bounded(self, declared_length: int, *, configured_limit: int) -> None:
+        # The drain window always covers any body the server could have
+        # accepted (the configured limit), so an over-limit rejection can
+        # still return a clean 413 instead of closing mid-send; beyond the
+        # cap the connection is closed (the client sees the socket close).
+        remaining = min(declared_length, max(self._MAX_DRAIN_BYTES, configured_limit))
         try:
             while remaining > 0:
                 chunk = self.rfile.read(min(remaining, 65_536))

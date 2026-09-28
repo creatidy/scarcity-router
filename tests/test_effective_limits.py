@@ -35,6 +35,14 @@ import threading
 import unittest
 from typing import cast
 
+from collections.abc import Callable
+
+from scarcity_router.gateway_adapters import (
+    AdapterCall,
+    AdapterResult,
+    CallObservation,
+    ExecutionContext,
+)
 from scarcity_router.gateway_contracts import GatewayLimits
 from scarcity_router.gateway_server import GatewayHTTPServer, make_gateway_server
 from scarcity_router.resource_state import (
@@ -50,19 +58,25 @@ from scarcity_router.selection_types import (
     ModelIdentity,
 )
 from scarcity_router.routing_core import CompatibilityCell
+from scarcity_router.selection_types import CapacityScopeRef
 from tests.gateway_fixtures import (
+    ALL_FEATURES,
     CLIENT_KEY,
     EVIDENCE,
     GatewayApplication,
     ScriptedAdapter,
+    ambiguous_failure_behavior,
     audit_records,
     build_catalog,
     build_cells,
     build_registry,
     make_application,
+    permanent_failure_behavior,
+    timeout_behavior,
 )
 from tests.gateway_fixtures import (  # noqa: F401 -- fixture privates, single-world helpers
     _capabilities as _capabilities,  # pyright: ignore[reportPrivateUsage]
+    _entry as _entry,  # pyright: ignore[reportPrivateUsage]
     _observation as _observation,  # pyright: ignore[reportPrivateUsage]
 )
 from tests.test_gateway_server import ServerHarness, as_dict, as_list
@@ -101,8 +115,12 @@ class LimitsHarness(ServerHarness):
         limits: GatewayLimits | None = None,
         catalog: ModelCatalog | None = None,
         channels: tuple[str, ...] = ("server_direct_http", "worker_bridged"),
+        behavior: Callable[[AdapterCall, ExecutionContext], AdapterResult] | None = None,
     ) -> int:
-        self.adapters = {channel: ScriptedAdapter(channel=channel) for channel in channels}
+        self.adapters = {
+            channel: ScriptedAdapter(channel=channel, behavior=behavior)
+            for channel in channels
+        }
         application = make_application(
             registry=registry,
             cells=cells if cells is not None else build_cells(include_worker=True),
@@ -131,6 +149,23 @@ def registry_with(
     """The default healthy world plus extra (identity, capabilities)."""
     registry = build_registry()
     for identity, capabilities in extra:
+        registry.register(
+            ResourceRegistration(
+                identity=identity,
+                freshness_ttl_seconds=300,
+                capabilities=capabilities,
+            )
+        )
+        registry.apply_snapshot(_observation(identity))
+    return registry
+
+
+def bare_registry(
+    *pairs: tuple[ResourceIdentity, ExecutionCapabilities],
+) -> ResourceRegistry:
+    """A registry holding ONLY the given (identity, capabilities) routes."""
+    registry = ResourceRegistry(clock=lambda: "2026-09-15T12:05:00.000Z")
+    for identity, capabilities in pairs:
         registry.register(
             ResourceRegistration(
                 identity=identity,
@@ -200,7 +235,11 @@ class HonestDefaultsTests(LimitsHarness):
 
     def test_over_admin_context_limit_is_rejected_unchanged(self) -> None:
         port = self.make_world()
-        huge = "x" * 1_100_000  # ~275k estimated tokens > 272000
+        # ~2.13M estimated tokens: above the 2^21 administrator guard but
+        # below the 16 MiB body bound, so the typed admin pre-check fires
+        # (the per-route channel gate is exercised by the capability
+        # tests below).
+        huge = "x" * 8_500_000
         response = self.post_chat(
             port, chat_body(messages=[{"role": "user", "content": huge}])
         )
@@ -286,8 +325,9 @@ class PerRouteIntersectionTests(LimitsHarness):
         )
         self.assertEqual(above.status, 400)
         error = as_dict(cast("dict[str, object]", json.loads(above.read()))["error"])
-        self.assertEqual(error["code"], "output_limit_exceeded")
-        self.assertEqual(error["param"], "max_completion_tokens")
+        # Rejected at PIN ADMISSION, before ranking could ever prefer it:
+        # the route's evidenced output ceiling is below the request.
+        self.assertEqual(error["code"], "output_limit_insufficient")
 
     def test_request_within_advertised_maximum_executes(self) -> None:
         """The advertised headline is executable: a request at the
@@ -353,8 +393,9 @@ class UnenforceableOutputControlTests(LimitsHarness):
         )
         self.assertEqual(response.status, 400)
         error = as_dict(as_dict(cast("dict[str, object]", json.loads(response.read()))["error"]))
+        # Admission rejections map the routing code verbatim (no param —
+        # consistent with the context-ceiling admission mapping).
         self.assertEqual(error["code"], "output_limit_unenforceable")
-        self.assertEqual(error["param"], "max_completion_tokens")
         self.assertEqual(self.adapter_for("worker_bridged").dispatch_count, 0)
         record = audit_records(self.application)[-1]
         self.assertEqual(record.result_status, "rejected")
@@ -420,8 +461,586 @@ class UnenforceableOutputControlTests(LimitsHarness):
         )
         self.assertEqual(response.status, 400)
         error = as_dict(as_dict(cast("dict[str, object]", json.loads(response.read()))["error"]))
+        # With no evidenced capability input at all the honest rejection is
+        # the UNKNOWN code (fail closed), never a guessed normalization.
+        self.assertEqual(error["code"], "output_limit_unknown")
+        self.assertEqual(self.adapter_for("worker_bridged").dispatch_count, 0)
+
+
+class OutputSteeringTests(LimitsHarness):
+    """Blocker 1 regression: output capability gates routes BEFORE ranking.
+
+    Two routes serve the SAME exact model+effort; the weak route is
+    otherwise preferred (the stable resource-id ordering decides without a
+    promotion). A request whose output requirement only the strong route
+    satisfies MUST execute on the strong route — never select-weak-then-
+    reject (D-056: a request routes only to a source whose evidenced
+    capability satisfies the full semantic request).
+    """
+
+    WEAK: ResourceIdentity = ResourceIdentity(
+        resource_id="a-weak-output",
+        channel="server_direct_http",
+        provider="openai",
+        model="gpt-5.6-luna",
+        entitlement="subscription_included",
+    )
+    STRONG: ResourceIdentity = ResourceIdentity(
+        resource_id="z-strong-output",
+        channel="worker_bridged",
+        provider="openai",
+        model="gpt-5.6-luna",
+        entitlement="subscription_included",
+    )
+
+    def _world(self, *, strong_only: bool = False, weak_only: bool = False) -> int:
+        pairs: list[tuple[ResourceIdentity, ExecutionCapabilities]] = []
+        if not strong_only:
+            pairs.append(
+                (
+                    self.WEAK,
+                    ExecutionCapabilities(
+                        context_limit_tokens=272_000,
+                        output_limit_tokens=32_000,
+                        output_limit_control=True,
+                    ),
+                )
+            )
+        if not weak_only:
+            pairs.append(
+                (
+                    self.STRONG,
+                    ExecutionCapabilities(
+                        context_limit_tokens=272_000,
+                        output_limit_tokens=128_000,
+                        output_limit_control=True,
+                    ),
+                )
+            )
+        return self.make_world(registry=bare_registry(*pairs))
+
+    def test_strong_route_executes_when_weak_is_preferred(self) -> None:
+        port = self._world()
+        response = self.post_chat(port, chat_body(max_completion_tokens=64_000))
+        self.assertEqual(response.status, 200)
+        record = audit_records(self.application)[-1]
+        assert record.selected_target is not None
+        # The weak route sorts first and would win the stable-id ordering;
+        # pre-ranking output eligibility removes it from the candidate set.
+        self.assertEqual(record.selected_target.resource_id, "z-strong-output")
+        self.assertEqual(
+            self.adapter_for("worker_bridged").dispatch_count, 1
+        )
+        self.assertEqual(
+            self.adapter_for("server_direct_http").dispatch_count, 0
+        )
+
+    def test_weak_only_world_is_explicitly_rejected(self) -> None:
+        port = self._world(weak_only=True)
+        response = self.post_chat(port, chat_body(max_completion_tokens=64_000))
+        self.assertEqual(response.status, 503)
+        error = as_dict(cast("dict[str, object]", json.loads(response.read()))["error"])
+        self.assertEqual(error["code"], "no_eligible_target")
+        self.assertEqual(
+            self.adapter_for("server_direct_http").dispatch_count, 0
+        )
+
+    def test_pin_to_weak_route_is_explicitly_rejected(self) -> None:
+        port = self._world()
+        response = self.post_chat(
+            port,
+            chat_body(
+                model="sr-pin:a-weak-output/openai/gpt-5.6-luna/max",
+                max_completion_tokens=64_000,
+            ),
+        )
+        self.assertEqual(response.status, 400)
+        error = as_dict(cast("dict[str, object]", json.loads(response.read()))["error"])
+        self.assertEqual(error["code"], "output_limit_insufficient")
+        self.assertEqual(
+            self.adapter_for("server_direct_http").dispatch_count, 0
+        )
+
+    def test_pin_to_strong_route_executes(self) -> None:
+        port = self._world()
+        response = self.post_chat(
+            port,
+            chat_body(
+                model="sr-pin:z-strong-output/openai/gpt-5.6-luna/max",
+                max_completion_tokens=64_000,
+            ),
+        )
+        self.assertEqual(response.status, 200)
+        self.assertEqual(self.adapter_for("worker_bridged").dispatch_count, 1)
+
+    def test_unknown_output_capability_fails_closed(self) -> None:
+        """A route with NO evidenced output capability (hard UNKNOWN, channel
+        UNKNOWN) cannot prove it satisfies an explicit output requirement:
+        fail closed for that route, pinned or unpinned."""
+        unknown = ResourceIdentity(
+            resource_id="a-unknown-output",
+            channel="worker_bridged",
+            provider="openai",
+            model="gpt-x-unknown",
+            entitlement="subscription_included",
+            variant="max",
+        )
+        cells = build_cells(include_worker=True) + tuple(
+            CompatibilityCell(
+                channel="worker_bridged",
+                provider="openai",
+                model="gpt-x-unknown",
+                feature=feature,
+                value="PASS",
+                adapter="synthetic-http",
+                adapter_version="1.2.3",
+                evidence=EVIDENCE,
+            )
+            for feature in ALL_FEATURES
+        )
+        catalog = ModelCatalog(
+            catalog_version=1,
+            updated_on="2026-09-01",
+            entries=(build_catalog().entries[0], _entry_without_output(
+                "openai", "gpt-x-unknown", "max"
+            )),
+        )
+        port = self.make_world(
+            registry=bare_registry(
+                (unknown, ExecutionCapabilities(context_limit_tokens=272_000))
+            ),
+            catalog=catalog,
+            cells=cells,
+        )
+        pinned = "sr-pin:a-unknown-output/openai/gpt-x-unknown/max"
+        response = self.post_chat(
+            port, chat_body(model=pinned, max_completion_tokens=1_000)
+        )
+        self.assertEqual(response.status, 400)
+        error = as_dict(cast("dict[str, object]", json.loads(response.read()))["error"])
+        self.assertEqual(error["code"], "output_limit_unknown")
+        self.assertEqual(self.adapter_for("worker_bridged").dispatch_count, 0)
+
+
+class ExactVariantTests(LimitsHarness):
+    """Finding 3 regression: hard properties come from the EXACT calibrated
+    variant, never a minimum across sibling variants."""
+
+    def _catalog(self) -> ModelCatalog:
+        max_entry = _entry(
+            "openai", "gpt-5.6-luna", "max", reasoning=4, coding=4, scope="codex"
+        )
+        medium_entry = ModelCatalogEntry(
+            identity=ModelIdentity(provider="openai", model="gpt-5.6-luna", variant="medium"),
+            display_name="gpt-5.6-luna medium",
+            hard_properties=ModelHardProperties(
+                input_context_tokens=131_072,
+                output_tokens=64_000,
+                supports_tool_use=True,
+                supports_vision=False,
+                supports_reasoning_mode=True,
+            ),
+            capabilities=max_entry.capabilities,
+            capacity_bindings=max_entry.capacity_bindings,
+            reasoning_effort="medium",
+        )
+        return ModelCatalog(
+            catalog_version=1,
+            updated_on="2026-09-01",
+            entries=(max_entry, medium_entry),
+        )
+
+    def _variant_world(self, *, codex: bool) -> int:
+        pairs: list[tuple[ResourceIdentity, ExecutionCapabilities]] = []
+        if codex:
+            pairs.append(
+                (
+                    ResourceIdentity(
+                        resource_id="z-codex-max",
+                        channel="worker_bridged",
+                        provider="openai",
+                        model="gpt-5.6-luna",
+                        entitlement="subscription_included",
+                        variant="max",
+                    ),
+                    ExecutionCapabilities(
+                        context_limit_tokens=272_000,
+                        output_limit_control=False,
+                    ),
+                )
+            )
+            pairs.append(
+                (
+                    ResourceIdentity(
+                        resource_id="a-codex-medium",
+                        channel="worker_bridged",
+                        provider="openai",
+                        model="gpt-5.6-luna",
+                        entitlement="subscription_included",
+                        variant="medium",
+                    ),
+                    ExecutionCapabilities(
+                        context_limit_tokens=272_000,
+                        output_limit_control=False,
+                    ),
+                )
+            )
+        else:
+            pairs.append(
+                (
+                    ResourceIdentity(
+                        resource_id="z-max-route",
+                        channel="worker_bridged",
+                        provider="openai",
+                        model="gpt-5.6-luna",
+                        entitlement="subscription_included",
+                        variant="max",
+                    ),
+                    ExecutionCapabilities(context_limit_tokens=272_000),
+                )
+            )
+            pairs.append(
+                (
+                    ResourceIdentity(
+                        resource_id="a-medium-route",
+                        channel="worker_bridged",
+                        provider="openai",
+                        model="gpt-5.6-luna",
+                        entitlement="subscription_included",
+                        variant="medium",
+                    ),
+                    ExecutionCapabilities(context_limit_tokens=272_000),
+                )
+            )
+        return self.make_world(registry=bare_registry(*pairs), catalog=self._catalog())
+
+    def test_each_variant_uses_its_own_hard_properties(self) -> None:
+        """max route uses max's properties; medium route uses medium's;
+        neither inherits min() from the sibling variant."""
+        port = self._variant_world(codex=False)
+        max_ok = self.post_chat(
+            port,
+            chat_body(
+                model="sr-pin:z-max-route/openai/gpt-5.6-luna/max",
+                max_completion_tokens=100_000,
+            ),
+        )
+        self.assertEqual(max_ok.status, 200)  # max hard output 128000 >= 100000
+        medium_rejected = self.post_chat(
+            port,
+            chat_body(
+                model="sr-pin:a-medium-route/openai/gpt-5.6-luna/medium",
+                max_completion_tokens=100_000,
+            ),
+        )
+        self.assertEqual(medium_rejected.status, 400)  # medium hard 64000
+        error = as_dict(
+            cast("dict[str, object]", json.loads(medium_rejected.read()))["error"]
+        )
+        self.assertEqual(error["code"], "output_limit_insufficient")
+
+    def test_discovery_metadata_is_exact_variant_per_route(self) -> None:
+        port = self._variant_world(codex=False)
+        connection = self.client(port)
+        connection.request("GET", "/v1/models", headers=dict(AUTH))
+        response = connection.getresponse()
+        self.assertEqual(response.status, 200)
+        payload = cast("dict[str, object]", json.loads(response.read()))
+        entries = [as_dict(e) for e in as_list(payload["data"])]
+        luna = next(e for e in entries if e["id"] == "gpt-5.6-luna")
+        routes = {
+            as_dict(r)["resource_id"]: as_dict(r)
+            for r in as_list(as_dict(luna["x_scarcity_router"])["routes"])
+        }
+        self.assertEqual(
+            routes["z-max-route"]["effective_output_limit_tokens"], 128_000
+        )
+        self.assertEqual(
+            routes["a-medium-route"]["effective_output_limit_tokens"], 64_000
+        )
+        self.assertEqual(
+            routes["z-max-route"]["effective_context_limit_tokens"], 272_000
+        )
+        self.assertEqual(
+            routes["a-medium-route"]["effective_context_limit_tokens"], 131_072
+        )
+
+    def test_normalization_threshold_is_the_exact_variants_maximum(self) -> None:
+        """The discriminating case: on a control=False channel serving the
+        max variant (hard output 128000, sibling medium 64000), a request
+        for 100000 BINDS against max's own proven maximum and is rejected —
+        the old minimum-across-variants reading (64000) would have
+        normalized it away as 'non-binding'."""
+        port = self._variant_world(codex=True)
+        binding = self.post_chat(
+            port,
+            chat_body(
+                model="sr-pin:z-codex-max/openai/gpt-5.6-luna/max",
+                max_completion_tokens=100_000,
+            ),
+        )
+        self.assertEqual(binding.status, 400)
+        error = as_dict(cast("dict[str, object]", json.loads(binding.read()))["error"])
         self.assertEqual(error["code"], "output_limit_unenforceable")
         self.assertEqual(self.adapter_for("worker_bridged").dispatch_count, 0)
+        # Each variant normalizes against its OWN proven maximum.
+        for resource, effort, limit in (
+            ("z-codex-max", "max", 128_000),
+            ("a-codex-medium", "medium", 64_000),
+        ):
+            response = self.post_chat(
+                port,
+                chat_body(
+                    model=f"sr-pin:{resource}/openai/gpt-5.6-luna/{effort}",
+                    reasoning_effort=effort,
+                    max_completion_tokens=limit,
+                ),
+            )
+            self.assertEqual(response.status, 200, resource)
+            record = audit_records(self.application)[-1]
+            self.assertIn("output_limit_normalized", record.reason_codes)
+
+
+class DefaultCapabilityTests(LimitsHarness):
+    """Blocker 2 regression: administrator policy is separated from channel
+    capability. The 272000 Codex channel fact must not be the global
+    administrator input ceiling, and a >272k request executes on a route
+    whose evidence supports it while staying ineligible on the 272k
+    channel."""
+
+    LONG_MODEL_CATALOG_CELLS: tuple[CompatibilityCell, ...] | None = None
+
+    def _catalog_with_long_model(self) -> ModelCatalog:
+        long_entry = ModelCatalogEntry(
+            identity=ModelIdentity(provider="openai", model="gpt-6-long", variant="max"),
+            display_name="gpt-6-long max",
+            hard_properties=ModelHardProperties(
+                input_context_tokens=1_050_000,
+                output_tokens=128_000,
+                supports_tool_use=True,
+                supports_vision=False,
+                supports_reasoning_mode=True,
+            ),
+            capabilities=_entry(
+                "openai", "gpt-5.6-luna", "max", reasoning=4, coding=4, scope="codex"
+            ).capabilities,
+            capacity_bindings=(
+                CapacityScopeRef(provider="openai", scope_id="codex"),
+            ),
+            reasoning_effort="max",
+        )
+        base = build_catalog()
+        return ModelCatalog(
+            catalog_version=base.catalog_version,
+            updated_on=base.updated_on,
+            entries=base.entries + (long_entry,),
+        )
+
+    def _cells_for(self, model: str) -> tuple[CompatibilityCell, ...]:
+        return build_cells(include_worker=True) + tuple(
+            CompatibilityCell(
+                channel=channel,
+                provider="openai",
+                model=model,
+                feature=feature,
+                value="PASS",
+                adapter="synthetic-http",
+                adapter_version="1.2.3",
+                evidence=EVIDENCE,
+            )
+            for channel in ("server_direct_http", "worker_bridged")
+            for feature in ALL_FEATURES
+        )
+
+    def _world(self, *, limits: GatewayLimits | None = None) -> int:
+        long_route = ResourceIdentity(
+            resource_id="z-long-route",
+            channel="server_direct_http",
+            provider="openai",
+            model="gpt-6-long",
+            entitlement="subscription_included",
+        )
+        codex_route = ResourceIdentity(
+            resource_id="a-codex-route",
+            channel="worker_bridged",
+            provider="openai",
+            model="gpt-6-long",
+            entitlement="subscription_included",
+            variant="max",
+        )
+        return self.make_world(
+            registry=bare_registry(
+                (long_route, ExecutionCapabilities(context_limit_tokens=1_050_000)),
+                (codex_route, ExecutionCapabilities(context_limit_tokens=272_000)),
+            ),
+            catalog=self._catalog_with_long_model(),
+            cells=self._cells_for("gpt-6-long"),
+            limits=limits,
+        )
+
+    _LONG_BODY: str = "x" * 1_200_000  # ~300k estimated tokens
+
+    def _long_request(self, **overrides: object) -> dict[str, object]:
+        body = chat_body(
+            messages=[{"role": "user", "content": self._LONG_BODY}]
+        )
+        body["model"] = "gpt-6-long"
+        body.update(overrides)
+        return body
+
+    def test_request_above_272k_executes_on_the_supporting_route(self) -> None:
+        """Under DEFAULT administrator limits a >272k input request
+        executes on the route whose model+channel evidence supports it —
+        the 272k Codex fact is that channel's capability, not gateway
+        policy."""
+        port = self._world()
+        response = self.post_chat(port, self._long_request())
+        self.assertEqual(response.status, 200)
+        record = audit_records(self.application)[-1]
+        assert record.selected_target is not None
+        self.assertEqual(record.selected_target.resource_id, "z-long-route")
+
+    def test_same_request_is_ineligible_on_the_272k_channel(self) -> None:
+        port = self._world()
+        pinned = "sr-pin:a-codex-route/openai/gpt-6-long/max"
+        response = self.post_chat(port, self._long_request(model=pinned))
+        self.assertEqual(response.status, 400)
+        error = as_dict(cast("dict[str, object]", json.loads(response.read()))["error"])
+        self.assertEqual(error["code"], "context_limit_insufficient")
+        self.assertEqual(self.adapter_for("worker_bridged").dispatch_count, 0)
+
+    def test_explicit_admin_272k_narrows_all_routes(self) -> None:
+        """An administrator who explicitly configures
+        ``max_input_context_tokens = 272000`` intentionally narrows every
+        route: the global pre-check rejects before routing."""
+        port = self._world(limits=GatewayLimits(max_input_context_tokens=272_000))
+        response = self.post_chat(port, self._long_request())
+        self.assertEqual(response.status, 400)
+        error = as_dict(cast("dict[str, object]", json.loads(response.read()))["error"])
+        self.assertEqual(error["code"], "context_length_exceeded")
+        self.assertEqual(
+            self.adapter_for("server_direct_http").dispatch_count, 0
+        )
+
+
+class NormalizationProvenanceTests(LimitsHarness):
+    """Finding 4 regression: the output_limit_normalized provenance note is
+    present on EVERY terminal audit record after normalization, never on
+    pre-normalization rejections, and never replaces the primary reason."""
+
+    _PIN: str = "sr-pin:codex-luna/openai/gpt-5.6-luna/max"
+
+    def _world(
+        self, behavior: Callable[[AdapterCall, ExecutionContext], AdapterResult] | None
+    ) -> int:
+        codex = ResourceIdentity(
+            resource_id="codex-luna",
+            channel="worker_bridged",
+            provider="openai",
+            model="gpt-5.6-luna",
+            entitlement="subscription_included",
+            variant="max",
+        )
+        return self.make_world(
+            registry=bare_registry(
+                (
+                    codex,
+                    ExecutionCapabilities(
+                        context_limit_tokens=272_000,
+                        output_limit_control=False,
+                    ),
+                )
+            ),
+            behavior=behavior,
+            channels=("worker_bridged",),
+        )
+
+    def _normalized_request(self) -> dict[str, object]:
+        return chat_body(
+            model=self._PIN,
+            max_completion_tokens=128_000,  # == the exact variant's hard max
+        )
+
+    def test_completed_record_carries_the_note(self) -> None:
+        port = self._world(None)
+        response = self.post_chat(port, self._normalized_request())
+        self.assertEqual(response.status, 200)
+        record = audit_records(self.application)[-1]
+        self.assertEqual(record.result_status, "completed")
+        self.assertIn("output_limit_normalized", record.reason_codes)
+
+    def test_backend_failure_record_carries_the_note(self) -> None:
+        port = self._world(permanent_failure_behavior())
+        response = self.post_chat(port, self._normalized_request())
+        self.assertEqual(response.status, 502)
+        record = audit_records(self.application)[-1]
+        self.assertEqual(record.result_status, "failed")
+        self.assertEqual(
+            record.reason_codes, ("backend_failure", "output_limit_normalized")
+        )
+
+    def test_timeout_record_carries_the_note(self) -> None:
+        port = self._world(timeout_behavior())
+        response = self.post_chat(port, self._normalized_request())
+        self.assertEqual(response.status, 408)
+        record = audit_records(self.application)[-1]
+        self.assertEqual(record.result_status, "timed_out")
+        self.assertEqual(
+            record.reason_codes,
+            ("execution_time_limit_exceeded", "output_limit_normalized"),
+        )
+
+    def test_ambiguous_record_carries_the_note(self) -> None:
+        port = self._world(ambiguous_failure_behavior())
+        response = self.post_chat(port, self._normalized_request())
+        self.assertEqual(response.status, 500)
+        record = audit_records(self.application)[-1]
+        self.assertEqual(record.result_status, "failed_ambiguous")
+        self.assertEqual(
+            record.reason_codes,
+            ("ambiguous_execution_state", "output_limit_normalized"),
+        )
+
+    def test_cancelled_record_carries_the_note(self) -> None:
+        def cancel_and_report(
+            call: AdapterCall, context: ExecutionContext
+        ) -> AdapterResult:
+            _ = call
+            context.cancel_event.set()
+            return AdapterResult(
+                status="cancelled",
+                calls=(
+                    CallObservation(
+                        call_index=0,
+                        started_at="2026-09-15T12:05:00.000Z",
+                        ended_at="2026-09-15T12:05:01.000Z",
+                        status="cancelled",
+                    ),
+                ),
+            )
+
+        port = self._world(cancel_and_report)
+        # A client disconnect closes the connection without a status line;
+        # the assertion target is the audit provenance.
+        try:
+            _ = self.post_chat(port, self._normalized_request())
+        except OSError:
+            pass
+        record = audit_records(self.application)[-1]
+        self.assertEqual(record.result_status, "cancelled")
+        self.assertEqual(
+            record.reason_codes, ("client_disconnected", "output_limit_normalized")
+        )
+
+    def test_binding_rejection_before_normalization_has_no_note(self) -> None:
+        port = self._world(permanent_failure_behavior())
+        response = self.post_chat(
+            port, chat_body(model=self._PIN, max_completion_tokens=64_000)
+        )
+        self.assertEqual(response.status, 400)
+        record = audit_records(self.application)[-1]
+        self.assertEqual(record.result_status, "rejected")
+        self.assertNotIn("output_limit_normalized", record.reason_codes)
 
 
 class ConfigurationExportHonestyTests(unittest.TestCase):
@@ -452,7 +1071,7 @@ class ConfigurationExportHonestyTests(unittest.TestCase):
         assert isinstance(document, dict)
         exported = as_dict(document["limits"])
         self.assertEqual(exported["max_output_tokens"], 16_384)
-        self.assertEqual(exported["max_input_context_tokens"], 272_000)
+        self.assertEqual(exported["max_input_context_tokens"], 2_097_152)
         restored = ServerConfiguration.from_document(document)
         self.assertEqual(restored.limits, GatewayLimits(max_output_tokens=16_384))
 
