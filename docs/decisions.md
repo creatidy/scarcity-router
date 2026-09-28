@@ -4552,11 +4552,13 @@ Do not rewrite history or change an accepted decision silently.
      rejected, never silently downgraded to text), NDJSON session events
      terminated by a typed final result, `--disallowed-tools`,
      `--resume`, `app-server`/`agent-server` and `doctor --json`.
-     `NOTICE.md` documents the non-interactive `--prompt` path and its
-     unattended-automation behavior in the vendor's own words. Stage 1's
+     `NOTICE.md` documents the non-interactive `--prompt` path and the
+     automation-risk table in the vendor's own words. Stage 1's
      "no supported programmatic surface" finding no longer holds.
-  2. **A supported safe permission model exists (the point-9 concern).**
-     Headless `--prompt` defaults to yolo — confirmed in help text,
+  2. **A supported safe permission model exists**, satisfying the
+     evaluation's requirement that the integration must not rely
+     silently on an unsafe unrestricted execution mode. Headless
+     `--prompt` defaults to yolo — confirmed in help text,
      `NOTICE.md` and source (`DEFAULT_HEADLESS_PROMPT_MODE`) — but
      `--mode build|plan|edit` is first-party supported, and under
      non-yolo modes every side-effecting/high/critical tool returns an
@@ -4572,9 +4574,10 @@ Do not rewrite history or change an accepted decision silently.
      That prohibition was and remains "the central terms risk for the
      M07 use case". Uncertainty is not permission: the intended
      integration is not clearly licensed.
-  4. **Live feasibility (supporting evidence, not a gate).** The CLI was
-     built from the pinned official source and probed in a disposable
-     workspace: headless invocation without a shell wrapper, structured
+  4. **Live feasibility (recorded as gate D in the evidence document;
+     advisory here — this decision turns on points 1 and 3).** The CLI
+     was built from the pinned official source and probed in a
+     disposable workspace: headless invocation without a shell wrapper, structured
      event stream, typed provider-error attribution, meaningful exit
      status, timeout bounding, stderr separation and OS-boundary SIGTERM
      cancellation all demonstrated; `doctor --json` is a usable
@@ -4587,8 +4590,8 @@ Do not rewrite history or change an accepted decision silently.
   5. **M07 Stage 2 therefore REMAINS NO-GO**, and this record does not
      supersede D-047's product decision — it updates its factual basis.
      No ZCode execution adapter is planned while condition 2 stays
-     unmet. The Stage-2 reopen task's own rule is applied unchanged: a
-     clean BLOCKED result is preferable to an integration built on an
+     unmet. The evaluation's governing rule is applied unchanged: a clean
+     BLOCKED result is preferable to an integration built on an
      unsupported or unsafe contract.
   6. **Reopen path preserved.** Stage 2 may proceed only with (a)
      written vendor authorization for proxy-style automation of the

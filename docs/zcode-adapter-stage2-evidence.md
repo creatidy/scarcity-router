@@ -19,16 +19,18 @@ Stage 2 (D-047). ZCode has since published a first-party, open-source CLI:
   `LICENSE` (Apache-2.0), `NOTICE.md` present.
 - Release **v3.14.3**, published 2026-09-24 (commit `29628c9`); README
   states "2026-9-23: 更新至 ZCode v3.14.3 版本".
-- The Agent CLI source lives at `apps/zcode-cli/` (workspace
-  `@zcode/cli`, built bundle `dist/zcode.cjs`; package reports its own
-  version `0.16.9`; product release is v3.14.3).
+- The Agent CLI source lives at `apps/zcode-cli/` (workspace root
+  package `zcode-cli` `0.16.9`, injected into the built bundle
+  `dist/zcode.cjs` as its reported version; the inner `@zcode/cli`
+  package manifest is `0.1.0`; product release is v3.14.3).
 - `NOTICE.md` officially documents non-interactive automation:
   "独立 CLI 通过 `--prompt` 执行非交互任务时，未指定 `--mode` 会采用
   yolo" (the standalone CLI running non-interactive tasks via `--prompt`
-  adopts yolo mode when `--mode` is unspecified) and warns that
-  "无人值守的自动化……可继续调用模型、执行命令并产生费用或外部副作用"
-  (unattended automations may continue calling models, executing
-  commands, and incurring costs or external side effects).
+  adopts yolo mode when `--mode` is unspecified). Its automation-risk
+  table warns that subagents, workflows and background tasks
+  ("子代理、工作流与后台任务") "可继续调用模型、执行命令并产生费用或
+  外部副作用" (may continue calling models, executing commands, and
+  incurring costs or external side effects).
 
 All sources in this document were retrieved or probed **2026-09-28**
 unless stated otherwise.
@@ -43,7 +45,7 @@ unless stated otherwise.
 | Structured output | `--output-format <text\|json\|stream-json>` with strict validation (`run.ts:115-128`: an unknown value is an error, never silent text); `--json` boolean |
 | Streaming events | `stream-json` writes one NDJSON session event per line, terminated by a final `type:"result"` line carrying the same fields as `--json` (`packages/cli/src/prompt-command.ts:347-373`) |
 | Result semantics | Success: exit `0` + final result (JSON fields: `sessionId`, `traceId`, `turnId?`, `response`, `usage?`, `projection.status`, token/context numbers). Failure: exit `1`, `Error: <message> (traceId: …)` on stderr (`prompt-command.ts:420-432`) |
-| Signal handling | `registerCliShutdownHandlers` aborts the run controller on SIGINT/SIGTERM and runs bounded cleanup (`prompt-command.ts:142-151`) |
+| Signal handling | `registerCliShutdownHandlers` aborts the run controller on SIGINT/SIGTERM and runs bounded cleanup (`prompt-command.ts:144-151`) |
 | Approval enforcement | Permission service: `plan` = read-only only; `build` = read-only + low-risk session-local state, side-effecting/high/critical tools require approval (`packages/core/src/permission/service.ts:450-507`); with no permission client attached the default broker DENIES ("No permission client configured for <tool>", `packages/core/src/permission/broker.ts:24-31`), and the headless workflow path imports `createDenyPermissionBroker` explicitly |
 | Other | `app-server` / `agent-server` protocol commands exist (`isProtocolServerInvocation`, `arguments.ts:112-126`); `--disallowed-tools` per-run tool denylist; `--resume <sessionId>`; `doctor --json` runtime probe; `login [zai\|bigmodel]` browser-OAuth auth and a shared Z.AI credential store (`logout`: "Remove the shared Z.AI login credentials") |
 
@@ -163,9 +165,9 @@ permission).
 | D — live feasibility | **PASS (interface)**, completion environment-blocked | Section 4 |
 | E — production adapter | **NOT ENTERED** | Requires A–C pass; C does not pass |
 
-Consequence per the reopen task's own rule ("a clean BLOCKED result is
-preferable to an integration built on an unsupported or unsafe
-contract"): no adapter is implemented in this round. **D-061** records
+Consequence under the evaluation's governing rule (a clean BLOCKED
+result is preferable to an integration built on an unsupported or unsafe
+contract): no adapter is implemented in this round. **D-061** records
 the updated reopen state.
 
 ## 7. What would reopen Stage 2
