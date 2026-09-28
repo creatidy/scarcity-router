@@ -593,6 +593,92 @@ class ProviderAndResourceTests(ServerHarness):
             [], cast("list[object]", cast("dict[str, object]", payload)["resources"])
         )
 
+    def test_d058_capability_facts_survive_admin_mutations(self) -> None:
+        """D-058 facts (output_limit_tokens, output_limit_control) survive
+        every administrator mutation that copies the registration:
+        disable -> re-enable, provider removal (endpoint detachment) and
+        the persisted/exported configuration document."""
+        self.onboard()
+        status, _payload = self.admin_post(
+            "/control/providers", _provider_document()
+        )
+        self.assertEqual(200, status)
+        document = _resource_document()
+        registration = cast("dict[str, object]", document["registration"])
+        registration["capabilities"] = {
+            "context_limit_tokens": 272_000,
+            "output_limit_tokens": 32_000,
+            "output_limit_control": False,
+        }
+        status, _payload = self.admin_post("/control/resources", document)
+        self.assertEqual(200, status)
+
+        def composed_facts() -> tuple[object, object, object]:
+            snapshot = (
+                self.plane.current_application().registry.registry_snapshot()
+            )
+            entry = next(
+                entry
+                for entry in snapshot.entries
+                if entry.identity.resource_id == "zai-plan-1"
+            )
+            capabilities = entry.capabilities
+            return (
+                capabilities.context_limit_tokens,
+                capabilities.output_limit_tokens,
+                capabilities.output_limit_control,
+            )
+
+        self.assertEqual(composed_facts(), (272_000, 32_000, False))
+
+        # disable -> re-enable (the _with_enabled copy path).
+        status, _payload = self.admin_post(
+            "/control/resources/zai-plan-1/enabled", {"enabled": False}
+        )
+        self.assertEqual(200, status)
+        status, _payload = self.admin_post(
+            "/control/resources/zai-plan-1/enabled", {"enabled": True}
+        )
+        self.assertEqual(200, status)
+        self.assertEqual(composed_facts(), (272_000, 32_000, False))
+
+        # The persisted/exported configuration document is equivalent for
+        # those facts (byte-semantic values, not erasure-by-default).
+        exported = self.plane.configuration.to_document()
+        resources = cast("list[object]", exported["resources"])
+        persisted = cast("dict[str, object]", resources[0])
+        registration = cast("dict[str, object]", persisted["registration"])
+        self.assertEqual(
+            cast("dict[str, object]", registration["capabilities"]),
+            {
+                "context_limit_tokens": 272_000,
+                "output_limit_tokens": 32_000,
+                "output_limit_control": False,
+            },
+        )
+
+        # Provider removal detaches the endpoint (the _with_endpoint copy
+        # path) and keeps every capability fact.
+        status, _payload, _headers = self.exchange(
+            "DELETE",
+            "/control/providers/zai-http",
+            headers=_csrf_headers(self.plane, self.cookie),
+        )
+        self.assertEqual(200, status)
+        exported = self.plane.configuration.to_document()
+        resources = cast("list[object]", exported["resources"])
+        persisted = cast("dict[str, object]", resources[0])
+        self.assertIsNone(persisted.get("endpoint_id"))
+        registration = cast("dict[str, object]", persisted["registration"])
+        self.assertEqual(
+            cast("dict[str, object]", registration["capabilities"]),
+            {
+                "context_limit_tokens": 272_000,
+                "output_limit_tokens": 32_000,
+                "output_limit_control": False,
+            },
+        )
+
     def test_resource_with_unknown_endpoint_is_rejected(self) -> None:
         self.onboard()
         status, _payload = self.admin_post(

@@ -576,6 +576,78 @@ class OutputSteeringTests(LimitsHarness):
         self.assertEqual(response.status, 200)
         self.assertEqual(self.adapter_for("worker_bridged").dispatch_count, 1)
 
+    def test_mixed_output_and_availability_stays_503(self) -> None:
+        """Review blocker regression: the typed output 400 is reserved for
+        decisions caused PURELY by the output dimension. Route A is
+        available but its 32k ceiling cannot satisfy 64k; route B could
+        satisfy it but is currently UNAVAILABLE. The ordinary
+        no-eligible-target 503 stands — the request could succeed
+        unchanged when B becomes available — and once B recovers the same
+        request executes there unchanged."""
+        weak = ResourceIdentity(
+            resource_id="a-weak-output",
+            channel="server_direct_http",
+            provider="openai",
+            model="gpt-5.6-luna",
+            entitlement="subscription_included",
+        )
+        strong = ResourceIdentity(
+            resource_id="z-strong-output",
+            channel="worker_bridged",
+            provider="openai",
+            model="gpt-5.6-luna",
+            entitlement="subscription_included",
+        )
+        registry = ResourceRegistry(clock=lambda: "2026-09-15T12:05:00.000Z")
+        for identity, capabilities in (
+            (
+                weak,
+                ExecutionCapabilities(
+                    context_limit_tokens=272_000,
+                    output_limit_tokens=32_000,
+                    output_limit_control=True,
+                ),
+            ),
+            (
+                strong,
+                ExecutionCapabilities(
+                    context_limit_tokens=272_000,
+                    output_limit_tokens=128_000,
+                    output_limit_control=True,
+                ),
+            ),
+        ):
+            registry.register(
+                ResourceRegistration(
+                    identity=identity,
+                    freshness_ttl_seconds=300,
+                    capabilities=capabilities,
+                )
+            )
+        registry.apply_snapshot(_observation(weak))
+        # The strong route is registered but NEVER observed: an
+        # availability-stage failure, not an output one.
+        port = self.make_world(registry=registry)
+        response = self.post_chat(port, chat_body(max_completion_tokens=64_000))
+        self.assertEqual(response.status, 503)
+        error = as_dict(
+            cast("dict[str, object]", json.loads(response.read()))["error"]
+        )
+        self.assertEqual(error["code"], "no_eligible_target")
+        self.assertEqual(
+            self.adapter_for("server_direct_http").dispatch_count, 0
+        )
+        # B recovers: the same request now executes on the strong route,
+        # unchanged — exactly why the mixed case must not be a 400.
+        registry.apply_snapshot(_observation(strong))
+        recovered = self.post_chat(
+            port, chat_body(max_completion_tokens=64_000)
+        )
+        self.assertEqual(recovered.status, 200)
+        record = audit_records(self.application)[-1]
+        assert record.selected_target is not None
+        self.assertEqual(record.selected_target.resource_id, "z-strong-output")
+
     def test_unknown_output_capability_fails_closed(self) -> None:
         """A route with NO evidenced output capability (hard UNKNOWN, channel
         UNKNOWN) cannot prove it satisfies an explicit output requirement:

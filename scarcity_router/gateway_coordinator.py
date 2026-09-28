@@ -1311,26 +1311,35 @@ def _target_capabilities(
 def _no_eligible_target_error(decision: RouteDecision) -> GatewayError:
     """The typed failure for an unpinned decision with no selected target.
 
-    When the decision's target exclusions show that routes were excluded
-    purely on the OUTPUT dimension (D-058 pre-ranking eligibility), the
-    client gets the actionable typed 400 — the same code the pinned path
-    maps — instead of a retry-suggesting generic 503: the limit itself is
-    the problem (omit it, raise it to the proven maximum, or lower it).
-    Priority matches :func:`_admission_rejection`
-    (insufficient > unenforceable > unknown); any other exclusion shape
-    keeps the honest 503 ``no_eligible_target``.
+    The output 400 is reserved for decisions caused PURELY by the output
+    dimension (D-058): every target exclusion in the decision must be a
+    compatibility-stage exclusion whose reason codes are exactly output
+    codes. If any route was excluded for any OTHER reason — availability,
+    authorization, binding, a different compatibility feature — the
+    request could succeed unchanged once that other cause clears, so the
+    honest surface is the ordinary 503 ``no_eligible_target`` with its
+    availability-style semantics, never an actionable "change your output
+    request" 400. Priority within the pure case matches
+    :func:`_admission_rejection` (insufficient > unenforceable > unknown).
     """
-    output_codes: set[str] = set()
-    for exclusion in decision.target_exclusions:
-        output_codes |= set(exclusion.reason_codes) & {
-            "output_limit_unknown",
-            "output_limit_insufficient",
-            "output_limit_unenforceable",
-        }
-    if output_codes:
-        if "output_limit_insufficient" in output_codes:
+    output_codes: set[str] = {
+        "output_limit_unknown",
+        "output_limit_insufficient",
+        "output_limit_unenforceable",
+    }
+    exclusions = decision.target_exclusions
+    purely_output = bool(exclusions) and all(
+        exclusion.reason_codes
+        and set(exclusion.reason_codes) <= output_codes
+        for exclusion in exclusions
+    )
+    if purely_output:
+        seen: set[str] = set()
+        for exclusion in exclusions:
+            seen |= set(exclusion.reason_codes)
+        if "output_limit_insufficient" in seen:
             code = "output_limit_insufficient"
-        elif "output_limit_unenforceable" in output_codes:
+        elif "output_limit_unenforceable" in seen:
             code = "output_limit_unenforceable"
         else:
             code = "output_limit_unknown"
