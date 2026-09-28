@@ -1314,8 +1314,13 @@ def _no_eligible_target_error(decision: RouteDecision) -> GatewayError:
     The output 400 is reserved for decisions caused PURELY by the output
     dimension (D-058): every target exclusion in the decision must be a
     compatibility-stage exclusion whose reason codes are exactly output
-    codes. If any route was excluded for any OTHER reason — availability,
-    authorization, binding, a different compatibility feature — the
+    codes, AND the embedded selection decision must show no candidate
+    excluded for a non-output reason — concretely, no D-059 policy-blackout
+    exclusion (``exclusion_stage == "policy_blackout"`` / a blocked
+    ``blackout_decision``), which lives at the selector level and never
+    appears in the gate-level exclusion records. If any route was excluded
+    for any OTHER reason — availability, authorization, binding, a
+    different compatibility feature, or D-059 campaign policy — the
     request could succeed unchanged once that other cause clears, so the
     honest surface is the ordinary 503 ``no_eligible_target`` with its
     availability-style semantics, never an actionable "change your output
@@ -1333,6 +1338,22 @@ def _no_eligible_target_error(decision: RouteDecision) -> GatewayError:
         and set(exclusion.reason_codes) <= output_codes
         for exclusion in exclusions
     )
+    if purely_output:
+        # D-059 interplay: a selector-level policy blackout never reaches
+        # the gate exclusions, so a pure-output gate set can still be a
+        # mixed cause overall. Any blocked candidate in the embedded
+        # selection decision downgrades the classification to the generic
+        # 503 — the request may simply need the campaign to end.
+        selection = decision.selection
+        candidates = tuple(selection.excluded) + tuple(
+            selection.closest_candidates
+        )
+        if any(
+            candidate.blackout_decision is not None
+            and candidate.blackout_decision.blocked
+            for candidate in candidates
+        ):
+            purely_output = False
     if purely_output:
         seen: set[str] = set()
         for exclusion in exclusions:

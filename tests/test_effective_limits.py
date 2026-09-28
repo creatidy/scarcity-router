@@ -33,6 +33,7 @@ from __future__ import annotations
 import json
 import threading
 import unittest
+from dataclasses import replace
 from typing import cast
 
 from collections.abc import Callable
@@ -45,6 +46,7 @@ from scarcity_router.gateway_adapters import (
 )
 from scarcity_router.gateway_contracts import GatewayLimits
 from scarcity_router.gateway_server import GatewayHTTPServer, make_gateway_server
+from scarcity_router.policy import AvailabilityTarget, WeeklyBlackoutRule
 from scarcity_router.resource_state import (
     ExecutionCapabilities,
     ResourceIdentity,
@@ -58,6 +60,7 @@ from scarcity_router.selection_types import (
     ModelIdentity,
 )
 from scarcity_router.routing_core import CompatibilityCell
+from scarcity_router.selector import SelectorPolicy, neutral_selector_policy
 from scarcity_router.selection_types import CapacityScopeRef
 from tests.gateway_fixtures import (
     ALL_FEATURES,
@@ -116,6 +119,7 @@ class LimitsHarness(ServerHarness):
         catalog: ModelCatalog | None = None,
         channels: tuple[str, ...] = ("server_direct_http", "worker_bridged"),
         behavior: Callable[[AdapterCall, ExecutionContext], AdapterResult] | None = None,
+        policy: SelectorPolicy | None = None,
     ) -> int:
         self.adapters = {
             channel: ScriptedAdapter(channel=channel, behavior=behavior)
@@ -127,6 +131,7 @@ class LimitsHarness(ServerHarness):
             adapters=[self.adapters[channel] for channel in channels],
             limits=limits,
             catalog=catalog,
+            policy=policy,
         )
         return self._serve(application)
 
@@ -648,6 +653,104 @@ class OutputSteeringTests(LimitsHarness):
         assert record.selected_target is not None
         self.assertEqual(record.selected_target.resource_id, "z-strong-output")
 
+    def test_d059_blackout_on_capable_route_keeps_mixed_cause_503(self) -> None:
+        """D-059 interplay regression: the typed output 400 stays reserved
+        for PURELY output-caused no-target decisions. Route A is available
+        but its 32k ceiling cannot satisfy 64k (gate exclusion,
+        output_limit_insufficient); route B could satisfy it but is blocked
+        by an ACTIVE D-059 campaign blackout at the selector level — which
+        never appears in the gate-level exclusion records. The honest
+        surface is the generic 503: when the campaign ends, the same
+        request executes on B unchanged. The control world without the
+        blackout proves exactly that."""
+        weak = ResourceIdentity(
+            resource_id="a-weak-output",
+            channel="server_direct_http",
+            provider="openai",
+            model="gpt-5.6-luna",
+            entitlement="subscription_included",
+        )
+        strong = ResourceIdentity(
+            resource_id="z-strong-output",
+            channel="worker_bridged",
+            provider="openai",
+            model="gpt-5.6-luna",
+            entitlement="subscription_included",
+        )
+        capabilities = (
+            (
+                weak,
+                ExecutionCapabilities(
+                    context_limit_tokens=272_000,
+                    output_limit_tokens=32_000,
+                    output_limit_control=True,
+                ),
+            ),
+            (
+                strong,
+                ExecutionCapabilities(
+                    context_limit_tokens=272_000,
+                    output_limit_tokens=128_000,
+                    output_limit_control=True,
+                ),
+            ),
+        )
+
+        def world(*, blacked_out: bool) -> int:
+            registry = ResourceRegistry(clock=lambda: "2026-09-15T12:05:00.000Z")
+            for identity, caps in capabilities:
+                registry.register(
+                    ResourceRegistration(
+                        identity=identity,
+                        freshness_ttl_seconds=300,
+                        capabilities=caps,
+                    )
+                )
+                registry.apply_snapshot(_observation(identity))
+            policy = neutral_selector_policy()
+            if blacked_out:
+                rule = WeeklyBlackoutRule(
+                    rule_id="test-campaign-blackout",
+                    target=AvailabilityTarget(provider="openai"),
+                    timezone="UTC",
+                    # T_EVAL (2026-09-15) is a Tuesday.
+                    weekdays=("tue",),
+                    start_local="00:00",
+                    end_local="23:59",
+                    reason_code="test_blackout",
+                )
+                policy = replace(
+                    policy,
+                    resource_policy=replace(
+                        policy.resource_policy, blackouts=(rule,)
+                    ),
+                )
+            return self.make_world(registry=registry, policy=policy)
+
+        # Mixed cause: gate-level output exclusion (weak) + selector-level
+        # blackout (strong) -> generic 503, never the actionable 400.
+        port = world(blacked_out=True)
+        response = self.post_chat(port, chat_body(max_completion_tokens=64_000))
+        self.assertEqual(response.status, 503)
+        error = as_dict(
+            cast("dict[str, object]", json.loads(response.read()))["error"]
+        )
+        self.assertEqual(error["code"], "no_eligible_target")
+        self.assertEqual(
+            self.adapter_for("server_direct_http").dispatch_count, 0
+        )
+        self.assertEqual(self.adapter_for("worker_bridged").dispatch_count, 0)
+
+        # Control: without the blackout the same request executes on the
+        # strong route — the cause was the campaign, not the output.
+        port = world(blacked_out=False)
+        response = self.post_chat(
+            port, chat_body(max_completion_tokens=64_000)
+        )
+        self.assertEqual(response.status, 200)
+        record = audit_records(self.application)[-1]
+        assert record.selected_target is not None
+        self.assertEqual(record.selected_target.resource_id, "z-strong-output")
     def test_unknown_output_capability_fails_closed(self) -> None:
         """A route with NO evidenced output capability (hard UNKNOWN, channel
         UNKNOWN) cannot prove it satisfies an explicit output requirement:
