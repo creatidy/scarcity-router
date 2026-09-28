@@ -865,51 +865,67 @@ class GatewayApplication:
 
     # ── D-060 client-tool continuation ───────────────────────────────────
 
+    _CONTINUATION_TOKEN_PREFIX: str = "srct-"
+
     def _detect_continuation(
         self, request: ChatCompletionRequest, client_id: str
     ) -> PendingContinuation | None:
         """Whether this request IS a harness tool result for a suspension.
 
-        Detection keys on the request's ``role: "tool"`` message ids: a
-        request carrying NO tool messages, or only ids with no live
-        continuation, is a normal request (full-history paths stay
-        untouched). A request that matches a continuation but does not
-        carry the exact single-result shape is a typed mismatch — never
-        a silently half-continued turn.
+        Detection is SHAPE-AWARE: only a request whose FINAL message is
+        a ``role: "tool"`` result can be attempting a continuation, so
+        ordinary full-history follow-up turns (which necessarily still
+        carry earlier tool messages) are never mistaken for replays —
+        a completed round never poisons the conversation. Within that
+        delivery shape:
+
+        - a live record for the addressed token → the continuation
+          (exact-shape validation follows in
+          :meth:`_validate_continuation_request`);
+        - a terminally resolved token (client-scoped tombstone) → the
+          explicit ``409`` conflict, never a silent re-interpretation;
+        - any other gateway-issued ``srct-`` token (a lost record:
+          gateway restart, registry bound) → the typed ``404``
+          continuation_not_found — the gateway issued that id, so a
+          result addressed to it must never be fed to a fresh model
+          selection;
+        - any non-gateway id → a normal request (full-history paths on
+          other channels stay untouched).
+
+        A live record cited WITHOUT the delivery shape (mid-history)
+        falls through to normal flow, where the codex adapter's own
+        rejection applies.
         """
         registry = self.continuations
         if registry is None:
             return None
-        tokens = [
-            message.tool_call_id
-            for message in request.messages
-            if message.role == "tool" and message.tool_call_id is not None
-        ]
-        if not tokens:
+        messages = request.messages
+        if not messages:
             return None
-        matched: PendingContinuation | None = None
-        for token in tokens:
-            candidate = registry.detect(token)
-            if candidate is None:
-                if registry.was_terminal_for(token, client_id):
-                    # A replayed/duplicate tool result after the
-                    # continuation already resolved: the explicit
-                    # conflict, never a silent re-interpretation. A
-                    # foreign client's replay stays not-found.
-                    raise GatewayError.conflict(
-                        "this continuation was already resolved by one tool result",
-                        code="continuation_already_resolved",
-                    )
-                continue
-            if matched is not None or len(tokens) != 1:
-                raise GatewayError.invalid_request(
-                    "a continuation request carries exactly one tool result "
-                    + "for its suspended execution",
-                    code="continuation_mismatch",
-                    param="messages",
-                )
-            matched = candidate
-        return matched
+        final = messages[-1]
+        if final.role != "tool" or final.tool_call_id is None:
+            return None
+        token = final.tool_call_id
+        candidate = registry.detect(token)
+        if candidate is not None:
+            return candidate
+        if registry.was_terminal_for(token, client_id):
+            # A replayed/duplicate tool result after the continuation
+            # already resolved: the explicit conflict. A foreign
+            # client's replay stays not-found.
+            raise GatewayError.conflict(
+                "this continuation was already resolved by one tool result",
+                code="continuation_already_resolved",
+            )
+        if token.startswith(self._CONTINUATION_TOKEN_PREFIX):
+            # A result addressed to a gateway-issued id with no registry
+            # state: the suspension was lost (restart, bound) — the
+            # documented typed failure, never a fresh completion.
+            raise GatewayError.not_found(
+                "no pending continuation exists for this tool result",
+                code="continuation_not_found",
+            )
+        return None
 
     def _continuation_error(self, reason: str) -> GatewayError:
         """The typed failure for a tool result that cannot claim its
@@ -1101,8 +1117,11 @@ class GatewayApplication:
             registry.close(record.continuation_token, CONTINUATION_EXPIRED)
             raise
         if isinstance(outcome, ToolSuspension):
-            # A sequential tool round on the SAME turn: register the next
-            # continuation and end this leg with the new tool_calls.
+            # A sequential tool round on the SAME turn: the previous
+            # token's result was consumed by THIS delivery (terminal for
+            # that token — a later replay gets the explicit conflict),
+            # and the next continuation takes the freed slot.
+            registry.close(record.continuation_token, CONTINUATION_COMPLETED)
             state.calls = (
                 CallObservation(
                     call_index=0,
@@ -1225,6 +1244,11 @@ class GatewayApplication:
             cancel_callback=lambda _record: adapter.cancel_suspension(handle),
         )
         if not registry.register(record):
+            # At the pending bound the continuation cannot exist: cancel
+            # the already-suspended worker turn NOW (no orphan Codex
+            # process waiting for a result that will never be accepted)
+            # and note the honest bounded failure in the audit.
+            adapter.cancel_suspension(handle)
             state.flow_notes = (*state.flow_notes, "continuation_unavailable")
             return
         state.flow_notes = (*state.flow_notes, "suspended_for_client_tool")

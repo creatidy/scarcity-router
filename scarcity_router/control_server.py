@@ -361,8 +361,11 @@ def _reap_liveness(
         if on_tick is not None:
             try:
                 _ = on_tick()
-            except Exception:  # noqa: BLE001 - the reaper never dies
-                return
+            except Exception:  # noqa: BLE001 - a failed tick is skipped;
+                # the reaper survives (a dead reaper would let stale
+                # sessions fill the bounded table and continuations pin
+                # slots) and the next cadence tick retries the work.
+                pass
 
 
 def _loopback(host: str) -> bool:

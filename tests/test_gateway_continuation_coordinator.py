@@ -392,6 +392,141 @@ class ContinuationLifecycleTests(unittest.TestCase):
         self.assertIn("continuation_resumed", record.reason_codes)
 
 
+class DetectionShapeTests(unittest.TestCase):
+    """Review-round regression pins (PR #159 round 1 blockers)."""
+
+    registry: ContinuationRegistry
+    adapter: "_FakeContinuationAdapter"
+    application: GatewayApplication
+
+    def __init__(self, method_name: str = "runTest") -> None:
+        # Placeholders; setUp replaces them before each test body runs.
+        self.registry = cast("ContinuationRegistry", object())
+        self.adapter = cast("_FakeContinuationAdapter", object())
+        self.application = cast("GatewayApplication", object())
+        super().__init__(method_name)
+
+    @override
+    def setUp(self) -> None:
+        self.registry = ContinuationRegistry()
+        self.adapter = _FakeContinuationAdapter()
+        self.application = _application_with_continuation(
+            self.registry, self.adapter
+        )
+
+    def _deliver_one_round(self) -> None:
+        document = _canonical_request_document()
+        _ = _registered_record(document, self.registry, self.adapter)
+        _ = self.application.execute(
+            client_id=CLIENT_ID, request=parse_chat_request(document)
+        )
+
+    def test_follow_up_turn_after_a_round_is_not_a_replay(self) -> None:
+        # A conforming full-history harness resends the whole
+        # conversation on its next turn; the consumed tool result stays
+        # in the middle of the history. That request must route
+        # normally — never a tombstone 409 (review blocker 1).
+        self._deliver_one_round()
+        delivered_before = len(self.adapter.delivered)
+        follow_up: dict[str, object] = {
+            "model": "openai-worker-model",
+            "messages": [
+                *PREFIX_MESSAGES,
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": TOOL_TOKEN,
+                            "type": "function",
+                            "function": {
+                                "name": TOOL_NAME,
+                                "arguments": TOOL_ARGUMENTS,
+                            },
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": TOOL_TOKEN,
+                    "content": "TOOL-RESULT",
+                },
+                {"role": "assistant", "content": "FINAL"},
+                {"role": "user", "content": "SECRET-NEXT-TURN"},
+            ],
+        }
+        with self.assertRaises(GatewayError) as caught:
+            _ = self.application.execute(
+                client_id=CLIENT_ID, request=parse_chat_request(follow_up)
+            )
+        # Normal routing ran (this fixture's model has no route); the
+        # point is the absence of the continuation vocabulary.
+        self.assertNotIn(
+            caught.exception.code,
+            {"continuation_already_resolved", "continuation_not_found"},
+        )
+        self.assertEqual(delivered_before, len(self.adapter.delivered))
+
+    def test_delivering_result_to_a_lost_suspension_is_not_found(self) -> None:
+        # Gateway restart (fresh registry): a result addressed to a
+        # gateway-issued token must be the typed 404 — never fed to a
+        # fresh model selection (review blocker 2).
+        document = _canonical_request_document()
+        with self.assertRaises(GatewayError) as caught:
+            _ = self.application.execute(
+                client_id=CLIENT_ID, request=parse_chat_request(document)
+            )
+        self.assertEqual(404, caught.exception.http_status)
+        self.assertEqual("continuation_not_found", caught.exception.code)
+        self.assertEqual([], self.adapter.delivered)
+
+    def test_mid_history_token_without_delivery_shape_is_normal_flow(self) -> None:
+        # A tombstoned/srct token cited mid-history (not as the final
+        # result message) is conversation history, not a delivery.
+        self._deliver_one_round()
+        citing: dict[str, object] = {
+            "model": "openai-worker-model",
+            "messages": [
+                *PREFIX_MESSAGES,
+                {"role": "assistant", "content": "cites " + TOOL_TOKEN},
+                {"role": "user", "content": "continue"},
+            ],
+        }
+        with self.assertRaises(GatewayError) as caught:
+            _ = self.application.execute(
+                client_id=CLIENT_ID, request=parse_chat_request(citing)
+            )
+        self.assertNotIn(
+            caught.exception.code,
+            {"continuation_already_resolved", "continuation_not_found"},
+        )
+
+    def test_sequential_round_closes_the_superseded_token(self) -> None:
+        # Review DEFER 3: the superseded token must reach a terminal
+        # state when its result is consumed by a sequential round, so a
+        # very-late replay gets the precise 409 and the slot is freed.
+        document = _canonical_request_document()
+        _ = _registered_record(document, self.registry, self.adapter)
+        next_token = new_continuation_token()
+        self.adapter.next_result = ToolSuspension(
+            continuation_token=next_token,
+            tool_name="second_tool",
+            arguments="{}",
+            content=None,
+        )
+        _ = self.application.execute(
+            client_id=CLIENT_ID, request=parse_chat_request(document)
+        )
+        # The superseded token is terminal; a replay conflicts precisely.
+        with self.assertRaises(GatewayError) as caught:
+            _ = self.application.execute(
+                client_id=CLIENT_ID, request=parse_chat_request(document)
+            )
+        self.assertEqual(409, caught.exception.http_status)
+        self.assertEqual("continuation_already_resolved", caught.exception.code)
+        # And exactly ONE pending record remains (the new token's).
+        self.assertEqual(1, self.registry.pending_count())
+
+
 _PREFIX_ALONE = PREFIX_MESSAGES[1]
 
 
