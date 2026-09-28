@@ -238,9 +238,11 @@ class WorkerBridgedAdapter:
                 ):
                     # The continuation cannot exist (bound reached, or no
                     # registration surface on this dispatch): cancel the
-                    # suspended backend turn and fail typed — the
-                    # tool_call id is NEVER exposed unregistered
-                    # (review round 2, finding 4).
+                    # suspended backend turn, release the local handle,
+                    # and fail typed — the tool_call id is NEVER exposed
+                    # unregistered (review round 2, finding 4).
+                    if handle is not None:
+                        self._drop_suspension(handle.continuation_token)
                     self._send_cancel_best_effort(pending.attempt_id, resource_id)
                     raise AdapterPermanentError(
                         "the gateway cannot continue this client-tool turn"
@@ -461,6 +463,8 @@ class WorkerBridgedAdapter:
                 if next_handle is None or not self._admit_continuation(
                     context, next_handle, suspension.arguments
                 ):
+                    if next_handle is not None:
+                        self._drop_suspension(next_handle.continuation_token)
                     self._send_cancel_best_effort(
                         handle.attempt_id, handle.resource_id
                     )

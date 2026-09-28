@@ -1024,9 +1024,11 @@ the D-056 effective-output intersection.
 
 The Stage-2 matrix above recorded `tool_calls`/`tool_results` as
 UNSUPPORTED on the stable surface. Issue #137's investigation (verdict
-TOOL_BRIDGE_VIABLE, issue comment 2026-09-28) plus the D-062
-implementation move both cells to **PARTIAL (conditional)**, under
-exactly these evidenced conditions:
+TOOL_BRIDGE_VIABLE, issue comment 2026-09-28), the D-062
+implementation, and the 2026-09-28 review STOP leave the two cells
+SPLIT: `tool_calls` moves to **PARTIAL (conditional)** — the
+declarations/suspension/relay half — while `tool_results` STAYS
+**UNSUPPORTED**, under exactly these evidenced conditions:
 
 - **Mechanism evidence (2026-09-28, unchanged from the #137
   investigation):** `dynamicTools` on `thread/start`, gated by the

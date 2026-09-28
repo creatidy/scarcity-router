@@ -15,18 +15,21 @@ synthetic or administrator-invented entries.
 Conservative by design: every turn-level cell stays ``PARTIAL`` because
 the live half (confirmation against a signed-in subscription home) is
 still pending behind the recorded ``LIVE_CODEX_SUBSCRIPTION`` gate — no
-cell is upgraded above the reviewed matrix. ``tool_calls`` and
-``tool_results`` moved from ``UNSUPPORTED`` to ``PARTIAL`` with the
-D-062 client-tool bridge (#137): the mechanism is evidenced at
-mechanism level on the current runtime (2026-09-28 probe of
-``codex-cli 0.155.0-alpha.16.3`` + official docs + binary-pinned
-schemas, re-pinned upstream ``rust-v0.157.1`` by #150), the
-deterministic round trip is test-verified end to end, and the live
-signed-in round trip stays behind the same M10-class gate — hence
-PARTIAL, never PASS. An OLD worker that cannot negotiate protocol
-version 3 is never tool-continuation-capable regardless of these cells
-(the dispatch path fails closed on the live worker session). ``UNKNOWN``
-and ``UNSUPPORTED`` fail closed at admission.
+cell is upgraded above the reviewed matrix. With the D-062 client-tool
+bridge (#137), ``tool_calls`` moved from ``UNSUPPORTED`` to ``PARTIAL``
+(the declarations/suspension/relay half is mechanism-evidenced on the
+current runtime — 2026-09-28 probe of ``codex-cli
+0.155.0-alpha.16.3`` + official docs + binary-pinned schemas, upstream
+re-pinned ``rust-v0.157.1`` by #150 — and deterministic-test-verified),
+while ``tool_results`` STAYS ``UNSUPPORTED``: upstream ``success``
+means "whether the tool call succeeded" (a required bool), the generic
+text-only ``role: "tool"`` message carries no such fact, and the
+adapter refuses to fabricate the answer (typed
+``tool_result_success_unresolved``) pending the owner decision packet
+on issue #137. Tool eligibility additionally requires the worker
+session's LIVE protocol-v3 negotiation (an old worker is never
+tool-continuation-capable regardless of these cells). ``UNKNOWN`` and
+``UNSUPPORTED`` fail closed at admission.
 
 Authority model (issue #106): this built-in evidence is the DEFAULT
 ceiling for the Codex worker-local adapter. Nothing here lets
