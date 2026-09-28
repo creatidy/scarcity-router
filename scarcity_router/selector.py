@@ -958,11 +958,22 @@ class CandidateEvaluation:
     ``degraded`` mirrors a ``degraded`` unknown-capacity decision (unknown
     capacity that may remain conditionally usable); it never fabricates a
     numeric scarcity value.
+
+    ``reasoning_effort`` is carried verbatim from the same catalog entry that
+    participated in ranking (D-057): ``None`` means the entry has no
+    configured effort — materially different from the real effort ``"none"``
+    — and the value is never reconstructed from ``identity.variant`` or any
+    other opaque identity. It is a required construction argument, so a
+    candidate evaluation cannot exist without its catalog provenance.
     """
 
     identity: ModelIdentity
     display_name: str
     eligible: bool
+    # D-057 additive public contract member: the candidate's configured
+    # reasoning effort, sourced from the ranked catalog entry. Required (no
+    # default) so "not carried" can never silently serialize as unconfigured.
+    reasoning_effort: str | None
     degraded: bool = False
     exclusion_stage: str | None = None
     # D-039: the paired execution-eligibility report, carried only on
@@ -993,6 +1004,12 @@ class CandidateEvaluation:
         _ = _v_instance_of(self.identity, ModelIdentity, "candidate_evaluation.identity")
         _ = _v_nonempty_str(self.display_name, "candidate_evaluation.display_name")
         _ = _v_bool(self.eligible, "candidate_evaluation.eligible")
+        if self.reasoning_effort is not None:
+            _ = _v_enum(
+                self.reasoning_effort,
+                frozenset(REASONING_EFFORTS),
+                "candidate_evaluation.reasoning_effort",
+            )
         _ = _v_bool(self.degraded, "candidate_evaluation.degraded")
         _ = _v_tuple_of(
             self.hard_constraint_failures,
@@ -1140,6 +1157,9 @@ class CandidateEvaluation:
         out: dict[str, object] = {
             "identity": self.identity.to_dict(),
             "display_name": self.display_name,
+            # D-057 additive member, always present: unconfigured effort is
+            # the explicit null, never an omitted key and never "none".
+            "reasoning_effort": self.reasoning_effort,
             "eligible": self.eligible,
             "degraded": self.degraded,
         }
@@ -1227,6 +1247,7 @@ def _evaluate_candidate(
         return CandidateEvaluation(
             identity=identity,
             display_name=entry.display_name,
+            reasoning_effort=entry.reasoning_effort,
             eligible=False,
             exclusion_stage="execution",
             execution_eligibility=eligibility_report,
@@ -1240,6 +1261,7 @@ def _evaluate_candidate(
         return CandidateEvaluation(
             identity=identity,
             display_name=entry.display_name,
+            reasoning_effort=entry.reasoning_effort,
             eligible=False,
             exclusion_stage="policy_blackout",
             blackout_decision=blackout,
@@ -1251,6 +1273,7 @@ def _evaluate_candidate(
         return CandidateEvaluation(
             identity=identity,
             display_name=entry.display_name,
+            reasoning_effort=entry.reasoning_effort,
             eligible=False,
             exclusion_stage="hard_constraint",
             hard_constraint_failures=hard_failures,
@@ -1264,6 +1287,7 @@ def _evaluate_candidate(
         return CandidateEvaluation(
             identity=identity,
             display_name=entry.display_name,
+            reasoning_effort=entry.reasoning_effort,
             eligible=False,
             exclusion_stage="capability",
             capability_failures=capability_failures,
@@ -1299,6 +1323,7 @@ def _evaluate_candidate(
         return CandidateEvaluation(
             identity=identity,
             display_name=entry.display_name,
+            reasoning_effort=entry.reasoning_effort,
             eligible=False,
             exclusion_stage="capacity",
             capability_margin=margin,
@@ -1343,6 +1368,7 @@ def _evaluate_candidate(
         return CandidateEvaluation(
             identity=identity,
             display_name=entry.display_name,
+            reasoning_effort=entry.reasoning_effort,
             eligible=False,
             exclusion_stage="reservation",
             capability_margin=margin,
@@ -1379,6 +1405,7 @@ def _evaluate_candidate(
     return CandidateEvaluation(
         identity=identity,
         display_name=entry.display_name,
+        reasoning_effort=entry.reasoning_effort,
         eligible=True,
         degraded=unknown_decision.degraded,
         capability_margin=margin,

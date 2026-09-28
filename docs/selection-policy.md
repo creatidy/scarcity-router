@@ -134,10 +134,13 @@ full reservation decisions — including triggered-but-permitted ones — for
 eligible candidates, and the applied preference order.
 
 D-032 preserves machine-interface v1 and the SelectionDecision serialized
-field set. Current selected `identity.variant` values identify the configured
-effort without changing identity semantics; use the explicit field in the
-decision's versioned catalog to reconstruct effort comparisons. Variant is
-never parsed by production logic. Public explicit effort output is deferred.
+field set. D-057 adds the public explicit effort output that D-032 deferred:
+every serialized candidate evaluation carries `reasoning_effort` — the exact
+configured effort of the catalog entry that participated in ranking, with an
+explicit `null` for entries without a configured effort (`null` is distinct
+from the real effort `"none"`). `identity.variant` stays opaque: variant is
+never parsed by production logic, and consumers must not infer effort from
+it — the serialized field is the only public effort surface.
 
 **Outputs.** The selector returns a structured `SelectionDecision`:
 selected candidate, alternatives in exact ranking order, excluded

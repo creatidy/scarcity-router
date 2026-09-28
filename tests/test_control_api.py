@@ -26,6 +26,7 @@ from scarcity_router.machine_api import (
     invalid_request_payload,
 )
 from scarcity_router.remote import RemoteScarcityClient, RemoteServerConfig
+from scarcity_router.selection_app import load_catalog
 from scarcity_router.server_config import ResourceConfig
 from scarcity_router.status import collect_status
 
@@ -37,6 +38,8 @@ from tests.server_fixtures import (
     ServerHarness,
     synthetic_collectors,
 )
+
+REPO = Path(__file__).resolve().parents[1]
 
 
 def _csrf_headers(plane: ControlPlane, cookie: str) -> dict[str, str]:
@@ -243,6 +246,37 @@ class RemoteBridgeParityTests(ServerHarness):
         self.assertIsNotNone(decision["decision"])
         result = client.simulate({"profile_id": "deep_coding", "overrides": {}})
         self.assertIn("result", result)
+
+    def test_authenticated_select_decision_carries_reasoning_effort(self) -> None:
+        """D-057: the authenticated /v1/select decision serializes the
+        ranked catalog entry's effort for every candidate (additive v1)."""
+        self.onboard()
+        decision = self._client().select({"profile_id": "deep_coding"})
+        payload = cast("dict[str, object]", decision["decision"])
+        catalog = load_catalog(REPO / "model-catalog.json")
+        catalog_efforts = {
+            (entry.identity.provider, entry.identity.model, entry.identity.variant): (
+                entry.reasoning_effort
+            )
+            for entry in catalog.entries
+        }
+        selected = cast("dict[str, object]", payload["selected"])
+        identity = cast("dict[str, object]", selected["identity"])
+        self.assertIn("reasoning_effort", selected)
+        self.assertEqual(
+            catalog_efforts[
+                cast(
+                    "tuple[str, str, str]",
+                    (identity["provider"], identity["model"], identity["variant"]),
+                )
+            ],
+            selected["reasoning_effort"],
+        )
+        for member in ("alternatives", "excluded"):
+            for candidate in cast("list[object]", payload[member]):
+                self.assertIn(
+                    "reasoning_effort", cast("dict[str, object]", candidate), member
+                )
 
     def test_remote_select_surfaces_server_rejections(self) -> None:
         self.onboard()

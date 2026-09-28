@@ -260,7 +260,10 @@ class ScenarioTests(unittest.TestCase):
                 self.assertEqual(winner.reasoning_effort, decision.selected.identity.variant)
                 payload = decision.selected.to_dict()
                 self.assertEqual(payload["identity"], winner.identity.to_dict())
-                self.assertNotIn("reasoning_effort", payload)
+                # D-057: the serialized effort is the catalog entry's effort.
+                # (In the shipped catalog variant names coincide with efforts,
+                # which is exactly why the explicit field is required.)
+                self.assertEqual(winner.reasoning_effort, payload["reasoning_effort"])
                 excluded = {c.identity: c for c in decision.excluded}
                 if profile == "deep_coding":
                     self.assertEqual(
@@ -1944,6 +1947,7 @@ class ShortWindowFloorTests(unittest.TestCase):
                 identity=identity,
                 display_name="Alpha",
                 eligible=False,
+                reasoning_effort="max",
                 exclusion_stage="capability",
                 reason_codes=("capability_failed",),
                 short_window_below_floor=True,
@@ -1953,6 +1957,7 @@ class ShortWindowFloorTests(unittest.TestCase):
                 identity=identity,
                 display_name="Alpha",
                 eligible=True,
+                reasoning_effort="max",
                 capability_margin=0,
                 short_window_below_floor=True,
             )
@@ -1960,6 +1965,7 @@ class ShortWindowFloorTests(unittest.TestCase):
             identity=identity,
             display_name="Alpha",
             eligible=True,
+            reasoning_effort="max",
             capability_margin=0,
             scarcity_assessment=known,
             short_window_below_floor=True,
@@ -1985,6 +1991,240 @@ class ShortWindowFloorTests(unittest.TestCase):
             + "(below floor — task may not fit this window)",
             explained,
         )
+
+
+def _open_requirement() -> TaskRequirement:
+    """A requirement nothing can fail: no minima, no hard constraints."""
+    return TaskRequirement(
+        task_level="L1",
+        capability_minima=CapabilityMinima(),
+        hard_constraints=HardConstraints(),
+    )
+
+
+class ReasoningEffortSerializationTests(unittest.TestCase):
+    """D-057: every serialized candidate carries its catalog effort.
+
+    The ``reasoning_effort`` member is always present in serialized
+    ``CandidateEvaluation`` documents: ``null`` means unconfigured and is
+    distinct from the real configured effort ``"none"``; the value comes
+    verbatim from the ranked catalog entry and is never derived from the
+    opaque ``identity.variant`` or any other identity member.
+    """
+
+    def _synthetic_decision(
+        self, *entries: object
+    ) -> SelectionDecision:
+        catalog = ModelCatalog(
+            catalog_version=1,
+            updated_on="2026-09-06",
+            entries=cast("tuple[ModelCatalogEntry, ...]", entries),
+        )
+        return _select(
+            _open_requirement(), [_snap("openai")], catalog=catalog
+        )
+
+    def test_decision_walk_serializes_catalog_effort_everywhere(self) -> None:
+        for profile in (
+            "routine_coding",
+            "deep_coding",
+            "scientific_review",
+            "editorial",
+            "translation",
+        ):
+            decision = _select(
+                PROFILES.resolve(profile), [_snap("openai"), _snap("zai")]
+            )
+            candidates: list[CandidateEvaluation] = []
+            if decision.selected is not None:
+                candidates.append(decision.selected)
+            candidates.extend(decision.alternatives)
+            candidates.extend(decision.excluded)
+            for candidate in candidates:
+                with self.subTest(profile=profile, identity=candidate.identity):
+                    entry = BY_IDENTITY[
+                        (
+                            candidate.identity.provider,
+                            candidate.identity.model,
+                            candidate.identity.variant,
+                        )
+                    ]
+                    payload = candidate.to_dict()
+                    self.assertIn("reasoning_effort", payload)
+                    self.assertEqual(
+                        entry.reasoning_effort, payload["reasoning_effort"]
+                    )
+
+    def test_alternatives_serialize_their_own_efforts_independently(self) -> None:
+        decision = _select(
+            PROFILES.resolve("deep_coding"), [_snap("openai"), _snap("zai")]
+        )
+        self.assertEqual(
+            [SOL_MEDIUM.identity, SOL.identity, GLM53.identity],
+            [alternative.identity for alternative in decision.alternatives],
+        )
+        self.assertEqual(
+            ["medium", "high", "max"],
+            [
+                alternative.to_dict()["reasoning_effort"]
+                for alternative in decision.alternatives
+            ],
+        )
+
+    def test_capacity_excluded_and_recoverable_candidates_preserve_the_field(
+        self,
+    ) -> None:
+        policy = SelectorPolicy(
+            mode="balanced",
+            resource_policy=UserPolicy(
+                policy_version=1,
+                unknown_capacity_mode="degraded",
+                replenishment_mode="recoverable",
+                reservations=(),
+                blackouts=(),
+            ),
+        )
+        states = (
+            ReplenishmentState(
+                provider="openai",
+                kind="rate_limit_reset",
+                available_count=2,
+                details_known=True,
+                earliest_expiry=None,
+                retrieved_at=RETRIEVED_AT,
+            ),
+        )
+        decision = _select(
+            PROFILES.resolve("scientific_review"),
+            [_snap("openai", 98, 0), _snap("zai", 80, 80)],
+            policy=policy,
+            states=states,
+        )
+        self.assertIsNone(decision.selected)
+        self.assertEqual(1, len(decision.recoverable_candidates))
+        recoverable = decision.recoverable_candidates[0]
+        self.assertEqual(SOL.identity, recoverable.identity)
+        self.assertEqual("high", recoverable.to_dict()["reasoning_effort"])
+
+    def test_closest_candidates_preserve_the_field(self) -> None:
+        base = PROFILES.resolve("routine_coding")
+        requirement = replace(
+            base,
+            hard_constraints=replace(
+                base.hard_constraints, required_provider="openai"
+            ),
+        )
+        decision = _select(
+            requirement, [_snap("openai", 0, 0), _snap("zai")]
+        )
+        assert decision.selected is None
+        self.assertTrue(decision.closest_candidates)
+        for candidate in decision.closest_candidates:
+            with self.subTest(identity=candidate.identity):
+                entry = BY_IDENTITY[
+                    (
+                        candidate.identity.provider,
+                        candidate.identity.model,
+                        candidate.identity.variant,
+                    )
+                ]
+                self.assertEqual("capacity", candidate.exclusion_stage)
+                self.assertEqual(
+                    entry.reasoning_effort, candidate.to_dict()["reasoning_effort"]
+                )
+
+    def test_unconfigured_effort_serializes_explicit_null(self) -> None:
+        entry = _synthetic_entry("openai", "alpha", "xhigh", reasoning_effort=None)
+        decision = self._synthetic_decision(entry)
+        assert decision.selected is not None
+        payload = decision.selected.to_dict()
+        # The key is always present; null is the unconfigured state, never an
+        # omitted member and never derived from the variant string.
+        self.assertIn("reasoning_effort", payload)
+        self.assertIsNone(payload["reasoning_effort"])
+        self.assertEqual(
+            "xhigh", cast("dict[str, object]", payload["identity"])["variant"]
+        )
+
+    def test_configured_none_serializes_as_none_not_null(self) -> None:
+        entry = _synthetic_entry(
+            "openai",
+            "alpha",
+            "none",
+            hard_properties=ModelHardProperties(supports_reasoning_mode=True),
+            reasoning_effort="none",
+        )
+        decision = self._synthetic_decision(entry)
+        assert decision.selected is not None
+        self.assertEqual("none", decision.selected.to_dict()["reasoning_effort"])
+
+    def test_effort_is_never_inferred_from_variant(self) -> None:
+        configured = _synthetic_entry(
+            "openai",
+            "alpha",
+            "medium",
+            hard_properties=ModelHardProperties(supports_reasoning_mode=True),
+            reasoning_effort="high",
+        )
+        unconfigured = _synthetic_entry("openai", "beta", "high")
+        decision = self._synthetic_decision(configured, unconfigured)
+        assert decision.selected is not None
+        payloads = {
+            candidate.identity.model: candidate.to_dict()
+            for candidate in (decision.selected, *decision.alternatives)
+        }
+        # alpha: variant "medium", catalog effort "high" — the catalog wins.
+        self.assertEqual("high", payloads["alpha"]["reasoning_effort"])
+        self.assertEqual(
+            "medium",
+            cast("dict[str, object]", payloads["alpha"]["identity"])["variant"],
+        )
+        # beta: variant "high", no configured effort — null, never the variant.
+        self.assertIsNone(payloads["beta"]["reasoning_effort"])
+        self.assertEqual(
+            "high",
+            cast("dict[str, object]", payloads["beta"]["identity"])["variant"],
+        )
+
+    def test_ranking_still_consumes_the_catalog_effort(self) -> None:
+        # Identical ranking inputs except the catalog effort: the frozen
+        # effort tie-break must order low before high even though neither
+        # variant name is an effort name (D-057 changes serialization only).
+        slower = _synthetic_entry(
+            "openai",
+            "alpha",
+            "slow",
+            hard_properties=ModelHardProperties(supports_reasoning_mode=True),
+            reasoning_effort="high",
+        )
+        faster = _synthetic_entry(
+            "openai",
+            "beta",
+            "fast",
+            hard_properties=ModelHardProperties(supports_reasoning_mode=True),
+            reasoning_effort="low",
+        )
+        decision = self._synthetic_decision(slower, faster)
+        assert decision.selected is not None
+        self.assertEqual("beta", decision.selected.identity.model)
+        self.assertEqual(
+            ("alpha",),
+            tuple(
+                alternative.identity.model
+                for alternative in decision.alternatives
+            ),
+        )
+
+    def test_constructor_rejects_effort_outside_the_vocabulary(self) -> None:
+        identity = ModelIdentity(provider="openai", model="alpha", variant="max")
+        with self.assertRaises(SelectionContractValidationError):
+            _ = CandidateEvaluation(
+                identity=identity,
+                display_name="Alpha",
+                eligible=True,
+                reasoning_effort=cast("str | None", _ill("extreme")),
+                capability_margin=0,
+            )
 
 
 if __name__ == "__main__":

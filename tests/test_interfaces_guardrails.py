@@ -909,6 +909,81 @@ class GatewayEraParityTests(GuardrailTestCase):
         self.assertEqual(rest_document, _mcp_payload(mcp_result))
         self.assertEqual(rest_document, _mcp_text_payload(mcp_result))
 
+    def test_select_reasoning_effort_parity(self) -> None:
+        """D-057: every serialized candidate carries its catalog effort,
+        identically on the direct core, CLI, loopback REST and MCP."""
+        collectors = _collectors()
+        application = _application(collectors)
+        harness = self._rest(application)
+        direct = select_from_inputs(
+            catalog=load_catalog(CATALOG_PATH),
+            profiles=load_model_policy(POLICY_PATH)[0],
+            profile_policy_version=load_model_policy(POLICY_PATH)[1],
+            profile_id="deep_coding",
+            requirement=None,
+            tightening=None,
+            policy=None,
+            replenishment_states=(),
+            collectors=collectors,
+            clock=_clock,
+        )
+        code, output = self._cli(
+            ["select", "--profile", "deep_coding", "--json"],
+            collectors=collectors,
+        )
+        self.assertEqual(0, code)
+        rest_status, rest_envelope = _rest_json(
+            harness, "POST", "/v1/select", {"profile_id": "deep_coding"}
+        )
+        self.assertEqual(200, rest_status)
+        mcp_result = self._mcp(
+            application, "scarcity_select", {"profile_id": "deep_coding"}
+        )
+        self.assertFalse(mcp_result.is_error)
+        expected_envelope = {
+            "schema_version": ENVELOPE_SCHEMA_VERSION,
+            "decision": direct.to_dict(),
+        }
+        self.assertEqual(direct.to_dict(), json.loads(output))
+        self.assertEqual(expected_envelope, rest_envelope)
+        self.assertEqual(expected_envelope, _mcp_payload(mcp_result))
+        self.assertEqual(expected_envelope, _mcp_text_payload(mcp_result))
+        # The additive member rides every candidate list on every surface,
+        # and its value is the ranked catalog entry's configured effort.
+        catalog_efforts = {
+            (entry.identity.provider, entry.identity.model, entry.identity.variant): (
+                entry.reasoning_effort
+            )
+            for entry in load_catalog(CATALOG_PATH).entries
+        }
+        rest_document = cast("dict[str, object]", rest_envelope)
+        decision = cast("dict[str, object]", rest_document["decision"])
+
+        def _walk(candidate: object, label: str) -> None:
+            payload = cast("dict[str, object]", candidate)
+            identity = cast("dict[str, object]", payload["identity"])
+            key = cast(
+                "tuple[str, str, str]",
+                (identity["provider"], identity["model"], identity["variant"]),
+            )
+            self.assertIn("reasoning_effort", payload, label)
+            self.assertEqual(catalog_efforts[key], payload["reasoning_effort"], label)
+
+        for member in (
+            "selected",
+            "alternatives",
+            "excluded",
+            "closest_candidates",
+            "recoverable_candidates",
+        ):
+            value = decision[member]
+            if member == "selected":
+                if value is not None:
+                    _walk(value, member)
+            else:
+                for candidate in cast("list[object]", value):
+                    _walk(candidate, member)
+
     def test_execution_eligibility_exclusion_parity(self) -> None:
         """A blocked provider is excluded BEFORE routing, on every surface."""
         collectors = _collectors(
@@ -1257,6 +1332,37 @@ class RemoteBridgeTests(GuardrailTestCase):
         )
         self.assertEqual(200, local_code)
         self.assertEqual(local_result, remote_result)
+
+    def test_remote_select_passes_reasoning_effort_through_verbatim(self) -> None:
+        """D-057: the bridge neither strips nor invents the additive member."""
+        collectors = _collectors()
+        server = self._serve(collectors)
+        client = self._client(server)
+        harness = self._rest(_application(collectors))
+        local_code, local_decision = _rest_json(
+            harness, "POST", "/v1/select", {"profile_id": "deep_coding"}
+        )
+        self.assertEqual(200, local_code)
+        remote_decision = client.select({"profile_id": "deep_coding"})
+        self.assertEqual(local_decision, remote_decision)
+        payload = cast("dict[str, object]", remote_decision["decision"])
+        seen: list[object] = []
+        for member in (
+            "selected",
+            "alternatives",
+            "excluded",
+            "closest_candidates",
+            "recoverable_candidates",
+        ):
+            value = payload[member]
+            if member == "selected":
+                if value is not None:
+                    seen.append(value)
+            else:
+                seen.extend(cast("list[object]", value))
+        self.assertTrue(seen)
+        for candidate in seen:
+            self.assertIn("reasoning_effort", cast("dict[str, object]", candidate))
 
     def test_credential_travels_in_header_only_never_in_the_url(self) -> None:
         server = self._serve()

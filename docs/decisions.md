@@ -4176,3 +4176,56 @@ Do not rewrite history or change an accepted decision silently.
   implemented rule stays "non-loopback bind requires TLS", and
   tool-requiring requests to sources without an evidenced `tool_calls`
   capability fail closed.
+
+### D-057 — Public recommendation contract: serialized candidates carry their catalog reasoning effort
+
+- **Status:** Accepted (issue #148; branch `contract/reasoning-effort-serialization`)
+- **Date:** 2026-09-28
+- **Confidence:** High for the contract and its parity; the motivating gap is
+  an observed external-consumer failure, not a projection.
+- **Context:** Creatidy Kernel K8 (issue #11) failed its public-contract gate
+  because `/v1/select` could not convey the exact execution configuration of
+  a recommendation without forbidden inference: the reasoning effort is an
+  authoritative selection input (the D-032 catalog field and the D-032/D-054
+  effort tie-break), but the serialized `CandidateEvaluation` omitted it, and
+  in the shipped catalog `identity.variant` names coincide with effort names —
+  a calibration coincidence, not a contract. D-032 explicitly deferred public
+  explicit effort output; that deferral is superseded by an observed consumer
+  need.
+- **Decision:**
+  1. Every serialized `CandidateEvaluation` — hence `selected`,
+     `alternatives`, `excluded`, `closest_candidates` and
+     `recoverable_candidates` in `SelectionDecision` — carries
+     `reasoning_effort: string | null`, and the member is always present.
+  2. Provenance: the value is carried verbatim from the same
+     `ModelCatalogEntry` that participated in ranking (a required
+     construction argument, so a candidate evaluation cannot exist without
+     its catalog provenance). It is never reconstructed after selection from
+     `ModelIdentity.variant` or any other opaque identity, and no new
+     inference or mapping rule is introduced.
+  3. `null` means the entry has no configured effort and is materially
+     distinct from the real configured effort `"none"`.
+  4. Versioning: an additive backwards-compatible machine-interface v1
+     domain field per `docs/machine-interfaces.md` (the D-039 `eligibility`
+     precedent); envelope `schema_version` stays `1`; no compatibility
+     serializer is needed.
+  5. One-core parity: the field propagates through CLI JSON, loopback REST
+     `/v1/select`, MCP `scarcity_select`, the authenticated control
+     `/v1/select` and the remote bridge unchanged; no transport adapter gains
+     selection logic.
+  6. No selector-engine changes: ranking, capability minima, margins, model
+     identity semantics and execution routing are untouched.
+- **Alternatives considered:** (a) reconstruct effort after selection from
+  `variant` — rejected: forbidden inference, wrong for unconfigured entries
+  and for any future catalog where variant names diverge from efforts;
+  (b) a machine-interface v2 bump — rejected: the frozen versioning rules
+  permit additive backwards-compatible members within v1; (c) a
+  selected-only top-level `reasoning_effort` — rejected: a special
+  representation that diverges from every other candidate in the same
+  decision; (d) folding effort into `ModelIdentity` — rejected: identity
+  semantics are frozen and effort is calibrated configuration, not identity.
+- **Boundary:** Public recommendation serialization only. No catalog ratings,
+  capability claims, ranking semantics, model identity semantics, execution
+  gateway behavior, provider telemetry or account/access-mode/business-model
+  fields are changed. The D-032 deferral sentence in
+  `docs/selection-policy.md` is updated accordingly.

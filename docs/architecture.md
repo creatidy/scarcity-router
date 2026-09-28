@@ -209,7 +209,10 @@ The current normalized capacity contract is v3, documented in
   `hard_constraint`, `capability`, `capacity`, `reservation`), structured
   hard/capability failures, normalized reason codes, deterministic
   closest-candidate and recoverable-candidate lists for no-solution
-  results, and serialize-only `to_dict()` output.
+  results, and serialize-only `to_dict()` output. Each serialized candidate
+  also carries `reasoning_effort` (D-057) — the configured effort of the
+  same catalog entry that participated in ranking, with an explicit `null`
+  for unconfigured entries; it is never derived from the opaque identity.
 - `ScarcityAssessment`: the per-candidate scarcity result over explicit
   capacity bindings — continuous integer penalty, explanatory label,
   explicit `known`/`unknown`/`unavailable` state and normalized reason
