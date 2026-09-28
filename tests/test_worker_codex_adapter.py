@@ -2065,7 +2065,12 @@ def _tool_scenario(**turn_extra: object) -> dict[str, object]:
 class CodexToolBridgeTests(CodexAdapterTests):
     """The D-062 suspension round trip at the adapter edge (fake server)."""
 
-    def test_suspension_relays_to_the_bridge_and_answers_the_same_turn(self) -> None:
+    def test_suspension_relays_to_the_bridge_and_refuses_to_fabricate(self) -> None:
+        """Review round 2, finding 1: the suspension half works end to
+        end; the ANSWER half is the recorded STOP — the harness result
+        reaches the bridge, and the adapter REFUSES to invent the
+        upstream ``success`` fact (typed failure; the held request is
+        never answered)."""
         harness = self._harness(_tool_scenario())
         bridge = _ScriptedBridge()
         result = harness.adapter.invoke(
@@ -2075,20 +2080,18 @@ class CodexToolBridgeTests(CodexAdapterTests):
             emit=lambda chunk: None,
             tool_bridge=bridge,
         )
-        self.assertEqual("completed", result.status)
-        assert result.message is not None
-        # The resumed turn's message carries only post-suspension text;
-        # the pre-tool text left with the suspension content.
-        self.assertEqual("Done.", result.message.content)
+        self.assertEqual("failed", result.status)
+        self.assertEqual(
+            "tool_result_success_unresolved", result.calls[0].note
+        )
+        # The suspension half was real: the request reached the bridge
+        # with the pre-tool content.
         self.assertEqual(
             [("call-synthetic-1", "synthetic_lookup", '{"n": 0}', "Checking ")],
             bridge.seen,
         )
-        # The turn-level usage observation rides the terminal result.
-        # The evidenced wire behavior, pinned from the trace: the
-        # experimental capability opted in for THIS session only, the
-        # verbatim dynamicTools declaration, and the harness result
-        # answered onto the ORIGINAL callId with the evidenced shape.
+        # The experimental capability opted in for THIS session only,
+        # and the verbatim dynamicTools declaration.
         inits = [
             record
             for record in harness.trace()
@@ -2107,24 +2110,16 @@ class CodexToolBridgeTests(CodexAdapterTests):
             },
             declared[0],
         )
+        # The STOP itself: NO fabricated answer ever reaches the
+        # backend — the held request dies with the bounded teardown.
         answers = [
             record
             for record in harness.trace()
             if record.get("event") == "tool_call_answer"
         ]
-        self.assertEqual(1, len(answers))
-        self.assertEqual("call-synthetic-1", answers[0]["callId"])
-        self.assertEqual(
-            {
-                "success": True,
-                "contentItems": [
-                    {"type": "inputText", "text": "TOOL-RESULT"},
-                ],
-            },
-            cast("dict[str, object]", answers[0]["result"]),
-        )
+        self.assertEqual([], answers)
 
-    def test_two_sequential_tool_rounds_on_one_turn(self) -> None:
+    def test_two_sequential_rounds_never_reach_a_second_answer(self) -> None:
         harness = self._harness(_tool_scenario(dynamicToolRounds=2))
         bridge = _ScriptedBridge(results=["R1", "R2"])
         result = harness.adapter.invoke(
@@ -2134,24 +2129,20 @@ class CodexToolBridgeTests(CodexAdapterTests):
             emit=lambda chunk: None,
             tool_bridge=bridge,
         )
-        self.assertEqual("completed", result.status)
-        assert result.message is not None
-        self.assertEqual("Done.", result.message.content)
+        # The refusal fires at the FIRST answer point; a sequential
+        # round cannot be reached while the success semantic is
+        # unresolved.
+        self.assertEqual("failed", result.status)
         self.assertEqual(
-            ["call-synthetic-1", "call-synthetic-2"],
-            [call_id for call_id, _n, _a, _c in bridge.seen],
+            "tool_result_success_unresolved", result.calls[0].note
         )
+        self.assertEqual(1, len(bridge.seen))
         answers = [
             record
             for record in harness.trace()
             if record.get("event") == "tool_call_answer"
         ]
-        texts: list[object] = []
-        for answer in answers:
-            result = cast("dict[str, object]", answer["result"])
-            items = cast("list[dict[str, object]]", result["contentItems"])
-            texts.append(items[0]["text"])
-        self.assertEqual(["R1", "R2"], texts)
+        self.assertEqual([], answers)
 
     def test_malformed_tool_arguments_fail_closed(self) -> None:
         harness = self._harness(

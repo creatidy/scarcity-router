@@ -678,6 +678,7 @@ def make_application(
     catalog: ModelCatalog | None = None,
     policy: SelectorPolicy | None = None,
     continuations: "ContinuationRegistry | None" = None,
+    continuation_capability_source: "Callable[[], frozenset[str]] | None" = None,
 ) -> GatewayApplication:
     """Assemble a fully injected GatewayApplication for tests."""
     adapter_registry = AdapterRegistry()
@@ -728,6 +729,7 @@ def make_application(
             else make_sequential_request_ids()
         ),
         continuations=continuations,
+        continuation_capability_source=continuation_capability_source,
     )
 
 
@@ -758,6 +760,7 @@ def parse_chat_request(document: dict[str, object]) -> ChatCompletionRequest:
 
 __all__ = [
     "ALL_FEATURES",
+    "ChatCompletionRequest",
     "BlockingAdapter",
     "CLIENT_ID",
     "CLIENT_KEY",

@@ -79,18 +79,22 @@ CODEX_WORKER_CELL_VALUES: Mapping[str, tuple[str, str, str]] = {
     "tool_calls": (
         "PARTIAL",
         "D-062 bridge: experimentalApi-gated dynamicTools declarations "
-        + "and item/tool/call suspensions relayed to the harness; "
-        + "mechanism evidenced on codex-cli 0.155.0-alpha.16.3, round "
-        + "trip test-verified on the deterministic App Server; live "
-        + "signed-in acceptance pending; v3-worker-gated",
+        + "and item/tool/call suspensions relayed to the harness "
+        + "(mechanism evidenced on codex-cli 0.155.0-alpha.16.3, "
+        + "test-verified on the deterministic App Server); the round "
+        + "trip does NOT complete: delivery is refused at the answer "
+        + "point (tool_result_success_unresolved) pending the owner "
+        + "decision on issue #137; v3-worker availability-gated",
         _TOOL_BRIDGE_EVIDENCE_DATE,
     ),
     "tool_results": (
-        "PARTIAL",
-        "D-062 bridge: the harness's role:tool result answers the SAME "
-        + "suspended turn (evidenced success/contentItems response, "
-        + "text-only); round trip test-verified; live signed-in "
-        + "acceptance pending; v3-worker-gated",
+        "UNSUPPORTED",
+        "D-062 STOP (2026-09-28 review): upstream success means "
+        + "'whether the tool call succeeded' (required bool, openai/"
+        + "codex @ 36650394); the generic text-only role:tool message "
+        + "carries no success fact and inventing one is forbidden — "
+        + "delivery is refused typed until the owner decides (#137 "
+        + "packet); v3-worker-gated",
         _TOOL_BRIDGE_EVIDENCE_DATE,
     ),
     "structured_output": (

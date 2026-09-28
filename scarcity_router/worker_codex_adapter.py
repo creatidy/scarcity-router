@@ -2447,7 +2447,7 @@ class CodexLocalAdapter:
                     # failures.
                     if tool_bridge is None:  # pragma: no cover - session gate
                         raise CodexProtocolFailure("tool_call_unsupported")
-                    request_id, call_id, tool_name, arguments_text = (
+                    _request_id, call_id, tool_name, arguments_text = (
                         parse_tool_call_request(
                             cast("dict[str, object]", value),
                             thread_id=thread_id,
@@ -2459,7 +2459,7 @@ class CodexLocalAdapter:
                     if tool_rounds > MAX_TOOL_ROUNDS:
                         raise CodexProtocolFailure("tool_round_budget_exceeded")
                     try:
-                        result_text = tool_bridge.suspend(
+                        _result_text = tool_bridge.suspend(
                             call_id,
                             tool_name,
                             arguments_text,
@@ -2470,32 +2470,21 @@ class CodexLocalAdapter:
                         # harness: interrupt the pending turn, report
                         # honestly — never fabricate a tool result.
                         raise _Cancelled() from exc
-                    # The pre-suspension text already left with the
-                    # suspension leg; the resumed turn's message carries
-                    # only what the client has not seen yet.
-                    parts.clear()
-                    message_chars = 0
-                    # Text-only execution surface v1: the harness's tool
-                    # message content maps to one inputText content item,
-                    # and ``success: true`` asserts exactly what a valid
-                    # ``role: "tool"`` message asserts — the client
-                    # successfully returned a result (D-062 recorded
-                    # mapping; failure signalling stays the harness's
-                    # content-level concern, as in every OpenAI-compatible
-                    # chat pipeline).
-                    session.answer_tool_call(
-                        request_id,
-                        {
-                            "success": True,
-                            "contentItems": [
-                                {
-                                    "type": _CONTENT_ITEM_INPUT_TEXT,
-                                    "text": result_text,
-                                }
-                            ],
-                        },
-                    )
-                    continue
+                    # D-062 STOP (review round 2, finding 1): upstream
+                    # (openai/codex @ 36650394, protocol.rs) defines the
+                    # answer's ``success`` as "Whether the tool call
+                    # succeeded" — a REQUIRED bool with no default. The
+                    # generic Chat Completions ``role:"tool"`` message
+                    # (text-only, closed fields) and the representative
+                    # capture carry NO success/failure signal, and
+                    # inferring one is forbidden. The bridge therefore
+                    # REFUSES to fabricate the answer: the attempt fails
+                    # typed, the held request is never answered, and the
+                    # bounded process teardown interrupts the turn. The
+                    # owner decision packet on issue #137 resolves the
+                    # mapping before this bridge can complete a round
+                    # trip.
+                    raise CodexIneligible("tool_result_success_unresolved")
                 envelope = cast("dict[str, object]", value)
                 method = cast("str", envelope.get("method"))
                 params = _as_object(envelope.get("params")) or {}

@@ -2111,6 +2111,25 @@ class ControlPlane:
             client_authorizations=self._config.client_authorizations,
             clock=self._clock,
             continuations=self._continuations,
+            continuation_capability_source=self._continuation_capable_resources,
+        )
+
+    def _continuation_capable_resources(self) -> frozenset[str]:
+        """The D-062 live worker-continuation capability fact (review
+        round 2, finding 3): the worker_bridged resource ids of the
+        CURRENT registry whose owning worker session has negotiated
+        protocol version 3. Computed fresh per request through the
+        endpoint's dispatch-authorization path; never cached, never a
+        matrix mutation."""
+        application = self.current_application()
+        snapshot = application.registry.registry_snapshot()
+        resource_ids = [
+            entry.identity.resource_id
+            for entry in snapshot.entries
+            if entry.identity.channel == "worker_bridged"
+        ]
+        return self._worker_endpoint.continuation_capable_resource_ids(
+            resource_ids
         )
 
     def expire_continuations(self) -> tuple[str, ...]:

@@ -244,6 +244,17 @@ class ExecutionContext:
     deadline: str
     cancel_event: threading.Event = field(default_factory=threading.Event)
     emit_chunk: Callable[["AdapterStreamChunk"], None] | None = None
+    #: D-062 continuation registration seam (review round 2, finding 4).
+    #: A continuation-capable adapter MUST call this with the suspension
+    #: handle BEFORE the tool_call id becomes observable (before a
+    #: ``tool_call`` chunk is emitted and before a suspension result is
+    #: returned): the invariant is "if the client can observe the token,
+    #: it already names a live registered continuation". ``False`` means
+    #: the gateway could not register (pending bound) — the adapter then
+    #: cancels the suspended turn and fails the attempt typed, exposing
+    #: nothing. ``None`` means this dispatch has no continuation surface
+    #: (same bounded failure).
+    register_continuation: Callable[["SuspensionHandle", str], bool] | None = None
 
     def __post_init__(self) -> None:
         _ = v_safe_id(self.request_id, "execution_context.request_id")

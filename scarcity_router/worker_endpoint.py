@@ -56,6 +56,7 @@ import threading
 import time
 import argparse
 from collections import deque
+from collections.abc import Iterable
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -1087,6 +1088,28 @@ class WorkerEndpoint:
         """Route one execute message to the session bound to ``resource_id``."""
         session = self.session_for_resource(resource_id)
         return session.submit_execute(message)
+
+    def continuation_capable_resource_ids(
+        self, resource_ids: "Iterable[str]"
+    ) -> frozenset[str]:
+        """The subset of ``resource_ids`` whose CONFIGURED owner's live
+        authenticated session has negotiated protocol version 3 (D-062).
+
+        Uses exactly the dispatch authorization path (configured owner +
+        the owner's own report as availability evidence); a resource
+        that is unbound, unreported, offline or served by a v1/v2
+        session is simply absent — the availability stage then fails
+        tool-bearing requests closed (review round 2, finding 3).
+        """
+        capable: set[str] = set()
+        for resource_id in resource_ids:
+            try:
+                session = self.session_for_resource(resource_id)
+            except WorkerDispatchError:
+                continue
+            if (session.negotiated_version or 0) >= 3:
+                capable.add(resource_id)
+        return frozenset(capable)
 
     # ── Administration (M09 composes these) ──────────────────────────
 

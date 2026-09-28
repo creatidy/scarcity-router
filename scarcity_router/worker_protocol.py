@@ -97,9 +97,13 @@ SERVER_SUPPORTED_PROTOCOL_VERSIONS: tuple[int, ...] = (3, 2, 1)
 # ── Framing bounds ────────────────────────────────────────────────────────────
 
 # Bounded frames (D-043 strict parsing): 4-byte length prefix, then at most
-# this many payload bytes. The gateway's default request-body admission limit
-# is 1 MiB; the frame bound leaves bounded headroom for JSON encoding of one
-# admitted call plus envelope, and nothing larger can ever enter a session.
+# this many payload bytes — the SAME order as the gateway's default
+# request-body admission limit (16 MiB since D-058; the earlier "1 MiB
+# default" note was stale). The bound does not claim headroom over an
+# admitted body: one admitted call plus envelope is expected to fit
+# because the coordinator's limits cap input context far below the byte
+# bound in practice, and encode/decode failures are typed protocol
+# errors — nothing larger can ever enter a session.
 MAX_FRAME_BYTES = 16 * 1_048_576
 
 _LENGTH_PREFIX = struct.Struct(">I")

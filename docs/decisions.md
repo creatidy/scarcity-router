@@ -4787,15 +4787,27 @@ Do not rewrite history or change an accepted decision silently.
      keeps its existing refuse-not-drop treatment (it lands in
      ``generation_params``), and sequential multi-round turns are
      bounded (32 rounds/turn) with one pending call at a time.
-  6. **``success`` mapping (recorded, not guessed).** A valid OpenAI
-     ``role:"tool"`` message maps to
-     ``{"success": true, "contentItems": [{"type": "inputText",
-     "text": <content>}]}`` — text-only v1. ``success: true`` asserts
-     exactly what a well-formed tool-result message asserts — the
-     client successfully returned a result for the requested call;
-     failure signalling stays the harness's content-level concern, as
-     in every OpenAI-compatible chat pipeline. Nothing is inferred
-     from result text; nothing is fabricated.
+  6. **The ``success`` semantic: STOPPED, not mapped (review round 2,
+     finding 1).** Upstream (verified first-hand at ``openai/codex``
+     @ ``36650394``, ``codex-rs/protocol/src/protocol.rs``) defines the
+     dynamic-tool answer's ``success`` as "Whether the tool call
+     succeeded" — a REQUIRED ``bool`` with no default. The generic Chat
+     Completions ``role:"tool"`` message (execution surface v1:
+     text-only, closed field set) and the representative client capture
+     carry NO success/failure signal, and inferring one from result
+     text, HTTP outcomes or id validity is forbidden. The earlier
+     reading of this point — that ``success: true`` merely asserts "the
+     client returned a result" — is RETRACTED as an upstream-fact
+     claim. Consequence, implemented: the adapter REFUSES to fabricate
+     the answer; a delivered result fails the attempt typed
+     (``tool_result_success_unresolved``), the held request is never
+     answered, and the ``tool_results`` cell stays UNSUPPORTED. An
+     owner decision packet (issue #137) resolves the mapping — an
+     explicit owner-accepted compatibility rule, or a future
+     structured tool-result surface — before any round trip can
+     complete. The mechanism (declarations, suspension, relay,
+     registry, protocol) remains as specified below; the matrix
+     records exactly this state.
   7. **Honest audit across the multi-request turn.** The initial leg
      audits ``completed`` with an ``unknown``-status, usage-free call
      observation (the provider call is open) plus the additive reason

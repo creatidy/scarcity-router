@@ -49,9 +49,11 @@ import json
 import secrets
 import threading
 from collections import deque
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+
+from collections.abc import Sequence
 
 from .gateway_adapters import AdapterMessage, AdapterToolCall, SuspensionHandle
 from .gateway_audit import ExecutedTarget
@@ -185,18 +187,21 @@ def tools_fingerprint(tools: Sequence[Mapping[str, object]]) -> str | None:
     return _sha256(_canonical_json([dict(tool) for tool in tools]))
 
 
-def tool_calls_match(
-    expected: Sequence[AdapterToolCall],
-    actual: Sequence[AdapterToolCall] | None,
-) -> bool:
-    """Exact assistant tool_calls identity (ids, names, arguments)."""
-    if actual is None or len(expected) != len(actual):
-        return False
-    return all(
-        expected_call.id == actual_call.id
-        and expected_call.name == actual_call.name
-        and expected_call.arguments == actual_call.arguments
-        for expected_call, actual_call in zip(expected, actual)
+def tool_calls_fingerprint(calls: Sequence[AdapterToolCall]) -> str:
+    """A bounded digest of assistant tool_calls (ids, names, arguments).
+
+    The continuation record retains this digest INSTEAD OF the calls
+    themselves: exact echo validation stays fail-closed (digest
+    equality), while raw tool arguments — client content — are never
+    held in long-lived gateway state (review round 2, finding 2).
+    """
+    return _sha256(
+        _canonical_json(
+            [
+                {"id": call.id, "name": call.name, "arguments": call.arguments}
+                for call in calls
+            ]
+        )
     )
 
 
@@ -210,8 +215,9 @@ class PendingContinuation:
     Everything here is server-side correlation state: identifiers,
     bounded fingerprints and the audit provenance of the ORIGINAL
     dispatch. Prompt text, tool arguments and tool results are never
-    stored (arguments live in the tool_calls tuple the client must echo;
-    results flow straight through delivery and are never retained).
+    stored — the echoed assistant tool_calls are held only as a digest
+    (review round 2, finding 2), and results flow straight through
+    delivery and are never retained.
     """
 
     continuation_token: str
@@ -219,7 +225,6 @@ class PendingContinuation:
     resource_id: str
     channel: str
     call_id: str
-    tool_name: str
     deadline: datetime
     created_at: str
     client_id: str
@@ -228,7 +233,10 @@ class PendingContinuation:
     tools_fingerprint: str | None
     tool_choice_json: str | None
     prefix_fingerprint: str
-    assistant_tool_calls: tuple[AdapterToolCall, ...]
+    #: The DIGEST of the assistant tool_calls the gateway returned —
+    #: exact echo validation without retaining raw tool arguments
+    #: (arguments are client content and are never stored).
+    assistant_tool_calls_digest: str
     #: The adapter-side identity of the suspended execution (set at
     #: registration; the coordinator passes it back to the adapter's
     #: continuation surface).
@@ -273,14 +281,16 @@ class PendingContinuation:
         with self._lock:
             self.state = state
 
-    def mark_expired_if_waiting(self) -> bool:
-        """Expire a still-waiting record (reaper path); ``False`` when a
-        claim already moved it (the expiry then loses the race honestly)."""
+    def mark_expired(self) -> bool:
+        """Mark the record expired (reaper path). ``True`` when the record
+        was WAITING (its cancel callback must interrupt the suspended
+        turn); ``False`` for RESUMING (a delivery was in flight — the
+        caller still cancels, but the delivery's own error path owns the
+        worker interaction)."""
         with self._lock:
-            if self.state != CONTINUATION_WAITING:
-                return False
+            was_waiting = self.state == CONTINUATION_WAITING
             self.state = CONTINUATION_EXPIRED
-            return True
+            return was_waiting
 
     def restore_waiting(self) -> None:
         """Return a claimed record to ``waiting`` after a validation-only
@@ -434,9 +444,21 @@ class ContinuationRegistry:
                 if not record.expired_at(now):
                     continue
                 _ = self._records.pop(token, None)
-                if record.mark_expired_if_waiting():
+                if record.mark_expired():
+                    expired.append(record)
+                else:
+                    # A RESUMING record expired mid-delivery: still
+                    # terminal + tombstoned + cancelled — removal never
+                    # silently skips the cleanup semantics (review round
+                    # 2, finding 5). The in-flight delivery observes the
+                    # cancellation through its own error paths.
+                    self._terminal_tombstones.append(
+                        (token, record.client_id)
+                    )
                     expired.append(record)
         for record in expired:
+            # Both waiting AND resuming records get the best-effort
+            # worker-side cancellation: expiry always stops the turn.
             if record.cancel_callback is not None:
                 record.cancel_callback(record)
         return tuple(record.continuation_token for record in expired)
@@ -465,6 +487,6 @@ __all__ = [
     "canonical_json_text",
     "message_fingerprint",
     "new_continuation_token",
-    "tool_calls_match",
+    "tool_calls_fingerprint",
     "tools_fingerprint",
 ]

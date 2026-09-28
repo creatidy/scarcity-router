@@ -1767,11 +1767,13 @@ class CodexStreamingExecutionTests(CodexComposedTlsWorld):
             body["tools"] = self._tool_declaration()
         return body
 
-    def test_tool_round_trip_suspends_and_resumes_the_same_turn(self) -> None:
-        """The Family-A acceptance: request with tools -> suspension ->
-        OpenAI tool_call response -> role:tool result -> the SAME Codex
-        thread/turn continues -> final answer. One app-server process,
-        one thread/start, one turn/start across BOTH HTTP legs."""
+    def test_tool_suspension_relays_and_delivery_is_refused_typed(self) -> None:
+        """Review round 2, finding 1 (STOP): the suspension half works
+        end to end (Family A relay to the harness); the harness's
+        ordinary role:tool result reaches the exact suspended execution
+        and the worker REFUSES to fabricate the upstream ``success``
+        fact — the leg fails typed ``backend_failure`` with the recorded
+        reason, and NO fabricated answer ever reaches the backend."""
         worker = self.start_codex_worker(self._tool_turn_scenario())
         self.configure_codex_resource(worker.worker_id)
         worker.start()
@@ -1787,38 +1789,27 @@ class CodexStreamingExecutionTests(CodexComposedTlsWorld):
             self.assertEqual("Checking ", message["content"])
             tool_calls = cast("list[dict[str, object]]", message["tool_calls"])
             self.assertEqual(1, len(tool_calls))
-            call = tool_calls[0]
-            token = call["id"]
-            self.assertIsInstance(token, str)
-            self.assertTrue(str(token).startswith("srct-"))
-            call_function = cast("dict[str, object]", call["function"])
-            self.assertEqual(self._TOOL_NAME, call_function["name"])
-            self.assertEqual('{"n": 0}', call_function["arguments"])
+            token = cast("str", tool_calls[0]["id"])
+            self.assertTrue(token.startswith("srct-"))
 
-            # The harness executes the tool and sends the ordinary
-            # Chat Completions continuation — no router-specific field.
+            # The ordinary continuation — no router-specific field — is
+            # correlated to the SAME suspended turn and then REFUSED at
+            # the answer point (the semantic is unresolved; #137 packet).
             status, payload2, _headers = self.exchange(
                 "POST",
                 "/v1/chat/completions",
-                self._continuation_body(str(token)),
+                self._continuation_body(token),
                 headers={"Authorization": f"Bearer {self.client_key}"},
                 timeout=60,
             )
-            self.assertEqual(200, status, payload2)
-            body2 = cast("dict[str, object]", payload2)
-            choice2 = cast(
-                "dict[str, object]",
-                cast("list[object]", body2["choices"])[0],
+            self.assertEqual(502, status, payload2)
+            error2 = cast(
+                "dict[str, object]", cast("dict[str, object]", payload2)["error"]
             )
-            self.assertEqual("stop", choice2["finish_reason"])
-            self.assertEqual(
-                "Done.", cast("dict[str, object]", choice2["message"])["content"]
-            )
+            self.assertEqual("backend_failure", error2["code"])
 
-            # SAME suspended execution: exactly one app-server session,
-            # one thread/start (carrying the dynamicTools), one
-            # turn/start — and the harness result reached the original
-            # callId with the evidenced answer shape.
+            # Mechanism pins: exactly one session/thread/turn; the
+            # dynamicTools declared; the suspension reached the harness.
             methods = trace_methods(worker.trace_path)
             self.assertEqual(1, methods.count("thread/start"))
             self.assertEqual(1, methods.count("turn/start"))
@@ -1826,36 +1817,17 @@ class CodexStreamingExecutionTests(CodexComposedTlsWorld):
             assert thread_params is not None
             declared = cast("list[dict[str, object]]", thread_params["dynamicTools"])
             self.assertEqual(self._TOOL_NAME, declared[0]["name"])
-            answers = trace_events(worker.trace_path, "tool_call_answer")
-            self.assertEqual(1, len(answers))
-            self.assertEqual("call-synthetic-1", answers[0]["callId"])
-            answer = cast("dict[str, object]", answers[0]["result"])
-            self.assertIs(True, answer["success"])
-            content_items = cast("list[dict[str, object]]", answer["contentItems"])
-            self.assertEqual("inputText", content_items[0]["type"])
-            self.assertEqual(self._TOOL_RESULT_TEXT, content_items[0]["text"])
-            # No router-side or worker-side tool execution exists; the
-            # experimental capability was opted into ONLY for the
-            # tool-bearing dispatch session — the state-report probe
-            # session stays on the stable surface (capabilities: {}).
-            init_events = trace_events(worker.trace_path, "initialize")
-            experimental = [
-                event
-                for event in init_events
-                if event.get("experimentalApi") is True
+            tool_requests = [
+                record
+                for record in trace_events(worker.trace_path, "request")
+                if record.get("method") == "item/tool/call"
             ]
-            stable = [
-                event
-                for event in init_events
-                if event.get("experimentalApi") is False
-            ]
-            self.assertEqual(1, len(experimental))
-            self.assertGreaterEqual(len(stable), 1)
+            self.assertEqual(1, len(tool_requests))
+            # The STOP: no fabricated answer.
+            self.assertEqual([], trace_events(worker.trace_path, "tool_call_answer"))
 
-            # Honest audit: the initial leg completed the suspension
-            # (provider call still open, zero observations); the
-            # continuation carries the ONE turn-level observation and
-            # resumes the original decision.
+            # Honest audit: leg 1 completed with the open-call
+            # observation; leg 2 failed with the recorded reason.
             executed = [
                 record
                 for record in self.audit_records()
@@ -1867,15 +1839,11 @@ class CodexStreamingExecutionTests(CodexComposedTlsWorld):
             second_reasons = cast("list[str]", second["reason_codes"])
             self.assertIn("suspended_for_client_tool", first_reasons)
             self.assertEqual(1, first["call_count"])
-            self.assertEqual(
-                first["decision_id"], second["decision_id"]
-            )
-            self.assertIn("continuation_resumed", second_reasons)
-            self.assertEqual(1, second["call_count"])
-            # Usage is carried ONCE — on the terminal record only; the
-            # suspension leg's open call observation stays usage-free.
             self.assertIsNone(first.get("provider_reported_usage"))
-            self.assertIsNotNone(second.get("provider_reported_usage"))
+            self.assertEqual(first["decision_id"], second["decision_id"])
+            self.assertIn("continuation_resumed", second_reasons)
+            self.assertIn("backend_failure", second_reasons)
+            self.assertEqual("failed", second["result_status"])
         finally:
             worker.stop()
 
@@ -1932,29 +1900,17 @@ class CodexStreamingExecutionTests(CodexComposedTlsWorld):
                 headers={"Authorization": f"Bearer {self.client_key}"},
                 timeout=60,
             )
-            self.assertEqual(200, status2)
-            frames2 = [
-                cast("dict[str, object]", json.loads(line[len("data: ") :]))
-                for line in str(text2).splitlines()
-                if line.startswith("data: ") and line != "data: [DONE]"
-            ]
-            content2 = ""
-            finish2: list[object] = []
-            for frame in frames2:
-                for choice in cast("list[object]", frame.get("choices", [])):
-                    choice_map = cast("dict[str, object]", choice)
-                    delta = cast("dict[str, object]", choice_map.get("delta", {}))
-                    piece = delta.get("content")
-                    if piece:
-                        content2 += str(piece)
-                    if choice_map.get("finish_reason") is not None:
-                        finish2.append(choice_map["finish_reason"])
-            self.assertEqual("Done.", content2)
-            self.assertEqual(["stop"], finish2)
+            # The delivery is REFUSED typed (review round 2, finding 1).
+            # The resumed leg's stream had not started (the refusal
+            # happens before any chunk), so the failure surfaces as the
+            # clean HTTP error — never a fabricated continuation.
+            self.assertEqual(502, status2, text2)
+            self.assertNotIn("srct-", str(text2))
             # ONE suspended execution across both streamed legs.
             methods = trace_methods(worker.trace_path)
             self.assertEqual(1, methods.count("thread/start"))
             self.assertEqual(1, methods.count("turn/start"))
+            self.assertEqual([], trace_events(worker.trace_path, "tool_call_answer"))
         finally:
             worker.stop()
 
@@ -1974,7 +1930,9 @@ class CodexStreamingExecutionTests(CodexComposedTlsWorld):
                 headers={"Authorization": f"Bearer {self.client_key}"},
                 timeout=60,
             )
-            self.assertEqual(200, status, payload2)
+            # The first delivery fails typed (the STOP); the record is
+            # terminally closed, so the replay is the explicit conflict.
+            self.assertEqual(502, status, payload2)
             status, payload3, _headers = self.exchange(
                 "POST",
                 "/v1/chat/completions",

@@ -23,7 +23,7 @@ from scarcity_router.gateway_continuation import (
     PendingContinuation,
     message_fingerprint,
     new_continuation_token,
-    tool_calls_match,
+    tool_calls_fingerprint,
     tools_fingerprint,
 )
 
@@ -32,6 +32,9 @@ _CLIENT = "client-a"
 
 def _real_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+_ECHO_CALLS = (AdapterToolCall(id="srct-x", name="t", arguments="{}"),)
 
 
 def _record(
@@ -47,7 +50,6 @@ def _record(
         resource_id="codex-e2e:slug",
         channel="worker_bridged",
         call_id="call-synthetic-1",
-        tool_name="synthetic_lookup",
         deadline=(
             deadline if deadline is not None else _real_now() + timedelta(hours=1)
         ),
@@ -60,9 +62,7 @@ def _record(
         ),
         tool_choice_json=None,
         prefix_fingerprint="f" * 64,
-        assistant_tool_calls=(
-            AdapterToolCall(id="srct-x", name="t", arguments="{}"),
-        ),
+        assistant_tool_calls_digest=tool_calls_fingerprint(_ECHO_CALLS),
         cancel_callback=cancel_callback,
     )
 
@@ -138,6 +138,27 @@ class RegistryLifecycleTests(unittest.TestCase):
         self.assertEqual([due.continuation_token], cancelled)
         self.assertEqual(1, registry.pending_count())
 
+    def test_expire_due_on_a_resuming_record_still_cleans_up(self) -> None:
+        # Review round 2, finding 5: a record claimed (RESUMING) by an
+        # in-flight delivery must STILL reach terminal cleanup at expiry
+        # — cancelled + tombstoned, never silently dropped.
+        cancelled: list[str] = []
+        registry = ContinuationRegistry()
+        now = _real_now()
+        record = _record(
+            deadline=now + timedelta(seconds=1),
+            cancel_callback=lambda _r: cancelled.append(_r.continuation_token),
+        )
+        self.assertTrue(registry.register(record))
+        _ = registry.claim(record.continuation_token, _CLIENT)
+        expired = registry.expire_due(now + timedelta(seconds=2))
+        self.assertEqual((record.continuation_token,), expired)
+        self.assertEqual([record.continuation_token], cancelled)
+        self.assertEqual(0, registry.pending_count())
+        self.assertTrue(
+            registry.was_terminal_for(record.continuation_token, _CLIENT)
+        )
+
     def test_bounded_table_refuses_new_suspensions_at_the_bound(self) -> None:
         registry = ContinuationRegistry(max_pending=1)
         self.assertTrue(registry.register(_record()))
@@ -199,16 +220,23 @@ class FingerprintTests(unittest.TestCase):
             tools_fingerprint(({"type": "function", "function": {"name": "u"}},)),
         )
 
-    def test_tool_calls_match_is_exact(self) -> None:
+    def test_tool_calls_fingerprint_is_exact(self) -> None:
         calls = (AdapterToolCall(id="a", name="t", arguments="{}"),)
-        self.assertTrue(tool_calls_match(calls, calls))
-        self.assertFalse(tool_calls_match(calls, None))
-        self.assertFalse(
-            tool_calls_match(
-                calls, (AdapterToolCall(id="a", name="t", arguments='{"x":1}'),)
-            )
+        reference = tool_calls_fingerprint(calls)
+        self.assertEqual(reference, tool_calls_fingerprint(calls))
+        self.assertNotEqual(
+            reference,
+            tool_calls_fingerprint(
+                (AdapterToolCall(id="a", name="t", arguments='{"x":1}'),)
+            ),
         )
-        self.assertFalse(tool_calls_match(calls, ()))
+        self.assertNotEqual(
+            reference,
+            tool_calls_fingerprint(
+                (AdapterToolCall(id="OTHER", name="t", arguments="{}"),)
+            ),
+        )
+        self.assertNotEqual(reference, tool_calls_fingerprint(()))
 
 
 class TokenTests(unittest.TestCase):

@@ -19,8 +19,13 @@ from datetime import datetime, timedelta, timezone
 from typing import cast, override
 
 from scarcity_router.gateway_adapters import (
+    AdapterAmbiguousError,
+    AdapterCall,
     AdapterMessage,
+    AdapterPermanentError,
     AdapterResult,
+    AdapterTimeoutError,
+    AdapterToolCall,
     CallObservation,
     ContinuationLostError,
     ExecutionContext,
@@ -28,19 +33,33 @@ from scarcity_router.gateway_adapters import (
     ToolSuspension,
 )
 from scarcity_router.gateway_adapters import ExecutionAdapter
+from scarcity_router.capacity import CapacityWindow
 from scarcity_router.gateway_contracts import GatewayError
+from scarcity_router.resource_state import (
+    ExecutionCapabilities,
+    QuotaFact,
+    ResourceHealth,
+    ResourceIdentity,
+    ResourceRegistration,
+    ResourceRegistry,
+    ResourceStateSnapshot,
+)
+from scarcity_router.routing_core import ClientAuthorization
 from scarcity_router.gateway_audit import ExecutedTarget
 from scarcity_router.gateway_continuation import (
     PendingContinuation,
     ContinuationRegistry,
     message_fingerprint,
     new_continuation_token,
+    tool_calls_fingerprint,
     tools_fingerprint,
 )
 from tests.gateway_fixtures import (
     CLIENT_ID,
+    ChatCompletionRequest,
     GatewayApplication,
     audit_records,
+    build_registry,
     make_application,
     parse_chat_request,
 )
@@ -100,6 +119,9 @@ class _FakeContinuationAdapter:
     adapter_name: str = "fake-continuation"
     adapter_version: str = "1.0.0"
 
+    _call_id: str = "call-internal-1"
+    _next_call_id: str = "call-internal-2"
+
     def __init__(self) -> None:
         self.delivered: list[tuple[str, str]] = []
         self.next_result: AdapterResult | ToolSuspension | Exception = AdapterResult(
@@ -121,18 +143,93 @@ class _FakeContinuationAdapter:
             continuation_token=token,
             attempt_id="wa-1",
             resource_id="openai-worker",
-            call_id="call-internal-1",
+            call_id=self._call_id,
             tool_name=TOOL_NAME,
+        )
+
+    def execute(self, call: AdapterCall, context: ExecutionContext) -> AdapterResult:
+        """The D-062 dispatch contract: register BEFORE exposure."""
+        from scarcity_router.gateway_adapters import FINISH_TOOL_CALLS
+
+        if not call.tools:
+            return AdapterResult(
+                status="completed",
+                calls=(
+                    CallObservation(
+                        call_index=0,
+                        started_at="2026-09-28T12:00:00.000Z",
+                        ended_at="2026-09-28T12:00:01.000Z",
+                        status="completed",
+                    ),
+                ),
+                message=AdapterMessage(role="assistant", content="FINAL"),
+                finish_reason="stop",
+            )
+        token = new_continuation_token()
+        handle = SuspensionHandle(
+            continuation_token=token,
+            attempt_id="wa-dispatch",
+            resource_id=call.resource.resource_id,
+            call_id=self._call_id,
+            tool_name=TOOL_NAME,
+        )
+        arguments = "{}"
+        registrar = context.register_continuation
+        if registrar is None or not registrar(handle, arguments):
+            # Bounded/no-surface failure: cancel and expose NOTHING.
+            raise AdapterPermanentError(
+                "the gateway cannot continue this client-tool turn"
+            )
+        return AdapterResult(
+            status="completed",
+            calls=(
+                CallObservation(
+                    call_index=0,
+                    started_at="2026-09-28T12:00:00.000Z",
+                    ended_at="2026-09-28T12:00:01.000Z",
+                    status="unknown",
+                    note="the backend turn is suspended for a tool call",
+                ),
+            ),
+            message=AdapterMessage(
+                role="assistant",
+                tool_calls=(
+                    AdapterToolCall(
+                        id=token,
+                        name=TOOL_NAME,
+                        arguments=arguments,
+                    ),
+                ),
+            ),
+            finish_reason=FINISH_TOOL_CALLS,
         )
 
     def deliver_tool_result(
         self, handle: SuspensionHandle, content: str, context: ExecutionContext
     ) -> AdapterResult | ToolSuspension:
-        _ = context
-        self.delivered.append((handle.call_id, content))
+        _ = handle
+        self.delivered.append((self._call_id, content))
         outcome = self.next_result
         if isinstance(outcome, Exception):
             raise outcome
+        if isinstance(outcome, ToolSuspension):
+            # Mirror the real contract: the next continuation is
+            # registered through the context's registrar BEFORE the new
+            # token becomes observable (review round 2, finding 4).
+            next_handle = SuspensionHandle(
+                continuation_token=outcome.continuation_token,
+                attempt_id="wa-1",
+                resource_id="openai-worker",
+                call_id=self._next_call_id,
+                tool_name=outcome.tool_name,
+            )
+            registrar = context.register_continuation
+            if registrar is None or not registrar(
+                next_handle, outcome.arguments
+            ):
+                raise ContinuationLostError(
+                    "the gateway cannot register the sequential round"
+                )
         return outcome
 
     def cancel_suspension(self, handle: SuspensionHandle) -> None:
@@ -146,11 +243,16 @@ class _FakeContinuationAdapter:
 def _application_with_continuation(
     registry: ContinuationRegistry,
     adapter: _FakeContinuationAdapter,
+    **overrides: object,
 ) -> GatewayApplication:
     # The test fake satisfies the ExecutionAdapter seam structurally.
+    # The registry includes the worker_bridged resource so the F6
+    # authority recheck can resolve the ORIGINAL target's entry.
     return make_application(
+        registry=build_registry(with_worker=True),
         adapters=cast("tuple[ExecutionAdapter, ...]", (adapter,)),
         continuations=registry,
+        **overrides,  # pyright: ignore[reportArgumentType] - typed keyword helper
     )
 
 
@@ -168,7 +270,6 @@ def _registered_record(
         resource_id="openai-worker",
         channel="worker_bridged",
         call_id="call-internal-1",
-        tool_name=TOOL_NAME,
         deadline=_DEADLINE,
         created_at="2026-09-28T12:00:00Z",
         client_id=CLIENT_ID,
@@ -181,7 +282,9 @@ def _registered_record(
             else None
         ),
         prefix_fingerprint=message_fingerprint(messages[:-2]),
-        assistant_tool_calls=messages[-2].tool_calls,
+        assistant_tool_calls_digest=tool_calls_fingerprint(
+            messages[-2].tool_calls
+        ),
         handle=(
             adapter.suspension_handle(TOOL_TOKEN) if adapter is not None else None
         ),
@@ -525,6 +628,284 @@ class DetectionShapeTests(unittest.TestCase):
         self.assertEqual("continuation_already_resolved", caught.exception.code)
         # And exactly ONE pending record remains (the new token's).
         self.assertEqual(1, self.registry.pending_count())
+
+
+class WorkerContinuationEligibilityTests(unittest.TestCase):
+    """Finding 3: the LIVE v3 worker fact gates tool requests BEFORE
+    ranking; ordinary requests are unaffected."""
+
+    resource_ids: tuple[str, ...] = ("worker-a", "worker-b")
+
+    def _two_worker_registry(self) -> ResourceRegistry:
+        """Two healthy worker_bridged registrations of the SAME identity
+        (built from the public registration/observation contracts — the
+        fixtures' private helpers are not imported)."""
+        from tests.gateway_fixtures import T_NOW, T_OBS
+
+        registry = ResourceRegistry(clock=lambda: "2026-09-28T12:00:00Z")
+        for resource_id in self.resource_ids:
+            identity = ResourceIdentity(
+                resource_id=resource_id,
+                channel="worker_bridged",
+                provider="openai",
+                model="gpt-5.6-luna",
+                entitlement="subscription_included",
+                variant=None,
+                quota_pool_ids=(),
+            )
+            registry.register(
+                ResourceRegistration(
+                    identity=identity,
+                    freshness_ttl_seconds=3600,
+                    capabilities=ExecutionCapabilities(
+                        context_limit_tokens=272_000
+                    ),
+                )
+            )
+            registry.apply_snapshot(
+                ResourceStateSnapshot(
+                    schema_version=1,
+                    identity=identity,
+                    observed_at=T_OBS,
+                    health=ResourceHealth(status="ok", diagnostics=()),
+                    quota_facts=(
+                        QuotaFact(
+                            observation_class="provider_telemetry",
+                            window=CapacityWindow(
+                                resource="tokens",
+                                kind="five_hour",
+                                scope_id="codex",
+                                duration_seconds=18_000,
+                                used_percent=50,
+                                remaining_percent=50,
+                            ),
+                        ),
+                    ),
+                    promotions=(),
+                )
+            )
+            _ = T_NOW
+        return registry
+
+    def _application(
+        self, capable: "frozenset[str] | None"
+    ) -> GatewayApplication:
+        from tests.gateway_fixtures import build_cells
+
+        cells = build_cells(
+            overrides={
+                ("worker_bridged", "openai", "gpt-5.6-luna", "tool_calls"): "PARTIAL",
+            },
+            include_worker=True,
+        )
+        return make_application(
+            registry=self._two_worker_registry(),
+            adapters=cast(
+                "tuple[ExecutionAdapter, ...]", (_FakeContinuationAdapter(),)
+            ),
+            cells=cells,
+            continuations=ContinuationRegistry(),
+            continuation_capability_source=(
+                (lambda: capable) if capable is not None else None
+            ),
+        )
+
+    def _tool_request(self) -> "ChatCompletionRequest":
+        return parse_chat_request(
+            {
+                "model": "gpt-5.6-luna",
+                "messages": [_PREFIX_ALONE],
+                "reasoning_effort": "max",
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": TOOL_NAME,
+                            "parameters": {"type": "object"},
+                        },
+                    }
+                ],
+            }
+        )
+
+    def test_v3_route_is_selected_over_the_otherwise_equal_v2_route(self) -> None:
+        # Both routes serve the exact same identity; only worker-b has a
+        # live v3 worker. The tool-bearing request must be pre-ranking
+        # ineligible on worker-a and EXECUTE on worker-b — never select
+        # A and fail at the backend.
+        application = self._application(frozenset({"worker-b"}))
+        outcome = application.execute(
+            client_id=CLIENT_ID, request=self._tool_request()
+        )
+        self.assertEqual("tool_calls", outcome.finish_reason)
+        audit = audit_records(application)[-1]
+        assert audit.executed_target is not None
+        self.assertEqual("worker-b", audit.executed_target.resource_id)
+
+    def test_no_v3_fact_fails_tool_requests_closed(self) -> None:
+        for capable in (frozenset[str](), None):
+            with self.subTest(capable=capable is not None):
+                application = self._application(capable)
+                with self.assertRaises(GatewayError) as caught:
+                    _ = application.execute(
+                        client_id=CLIENT_ID, request=self._tool_request()
+                    )
+                self.assertEqual(503, caught.exception.http_status)
+                self.assertEqual("no_eligible_target", caught.exception.code)
+
+    def test_non_tool_requests_still_use_the_v2_worker(self) -> None:
+        application = self._application(frozenset())
+        outcome = application.execute(
+            client_id=CLIENT_ID,
+            request=parse_chat_request(
+                {
+                    "model": "gpt-5.6-luna",
+                    "messages": [_PREFIX_ALONE],
+                    "reasoning_effort": "max",
+                }
+            ),
+        )
+        self.assertEqual("stop", outcome.finish_reason)
+        audit = audit_records(application)[-1]
+        assert audit.executed_target is not None
+        self.assertEqual("worker-a", audit.executed_target.resource_id)
+
+
+class ReviewRound2Tests(unittest.TestCase):
+    """Regression pins for the owner review of PR #159 (findings 1-6)."""
+
+    registry: ContinuationRegistry
+    adapter: "_FakeContinuationAdapter"
+    application: GatewayApplication
+
+    def __init__(self, method_name: str = "runTest") -> None:
+        # Placeholders; setUp replaces them before each test body runs.
+        self.registry = cast("ContinuationRegistry", object())
+        self.adapter = cast("_FakeContinuationAdapter", object())
+        self.application = cast("GatewayApplication", object())
+        super().__init__(method_name)
+
+    @override
+    def setUp(self) -> None:
+        self.registry = ContinuationRegistry()
+        self.adapter = _FakeContinuationAdapter()
+        self.application = _application_with_continuation(
+            self.registry, self.adapter
+        )
+
+    def _deliver_one_round(self) -> None:
+        document = _canonical_request_document()
+        _ = _registered_record(document, self.registry, self.adapter)
+        _ = self.application.execute(
+            client_id=CLIENT_ID, request=parse_chat_request(document)
+        )
+
+    # ── Finding 2: no raw tool arguments in retained state ───────────
+
+    def test_continuation_state_retains_no_raw_arguments(self) -> None:
+        document = _canonical_request_document(content="SECRET-RESULT-VALUE")
+        _ = _registered_record(document, self.registry, self.adapter)
+        record = self.registry.detect(TOOL_TOKEN)
+        self.assertIsNotNone(record)
+        live = cast(PendingContinuation, record)
+        rendered = repr(live)
+        for secret in (
+            "SECRET-ARG-VALUE-42",
+            "SECRET-RESULT-VALUE",
+            "SECRET-PREFIX-CONTENT",
+        ):
+            self.assertNotIn(secret, rendered)
+        self.assertFalse(hasattr(live, "assistant_tool_calls"))
+        self.assertEqual(64, len(live.assistant_tool_calls_digest))
+
+    # ── Finding 5: every post-claim exit reaches terminal cleanup ─────
+
+    def test_every_post_claim_error_path_closes_the_record(self) -> None:
+        cases: dict[str, Exception] = {
+            "permanent": AdapterPermanentError("backend failed"),
+            "ambiguous": AdapterAmbiguousError("may have been consumed"),
+            "timeout": AdapterTimeoutError("deadline"),
+            "lost": ContinuationLostError("gone before delivery"),
+            "unexpected": RuntimeError("internal defect"),
+        }
+        for label, failure in cases.items():
+            with self.subTest(case=label):
+                registry = ContinuationRegistry()
+                adapter = _FakeContinuationAdapter()
+                application = _application_with_continuation(registry, adapter)
+                adapter.next_result = failure
+                document = _canonical_request_document()
+                _ = _registered_record(document, registry, adapter)
+                with self.assertRaises(Exception):  # noqa: B017 - any failure closes
+                    _ = application.execute(
+                        client_id=CLIENT_ID,
+                        request=parse_chat_request(document),
+                    )
+                # The pending table is empty IMMEDIATELY: no record sits
+                # in RESUMING until the deadline reaper.
+                self.assertEqual(0, registry.pending_count())
+
+    def test_backend_failed_outcome_closes_the_record(self) -> None:
+        registry = ContinuationRegistry()
+        adapter = _FakeContinuationAdapter()
+        application = _application_with_continuation(registry, adapter)
+        adapter.next_result = AdapterResult(
+            status="failed",
+            calls=(
+                CallObservation(
+                    call_index=0,
+                    started_at="2026-09-28T12:00:00.000Z",
+                    ended_at="2026-09-28T12:00:05.000Z",
+                    status="failed",
+                ),
+            ),
+        )
+        document = _canonical_request_document()
+        _ = _registered_record(document, registry, adapter)
+        with self.assertRaises(GatewayError):
+            _ = application.execute(
+                client_id=CLIENT_ID, request=parse_chat_request(document)
+            )
+        self.assertEqual(0, registry.pending_count())
+
+    # ── Finding 6: current client authority rechecked pre-delivery ────
+
+    def test_revoked_grant_blocks_delivery_without_rerouting(self) -> None:
+        document = _canonical_request_document()
+        _ = _registered_record(document, self.registry, self.adapter)
+        # The administrator narrows the client's grant AFTER the
+        # suspension: the resource is now blocked for this client.
+        revoked_application = make_application(
+            registry=build_registry(with_worker=True),
+            adapters=cast("tuple[ExecutionAdapter, ...]", (self.adapter,)),
+            continuations=self.registry,
+            client_authorizations={
+                CLIENT_ID: ClientAuthorization(
+                    blocked_resource_ids=("openai-worker",)
+                )
+            },
+        )
+        delivered_before = len(self.adapter.delivered)
+        with self.assertRaises(GatewayError) as caught:
+            _ = revoked_application.execute(
+                client_id=CLIENT_ID, request=parse_chat_request(document)
+            )
+        self.assertEqual(403, caught.exception.http_status)
+        self.assertEqual("unauthorized_target", caught.exception.code)
+        self.assertEqual(delivered_before, len(self.adapter.delivered))
+        # The continuation is terminal (cancelled), not resumable.
+        self.assertEqual(0, self.registry.pending_count())
+        self.assertTrue(self.registry.was_terminal_for(TOOL_TOKEN, CLIENT_ID))
+
+    def test_allowed_grant_still_delivers(self) -> None:
+        # The recheck must not over-block: the default (unrestricted)
+        # grant delivers exactly as before.
+        document = _canonical_request_document()
+        _ = _registered_record(document, self.registry, self.adapter)
+        outcome = self.application.execute(
+            client_id=CLIENT_ID, request=parse_chat_request(document)
+        )
+        self.assertEqual("stop", outcome.finish_reason)
 
 
 _PREFIX_ALONE = PREFIX_MESSAGES[1]

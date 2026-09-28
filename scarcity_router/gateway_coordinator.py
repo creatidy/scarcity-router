@@ -88,6 +88,7 @@ from .gateway_adapters import (
     ContinuationLostError,
     ExecutionContext,
     FINISH_TOOL_CALLS,
+    SuspensionHandle,
     ToolSuspension,
 )
 from .gateway_audit import (
@@ -114,7 +115,7 @@ from .gateway_continuation import (
     PendingContinuation,
     canonical_json_text,
     message_fingerprint,
-    tool_calls_match,
+    tool_calls_fingerprint,
     tools_fingerprint,
 )
 from .gateway_contracts import (
@@ -157,6 +158,8 @@ from .routing_core import (
     RouteRequest,
     RouteTarget,
     _lookup_cell,  # pyright: ignore[reportPrivateUsage] -- the M02 matrix lookup is the single authority; reimplementing it here would fork D-043 compatibility semantics
+    _authorization_failure_codes,  # pyright: ignore[reportPrivateUsage] -- the M02 authorization stage is the single authority; forking it for the continuation recheck would fork D-042 semantics
+    _effective_authorization,  # pyright: ignore[reportPrivateUsage] -- same single-authority rationale
     admit_pinned_target,
     route_request,
 )
@@ -626,6 +629,7 @@ class GatewayApplication:
         clock: Callable[[], datetime] | None = None,
         request_id_factory: RequestFactory | None = None,
         continuations: ContinuationRegistry | None = None,
+        continuation_capability_source: "Callable[[], frozenset[str]] | None" = None,
         replaced_application: "GatewayApplication | None" = None,
     ) -> None:
         _ = v_instance(catalog, ModelCatalog, "gateway_application.catalog")
@@ -694,6 +698,16 @@ class GatewayApplication:
         #: continuation surface — suspensions then fail closed instead
         #: of registering.
         self.continuations: ContinuationRegistry | None = continuations
+        #: D-062 (review round 2, finding 3): the LIVE worker-continuation
+        #: capability source — the worker_bridged resource ids whose owning
+        #: worker session has negotiated protocol v3 right now. ``None``
+        #: means no live fact source: tool-bearing worker_bridged requests
+        #: fail closed at pre-ranking availability. Wired by the composed
+        #: server over the worker endpoint; never derived from request
+        #: content, never a matrix mutation.
+        self.continuation_capability_source: (
+            "Callable[[], frozenset[str]] | None"
+        ) = continuation_capability_source
         # Daybreak finding 5: concurrency enforcement must SURVIVE
         # application rebuilds (a state-report adoption rebuilds the
         # application while executions are in flight). The reservation
@@ -1009,7 +1023,8 @@ class GatewayApplication:
             or final.tool_call_id != record.continuation_token
             or final.content is None
             or assistant.role != "assistant"
-            or not tool_calls_match(record.assistant_tool_calls, assistant.tool_calls)
+            or tool_calls_fingerprint(assistant.tool_calls)
+            != record.assistant_tool_calls_digest
         ):
             raise GatewayError.invalid_request(
                 "the continuation's final messages must echo the returned "
@@ -1066,9 +1081,7 @@ class GatewayApplication:
             raise self._continuation_error(exc.reason) from None
         remaining = (record.deadline - self._now()).total_seconds()
         if remaining <= 0.0:
-            registry.close(record.continuation_token, CONTINUATION_EXPIRED)
-            if record.cancel_callback is not None:
-                record.cancel_callback(record)
+            self._close_continuation(record, CONTINUATION_EXPIRED)
             raise self._continuation_error(REJECT_EXPIRED)
         # Audit provenance repeats the ORIGINAL dispatch identity: the
         # continuation is the same logical backend execution, so its one
@@ -1082,7 +1095,7 @@ class GatewayApplication:
         state.registry_generated_at = record.registry_generated_at
         adapter = self.adapters.resolve(record.channel)
         if adapter is None or not isinstance(adapter, ContinuationCapableAdapter):
-            registry.close(record.continuation_token, CONTINUATION_LOST)
+            self._close_continuation(record, CONTINUATION_LOST)
             raise GatewayError.api(
                 "no continuation-capable adapter is configured for the "
                 + "suspended execution's channel",
@@ -1090,38 +1103,71 @@ class GatewayApplication:
                 http_status=503,
             )
         context = self._build_context(
-            state, emit_chunk, record.deadline
+            state,
+            emit_chunk,
+            record.deadline,
+            register_continuation=self._continuation_registrar(
+                request=request, state=state, deadline=record.deadline,
+                channel=record.channel, adapter=adapter,
+            ),
         )
         state.context = context
         state.flow_notes = (*state.flow_notes, "continuation_resumed")
         if record.handle is None:  # pragma: no cover - registration invariant
-            registry.close(record.continuation_token, CONTINUATION_LOST)
+            self._close_continuation(record, CONTINUATION_LOST)
             raise GatewayError.api(
                 "the continuation record is unusable",
                 code="invalid_state",
                 http_status=500,
             )
+        # Hard-authority recheck (review round 2, finding 6): sticky
+        # routing never bypasses CURRENT authorization. The exact
+        # original target's registry entry is re-read and the client's
+        # CURRENT grant is evaluated through the SAME M02 authorization
+        # stage admission used — scarcity/policy ranking is never run,
+        # and a revoked grant cancels the suspended turn instead of
+        # delivering into it.
+        self._recheck_continuation_authority(record)
+        # Every post-claim exit reaches a terminal registry state
+        # (review round 2, finding 5): nothing may occupy the pending
+        # table past this point regardless of outcome.
         try:
             outcome = adapter.deliver_tool_result(record.handle, content, context)
+        except ClientDisconnectedError:
+            self._close_continuation(record, CONTINUATION_CANCELLED)
+            raise
         except ContinuationLostError:
-            registry.close(record.continuation_token, CONTINUATION_LOST)
+            self._close_continuation(record, CONTINUATION_LOST)
             raise GatewayError.not_found(
                 "the suspended execution was lost before the tool result "
                 + "was delivered; nothing was consumed",
                 code="continuation_not_found",
             ) from None
         except AdapterAmbiguousError:
-            registry.close(record.continuation_token, CONTINUATION_LOST)
+            self._close_continuation(record, CONTINUATION_LOST)
             raise
         except AdapterTimeoutError:
-            registry.close(record.continuation_token, CONTINUATION_EXPIRED)
+            self._close_continuation(record, CONTINUATION_EXPIRED)
+            raise
+        except AdapterPermanentError:
+            # The backend definitively failed the resumed turn.
+            self._close_continuation(record, CONTINUATION_LOST)
+            raise
+        except GatewayError:
+            raise  # already closed by a specific handler above
+        except Exception:
+            # Unexpected internal error: the record must still reach a
+            # terminal state (honest ambiguity about the delivery).
+            self._close_continuation(record, CONTINUATION_LOST)
             raise
         if isinstance(outcome, ToolSuspension):
             # A sequential tool round on the SAME turn: the previous
             # token's result was consumed by THIS delivery (terminal for
-            # that token — a later replay gets the explicit conflict),
-            # and the next continuation takes the freed slot.
-            registry.close(record.continuation_token, CONTINUATION_COMPLETED)
+            # that token — a later replay gets the explicit conflict).
+            # The NEXT continuation was already registered by the adapter
+            # through this leg's registrar BEFORE the new token became
+            # observable (review round 2, finding 4).
+            self._close_continuation(record, CONTINUATION_COMPLETED)
             state.calls = (
                 CallObservation(
                     call_index=0,
@@ -1145,15 +1191,6 @@ class GatewayApplication:
                     ),
                 ),
             )
-            self._register_suspension_record(
-                adapter=adapter,
-                token=outcome.continuation_token,
-                request=request,
-                state=state,
-                deadline=record.deadline,
-                assistant_tool_calls=message.tool_calls,
-                channel=record.channel,
-            )
             accounting = _unavailable_usage()
             return CompletionOutcome(
                 request_id=state.request_id,
@@ -1167,14 +1204,14 @@ class GatewayApplication:
         result = outcome
         state.calls = result.calls
         if result.status == "cancelled":
-            registry.close(record.continuation_token, CONTINUATION_CANCELLED)
+            self._close_continuation(record, CONTINUATION_CANCELLED)
             if context.cancelled:
                 raise ClientDisconnectedError()
             raise AdapterTimeoutError(result_note(result))
         if result.status == "failed":
-            registry.close(record.continuation_token, CONTINUATION_LOST)
+            self._close_continuation(record, CONTINUATION_LOST)
             raise AdapterPermanentError(result_note(result))
-        registry.close(record.continuation_token, CONTINUATION_COMPLETED)
+        self._close_continuation(record, CONTINUATION_COMPLETED)
         accounting = _aggregate_usage(result)
         message = result.message
         finish_reason = result.finish_reason
@@ -1190,68 +1227,139 @@ class GatewayApplication:
             decision_id=record.decision_id,
         )
 
-    def _register_suspension_record(
+    def _continuation_registrar(
         self,
         *,
-        adapter: ContinuationCapableAdapter,
-        token: str,
         request: ChatCompletionRequest,
         state: _LifecycleState,
         deadline: datetime,
-        assistant_tool_calls: tuple[AdapterToolCall, ...],
         channel: str,
-    ) -> None:
-        """Bind one suspension to its continuation record (bounded).
+        adapter: ContinuationCapableAdapter,
+    ) -> "Callable[[SuspensionHandle, str], bool]":
+        """The dispatch's continuation registration closure (D-062).
 
-        Called on the dispatch thread right after an adapter produced a
-        ``tool_calls`` leg — before any byte of the response reaches the
-        client, so no harness can observe a tool_call id that is not yet
-        registered. Records hold only identifiers and bounded
-        fingerprints. When the gateway is at its pending-continuation
-        bound the note records it honestly and the later tool result
-        receives the typed not-found failure.
+        The ADAPTER invokes this at the suspension point — strictly
+        before the tool_call id becomes observable (streamed frame or
+        return value), so the invariant "observable ⇒ registered" holds
+        for streaming and non-streaming clients alike (review round 2,
+        finding 4). The record retains only identifiers and bounded
+        digests: the echoed assistant tool_calls are stored as their
+        fingerprint, never as raw arguments (finding 2).
+        """
+        registry = self.continuations
+
+        def register(handle: SuspensionHandle, arguments: str) -> bool:
+            if registry is None:  # pragma: no cover - dispatch gate
+                return False
+            record = PendingContinuation(
+                continuation_token=handle.continuation_token,
+                attempt_id=handle.attempt_id,
+                resource_id=handle.resource_id,
+                channel=channel,
+                call_id=handle.call_id,
+                deadline=deadline,
+                created_at=canonical_instant(self._now()),
+                client_id=state.client_id,
+                model_echo=request.model,
+                reasoning_effort=request.reasoning_effort,
+                tools_fingerprint=tools_fingerprint(request.tools),
+                tool_choice_json=canonical_json_text(request.tool_choice),
+                prefix_fingerprint=message_fingerprint(request.messages),
+                assistant_tool_calls_digest=tool_calls_fingerprint(
+                    (
+                        AdapterToolCall(
+                            id=handle.continuation_token,
+                            name=handle.tool_name,
+                            arguments=arguments,
+                        ),
+                    )
+                ),
+                decision_id=state.decision_id,
+                adapter_name=state.adapter_name,
+                adapter_version=state.adapter_version,
+                registry_revision=state.registry_revision,
+                registry_generated_at=state.registry_generated_at,
+                selected_target=state.selected_target,
+                executed_target=state.executed_target,
+                handle=handle,
+                cancel_callback=lambda _record: adapter.cancel_suspension(handle),
+            )
+            registered = registry.register(record)
+            if registered:
+                state.flow_notes = (
+                    *state.flow_notes,
+                    "suspended_for_client_tool",
+                )
+            return registered
+
+        return register
+
+    def _close_continuation(self, record: PendingContinuation, state: str) -> None:
+        """Terminal-close a claimed continuation (registry removal +
+        tombstone) and cancel the suspended worker turn whenever the
+        backend may still be waiting (expiry/authority revocation)."""
+        registry = self.continuations
+        assert registry is not None
+        registry.close(record.continuation_token, state)
+        if state in (CONTINUATION_CANCELLED, CONTINUATION_EXPIRED):
+            if record.cancel_callback is not None:
+                record.cancel_callback(record)
+
+    def _recheck_continuation_authority(self, record: PendingContinuation) -> None:
+        """The CURRENT hard authority of the ORIGINAL client against the
+        EXACT original target (review round 2, finding 6).
+
+        Runs the SAME M02 authorization stage admission runs (provider /
+        channel / entitlement allow-lists, blocked resources, spending
+        limits) over the client's CURRENT grant — never scarcity or
+        campaign ranking, which stay non-authoritative for an existing
+        turn (D-059). On any failure the continuation is closed and the
+        suspended backend turn is cancelled; the typed permission
+        failure never reroutes.
         """
         registry = self.continuations
         assert registry is not None
-        handle = adapter.suspension_handle(token)
-        if handle is None:
-            state.flow_notes = (*state.flow_notes, "continuation_unavailable")
-            return
-        record = PendingContinuation(
-            continuation_token=token,
-            attempt_id=handle.attempt_id,
-            resource_id=handle.resource_id,
-            channel=channel,
-            call_id=handle.call_id,
-            tool_name=handle.tool_name,
-            deadline=deadline,
-            created_at=canonical_instant(self._now()),
-            client_id=state.client_id,
-            model_echo=request.model,
-            reasoning_effort=request.reasoning_effort,
-            tools_fingerprint=tools_fingerprint(request.tools),
-            tool_choice_json=canonical_json_text(request.tool_choice),
-            prefix_fingerprint=message_fingerprint(request.messages),
-            assistant_tool_calls=assistant_tool_calls,
-            decision_id=state.decision_id,
-            adapter_name=state.adapter_name,
-            adapter_version=state.adapter_version,
-            registry_revision=state.registry_revision,
-            registry_generated_at=state.registry_generated_at,
-            selected_target=state.selected_target,
-            executed_target=state.executed_target,
-            handle=handle,
-            cancel_callback=lambda _record: adapter.cancel_suspension(handle),
+        try:
+            snapshot = self.registry.registry_snapshot(
+                now=canonical_instant(self._now())
+            )
+        except (CapacityValidationError, ValueError):
+            self._close_continuation(record, CONTINUATION_LOST)
+            raise GatewayError.api(
+                "the gateway's resource state is unavailable",
+                code="state_unavailable",
+                http_status=503,
+            ) from None
+        entry = next(
+            (
+                candidate
+                for candidate in snapshot.entries
+                if candidate.identity.resource_id == record.resource_id
+            ),
+            None,
         )
-        if not registry.register(record):
-            # At the pending bound the continuation cannot exist: cancel
-            # the already-suspended worker turn NOW (no orphan Codex
-            # process waiting for a result that will never be accepted)
-            # and note the honest bounded failure in the audit.
-            adapter.cancel_suspension(handle)
-            state.flow_notes = (*state.flow_notes, "continuation_unavailable")
-            return
-        state.flow_notes = (*state.flow_notes, "suspended_for_client_tool")
+        if entry is None:
+            # The exact target's registration disappeared: hard
+            # authority/availability loss — fail closed, cancel, never
+            # reroute.
+            self._close_continuation(record, CONTINUATION_LOST)
+            raise GatewayError.not_found(
+                "the suspended execution's target no longer exists",
+                code="continuation_not_found",
+            )
+        effective = _effective_authorization(
+            self.admin_constraints,
+            self._client_grant(record.client_id),
+            None,
+        )
+        codes = _authorization_failure_codes(entry, effective)
+        if codes:
+            self._close_continuation(record, CONTINUATION_CANCELLED)
+            raise GatewayError.permission(
+                "the client's current authorization no longer covers the "
+                + "suspended execution's target",
+                code="unauthorized_target",
+            )
 
     def expire_continuations(self) -> tuple[str, ...]:
         """Expire due continuations (the server's reaper loop calls this).
@@ -1332,6 +1440,14 @@ class GatewayApplication:
             pinned_target=resolved.pinned_target,
         )
         routing_profile = resolved.profile
+        continuation_capable: frozenset[str] | None = None
+        if self.continuation_capability_source is not None:
+            try:
+                continuation_capable = self.continuation_capability_source()
+            except Exception:  # noqa: BLE001 - a live-fact failure fails
+                # CLOSED (None), never open: the availability stage then
+                # excludes worker_bridged candidates for tool requests.
+                continuation_capable = None
         try:
             request_obj = RouteRequest(
                 catalog=self.catalog,
@@ -1349,6 +1465,7 @@ class GatewayApplication:
                 profile_policy_version=(
                     self.profile_policy_version if routing_profile is not None else None
                 ),
+                continuation_capable_resource_ids=continuation_capable,
             )
         except (CapacityValidationError, SelectionContractError, ValueError):
             raise GatewayError.api(
@@ -1527,7 +1644,23 @@ class GatewayApplication:
         state.adapter_name = adapter.adapter_name
         state.adapter_version = adapter.adapter_version
         deadline = started + timedelta(seconds=self.limits.execution_time_limit_seconds)
-        context = self._build_context(state, emit_chunk, deadline)
+        context = self._build_context(
+            state,
+            emit_chunk,
+            deadline,
+            register_continuation=(
+                self._continuation_registrar(
+                    request=request,
+                    state=state,
+                    deadline=deadline,
+                    channel=target.resource.channel,
+                    adapter=adapter,
+                )
+                if self.continuations is not None
+                and isinstance(adapter, ContinuationCapableAdapter)
+                else None
+            ),
+        )
         state.context = context
         # Exact-execution discipline (D-042/D-053, Daybreak finding 2):
         # a PINNED request is admission-only — the pinned variant is part
@@ -1590,28 +1723,13 @@ class GatewayApplication:
             generation_params=request.generation_params or {},
         )
         result = adapter.execute(call, context)
-        if (
-            result.finish_reason == FINISH_TOOL_CALLS
-            and result.message is not None
-            and result.message.tool_calls
-            and self.continuations is not None
-            and isinstance(adapter, ContinuationCapableAdapter)
-        ):
-            # D-062: a continuation-capable channel suspended for a
-            # client tool. Bind the suspension BEFORE the response
-            # leaves; server-direct adapters' own tool_calls legs never
-            # enter this path (they replay history statelessly).
-            self._register_suspension_record(
-                adapter=adapter,
-                token=result.message.tool_calls[0].id,
-                request=request,
-                state=state,
-                deadline=datetime.fromisoformat(
-                    context.deadline[:-1] + "+00:00"
-                ),
-                assistant_tool_calls=result.message.tool_calls,
-                channel=target.resource.channel,
-            )
+        # D-062: a continuation-capable channel that suspended for a
+        # client tool registered the continuation through the context's
+        # registrar BEFORE the tool_call id became observable (review
+        # round 2, finding 4); a bound failure surfaced as a typed
+        # dispatch failure instead. Server-direct adapters' own
+        # tool_calls legs never register (they replay history
+        # statelessly).
         state.calls = result.calls
         if result.status == "cancelled":
             if context.cancelled:
@@ -1639,12 +1757,20 @@ class GatewayApplication:
         state: _LifecycleState,
         emit_chunk: StreamEmitter | None,
         deadline: datetime,
+        register_continuation: "Callable[[SuspensionHandle, str], bool] | None" = None,
     ) -> ExecutionContext:
-        """Build the dispatch context; the emitter propagates disconnects."""
+        """Build the dispatch context; the emitter propagates disconnects.
+
+        ``register_continuation`` is the D-062 seam (review round 2,
+        finding 4): the continuation-capable adapter invokes it at the
+        suspension point, BEFORE the tool_call id becomes observable
+        anywhere.
+        """
         if emit_chunk is None:
             return ExecutionContext(
                 request_id=state.request_id,
                 deadline=canonical_instant(deadline),
+                register_continuation=register_continuation,
             )
 
         def emit(chunk: AdapterStreamChunk) -> None:
@@ -1661,6 +1787,7 @@ class GatewayApplication:
             request_id=state.request_id,
             deadline=canonical_instant(deadline),
             emit_chunk=emit,
+            register_continuation=register_continuation,
         )
 
     # ── Audit ────────────────────────────────────────────────────────────

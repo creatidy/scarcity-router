@@ -233,19 +233,25 @@ class WorkerBridgedAdapter:
                 # backend's own call id never leaves this adapter.
                 suspension = cast(ExecuteToolCallMessage, payload)
                 handle = self._register_suspension(suspension, resource_id)
-                if handle is None:
-                    # The suspension table is at its bound: the attempt
-                    # cannot be continued, so it fails honestly here
-                    # (the worker's own deadline stops the backend turn).
+                if handle is None or not self._admit_continuation(
+                    context, handle, suspension.arguments
+                ):
+                    # The continuation cannot exist (bound reached, or no
+                    # registration surface on this dispatch): cancel the
+                    # suspended backend turn and fail typed — the
+                    # tool_call id is NEVER exposed unregistered
+                    # (review round 2, finding 4).
                     self._send_cancel_best_effort(pending.attempt_id, resource_id)
                     raise AdapterPermanentError(
-                        "the gateway is at its pending client-tool bound"
+                        "the gateway cannot continue this client-tool turn"
                     )
                 tool_call = AdapterToolCall(
                     id=handle.continuation_token,
                     name=suspension.name,
                     arguments=suspension.arguments,
                 )
+                # The token is registered; only NOW may it become
+                # externally visible (streamed frame or return value).
                 if context.emit_chunk is not None and not context.cancelled:
                     # The streamed initial leg carries the complete
                     # tool_call and the explicit tool_calls finish frame
@@ -308,6 +314,24 @@ class WorkerBridgedAdapter:
                 )
 
     # ── D-062 continuation surface (ContinuationCapableAdapter) ──────
+
+    def _admit_continuation(
+        self,
+        context: ExecutionContext,
+        handle: SuspensionHandle,
+        arguments: str,
+    ) -> bool:
+        """Run the coordinator's registration for this suspension.
+
+        Returns whether the continuation is NOW live in the gateway
+        registry — called strictly before the token becomes observable.
+        A ``None`` seam or a ``False`` result means the bounded
+        continuation cannot exist for this dispatch.
+        """
+        registrar = context.register_continuation
+        if registrar is None:
+            return False
+        return registrar(handle, arguments)
 
     def _register_suspension(
         self, suspension: ExecuteToolCallMessage, resource_id: str
@@ -426,20 +450,22 @@ class WorkerBridgedAdapter:
                         raise
                 continue
             if kind == "suspension":
-                # A sequential tool round on the SAME turn: end this leg
-                # with the new suspension (the caller registers the next
-                # continuation exactly as for the initial leg).
+                # A sequential tool round on the SAME turn: register the
+                # next continuation BEFORE anything observable, then end
+                # this leg with the new suspension.
                 suspension = cast(ExecuteToolCallMessage, payload)
                 next_handle = self._register_suspension(
                     suspension, handle.resource_id
                 )
                 self._drop_suspension(handle.continuation_token)
-                if next_handle is None:
+                if next_handle is None or not self._admit_continuation(
+                    context, next_handle, suspension.arguments
+                ):
                     self._send_cancel_best_effort(
                         handle.attempt_id, handle.resource_id
                     )
                     raise AdapterPermanentError(
-                        "the gateway is at its pending client-tool bound"
+                        "the gateway cannot continue this client-tool turn"
                     )
                 if context.emit_chunk is not None and not context.cancelled:
                     context.emit_chunk(

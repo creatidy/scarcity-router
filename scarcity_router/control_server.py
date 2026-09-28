@@ -59,6 +59,7 @@ from .server_store import (
     default_server_data_dir,
 )
 from .worker_endpoint import build_tls_context as build_worker_tls_context
+from .worker_protocol import WORKER_PROTOCOL_VERSION
 
 DEFAULT_DATA_DIR = default_server_data_dir()
 
@@ -314,7 +315,8 @@ def main(argv: list[str] | None = None) -> int:
         print(
             "worker-protocol listener on "
             + f"{worker_scheme}://{worker_host}:{worker_listener.bound_port} "
-            + f"(protocol v1; pairing codes are issued at {origin}/admin/workers)",
+            + f"(protocol v{WORKER_PROTOCOL_VERSION}; pairing codes are "
+            + f"issued at {origin}/admin/workers)",
             flush=True,
         )
     else:
