@@ -54,8 +54,8 @@ reasoning-dialect layer below is the precedent).
 | Role history | `system`/`developer`/`user`/`assistant`/`tool`, admission-gated per matrix cell | Implemented (text-only in v1) |
 | Streaming | SSE `chat.completion.chunk` frames, optional usage chunk, `[DONE]` | Implemented |
 | Client-owned tool declarations | `tools[]` validated at ingress; capability-gated before inference | Implemented |
-| Tool calls returned to the client | `tool_calls` always return to the CLIENT; the router/worker never executes them (D-043); admitted per source only where the matrix evidences it | Implemented on evidenced server-direct channels (`tool_calls` PASS/PARTIAL cells); Codex worker source UNSUPPORTED — #137 |
-| Client tool-result continuation | `role: "tool"` results with `tool_call_id` transported back into the backend's continuation | Implemented on evidenced server-direct channels (`tool_results` PASS/PARTIAL cells); Codex worker source UNSUPPORTED — #137 |
+| Tool calls returned to the client | `tool_calls` always return to the CLIENT; the router/worker never executes them (D-043); admitted per source only where the matrix evidences it | Implemented on evidenced server-direct channels (`tool_calls` PASS/PARTIAL cells); Codex worker source PARTIAL (D-062: the protocol-v3 availability-gated dynamic-tool bridge; live signed-in acceptance pending) |
+| Client tool-result continuation | `role: "tool"` results with `tool_call_id` transported back into the backend's continuation | Implemented on evidenced server-direct channels (`tool_results` PASS/PARTIAL cells); Codex worker source PARTIAL (D-062: the suspended-turn continuation with the owner-accepted lossy `success` mapping; live signed-in acceptance pending) |
 | Structured output | `response_format` text/`json_object`/`json_schema`, matrix-gated | Implemented |
 | Max output semantics | effective output ceiling = model ∩ channel ∩ administrator allowance; honest, visible, rejection-based; a channel without an output-limit control normalizes away only a non-binding requested limit (audited) and rejects a binding one (`output_limit_unenforceable`) | Implemented (#136/D-058) |
 | Context capability | effective context = model ∩ channel ∩ administrator allowance; UNKNOWN never guessed | Implemented (#136/D-058; D-055 metadata) |
@@ -86,12 +86,87 @@ is a per-source capability: evidence-backed server-direct presets already
 evidence `tool_calls`/`tool_results` (PASS/PARTIAL cells with dated
 evidence; the evidence-free generic OpenAI-compatible preset defaults
 every cell to UNKNOWN and stays fail-closed), so tool-requiring requests
-execute there today. An
-execution source that cannot implement the lifecycle — currently the
-Codex worker source, whose evidence records both cells UNSUPPORTED — is
-ineligible for tool-requiring requests, a limitation of that source
-recorded in the compatibility matrix, never a limitation of the
-architecture (#137).
+execute there today. The Codex worker source implements the lifecycle
+through the D-062 client-tool bridge (#137): a PARTIAL, protocol-v3-gated
+suspended-turn continuation whose evidence and remaining live gate are
+recorded in `docs/codex-adapter-stage1-evidence.md` and D-062.
+
+### The Codex client-tool continuation (D-062, #137)
+
+On the Codex source, the lifecycle is a SUSPENDED TURN (Family A): the
+backend thread/turn stays alive while the harness executes its tool, and
+the harness's ordinary `role: "tool"` request resumes the SAME turn —
+one provider call, one usage observation, one decision identity across
+both HTTP legs. One mapping rule is an explicit OWNER DECISION
+(D-062 pt 6): upstream (openai/codex @ 36650394) defines the
+dynamic-tool answer's `success` as "Whether the tool call succeeded" —
+a required bool the generic text-only `role: "tool"` message does not
+carry — so Scarcity Router applies an owner-accepted LOSSY
+compatibility rule: a valid `role: "tool"` result is represented as
+`success: true` with the verbatim content as one inputText item. That
+answer does NOT natively mean "the client returned a result" and is
+NOT proof the external operation succeeded; semantic failures ride in
+the verbatim content, which Scarcity Router never inspects, parses or
+reinterprets, and `success: false` is never inferred. The frozen rules
+of the implemented mechanism:
+
+- **Ordinary shapes are the only carrier.** The initial response is a
+  normal `assistant.tool_calls` + `finish_reason: "tool_calls"`
+  completion; the continuation is a normal request echoing those
+  `tool_calls` and carrying `role: "tool"` with `tool_call_id`. No
+  Scarcity-Router header, field, endpoint or internal id exists. The
+  visible `tool_call_id` is an opaque server-issued token (`srct-…`);
+  worker, thread and process identities never cross the wire.
+- **Exactly-once, single-subscriber.** The continuation resolves at
+  most once: replay or double delivery is `409
+  continuation_already_resolved`; a result from another client is
+  indistinguishably `404 continuation_not_found`; an unknown id is
+  `404 continuation_not_found`. A continuation past its deadline is
+  `404 continuation_expired`. Any drift in the echoed request — model,
+  reasoning effort, tool declarations, `tool_choice`, conversation
+  prefix, the assistant `tool_calls` echo, or an over-bound (4 MiB)
+  result text — is `400 continuation_mismatch`. Fingerprints are
+  bounded digests; no prompt or tool content is stored.
+- **One absolute lifetime.** The whole logical turn — initial
+  inference, harness tool time, resumed inference, further rounds —
+  shares the original attempt's admission deadline
+  (`execution_time_limit_seconds`). There is no per-leg reset; expiry
+  interrupts the backend turn, cleans the record, and later results
+  receive the typed expired/not-found response. Pending continuations
+  are bounded (server-side structural bound, never client-expandable).
+- **Sticky for ranking, never above authority.** The continuation
+  path performs no scarcity/campaign/policy ranking: D-059 changes
+  cannot move or terminate a suspended turn. Two hard gates recheck
+  CURRENT state before delivery: the client's live authorization grant
+  is evaluated against the EXACT original target through the same M02
+  authorization stage admission used (a revoked/narrowed grant yields
+  typed `403 unauthorized_target` and the suspended turn is cancelled),
+  and the exact target's registration must still exist. Worker/source
+  loss and gateway restart fail the continuation closed (the state is
+  in-memory by architecture; a lost suspension says
+  `continuation_not_found`, never pretends durability).
+- **Live v3 eligibility, pre-ranking (review round 2).** A
+  tool-bearing request is availability-gated per `worker_bridged`
+  resource on the owning worker's LIVE protocol-v3 negotiation
+  (`worker_continuation_unavailable`): with two otherwise equal routes,
+  the v3 route is selected and a v2 route is never chosen into a
+  backend continuation failure; with no live v3 fact, tool requests
+  fail closed; ordinary non-tool requests are unaffected; the static
+  matrix is not mutated.
+- **Registration before exposure.** A `tool_call` id only ever reaches
+  a client already registered as a live continuation: registration
+  happens inside the dispatch before the streamed `tool_call` frame or
+  the response is produced. A bounded-table failure cancels the
+  suspended backend and returns a typed failure that exposes no token.
+- **Streaming.** A streamed suspension leg renders the complete
+  `tool_call` delta and the `finish_reason: "tool_calls"` frame before
+  `[DONE]`; the resumed leg streams the turn's continuation normally.
+- **Audit.** The initial leg audits `completed` with an
+  `unknown`-status usage-free call observation (`suspended_for_client_tool`);
+  the terminal leg audits `completed` with the turn's single
+  usage-bearing observation (`continuation_resumed`) and repeats the
+  original decision/target identity — one provider call is never
+  reported as two.
 
 ### Effective capability (D-056; implemented by #136, D-058)
 
@@ -462,11 +537,12 @@ Errors use the OpenAI envelope
 
 | HTTP | type                  | typical codes                                      |
 | ---- | --------------------- | -------------------------------------------------- |
-| 400  | `invalid_request_error` | `unknown_parameter`, `invalid_json`, `invalid_pin_reference`, `pinned_model_not_bound`, `compatibility_unsupported`, `compatibility_unknown`, `context_length_exceeded`, `output_limit_exceeded`, `router_loop_detected`, `invalid_host`, `unsupported_reasoning_effort`, `reasoning_effort_required`, `ambiguous_logical_model`, `conflicting_reasoning_parameters` |
+| 400  | `invalid_request_error` | `unknown_parameter`, `invalid_json`, `invalid_pin_reference`, `pinned_model_not_bound`, `compatibility_unsupported`, `compatibility_unknown`, `context_length_exceeded`, `output_limit_exceeded`, `router_loop_detected`, `invalid_host`, `unsupported_reasoning_effort`, `reasoning_effort_required`, `ambiguous_logical_model`, `conflicting_reasoning_parameters`, `continuation_mismatch`, `tool_result_too_large` |
 | 401  | `authentication_error`  | (no code)                                          |
 | 403  | `permission_error`      | `unauthorized_target`, `spend_limit_exceeded`      |
-| 404  | `not_found_error`       | `model_not_found`, `pin_target_not_found`          |
+| 404  | `not_found_error`       | `model_not_found`, `pin_target_not_found`, `continuation_not_found`, `continuation_expired` |
 | 408  | `timeout_error`         | `execution_time_limit_exceeded`                    |
+| 409  | `conflict_error`        | `continuation_already_resolved` (D-062 replay/double delivery) |
 | 413  | `invalid_request_error` | `request_too_large`                                |
 | 429  | `rate_limit_error`      | `concurrency_limit_reached`                        |
 | 5xx  | `api_error`             | `no_eligible_target`, `adapter_unavailable`, `backend_failure`, `ambiguous_execution_state` |

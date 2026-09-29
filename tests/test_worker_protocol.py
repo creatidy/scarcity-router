@@ -32,6 +32,8 @@ from scarcity_router.worker_protocol import (
     StateReportMessage,
     ExecuteMessage,
     ExecuteResultMessage,
+    ExecuteToolCallMessage,
+    ExecuteToolResultMessage,
     FrameReader,
     HelloMessage,
     WorkerProtocolError,
@@ -298,6 +300,77 @@ class AttemptIdentityTests(unittest.TestCase):
     def test_attempt_ids_follow_safe_grammar(self) -> None:
         with self.assertRaises(WorkerProtocolError):
             _ = parse_server_message({"type": "cancel", "attempt_id": "BAD ID!"})
+
+
+class ToolContinuationMessageTests(unittest.TestCase):
+    """Protocol version 3: the D-062 suspension/result vocabulary."""
+
+    def test_tool_call_message_round_trip(self) -> None:
+        message = ExecuteToolCallMessage(
+            attempt_id="wa-attempt1",
+            call_id="call-synthetic-1",
+            name="synthetic_lookup",
+            arguments='{"n": 0}',
+            content="pre-text",
+        )
+        rebuilt = parse_worker_message(message.to_payload())
+        assert isinstance(rebuilt, ExecuteToolCallMessage)
+        self.assertEqual("wa-attempt1", rebuilt.attempt_id)
+        self.assertEqual("call-synthetic-1", rebuilt.call_id)
+        self.assertEqual("synthetic_lookup", rebuilt.name)
+        self.assertEqual('{"n": 0}', rebuilt.arguments)
+        self.assertEqual("pre-text", rebuilt.content)
+        # content is optional.
+        bare = ExecuteToolCallMessage(
+            attempt_id="wa-attempt1",
+            call_id="c",
+            name="n",
+            arguments="{}",
+        )
+        rebuilt = parse_worker_message(bare.to_payload())
+        assert isinstance(rebuilt, ExecuteToolCallMessage)
+        self.assertIsNone(rebuilt.content)
+
+    def test_tool_call_message_rejects_drift(self) -> None:
+        good = ExecuteToolCallMessage(
+            attempt_id="wa-a", call_id="c", name="n", arguments="{}"
+        )
+        payload = good.to_payload()
+        with self.assertRaises(WorkerProtocolError):
+            _ = parse_worker_message({**payload, "extra": 1})
+        with self.assertRaises(WorkerProtocolError):
+            _ = parse_worker_message({**payload, "arguments": "x" * (1_048_577)})
+        # Vocabulary gate: unknown types stay fatal.
+        with self.assertRaises(WorkerProtocolError) as caught:
+            _ = parse_worker_message({"type": "execute_shell", "cmd": "ls"})
+        self.assertEqual(ERR_UNKNOWN_MESSAGE, caught.exception.code)
+
+    def test_tool_result_message_round_trip_and_bounds(self) -> None:
+        message = ExecuteToolResultMessage(
+            attempt_id="wa-attempt1", call_id="call-synthetic-1", content="result"
+        )
+        rebuilt = parse_server_message(message.to_payload())
+        assert isinstance(rebuilt, ExecuteToolResultMessage)
+        self.assertEqual("result", rebuilt.content)
+        with self.assertRaises(WorkerProtocolError):
+            _ = parse_server_message(
+                {
+                    "type": "execute_tool_result",
+                    "attempt_id": "wa-attempt1",
+                    "call_id": "c",
+                    "content": "x" * (4 * 1_048_576 + 1),
+                }
+            )
+
+    def test_version_negotiation_still_accepts_old_workers(self) -> None:
+        # The server accepts v1/v2/v3; the highest mutual version wins;
+        # disjoint sets fail explicitly.
+        self.assertEqual(3, negotiate_version((3, 2, 1), (3,)))
+        self.assertEqual(2, negotiate_version((3, 2, 1), (2,)))
+        self.assertEqual(1, negotiate_version((3, 2, 1), (1,)))
+        with self.assertRaises(WorkerProtocolError) as caught:
+            _ = negotiate_version((3,), (2,))
+        self.assertEqual(ERR_PROTOCOL_VERSION, caught.exception.code)
 
 
 if __name__ == "__main__":

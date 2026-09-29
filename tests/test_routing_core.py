@@ -502,6 +502,7 @@ def _request(
     client: ClientAuthorization | None = None,
     cells: tuple[CompatibilityCell, ...] = (),
     reports: tuple[ExecutionEligibility, ...] = (),
+    continuation_capable_resource_ids: frozenset[str] | None = None,
 ) -> RouteRequest:
     return RouteRequest(
         catalog=_catalog(),
@@ -513,6 +514,7 @@ def _request(
         if snapshots is not None
         else (_snap("openai"), _snap("zai")),
         eligibility_reports=reports,
+        continuation_capable_resource_ids=continuation_capable_resource_ids,
         compatibility_cells=cells,
         admin_constraints=admin if admin is not None else AdministratorConstraints(),
         client_authorization=client if client is not None else ClientAuthorization(),
@@ -1014,7 +1016,29 @@ class CompatibilityTests(unittest.TestCase):
         self.assertEqual(sub.reason_codes, ("compatibility_unsupported",))
         self.assertEqual(sub.compatibility_feature, "tool_calls")
         self.assertEqual(sub.compatibility_value, "UNSUPPORTED")
+        # The worker surface fails EARLIER now (D-062): with no live v3
+        # continuation fact for a tool-bearing request, the availability
+        # stage excludes it before compatibility is reached.
         worker = excluded["openai-worker"]
+        self.assertEqual(worker.stage, "availability")
+        self.assertEqual(worker.reason_codes, ("worker_continuation_unavailable",))
+        self.assertIsNone(worker.compatibility_value)
+
+    def test_tool_calling_on_a_v3_capable_worker_reaches_compatibility(self) -> None:
+        # With the live v3 fact present, the availability gate passes and
+        # the compatibility stage (unknown cell) is what excludes.
+        decision = route_request(
+            _request(
+                request=RequestBinding(requires_tool_calls=True),
+                cells=_tool_cells(
+                    server_direct="PASS", local_app="UNSUPPORTED", worker=None
+                ),
+                continuation_capable_resource_ids=frozenset({"openai-worker"}),
+            )
+        )
+        excluded = _exclusion_by_id(decision)
+        worker = excluded["openai-worker"]
+        self.assertEqual(worker.stage, "compatibility")
         self.assertEqual(worker.reason_codes, ("compatibility_unknown",))
         self.assertIsNone(worker.compatibility_value)
 

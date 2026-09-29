@@ -235,6 +235,9 @@ _STAGE_REASONS: dict[str, frozenset[str]] = {
         "resource_never_observed",
         "resource_unhealthy",
         "execution_ineligible",
+        # D-062 (review round 2, finding 3): the owning worker's live
+        # session cannot carry the client-tool continuation.
+        "worker_continuation_unavailable",
     }),
     "compatibility": frozenset({
         "compatibility_unsupported",
@@ -1492,7 +1495,11 @@ def _compatibility_failure(
     )
     if output_code is not None:
         codes.append(output_code)
-    return tuple(codes), first_feature, first_value
+    # The docstring promises a sorted, duplicate-free code tuple: two
+    # required features can fail with the SAME code (e.g. two missing
+    # cells both yield compatibility_unknown), and TargetExclusion's
+    # strict reason-code grammar rejects duplicates.
+    return tuple(sorted(set(codes))), first_feature, first_value
 
 
 def _parse_promotion_bounds(
@@ -1607,6 +1614,7 @@ def _evaluate_resource(
     requirement: TaskRequirement,
     eligibility_reports: tuple[ExecutionEligibility, ...],
     evaluated_at: datetime,
+    continuation_capable_resource_ids: frozenset[str] | None = None,
 ) -> _ResourceGate:
     """Run the frozen gate pipeline for one resource.
 
@@ -1637,7 +1645,21 @@ def _evaluate_resource(
             reason_codes=authorization_codes,
             promotion_sources=promotion_sources,
         )
-    availability_codes = _availability_failure_codes(entry, eligibility_reports)
+    availability_codes = list(_availability_failure_codes(entry, eligibility_reports))
+    if request.requires_tool_calls and entry.identity.channel == "worker_bridged":
+        # D-062 (review round 2, finding 3): the client-tool round trip
+        # needs the owning worker's LIVE protocol-v3 negotiation. This is
+        # an availability fact of the specific resource, checked BEFORE
+        # ranking — a v2 worker is never selected for a tool-bearing
+        # request when a v3 worker serves the same identity, and a
+        # missing live fact fails closed. Static matrix cells stay
+        # untouched.
+        if (
+            continuation_capable_resource_ids is None
+            or entry.identity.resource_id not in continuation_capable_resource_ids
+        ):
+            availability_codes.append("worker_continuation_unavailable")
+    availability_codes = tuple(availability_codes)
     if availability_codes:
         report = next(
             (
@@ -2243,6 +2265,16 @@ class RouteRequest:
     routing_profile: ClientRoutingProfile | None = None
     request: RequestBinding = field(default_factory=RequestBinding)
     profile_policy_version: int | None = None
+    #: D-062 (review round 2, finding 3): the LIVE worker-continuation
+    #: capability of ``worker_bridged`` resources — the resource ids whose
+    #: owning worker session has negotiated protocol version 3 right now.
+    #: ``None`` means no live fact source is configured: tool-bearing
+    #: requests then fail closed on every ``worker_bridged`` candidate
+    #: (availability stage, ``worker_continuation_unavailable``). Ordinary
+    #: non-tool requests are unaffected, and static matrix cells are not
+    #: mutated — this is per-resource live capability, never a backend
+    #: matrix change.
+    continuation_capable_resource_ids: frozenset[str] | None = None
 
     def __post_init__(self) -> None:
         _ = _v_instance_of(self.catalog, ModelCatalog, "route_request.catalog")
@@ -2566,6 +2598,7 @@ def route_request(request: RouteRequest) -> RouteDecision:
                 requirement,
                 request.eligibility_reports,
                 request.evaluated_at,
+                request.continuation_capable_resource_ids,
             )
             for entry in request.registry_snapshot.entries
         ),
@@ -2777,6 +2810,7 @@ def admit_pinned_target(
         requirement,
         request.eligibility_reports,
         request.evaluated_at,
+        request.continuation_capable_resource_ids,
     )
     if not gate.qualified or not gate.bound_identities:
         return AdmissionDecision(
