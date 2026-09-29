@@ -108,13 +108,18 @@ ADOPTION_STATES: tuple[str, ...] = (
 #:   no experimental gate names one). An explicit client output limit can
 #:   never be enforced on this channel; the #136 coordinator normalization
 #:   rule governs.
-#: - ``tool_calls: False`` — client tools return to clients (D-043); the
-#:   experimental dynamic-tools round trip is #137's investigation scope
-#:   and stays unaudited here.
+#: - ``tool_calls: True`` — evidenced 2026-09-28 (issue #137/D-062):
+#:   the Codex execution surface carries the client-tool round trip
+#:   through the evidenced experimentalApi-gated ``dynamicTools`` /
+#:   ``item/tool/call`` bridge, relayed to the harness (never executed
+#:   worker-side), with the owner-accepted lossy ``success`` mapping
+#:   (D-062 pt 6). Runtime-gated: only a worker that negotiates protocol
+#:   version 3 may run it; the D-043 matrix cells stay the per-request
+#:   admission authority.
 CODEX_SURFACE_CAPABILITIES: dict[str, object] = {
     "context_limit_tokens": 272_000,
     "streaming": True,
-    "tool_calls": False,
+    "tool_calls": True,
     "structured_output": True,
     "reasoning_controls": True,
     "usage_reporting": True,

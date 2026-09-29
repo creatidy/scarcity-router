@@ -1245,7 +1245,7 @@ class CompatibilityMatrixCanonicalizationTests(unittest.TestCase):
         self.assertEqual(len(keys), len(set(keys)))
         self.assertEqual(len(CODEX_WORKER_CELL_VALUES), len(both))
         self.assertEqual(
-            {feature: value for feature, (value, _note) in CODEX_WORKER_CELL_VALUES.items()},
+            {feature: value for feature, (value, _note, _date) in CODEX_WORKER_CELL_VALUES.items()},
             {cell.feature: cell.value for cell in both},
         )
 

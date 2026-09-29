@@ -927,9 +927,17 @@ class ZCodeLocalAdapter:
         cancel_event: threading.Event,
         deadline: str,
         emit: Callable[[AdapterStreamChunk], None],
+        tool_bridge: "object | None" = None,
     ) -> AdapterResult:
         started = _canonical_now()
         _ = emit  # no evidenced incremental text surface: nothing synthesized
+        # The D-062 continuation channel is deliberately unused here: the
+        # plan lane carries NO client-tool round trip on any session
+        # version (the ZCODE compatibility cells mark tool_calls
+        # UNSUPPORTED and tool-bearing requests are typed rejections
+        # before anything executes), so there is nothing to suspend and
+        # the channel can never be engaged.
+        _ = tool_bridge
         try:
             return self._invoke(
                 call,

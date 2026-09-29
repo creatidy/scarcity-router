@@ -54,9 +54,49 @@ MCP_TOOL_NAMES: tuple[str, str, str] = (
     "scarcity_simulate",
 )
 
-_TOOL_DESCRIPTION = (
+# Every tool description keeps the D-028 statement (contract v1, no
+# execution) and then states its own intent, output and when the
+# neighbouring tool is the better choice, so tool-selection systems can
+# distinguish the three tools from metadata alone (#162).
+_CONTRACT_PREAMBLE = (
     "Scarcity Router machine-interface contract v1. "
-    "This tool reports or recommends only; it never executes model inference."
+)
+
+_STATUS_DESCRIPTION = (
+    _CONTRACT_PREAMBLE
+    + "This tool only reports observations; it never executes model "
+    + "inference. It collects one normalized capacity snapshot per "
+    + "supported subscription provider — observed quota windows, validated "
+    + "reset information where known, collection/source status, explicit "
+    + "failures and unknowns — and makes no recommendation. Snapshots are "
+    + "observations at collection time, not a real-time availability "
+    + "guarantee. It accepts no input. Use it to inspect or diagnose the "
+    + "router's resource view; to choose a model, use scarcity_select "
+    + "instead."
+)
+
+_SELECT_DESCRIPTION = (
+    _CONTRACT_PREAMBLE
+    + "This tool only recommends; it never executes model inference. Given "
+    + "a calibrated profile_id or a complete requirement (exactly one of the "
+    + "two), it gates candidates on capability and hard constraints, then "
+    + "ranks the eligible ones by current capacity/scarcity and the "
+    + "configured selector policy — quota-preference policy may outrank "
+    + "better scarcity — and recommends the top-ranked configuration with "
+    + "ordered alternatives, exclusions and reasons; a no-solution result "
+    + "is explicit and valid. This is the routing-decision tool; use "
+    + "scarcity_status to inspect capacity without a decision, and "
+    + "scarcity_simulate for hypothetical what-if analysis."
+)
+
+_SIMULATE_DESCRIPTION = (
+    _CONTRACT_PREAMBLE
+    + "This tool only answers hypotheticals; it never executes model "
+    + "inference. It runs the same selector under typed SimulationOverrides — "
+    + "for example a different evaluated_at instant or replaced window "
+    + "percentages — and returns the baseline and simulated decisions "
+    + "together for comparison. Use it for planning and policy analysis, not "
+    + "for the real dispatch decision; for that, use scarcity_select."
 )
 
 
@@ -114,23 +154,17 @@ _SIMULATE_INPUT_SCHEMA = _object_schema(
 _TOOLS: tuple[Tool, Tool, Tool] = (
     Tool(
         name="scarcity_status",
-        description=_TOOL_DESCRIPTION + " It accepts no logical input fields.",
+        description=_STATUS_DESCRIPTION,
         input_schema=_object_schema({}),
     ),
     Tool(
         name="scarcity_select",
-        description=(
-            _TOOL_DESCRIPTION
-            + " Inputs mirror the REST /v1/select logical contract."
-        ),
+        description=_SELECT_DESCRIPTION,
         input_schema=_SELECT_INPUT_SCHEMA,
     ),
     Tool(
         name="scarcity_simulate",
-        description=(
-            _TOOL_DESCRIPTION
-            + " Inputs mirror the REST /v1/simulate logical contract."
-        ),
+        description=_SIMULATE_DESCRIPTION,
         input_schema=_SIMULATE_INPUT_SCHEMA,
     ),
 )

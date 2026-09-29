@@ -73,16 +73,23 @@ from .eligibility import ExecutionEligibility
 from .errors import CapacityValidationError, SelectionContractError
 from .gateway_adapters import (
     AdapterCall,
+    AdapterMessage,
     AdapterPermanentError,
     AdapterRegistry,
     AdapterResult,
     AdapterStreamChunk,
     AdapterTimeoutError,
     AdapterAmbiguousError,
+    AdapterToolCall,
     CallObservation,
     ClientDisconnectedError,
     CompletionOutcome,
+    ContinuationCapableAdapter,
+    ContinuationLostError,
     ExecutionContext,
+    FINISH_TOOL_CALLS,
+    SuspensionHandle,
+    ToolSuspension,
 )
 from .gateway_audit import (
     RESULT_CANCELLED,
@@ -94,6 +101,22 @@ from .gateway_audit import (
     AuditRecord,
     AuditSink,
     ExecutedTarget,
+)
+from .gateway_continuation import (
+    REJECT_ALREADY_RESOLVED,
+    REJECT_EXPIRED,
+    REJECT_NOT_FOUND,
+    CONTINUATION_CANCELLED,
+    CONTINUATION_COMPLETED,
+    CONTINUATION_EXPIRED,
+    CONTINUATION_LOST,
+    ContinuationRegistry,
+    ContinuationRejected,
+    PendingContinuation,
+    canonical_json_text,
+    message_fingerprint,
+    tool_calls_fingerprint,
+    tools_fingerprint,
 )
 from .gateway_contracts import (
     USAGE_SOURCE_ESTIMATED,
@@ -135,6 +158,8 @@ from .routing_core import (
     RouteRequest,
     RouteTarget,
     _lookup_cell,  # pyright: ignore[reportPrivateUsage] -- the M02 matrix lookup is the single authority; reimplementing it here would fork D-043 compatibility semantics
+    _authorization_failure_codes,  # pyright: ignore[reportPrivateUsage] -- the M02 authorization stage is the single authority; forking it for the continuation recheck would fork D-042 semantics
+    _effective_authorization,  # pyright: ignore[reportPrivateUsage] -- same single-authority rationale
     admit_pinned_target,
     route_request,
 )
@@ -145,6 +170,12 @@ from .selection_types import ModelCatalog, ModelIdentity, ModelRef, TaskProfileC
 # ── Model-field resolution ────────────────────────────────────────────────────
 
 PIN_PREFIX = "sr-pin:"
+
+#: D-062: the maximum tool-result text a continuation may carry — the
+#: same bound the v3 worker frame enforces (a 4 MiB string stays under
+#: the 16 MiB frame bound even in the worst JSON-escaping case). Larger
+#: results are a typed pre-delivery rejection, never a truncated frame.
+MAX_TOOL_RESULT_TEXT = 4 * 1_048_576
 
 PIN_KIND = "pin"
 ALIAS_KIND = "alias"
@@ -597,6 +628,8 @@ class GatewayApplication:
         client_authorizations: Mapping[str, ClientAuthorization] | None = None,
         clock: Callable[[], datetime] | None = None,
         request_id_factory: RequestFactory | None = None,
+        continuations: ContinuationRegistry | None = None,
+        continuation_capability_source: "Callable[[], frozenset[str]] | None" = None,
         replaced_application: "GatewayApplication | None" = None,
     ) -> None:
         _ = v_instance(catalog, ModelCatalog, "gateway_application.catalog")
@@ -658,6 +691,23 @@ class GatewayApplication:
         )
         self.clock: Callable[[], datetime] | None = clock
         self.request_id_factory: RequestFactory | None = request_id_factory
+        #: D-062: the shared continuation registry (one instance per
+        #: server process, owned by the composition so application
+        #: rebuilds never orphan a pending continuation). ``None``
+        #: (the default) means the deployment has no client-tool
+        #: continuation surface — suspensions then fail closed instead
+        #: of registering.
+        self.continuations: ContinuationRegistry | None = continuations
+        #: D-062 (review round 2, finding 3): the LIVE worker-continuation
+        #: capability source — the worker_bridged resource ids whose owning
+        #: worker session has negotiated protocol v3 right now. ``None``
+        #: means no live fact source: tool-bearing worker_bridged requests
+        #: fail closed at pre-ranking availability. Wired by the composed
+        #: server over the worker endpoint; never derived from request
+        #: content, never a matrix mutation.
+        self.continuation_capability_source: (
+            "Callable[[], frozenset[str]] | None"
+        ) = continuation_capability_source
         # Daybreak finding 5: concurrency enforcement must SURVIVE
         # application rebuilds (a state-report adoption rebuilds the
         # application while executions are in flight). The reservation
@@ -730,10 +780,25 @@ class GatewayApplication:
             started_at=canonical_instant(started),
         )
         try:
-            outcome = self._run_lifecycle(
-                started=started, request=request, client_id=client_id,
-                state=state, emit_chunk=emit_chunk,
-            )
+            continuation_record = self._detect_continuation(request, client_id)
+            if continuation_record is not None:
+                # D-062: this request IS the harness's tool result for a
+                # suspended backend turn. It never routes, never
+                # re-ranks and never re-admits: it resolves into the
+                # exact continuation (sticky to its original target).
+                outcome = self._run_continuation(
+                    record=continuation_record,
+                    request=request,
+                    client_id=client_id,
+                    emit_chunk=emit_chunk,
+                    started=started,
+                    state=state,
+                )
+            else:
+                outcome = self._run_lifecycle(
+                    started=started, request=request, client_id=client_id,
+                    state=state, emit_chunk=emit_chunk,
+                )
             self._write_audit(state, RESULT_COMPLETED, ("completed",))
             return outcome
         except ClientDisconnectedError:
@@ -812,6 +877,501 @@ class GatewayApplication:
         finally:
             reservation.release()
 
+    # ── D-062 client-tool continuation ───────────────────────────────────
+
+    _CONTINUATION_TOKEN_PREFIX: str = "srct-"
+
+    def _detect_continuation(
+        self, request: ChatCompletionRequest, client_id: str
+    ) -> PendingContinuation | None:
+        """Whether this request IS a harness tool result for a suspension.
+
+        Detection is SHAPE-AWARE: only a request whose FINAL message is
+        a ``role: "tool"`` result can be attempting a continuation, so
+        ordinary full-history follow-up turns (which necessarily still
+        carry earlier tool messages) are never mistaken for replays —
+        a completed round never poisons the conversation. Within that
+        delivery shape:
+
+        - a live record for the addressed token → the continuation
+          (exact-shape validation follows in
+          :meth:`_validate_continuation_request`);
+        - a terminally resolved token (client-scoped tombstone) → the
+          explicit ``409`` conflict, never a silent re-interpretation;
+        - any other gateway-issued ``srct-`` token (a lost record:
+          gateway restart, registry bound) → the typed ``404``
+          continuation_not_found — the gateway issued that id, so a
+          result addressed to it must never be fed to a fresh model
+          selection;
+        - any non-gateway id → a normal request (full-history paths on
+          other channels stay untouched).
+
+        A live record cited WITHOUT the delivery shape (mid-history)
+        falls through to normal flow, where the codex adapter's own
+        rejection applies.
+        """
+        registry = self.continuations
+        if registry is None:
+            return None
+        messages = request.messages
+        if not messages:
+            return None
+        final = messages[-1]
+        if final.role != "tool" or final.tool_call_id is None:
+            return None
+        token = final.tool_call_id
+        candidate = registry.detect(token)
+        if candidate is not None:
+            return candidate
+        if registry.was_terminal_for(token, client_id):
+            # A replayed/duplicate tool result after the continuation
+            # already resolved: the explicit conflict. A foreign
+            # client's replay stays not-found.
+            raise GatewayError.conflict(
+                "this continuation was already resolved by one tool result",
+                code="continuation_already_resolved",
+            )
+        if token.startswith(self._CONTINUATION_TOKEN_PREFIX):
+            # A result addressed to a gateway-issued id with no registry
+            # state: the suspension was lost (restart, bound) — the
+            # documented typed failure, never a fresh completion.
+            raise GatewayError.not_found(
+                "no pending continuation exists for this tool result",
+                code="continuation_not_found",
+            )
+        return None
+
+    def _continuation_error(self, reason: str) -> GatewayError:
+        """The typed failure for a tool result that cannot claim its
+        continuation (D-062: expired/not-found are distinct, replay and
+        double-delivery conflict)."""
+        if reason == REJECT_EXPIRED:
+            return GatewayError.not_found(
+                "the continuation's lifetime has expired; restart the task "
+                + "with a fresh request",
+                code="continuation_expired",
+            )
+        if reason == REJECT_ALREADY_RESOLVED:
+            return GatewayError.conflict(
+                "this continuation was already resolved by one tool result",
+                code="continuation_already_resolved",
+            )
+        return GatewayError.not_found(
+            "no pending continuation exists for this tool result",
+            code="continuation_not_found",
+        )
+
+    def _validate_continuation_request(
+        self,
+        *,
+        record: PendingContinuation,
+        request: ChatCompletionRequest,
+    ) -> str:
+        """Validate the exact continuation shape; returns the tool content.
+
+        Fails closed on ANY drift: a changed model, effort, tool set or
+        tool_choice; a rewritten conversation prefix; a substituted
+        assistant tool_calls entry; more than the one expected new
+        tool-result message; or an over-bound result text. Fingerprints
+        are bounded digests — no prompt content is stored or compared in
+        the clear.
+        """
+        messages = request.messages
+        if (
+            record.client_id  # client equality checked by the caller
+            and request.model != record.model_echo
+        ):
+            raise GatewayError.invalid_request(
+                "a continuation must repeat the original model",
+                code="continuation_mismatch",
+                param="model",
+            )
+        if request.reasoning_effort != record.reasoning_effort:
+            raise GatewayError.invalid_request(
+                "a continuation must repeat the original reasoning effort",
+                code="continuation_mismatch",
+                param="reasoning_effort",
+            )
+        request_tools_fp = tools_fingerprint(request.tools)
+        if request_tools_fp != record.tools_fingerprint and request.tools:
+            # Normal harnesses resend the identical tools[]; an absent
+            # declaration means the unchanged thread-scoped set (the
+            # #137 evidence), never a substitution.
+            raise GatewayError.invalid_request(
+                "a continuation's tool declarations must match the "
+                + "suspended turn's declared set",
+                code="continuation_mismatch",
+                param="tools",
+            )
+        if canonical_json_text(request.tool_choice) != record.tool_choice_json:
+            raise GatewayError.invalid_request(
+                "a continuation must repeat the original tool_choice",
+                code="continuation_mismatch",
+                param="tool_choice",
+            )
+        if len(messages) < 3:
+            raise GatewayError.invalid_request(
+                "a continuation carries the conversation, the assistant "
+                + "tool_calls and the tool result",
+                code="continuation_mismatch",
+                param="messages",
+            )
+        final = messages[-1]
+        assistant = messages[-2]
+        if (
+            final.role != "tool"
+            or final.tool_call_id != record.continuation_token
+            or final.content is None
+            or assistant.role != "assistant"
+            or tool_calls_fingerprint(assistant.tool_calls)
+            != record.assistant_tool_calls_digest
+        ):
+            raise GatewayError.invalid_request(
+                "the continuation's final messages must echo the returned "
+                + "tool_calls and address this tool result to them",
+                code="continuation_mismatch",
+                param="messages",
+            )
+        if message_fingerprint(messages[:-2]) != record.prefix_fingerprint:
+            raise GatewayError.invalid_request(
+                "the continued conversation prefix has changed since the "
+                + "model suspended",
+                code="continuation_mismatch",
+                param="messages",
+            )
+        if len(final.content) > MAX_TOOL_RESULT_TEXT:
+            raise GatewayError.invalid_request(
+                "the tool result exceeds the maximum continuation size",
+                code="tool_result_too_large",
+                param="messages",
+            )
+        return final.content
+
+    def _run_continuation(
+        self,
+        *,
+        record: PendingContinuation,
+        request: ChatCompletionRequest,
+        client_id: str,
+        emit_chunk: StreamEmitter | None,
+        started: datetime,
+        state: _LifecycleState,
+    ) -> CompletionOutcome:
+        """Resolve one suspended backend turn with the harness's result.
+
+        Sticky by construction: no competitive routing runs, the D-059
+        policy and scarcity state are never re-read for selection, and
+        the original selected/executed targets are the audit identity.
+        Only the hard gates recheck: the record's client, the absolute
+        lifetime, and the live worker session (revocation or session
+        loss fails closed — never a substitute execution).
+        """
+        registry = self.continuations
+        assert registry is not None
+        if record.client_id != client_id:
+            # Indistinguishable from an unknown id: a token never grants
+            # another client access to a pending execution.
+            raise self._continuation_error(REJECT_NOT_FOUND)
+        content = self._validate_continuation_request(
+            record=record, request=request
+        )
+        try:
+            record = registry.claim(record.continuation_token, client_id)
+        except ContinuationRejected as exc:
+            raise self._continuation_error(exc.reason) from None
+        remaining = (record.deadline - self._now()).total_seconds()
+        if remaining <= 0.0:
+            self._close_continuation(record, CONTINUATION_EXPIRED)
+            raise self._continuation_error(REJECT_EXPIRED)
+        # Audit provenance repeats the ORIGINAL dispatch identity: the
+        # continuation is the same logical backend execution, so its one
+        # provider call is counted exactly once — on the terminal record.
+        state.decision_id = record.decision_id
+        state.selected_target = record.selected_target
+        state.executed_target = record.executed_target
+        state.adapter_name = record.adapter_name
+        state.adapter_version = record.adapter_version
+        state.registry_revision = record.registry_revision
+        state.registry_generated_at = record.registry_generated_at
+        adapter = self.adapters.resolve(record.channel)
+        if adapter is None or not isinstance(adapter, ContinuationCapableAdapter):
+            self._close_continuation(record, CONTINUATION_LOST)
+            raise GatewayError.api(
+                "no continuation-capable adapter is configured for the "
+                + "suspended execution's channel",
+                code="adapter_unavailable",
+                http_status=503,
+            )
+        context = self._build_context(
+            state,
+            emit_chunk,
+            record.deadline,
+            register_continuation=self._continuation_registrar(
+                request=request, state=state, deadline=record.deadline,
+                channel=record.channel, adapter=adapter,
+            ),
+        )
+        state.context = context
+        state.flow_notes = (*state.flow_notes, "continuation_resumed")
+        if record.handle is None:  # pragma: no cover - registration invariant
+            self._close_continuation(record, CONTINUATION_LOST)
+            raise GatewayError.api(
+                "the continuation record is unusable",
+                code="invalid_state",
+                http_status=500,
+            )
+        # Hard-authority recheck (review round 2, finding 6): sticky
+        # routing never bypasses CURRENT authorization. The exact
+        # original target's registry entry is re-read and the client's
+        # CURRENT grant is evaluated through the SAME M02 authorization
+        # stage admission used — scarcity/policy ranking is never run,
+        # and a revoked grant cancels the suspended turn instead of
+        # delivering into it.
+        self._recheck_continuation_authority(record)
+        # Every post-claim exit reaches a terminal registry state
+        # (review round 2, finding 5): nothing may occupy the pending
+        # table past this point regardless of outcome.
+        try:
+            outcome = adapter.deliver_tool_result(record.handle, content, context)
+        except ClientDisconnectedError:
+            self._close_continuation(record, CONTINUATION_CANCELLED)
+            raise
+        except ContinuationLostError:
+            self._close_continuation(record, CONTINUATION_LOST)
+            raise GatewayError.not_found(
+                "the suspended execution was lost before the tool result "
+                + "was delivered; nothing was consumed",
+                code="continuation_not_found",
+            ) from None
+        except AdapterAmbiguousError:
+            self._close_continuation(record, CONTINUATION_LOST)
+            raise
+        except AdapterTimeoutError:
+            self._close_continuation(record, CONTINUATION_EXPIRED)
+            raise
+        except AdapterPermanentError:
+            # The backend definitively failed the resumed turn.
+            self._close_continuation(record, CONTINUATION_LOST)
+            raise
+        except GatewayError:
+            raise  # already closed by a specific handler above
+        except Exception:
+            # Unexpected internal error: the record must still reach a
+            # terminal state (honest ambiguity about the delivery).
+            self._close_continuation(record, CONTINUATION_LOST)
+            raise
+        if isinstance(outcome, ToolSuspension):
+            # A sequential tool round on the SAME turn: the previous
+            # token's result was consumed by THIS delivery (terminal for
+            # that token — a later replay gets the explicit conflict).
+            # The NEXT continuation was already registered by the adapter
+            # through this leg's registrar BEFORE the new token became
+            # observable (review round 2, finding 4).
+            self._close_continuation(record, CONTINUATION_COMPLETED)
+            state.calls = (
+                CallObservation(
+                    call_index=0,
+                    started_at=state.started_at,
+                    ended_at=canonical_instant(self._now()),
+                    status="unknown",
+                    note=(
+                        "the backend turn is suspended for a client-owned "
+                        + "tool call"
+                    ),
+                ),
+            )
+            message = AdapterMessage(
+                role="assistant",
+                content=outcome.content,
+                tool_calls=(
+                    AdapterToolCall(
+                        id=outcome.continuation_token,
+                        name=outcome.tool_name,
+                        arguments=outcome.arguments,
+                    ),
+                ),
+            )
+            accounting = _unavailable_usage()
+            return CompletionOutcome(
+                request_id=state.request_id,
+                created=int(started.timestamp()),
+                model_echo=request.model,
+                message=message,
+                finish_reason=FINISH_TOOL_CALLS,
+                usage=accounting,
+                decision_id=record.decision_id,
+            )
+        result = outcome
+        state.calls = result.calls
+        if result.status == "cancelled":
+            self._close_continuation(record, CONTINUATION_CANCELLED)
+            if context.cancelled:
+                raise ClientDisconnectedError()
+            raise AdapterTimeoutError(result_note(result))
+        if result.status == "failed":
+            self._close_continuation(record, CONTINUATION_LOST)
+            raise AdapterPermanentError(result_note(result))
+        self._close_continuation(record, CONTINUATION_COMPLETED)
+        accounting = _aggregate_usage(result)
+        message = result.message
+        finish_reason = result.finish_reason
+        if message is None or finish_reason is None:  # pragma: no cover - contract
+            raise AdapterPermanentError("adapter returned an incomplete result")
+        return CompletionOutcome(
+            request_id=state.request_id,
+            created=int(started.timestamp()),
+            model_echo=request.model,
+            message=message,
+            finish_reason=finish_reason,
+            usage=accounting,
+            decision_id=record.decision_id,
+        )
+
+    def _continuation_registrar(
+        self,
+        *,
+        request: ChatCompletionRequest,
+        state: _LifecycleState,
+        deadline: datetime,
+        channel: str,
+        adapter: ContinuationCapableAdapter,
+    ) -> "Callable[[SuspensionHandle, str], bool]":
+        """The dispatch's continuation registration closure (D-062).
+
+        The ADAPTER invokes this at the suspension point — strictly
+        before the tool_call id becomes observable (streamed frame or
+        return value), so the invariant "observable ⇒ registered" holds
+        for streaming and non-streaming clients alike (review round 2,
+        finding 4). The record retains only identifiers and bounded
+        digests: the echoed assistant tool_calls are stored as their
+        fingerprint, never as raw arguments (finding 2).
+        """
+        registry = self.continuations
+
+        def register(handle: SuspensionHandle, arguments: str) -> bool:
+            if registry is None:  # pragma: no cover - dispatch gate
+                return False
+            record = PendingContinuation(
+                continuation_token=handle.continuation_token,
+                attempt_id=handle.attempt_id,
+                resource_id=handle.resource_id,
+                channel=channel,
+                call_id=handle.call_id,
+                deadline=deadline,
+                created_at=canonical_instant(self._now()),
+                client_id=state.client_id,
+                model_echo=request.model,
+                reasoning_effort=request.reasoning_effort,
+                tools_fingerprint=tools_fingerprint(request.tools),
+                tool_choice_json=canonical_json_text(request.tool_choice),
+                prefix_fingerprint=message_fingerprint(request.messages),
+                assistant_tool_calls_digest=tool_calls_fingerprint(
+                    (
+                        AdapterToolCall(
+                            id=handle.continuation_token,
+                            name=handle.tool_name,
+                            arguments=arguments,
+                        ),
+                    )
+                ),
+                decision_id=state.decision_id,
+                adapter_name=state.adapter_name,
+                adapter_version=state.adapter_version,
+                registry_revision=state.registry_revision,
+                registry_generated_at=state.registry_generated_at,
+                selected_target=state.selected_target,
+                executed_target=state.executed_target,
+                handle=handle,
+                cancel_callback=lambda _record: adapter.cancel_suspension(handle),
+            )
+            registered = registry.register(record)
+            if registered:
+                state.flow_notes = (
+                    *state.flow_notes,
+                    "suspended_for_client_tool",
+                )
+            return registered
+
+        return register
+
+    def _close_continuation(self, record: PendingContinuation, state: str) -> None:
+        """Terminal-close a claimed continuation (registry removal +
+        tombstone) and cancel the suspended worker turn whenever the
+        backend may still be waiting (expiry/authority revocation)."""
+        registry = self.continuations
+        assert registry is not None
+        registry.close(record.continuation_token, state)
+        if state in (CONTINUATION_CANCELLED, CONTINUATION_EXPIRED):
+            if record.cancel_callback is not None:
+                record.cancel_callback(record)
+
+    def _recheck_continuation_authority(self, record: PendingContinuation) -> None:
+        """The CURRENT hard authority of the ORIGINAL client against the
+        EXACT original target (review round 2, finding 6).
+
+        Runs the SAME M02 authorization stage admission runs (provider /
+        channel / entitlement allow-lists, blocked resources, spending
+        limits) over the client's CURRENT grant — never scarcity or
+        campaign ranking, which stay non-authoritative for an existing
+        turn (D-059). On any failure the continuation is closed and the
+        suspended backend turn is cancelled; the typed permission
+        failure never reroutes.
+        """
+        registry = self.continuations
+        assert registry is not None
+        try:
+            snapshot = self.registry.registry_snapshot(
+                now=canonical_instant(self._now())
+            )
+        except (CapacityValidationError, ValueError):
+            self._close_continuation(record, CONTINUATION_LOST)
+            raise GatewayError.api(
+                "the gateway's resource state is unavailable",
+                code="state_unavailable",
+                http_status=503,
+            ) from None
+        entry = next(
+            (
+                candidate
+                for candidate in snapshot.entries
+                if candidate.identity.resource_id == record.resource_id
+            ),
+            None,
+        )
+        if entry is None:
+            # The exact target's registration disappeared: hard
+            # authority/availability loss — fail closed, cancel, never
+            # reroute.
+            self._close_continuation(record, CONTINUATION_LOST)
+            raise GatewayError.not_found(
+                "the suspended execution's target no longer exists",
+                code="continuation_not_found",
+            )
+        effective = _effective_authorization(
+            self.admin_constraints,
+            self._client_grant(record.client_id),
+            None,
+        )
+        codes = _authorization_failure_codes(entry, effective)
+        if codes:
+            self._close_continuation(record, CONTINUATION_CANCELLED)
+            raise GatewayError.permission(
+                "the client's current authorization no longer covers the "
+                + "suspended execution's target",
+                code="unauthorized_target",
+            )
+
+    def expire_continuations(self) -> tuple[str, ...]:
+        """Expire due continuations (the server's reaper loop calls this).
+
+        Each expiry cancels the worker-side turn best-effort and drops
+        the record, so later tool results receive the typed expired/
+        not-found response and no Codex process outlives its budget.
+        """
+        if self.continuations is None:
+            return ()
+        return self.continuations.expire_due(self._now())
+
     def _enforce_request_limits(self, caps: RequestCapabilities) -> None:
         """Body/context/output admission limits, before any routing I/O."""
         limits = self.limits
@@ -880,6 +1440,14 @@ class GatewayApplication:
             pinned_target=resolved.pinned_target,
         )
         routing_profile = resolved.profile
+        continuation_capable: frozenset[str] | None = None
+        if self.continuation_capability_source is not None:
+            try:
+                continuation_capable = self.continuation_capability_source()
+            except Exception:  # noqa: BLE001 - a live-fact failure fails
+                # CLOSED (None), never open: the availability stage then
+                # excludes worker_bridged candidates for tool requests.
+                continuation_capable = None
         try:
             request_obj = RouteRequest(
                 catalog=self.catalog,
@@ -897,6 +1465,7 @@ class GatewayApplication:
                 profile_policy_version=(
                     self.profile_policy_version if routing_profile is not None else None
                 ),
+                continuation_capable_resource_ids=continuation_capable,
             )
         except (CapacityValidationError, SelectionContractError, ValueError):
             raise GatewayError.api(
@@ -1075,7 +1644,23 @@ class GatewayApplication:
         state.adapter_name = adapter.adapter_name
         state.adapter_version = adapter.adapter_version
         deadline = started + timedelta(seconds=self.limits.execution_time_limit_seconds)
-        context = self._build_context(state, emit_chunk, deadline)
+        context = self._build_context(
+            state,
+            emit_chunk,
+            deadline,
+            register_continuation=(
+                self._continuation_registrar(
+                    request=request,
+                    state=state,
+                    deadline=deadline,
+                    channel=target.resource.channel,
+                    adapter=adapter,
+                )
+                if self.continuations is not None
+                and isinstance(adapter, ContinuationCapableAdapter)
+                else None
+            ),
+        )
         state.context = context
         # Exact-execution discipline (D-042/D-053, Daybreak finding 2):
         # a PINNED request is admission-only — the pinned variant is part
@@ -1138,6 +1723,13 @@ class GatewayApplication:
             generation_params=request.generation_params or {},
         )
         result = adapter.execute(call, context)
+        # D-062: a continuation-capable channel that suspended for a
+        # client tool registered the continuation through the context's
+        # registrar BEFORE the tool_call id became observable (review
+        # round 2, finding 4); a bound failure surfaced as a typed
+        # dispatch failure instead. Server-direct adapters' own
+        # tool_calls legs never register (they replay history
+        # statelessly).
         state.calls = result.calls
         if result.status == "cancelled":
             if context.cancelled:
@@ -1165,12 +1757,20 @@ class GatewayApplication:
         state: _LifecycleState,
         emit_chunk: StreamEmitter | None,
         deadline: datetime,
+        register_continuation: "Callable[[SuspensionHandle, str], bool] | None" = None,
     ) -> ExecutionContext:
-        """Build the dispatch context; the emitter propagates disconnects."""
+        """Build the dispatch context; the emitter propagates disconnects.
+
+        ``register_continuation`` is the D-062 seam (review round 2,
+        finding 4): the continuation-capable adapter invokes it at the
+        suspension point, BEFORE the tool_call id becomes observable
+        anywhere.
+        """
         if emit_chunk is None:
             return ExecutionContext(
                 request_id=state.request_id,
                 deadline=canonical_instant(deadline),
+                register_continuation=register_continuation,
             )
 
         def emit(chunk: AdapterStreamChunk) -> None:
@@ -1187,6 +1787,7 @@ class GatewayApplication:
             request_id=state.request_id,
             deadline=canonical_instant(deadline),
             emit_chunk=emit,
+            register_continuation=register_continuation,
         )
 
     # ── Audit ────────────────────────────────────────────────────────────
@@ -1222,7 +1823,9 @@ class GatewayApplication:
             # requests rejected BEFORE it are never tagged; the note is an
             # additional reason code and never replaces the primary
             # failure reason.
-            reason_codes=tuple(reason_codes) + tuple(state.limit_notes),
+            reason_codes=tuple(reason_codes)
+            + tuple(state.limit_notes)
+            + tuple(state.flow_notes),
             provider_reported_usage=reported,
             estimated_usage=estimated,
             call_count=len(state.calls),
@@ -1255,6 +1858,7 @@ class _LifecycleState:
         "target_capabilities",
         "limit_notes",
         "normalized_output_limit",
+        "flow_notes",
     )
 
     def __init__(self, *, request_id: str, client_id: str, started_at: str) -> None:
@@ -1276,12 +1880,27 @@ class _LifecycleState:
         self.target_capabilities: ResourceRegistryEntry | None = None
         self.limit_notes: tuple[str, ...] = ()
         self.normalized_output_limit: bool = False
+        #: D-062 flow provenance notes (appended to the audit reason
+        #: codes): ``suspended_for_client_tool``,
+        #: ``continuation_resumed``, ``continuation_unavailable``.
+        self.flow_notes: tuple[str, ...] = ()
 
 
 def _request_id(factory: RequestFactory | None) -> str:
     if factory is not None:
         return v_safe_id(factory(), "request_id")
     return f"chatcmpl-{uuid.uuid4().hex}"
+
+
+def _unavailable_usage() -> UsageAccounting:
+    """The honest accounting of a leg whose provider call is still open.
+
+    A tool_calls leg ends one HTTP response but NOT the backend turn:
+    no call observation exists yet (the single observation arrives with
+    the turn's terminal result), so the usage source is ``unavailable``
+    — structural absence, never a fabricated zero.
+    """
+    return UsageAccounting(usage_source=USAGE_SOURCE_UNAVAILABLE)
 
 
 def _audit_target(target: RouteTarget) -> ExecutedTarget:

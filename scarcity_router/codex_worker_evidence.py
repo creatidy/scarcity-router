@@ -1,7 +1,7 @@
 """Dated Codex worker-local adapter compatibility-matrix cells (M06).
 
 The D-043 compatibility-matrix contribution of the M06 Codex execution
-adapter, exactly as reviewed and recorded in
+adapter, originally as reviewed and recorded in
 ``docs/codex-adapter-stage1-evidence.md`` (Stage-2 matrix, 2026-09-20;
 tested ``codex-cli 0.154.0-alpha.6.2`` against the version-pinned
 ``rust-v0.155.1`` schemas). This module is a STATIC, module-level table —
@@ -15,11 +15,21 @@ synthetic or administrator-invented entries.
 Conservative by design: every turn-level cell stays ``PARTIAL`` because
 the live half (confirmation against a signed-in subscription home) is
 still pending behind the recorded ``LIVE_CODEX_SUBSCRIPTION`` gate — no
-cell is upgraded above the reviewed matrix. ``tool_calls`` and
-``tool_results`` are ``UNSUPPORTED`` on the stable surface (client tools
-return to clients, D-043; ``dynamicTools`` is never enabled); the
-adapter rejects them before execution. ``UNKNOWN`` and ``UNSUPPORTED``
-fail closed at admission.
+cell is upgraded above the reviewed matrix, and nothing is claimed
+``PASS``. With the D-062 client-tool bridge (#137), ``tool_calls`` and
+``tool_results`` are both ``PARTIAL``: the mechanism is evidenced on
+the current runtime (2026-09-28 probe of ``codex-cli
+0.155.0-alpha.16.3`` + official docs + binary-pinned schemas, upstream
+re-pinned ``rust-v0.157.1`` by #150) and the deterministic round trip
+is test-verified under the OWNER-ACCEPTED LOSSY compatibility rule for
+the ``success`` answer (D-062 pt 6: a valid ``role: "tool"`` result is
+represented as ``success: true``; upstream's richer "whether the tool
+call succeeded" semantic is deliberately not preserved because the
+generic Chat Completions contract carries no such boolean). Tool
+eligibility additionally requires the worker session's LIVE
+protocol-v3 negotiation (an old worker is never
+tool-continuation-capable regardless of these cells). ``UNKNOWN`` and
+``UNSUPPORTED`` fail closed at admission.
 
 Authority model (issue #106): this built-in evidence is the DEFAULT
 ceiling for the Codex worker-local adapter. Nothing here lets
@@ -41,75 +51,99 @@ from .worker_codex_adapter import CODEX_PROVIDER
 #: the worker-local adapter implementation with its own version.
 CODEX_WORKER_CHANNEL = "worker_bridged"
 CODEX_WORKER_ADAPTER_NAME = "codex-worker-local"
-CODEX_WORKER_ADAPTER_VERSION = "1.0.0"
+CODEX_WORKER_ADAPTER_VERSION = "1.1.0"
 
 #: The tested Codex generation and the evidence record, as reviewed
 #: (docs/codex-adapter-stage1-evidence.md, Stage-2 matrix, 2026-09-20).
 _CODEX_TESTED_VERSION = "codex-cli 0.154.0-alpha.6.2 / schemas rust-v0.155.1"
 _EVIDENCE_DATE = "2026-09-20"
+#: The D-062 tool-bridge evidence date (#137): the 2026-09-28 mechanism
+#: re-evidence on the CURRENT runtime plus the deterministic
+#: implementation acceptance.
+_TOOL_BRIDGE_EVIDENCE_DATE = "2026-09-28"
 
-#: feature -> (cell value, cell-specific evidence note). Values are the
-#: RECORDED Stage-2 matrix values — nothing upgraded, nothing derived.
-CODEX_WORKER_CELL_VALUES: Mapping[str, tuple[str, str]] = {
+#: feature -> (cell value, cell-specific evidence note, evidence date).
+#: Values are the RECORDED matrix values — nothing upgraded beyond what
+#: the dated evidence supports.
+CODEX_WORKER_CELL_VALUES: Mapping[str, tuple[str, str, str]] = {
     "roles_history": (
         "PARTIAL",
         "mapping test-verified (system→baseInstructions, "
         + "developer→developerInstructions, prior turns via inject_items, "
         + "final user input); live fidelity pending",
+        _EVIDENCE_DATE,
     ),
     "streaming": (
         "PARTIAL",
         "item/agentMessage/delta → text_delta mapping test-verified "
         + "(bounded per delta and cumulative); live delta semantics pending",
+        _EVIDENCE_DATE,
     ),
     "tool_calls": (
-        "UNSUPPORTED",
-        "stable surface: tool role/tool_calls/tools rejected BEFORE "
-        + "execution; dynamicTools never enabled (client tools stay "
-        + "client-side)",
+        "PARTIAL",
+        "D-062 bridge: experimentalApi-gated dynamicTools declarations "
+        + "and item/tool/call suspensions relayed to the harness "
+        + "(mechanism evidenced on codex-cli 0.155.0-alpha.16.3, "
+        + "round trip test-verified on the deterministic App Server "
+        + "under the owner-approved success mapping); live signed-in "
+        + "acceptance pending; v3-worker availability-gated",
+        _TOOL_BRIDGE_EVIDENCE_DATE,
     ),
     "tool_results": (
-        "UNSUPPORTED",
-        "tool-result round trips not mapped; fail closed",
+        "PARTIAL",
+        "D-062 pt 6 (OWNER DECISION 2026-09-28): the harness's verbatim "
+        + "role:tool content answers the SAME suspended turn as "
+        + "success:true + inputText — an owner-accepted LOSSY "
+        + "compatibility rule (upstream success means 'whether the tool "
+        + "call succeeded'; Chat Completions carries no such boolean); "
+        + "test-verified on the deterministic App Server; live "
+        + "signed-in acceptance pending; v3-worker-gated",
+        _TOOL_BRIDGE_EVIDENCE_DATE,
     ),
     "structured_output": (
         "PARTIAL",
         "json_schema → outputSchema mapping test-verified (object/size/"
         + "depth validated); json_object rejected; live enforcement pending",
+        _EVIDENCE_DATE,
     ),
     "reasoning_controls": (
         "PARTIAL",
         "exact binding test-verified (slug listed, effort in "
         + "supportedReasoningEfforts, pinned per turn); live acceptance "
         + "of pinned turns pending",
+        _EVIDENCE_DATE,
     ),
     "context_limits": (
         "PARTIAL",
         "contextWindowExceeded maps to a safe failure note; no per-model "
         + "context-window discovery implemented",
+        _EVIDENCE_DATE,
     ),
     "error_semantics": (
         "PARTIAL",
         "failed turns map to the closed codexErrorInfo vocabulary only; "
         + "free-text error bodies never read; exact client error-code "
         + "parity pending",
+        _EVIDENCE_DATE,
     ),
     "usage_reporting": (
         "PARTIAL",
         "tokenUsage last/total → prompt/completion tokens mapping "
         + "test-verified; absent usage stays absent; cached/reasoning "
         + "components not represented",
+        _EVIDENCE_DATE,
     ),
     "cancellation": (
         "PARTIAL",
         "cancel or deadline → exactly one bounded turn/interrupt, "
         + "cancelled result, never completed after confirmed cancellation; "
         + "live propagation timing pending",
+        _EVIDENCE_DATE,
     ),
 }
 
 
-def codex_worker_cell_evidence(note: str) -> EvidenceRef:
+def codex_worker_cell_evidence(note: str, *, date: str = _EVIDENCE_DATE) -> EvidenceRef:
     """One dated provenance reference for a Codex cell (bounded)."""
     identifier = (
         "docs/codex-adapter-stage1-evidence.md Stage-2 matrix "
@@ -123,7 +157,7 @@ def codex_worker_cell_evidence(note: str) -> EvidenceRef:
     return EvidenceRef(
         source="codex_adapter_stage2",
         identifier=identifier,
-        date=_EVIDENCE_DATE,
+        date=date,
     )
 
 
@@ -151,7 +185,7 @@ def default_codex_worker_cells(
         entry = CODEX_WORKER_CELL_VALUES.get(feature)
         if entry is None:
             continue
-        value, note = entry
+        value, note, date = entry
         cells.append(
             CompatibilityCell(
                 channel=CODEX_WORKER_CHANNEL,
@@ -161,7 +195,7 @@ def default_codex_worker_cells(
                 value=value,
                 adapter=CODEX_WORKER_ADAPTER_NAME,
                 adapter_version=CODEX_WORKER_ADAPTER_VERSION,
-                evidence=codex_worker_cell_evidence(note),
+                evidence=codex_worker_cell_evidence(note, date=date),
             )
         )
     return tuple(cells)

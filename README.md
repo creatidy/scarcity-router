@@ -7,6 +7,32 @@ subscription-backed AI models. It combines current capacity, curated
 capabilities, task requirements and user policy, then returns a recommendation
 with alternatives and an explanation.
 
+## When To Use It
+
+**Use it when** you consume several subscription-backed AI models (for
+example an OpenAI/Codex plan and a Z.ai Coding Plan), quota is split across
+rolling windows, and you want a reproducible answer to "which capable model
+should this task consume now?" — instead of checking provider dashboards
+manually or maintaining a static model table that goes stale.
+
+**Do not use it when** you need:
+
+- a generic OpenAI-compatible reverse proxy for arbitrary LLM traffic — the
+  optional execution gateway below serves only explicitly configured,
+  authorized resources under its own deployment and security model;
+- an autonomous coding agent or orchestrator — Scarcity Router recommends
+  (and in gateway mode executes authorized requests); it never edits
+  repositories or completes development tasks itself;
+- hosted multi-user quota pooling — this is a local, single-owner service
+  that never shares or resells subscription quota.
+
+Current maturity: pre-release (v0.1.0); the automated repository gate
+(unit tests and type checks) is green, while live and external acceptance
+work remains tracked separately in
+[`docs/m10-acceptance.md`](docs/m10-acceptance.md); not yet published to a
+package index or container registry (see
+[Quick Start](#quick-start) for the checkout-based install).
+
 ## What It Does
 
 The broker answers **which capable model should this task consume now?** It
