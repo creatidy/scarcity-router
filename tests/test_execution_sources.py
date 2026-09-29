@@ -558,6 +558,307 @@ class UpgradeSimulationTests(unittest.TestCase):
         )
 
 
+class ZCodeSourceTests(unittest.TestCase):
+    """The zcode_subscription kind (D-061): per-kind facts, honest gating.
+
+    The ZCode plan lane claims no physical model, variant or reasoning
+    effort, so it stays visible-but-never-routable until owner-approved
+    ``zai`` track evidence lands — the normal D-053 classification for
+    unevidenced slugs. The per-kind registration capabilities and the
+    adapter-instance mapping are pinned here so the kind is fully
+    specified even while adoption stays closed.
+    """
+
+    def _zcode_config(self, **overrides: object) -> SourceConfig:
+        return _config(
+            source_id="zai-plan-1",
+            kind="zcode_subscription",
+            label="Z.ai Coding Plan (ZCode)",
+            **overrides,
+        )
+
+    def _zcode_inventory(
+        self,
+        models: tuple[DiscoveredModel, ...],
+        auth_state: str = "unverified",
+    ) -> ModelInventoryReport:
+        return ModelInventoryReport(
+            worker_id="worker-1",
+            sources=(
+                SourceInventory(
+                    source_id="zai-plan-1",
+                    adapter_id="zcode:zai-plan-1",
+                    kind="zcode_subscription",
+                    observed_at=OBSERVED,
+                    auth_state=auth_state,  # type: ignore[arg-type]
+                    runtime_name="zcode",
+                    runtime_version="0.16.9",
+                    models=models,
+                ),
+            ),
+        )
+
+    def test_kind_maps_to_the_zai_provider(self) -> None:
+        config = self._zcode_config()
+        self.assertEqual("zai", config.provider())
+
+    def test_kind_requires_subscription_entitlement(self) -> None:
+        with self.assertRaises(ServerConfigError):
+            _ = self._zcode_config(entitlement="payg_metered")
+        with self.assertRaises(ServerConfigError):
+            _ = self._zcode_config(entitlement="promotional")
+
+    def test_adapter_instance_prefix_follows_the_kind(self) -> None:
+        registry = SourceRegistry(track_registry=load_track_registry())
+        registry.sync_configuration(
+            (
+                _config(source_id="personal-openai", worker_id="worker-1"),
+                self._zcode_config(),
+            )
+        )
+        self.assertEqual(
+            "codex:personal-openai",
+            registry.adapter_of("personal-openai:gpt-6-sol:high"),
+        )
+        self.assertEqual(
+            "zcode:zai-plan-1",
+            registry.adapter_of("zai-plan-1:plan-managed"),
+        )
+        self.assertIsNone(registry.adapter_of("unknown-src:slug"))
+
+    def test_plan_lane_adopts_from_a_healthy_unverified_source(self) -> None:
+        # D-063: the reviewed zai/plan track marks the effort-less lane as
+        # plan-managed; a healthy-but-unverified source (the honest zcode
+        # steady state — no non-inference auth probe exists) adopts it.
+        registry = SourceRegistry(track_registry=load_track_registry())
+        registry.sync_configuration((self._zcode_config(),))
+        decisions = registry.apply_inventory(
+            self._zcode_inventory(
+                (DiscoveredModel("plan-managed", ()),),
+            )
+        )
+        self.assertEqual(len(decisions), 1)
+        self.assertEqual("routable", decisions[0].state)
+        self.assertIsNone(decisions[0].reason)
+        self.assertEqual("zai-plan-1:plan-managed", decisions[0].resource_id)
+        registrations = registry.derived_registrations()
+        self.assertEqual(len(registrations), 1)
+        identity = registrations[0].identity
+        self.assertEqual("zai-plan-1:plan-managed", identity.resource_id)
+        self.assertIsNone(identity.variant, "the lane binds no effort")
+        self.assertEqual("zai", identity.provider)
+        self.assertEqual("plan-managed", identity.model)
+        # The lane's registration carries the ZCODE surface facts, never
+        # the codex ones.
+        self.assertFalse(registrations[0].capabilities.streaming)
+        self.assertFalse(registrations[0].capabilities.tool_calls)
+        self.assertIsNone(registrations[0].capabilities.usage_reporting)
+        self.assertEqual("zcode:zai-plan-1", registry.adapter_of(identity.resource_id))
+        view = registry.source_view()[0]
+        self.assertEqual("zcode_subscription", view["kind"])
+        self.assertEqual("routable", cast("dict[str, object]", cast("list[object]", view["models"])[0])["state"])
+
+    def test_plan_lane_is_rejected_when_the_source_is_unavailable(self) -> None:
+        registry = SourceRegistry(track_registry=load_track_registry())
+        registry.sync_configuration((self._zcode_config(),))
+        decisions = registry.apply_inventory(
+            self._zcode_inventory(
+                (DiscoveredModel("plan-managed", ()),),
+                auth_state="unavailable",
+            )
+        )
+        self.assertEqual("classified", decisions[0].state)
+        self.assertEqual("source_not_authenticated", decisions[0].reason)
+        self.assertEqual((), registry.derived_registrations())
+
+    def test_plan_lane_never_invents_a_physical_model_entry(self) -> None:
+        # A zcode inventory naming a PHYSICAL slug (e.g. from a future
+        # listing) still cannot adopt: zai has no physical-model track,
+        # and the lane track matches only the reserved descriptor.
+        registry = SourceRegistry(track_registry=load_track_registry())
+        registry.sync_configuration((self._zcode_config(),))
+        decisions = registry.apply_inventory(
+            self._zcode_inventory(
+                (
+                    DiscoveredModel("plan-managed", ()),
+                    DiscoveredModel("glm-5.3", ("max",)),
+                ),
+            )
+        )
+        by_slug = {d.slug: d for d in decisions}
+        self.assertEqual("routable", by_slug["plan-managed"].state)
+        self.assertEqual("discovered", by_slug["glm-5.3"].state)
+        self.assertEqual(
+            ("zai-plan-1:plan-managed",),
+            tuple(r.identity.resource_id for r in registry.derived_registrations()),
+        )
+
+    def test_lane_catalog_entry_is_effort_less_and_never_reasoning(self) -> None:
+        from scarcity_router.selection_app import DEFAULT_CATALOG_PATH, load_catalog
+
+        registry = SourceRegistry(track_registry=load_track_registry())
+        registry.sync_configuration((self._zcode_config(),))
+        _ = registry.apply_inventory(
+            self._zcode_inventory((DiscoveredModel("plan-managed", ()),))
+        )
+        merged = registry.derived_catalog_entries(load_catalog(DEFAULT_CATALOG_PATH))
+        lanes = [
+            e for e in merged.entries if e.identity.model == "plan-managed"
+        ]
+        self.assertEqual(len(lanes), 1)
+        entry = lanes[0]
+        self.assertEqual("zai", entry.identity.provider)
+        self.assertEqual("plan", entry.identity.variant)
+        self.assertIsNone(entry.reasoning_effort)
+        self.assertFalse(entry.hard_properties.supports_reasoning_mode)
+        # The lane floor's owner-reviewed family-continuity facts (the
+        # runtime is the enforcement boundary).
+        self.assertEqual(1_000_000, entry.hard_properties.input_context_tokens)
+        self.assertEqual(128_000, entry.hard_properties.output_tokens)
+        self.assertIsNone(entry.capacity_bindings)
+
+    def test_physical_model_adoption_still_requires_reported_efforts(self) -> None:
+        # The plan-managed exception is scoped: a physical-model source
+        # (codex) listing a model with NO efforts still fails closed.
+        from scarcity_router.model_tracks import (
+            ModelTrack,
+            TrackFloor,
+            TrackRegistry,
+        )
+        from scarcity_router.selection_types import CAPABILITY_DIMENSIONS
+
+        floor = TrackFloor(
+            ratings={dim: 4 for dim in CAPABILITY_DIMENSIONS},
+            assessed_on="2026-09-28",
+            confidence="medium",
+            decision="D-053",
+            rationale="synthetic test floor",
+        )
+        track = ModelTrack(
+            provider="openai",
+            track="sol",
+            display_name="GPT Sol",
+            slug_pattern=r"^gpt-[0-9.]+-sol$",
+            classification="standard",
+            floor=floor,
+        )
+        registry = SourceRegistry(track_registry=TrackRegistry((track,)))
+        registry.sync_configuration((_config(),))
+        decisions = registry.apply_inventory(
+            _inventory("personal-openai", "worker-1", (_model("gpt-6-sol", ()),))
+        )
+        self.assertEqual("effort_not_reported", decisions[0].reason)
+        self.assertEqual((), registry.derived_registrations())
+
+    def test_hypothetical_listed_model_adopts_with_zcode_surface_facts(self) -> None:
+        # If ZCode ever ships a real listing surface, a listed zai model
+        # with runtime-reported efforts would adopt through the normal
+        # gates — carrying the ZCODE surface facts, never the codex ones.
+        from scarcity_router.execution_sources import (
+            ZCODE_SURFACE_CAPABILITIES,
+        )
+        from scarcity_router.model_tracks import ModelTrack, TrackFloor, TrackRegistry
+        from scarcity_router.selection_types import CAPABILITY_DIMENSIONS
+
+        floor = TrackFloor(
+            ratings={dim: 3 for dim in CAPABILITY_DIMENSIONS},
+            assessed_on="2026-09-28",
+            confidence="low",
+            decision="D-061",
+            rationale="synthetic test floor",
+        )
+        track = ModelTrack(
+            provider="zai",
+            track="plan",
+            display_name="Z.ai Plan",
+            slug_pattern=r"^glm-[a-z0-9.-]+$",
+            classification="standard",
+            floor=floor,
+        )
+        registry = SourceRegistry(track_registry=TrackRegistry((track,)))
+        registry.sync_configuration((self._zcode_config(),))
+        decisions = registry.apply_inventory(
+            self._zcode_inventory(
+                (DiscoveredModel("glm-5.3", ("max",)),),
+                auth_state="authenticated",
+            )
+        )
+        self.assertEqual("routable", decisions[0].state)
+        registrations = registry.derived_registrations()
+        self.assertEqual(len(registrations), 1)
+        capabilities = registrations[0].capabilities
+        self.assertFalse(capabilities.streaming)
+        self.assertFalse(capabilities.tool_calls)
+        self.assertFalse(capabilities.reasoning_controls)
+        self.assertFalse(capabilities.structured_output)
+        self.assertFalse(capabilities.output_limit_control)
+        self.assertIsNone(capabilities.usage_reporting)
+        # The owner-registered lane ceilings (D-063 remediation): the
+        # reviewed plan-family calibration minimum, never a per-model
+        # claim; the runtime is the enforcement backstop.
+        self.assertEqual(1_000_000, capabilities.context_limit_tokens)
+        self.assertEqual(128_000, capabilities.output_limit_tokens)
+        self.assertFalse(capabilities.output_limit_control)
+        self.assertEqual(
+            ZCODE_SURFACE_CAPABILITIES["cancellation"],
+            capabilities.cancellation,
+        )
+        # The floor-derived catalog entry carries the SOURCE's provider,
+        # never a hard-coded one.
+        merged = registry.derived_catalog_entries(_base_catalog())
+        zai_entries = [
+            e
+            for e in merged.entries
+            if e.identity.provider == "zai" and e.identity.model == "glm-5.3"
+        ]
+        self.assertTrue(zai_entries)
+
+    def test_adopted_lane_receives_the_zcode_compatibility_cells(self) -> None:
+        # The composed D-043 matrix carries the reviewed ZCode cells for
+        # the adopted lane (backend-level, variant-less key) — never the
+        # codex evidence.
+        from scarcity_router.routing_core import COMPAT_FEATURES
+        from scarcity_router.server_composition import build_compatibility_cells
+        from scarcity_router.server_config import ServerConfiguration
+
+        registry = SourceRegistry(track_registry=load_track_registry())
+        registry.sync_configuration((self._zcode_config(),))
+        _ = registry.apply_inventory(
+            self._zcode_inventory((DiscoveredModel("plan-managed", ()),))
+        )
+        cells = build_compatibility_cells(
+            ServerConfiguration(sources=(self._zcode_config(),)),
+            provider_secret_reader=lambda _provider_id: "SYNTHETIC",
+            source_registry=registry,
+        )
+        lane_cells = {
+            cell.feature: cell.value
+            for cell in cells
+            if cell.provider == "zai" and cell.model == "plan-managed"
+        }
+        self.assertIn("streaming", lane_cells)
+        self.assertEqual("UNSUPPORTED", lane_cells["streaming"])
+        self.assertEqual("UNSUPPORTED", lane_cells["tool_calls"])
+        self.assertEqual("UNSUPPORTED", lane_cells["reasoning_controls"])
+        self.assertEqual("PARTIAL", lane_cells["cancellation"])
+        self.assertNotIn("usage_reporting", lane_cells)
+        for cell in cells:
+            if cell.provider == "zai" and cell.model == "plan-managed":
+                self.assertIn(cell.feature, COMPAT_FEATURES)
+                self.assertIsNone(cell.variant)
+                _ = cell.evidence  # dated provenance present by construction
+        # The lane's cells are the ONLY cells this composition carries:
+        # no codex evidence was transplanted onto the zai lane and no
+        # zcode evidence onto openai models.
+        self.assertTrue(cells)
+        self.assertTrue(
+            all(
+                cell.provider == "zai" and cell.model == "plan-managed"
+                for cell in cells
+            )
+        )
+
+
 if __name__ == "__main__":
     _ = unittest.main()
 

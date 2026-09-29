@@ -1186,6 +1186,21 @@ def build_parser() -> argparse.ArgumentParser:
                          help="pin the Codex binary path (regular executable "
                               + "file; discovery falls back to PATH and the "
                               + "VS Code extension layout)")
+    _ = run.add_argument("--zcode-source", action="append", default=None,
+                              metavar="SOURCE_ID", dest="zcode_sources",
+                              help="enable a ZCode execution SOURCE instance "
+                                   + "(repeatable; official ZCode CLI plan "
+                                   + "lane, D-061. Authentication is the "
+                                   + "official 'zcode login zai' — never "
+                                   + "wrapped or copied)")
+    _ = run.add_argument("--zcode-bin", default=None, metavar="PATH",
+                         help="pin the ZCode binary path (regular executable "
+                              + "file; discovery falls back to PATH)")
+    _ = run.add_argument("--zcode-workspace", default=None, metavar="DIR",
+                         help="the ONE authorized project workspace the ZCode "
+                              + "source executes in (required with "
+                              + "--zcode-source; canonicalized and verified; "
+                              + "request content can never select a path)")
     login = commands.add_parser(
         "codex-login",
         help="run the OFFICIAL codex login against one source's controlled home",
@@ -1244,6 +1259,7 @@ def build_registry(
     allow_ollama = bool(arguments.get("allow_ollama"))
     allow_codex = bool(arguments.get("allow_codex"))
     codex_sources = arguments.get("codex_sources")
+    zcode_sources = arguments.get("zcode_sources")
     source_ids: tuple[str, ...] = ()
     if isinstance(codex_sources, list):
         source_ids = tuple(
@@ -1251,7 +1267,14 @@ def build_registry(
             for item in cast("list[object]", codex_sources)
             if isinstance(item, str) and item
         )
-    if not allow_ollama and not allow_codex and not source_ids:
+    zcode_source_ids: tuple[str, ...] = ()
+    if isinstance(zcode_sources, list):
+        zcode_source_ids = tuple(
+            item
+            for item in cast("list[object]", zcode_sources)
+            if isinstance(item, str) and item
+        )
+    if not allow_ollama and not allow_codex and not source_ids and not zcode_source_ids:
         return None
     from .resource_state import ResourceIdentity
 
@@ -1315,6 +1338,55 @@ def build_registry(
                     else None
                 ),
             )
+            registry.register(adapter)
+    if zcode_source_ids:
+        from pathlib import Path
+
+        from .model_inventory import SOURCE_ID_MAX_LENGTH
+        from .worker_zcode_adapter import ZCodeLocalAdapter
+
+        # The authorized project workspace is REQUIRED: a ZCode source
+        # without one has no coding capability to offer, so it never
+        # constructs (fail closed at configuration time, never a silent
+        # scratch-directory substitution).
+        zcode_workspace = arguments.get("zcode_workspace")
+        if not isinstance(zcode_workspace, str) or not zcode_workspace:
+            raise WorkerConfigError(
+                "--zcode-workspace is required with --zcode-source: the "
+                + "source executes the authorized project workspace"
+            )
+        zcode_pinned = arguments.get("zcode_bin")
+        for zcode_source_id in zcode_source_ids:
+            if len(zcode_source_id) > SOURCE_ID_MAX_LENGTH:
+                raise WorkerConfigError(
+                    f"--zcode-source {zcode_source_id!r}: longer than "
+                    + f"{SOURCE_ID_MAX_LENGTH} characters"
+                )
+            try:
+                checked_zcode = v_safe_id(zcode_source_id, "zcode_source")
+            except ValueError as exc:
+                raise WorkerConfigError(str(exc)) from None
+            if ":" in checked_zcode:
+                # The derived resource namespace partitions on the first
+                # colon (the same rule as the server-side configuration).
+                raise WorkerConfigError(
+                    f"--zcode-source {zcode_source_id!r}: ':' is not allowed"
+                )
+            try:
+                adapter = ZCodeLocalAdapter(
+                    source_id=checked_zcode,
+                    authorized_workspace=zcode_workspace,
+                    pinned_binary=(
+                        Path(str(zcode_pinned))
+                        if isinstance(zcode_pinned, str) and zcode_pinned
+                        else None
+                    ),
+                )
+            except (OSError, NotADirectoryError) as exc:
+                raise WorkerConfigError(
+                    f"--zcode-workspace {zcode_workspace!r}: "
+                    + f"{type(exc).__name__}"
+                ) from None
             registry.register(adapter)
     if allow_codex:
         from pathlib import Path
