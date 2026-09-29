@@ -409,7 +409,8 @@ def message_to_dict(message: AdapterMessage) -> dict[str, object]:
     if message.content is not None:
         out["content"] = message.content
     if message.reasoning is not None:
-        # Version 3 (#158): the assistant result's opaque reasoning output.
+        # Version 4 (D-063, #158): the assistant result's opaque reasoning
+        # output — v4-only, gated by the negotiated session version.
         out["reasoning"] = message.reasoning
     if message.tool_call_id is not None:
         out["tool_call_id"] = message.tool_call_id
