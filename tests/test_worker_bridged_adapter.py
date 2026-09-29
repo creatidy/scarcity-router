@@ -303,7 +303,7 @@ class AdapterHappyPathTests(unittest.TestCase):
         return scripted
 
     def test_v4_reasoning_chunk_and_message_reach_the_adapter(self) -> None:
-        """Combined D-063 x protocol v4: a reasoning_delta chunk crosses
+        """Combined D-064 x protocol v4: a reasoning_delta chunk crosses
         the worker protocol and is re-emitted as the distinct normalized
         kind (never a text delta), and the result message's reasoning
         member survives to the coordinator — streamed and whole-message

@@ -609,7 +609,7 @@ def request_call_resource(execute: ExecuteMessage) -> str:
 
 
 class EndpointReasoningVersionTests(EndpointTestCase):
-    """Protocol version 4 exactness (D-063 on top of the complete v3):
+    """Protocol version 4 exactness (D-064 on top of the complete v3):
 
     the `reasoning` member is legal ONLY on a session that negotiated 4;
     a below-v4 session carrying it is a schema violation that fails the
