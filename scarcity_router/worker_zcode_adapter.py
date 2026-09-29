@@ -25,10 +25,21 @@ evidence, D-043 discipline):
   shell input (no ``shell=True``, no command strings, ever).
 - **Explicit safe permission mode, always.** Headless ``--prompt``
   defaults to ``yolo`` (vendor-documented); every router-controlled
-  invocation passes ``--mode build`` explicitly. Under ``build``, tools
-  with side effects return an ``ask`` that a headless run cannot answer,
-  and the vendor's default broker DENIES it — fail closed by the CLI's
-  own design. Denials are never bypassed and never pre-approved.
+  invocation passes ``--mode edit`` explicitly — the LEAST-AUTHORITY
+  officially supported mode that still permits the coding workflow.
+  First-party evidence (official source
+  ``apps/zcode-cli/packages/core/src/permission/service.ts`` at the
+  D-061-pinned commit ``29628c9``, verified identical in the shipped
+  0.16.9 bundle): edit mode explicitly ALLOWS tools whose permission
+  name is ``edit`` and whose side-effect scope is ``workspace``
+  (``mode.edit.fileEdit`` — inspecting and modifying files in the
+  authorized workspace); everything else falls through to build-mode
+  logic — read-only tools allowed, critical/high-risk tools (e.g.
+  command execution) require an ``ask`` that a headless run cannot
+  answer, so the vendor's default broker DENIES it, fail closed. The
+  CLI confines its file tools to the workspace (outside paths are
+  rejected; symlinks judged by real path). Denials are never bypassed,
+  never pre-approved, and the mode is never downgraded to yolo.
 - **No model identity claims.** ZCode exposes no supported model listing
   and no headless model steering: the executed physical model is managed
   by the user's own ZCode configuration/plan. This adapter invents NO
@@ -50,11 +61,19 @@ evidence, D-043 discipline):
   state — never "authenticated because the binary exists". The owner's
   official ``zcode login zai`` remains the only sign-in path; the login
   itself is never wrapped, automated or fallback-ed.
-- **Workspace authority.** The CLI executes only in a per-attempt
-  workspace directory created by this adapter under the worker's state
-  area (``0o700``, symlink-resistant), passed explicitly via ``--cwd``
-  and as the process cwd. Ambient cwd, user-supplied paths and ZCode's
-  implicit defaults are never trusted.
+- **Workspace authority is construction-time, administrator-owned.**
+  The adapter is constructed with ONE explicitly authorized project
+  workspace (an existing real directory, canonicalized with
+  ``realpath`` at construction and re-validated before every run) and
+  passes that exact canonical directory as both ``--cwd`` and the
+  process cwd — ZCode inspects and edits THE AUTHORIZED PROJECT, not an
+  adapter-created scratch directory. Request content can never supply,
+  alter or select a path (no request field reaches the workspace
+  decision), the ambient cwd is never trusted, and the adapter's own
+  private state is never substituted: the adapter keeps NO execution
+  directory of its own at all. ZCode's runtime state stays in ZCode's
+  own supported installation; the adapter never touches credentials or
+  ZCode's configuration/security files (D-061 constraint 3).
 - **Honest lifecycle and output.** Exactly one CLI invocation per
   dispatched call — no retry, no second process, no fallback. Structured
   events are consumed incrementally under bounded budgets (per-line,
@@ -89,7 +108,6 @@ import subprocess
 import sys
 import threading
 import time
-import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -126,8 +144,6 @@ from .worker_codex_adapter import (
     default_codex_spawner as default_child_spawner,
     terminate_codex_process as terminate_child_process,
 )
-from .worker_identity_store import ensure_private_tree
-
 # ── Adapter identity and version contract ─────────────────────────────────────
 
 ZCODE_ADAPTER_ID = "zcode"
@@ -142,8 +158,10 @@ ZCODE_PROVIDER = "zai"
 #: a physical model claim: ZCode has no supported listing or steering, so
 #: no physical identity, variant or reasoning effort is ever asserted.
 #: The lane resource is effort-less (``<source_id>:plan-managed``, no
-#: variant) and stays non-routable server-side until owner-approved
-#: ``zai`` track evidence lands (normal D-053 classification).
+#: variant) and routes through the normal D-053/D-055 machinery as a
+#: vendor-managed lane (D-063: the owner-reviewed ``zai/plan`` track):
+#: routing to it means exactly "execute through this ZCode plan-managed
+#: lane in the authorized workspace", never "execute through GLM-…".
 PLAN_LANE_SLUG = "plan-managed"
 
 #: The evidenced bundle version of the pinned official release
@@ -153,11 +171,20 @@ PLAN_LANE_SLUG = "plan-managed"
 #: the numeric triple are tolerated.
 MIN_SUPPORTED_ZCODE_VERSION: tuple[int, int, int] = (0, 16, 9)
 
-#: The one permission mode this adapter ever selects (D-061 gate B:
-#: read-only plus low-risk session-local state; side-effecting tools get
-#: denied headless — fail closed). Headless ``--prompt`` defaults to
-#: ``yolo``; the default is never relied on and never restored.
-SAFE_PERMISSION_MODE = "build"
+#: The one permission mode this adapter ever selects: the
+#: LEAST-AUTHORITY officially supported mode that still permits the
+#: coding workflow (inspect, reason over, and modify files in the
+#: authorized workspace). First-party evidence, two agreeing sources:
+#: the official repo's ``permission/service.ts`` at the D-061-pinned
+#: commit ``29628c9`` and the identical shipped 0.16.9 bundle —
+#: edit mode explicitly ALLOWS workspace-scoped file-edit tools
+#: (``permissionName == "edit" && sideEffectScope == "workspace"`` →
+#: ``mode.edit.fileEdit``); every other side-effecting or high/critical
+#: risk tool still returns ``ask``, which a headless run cannot answer,
+#: so the vendor's default broker DENIES it (fail closed). Headless
+#: ``--prompt`` defaults to ``yolo``; the default is never relied on,
+#: never restored, and never fallen back to.
+SAFE_PERMISSION_MODE = "edit"
 
 _VERSION_RE = re.compile(r"(^|\s)(\d+)\.(\d+)\.(\d+)")
 
@@ -362,6 +389,7 @@ def probe_zcode_version(
     *,
     spawner: ChildSpawner,
     timeout: float = VERSION_PROBE_TIMEOUT_SECONDS,
+    cwd: Path | None = None,
 ) -> tuple[tuple[int, int, int] | None, str | None]:
     """Run ``<binary> --version`` (bounded) and parse the evidenced shape.
 
@@ -374,7 +402,7 @@ def probe_zcode_version(
     spec = SpawnSpec(
         argv=(str(binary), "--version"),
         env=_minimal_environment(),
-        cwd=os.getcwd(),
+        cwd=str(cwd) if cwd is not None else os.getcwd(),
     )
     try:
         proc = spawner(spec)
@@ -479,6 +507,7 @@ def probe_zcode_doctor(
     *,
     spawner: ChildSpawner,
     timeout: float = DOCTOR_PROBE_TIMEOUT_SECONDS,
+    cwd: Path | None = None,
 ) -> str | None:
     """Run ``<binary> doctor --json`` (bounded) and validate the shape.
 
@@ -492,7 +521,7 @@ def probe_zcode_doctor(
     spec = SpawnSpec(
         argv=(str(binary), "doctor", "--json"),
         env=_minimal_environment(),
-        cwd=os.getcwd(),
+        cwd=str(cwd) if cwd is not None else os.getcwd(),
     )
     try:
         proc = spawner(spec)
@@ -529,91 +558,44 @@ def probe_zcode_doctor(
     return None
 
 
-# ── Workspace authority (adapter-owned, per-attempt, symlink-resistant) ───────
+# ── Workspace authority (administrator-owned, canonical, re-validated) ────────
 
-_HOME_MODE_OK_MASK = 0o077  # group/other bits must be absent
+_WORKSPACE_MODE_OK_MASK = 0o077  # group/other bits must be absent on the path itself
 
 
-class ZCodeWorkspace:
-    """The adapter-owned per-attempt workspace root (never ambient cwd).
+def _canonical_workspace(path: str | os.PathLike[str]) -> Path:
+    """The canonical authorized workspace for a configured path.
 
-    Created under the worker's state area (``zcode-sources/<source_id>/
-    workspaces``), private (``0o700``), symlink-resistant: a symlink or
-    aliasing at the root invalidates it, so the workspace handed to
-    ZCode is always a real directory this adapter created. One attempt
-    gets one directory, created fresh, removed after the run.
+    ``realpath`` resolves every symlink and alias BEFORE any check, so
+    the directory handed to ZCode is the real project directory the
+    administrator named — a symlinked configuration path is resolved,
+    never followed blindly at run time. Raises ``NotADirectoryError``
+    when the resolved path is not a real directory.
     """
+    resolved = Path(os.path.realpath(Path(path)))
+    st = os.lstat(resolved)
+    if not stat.S_ISDIR(st.st_mode):
+        raise NotADirectoryError(str(resolved))
+    return resolved
 
-    def __init__(
-        self,
-        state_dir: str | os.PathLike[str],
-        *,
-        source_id: str,
-    ) -> None:
-        self._root: Path = (
-            Path(state_dir) / "zcode-sources" / source_id / "workspaces"
-        )
-        self._lock: threading.Lock = threading.Lock()
 
-    @property
-    def root(self) -> Path:
-        return self._root
+def validate_workspace(workspace: Path) -> str | None:
+    """Re-check the authorized workspace; ``None`` when intact.
 
-    def validate(self) -> str | None:
-        """``None`` when the workspace root is intact, else a safe reason.
-
-        Symlink-resistant: every adapter-owned path component (the
-        ``zcode-sources`` root, the per-source directory, the workspaces
-        root) is checked with ``lstat`` — a symlink or equivalent
-        aliasing planted anywhere in the chain invalidates the workspace,
-        so it can never resolve into a foreign directory.
-        """
-        with self._lock:
-            chain = [self._root]
-            probe = self._root
-            while probe.name != "zcode-sources" and probe != probe.parent:
-                probe = probe.parent
-                chain.append(probe)
-            for path in chain:
-                try:
-                    st = os.lstat(path)
-                except OSError:
-                    return "zcode_workspace_invalid"
-                if not stat.S_ISDIR(st.st_mode):
-                    return "zcode_workspace_invalid"
-                if st.st_mode & _HOME_MODE_OK_MASK:
-                    return "zcode_workspace_invalid"
-        return None
-
-    def ensure(self) -> None:
-        """Create the workspace root; raises ``OSError`` when impossible."""
-        with self._lock:
-            ensure_private_tree(str(self._root))
-            self._prune_stale_attempts()
-
-    def new_attempt_dir(self) -> Path:
-        """One per-attempt workspace (created fresh, ``0o700``)."""
-        with self._lock:
-            ensure_private_tree(str(self._root))
-            attempt = self._root / f"run-{uuid.uuid4().hex}"
-            # mkdir (not makedirs): fails if the path somehow exists —
-            # a pre-planted name can never be adopted.
-            attempt.mkdir(mode=0o700)
-            os.chmod(attempt, 0o700)
-            return attempt
-
-    def _prune_stale_attempts(self, *, max_age_seconds: float = 24 * 3600.0) -> None:
-        """Best-effort bounded hygiene for workspaces left by crashed runs."""
-        try:
-            now = time.time()
-            for entry in self._root.iterdir():
-                try:
-                    if now - entry.stat().st_mtime > max_age_seconds:
-                        shutil.rmtree(entry, ignore_errors=True)
-                except OSError:
-                    continue
-        except OSError:
-            return
+    Fresh per run: the directory must still exist as a real directory
+    (a deleted or replaced workspace fails closed before any spawn).
+    Group/other permission bits on the directory itself do not invalidate
+    a user-owned project, so they are deliberately not required away
+    here — authority comes from the administrator's construction-time
+    grant, not from filesystem mode bits.
+    """
+    try:
+        st = os.lstat(workspace)
+    except OSError:
+        return "workspace_unavailable"
+    if not stat.S_ISDIR(st.st_mode):
+        return "workspace_invalid"
+    return None
 
 
 # ── Structured result parsing ─────────────────────────────────────────────────
@@ -759,16 +741,18 @@ class ZCodeLocalAdapter:
     """The worker-local adapter for the official ZCode CLI (``zcode``).
 
     Source-mode only (D-053): the adapter is the instance
-    ``zcode:<source_id>`` and serves the source's single plan lane.
-    Construction performs no I/O; eligibility is established lazily and
-    honestly per call and per snapshot, so a broken ZCode installation
-    never prevents the worker from serving its other adapters.
+    ``zcode:<source_id>`` and serves the source's single plan lane
+    against ONE administrator-authorized project workspace. Eligibility
+    is established lazily and honestly per call and per snapshot, so a
+    broken ZCode installation never prevents the worker from serving its
+    other adapters.
 
     The lane resource is served ONLY while the latest bounded probes
-    passed: an installed-but-broken CLI serves nothing (installed is not
-    eligible). Server-side, the lane stays non-routable until
-    owner-approved track evidence lands — this adapter never widens
-    that.
+    passed AND the authorized workspace is intact: an installed-but-
+    broken CLI — or a vanished project directory — serves nothing
+    (installed is not eligible). Server-side, the lane routes through
+    the normal adoption machinery as a vendor-managed lane (D-063);
+    this adapter never claims a physical model.
     """
 
     adapter_id: str
@@ -777,7 +761,7 @@ class ZCodeLocalAdapter:
         self,
         *,
         source_id: str,
-        state_dir: str | os.PathLike[str],
+        authorized_workspace: str | os.PathLike[str],
         pinned_binary: Path | None = None,
         path_lookup: Callable[[str], str | None] = shutil.which,
         spawner: ChildSpawner = default_child_spawner,
@@ -801,9 +785,12 @@ class ZCodeLocalAdapter:
                 + "resource namespace is <source_id>:<slug>)"
             )
         self.adapter_id = f"{ZCODE_ADAPTER_ID}:{self._source_id}"
-        self._workspace: ZCodeWorkspace = ZCodeWorkspace(
-            state_dir, source_id=self._source_id
-        )
+        # Workspace authority is a construction-time grant: the path is
+        # canonicalized (realpath) and verified ONCE here — a configured
+        # non-directory fails the adapter's construction loudly instead
+        # of serving a lane that cannot do coding work. The canonical
+        # directory is re-validated fresh before every run.
+        self._workspace: Path = _canonical_workspace(authorized_workspace)
         self._pinned_binary: Path | None = pinned_binary
         self._path_lookup: Callable[[str], str | None] = path_lookup
         self._spawner: ChildSpawner = spawner
@@ -830,11 +817,19 @@ class ZCodeLocalAdapter:
 
     @property
     def resource_ids(self) -> tuple[str, ...]:
-        """The served resources: the lane iff the latest probes passed."""
+        """The served resources: the lane iff probes passed AND the
+        authorized workspace is intact."""
         inventory = self.inventory_report()
         if inventory is None or inventory.auth_state == "unavailable":
             return ()
+        if validate_workspace(self._workspace) is not None:
+            return ()
         return (self.lane_resource_id,)
+
+    @property
+    def authorized_workspace(self) -> Path:
+        """The canonical authorized project workspace (ZCode's ``--cwd``)."""
+        return self._workspace
 
     # ── D-053 runtime discovery ───────────────────────────────────────
 
@@ -855,6 +850,9 @@ class ZCodeLocalAdapter:
         models: tuple[DiscoveredModel, ...] = ()
         try:
             binary = self._discover()
+            workspace_invalid = validate_workspace(self._workspace)
+            if workspace_invalid is not None:
+                raise ZCodeIneligible(workspace_invalid)
             version, version_reason = probe_zcode_version(
                 binary.path,
                 spawner=self._spawner,
@@ -1003,12 +1001,18 @@ class ZCodeLocalAdapter:
         if len(prompt.encode("utf-8")) > MAX_PROMPT_BYTES:
             raise ZCodeIneligible("prompt_too_large")
 
-        # 2. Fresh local eligibility probes (never stale state).
+        # 2. Fresh workspace authority, then fresh eligibility probes
+        # (never stale state; probes run INSIDE the authorized workspace
+        # so no ambient cwd is ever involved).
+        workspace_invalid = validate_workspace(self._workspace)
+        if workspace_invalid is not None:
+            raise ZCodeIneligible(workspace_invalid)
         binary = self._discover()
         version, version_reason = probe_zcode_version(
             binary.path,
             spawner=self._spawner,
             timeout=self._version_probe_timeout,
+            cwd=self._workspace,
         )
         if version is None or version_reason is not None:
             raise ZCodeIneligible(version_reason or "version_unsupported")
@@ -1016,26 +1020,20 @@ class ZCodeLocalAdapter:
             binary.path,
             spawner=self._spawner,
             timeout=self._doctor_probe_timeout,
+            cwd=self._workspace,
         )
         if doctor_reason is not None:
             raise ZCodeIneligible(doctor_reason)
-        try:
-            self._workspace.ensure()
-        except OSError:
-            raise ZCodeIneligible("zcode_workspace_invalid") from None
-        workspace_invalid = self._workspace.validate()
-        if workspace_invalid is not None:
-            raise ZCodeIneligible(workspace_invalid)
-        attempt = self._workspace.new_attempt_dir()
 
-        # 3. The single bounded headless run (never a second one).
+        # 3. The single bounded headless run (never a second one) in THE
+        # AUTHORIZED PROJECT WORKSPACE — both --cwd and process cwd.
         version_text = ".".join(str(part) for part in version)
         spec = SpawnSpec(
             argv=build_run_argv(
-                binary=binary.path, prompt=prompt, workspace=attempt
+                binary=binary.path, prompt=prompt, workspace=self._workspace
             ),
             env=_minimal_environment(),
-            cwd=str(attempt),
+            cwd=str(self._workspace),
         )
         proc: ChildProcess | None = None
         reader: BoundedLineReader | None = None
@@ -1097,7 +1095,6 @@ class ZCodeLocalAdapter:
                 reader.join(timeout=1.0)
             if stderr_thread is not None:
                 stderr_thread.join(timeout=1.0)
-            shutil.rmtree(attempt, ignore_errors=True)
 
     # ── Stream consumption ────────────────────────────────────────────
 
@@ -1336,8 +1333,16 @@ class ZCodeLocalAdapter:
             inventory = self._inventory
         if inventory is None:
             return ()
+        # D-063 (remediation): the lane's OBSERVED health is what the
+        # bounded probes establish. A healthy CLI + intact authorized
+        # workspace reports "ok" — the same probe-health semantics as the
+        # loopback adapter — with the `telemetry_unknown` diagnostic kept
+        # so the un-establishable sign-in state survives to the UI (it is
+        # never upgraded to "authenticated" anywhere). An actual sign-in
+        # failure surfaces as a typed execution failure, and any probe
+        # failure reports the lane honestly unavailable.
         status_by_auth: dict[str, tuple[str, str]] = {
-            "unverified": ("unknown", "telemetry_unknown"),
+            "unverified": ("ok", "telemetry_unknown"),
             "unavailable": ("unavailable", "source_unavailable"),
         }
         if inventory.auth_state in status_by_auth:
@@ -1346,6 +1351,8 @@ class ZCodeLocalAdapter:
             # Defensive: the closed vocabulary gains a state only through
             # an explicit contract change; report it honestly as unknown.
             status, code = "unknown", "telemetry_unknown"
+        if validate_workspace(self._workspace) is not None:
+            status, code = "unavailable", "source_unavailable"
         identity = ResourceIdentity(
             resource_id=self.lane_resource_id,
             channel="worker_bridged",
@@ -1403,7 +1410,7 @@ __all__ = [
     "ZCodeProcessLost",
     "ZCodeProtocolFailure",
     "ZCodeRunResult",
-    "ZCodeWorkspace",
+    "validate_workspace",
     "build_run_argv",
     "discover_zcode_binary",
     "map_prompt",

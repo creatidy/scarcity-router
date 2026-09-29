@@ -43,7 +43,7 @@ with the honest evidence and remaining external gates:
 | M04 | #89 | Generic OpenAI-compatible HTTP adapter and Ollama integration | Complete |
 | M05 | #90 | Native worker, pairing, and execution transport | Complete |
 | M06 | #91 | Codex adapter (Stage 1 evidence + Stage 2 implementation) | Complete subject to the recorded `EXTERNAL_ACCEPTANCE_GATE: LIVE_CODEX_SUBSCRIPTION` live-acceptance gate |
-| M07 | #92 | ZCode adapter (Stage 1 evidence + Stage 2 implementation) | Stage 1 complete; Stage 2 implemented 2026-09-28 (D-061 reopen; D-063 design): official CLI execution source behind the D-053 source architecture, subject to the live-acceptance gate and to owner-approved `zai` track evidence before the plan lane can route |
+| M07 | #92 | ZCode adapter (Stage 1 evidence + Stage 2 implementation) | Stage 1 complete; Stage 2 implemented (D-061 reopen; D-063 amended 2026-09-29): authorized-workspace coding execution under `--mode edit`, plan-managed lane routable through the normal selector; live-execution acceptance blocked at the shared provider endpoint (owner-run gate) |
 | M08 | #93 | MCP, REST, and CLI compatibility; optional remote mode | Complete |
 | M09 | #94 | Configuration, web UX, and diagnostics | Complete |
 | M10 | #95 | Distribution, installation, update, and end-to-end acceptance | Implementation and deterministic acceptance complete subject to the explicit external gates in [`docs/m10-acceptance.md`](m10-acceptance.md) |

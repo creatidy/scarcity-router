@@ -1051,6 +1051,11 @@ def build_parser() -> argparse.ArgumentParser:
     _ = run.add_argument("--zcode-bin", default=None, metavar="PATH",
                          help="pin the ZCode binary path (regular executable "
                               + "file; discovery falls back to PATH)")
+    _ = run.add_argument("--zcode-workspace", default=None, metavar="DIR",
+                         help="the ONE authorized project workspace the ZCode "
+                              + "source executes in (required with "
+                              + "--zcode-source; canonicalized and verified; "
+                              + "request content can never select a path)")
     login = commands.add_parser(
         "codex-login",
         help="run the OFFICIAL codex login against one source's controlled home",
@@ -1195,10 +1200,16 @@ def build_registry(
         from .model_inventory import SOURCE_ID_MAX_LENGTH
         from .worker_zcode_adapter import ZCodeLocalAdapter
 
-        if state_dir is None:
-            from .worker_local_store import default_worker_state_dir
-
-            state_dir = default_worker_state_dir()
+        # The authorized project workspace is REQUIRED: a ZCode source
+        # without one has no coding capability to offer, so it never
+        # constructs (fail closed at configuration time, never a silent
+        # scratch-directory substitution).
+        zcode_workspace = arguments.get("zcode_workspace")
+        if not isinstance(zcode_workspace, str) or not zcode_workspace:
+            raise WorkerConfigError(
+                "--zcode-workspace is required with --zcode-source: the "
+                + "source executes the authorized project workspace"
+            )
         zcode_pinned = arguments.get("zcode_bin")
         for zcode_source_id in zcode_source_ids:
             if len(zcode_source_id) > SOURCE_ID_MAX_LENGTH:
@@ -1216,15 +1227,21 @@ def build_registry(
                 raise WorkerConfigError(
                     f"--zcode-source {zcode_source_id!r}: ':' is not allowed"
                 )
-            adapter = ZCodeLocalAdapter(
-                source_id=checked_zcode,
-                state_dir=state_dir,
-                pinned_binary=(
-                    Path(str(zcode_pinned))
-                    if isinstance(zcode_pinned, str) and zcode_pinned
-                    else None
-                ),
-            )
+            try:
+                adapter = ZCodeLocalAdapter(
+                    source_id=checked_zcode,
+                    authorized_workspace=zcode_workspace,
+                    pinned_binary=(
+                        Path(str(zcode_pinned))
+                        if isinstance(zcode_pinned, str) and zcode_pinned
+                        else None
+                    ),
+                )
+            except (OSError, NotADirectoryError) as exc:
+                raise WorkerConfigError(
+                    f"--zcode-workspace {zcode_workspace!r}: "
+                    + f"{type(exc).__name__}"
+                ) from None
             registry.register(adapter)
     if allow_codex:
         from pathlib import Path

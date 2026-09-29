@@ -4687,9 +4687,14 @@ Do not rewrite history or change an accepted decision silently.
 
 ### D-063 — M07 Stage 2 implementation: the ZCode execution source behind the existing D-053 source architecture
 
-- **Status:** Accepted (issue #92; branch `task/92-zcode-stage2`;
-  implements the scope D-061 authorized)
-- **Date:** 2026-09-28
+- **Status:** Accepted, AMENDED 2026-09-29 (issue #92; branch
+  `task/92-zcode-stage2`; implements the scope D-061 authorized; the
+  amendment records the owner-directed remediation round on PR #161 —
+  authorized-workspace execution, the evidenced `--mode edit`
+  semantics, and the routable plan-managed lane — in place, without a
+  corrective decision chain; the original 2026-09-28 record stands
+  below with its superseded choices corrected at each point)
+- **Date:** 2026-09-28 (amended 2026-09-29)
 - **Base:** `develop` @ `59538e9` (D-061 merged via PR #157)
 - **Confidence:** High for the integration shape (the D-053/D-056
   mechanisms are reused unchanged); the honest-limitation choices below
@@ -4721,19 +4726,33 @@ Do not rewrite history or change an accepted decision silently.
      is pinned to `subscription_included` like the codex kind (the
      owner's own paid plan; any other billing class is a new
      decision).
-  2. **No model identity is ever invented.** ZCode exposes no
-     supported listing or steering: the executed physical model is
-     plan-managed by the user's own ZCode configuration. The source's
-     inventory therefore carries exactly one effort-less reserved
-     descriptor slug (`plan-managed` — the plan lane), with no
-     variant and no reasoning-effort claims. Server-side adoption
-     stays CLOSED (visible, never routable) until owner-approved
-     `zai` track evidence lands in `model-tracks.json` — the normal
-     D-053 classification for unevidenced slugs; no hand-made
-     `zcode enabled` switch exists (the worker flag enables the
-     SOURCE INSTANCE, and eligibility is always the bounded probes).
-     If ZCode ever ships a real listing surface, listed models adopt
-     through the normal gates carrying the ZCODE surface facts.
+  2. **No model identity is ever invented; the lane routes as what it
+     is.** AMENDED 2026-09-29: ZCode exposes no supported listing or
+     steering, so the executed physical model stays plan-managed by the
+     user's own ZCode configuration and the source's inventory carries
+     exactly one effort-less reserved descriptor slug (`plan-managed` —
+     the plan lane), with no variant and no reasoning-effort claims.
+     The original record left the lane visible-but-never-routable
+     pending future track evidence; the owner's remediation round
+     directed making the lane actually routable, so THIS record adds
+     the owner-reviewed evidence (the `zai/plan` track in
+     `model-tracks.json`, flag `plan_managed`, conservative
+     minimum-of-scale floor with the plan-family context/output
+     continuity) and the smallest generic adoption extension: a
+     plan_managed track adopts its effort-less lane from a HEALTHY
+     source observation as ONE variant-less resource with ONE
+     effort-less catalog entry (variant `plan`, `reasoning_effort`
+     null, `supports_reasoning_mode` false). A plain
+     `model: "plan-managed"` request then resolves and routes through
+     the normal D-055/selector machinery; an effort-bearing request is
+     a typed `unsupported_reasoning_effort` rejection, and physical
+     slugs (`glm-5.3`) still classify nowhere on `zai`, so nothing is
+     ever silently substituted. No hand-made `zcode enabled` switch
+     exists (the worker flag enables the SOURCE INSTANCE; eligibility
+     is always the bounded probes plus the intact authorized
+     workspace). If ZCode ever ships a real listing surface, listed
+     models adopt through the normal gates carrying the ZCODE surface
+     facts.
   3. **Registration-owned surface facts are honest and dated.**
      `ZCODE_SURFACE_CAPABILITIES` (evidence 2026-09-28, CLI
      v3.14.3 / bundle 0.16.9): streaming `False` (the stream carries
@@ -4744,17 +4763,44 @@ Do not rewrite history or change an accepted decision silently.
      `output_limit_control` `False` (no supported control on the
      evidenced surface), `usage_reporting` UNKNOWN (the result's
      optional usage member has no evidenced internal field names —
-     nothing is mapped), context/output ceilings UNKNOWN. The
-     D-043 matrix stays the per-request admission authority.
+     nothing is mapped). AMENDED 2026-09-29: context/output ceilings
+     carry the OWNER-REVIEWED registration facts of this remediation —
+     `context_limit_tokens` 1_000_000 and `output_limit_tokens`
+     128_000, the reviewed plan-family calibration minimum
+     (`model-catalog.json` calibrates both GLM Coding Plan models at
+     1M/128K) — the same registration-fact class as the codex
+     surface's owner-reviewed 272_000, bounded admission ceilings that
+     never claim a per-model property; the runtime remains the
+     enforcement backstop. The D-043 matrix stays the per-request
+     admission authority, contributed as reviewed static cells
+     (`zcode_worker_evidence.py`: streaming/tools/structured output/
+     effort controls UNSUPPORTED, usage absent — fail closed).
   4. **The invocation contract is one argv vector, one safe mode.**
-     Exactly one official `zcode` subprocess per dispatched call:
-     `zcode --prompt <text> --cwd <workspace> --mode build
-     --output-format stream-json --no-browser`, argv only (prompt and
-     path are data; no shell exists anywhere on the path), `--mode
-     build` always explicit (the yolo headless default is never
-     relied on). The prompt is bounded (encoded 64 KiB — safely under
-     the kernel's 128 KiB single-argument limit); larger
-     conversations are a typed rejection, never a truncation.
+     AMENDED 2026-09-29: exactly one official `zcode` subprocess per
+     dispatched call: `zcode --prompt <text> --cwd <authorized
+     workspace> --mode edit --output-format stream-json --no-browser`,
+     argv only (prompt and path are data; no shell exists anywhere on
+     the path). The original record pinned `--mode build`; the owner's
+     remediation round required PROOF that the selected mode can
+     actually perform the coding workflow, and the first-party evidence
+     (official source `permission/service.ts` at the D-061-pinned
+     commit `29628c9`, verified identical in the shipped 0.16.9
+     bundle) shows `build` allows only read-only plus low-risk
+     session-local tools — every workspace-writing tool returns `ask`
+     and is denied headless, so `build` cannot edit the project. The
+     least-authority officially supported mode that permits the
+     workflow is **`edit`**: its first check explicitly ALLOWS
+     workspace-scoped file-edit tools (`permissionName == "edit" &&
+     sideEffectScope == "workspace"` → `mode.edit.fileEdit`); every
+     other side-effecting or high/critical-risk tool (command
+     execution included) still returns `ask` and the vendor's default
+     broker DENIES it headless — fail closed, never pre-approved, and
+     yolo is never relied on, restored or fallen back to. The CLI
+     confines its file tools to the workspace (outside paths rejected,
+     symlinks judged by real path). The prompt is bounded (encoded
+     64 KiB — safely under the kernel's 128 KiB single-argument
+     limit); larger conversations are a typed rejection, never a
+     truncation.
      Representable input is exactly one non-empty user message — the
      evidenced surface has no system/developer channel, no history
      injection and no tool-result continuation, so every other
@@ -4763,28 +4809,51 @@ Do not rewrite history or change an accepted decision silently.
      requests are typed rejections BEFORE any execution (the
      refuse-not-drop precedent; D-056 exact-identity is never
      silently substituted).
-  5. **Workspace authority is adapter-owned and explicit.** The CLI
-     executes only in a per-attempt directory the adapter creates
-     under the worker's state area (`zcode-sources/<source_id>/
-     workspaces/run-<uuid>`, `0o700`, fresh `mkdir`, symlink-checked
-     chain from the adapter-owned root), passed both as `--cwd` and
-     as the process cwd. Ambient cwd, request-supplied paths and
-     ZCode's implicit defaults are never trusted. Attempt directories
-     are removed after every run; stale ones are pruned on a bounded
-     cadence. Unlike the Codex adapter there is NO controlled config
-     home: ZCode runs with its own supported installation and login
-     state (D-061's supported-authentication scope), and the adapter
-     never reads or writes ZCode's configuration or security files.
+  5. **Workspace authority is construction-time and
+     administrator-owned.** AMENDED 2026-09-29 — the original record's
+     per-attempt scratch directory made the integration safe but
+     useless (ZCode could not see the project the task is about); the
+     owner's round directed real workspace execution. Now the adapter
+     is constructed with ONE explicitly authorized project workspace
+     (`--zcode-workspace`, required with `--zcode-source`):
+     canonicalized with `realpath` at construction (a configured
+     symlink resolves to the real directory), verified to be an
+     existing real directory (a missing or non-directory path fails
+     construction loudly), re-validated fresh before every run, and
+     passed as BOTH `--cwd` and the process cwd — ZCode inspects and
+     edits THE AUTHORIZED PROJECT. Request content can never supply,
+     alter or select a path (no request field reaches the workspace
+     decision — there is no route from request input to filesystem
+     authority), the ambient cwd is never trusted, and the adapter
+     keeps NO execution directory of its own: the state/workspace
+     separation is structural (the scratch machinery was removed, not
+     fallback-ed). Unlike the Codex adapter there is NO controlled
+     config home: ZCode runs with its own supported installation and
+     login state (D-061's supported-authentication scope), and the
+     adapter never reads or writes ZCode's configuration or security
+     files.
   6. **Auth is honest, never inferred.** No supported non-inference
      auth probe exists on the evidenced surface, so a healthy CLI
      reports `unverified` — never `authenticated` without evidence,
      and never "healthy because the binary exists"
-     (`unavailable` covers discovery/version/doctor failures).
-     Capability probes are strictly non-inference (`--version`,
-     `doctor --json`, bounded; a nonzero probe exit is a probe
-     failure). The owner's official `zcode login zai` stays the only
-     sign-in path; the adapter never wraps, automates or fallbacks
-     login, and never extracts or logs credential material.
+     (`unavailable` covers discovery/version/doctor/workspace
+     failures). AMENDED 2026-09-29: because `unverified` is the lane's
+     honest steady state, the plan-managed adoption gate accepts a
+     HEALTHY source observation (`authenticated` or `unverified`;
+     scoped to `plan_managed` tracks via
+     `AUTH_UNPROBEABLE_KINDS`), and the lane's snapshot reports the
+     probe-level health (`ok` with the `telemetry_unknown` diagnostic
+     kept — the same probe-health semantics as the loopback adapter)
+     so the Daybreak snapshot-drop rule cannot permanently hide a
+     healthy lane; an actual sign-in failure surfaces as a typed
+     execution failure, and `unavailable` still closes the source.
+     Physical-model sources (codex) keep the strict `authenticated`
+     gate and their unverified-drop semantics unchanged. Capability
+     probes are strictly non-inference (`--version`, `doctor --json`,
+     bounded; a nonzero probe exit is a probe failure). The owner's
+     official `zcode login zai` stays the only sign-in path; the
+     adapter never wraps, automates or fallbacks login, and never
+     extracts or logs credential material.
   7. **The terminal contract is result line AND exit 0.** A completed
      classification requires the documented `type:"result"` line
      (response required, bounded; `sessionId` kept as bounded opaque
@@ -4816,8 +4885,10 @@ Do not rewrite history or change an accepted decision silently.
      hard-coded `openai` (a latent kind-correctness defect that only
      a second provider kind could expose; corrected here).
   10. **Enabling and diagnosing.** `scarcity-router-worker run
-      --zcode-source <id>` (repeatable, `--zcode-bin` pin) enables
-      the source instance; the server learns the kind through the
+      --zcode-source <id> --zcode-workspace <dir>` (repeatable source,
+      `--zcode-bin` pin; the authorized workspace is REQUIRED — a
+      source without one never constructs) enables the source
+      instance; the server learns the kind through the
       existing source configuration (`kind: "zcode_subscription"`);
       source health converges through the existing inventory
       TTL/report path (a newly installed, broken, upgraded or
@@ -4831,12 +4902,18 @@ Do not rewrite history or change an accepted decision silently.
       explicit decision as the vocabulary requires.
 - **Reason:** Every choice above is forced by an evidenced surface
   fact plus an existing project rule: no listing/steering (D-056
-  exact-identity) means no model claims and a closed adoption path;
-  no non-inference auth probe means `unverified`; the yolo default
-  means an explicit `--mode build` in every argv; the single-prompt
-  surface means typed rejections for everything else; and reuse-first
-  (D-061's implementation constraints) means the Codex process seam
-  and the D-053 source machinery are extended, not duplicated.
+  exact-identity) means no model claims and a lane that routes only
+  as its honest descriptor; no non-inference auth probe means
+  `unverified` steady state with healthy-lane adoption scoped to the
+  plan_managed track; the yolo default means an explicit safe mode in
+  every argv — and the remediation round's demand for PROOF moved
+  that mode from `build` (safe but unable to edit) to `edit` (the
+  least-authority mode the official permission service allows to edit
+  workspace files), recorded here with verbatim first-party logic;
+  the single-prompt surface means typed rejections for everything
+  else; and reuse-first (D-061's implementation constraints) means
+  the Codex process seam and the D-053 source machinery are extended,
+  not duplicated.
 - **Alternatives considered:** (a) an administrator-configured
   physical-model resource (the codex legacy shape) — rejected: with
   no `model/list`-style verification the resource would claim a
@@ -4854,10 +4931,16 @@ Do not rewrite history or change an accepted decision silently.
   no adapter-owned home to log in against.
 - **Boundary:** Implementation only — the worker adapter module, the
   kind vocabulary (configuration + inventory), the per-kind registry
-  facts/mappings, the worker CLI flags, deterministic fake-CLI tests
-  and documentation. No catalog ratings or capability claims change;
-  no frozen interface changes; no ZCode execution becomes routable
-  through the standard path until owner-approved `zai` track
-  evidence lands (a future decision + `model-tracks.json` change).
-  The single-owner scope, retained exclusions and all D-061
-  constraints carry over unchanged.
+  facts/mappings, the owner-reviewed `zai/plan` track artifact (this
+  remediation's evidence addition), the static compatibility cells,
+  the worker CLI flags, deterministic fake-CLI tests plus the
+  composed router-path acceptance, and documentation. AMENDED
+  2026-09-29: the lane IS routable through the normal selector (the
+  original "not routable until future evidence" boundary is
+  superseded by point 2's amendment); no frozen interface changes;
+  no physical-model claims; the single-owner scope, retained
+  exclusions and all D-061 constraints carry over unchanged.
+  Live-execution acceptance remained environment-blocked at the
+  owner's shared ZCode provider endpoint (TLS validation failure,
+  unchanged since D-061 §4) — the owner-run acceptance procedure
+  lives on issue #92.

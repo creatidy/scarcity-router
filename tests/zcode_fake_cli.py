@@ -140,6 +140,20 @@ def _run_headless(scenario: dict[str, object]) -> int:
                         _ = handle.write("marker\n")
                 except OSError:
                     pass
+    # Simulated coding edit: append one deterministic line to a file in
+    # the workspace (proves the run can modify the authorized project).
+    append = scenario.get("append_line")
+    if isinstance(append, dict):
+        append_map = cast("dict[str, object]", append)
+        append_file = append_map.get("file")
+        append_line_text = append_map.get("line")
+        if isinstance(append_file, str) and isinstance(append_line_text, str):
+            try:
+                path = os.path.join(cwd, append_file)
+                with open(path, "a", encoding="utf-8") as handle:
+                    _ = handle.write(append_line_text + "\n")
+            except OSError:
+                pass
     stderr = scenario.get("stderr")
     if isinstance(stderr, str) and stderr:
         _ = sys.stderr.write(stderr)

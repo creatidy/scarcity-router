@@ -66,6 +66,15 @@ SOURCE_AUTH_STATES: tuple[str, ...] = (
 #: New kinds arrive only through an explicit decision.
 SOURCE_KINDS: tuple[str, ...] = ("codex_subscription", "zcode_subscription")
 
+#: Kinds whose sign-in state is NOT establishable without paid inference
+#: (D-061/D-063: the ZCode CLI exposes no non-inference auth probe). For
+#: these, ``unverified`` is the healthy probes-passed steady state — the
+#: worker's snapshots carry the honest ``telemetry_unknown`` diagnostic
+#: and are never upgraded to ``authenticated`` — so an ``unverified``
+#: observation is not an auth-loss signal. Any other non-authenticated
+#: state (``unavailable``) still closes the source.
+AUTH_UNPROBEABLE_KINDS: frozenset[str] = frozenset({"zcode_subscription"})
+
 #: Upper bound for a source_id so the derived resource id
 #: ``<source_id>:<slug>`` always fits the safe-id contract (64 chars)
 #: with room for realistic physical slugs.
@@ -493,6 +502,7 @@ __all__ = [
     "MODEL_INVENTORY_SCHEMA_VERSION",
     "ModelInventoryError",
     "ModelInventoryReport",
+    "AUTH_UNPROBEABLE_KINDS",
     "SOURCE_AUTH_STATES",
     "SOURCE_KINDS",
     "SourceInventory",

@@ -231,8 +231,9 @@ behind the existing D-053 source architecture — the same
 source-instance / inventory / allowlist machinery as the Codex
 adapter, with the official ZCode CLI as the only execution boundary.
 
-- **Enablement.** `scarcity-router-worker run --zcode-source <id>`
-  (repeatable; `--zcode-bin` pins the binary) enables the source
+- **Enablement.** `scarcity-router-worker run --zcode-source <id>
+  --zcode-workspace <dir>` (repeatable source; `--zcode-bin` pins the
+  binary; the authorized workspace is REQUIRED) enables the source
   instance; the server learns the kind through source configuration
   (`kind: "zcode_subscription"`, provider `zai`). Authentication is
   the owner's own official `zcode login zai` against ZCode's own
@@ -244,23 +245,37 @@ adapter, with the official ZCode CLI as the only execution boundary.
   `unavailable`; a healthy CLI is honestly `unverified` — no
   supported non-inference auth probe exists on the evidenced surface,
   and the binary's presence is never treated as health.
-- **Execution** is one headless run per dispatched call:
-  `--prompt <text> --cwd <adapter-owned workspace> --mode build
+- **Execution** is one headless run per dispatched call against THE
+  AUTHORIZED PROJECT WORKSPACE:
+  `--prompt <text> --cwd <authorized workspace> --mode edit
   --output-format stream-json --no-browser`, argv only (no shell
-  exists anywhere on the path). `--mode build` is always explicit —
-  the headless default is yolo and is never relied on; side-effecting
-  tools are denied by the CLI's own fail-closed broker, and denials
-  are typed outcomes. The workspace is a per-attempt private
-  directory the adapter creates and removes; ambient cwd and
-  request-supplied paths are never trusted.
-- **Model identity is never invented** (D-063): ZCode exposes no
-  supported listing or steering, so the source serves exactly one
-  effort-less plan-lane descriptor (`<source_id>:plan-managed`, no
-  variant, no physical model claim). It is visible in the source view
-  and NOT routable server-side until owner-approved `zai` track
-  evidence lands in `model-tracks.json`. Usage stays unmapped (the
-  result's optional usage member has no evidenced field names);
-  unknown stays unknown.
+  exists anywhere on the path). The workspace is administrator
+  configuration (`--zcode-workspace`): canonicalized with realpath,
+  verified, re-validated per run, passed as both `--cwd` and the
+  process cwd; request content can never select a path and the
+  adapter keeps no execution directory of its own. `--mode edit` is
+  always explicit and is the LEAST-AUTHORITY officially supported
+  mode that permits the coding workflow (first-party evidence:
+  `permission/service.ts` at the D-061-pinned commit, identical in
+  the shipped bundle — edit mode explicitly allows workspace-scoped
+  file edits, `mode.edit.fileEdit`; every other side-effecting or
+  high/critical-risk tool still requires an `ask` a headless run
+  cannot answer, so the vendor's default broker denies it, fail
+  closed). The headless yolo default is never relied on.
+- **Model identity is never invented, and the lane routes as itself**
+  (D-063, amended 2026-09-29): ZCode exposes no supported listing or
+  steering, so the source serves exactly one effort-less plan-lane
+  descriptor (`<source_id>:plan-managed`, no variant, no physical
+  model claim). The owner-reviewed `zai/plan` track
+  (`plan_managed: true`, conservative floor with the plan-family
+  context/output continuity) makes the lane adopt and route through
+  the NORMAL selector: a plain `model: "plan-managed"` request means
+  exactly "execute through this ZCode plan-managed lane in the
+  authorized workspace"; an effort-bearing request is a typed
+  `unsupported_reasoning_effort` rejection; `glm-5.3` and other
+  physical slugs classify nowhere on `zai`, so nothing is ever
+  silently substituted. Usage stays unmapped (the result's optional
+  usage member has no evidenced field names); unknown stays unknown.
 - **Honest endings:** completion requires the documented terminal
   result line AND exit 0; every other ending is a typed failure or an
   explicit `unknown` observation (stderr content is never read).

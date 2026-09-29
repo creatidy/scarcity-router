@@ -65,6 +65,7 @@ from typing import Protocol, cast
 from .errors import CapacityValidationError
 from .gateway_validation import v_int
 from .model_inventory import (
+    AUTH_UNPROBEABLE_KINDS,
     ModelInventoryError,
     ModelInventoryReport,
     is_source_resource_id,
@@ -669,6 +670,10 @@ class WorkerSession:
             for inv in applied_inventories
             for s in inv.sources
             if s.auth_state != "authenticated"
+            and not (
+                s.kind in AUTH_UNPROBEABLE_KINDS
+                and s.auth_state == "unverified"
+            )
         }
         for snapshot in report.resources:
             rid = snapshot.identity.resource_id
