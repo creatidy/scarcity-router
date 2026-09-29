@@ -285,22 +285,24 @@ issue.
 | M04 | #89 | Generic OpenAI-compatible HTTP adapter and Ollama integration |
 | M05 | #90 | Native worker, pairing, and execution transport |
 | M06 | #91 | Codex adapter: CLI/App Server with Desktop and VS Code installations |
-| M07 | #92 | ZCode adapter feasibility — Stage 1 complete; Stage 2 cancelled (D-047) |
+| M07 | #92 | ZCode adapter feasibility — Stage 1 complete; Stage 2 reopened (D-061, 2026-09-28, gate C re-evaluated): all gates pass under the recorded single-owner scope |
 | M08 | #93 | MCP, REST, and CLI compatibility; optional remote mode |
 | M09 | #94 | Configuration, web UX, and diagnostics |
 | M10 | #95 | Distribution, installation, update, and end-to-end acceptance |
 
 Dependency direction (blocked-by; cycle-free): M01→A0; M02→A0; M03→A0,M01,M02;
 M04→A0,M03; M05→A0,M03; M06→A0,M05 (Stage 2 only; Stage 1 evidence is exempt);
-M07→A0,M05 (Stage 2 only; Stage 1 evidence is exempt; Stage 2 cancelled by
-D-047); M08→A0; M09→A0,M03;
+M07→A0,M05 (Stage 2 only; Stage 1 evidence is exempt; Stage 2 reopened by
+D-061); M08→A0; M09→A0,M03;
 M10→A0,M01,M02,M03,M04,M05. The first useful execution vertical slice is
 M01/M02 → M03/M04 with the minimum M09/M10 support each slice needs; a user
 must be able to use real API/Ollama resources through one OpenAI-compatible
 endpoint before all local CLI adapters are complete. M07 was an independent
 research track that never blocked the program: Stage 1 produced
-[`docs/zcode-adapter-stage1-evidence.md`](zcode-adapter-stage1-evidence.md)
-and Stage 2 was cancelled by owner decision (D-047).
+[`docs/zcode-adapter-stage1-evidence.md`](zcode-adapter-stage1-evidence.md),
+Stage 2 was closed by owner decision (D-047) and reopened by D-061
+(2026-09-28) after the official CLI verified the interface condition and the
+re-evaluated terms gate passed under the recorded single-owner scope.
 
 ### Operating modes and deployment topologies
 
@@ -341,7 +343,7 @@ service.
 | HTTP execution adapters | M04 (#89) | One generic OpenAI-compatible HTTP adapter with evidence-based provider presets; Ollama (direct + worker-bridged transport) | Coordinator dispatch, admin-configured origins/credentials | Provider requests/responses, capability reports | Per-provider gateways; sourcing configuration from client requests |
 | Native worker + transport | M05 (#90) | Outbound TLS/WSS connection, pairing identity, heartbeat, state reporting, local adapter invocation within allowlists, local diagnostics | Server worker-protocol messages, local resources | State reports, streams, usage reports | Routing decisions; generic shell/ssh; expanding its allowlist on request |
 | Codex adapter | M06 (#91) | Codex execution through the official CLI/App Server mechanisms on Desktop/CLI/VS Code installations (worker-side or server-reachable) | Stage-1 evidence, D-039 eligibility, worker isolation | Compatibility matrix entries, execution | GUI automation; token extraction; adopting user projects/plugins |
-| ZCode adapter | M07 (#92) | Closed (D-047, 2026-09-20): Stage 1 produced dated feasibility evidence; Stage 2 is cancelled — no execution adapter is planned | Stage-1 evidence, vendor terms | Dated feasibility evidence only; no execution | Assuming official APIs, promotional eligibility or redistribution rights |
+| ZCode adapter | M07 (#92) | Reopened (D-061, 2026-09-28, gate C re-evaluated): official CLI verified (gates A–D) and the terms gate passes under the recorded single-owner scope; adapter implementation authorized, pending | Stage-2 evidence, vendor terms (D-061), worker isolation | Official CLI subprocess only; explicit safe mode; single-owner scope | Third-party or multi-user exposure; credential extraction; direct coding-endpoint calls; quota pooling |
 | Interface compatibility | M08 (#93) | Frozen v1 guardrail suite; parity; optional remote bridge | Every module's changes | Green parity suite | Semantic drift in frozen surfaces |
 | Configuration, web UX, diagnostics | M09 (#94) | Admin onboarding, provider configuration, pairing UI, client keys, routing profiles, diagnostics/doctor | Admin actions, server state | Control API + UI; copyable client configuration | A second selector; exporting secrets; author-private defaults |
 | Distribution and acceptance | M10 (#95) | Server container, worker packaging, update path, E2E and security acceptance | All modules | Installable artifacts; honest acceptance matrix | Fictional artifacts; depending on private infrastructure |

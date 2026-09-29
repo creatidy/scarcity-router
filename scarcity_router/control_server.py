@@ -40,6 +40,7 @@ from __future__ import annotations
 import argparse
 import sys
 import threading
+from collections.abc import Callable
 from pathlib import Path
 from typing import cast
 
@@ -58,6 +59,7 @@ from .server_store import (
     default_server_data_dir,
 )
 from .worker_endpoint import build_tls_context as build_worker_tls_context
+from .worker_protocol import WORKER_PROTOCOL_VERSION
 
 DEFAULT_DATA_DIR = default_server_data_dir()
 
@@ -284,6 +286,7 @@ def main(argv: list[str] | None = None) -> int:
                     plane.worker_endpoint.heartbeat_interval_seconds,
                     worker_reaper_stop,
                 ),
+                kwargs={"on_tick": plane.expire_continuations},
                 name="worker-endpoint-liveness",
                 daemon=True,
             )
@@ -312,7 +315,8 @@ def main(argv: list[str] | None = None) -> int:
         print(
             "worker-protocol listener on "
             + f"{worker_scheme}://{worker_host}:{worker_listener.bound_port} "
-            + f"(protocol v1; pairing codes are issued at {origin}/admin/workers)",
+            + f"(protocol v{WORKER_PROTOCOL_VERSION}; pairing codes are "
+            + f"issued at {origin}/admin/workers)",
             flush=True,
         )
     else:
@@ -342,13 +346,28 @@ def _reap_liveness(
     endpoint: object,
     interval_seconds: int,
     stop: threading.Event,
+    *,
+    on_tick: "Callable[[], object] | None" = None,
 ) -> None:
-    """Close heartbeat-silent worker sessions (bounded liveness reaping)."""
+    """Close heartbeat-silent worker sessions (bounded liveness reaping).
+
+    ``on_tick`` (when supplied) runs the composition's additional bounded
+    maintenance on the same cadence — the D-062 continuation reaper
+    (expire due continuations, cancelling their worker-side turns).
+    """
     from .worker_endpoint import WorkerEndpoint
 
     assert isinstance(endpoint, WorkerEndpoint)
     while not stop.wait(timeout=max(1, interval_seconds)):
         _ = endpoint.enforce_liveness()
+        if on_tick is not None:
+            try:
+                _ = on_tick()
+            except Exception:  # noqa: BLE001 - a failed tick is skipped;
+                # the reaper survives (a dead reaper would let stale
+                # sessions fill the bounded table and continuations pin
+                # slots) and the next cadence tick retries the work.
+                pass
 
 
 def _loopback(host: str) -> bool:

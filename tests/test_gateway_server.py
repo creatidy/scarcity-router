@@ -308,7 +308,7 @@ class SurfaceTests(ServerHarness):
         self.assertEqual(as_dict(final_usage["usage"])["prompt_tokens"], 11)
 
     def test_chunkless_reasoning_synthesizes_reasoning_before_content(self) -> None:
-        """D-062 (#158): a whole-message result carrying reasoning renders
+        """D-063 (#158): a whole-message result carrying reasoning renders
         the reasoning delta BEFORE the content delta in the synthesized
         sequence — reasoning is never merged into content and never
         dropped when a streaming dispatch completes without chunks."""

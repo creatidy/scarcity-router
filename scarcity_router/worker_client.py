@@ -62,6 +62,8 @@ from .resource_state import ResourceStateSnapshot, WorkerStateReport
 from .worker_local_adapters import (
     AdapterNotAllowedError,
     LocalAdapterRegistry,
+    ToolBridgeCancelled,
+    ToolBridgeUnavailable,
     run_allowlisted,
 )
 from .worker_local_store import (
@@ -76,6 +78,8 @@ from .worker_protocol import (
     ErrorMessage,
     ExecuteMessage,
     ExecuteResultMessage,
+    ExecuteToolCallMessage,
+    ExecuteToolResultMessage,
     FrameReader,
     FrameTransport,
     FrameWriter,
@@ -254,12 +258,90 @@ SESSION_STOP = "stop"
 
 
 class _WorkerAttempt:
-    """One in-flight local execution tracked by the runtime."""
+    """One in-flight local execution tracked by the runtime.
+
+    ``tool_call_id``/``tool_result``/``tool_result_event`` carry the
+    D-062 continuation slot: while the adapter thread is blocked inside a
+    client-tool suspension, the session's read loop deposits exactly one
+    harness tool result here (matched to the suspended ``call_id``);
+    the blocked ``suspend`` call consumes it at most once.
+    """
 
     def __init__(self, attempt_id: str) -> None:
         self.attempt_id: str = attempt_id
         self.cancel_event: threading.Event = threading.Event()
         self.thread: threading.Thread | None = None
+        self.tool_call_id: str | None = None
+        self.tool_result: tuple[str, str] | None = None
+        self.tool_result_event: threading.Event = threading.Event()
+        self.tool_bridge: "_SessionToolBridge | None" = None
+
+
+class _SessionToolBridge:
+    """The per-attempt D-062 continuation channel (protocol version 3).
+
+    The adapter calls :meth:`suspend` from its execution thread; the
+    method publishes the suspension to the server (one bounded
+    ``execute_tool_call`` frame) and blocks until the harness's result
+    for THAT call arrives, the admission deadline or a cancellation fires,
+    or the session dies. Exactly one suspension may be pending per
+    attempt: a second concurrent call is a typed refusal — never a
+    queued second consumer.
+    """
+
+    def __init__(
+        self,
+        session: "_ActiveSession",
+        attempt: _WorkerAttempt,
+    ) -> None:
+        self._session: _ActiveSession = session
+        self._attempt: _WorkerAttempt = attempt
+        self._suspended: bool = False
+
+    def suspend(
+        self,
+        call_id: str,
+        name: str,
+        arguments: str,
+        content: str | None,
+    ) -> str:
+        if self._suspended:
+            # Adapter-state-machine defect: one pending client tool call
+            # per attempt at a time, by construction.
+            raise ToolBridgeUnavailable("a tool call is already pending")
+        self._suspended = True
+        self._attempt.tool_call_id = call_id
+        self._attempt.tool_result = None
+        self._attempt.tool_result_event.clear()
+        self._session.send_execute_tool_call(
+            self._attempt.attempt_id, call_id, name, arguments, content
+        )
+        while True:
+            if self._attempt.tool_result_event.wait(timeout=0.1):
+                delivered = self._attempt.tool_result
+                if delivered is not None and delivered[0] == call_id:
+                    # Re-arm for a further sequential round on the SAME
+                    # turn (each round is its own single suspension).
+                    self._suspended = False
+                    self._attempt.tool_call_id = None
+                    return delivered[1]
+                # A result for a different call id cannot continue this
+                # suspension (exact identity, D-062); keep waiting for
+                # the real one — the deadline/cancel paths end the wait.
+                continue
+            if self._attempt.cancel_event.is_set():
+                raise ToolBridgeCancelled("the attempt was cancelled or deadlined")
+            if self._session.stopped:
+                raise ToolBridgeUnavailable("the session ended")
+
+    def deliver(self, call_id: str, content: str) -> bool:
+        """Deposit the harness result (read-loop side); ``False`` when no
+        matching suspension is pending."""
+        if not self._suspended or self._attempt.tool_call_id != call_id:
+            return False
+        self._attempt.tool_result = (call_id, content)
+        self._attempt.tool_result_event.set()
+        return True
 
 
 class WorkerRuntime:
@@ -652,6 +734,9 @@ class _ActiveSession:
         if isinstance(message, ExecuteMessage):
             self._start_execution(message)
             return
+        if isinstance(message, ExecuteToolResultMessage):
+            self._deliver_tool_result(message)
+            return
         if isinstance(message, CredentialRotatedMessage):
             rotated = WorkerLocalIdentity(
                 worker_id=self._identity.worker_id,
@@ -674,6 +759,29 @@ class _ActiveSession:
             self._runtime.note("warn", f"server reported: {message.code}")
             return
         self._runtime.note("warn", "ignoring unexpected server message")
+
+    def _deliver_tool_result(self, message: ExecuteToolResultMessage) -> None:
+        """Route one v3 harness tool result into its pending suspension.
+
+        Version-gated like every v3 frame: a v1/v2 session must never
+        receive it. A result for an attempt with no matching pending
+        suspension is a non-fatal protocol answer (the server already
+        failed the continuation closed) — never attributed elsewhere.
+        """
+        if self._version < 3:
+            self._runtime.note(
+                "error", "protocol violation by server: v3 frame on v2 session"
+            )
+            self._stop_session.set()
+            return
+        with self._attempts_lock:
+            attempt = self._attempts.get(message.attempt_id)
+        if attempt is None or attempt.tool_bridge is None:
+            self._runtime.note(
+                "warn", "tool result for an attempt without a pending suspension"
+            )
+            return
+        _ = attempt.tool_bridge.deliver(message.call_id, message.content)
 
     # ── Execution ────────────────────────────────────────────────────
 
@@ -703,6 +811,11 @@ class _ActiveSession:
                 return
             attempt = _WorkerAttempt(message.attempt_id)
             self._attempts[message.attempt_id] = attempt
+        if self._version >= 3:
+            # D-062: the continuation channel exists only on protocol
+            # version 3 sessions; on older sessions the adapter sees no
+            # channel and fails tool-bearing calls closed.
+            attempt.tool_bridge = _SessionToolBridge(self, attempt)
         thread = threading.Thread(
             target=self._execute_task,
             args=(message, attempt),
@@ -741,6 +854,7 @@ class _ActiveSession:
                 cancel_event=attempt.cancel_event,
                 deadline=message.deadline,
                 emit=self._make_emitter(message.attempt_id),
+                tool_bridge=attempt.tool_bridge,
             )
         except AdapterNotAllowedError:
             # The allowlist holds even against this server: never invoke,
@@ -775,7 +889,22 @@ class _ActiveSession:
                 deadline_timer.cancel()
             with self._attempts_lock:
                 _ = self._attempts.pop(message.attempt_id, None)
-        self._send_result(self._result_message(message.attempt_id, result))
+        try:
+            result_message = self._result_message(message.attempt_id, result)
+        except WorkerProtocolError as exc:
+            # The typed result-representation failure (e.g. reasoning on a
+            # below-v4 negotiation, D-063) fails the attempt closed with
+            # the structural note — never a silently truncated result.
+            self._send_result(
+                ExecuteResultMessage(
+                    attempt_id=message.attempt_id,
+                    status="failed",
+                    calls=(),
+                    note=exc.message[:200],
+                )
+            )
+            return
+        self._send_result(result_message)
 
     def _deadline_seconds(self, deadline: str) -> float | None:
         """Remaining seconds to the admission deadline, or ``None`` when
@@ -797,6 +926,37 @@ class _ActiveSession:
             )
 
         return emit
+
+    @property
+    def stopped(self) -> bool:
+        return self._stop_session.is_set() or self._runtime.stop_requested
+
+    def send_execute_tool_call(
+        self,
+        attempt_id: str,
+        call_id: str,
+        name: str,
+        arguments: str,
+        content: str | None,
+    ) -> None:
+        """Publish one client-tool suspension to the server (v3).
+
+        A failed send means the server never learned of the suspension;
+        the attempt's fate is the familiar interrupted-report path, and
+        the blocked adapter is woken through the session teardown.
+        """
+        message = ExecuteToolCallMessage(
+            attempt_id=attempt_id,
+            call_id=call_id,
+            name=name,
+            arguments=arguments,
+            content=content,
+        )
+        try:
+            self._sender.send(message.to_payload())
+        except (ConnectionError, OSError, WorkerProtocolError):
+            self._stop_session.set()
+            raise ToolBridgeUnavailable("the session ended") from None
 
     def _result_message(self, attempt_id: str, result: AdapterResult) -> ExecuteResultMessage:
         from .worker_protocol import usage_to_dict
@@ -820,6 +980,17 @@ class _ActiveSession:
             calls.append(call_doc)
         message: Mapping[str, object] | None = None
         if result.message is not None:
+            if self._version < 4 and result.message.reasoning is not None:
+                # D-063: the reasoning member is version-4-only. On a
+                # session that negotiated below 4 the result cannot be
+                # represented — fail the attempt closed instead of
+                # silently dropping the reasoning (negotiation falling
+                # back to v3 must never lose it).
+                raise WorkerProtocolError(
+                    "internal_error",
+                    "reasoning output cannot be represented on a negotiated "
+                    + "protocol below 4",
+                )
             message = message_to_dict(result.message)
         return ExecuteResultMessage(
             attempt_id=attempt_id,

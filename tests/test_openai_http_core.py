@@ -293,7 +293,7 @@ class ResponseParseTest(unittest.TestCase):
         self.assertEqual(parsed.usage.total_tokens, 5)
 
     def test_reasoning_content_is_preserved_not_ignored(self) -> None:
-        """D-062 (#158): the deepseek preset's evidenced reasoning-output
+        """D-063 (#158): the deepseek preset's evidenced reasoning-output
         field is preserved on the normalized message — this test once
         pinned the OLD silent-discard behavior and now pins its opposite;
         it would fail loudly if preservation ever regressed to a silent

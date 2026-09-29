@@ -452,8 +452,10 @@ class SyntheticLocalAdapter:
         cancel_event: threading.Event,
         deadline: str,
         emit: Callable[[AdapterStreamChunk], None],
+        tool_bridge: "object | None" = None,
     ) -> AdapterResult:
         _ = deadline
+        _ = tool_bridge
         with self.lock:
             self.invocations.append(call)
         if self.behavior is not None:

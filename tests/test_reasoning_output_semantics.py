@@ -547,8 +547,10 @@ class NormalizedSeamTests(unittest.TestCase):
         self.assertIsNone(rebuilt.reasoning)
 
     def test_worker_protocol_version_bumped_for_the_member(self) -> None:
-        self.assertEqual(3, WORKER_PROTOCOL_VERSION)
-        self.assertEqual((3, 2, 1), SERVER_SUPPORTED_PROTOCOL_VERSIONS)
+        # v3 is owned by merged D-062 (client-tool continuation); the
+        # reasoning member is version 4 on top of the complete v3.
+        self.assertEqual(4, WORKER_PROTOCOL_VERSION)
+        self.assertEqual((4, 3, 2, 1), SERVER_SUPPORTED_PROTOCOL_VERSIONS)
 
     def test_reasoning_delta_chunk_round_trips_through_worker_protocol(self) -> None:
         chunk = AdapterStreamChunk(kind=CHUNK_REASONING_DELTA, text="step")

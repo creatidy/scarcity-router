@@ -4523,9 +4523,388 @@ Do not rewrite history or change an accepted decision silently.
   boundary; the inclusive local-calendar-date encoding follows the D-035
   convention and is recorded here as the resolved interpretation.
 
-### D-062 — Provider reasoning output: preserve through one normalized representation or fail closed
+### D-061 — M07 Stage 2 reopen evaluation: all gates pass under single-owner scope; Stage 2 REOPENED
 
-- **Status:** Accepted (issue #158; branch `translation/reasoning-output-semantics`)
+- **Status:** Accepted (owner-authorized reopen evaluation; gate C
+  re-evaluated the same day on the owner's direction; issue #92)
+- **Date:** 2026-09-28
+- **Issue:** BioMedical-IT/scarcity-router#92 (M07); executes the D-047
+  point-4 reopen procedure; evidence:
+  [`docs/zcode-adapter-stage2-evidence.md`](zcode-adapter-stage2-evidence.md)
+- **Confidence:** High for the interface, permission and live findings
+  (first-party source at a pinned release plus a live probe). High for
+  the terms verdict within its method: a clause-by-clause textual
+  analysis of current official ZCode/Z.ai sources (ZCode ToS effective
+  2026-06-15, Z.AI ToU 2026-04-14, GLM Coding Plan Usage Policy,
+  Subscription Terms, devpack overview and ZCode tool guide; all
+  retrieved 2026-09-28), quoted verbatim in the evidence document. The
+  two interpretive readings (network-proxy scope; third-party scope)
+  are interpretations of official text, not vendor statements; the
+  verdict is scoped to the recorded single-owner deployment scope and
+  voided by any widening of it.
+- **Context:** D-047 closed M07 Stage 2 with a reopen condition: M07 may
+  be reconsidered only when ZCode ships an official supported
+  programmatic interface AND the applicable vendor terms permit the
+  intended use, through a new superseding decision. The owner authorized
+  a re-evaluation after ZCode published an open-source CLI. The first
+  pass of this evaluation (this decision as originally recorded, head
+  `112e950`) accepted the interface and permission evidence but
+  concluded the terms gate unresolved, reading Scarcity Router's
+  execution-routing role as "proxy-style use" lacking vendor
+  authorization. The owner directed a re-evaluation of the terms gate
+  only, against the concrete deployment scope (one natural-person
+  account owner; the owner's own paid GLM Coding Plan; supported
+  installation and authentication; local subprocess launch of the
+  official CLI; credentials local; no third party, no public or
+  multi-user gateway, no resale, no pooling, no quota circumvention, no
+  scraping/IPC/reverse engineering/spoofing), noting that D-047 was
+  written when no supported external interface existed and the
+  contemplated path was undocumented desktop IPC — a materially
+  different fact pattern. The decision id leaves D-060 unassigned on
+  purpose: open issue #156 reserves D-060 for the delegated-model-
+  governance record (the same gap-handling precedent as the
+  D-057/D-058 renumber in PR #152).
+- **Decision:**
+  1. **D-047 reopen condition 1 is now MET.** ZCode release v3.14.3
+     (2026-09-24, commit `29628c9`) ships a first-party Apache-2.0 CLI
+     (`apps/zcode-cli`) with an officially documented non-interactive
+     path: `--prompt`/`-p`, `--target`, `--cwd`, `--mode`, strict
+     `--output-format text|json|stream-json` (unknown values are
+     rejected, never silently downgraded to text), NDJSON session events
+     terminated by a typed final result, `--disallowed-tools`,
+     `--resume`, `app-server`/`agent-server` and `doctor --json`.
+     `NOTICE.md` documents the non-interactive `--prompt` path and the
+     automation-risk table in the vendor's own words. Stage 1's
+     "no supported programmatic surface" finding no longer holds.
+  2. **A supported safe permission model exists**, satisfying the
+     evaluation's requirement that the integration must not rely
+     silently on an unsafe unrestricted execution mode. Headless
+     `--prompt` defaults to yolo — confirmed in help text,
+     `NOTICE.md` and source (`DEFAULT_HEADLESS_PROMPT_MODE`) — but
+     `--mode build|plan|edit` is first-party supported, and under
+     non-yolo modes every side-effecting/high/critical tool returns an
+     `ask` decision that a headless run cannot answer: the default
+     `DenyPermissionBroker` denies it. The failure mode is fail-closed.
+     Any future adapter must always pass an explicit safe mode, never
+     rely on the default.
+  3. **D-047 reopen condition 2 is MET under the recorded single-owner
+     deployment scope.** Clause-by-clause analysis of the official
+     sources (quotes and retrieval dates in the evidence document,
+     section 5): the "unauthorized proxy server" prohibition (ZCode ToS
+     §IV) targets network-infrastructure misuse — "using ZCode as a
+     virtual server, unauthorized proxy server, or mail server" — and
+     the proposed architecture has no proxied resource, no proxy
+     beneficiary and no network/service boundary: the only model client
+     is the owner's own authenticated CLI process launched locally.
+     The third-party clauses (ZCode ToS §III–§IV; Coding Plan Usage
+     Policy; Subscription Terms §4.3) address other persons or
+     organizations receiving account access — "anyone other than the
+     original registrant", "bulk or automated usage on behalf of
+     others" — and the ZCode ToS itself deems account activities the
+     owner's own actions and CLI operations "an extension of your own
+     actions"; owner-controlled software is the owner's instrument, not
+     a third party. The automated-means clauses are purpose-bound to
+     scraping and unauthorized access, not to invoking the vendor's own
+     product. The commercial-use limitation (ZCode ToS §VI.2) is
+     expressly lifted when the user "subscribed to the corresponding
+     services on ZCode and paid the applicable fees"; official
+     documentation (devpack overview; the vendor's "Using GLM Coding
+     Plan in ZCode" guide) establishes the paid GLM Coding Plan as that
+     corresponding service for coding through ZCode, so no separate
+     written vendor authorization is required for the subscribed coding
+     use. The supported-tools rule (Usage Policy; Subscription Terms
+     §4.2) is satisfied by construction — the only model client is the
+     official tool. No remaining clause clearly prohibits the exact
+     deployment; generic reservations are insufficient under the
+     evaluation rule.
+  4. **Live feasibility (recorded as gate D in the evidence document;
+     advisory — points 1–3 govern).** The CLI
+     was built from the pinned official source and probed in a
+     disposable workspace: headless invocation without a shell wrapper, structured
+     event stream, typed provider-error attribution, meaningful exit
+     status, timeout bounding, stderr separation and OS-boundary SIGTERM
+     cancellation all demonstrated; `doctor --json` is a usable
+     capability probe. A successful completion was not observed because
+     this workstation's shared configuration pins a custom provider
+     endpoint that currently fails the CLI's TLS validation — the CLI
+     refused it instead of bypassing validation, which is itself
+     favorable evidence. The interface carried the spike; the
+     environment did not.
+  5. **M07 Stage 2 is REOPENED; D-047's Stage-2 NO-GO is superseded**
+     through the point-4 reopen procedure D-047 itself defined — both
+     conjuncts of the reopen condition are met. Implementation of the
+     ZCode CLI execution adapter is authorized subject to (a) the
+     already-established technical constraints: explicit safe
+     permission mode always passed (never the yolo default), typed
+     denial outcomes, bounded runtimes, cancellation, redaction,
+     dated-version capability pinning; and (b) the retained exclusions
+     in point 6. The implementation is a follow-up task; the change
+     recording this decision is documentation-only.
+  6. **Scope boundary of this PASS (retained exclusions).** The terms
+     verdict covers exactly the single-owner local integration. Outside
+     the evaluation — each requiring a new decision before any such
+     use — are: sharing credentials or account access with any third
+     party; a public or multi-user ZCode gateway; resale or repackaging
+     of access; account pooling; quota circumvention; use of the plan
+     outside officially supported tools (the adapter must never extract
+     plan credentials or call the coding endpoints directly from
+     Scarcity Router); modifying or bypassing ZCode security-
+     restriction or permission configuration; providing model
+     capabilities as a service to third parties (Subscription Terms
+     §4.2). Any widening of the deployment scope voids this evaluation.
+- **Reason:** The reopen condition was written as a conjunction and
+  both conjuncts are now met. The first pass preserved NO-GO by reading
+  the router's local process orchestration as "proxy-style use" —
+  an inference from the product's routing function that the
+  re-evaluation retracts — without analyzing the third-party clauses'
+  person-focused objects or the ToS §VI.2 paid-subscription exception
+  at all. D-047's caution was formed under a materially different fact
+  pattern (no official external interface; undocumented desktop IPC);
+  its own point-4 procedure requires a superseding decision on current
+  facts, which this record provides with verbatim official quotations.
+- **Alternatives considered:** (a) keeping NO-GO pending written vendor
+  authorization — rejected: the Terms themselves provide the
+  paid-subscription exception (§VI.2) and no analyzed clause reaches
+  the described architecture; inventing a written-authorization
+  requirement for this path would contradict the official text, which
+  reserves written agreements for use outside supported tools
+  (Subscription Terms §4.2); (b) recording UNCLEAR — rejected: UNCLEAR
+  requires an applicable clause whose scope is genuinely ambiguous for
+  this architecture; the clause-by-clause review found none, and the
+  two readings the verdict relies on are supported by the clauses'
+  objects and the ToS's own deeming language; (c) implementing the
+  adapter in this same change — rejected: the owner scoped this
+  remediation to the evidence record, D-061 and existing M07
+  cross-references; the implementation follows as its own task; (d)
+  recording no decision and only keeping the evidence doc — rejected:
+  D-047 requires reopenings to go through an explicit decision.
+- **Boundary:** Documentation only — this record,
+  `docs/zcode-adapter-stage2-evidence.md`, and dated cross-reference
+  updates in `docs/roadmap.md`, `docs/architecture.md` and
+  `docs/providers.md`. No code, no catalog ratings, no capability
+  claims, no serialized contracts, no execution-surface behavior. M04's
+  Z.ai HTTP/API path (D-047 point 5) is unaffected.
+
+### D-062 — Client-owned tool continuation on the Codex execution source: the Family-A suspended turn, worker protocol v3 and the bounded continuation boundary
+
+- **Status:** Accepted (issue #137; child E of program #132; branch
+  `gateway/codex-client-tools`). Numbered D-062 because D-060 is
+  reserved by open issue #156 and D-061 was taken (merged mid-flight)
+  while this branch was in flight; the renumbering is a scoped
+  substitution of this section only — D-061's own reference to the
+  D-060 reservation is history and stays untouched.
+- **Date:** 2026-09-28
+- **Base:** `develop` @ `6fec46c` (D-058/#136 and D-059/#154 merged;
+  #150's Stage-A reuse evidence consumed as input, its program untouched)
+- **Confidence:** High for the responsibility boundary, the state
+  machine, the exactly-once continuation discipline and the security
+  invariants (implemented and test-pinned at the HTTP, protocol and
+  adapter boundaries against the deterministic fake App Server). The
+  LIVE signed-in round trip stays behind the recorded
+  ``LIVE_CODEX_SUBSCRIPTION``-class gate: the tool cells are PARTIAL,
+  never PASS, until that acceptance. The ``success`` mapping (pt 6)
+  is an OWNER DECISION accepting a deliberately lossy translation —
+  its provenance is the owner's resolution of the 2026-09-28 decision
+  packet, not mechanism evidence.
+- **Context:** #137's investigation concluded TOOL_BRIDGE_VIABLE
+  (2026-09-28, issue comment): the client-tool mechanism on the current
+  runtime (``codex-cli 0.155.0-alpha.16.3``; upstream re-pin
+  ``rust-v0.157.1`` @ ``36650394`` by #150) is ``dynamicTools`` on
+  ``thread/start``, gated by the single ``experimentalApi`` capability,
+  with ``item/tool/call`` as the per-invocation suspension and a
+  ``{success, contentItems}`` answer into the SAME thread/turn.
+  Declarations are THREAD-scoped, not per-turn (F2), which makes the
+  tool set part of continuation identity. Family B (stateless
+  reconstruction) was not proved semantically equivalent (its two
+  hinges — interrupt-while-pending and inject_items fidelity — are
+  unverified), so under #137's frozen rule Family A is the only
+  selectable design.
+- **Decision:**
+  1. **Family A — the suspension IS the mechanism.** One Codex
+     App Server process, one thread, one turn per logical backend
+     execution. When Codex emits ``item/tool/call``, the worker holds
+     the request unanswered, relays it to the gateway over the worker
+     protocol, and the gateway ends that HTTP leg with a normal OpenAI
+     ``assistant.tool_calls`` + ``finish_reason="tool_calls"``
+     response. The harness executes its own tool; the next ordinary
+     Chat Completions request carries ``role:"tool"``; the gateway
+     answers the held ``item/tool/call`` with the harness's verbatim
+     text so the SAME turn continues — final answer or another
+     evidenced suspension. Reconstruction, replay into a new thread,
+     rerouting of a suspended turn and silent restarts do not exist; a
+     lost suspended runtime is a typed failure
+     (``continuation_not_found`` before delivery, honest
+     ``ambiguous_execution_state`` after it).
+  2. **Worker protocol v3 (closed, version-gated).** Exactly two new
+     attempt-scoped messages: ``execute_tool_call``
+     (worker→server: ``attempt_id``, backend ``call_id``, ``name``,
+     ``arguments`` JSON text, optional pre-suspension ``content``) and
+     ``execute_tool_result`` (server→worker: the harness's text
+     content for that call, ≤ 4 MiB). ``WORKER_PROTOCOL_VERSION = 3``;
+     the server accepts (3, 2, 1). v1/v2 sessions never carry the v3
+     vocabulary (violation is fatal), an old worker is NEVER
+     tool-continuation-capable, and ordinary non-tool execution on old
+     workers is unchanged. The transport, framing, authentication and
+     exactly-once dispatch discipline are untouched; there is still no
+     arbitrary-command surface and no second transport.
+  3. **Opaque, single-subscriber continuation identity.** The
+     externally visible ``tool_call_id`` is a server-issued random
+     token (``srct-`` + 128 bits); Codex's ``callId``, thread ids and
+     process facts never leave the worker. One bounded server-side
+     registry (≤ 64 pending) maps token → suspended execution bound to
+     the authenticated client, the exact worker/resource, the original
+     tool set fingerprint, the conversation-prefix fingerprint, the
+     echoed assistant tool_calls and the absolute deadline. Exactly one
+     client may submit the result and exactly one result is accepted:
+     replay/double-delivery is ``409 continuation_already_resolved``
+     (a bounded client-scoped tombstone ring keeps post-terminal
+     replays precise), a foreign client's replay is indistinguishably
+     ``404 continuation_not_found``, and every fingerprint mismatch
+     (model, effort, tools, tool_choice, prefix, assistant echo, extra
+     tool messages) is ``400 continuation_mismatch``. Prompt, tool
+     arguments and tool results are never stored — only bounded
+     digests.
+  4. **One absolute lifetime — reuse, not a new policy.** The logical
+     model turn's budget is the ORIGINAL attempt's admission deadline
+     (``execution_time_limit_seconds`` from the initial dispatch). The
+     worker's existing deadline timer (already armed on the execute
+     frame) interrupts the suspended Codex turn at expiry; the
+     gateway's reaper tick additionally expires the registry record and
+     cancels the worker turn; a later tool result receives the typed
+     expired/not-found response. No per-leg reset exists, so no request
+     pattern can keep a Codex process alive indefinitely, and no new
+     client-expandable knob was introduced.
+  5. **Narrowly scoped experimental API.** The stable surface keeps
+     ``initialize`` with empty ``capabilities`` byte-for-byte. ONLY a
+     request that actually carries client tools opts into
+     ``capabilities.experimentalApi = true`` and declares the client's
+     function tools verbatim as thread-scoped ``dynamicTools`` (no
+     renaming, truncation, schema weakening or sanitization; bounded
+     count/bytes/depth; anything unrepresentable is a typed
+     pre-execution rejection). Tool-``choice`` modes the surface cannot
+     enforce (``required``/named/``none``) are refused before
+     execution — no prompt-based emulation; ``parallel_tool_calls``
+     keeps its existing refuse-not-drop treatment (it lands in
+     ``generation_params``), and sequential multi-round turns are
+     bounded (32 rounds/turn) with one pending call at a time.
+  6. **The ``success`` semantic: explicit OWNER DECISION — an
+     accepted lossy protocol translation (resolves the 2026-09-28
+     decision packet; supersedes the interim answer-point STOP).**
+     Upstream (verified first-hand at ``openai/codex`` @ ``36650394``,
+     ``codex-rs/protocol/src/protocol.rs``) defines the dynamic-tool
+     answer's ``success`` as "Whether the tool call succeeded" — a
+     REQUIRED ``bool`` with no default. The generic Chat Completions
+     ``role:"tool"`` message (execution surface v1: text-only, closed
+     field set) carries NO independent boolean expressing whether the
+     external tool OPERATION succeeded, so the richer upstream
+     distinction cannot be preserved across this source contract. The
+     OWNER has therefore accepted, for the generic Chat Completions
+     execution surface, the explicit compatibility rule: **a
+     syntactically valid ``role:"tool"`` message with the expected
+     ``tool_call_id`` is represented on the Codex side as
+     ``DynamicToolCallResponse {success: true, contentItems:
+     [{"type": "inputText", "text": <verbatim message content>}]}``.**
+     This is an owner-accepted LOSSY protocol translation and must be
+     read exactly as follows: it is NOT the native meaning of Codex
+     ``success`` (the upstream fact above stands); ``success: true``
+     does NOT prove the external operation succeeded; it asserts only
+     that the generic result is represented as a successfully returned
+     function-call output on the Codex side. Semantic/tool failures
+     may still be represented by the harness in the verbatim result
+     content, which Scarcity Router never inspects, parses,
+     pattern-matches or reinterprets; ``success: false`` is never
+     inferred from content, HTTP outcomes or id validity. The rule
+     applies generically to every conforming Chat Completions client —
+     no client-specific branch exists. The mapping is applied only
+     after ALL continuation validation has succeeded (exact client,
+     exact continuation, digest-validated echo, exactly-once claim,
+     current hard-authority recheck, absolute deadline). The
+     interim answer-point STOP (refusing the answer as
+     ``tool_result_success_unresolved``) is superseded by this
+     decision and removed.
+  7. **Honest audit across the multi-request turn.** The initial leg
+     audits ``completed`` with an ``unknown``-status, usage-free call
+     observation (the provider call is open) plus the additive reason
+     code ``suspended_for_client_tool``; the terminal continuation leg
+     audits ``completed`` with the turn's SINGLE usage-bearing
+     observation plus ``continuation_resumed`` and repeats the
+     original decision/target identity. Usage is therefore carried
+     exactly once; records correlate by shared ``decision_id``. Additive
+     reason codes only; the frozen field set is unchanged.
+  8. **Capability honesty and rolling upgrade.** ``tool_calls`` and
+     ``tool_results`` move UNSUPPORTED → PARTIAL (dated 2026-09-28:
+     mechanism evidence + the deterministic round trip under the pt 6
+     owner-approved ``success`` mapping; signed-in live acceptance
+     still outstanding — neither cell is claimed PASS) and the Codex
+     surface registration fact ``tool_calls`` becomes true — but tool
+     eligibility additionally requires the LIVE worker session to
+     negotiate protocol v3, so an old worker never becomes tool-call
+     eligible because the static matrix moved. A tool-bearing request
+     selected onto a v3-less worker fails closed with a typed backend
+     failure before any experimental API use.
+  9. **Sticky vs revocable.** Competitive changes (D-059 campaigns,
+     blackouts, scarcity, quota, newly-cheaper resources) can never
+     move or re-rank a suspended turn — the continuation path performs
+     no routing I/O at all. Hard authority is separate: worker/source
+     revocation, source disappearance, session loss and expiry
+     terminate the pending turn (interrupt + bounded process teardown)
+     and fail the continuation closed.
+- **Reason:** The investigation's evidence (mechanism-level, three
+  agreeing classes) leaves exactly one protocol-native design, and the
+  frozen #137 constraints (generic OpenAI continuation carrier, no
+  cross-client access, bounded lifetime, closed versioned worker
+  contract, honest evidence) each map onto one mechanism above. Reusing
+  the admission deadline as the turn lifetime avoids a second policy
+  surface while satisfying the no-loophole requirement.
+- **Alternatives considered:** Family B stateless reconstruction
+  (rejected: semantic equivalence unproved — the #137 STOP rule);
+  passing Codex's ``callId`` through as the client-visible tool_call_id
+  (rejected: leaks worker-internal correlation ids and grants nothing
+  back — an opaque server-issued token is strictly safer); a new
+  administrator ``continuation_ttl_seconds`` (rejected for now: the
+  admission deadline already bounds the whole turn and a second
+  configurable lifetime invites divergence; revisiting is cheap if a
+  real workload needs a longer tool budget than its inference budget);
+  enabling ``experimentalApi`` globally (rejected: scope creep on the
+  experimental surface); serving parallel dynamic-tool fan-out
+  (rejected: unevidenced; ``parallel_tool_calls`` stays
+  refuse-not-drop); durable continuation state (rejected: in-memory is
+  the honest architecture — a gateway restart loses pending
+  continuations and says so).
+- **Reconciliation:** D-056 pt 5 (the client-owned tool lifecycle) is
+  implemented for the Codex source; D-043's worker-protocol closedness
+  is preserved through an explicit version bump; D-058's effective
+  limits, output-limit normalization and audit provenance are
+  untouched and apply to the initial tool-bearing leg as to any Codex
+  request; D-059's policy semantics govern initial selection only and
+  by construction cannot reroute a suspended turn. The #137 frozen
+  scope's non-goals stand: no Responses API, no Anthropic/MCP bridge,
+  no worker-side or router-side tool execution. The pt 6 ``success``
+  mapping is an amendment to THIS record resolving its own decision
+  packet — no new decision number is created, and the upstream fact it
+  cites ("Whether the tool call succeeded") remains the authoritative
+  description of Codex's native semantic.
+- **Boundary:** ``worker_protocol.py``, ``worker_endpoint.py``,
+  ``worker_client.py``, ``worker_bridged_adapter.py``,
+  ``worker_codex_adapter.py``, ``worker_local_adapters.py``,
+  ``gateway_continuation.py`` (new), ``gateway_adapters.py``,
+  ``gateway_coordinator.py``, ``gateway_contracts.py``,
+  ``routing_core.py`` (the live v3 availability gate, the
+  ``continuation_capable_resource_ids`` request input and the
+  compatibility reason-code dedup), ``control_api.py``,
+  ``control_server.py``, ``codex_worker_evidence.py``,
+  ``execution_sources.py``, tests,
+  ``docs/worker-protocol.md``, ``docs/execution-surface.md``,
+  ``docs/codex-adapter-stage1-evidence.md`` and this record. The live
+  signed-in acceptance remains open; no cell above PARTIAL is claimed.
+
+### D-063 — Provider reasoning output: preserve through one normalized representation or fail closed
+
+- **Status:** Accepted (issue #158; branch `translation/reasoning-output-semantics`; PR #160).
+  Numbered D-062 at recording time from the then-current `develop` frontier;
+  renumbered to **D-063** at integration after merged PR #159 legitimately
+  took D-062 for the client-tool continuation (the recorded D-057/D-058
+  renumber precedent; whole-record textual renumber, semantics unchanged).
 - **Date:** 2026-09-28
 - **Confidence:** High. Defect reproduced on canonical `develop` @
   `6fec46ca82901a5fb8761909778c16d8322bbb97` before any change. Provider
@@ -4603,12 +4982,15 @@ Do not rewrite history or change an accepted decision silently.
      provider arrival order (reasoning precedes text within one frame);
      fragmentation correctness is inherited from the authoritative SSE
      parser; no full-stream buffering of reasoning.
-  7. **Worker transport:** worker protocol version 3 adds ONE optional
-     bounded `reasoning` member on conversation messages (the documented
-     v2 "one optional member" precedent); the server accepts v1/v2/v3
-     peers; an evidenced-reasoning response under a negotiated schema that
-     cannot represent it fails closed worker-side — never silently
-     dropped.
+  7. **Worker transport:** worker protocol version 4 adds ONE optional
+     bounded `reasoning` member on conversation messages, on top of the
+     COMPLETE version-3 (D-062 tool-continuation) semantics — the same
+     documented "one optional member" precedent. The server accepts
+     v1/v2/v3/v4 peers; a `reasoning` member on a session that negotiated
+     below 4 is a schema violation the receiver rejects typed, and an
+     evidenced-reasoning response under a negotiated schema that cannot
+     represent it fails closed worker-side — negotiation can never
+     silently drop reasoning.
 - **Reuse (focused, #150 not repeated):** LiteLLM v1.102.1 @ `1ceeefbf`
   (MIT), `litellm/types/utils.py` — ADOPTED the normalized semantics
   (one `reasoning_content` field on message and delta; provider-variant
@@ -4640,7 +5022,7 @@ Do not rewrite history or change an accepted decision silently.
   `providers/openai_http_presets.py`, `providers/openai_http_adapter.py`,
   `gateway_adapters.py`, `gateway_openai.py`, `gateway_server.py`,
   `worker_local_translation.py`, `worker_local_adapters.py`,
-  `worker_protocol.py` (protocol version 3), tests,
+  `worker_protocol.py` (protocol version 4 on top of the D-062 v3), tests,
   `docs/execution-surface.md`, `docs/worker-protocol.md`, this record.
   No selector, ranking, capability-rating, catalog or routing-core
   change; no new admission dimension (reasoning output is response-side,

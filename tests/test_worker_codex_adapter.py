@@ -166,6 +166,7 @@ def _call(
     response_format: dict[str, object] | None = None,
     reasoning_effort: str | None = None,
     tools: tuple[dict[str, object], ...] = (),
+    tool_choice: object = None,
     resource: ResourceIdentity | None = None,
     model: ModelIdentity | None = None,
 ) -> AdapterCall:
@@ -183,6 +184,7 @@ def _call(
         response_format=response_format,
         reasoning_effort=reasoning_effort,
         tools=tools,
+        tool_choice=tool_choice,
     )
 
 
@@ -1064,8 +1066,11 @@ class CodexAdapterTests(unittest.TestCase):
             deadline=_future_deadline(),
             emit=lambda chunk: None,
         )
+        # D-062: without a v3 continuation channel the tool path fails
+        # closed BEFORE any execution — the tools are never silently
+        # dropped and the stable surface is never experimentalized.
         self.assertEqual("failed", result.status)
-        self.assertEqual("tool_calls_unsupported", result.calls[0].note)
+        self.assertEqual("tool_bridge_protocol_unsupported", result.calls[0].note)
         self.assertEqual([], harness.spawner.specs)
 
     def test_max_output_tokens_is_rejected_before_any_execution(self) -> None:
@@ -1969,6 +1974,327 @@ class WorkerWiringTests(unittest.TestCase):
         self.assertEqual("gpt-5.6-sol", arguments["codex_model"])
         self.assertEqual("/usr/local/bin/codex", arguments["codex_bin"])
         self.assertFalse(bool(arguments.get("allow_ollama")))
+
+
+# ── D-062: the client-tool bridge (suspended turn, harness result) ───────────
+
+
+class _ScriptedBridge:
+    """A deterministic :class:`ToolBridgeChannel` for adapter tests."""
+
+    def __init__(self, results: list[str] | None = None) -> None:
+        self.results: list[str] = (
+            list(results) if results is not None else ["TOOL-RESULT"]
+        )
+        self.seen: list[tuple[str, str, str, str | None]] = []
+        self.calls_made: int = 0
+
+    def suspend(
+        self,
+        call_id: str,
+        name: str,
+        arguments: str,
+        content: str | None,
+    ) -> str:
+        self.calls_made += 1
+        self.seen.append((call_id, name, arguments, content))
+        if self.results:
+            return self.results.pop(0)
+        raise AssertionError("the bridge ran out of scripted results")
+
+
+class _BlockingBridge:
+    """Suspends until the harness's cancel event fires (cancel path).
+
+    ``arm()`` starts a watchdog that sets the cancel event once the
+    adapter actually suspended (deterministically interrupting the
+    pending wait).
+    """
+
+    def __init__(self, cancel_event: threading.Event) -> None:
+        self._cancel_event: threading.Event = cancel_event
+        self.seen: list[tuple[str, str, str, str | None]] = []
+
+    def arm(self) -> None:
+        def fire() -> None:
+            while not self.seen:
+                _ = self._cancel_event.wait(timeout=0.02)
+            self._cancel_event.set()
+
+        threading.Thread(target=fire, daemon=True).start()
+
+    def suspend(
+        self,
+        call_id: str,
+        name: str,
+        arguments: str,
+        content: str | None,
+    ) -> str:
+        self.seen.append((call_id, name, arguments, content))
+        while not self._cancel_event.wait(timeout=0.02):
+            pass
+        from scarcity_router.worker_local_adapters import ToolBridgeCancelled
+
+        raise ToolBridgeCancelled("cancelled while pending")
+
+
+_TOOL_DECLARATION: tuple[dict[str, object], ...] = (
+    {
+        "type": "function",
+        "function": {
+            "name": "synthetic_lookup",
+            "description": "synthetic",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+)
+
+
+def _tool_scenario(**turn_extra: object) -> dict[str, object]:
+    turn: dict[str, object] = {
+        "dynamicTool": "synthetic_lookup",
+        "deltas": ["Checking "],
+        "postDeltas": ["Done."],
+        "usage": {"last": {"inputTokens": 11, "outputTokens": 7}},
+        "status": "completed",
+    }
+    turn.update(turn_extra)
+    return {"init": "ok", "account": "chatgpt", "turn": turn}
+
+
+class CodexToolBridgeTests(CodexAdapterTests):
+    """The D-062 suspension round trip at the adapter edge (fake server)."""
+
+    def test_suspension_relays_and_answers_with_the_owner_mapping(self) -> None:
+        """D-062 pt 6 (OWNER DECISION): the full round trip — the
+        harness result is answered onto the ORIGINAL callId as
+        ``success: true`` with the verbatim text as one inputText item,
+        and the SAME turn continues to its terminal answer."""
+        harness = self._harness(_tool_scenario())
+        bridge = _ScriptedBridge()
+        result = harness.adapter.invoke(
+            _call(tools=_TOOL_DECLARATION),
+            cancel_event=threading.Event(),
+            deadline=_future_deadline(),
+            emit=lambda chunk: None,
+            tool_bridge=bridge,
+        )
+        self.assertEqual("completed", result.status)
+        assert result.message is not None
+        # The resumed turn's message carries only post-suspension text;
+        # the pre-tool text left with the suspension content.
+        self.assertEqual("Done.", result.message.content)
+        self.assertEqual(
+            [("call-synthetic-1", "synthetic_lookup", '{"n": 0}', "Checking ")],
+            bridge.seen,
+        )
+        # The evidenced wire behavior, pinned from the trace: the
+        # experimental capability opted in for THIS session only, the
+        # verbatim dynamicTools declaration, and the harness result
+        # answered onto the ORIGINAL callId with the owner-approved
+        # mapping shape.
+        inits = [
+            record
+            for record in harness.trace()
+            if record.get("event") == "initialize"
+        ]
+        self.assertEqual(1, len(inits))
+        self.assertIs(True, inits[0]["experimentalApi"])
+        thread_params = harness.trace_request("thread/start")
+        assert thread_params is not None
+        declared = cast("list[dict[str, object]]", thread_params["dynamicTools"])
+        self.assertEqual(
+            {
+                "name": "synthetic_lookup",
+                "description": "synthetic",
+                "parameters": {"type": "object", "properties": {}},
+            },
+            declared[0],
+        )
+        answers = [
+            record
+            for record in harness.trace()
+            if record.get("event") == "tool_call_answer"
+        ]
+        self.assertEqual(1, len(answers))
+        self.assertEqual("call-synthetic-1", answers[0]["callId"])
+        self.assertEqual(
+            {
+                "success": True,
+                "contentItems": [
+                    {"type": "inputText", "text": "TOOL-RESULT"},
+                ],
+            },
+            cast("dict[str, object]", answers[0]["result"]),
+        )
+
+    def test_error_like_result_text_is_forwarded_verbatim(self) -> None:
+        """The compatibility rule never inspects content: text that
+        LOOKS like a failure is forwarded verbatim under the SAME
+        mapping and success=false is never inferred."""
+        harness = self._harness(_tool_scenario())
+        bridge = _ScriptedBridge(results=["ERROR: lookup failed"])
+        result = harness.adapter.invoke(
+            _call(tools=_TOOL_DECLARATION),
+            cancel_event=threading.Event(),
+            deadline=_future_deadline(),
+            emit=lambda chunk: None,
+            tool_bridge=bridge,
+        )
+        self.assertEqual("completed", result.status)
+        assert result.message is not None
+        self.assertEqual("Done.", result.message.content)
+        answers = [
+            record
+            for record in harness.trace()
+            if record.get("event") == "tool_call_answer"
+        ]
+        self.assertEqual(1, len(answers))
+        self.assertEqual(
+            {
+                "success": True,
+                "contentItems": [
+                    {"type": "inputText", "text": "ERROR: lookup failed"},
+                ],
+            },
+            cast("dict[str, object]", answers[0]["result"]),
+        )
+
+    def test_two_sequential_tool_rounds_on_one_turn(self) -> None:
+        harness = self._harness(_tool_scenario(dynamicToolRounds=2))
+        bridge = _ScriptedBridge(results=["R1", "R2"])
+        result = harness.adapter.invoke(
+            _call(tools=_TOOL_DECLARATION),
+            cancel_event=threading.Event(),
+            deadline=_future_deadline(),
+            emit=lambda chunk: None,
+            tool_bridge=bridge,
+        )
+        self.assertEqual("completed", result.status)
+        assert result.message is not None
+        self.assertEqual("Done.", result.message.content)
+        self.assertEqual(
+            ["call-synthetic-1", "call-synthetic-2"],
+            [call_id for call_id, _n, _a, _c in bridge.seen],
+        )
+        answers = [
+            record
+            for record in harness.trace()
+            if record.get("event") == "tool_call_answer"
+        ]
+        texts: list[object] = []
+        for answer in answers:
+            result_map = cast("dict[str, object]", answer["result"])
+            items = cast("list[dict[str, object]]", result_map["contentItems"])
+            texts.append(items[0]["text"])
+        self.assertEqual(["R1", "R2"], texts)
+
+    def test_malformed_tool_arguments_fail_closed(self) -> None:
+        harness = self._harness(
+            _tool_scenario(dynamicToolMalformed="arguments-not-object")
+        )
+        result = harness.adapter.invoke(
+            _call(tools=_TOOL_DECLARATION),
+            cancel_event=threading.Event(),
+            deadline=_future_deadline(),
+            emit=lambda chunk: None,
+            tool_bridge=_ScriptedBridge(),
+        )
+        self.assertEqual("failed", result.status)
+        self.assertEqual("tool_call_malformed", result.calls[0].note)
+
+    def test_undeclared_tool_request_fails_closed(self) -> None:
+        harness = self._harness(_tool_scenario(dynamicToolMalformed="undeclared-tool"))
+        result = harness.adapter.invoke(
+            _call(tools=_TOOL_DECLARATION),
+            cancel_event=threading.Event(),
+            deadline=_future_deadline(),
+            emit=lambda chunk: None,
+            tool_bridge=_ScriptedBridge(),
+        )
+        self.assertEqual("failed", result.status)
+        self.assertEqual("tool_call_undeclared", result.calls[0].note)
+
+    def test_cancel_while_suspended_interrupts_and_reports_cancelled(self) -> None:
+        harness = self._harness(_tool_scenario())
+        cancel_event = threading.Event()
+        bridge = _BlockingBridge(cancel_event)
+        bridge.arm()
+        result = harness.adapter.invoke(
+            _call(tools=_TOOL_DECLARATION),
+            cancel_event=cancel_event,
+            deadline=_future_deadline(),
+            emit=lambda chunk: None,
+            tool_bridge=bridge,
+        )
+        self.assertEqual("cancelled", result.status)
+        # The pending backend turn was interrupted, never completed
+        # (the result status is the contract; notifications are not
+        # part of the trace vocabulary).
+        self.assertIn("turn/interrupt", harness.trace_methods())
+        # The suspension was published exactly once and never answered:
+        answers = [
+            record
+            for record in harness.trace()
+            if record.get("event") == "tool_call_answer"
+        ]
+        self.assertEqual([], answers)
+
+    def test_runtime_without_the_experimental_gate_refuses_the_bridge(self) -> None:
+        harness = self._harness(
+            _tool_scenario(), version="0.155.1"
+        )
+        # A broken gate: the fake ignores the capability opt-in, so the
+        # thread/start refusal maps to the typed pre-inference rejection.
+        harness.spawner.scenario["experimentalGate"] = "broken"
+        result = harness.adapter.invoke(
+            _call(tools=_TOOL_DECLARATION),
+            cancel_event=threading.Event(),
+            deadline=_future_deadline(),
+            emit=lambda chunk: None,
+            tool_bridge=_ScriptedBridge(),
+        )
+        self.assertEqual("failed", result.status)
+        self.assertEqual("dynamic_tools_runtime_refused", result.calls[0].note)
+        self.assertNotIn("turn/start", harness.trace_methods())
+
+    def test_forced_tool_choice_is_rejected_before_execution(self) -> None:
+        # The dynamic-tool surface has no evidenced enforcement for
+        # named/required choice: refuse-not-drop BEFORE any process.
+        harness = self._harness()
+        result = harness.adapter.invoke(
+            _call(
+                tools=_TOOL_DECLARATION,
+                tool_choice={"type": "function", "function": {"name": "synthetic_lookup"}},
+            ),
+            cancel_event=threading.Event(),
+            deadline=_future_deadline(),
+            emit=lambda chunk: None,
+            tool_bridge=_ScriptedBridge(),
+        )
+        self.assertEqual("failed", result.status)
+        self.assertEqual("tool_choice_unsupported", result.calls[0].note)
+        self.assertEqual([], harness.spawner.specs)
+
+    def test_stable_surface_never_opts_into_the_experimental_api(self) -> None:
+        harness = self._harness()
+        result = harness.adapter.invoke(
+            _call(),
+            cancel_event=threading.Event(),
+            deadline=_future_deadline(),
+            emit=lambda chunk: None,
+        )
+        self.assertEqual("completed", result.status)
+        inits = [
+            record
+            for record in harness.trace()
+            if record.get("event") == "initialize"
+        ]
+        self.assertEqual(1, len(inits))
+        self.assertIs(False, inits[0]["experimentalApi"])
+        thread_params = harness.trace_request("thread/start")
+        assert thread_params is not None
+        self.assertNotIn("dynamicTools", thread_params)
 
 
 if __name__ == "__main__":

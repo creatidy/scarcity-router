@@ -1,4 +1,4 @@
-# Worker Protocol v2 (native worker transport)
+# Worker Protocol v3 (native worker transport)
 
 This document is the authoritative contract for the Scarcity Router
 worker protocol, implemented by M05 (#90). It defines the transport, the
@@ -84,10 +84,11 @@ Scarcity Router Server  <── outbound TLS ──  Native Worker  ──  loca
 
 ## Versioning and negotiation
 
-- `WORKER_PROTOCOL_VERSION = 1`. The worker's first frame (`hello` or
-  `pair_request`) carries `supported_versions` (1..8 entries). The server
-  selects the highest mutually supported version and echoes it in
-  `hello_ack`/`pair_result` (`negotiated_version`).
+- `WORKER_PROTOCOL_VERSION` is the version this build speaks (3 since
+  D-062; see the per-version sections below). The worker's first frame
+  (`hello` or `pair_request`) carries `supported_versions` (1..8
+  entries). The server selects the highest mutually supported version
+  and echoes it in `hello_ack`/`pair_result` (`negotiated_version`).
 - Disjoint version sets are an explicit, fatal
   `protocol_version_unsupported` on both ends: the worker stops (fail
   closed, no retry storm), the server closes the connection. Incompatible
@@ -115,26 +116,77 @@ Version 2 adds ONE optional member and changes nothing else:
   in the source view, never the resource registry) — every other
   unregistered resource still rejects the whole report.
 
-## Version 3: the message `reasoning` member (#158)
+## Version 3: the client-tool continuation messages (D-062, #137)
 
-Version 3 adds ONE optional member and changes nothing else:
+Version 3 adds exactly TWO attempt-scoped messages and changes nothing
+else:
+
+- `execute_tool_call` (worker → server, protocol version 3 sessions
+  only): `{attempt_id, call_id, name, arguments, content?}` — the
+  local adapter reached the evidenced D-062 suspension point and the
+  backend turn requests a CLIENT-owned tool. `call_id` is the backend's
+  own correlation id (never client-visible — the gateway returns its
+  own opaque `tool_call_id`); `arguments` stays an opaque JSON text
+  string (≤ 1 MiB) that nothing in Scarcity Router parses, repairs or
+  executes; `content` optionally carries the assistant text produced
+  before the suspension. The adapter emits AT MOST ONE pending tool
+  call per attempt at a time: a second call arriving while the first is
+  unconsumed is refused with a non-fatal `malformed_message` (a
+  sequential tool round after the first was answered is a legitimate
+  new suspension on the same attempt).
+- `execute_tool_result` (server → worker, protocol version 3 sessions
+  only): `{attempt_id, call_id, content}` — the harness's tool result
+  for that exact call, text only (≤ 4 MiB), delivered at most once.
+  The worker answers the held backend request with it so the SAME
+  turn continues.
+- **Version gating is fatal.** A v1/v2 session carrying either message
+  is a fatal `malformed_message` (a well-behaved old worker never sends
+  them; a peer that does cannot be trusted with open attempts). A
+  tool-result delivery to a below-v3 session is refused server-side
+  before any frame is built.
+- **Rolling upgrade invariants.** Old workers negotiate v1/v2 and
+  behave exactly as before; they are never tool-continuation-capable —
+  a client-tool request dispatched to one fails closed with a typed
+  backend failure before any experimental API use. Ordinary non-tool
+  execution on old workers is unchanged. A new worker against a v2-only
+  server fails at the handshake (deploy the server first).
+- While an attempt is suspended, it REMAINS tracked in the session's
+  pending-attempt table (bounded by the same per-session bound), so the
+  continuation resolves into the exact tracker and the turn's terminal
+  result is routed where the initial execution went. Session loss
+  resolves suspended attempts as interrupted like any other in-flight
+  attempt — the honest ambiguous outcome, never a reconstruction.
+
+## Version 4: the message `reasoning` member (D-063, #158)
+
+Version 4 adds ONE optional member on top of the COMPLETE version-3
+semantics and changes nothing else:
 
 - A conversation `message` (the assistant result the worker returns)
   MAY carry `reasoning`: the backend's opaque reasoning output, a
   bounded string, translated per the resource preset's evidenced
-  reasoning-output policy (D-062). A v3 result that cannot represent
-  evidenced reasoning never negotiates down silently: reasoning-bearing
-  responses under a policy that does not evidence them fail the
-  execution closed worker-side (typed translation failure), so an old
-  negotiated schema can never silently drop reasoning.
-- A version-1/2 worker never sends the member; the server still accepts
-  those peers (`SERVER_SUPPORTED_PROTOCOL_VERSIONS = (3, 2, 1)`), so an
-  old worker negotiates its own version and behaves exactly as before.
-  A v3 worker against a v2-only server fails cleanly at the handshake —
-  deploy the server first.
-- The streamed `execute_chunk` vocabulary needs no new member: the
-  normalized `reasoning_delta` chunk kind (D-062) rides the existing
-  generic chunk serialization (`kind` + optional `text`).
+  reasoning-output policy (D-063). The streamed `execute_chunk`
+  vocabulary needs no new member: the normalized `reasoning_delta`
+  chunk kind (D-063) rides the existing generic chunk serialization
+  (`kind` + optional `text`), so v4 streaming reasoning crosses the
+  protocol without schema change.
+- **Version gating is exact.** A `reasoning` member on a session that
+  negotiated below 4 is a schema violation: the server rejects the
+  result typed (the attempt fails closed with a structural note) — a
+  v3 peer cannot smuggle v4-only semantics, and no parser guesses the
+  peer's implementation. Symmetrically, a v4 worker holding a
+  reasoning-bearing result under a negotiated version below 4 FAILS
+  THE EXECUTION CLOSED worker-side (typed translation failure) rather
+  than silently dropping the reasoning: negotiation falling back to v3
+  can never lose reasoning silently.
+- **Rolling upgrade invariants.** v1/v2/v3 workers never send the
+  member; the server accepts those peers
+  (`SERVER_SUPPORTED_PROTOCOL_VERSIONS = (4, 3, 2, 1)`), so an old
+  worker negotiates its own version and behaves exactly as before —
+  v1/v2 are never tool-continuation-capable and a v3 worker keeps every
+  D-062 continuation behavior (it simply has no reasoning
+  representation). A v4 worker against a v3-only server fails cleanly
+  at the handshake — deploy the server first.
 
 ## Pairing, identity, rotation, revocation (D-044)
 

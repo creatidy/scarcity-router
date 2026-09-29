@@ -405,6 +405,100 @@ class AdapterCancellationTests(unittest.TestCase):
         self.assertEqual("cancelled", outcome.status)
 
 
+class AdapterSuspensionBoundTests(unittest.TestCase):
+    """D-062 review round 3: a failed continuation admission (full
+    gateway table) must cancel the backend AND release the adapter's
+    local suspension slot — no slow leak of the bounded table."""
+
+    world: AdapterWorld
+
+    def __init__(self, method_name: str = "runTest") -> None:
+        self.world = cast("AdapterWorld", object())
+        super().__init__(method_name)
+
+    @override
+    def setUp(self) -> None:
+        self.world = AdapterWorld()
+        self.addCleanup(self.world.close)
+
+    def test_failed_admit_releases_the_local_suspension_slot(self) -> None:
+        from tests.worker_fixtures import MemoryTransport
+        from scarcity_router.resource_state import WorkerStateReport
+
+        # A v3 worker session (the world's default pairs at v1, and v3
+        # frames are fatal there by contract).
+        worker_side, server_side = MemoryTransport.pair()
+        session = self.world.endpoint.attach_transport(server_side)
+        thread = threading.Thread(target=session.run, daemon=True)
+        thread.start()
+        from tests.worker_fixtures import build_worker_report
+        from scarcity_router.worker_protocol import FrameReader, FrameWriter
+        reader = FrameReader(worker_side)
+        writer = FrameWriter(worker_side)
+        code = self.world.store.begin_pairing(label="v3-adapter-test")
+        writer.write_message(
+            {
+                "type": "pair_request",
+                "pairing_code": code.pairing_code,
+                "supported_versions": [3, 2, 1],
+                "device_label": "v3-adapter-test",
+            }
+        )
+        answer = reader.read_message()
+        assert answer is not None and answer.get("type") == "pair_result", answer
+        worker_id = cast("str", answer["worker_id"])
+        self.world.owners[RESOURCE_ID] = worker_id
+        writer.write_message(
+            {
+                "type": "state_report",
+                "report": build_worker_report(
+                    worker_id=worker_id,
+                    resource_id=RESOURCE_ID,
+                    provider="openai",
+                    model="gpt-5.6-luna",
+                    entitlement="subscription_included",
+                    reported_at="2026-09-15T12:00:00.000Z",
+                ),
+            }
+        )
+        ack = reader.read_message()
+        assert ack is not None and ack.get("type") == "state_report_ack", ack
+
+        adapter = self.world.make_adapter()
+        # A registrar that always refuses (the gateway table is full).
+        context = ExecutionContext(
+            request_id="chatcmpl-bound1",
+            deadline="2030-01-01T00:00:00.000Z",
+            register_continuation=lambda handle, arguments: False,
+        )
+        run = run_dispatch(adapter, context)
+        execute_frame = reader.read_message()
+        assert execute_frame is not None
+        assert execute_frame.get("type") == "execute", execute_frame
+        attempt_id = cast("str", execute_frame["attempt_id"])
+        writer.write_message(
+            {
+                "type": "execute_tool_call",
+                "attempt_id": attempt_id,
+                "call_id": "call-synthetic-1",
+                "name": "t",
+                "arguments": "{}",
+            }
+        )
+        run.join(10)
+        self.assertFalse(run.alive)
+        self.assertIsInstance(run.error, AdapterPermanentError)
+        # The local suspension table is EMPTY: the failed admit released
+        # the handle, so future suspensions are not starved.
+        with adapter._suspended_lock:  # pyright: ignore[reportPrivateUsage]
+            self.assertEqual({}, adapter._suspended)  # pyright: ignore[reportPrivateUsage]
+        # And the worker was told to cancel the suspended backend.
+        cancel = reader.read_message()
+        assert cancel is not None and cancel.get("type") == "cancel", cancel
+        self.assertEqual(attempt_id, cancel.get("attempt_id"))
+        _ = WorkerStateReport
+
+
 class CoordinatorIntegrationTests(unittest.TestCase):
     """GatewayApplication -> WorkerBridgedAdapter -> endpoint -> worker."""
 
