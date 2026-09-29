@@ -4889,8 +4889,11 @@ Do not rewrite history or change an accepted decision silently.
   ``worker_codex_adapter.py``, ``worker_local_adapters.py``,
   ``gateway_continuation.py`` (new), ``gateway_adapters.py``,
   ``gateway_coordinator.py``, ``gateway_contracts.py``,
-  ``control_api.py``, ``control_server.py``,
-  ``codex_worker_evidence.py``, ``execution_sources.py``, tests,
+  ``routing_core.py`` (the live v3 availability gate, the
+  ``continuation_capable_resource_ids`` request input and the
+  compatibility reason-code dedup), ``control_api.py``,
+  ``control_server.py``, ``codex_worker_evidence.py``,
+  ``execution_sources.py``, tests,
   ``docs/worker-protocol.md``, ``docs/execution-surface.md``,
   ``docs/codex-adapter-stage1-evidence.md`` and this record. The live
   signed-in acceptance remains open; no cell above PARTIAL is claimed.
