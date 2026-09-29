@@ -4702,7 +4702,10 @@ Do not rewrite history or change an accepted decision silently.
   adapter boundaries against the deterministic fake App Server). The
   LIVE signed-in round trip stays behind the recorded
   ``LIVE_CODEX_SUBSCRIPTION``-class gate: the tool cells are PARTIAL,
-  never PASS, until that acceptance.
+  never PASS, until that acceptance. The ``success`` mapping (pt 6)
+  is an OWNER DECISION accepting a deliberately lossy translation —
+  its provenance is the owner's resolution of the 2026-09-28 decision
+  packet, not mechanism evidence.
 - **Context:** #137's investigation concluded TOOL_BRIDGE_VIABLE
   (2026-09-28, issue comment): the client-tool mechanism on the current
   runtime (``codex-cli 0.155.0-alpha.16.3``; upstream re-pin
@@ -4784,27 +4787,41 @@ Do not rewrite history or change an accepted decision silently.
      keeps its existing refuse-not-drop treatment (it lands in
      ``generation_params``), and sequential multi-round turns are
      bounded (32 rounds/turn) with one pending call at a time.
-  6. **The ``success`` semantic: STOPPED, not mapped (review round 2,
-     finding 1).** Upstream (verified first-hand at ``openai/codex``
-     @ ``36650394``, ``codex-rs/protocol/src/protocol.rs``) defines the
-     dynamic-tool answer's ``success`` as "Whether the tool call
-     succeeded" — a REQUIRED ``bool`` with no default. The generic Chat
-     Completions ``role:"tool"`` message (execution surface v1:
-     text-only, closed field set) and the representative client capture
-     carry NO success/failure signal, and inferring one from result
-     text, HTTP outcomes or id validity is forbidden. The earlier
-     reading of this point — that ``success: true`` merely asserts "the
-     client returned a result" — is RETRACTED as an upstream-fact
-     claim. Consequence, implemented: the adapter REFUSES to fabricate
-     the answer; a delivered result fails the attempt typed
-     (``tool_result_success_unresolved``), the held request is never
-     answered, and the ``tool_results`` cell stays UNSUPPORTED. An
-     owner decision packet (issue #137) resolves the mapping — an
-     explicit owner-accepted compatibility rule, or a future
-     structured tool-result surface — before any round trip can
-     complete. The mechanism (declarations, suspension, relay,
-     registry, protocol) remains as specified below; the matrix
-     records exactly this state.
+  6. **The ``success`` semantic: explicit OWNER DECISION — an
+     accepted lossy protocol translation (resolves the 2026-09-28
+     decision packet; supersedes the interim answer-point STOP).**
+     Upstream (verified first-hand at ``openai/codex`` @ ``36650394``,
+     ``codex-rs/protocol/src/protocol.rs``) defines the dynamic-tool
+     answer's ``success`` as "Whether the tool call succeeded" — a
+     REQUIRED ``bool`` with no default. The generic Chat Completions
+     ``role:"tool"`` message (execution surface v1: text-only, closed
+     field set) carries NO independent boolean expressing whether the
+     external tool OPERATION succeeded, so the richer upstream
+     distinction cannot be preserved across this source contract. The
+     OWNER has therefore accepted, for the generic Chat Completions
+     execution surface, the explicit compatibility rule: **a
+     syntactically valid ``role:"tool"`` message with the expected
+     ``tool_call_id`` is represented on the Codex side as
+     ``DynamicToolCallResponse {success: true, contentItems:
+     [{"type": "inputText", "text": <verbatim message content>}]}``.**
+     This is an owner-accepted LOSSY protocol translation and must be
+     read exactly as follows: it is NOT the native meaning of Codex
+     ``success`` (the upstream fact above stands); ``success: true``
+     does NOT prove the external operation succeeded; it asserts only
+     that the generic result is represented as a successfully returned
+     function-call output on the Codex side. Semantic/tool failures
+     may still be represented by the harness in the verbatim result
+     content, which Scarcity Router never inspects, parses,
+     pattern-matches or reinterprets; ``success: false`` is never
+     inferred from content, HTTP outcomes or id validity. The rule
+     applies generically to every conforming Chat Completions client —
+     no client-specific branch exists. The mapping is applied only
+     after ALL continuation validation has succeeded (exact client,
+     exact continuation, digest-validated echo, exactly-once claim,
+     current hard-authority recheck, absolute deadline). The
+     interim answer-point STOP (refusing the answer as
+     ``tool_result_success_unresolved``) is superseded by this
+     decision and removed.
   7. **Honest audit across the multi-request turn.** The initial leg
      audits ``completed`` with an ``unknown``-status, usage-free call
      observation (the provider call is open) plus the additive reason
@@ -4816,14 +4833,15 @@ Do not rewrite history or change an accepted decision silently.
      reason codes only; the frozen field set is unchanged.
   8. **Capability honesty and rolling upgrade.** ``tool_calls`` and
      ``tool_results`` move UNSUPPORTED → PARTIAL (dated 2026-09-28:
-     mechanism evidence + deterministic round trip; live acceptance
-     pending) and the Codex surface registration fact
-     ``tool_calls`` becomes true — but tool eligibility additionally
-     requires the LIVE worker session to negotiate protocol v3, so an
-     old worker never becomes tool-call eligible because the static
-     matrix moved. A tool-bearing request selected onto a v3-less
-     worker fails closed with a typed backend failure before any
-     experimental API use.
+     mechanism evidence + the deterministic round trip under the pt 6
+     owner-approved ``success`` mapping; signed-in live acceptance
+     still outstanding — neither cell is claimed PASS) and the Codex
+     surface registration fact ``tool_calls`` becomes true — but tool
+     eligibility additionally requires the LIVE worker session to
+     negotiate protocol v3, so an old worker never becomes tool-call
+     eligible because the static matrix moved. A tool-bearing request
+     selected onto a v3-less worker fails closed with a typed backend
+     failure before any experimental API use.
   9. **Sticky vs revocable.** Competitive changes (D-059 campaigns,
      blackouts, scarcity, quota, newly-cheaper resources) can never
      move or re-rank a suspended turn — the continuation path performs
@@ -4861,7 +4879,11 @@ Do not rewrite history or change an accepted decision silently.
   request; D-059's policy semantics govern initial selection only and
   by construction cannot reroute a suspended turn. The #137 frozen
   scope's non-goals stand: no Responses API, no Anthropic/MCP bridge,
-  no worker-side or router-side tool execution.
+  no worker-side or router-side tool execution. The pt 6 ``success``
+  mapping is an amendment to THIS record resolving its own decision
+  packet — no new decision number is created, and the upstream fact it
+  cites ("Whether the tool call succeeded") remains the authoritative
+  description of Codex's native semantic.
 - **Boundary:** ``worker_protocol.py``, ``worker_endpoint.py``,
   ``worker_client.py``, ``worker_bridged_adapter.py``,
   ``worker_codex_adapter.py``, ``worker_local_adapters.py``,

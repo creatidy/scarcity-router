@@ -2447,7 +2447,7 @@ class CodexLocalAdapter:
                     # failures.
                     if tool_bridge is None:  # pragma: no cover - session gate
                         raise CodexProtocolFailure("tool_call_unsupported")
-                    _request_id, call_id, tool_name, arguments_text = (
+                    request_id, call_id, tool_name, arguments_text = (
                         parse_tool_call_request(
                             cast("dict[str, object]", value),
                             thread_id=thread_id,
@@ -2459,7 +2459,7 @@ class CodexLocalAdapter:
                     if tool_rounds > MAX_TOOL_ROUNDS:
                         raise CodexProtocolFailure("tool_round_budget_exceeded")
                     try:
-                        _result_text = tool_bridge.suspend(
+                        result_text = tool_bridge.suspend(
                             call_id,
                             tool_name,
                             arguments_text,
@@ -2470,21 +2470,39 @@ class CodexLocalAdapter:
                         # harness: interrupt the pending turn, report
                         # honestly — never fabricate a tool result.
                         raise _Cancelled() from exc
-                    # D-062 STOP (review round 2, finding 1): upstream
-                    # (openai/codex @ 36650394, protocol.rs) defines the
-                    # answer's ``success`` as "Whether the tool call
-                    # succeeded" — a REQUIRED bool with no default. The
-                    # generic Chat Completions ``role:"tool"`` message
-                    # (text-only, closed fields) and the representative
-                    # capture carry NO success/failure signal, and
-                    # inferring one is forbidden. The bridge therefore
-                    # REFUSES to fabricate the answer: the attempt fails
-                    # typed, the held request is never answered, and the
-                    # bounded process teardown interrupts the turn. The
-                    # owner decision packet on issue #137 resolves the
-                    # mapping before this bridge can complete a round
-                    # trip.
-                    raise CodexIneligible("tool_result_success_unresolved")
+                    # The pre-suspension text already left with the
+                    # suspension leg; the resumed turn's message carries
+                    # only what the client has not seen yet.
+                    parts.clear()
+                    message_chars = 0
+                    # D-062 pt 6 (OWNER DECISION, 2026-09-28): upstream
+                    # ``success`` means "Whether the tool call succeeded"
+                    # (required bool, openai/codex @ 36650394) and the
+                    # generic Chat Completions ``role: "tool"`` message
+                    # carries no such boolean. The owner has accepted the
+                    # deliberately LOSSY compatibility rule: a valid
+                    # ``role: "tool"`` result for the expected call is
+                    # represented as a successfully returned function-call
+                    # output (``success: true``) with the verbatim text as
+                    # one inputText content item. This is NOT the native
+                    # upstream meaning, NOT proof the external operation
+                    # succeeded, and never inferred from the content —
+                    # semantic failures ride in the content verbatim and
+                    # are never parsed. Applies generically to every
+                    # conforming Chat Completions client.
+                    session.answer_tool_call(
+                        request_id,
+                        {
+                            "success": True,
+                            "contentItems": [
+                                {
+                                    "type": _CONTENT_ITEM_INPUT_TEXT,
+                                    "text": result_text,
+                                }
+                            ],
+                        },
+                    )
+                    continue
                 envelope = cast("dict[str, object]", value)
                 method = cast("str", envelope.get("method"))
                 params = _as_object(envelope.get("params")) or {}

@@ -1020,15 +1020,14 @@ the D-056 effective-output intersection.
 
 ---
 
-## D-062 addendum (2026-09-28, issue #137): the client-tool bridge — tool_calls/tool_results UNSUPPORTED → PARTIAL
+## D-062 addendum (2026-09-28, issue #137): the client-tool bridge — tool_calls/tool_results → PARTIAL (owner-approved lossy success mapping)
 
 The Stage-2 matrix above recorded `tool_calls`/`tool_results` as
 UNSUPPORTED on the stable surface. Issue #137's investigation (verdict
 TOOL_BRIDGE_VIABLE, issue comment 2026-09-28), the D-062
-implementation, and the 2026-09-28 review STOP leave the two cells
-SPLIT: `tool_calls` moves to **PARTIAL (conditional)** — the
-declarations/suspension/relay half — while `tool_results` STAYS
-**UNSUPPORTED**, under exactly these evidenced conditions:
+implementation, and the OWNER DECISION of 2026-09-28 move both cells
+to **PARTIAL (conditional)**, under exactly these evidenced
+conditions:
 
 - **Mechanism evidence (2026-09-28, unchanged from the #137
   investigation):** `dynamicTools` on `thread/start`, gated by the
@@ -1044,35 +1043,33 @@ declarations/suspension/relay half — while `tool_results` STAYS
   narrowing). No application-level timeout exists upstream for a
   pending call — the ONE absolute lifetime is Scarcity Router's
   original admission deadline (D-062 pt 4).
-- **Implementation evidence (this branch, deterministic — MECHANISM
-  ONLY, per the 2026-09-28 review STOP):** the suspension half — Chat
-  Completions with tools → gateway → real worker protocol v3 → real
-  `CodexLocalAdapter` → deterministic fake App Server → `item/tool/
-  call` → OpenAI `tool_calls` response — is test-pinned end to end
-  (non-streaming and streaming), together with the negative matrix
-  (foreign client, replay, expired, changed model/tools/prefix,
-  undeclared/malformed tool calls, cancel-while-pending, old-protocol
-  worker, experimental-gate refusal). The RESULT half is deliberately
-  NOT implemented: upstream `success` means "whether the tool call
-  succeeded" (required bool, verified at the pin), the generic
-  text-only `role:"tool"` message carries no such fact, and the
-  adapter REFUSES to fabricate the answer — a delivered result fails
-  typed (`tool_result_success_unresolved`) with the held request never
-  answered. The owner decision packet on issue #137 resolves the
-  mapping before a round trip can be established.
-- **`success` mapping (recorded):** a valid OpenAI `role:"tool"`
-  message maps to `{"success": true, "contentItems":
-  [{"type": "inputText", "text": <content>}]}` — text-only v1.
-  `success: true` asserts what a well-formed tool-result message
-  asserts: the client successfully returned a result for the requested
-  call. Failure signalling stays the harness's content-level concern,
-  as in every OpenAI-compatible chat pipeline; nothing is inferred
-  from result text and nothing is fabricated.
-- **Cell state after the review STOP (2026-09-28):** `tool_calls`
-  stays PARTIAL (the declarations/suspension/relay half is established
-  and live-gated); `tool_results` returns to UNSUPPORTED (the success
-  semantic is unresolved — delivery is refused, never guessed). Tool
-  eligibility additionally requires the worker session to negotiate
-  protocol version 3 via the LIVE availability stage (an old worker is
-  never selected for a tool-bearing request regardless of this
-  matrix).
+- **Implementation evidence (this branch, deterministic):** the full
+  round trip — Chat Completions with tools → gateway → real worker
+  protocol v3 → real `CodexLocalAdapter` → deterministic fake App
+  Server → `item/tool/call` → OpenAI `tool_calls` response → ordinary
+  `role:"tool"` continuation → `DynamicToolCallResponse {success:
+  true, contentItems:[inputText]}` → SAME thread/turn → terminal
+  answer — is test-pinned end to end (non-streaming and streaming),
+  together with the negative matrix (foreign client, replay, expired,
+  changed model/tools/prefix, undeclared/malformed tool calls,
+  cancel-while-pending, old-protocol worker, experimental-gate
+  refusal, verbatim error-like content forwarded unparsed).
+- **`success` mapping (OWNER DECISION, D-062 pt 6):** a valid OpenAI
+  `role:"tool"` message for the expected call maps to `{"success":
+  true, "contentItems": [{"type": "inputText", "text": <content>}]}`
+  — text-only v1. This is an owner-accepted LOSSY protocol
+  translation: upstream `success` natively means "Whether the tool
+  call succeeded" (required bool, `36650394`), the generic Chat
+  Completions contract carries no such boolean, and the mapping is
+  accepted for compatibility — NOT as the native upstream meaning and
+  NOT as proof the external operation succeeded. Semantic/tool
+  failures ride in the verbatim result content; Scarcity Router never
+  inspects, parses or reinterprets it and never infers
+  `success: false`.
+- **Cell state (2026-09-28):** both cells are PARTIAL because the
+  signed-in live acceptance is still outstanding (the
+  `LIVE_CODEX_SUBSCRIPTION`-class gate) — neither is claimed PASS.
+  Tool eligibility additionally requires the worker session to
+  negotiate protocol version 3 via the LIVE availability stage (an old
+  worker is never selected for a tool-bearing request regardless of
+  this matrix).

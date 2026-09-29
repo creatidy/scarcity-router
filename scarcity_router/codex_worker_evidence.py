@@ -15,19 +15,19 @@ synthetic or administrator-invented entries.
 Conservative by design: every turn-level cell stays ``PARTIAL`` because
 the live half (confirmation against a signed-in subscription home) is
 still pending behind the recorded ``LIVE_CODEX_SUBSCRIPTION`` gate — no
-cell is upgraded above the reviewed matrix. With the D-062 client-tool
-bridge (#137), ``tool_calls`` moved from ``UNSUPPORTED`` to ``PARTIAL``
-(the declarations/suspension/relay half is mechanism-evidenced on the
-current runtime — 2026-09-28 probe of ``codex-cli
+cell is upgraded above the reviewed matrix, and nothing is claimed
+``PASS``. With the D-062 client-tool bridge (#137), ``tool_calls`` and
+``tool_results`` are both ``PARTIAL``: the mechanism is evidenced on
+the current runtime (2026-09-28 probe of ``codex-cli
 0.155.0-alpha.16.3`` + official docs + binary-pinned schemas, upstream
-re-pinned ``rust-v0.157.1`` by #150 — and deterministic-test-verified),
-while ``tool_results`` STAYS ``UNSUPPORTED``: upstream ``success``
-means "whether the tool call succeeded" (a required bool), the generic
-text-only ``role: "tool"`` message carries no such fact, and the
-adapter refuses to fabricate the answer (typed
-``tool_result_success_unresolved``) pending the owner decision packet
-on issue #137. Tool eligibility additionally requires the worker
-session's LIVE protocol-v3 negotiation (an old worker is never
+re-pinned ``rust-v0.157.1`` by #150) and the deterministic round trip
+is test-verified under the OWNER-ACCEPTED LOSSY compatibility rule for
+the ``success`` answer (D-062 pt 6: a valid ``role: "tool"`` result is
+represented as ``success: true``; upstream's richer "whether the tool
+call succeeded" semantic is deliberately not preserved because the
+generic Chat Completions contract carries no such boolean). Tool
+eligibility additionally requires the worker session's LIVE
+protocol-v3 negotiation (an old worker is never
 tool-continuation-capable regardless of these cells). ``UNKNOWN`` and
 ``UNSUPPORTED`` fail closed at admission.
 
@@ -84,20 +84,20 @@ CODEX_WORKER_CELL_VALUES: Mapping[str, tuple[str, str, str]] = {
         "D-062 bridge: experimentalApi-gated dynamicTools declarations "
         + "and item/tool/call suspensions relayed to the harness "
         + "(mechanism evidenced on codex-cli 0.155.0-alpha.16.3, "
-        + "test-verified on the deterministic App Server); the round "
-        + "trip does NOT complete: delivery is refused at the answer "
-        + "point (tool_result_success_unresolved) pending the owner "
-        + "decision on issue #137; v3-worker availability-gated",
+        + "round trip test-verified on the deterministic App Server "
+        + "under the owner-approved success mapping); live signed-in "
+        + "acceptance pending; v3-worker availability-gated",
         _TOOL_BRIDGE_EVIDENCE_DATE,
     ),
     "tool_results": (
-        "UNSUPPORTED",
-        "D-062 STOP (2026-09-28 review): upstream success means "
-        + "'whether the tool call succeeded' (required bool, openai/"
-        + "codex @ 36650394); the generic text-only role:tool message "
-        + "carries no success fact and inventing one is forbidden — "
-        + "delivery is refused typed until the owner decides (#137 "
-        + "packet); v3-worker-gated",
+        "PARTIAL",
+        "D-062 pt 6 (OWNER DECISION 2026-09-28): the harness's verbatim "
+        + "role:tool content answers the SAME suspended turn as "
+        + "success:true + inputText — an owner-accepted LOSSY "
+        + "compatibility rule (upstream success means 'whether the tool "
+        + "call succeeded'; Chat Completions carries no such boolean); "
+        + "test-verified on the deterministic App Server; live "
+        + "signed-in acceptance pending; v3-worker-gated",
         _TOOL_BRIDGE_EVIDENCE_DATE,
     ),
     "structured_output": (

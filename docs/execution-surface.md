@@ -54,8 +54,8 @@ reasoning-dialect layer below is the precedent).
 | Role history | `system`/`developer`/`user`/`assistant`/`tool`, admission-gated per matrix cell | Implemented (text-only in v1) |
 | Streaming | SSE `chat.completion.chunk` frames, optional usage chunk, `[DONE]` | Implemented |
 | Client-owned tool declarations | `tools[]` validated at ingress; capability-gated before inference | Implemented |
-| Tool calls returned to the client | `tool_calls` always return to the CLIENT; the router/worker never executes them (D-043); admitted per source only where the matrix evidences it | Implemented on evidenced server-direct channels (`tool_calls` PASS/PARTIAL cells); Codex worker source PARTIAL (D-062: the protocol-v3 availability-gated bridge — declarations/suspension only; the round trip does not complete, see the continuation row) |
-| Client tool-result continuation | `role: "tool"` results with `tool_call_id` transported back into the backend's continuation | Implemented on evidenced server-direct channels (`tool_results` PASS/PARTIAL cells); Codex worker source UNSUPPORTED (D-062 STOP: upstream `success` = "whether the tool call succeeded"; the generic text-only message carries no such fact, so delivery is refused typed `tool_result_success_unresolved` pending the owner decision on #137) |
+| Tool calls returned to the client | `tool_calls` always return to the CLIENT; the router/worker never executes them (D-043); admitted per source only where the matrix evidences it | Implemented on evidenced server-direct channels (`tool_calls` PASS/PARTIAL cells); Codex worker source PARTIAL (D-062: the protocol-v3 availability-gated dynamic-tool bridge; live signed-in acceptance pending) |
+| Client tool-result continuation | `role: "tool"` results with `tool_call_id` transported back into the backend's continuation | Implemented on evidenced server-direct channels (`tool_results` PASS/PARTIAL cells); Codex worker source PARTIAL (D-062: the suspended-turn continuation with the owner-accepted lossy `success` mapping; live signed-in acceptance pending) |
 | Structured output | `response_format` text/`json_object`/`json_schema`, matrix-gated | Implemented |
 | Max output semantics | effective output ceiling = model ∩ channel ∩ administrator allowance; honest, visible, rejection-based; a channel without an output-limit control normalizes away only a non-binding requested limit (audited) and rejects a binding one (`output_limit_unenforceable`) | Implemented (#136/D-058) |
 | Context capability | effective context = model ∩ channel ∩ administrator allowance; UNKNOWN never guessed | Implemented (#136/D-058; D-055 metadata) |
@@ -95,15 +95,19 @@ recorded in `docs/codex-adapter-stage1-evidence.md` and D-062.
 
 On the Codex source, the lifecycle is a SUSPENDED TURN (Family A): the
 backend thread/turn stays alive while the harness executes its tool, and
-the harness's ordinary `role: "tool"` request is correlated to the SAME
-turn. One frozen rule bounds the whole design today: **the round trip
-does not complete.** Upstream (openai/codex @ 36650394) defines the
+the harness's ordinary `role: "tool"` request resumes the SAME turn —
+one provider call, one usage observation, one decision identity across
+both HTTP legs. One mapping rule is an explicit OWNER DECISION
+(D-062 pt 6): upstream (openai/codex @ 36650394) defines the
 dynamic-tool answer's `success` as "Whether the tool call succeeded" —
-a required bool — and the generic text-only `role: "tool"` message
-carries no such fact; inventing one is forbidden. A delivered result
-therefore fails the attempt typed (`tool_result_success_unresolved`,
-audited), `tool_results` stays UNSUPPORTED for this source, and the
-owner decision packet on #137 resolves the mapping. The frozen rules
+a required bool the generic text-only `role: "tool"` message does not
+carry — so Scarcity Router applies an owner-accepted LOSSY
+compatibility rule: a valid `role: "tool"` result is represented as
+`success: true` with the verbatim content as one inputText item. That
+answer does NOT natively mean "the client returned a result" and is
+NOT proof the external operation succeeded; semantic failures ride in
+the verbatim content, which Scarcity Router never inspects, parses or
+reinterprets, and `success: false` is never inferred. The frozen rules
 of the implemented mechanism:
 
 - **Ordinary shapes are the only carrier.** The initial response is a
