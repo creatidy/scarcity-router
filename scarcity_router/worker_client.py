@@ -52,13 +52,16 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from .errors import CapacityValidationError
 from .gateway_adapters import AdapterResult, AdapterStreamChunk
 from .gateway_validation import v_safe_id, v_text
 from .model_inventory import ModelInventoryReport, SourceInventory
 from .resource_state import ResourceStateSnapshot, WorkerStateReport
+
+if TYPE_CHECKING:  # pragma: no cover - type-only import
+    from .gateway_adapters import AdapterMessage
 from .worker_local_adapters import (
     AdapterNotAllowedError,
     LocalAdapterRegistry,
@@ -660,6 +663,25 @@ class _FrameSender:
             self._transport.close()
 
 
+def ensure_reasoning_representable(
+    negotiated_version: int, message: "AdapterMessage"
+) -> None:
+    """The D-063 no-silent-loss negotiation gate.
+
+    The `reasoning` member is version-4-only. On a session that
+    negotiated below 4 a reasoning-bearing result cannot be represented —
+    fail the attempt closed instead of silently dropping the reasoning
+    (negotiation falling back to v3 must never lose it). The failure is
+    structural: parameter names only, never reasoning content.
+    """
+    if negotiated_version < 4 and message.reasoning is not None:
+        raise WorkerProtocolError(
+            "internal_error",
+            "reasoning output cannot be represented on a negotiated "
+            + "protocol below 4",
+        )
+
+
 class _ActiveSession:
     """The message loop of one established worker session."""
 
@@ -980,17 +1002,7 @@ class _ActiveSession:
             calls.append(call_doc)
         message: Mapping[str, object] | None = None
         if result.message is not None:
-            if self._version < 4 and result.message.reasoning is not None:
-                # D-063: the reasoning member is version-4-only. On a
-                # session that negotiated below 4 the result cannot be
-                # represented — fail the attempt closed instead of
-                # silently dropping the reasoning (negotiation falling
-                # back to v3 must never lose it).
-                raise WorkerProtocolError(
-                    "internal_error",
-                    "reasoning output cannot be represented on a negotiated "
-                    + "protocol below 4",
-                )
+            ensure_reasoning_representable(self._version, result.message)
             message = message_to_dict(result.message)
         return ExecuteResultMessage(
             attempt_id=attempt_id,
@@ -1458,6 +1470,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 __all__ = [
+    "ensure_reasoning_representable",
     "DEFAULT_HEARTBEAT_INTERVAL_SECONDS",
     "DEFAULT_MAX_RECONNECT_ATTEMPTS",
     "DEFAULT_PORT",

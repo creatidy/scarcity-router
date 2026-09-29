@@ -19,7 +19,8 @@ Layers covered (one semantic implementation, every transport):
   (``choices[*].message.reasoning_content`` /
   ``choices[*].delta.reasoning_content``), present only when reasoning
   was preserved;
-- worker protocol: the additive v3 ``reasoning`` message member;
+- worker protocol: the additive v4 ``reasoning`` message member
+  (on top of the complete v3);
 - worker-loopback translation: the shared core under the worker transport;
 - composed server-direct HTTP: end-to-end preservation, drift fail-closed
   and privacy (reasoning never enters audit or error surfaces).
@@ -719,6 +720,67 @@ class PrivacyTests(unittest.TestCase):
         encoded = json.dumps(payload)
         self.assertIn(REASONING_MARKER, encoded)
         self.assertNotIn("x_scarcity_router", encoded)
+
+
+# ── Worker protocol v4 gates (D-063 on top of the complete v3) ────────────────
+
+
+class WorkerVersionGateTests(unittest.TestCase):
+    """The no-silent-loss negotiation gate (D-063): a v4 worker holding a
+    reasoning-bearing result under a negotiated version below 4 fails the
+    attempt closed with a structural note; on v4 the reasoning member is
+    serialized."""
+
+    def test_reasoning_below_v4_fails_closed_not_dropped(self) -> None:
+        from scarcity_router.worker_client import ensure_reasoning_representable
+
+        message = AdapterMessage(
+            role="assistant", content="answer", reasoning=REASONING_MARKER
+        )
+        with self.assertRaises(WorkerProtocolError) as caught:
+            ensure_reasoning_representable(3, message)
+        self.assertIn("below 4", str(caught.exception.message))
+        # The structural note names no reasoning content.
+        self.assertNotIn(REASONING_MARKER, caught.exception.message)
+
+    def test_reasoning_on_v4_is_accepted(self) -> None:
+        from scarcity_router.worker_client import ensure_reasoning_representable
+
+        message = AdapterMessage(
+            role="assistant", content="answer", reasoning=REASONING_MARKER
+        )
+        _ = ensure_reasoning_representable(4, message)
+
+    def test_plain_result_below_v4_is_unaffected(self) -> None:
+        from scarcity_router.worker_client import ensure_reasoning_representable
+
+        _ = ensure_reasoning_representable(
+            2, AdapterMessage(role="assistant", content="plain")
+        )
+
+    def test_worker_side_gate_is_wired_into_result_serialization(self) -> None:
+        """The gate sits on the result-send path: a v3-negotiated session
+        fails the reasoning-bearing result instead of serializing it."""
+        from scarcity_router.gateway_adapters import AdapterResult
+        from scarcity_router.worker_client import _ActiveSession  # pyright: ignore[reportPrivateUsage] - the wired path under test
+
+        session = object.__new__(_ActiveSession)
+        session._version = 3  # pyright: ignore[reportPrivateUsage] - minimal hand-built session
+        with self.assertRaises(WorkerProtocolError) as caught:
+            _ = session._result_message(  # pyright: ignore[reportPrivateUsage] - the wired path under test
+                "wa-1",
+                AdapterResult(
+                    status="completed",
+                    calls=(),
+                    message=AdapterMessage(
+                        role="assistant",
+                        content="answer",
+                        reasoning=REASONING_MARKER,
+                    ),
+                    finish_reason="stop",
+                ),
+            )
+        self.assertNotIn(REASONING_MARKER, caught.exception.message)
 
 
 # ── Composed server-direct HTTP end to end ────────────────────────────────────
