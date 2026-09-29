@@ -26,9 +26,12 @@ manually or maintaining a static model table that goes stale.
 - hosted multi-user quota pooling — this is a local, single-owner service
   that never shares or resells subscription quota.
 
-Current maturity: pre-release (v0.1.0), green under this repository's full
-test and acceptance gates; not yet published to a package index or container
-registry (see [Quick Start](#quick-start) for the checkout-based install).
+Current maturity: pre-release (v0.1.0); the automated repository gate
+(unit tests and type checks) is green, while live and external acceptance
+work remains tracked separately in
+[`docs/m10-acceptance.md`](docs/m10-acceptance.md); not yet published to a
+package index or container registry (see
+[Quick Start](#quick-start) for the checkout-based install).
 
 ## What It Does
 

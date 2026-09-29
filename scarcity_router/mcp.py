@@ -64,23 +64,28 @@ _CONTRACT_PREAMBLE = (
 
 _STATUS_DESCRIPTION = (
     _CONTRACT_PREAMBLE
-    + "This tool only reports current state; it never executes model "
-    + "inference. It returns one normalized capacity snapshot per supported "
-    + "subscription provider — quota windows, reset times, health, explicit "
-    + "failures and unknowns — and makes no recommendation. It accepts no "
-    + "input. Use it to inspect or diagnose the router's resource view; to "
-    + "choose a model, use scarcity_select instead."
+    + "This tool only reports observations; it never executes model "
+    + "inference. It collects one normalized capacity snapshot per "
+    + "supported subscription provider — observed quota windows, validated "
+    + "reset information where known, collection/source status, explicit "
+    + "failures and unknowns — and makes no recommendation. Snapshots are "
+    + "observations at collection time, not a real-time availability "
+    + "guarantee. It accepts no input. Use it to inspect or diagnose the "
+    + "router's resource view; to choose a model, use scarcity_select "
+    + "instead."
 )
 
 _SELECT_DESCRIPTION = (
     _CONTRACT_PREAMBLE
     + "This tool only recommends; it never executes model inference. Given "
     + "a calibrated profile_id or a complete requirement (exactly one of the "
-    + "two), it evaluates capability, current capacity, constraints and "
-    + "selector policy, then returns the least scarce capable model "
-    + "configuration with ordered alternatives, exclusions and reasons; a "
-    + "no-solution result is explicit and valid. This is the routing-decision "
-    + "tool; use scarcity_status to inspect capacity without a decision, and "
+    + "two), it gates candidates on capability and hard constraints, then "
+    + "ranks the eligible ones by current capacity/scarcity and the "
+    + "configured selector policy — quota-preference policy may outrank "
+    + "better scarcity — and recommends the top-ranked configuration with "
+    + "ordered alternatives, exclusions and reasons; a no-solution result "
+    + "is explicit and valid. This is the routing-decision tool; use "
+    + "scarcity_status to inspect capacity without a decision, and "
     + "scarcity_simulate for hypothetical what-if analysis."
 )
 
