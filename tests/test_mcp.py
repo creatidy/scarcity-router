@@ -384,6 +384,20 @@ class DiscoveryTests(McpTestCase):
             description = cast(str, tool.description)
             self.assertIn("Scarcity Router machine-interface contract v1", description)
             self.assertIn("never executes model inference", description)
+        # Intent differentiation (#162): each description states its own
+        # role and names the neighbouring tool for the intents it does not
+        # serve, keeping the three tools distinguishable from metadata alone.
+        status_description = cast(str, by_name["scarcity_status"].description)
+        select_description = cast(str, by_name["scarcity_select"].description)
+        simulate_description = cast(str, by_name["scarcity_simulate"].description)
+        self.assertIn("only reports current state", status_description)
+        self.assertIn("scarcity_select", status_description)
+        self.assertIn("only recommends", select_description)
+        self.assertIn("least scarce capable", select_description)
+        self.assertIn("scarcity_status", select_description)
+        self.assertIn("scarcity_simulate", select_description)
+        self.assertIn("only answers hypotheticals", simulate_description)
+        self.assertIn("scarcity_select", simulate_description)
         status_schema = cast(
             dict[str, object], by_name["scarcity_status"].input_schema
         )
