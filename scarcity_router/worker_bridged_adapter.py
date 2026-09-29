@@ -39,22 +39,41 @@ from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
 from typing import cast
 
+import secrets
+import threading
+
 from .gateway_adapters import (
     AdapterAmbiguousError,
     AdapterCall,
+    AdapterMessage,
     AdapterPermanentError,
     AdapterResult,
     AdapterStreamChunk,
     AdapterTimeoutError,
+    AdapterToolCall,
     CallObservation,
+    CHUNK_FINISH,
+    CHUNK_TOOL_CALL,
     ClientDisconnectedError,
+    ContinuationLostError,
     ExecutionContext,
+    FINISH_TOOL_CALLS,
+    SuspensionHandle,
+    ToolSuspension,
 )
+
 from .gateway_validation import v_canonical_ts, v_instance, v_safe_id
-from .worker_endpoint import AttemptOutcome, PendingAttempt, WorkerDispatchError, WorkerEndpoint
+from .worker_endpoint import (
+    AttemptOutcome,
+    PendingAttempt,
+    WorkerDispatchError,
+    WorkerEndpoint,
+    WorkerSession,
+)
 from .worker_protocol import (
     ExecuteChunkMessage,
     ExecuteMessage,
+    ExecuteToolCallMessage,
     WorkerProtocolError,
     call_observation_from_dict,
     chunk_from_dict,
@@ -67,6 +86,13 @@ ADAPTER_VERSION = "1.0.0"
 # How often the dispatch loop wakes to observe cancellation/deadline while
 # waiting for worker traffic (bounded polling, never a busy spin).
 DISPATCH_POLL_SECONDS = 0.05
+
+#: The bounded count of D-062 suspensions this adapter instance tracks at
+#: once. Each suspension also holds one endpoint pending-attempt slot (the
+#: tighter per-worker bound), so this only caps the shared table; a
+#: suspension arriving at the bound fails the attempt honestly instead of
+#: growing state without limit.
+MAX_PENDING_SUSPENSIONS = 64
 
 AttemptIdFactory = Callable[[], str]
 NowFactory = Callable[[], datetime]
@@ -111,6 +137,12 @@ class WorkerBridgedAdapter:
         self._attempt_id_factory: AttemptIdFactory = attempt_id_factory
         self._now: NowFactory = now if now is not None else _utcnow
         self._poll_seconds: float = poll_seconds
+        # D-062: the one suspended-execution table of this adapter
+        # instance (token -> handle). Guarded by its own lock: the
+        # dispatch threads, the continuation path and the registry's
+        # reaper callbacks all touch it.
+        self._suspended_lock: threading.Lock = threading.Lock()
+        self._suspended: dict[str, SuspensionHandle] = {}
 
     # ── The M03 adapter entry point ──────────────────────────────────
 
@@ -190,6 +222,84 @@ class WorkerBridgedAdapter:
                             cancel_sent = True
                         raise
                 continue
+            if kind == "suspension":
+                # D-062: the worker's backend turn suspended on a
+                # CLIENT-owned tool call. Everything queued before this
+                # event belonged to the initial leg (already emitted);
+                # the attempt stays tracked endpoint-side until the
+                # turn's terminal result, and the harness continues the
+                # turn through the continuation path. The external
+                # tool_call id is an opaque server-issued token — the
+                # backend's own call id never leaves this adapter.
+                suspension = cast(ExecuteToolCallMessage, payload)
+                handle = self._register_suspension(suspension, resource_id)
+                if handle is None or not self._admit_continuation(
+                    context, handle, suspension.arguments
+                ):
+                    # The continuation cannot exist (bound reached, or no
+                    # registration surface on this dispatch): cancel the
+                    # suspended backend turn, release the local handle,
+                    # and fail typed — the tool_call id is NEVER exposed
+                    # unregistered (review round 2, finding 4).
+                    if handle is not None:
+                        self._drop_suspension(handle.continuation_token)
+                    self._send_cancel_best_effort(pending.attempt_id, resource_id)
+                    raise AdapterPermanentError(
+                        "the gateway cannot continue this client-tool turn"
+                    )
+                tool_call = AdapterToolCall(
+                    id=handle.continuation_token,
+                    name=suspension.name,
+                    arguments=suspension.arguments,
+                )
+                # The token is registered; only NOW may it become
+                # externally visible (streamed frame or return value).
+                if context.emit_chunk is not None and not context.cancelled:
+                    # The streamed initial leg carries the complete
+                    # tool_call and the explicit tool_calls finish frame
+                    # (the stable non-tool path keeps its recorded
+                    # no-finish-frame shape).
+                    context.emit_chunk(
+                        AdapterStreamChunk(kind=CHUNK_TOOL_CALL, tool_call=tool_call)
+                    )
+                    context.emit_chunk(
+                        AdapterStreamChunk(
+                            kind=CHUNK_FINISH, finish_reason=FINISH_TOOL_CALLS
+                        )
+                    )
+                message = AdapterMessage(
+                    role="assistant",
+                    content=suspension.content,
+                    tool_calls=(tool_call,),
+                )
+                return AdapterResult(
+                    status="completed",
+                    # The provider call is OPEN, not finished: an
+                    # ``unknown`` observation with no usage marks the
+                    # suspended call honestly (D-043: a completed record
+                    # carries at least one call) while the turn's single
+                    # usage-bearing observation arrives only on the
+                    # terminal continuation record — nothing is
+                    # double-counted.
+                    calls=(
+                        CallObservation(
+                            call_index=0,
+                            started_at=_utcnow().isoformat(
+                                timespec="milliseconds"
+                            ).replace("+00:00", "Z"),
+                            ended_at=_utcnow().isoformat(
+                                timespec="milliseconds"
+                            ).replace("+00:00", "Z"),
+                            status="unknown",
+                            note=(
+                                "the backend turn is suspended for a "
+                                + "client-owned tool call"
+                            ),
+                        ),
+                    ),
+                    message=message,
+                    finish_reason=FINISH_TOOL_CALLS,
+                )
             if kind == "outcome":
                 outcome = cast(AttemptOutcome, payload)
                 if outcome.status == "interrupted":
@@ -204,6 +314,215 @@ class WorkerBridgedAdapter:
                 raise AdapterTimeoutError(
                     "the worker-bridged execution exceeded its time limit"
                 )
+
+    # ── D-062 continuation surface (ContinuationCapableAdapter) ──────
+
+    def _admit_continuation(
+        self,
+        context: ExecutionContext,
+        handle: SuspensionHandle,
+        arguments: str,
+    ) -> bool:
+        """Run the coordinator's registration for this suspension.
+
+        Returns whether the continuation is NOW live in the gateway
+        registry — called strictly before the token becomes observable.
+        A ``None`` seam or a ``False`` result means the bounded
+        continuation cannot exist for this dispatch.
+        """
+        registrar = context.register_continuation
+        if registrar is None:
+            return False
+        return registrar(handle, arguments)
+
+    def _register_suspension(
+        self, suspension: ExecuteToolCallMessage, resource_id: str
+    ) -> SuspensionHandle | None:
+        token = "srct-" + secrets.token_hex(16)
+        handle = SuspensionHandle(
+            continuation_token=token,
+            attempt_id=suspension.attempt_id,
+            resource_id=resource_id,
+            call_id=suspension.call_id,
+            tool_name=suspension.name,
+        )
+        with self._suspended_lock:
+            if len(self._suspended) >= MAX_PENDING_SUSPENSIONS:
+                return None
+            self._suspended[token] = handle
+        return handle
+
+    def _drop_suspension(self, token: str) -> None:
+        with self._suspended_lock:
+            _ = self._suspended.pop(token, None)
+
+    def suspension_handle(self, continuation_token: str) -> SuspensionHandle | None:
+        """The handle for a suspension this adapter issued, or ``None``."""
+        with self._suspended_lock:
+            return self._suspended.get(continuation_token)
+
+    def suspension_alive(self, handle: SuspensionHandle) -> bool:
+        """Whether the suspended attempt is still tracked endpoint-side.
+
+        A closed worker session (or a worker that already reported the
+        attempt terminal) resolves the tracker — the continuation is
+        honestly dead and nothing can resume it.
+        """
+        try:
+            session = self._endpoint.session_for_resource(handle.resource_id)
+        except WorkerDispatchError:
+            return False
+        return session.pending_attempt(handle.attempt_id) is not None
+
+    def cancel_suspension(self, handle: SuspensionHandle) -> None:
+        """Stop one suspended turn best-effort (registry expiry/cancel)."""
+        self._drop_suspension(handle.continuation_token)
+        self._send_cancel_best_effort(handle.attempt_id, handle.resource_id)
+
+    def deliver_tool_result(
+        self,
+        handle: SuspensionHandle,
+        content: str,
+        context: ExecutionContext,
+    ) -> "AdapterResult | ToolSuspension":
+        """Resume the EXACT suspended turn with one harness tool result.
+
+        Delivers the result into the same attempt and waits for that
+        turn's terminal outcome (or a further sequential suspension).
+        Loss BEFORE delivery raises :class:`ContinuationLostError`
+        (nothing consumed the result); loss AFTER it raises
+        :class:`AdapterAmbiguousError`. There is no retry, no
+        reconstruction and no fallback — D-062's sticky-exact discipline.
+        """
+        self._v_context(context)
+        session = self._session_for(handle)
+        pending = session.pending_attempt(handle.attempt_id)
+        if pending is None:
+            # The attempt already resolved (worker terminal/interrupt
+            # report, session loss, expiry): the result was never
+            # delivered and nothing was consumed.
+            self._drop_suspension(handle.continuation_token)
+            raise ContinuationLostError(
+                "the suspended execution is no longer tracked by its worker"
+            )
+        delivery = session.send_tool_result(
+            handle.attempt_id, handle.call_id, content
+        )
+        if delivery == WorkerSession.TOOL_RESULT_NOT_SENT:
+            self._drop_suspension(handle.continuation_token)
+            raise ContinuationLostError(
+                "the worker session closed before the tool result was delivered"
+            )
+        if delivery == WorkerSession.TOOL_RESULT_AMBIGUOUS:
+            self._drop_suspension(handle.continuation_token)
+            raise AdapterAmbiguousError(
+                "the tool result could not be delivered deterministically; "
+                + "the suspended execution may have consumed it"
+            )
+        return self._await_resume(handle, pending, context)
+
+    def _await_resume(
+        self,
+        handle: SuspensionHandle,
+        pending: PendingAttempt,
+        context: ExecutionContext,
+    ) -> "AdapterResult | ToolSuspension":
+        cancel_sent = False
+        while True:
+            if context.cancelled and not cancel_sent:
+                pending.cancel_requested = True
+                self._send_cancel_best_effort(handle.attempt_id, handle.resource_id)
+                cancel_sent = True
+            kind, payload = pending.take(self._poll_seconds)
+            if kind == "chunk":
+                chunk = self._chunk_from(cast(object, payload))
+                if context.cancelled:
+                    self._drop_suspension(handle.continuation_token)
+                    return AdapterResult(status="cancelled", calls=())
+                if context.emit_chunk is not None:
+                    try:
+                        context.emit_chunk(chunk)
+                    except ClientDisconnectedError:
+                        if not cancel_sent:
+                            pending.cancel_requested = True
+                            self._send_cancel_best_effort(
+                                handle.attempt_id, handle.resource_id
+                            )
+                            cancel_sent = True
+                        raise
+                continue
+            if kind == "suspension":
+                # A sequential tool round on the SAME turn: register the
+                # next continuation BEFORE anything observable, then end
+                # this leg with the new suspension.
+                suspension = cast(ExecuteToolCallMessage, payload)
+                next_handle = self._register_suspension(
+                    suspension, handle.resource_id
+                )
+                self._drop_suspension(handle.continuation_token)
+                if next_handle is None or not self._admit_continuation(
+                    context, next_handle, suspension.arguments
+                ):
+                    if next_handle is not None:
+                        self._drop_suspension(next_handle.continuation_token)
+                    self._send_cancel_best_effort(
+                        handle.attempt_id, handle.resource_id
+                    )
+                    raise AdapterPermanentError(
+                        "the gateway cannot continue this client-tool turn"
+                    )
+                if context.emit_chunk is not None and not context.cancelled:
+                    context.emit_chunk(
+                        AdapterStreamChunk(
+                            kind=CHUNK_TOOL_CALL,
+                            tool_call=AdapterToolCall(
+                                id=next_handle.continuation_token,
+                                name=suspension.name,
+                                arguments=suspension.arguments,
+                            ),
+                        )
+                    )
+                    context.emit_chunk(
+                        AdapterStreamChunk(
+                            kind=CHUNK_FINISH, finish_reason=FINISH_TOOL_CALLS
+                        )
+                    )
+                return ToolSuspension(
+                    continuation_token=next_handle.continuation_token,
+                    tool_name=suspension.name,
+                    arguments=suspension.arguments,
+                    content=suspension.content,
+                )
+            if kind == "outcome":
+                self._drop_suspension(handle.continuation_token)
+                outcome = cast(AttemptOutcome, payload)
+                if outcome.status == "interrupted":
+                    # Lost AFTER delivery: the result may have been
+                    # consumed; honest ambiguity, never a re-execution.
+                    raise AdapterAmbiguousError(
+                        "the worker connection was lost after the tool result "
+                        + "was delivered; the outcome is unknown and was not "
+                        + "retried"
+                    )
+                return self._result_from(outcome)
+            if self._now() >= _parse_deadline(context.deadline):
+                self._drop_suspension(handle.continuation_token)
+                self._send_cancel_best_effort(handle.attempt_id, handle.resource_id)
+                raise AdapterTimeoutError(
+                    "the continued execution exceeded its time limit"
+                )
+
+    def _v_context(self, context: ExecutionContext) -> None:
+        _ = v_instance(context, ExecutionContext, "worker_bridged.context")
+
+    def _session_for(self, handle: SuspensionHandle) -> WorkerSession:
+        try:
+            return self._endpoint.session_for_resource(handle.resource_id)
+        except WorkerDispatchError as exc:
+            raise ContinuationLostError(
+                "no worker session can deliver the tool result for the "
+                + "suspended execution"
+            ) from exc
 
     def _chunk_from(self, payload: object) -> AdapterStreamChunk:
         if not isinstance(payload, ExecuteChunkMessage):
@@ -290,6 +609,7 @@ __all__ = [
     "ADAPTER_NAME",
     "ADAPTER_VERSION",
     "DISPATCH_POLL_SECONDS",
+    "MAX_PENDING_SUSPENSIONS",
     "AttemptIdFactory",
     "WorkerBridgedAdapter",
     "default_attempt_id",

@@ -69,6 +69,7 @@ from scarcity_router.worker_local_store import (  # noqa: E402
     WorkerLocalStore,
 )
 from scarcity_router.worker_protocol import (  # noqa: E402
+    ExecuteToolCallMessage,
     ExecuteChunkMessage,
     ExecuteMessage,
     FrameReader,
@@ -514,7 +515,7 @@ class RunLoopTests(unittest.TestCase):
         self.assertEqual("duplicate_attempt", caught.exception.code)
         # The first attempt completes normally.
         kind: str = "timeout"
-        taken: tuple[str, ExecuteChunkMessage | AttemptOutcome | None] = ("timeout", None)
+        taken: tuple[str, ExecuteChunkMessage | ExecuteToolCallMessage | AttemptOutcome | None] = ("timeout", None)
         for _ in range(16):
             taken = first.take(5.0)
             if taken[0] == "outcome":

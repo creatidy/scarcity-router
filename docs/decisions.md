@@ -4684,3 +4684,216 @@ Do not rewrite history or change an accepted decision silently.
   `docs/providers.md`. No code, no catalog ratings, no capability
   claims, no serialized contracts, no execution-surface behavior. M04's
   Z.ai HTTP/API path (D-047 point 5) is unaffected.
+
+### D-062 — Client-owned tool continuation on the Codex execution source: the Family-A suspended turn, worker protocol v3 and the bounded continuation boundary
+
+- **Status:** Accepted (issue #137; child E of program #132; branch
+  `gateway/codex-client-tools`). Numbered D-062 because D-060 is
+  reserved by open issue #156 and D-061 was taken (merged mid-flight)
+  while this branch was in flight; the renumbering is a scoped
+  substitution of this section only — D-061's own reference to the
+  D-060 reservation is history and stays untouched.
+- **Date:** 2026-09-28
+- **Base:** `develop` @ `6fec46c` (D-058/#136 and D-059/#154 merged;
+  #150's Stage-A reuse evidence consumed as input, its program untouched)
+- **Confidence:** High for the responsibility boundary, the state
+  machine, the exactly-once continuation discipline and the security
+  invariants (implemented and test-pinned at the HTTP, protocol and
+  adapter boundaries against the deterministic fake App Server). The
+  LIVE signed-in round trip stays behind the recorded
+  ``LIVE_CODEX_SUBSCRIPTION``-class gate: the tool cells are PARTIAL,
+  never PASS, until that acceptance. The ``success`` mapping (pt 6)
+  is an OWNER DECISION accepting a deliberately lossy translation —
+  its provenance is the owner's resolution of the 2026-09-28 decision
+  packet, not mechanism evidence.
+- **Context:** #137's investigation concluded TOOL_BRIDGE_VIABLE
+  (2026-09-28, issue comment): the client-tool mechanism on the current
+  runtime (``codex-cli 0.155.0-alpha.16.3``; upstream re-pin
+  ``rust-v0.157.1`` @ ``36650394`` by #150) is ``dynamicTools`` on
+  ``thread/start``, gated by the single ``experimentalApi`` capability,
+  with ``item/tool/call`` as the per-invocation suspension and a
+  ``{success, contentItems}`` answer into the SAME thread/turn.
+  Declarations are THREAD-scoped, not per-turn (F2), which makes the
+  tool set part of continuation identity. Family B (stateless
+  reconstruction) was not proved semantically equivalent (its two
+  hinges — interrupt-while-pending and inject_items fidelity — are
+  unverified), so under #137's frozen rule Family A is the only
+  selectable design.
+- **Decision:**
+  1. **Family A — the suspension IS the mechanism.** One Codex
+     App Server process, one thread, one turn per logical backend
+     execution. When Codex emits ``item/tool/call``, the worker holds
+     the request unanswered, relays it to the gateway over the worker
+     protocol, and the gateway ends that HTTP leg with a normal OpenAI
+     ``assistant.tool_calls`` + ``finish_reason="tool_calls"``
+     response. The harness executes its own tool; the next ordinary
+     Chat Completions request carries ``role:"tool"``; the gateway
+     answers the held ``item/tool/call`` with the harness's verbatim
+     text so the SAME turn continues — final answer or another
+     evidenced suspension. Reconstruction, replay into a new thread,
+     rerouting of a suspended turn and silent restarts do not exist; a
+     lost suspended runtime is a typed failure
+     (``continuation_not_found`` before delivery, honest
+     ``ambiguous_execution_state`` after it).
+  2. **Worker protocol v3 (closed, version-gated).** Exactly two new
+     attempt-scoped messages: ``execute_tool_call``
+     (worker→server: ``attempt_id``, backend ``call_id``, ``name``,
+     ``arguments`` JSON text, optional pre-suspension ``content``) and
+     ``execute_tool_result`` (server→worker: the harness's text
+     content for that call, ≤ 4 MiB). ``WORKER_PROTOCOL_VERSION = 3``;
+     the server accepts (3, 2, 1). v1/v2 sessions never carry the v3
+     vocabulary (violation is fatal), an old worker is NEVER
+     tool-continuation-capable, and ordinary non-tool execution on old
+     workers is unchanged. The transport, framing, authentication and
+     exactly-once dispatch discipline are untouched; there is still no
+     arbitrary-command surface and no second transport.
+  3. **Opaque, single-subscriber continuation identity.** The
+     externally visible ``tool_call_id`` is a server-issued random
+     token (``srct-`` + 128 bits); Codex's ``callId``, thread ids and
+     process facts never leave the worker. One bounded server-side
+     registry (≤ 64 pending) maps token → suspended execution bound to
+     the authenticated client, the exact worker/resource, the original
+     tool set fingerprint, the conversation-prefix fingerprint, the
+     echoed assistant tool_calls and the absolute deadline. Exactly one
+     client may submit the result and exactly one result is accepted:
+     replay/double-delivery is ``409 continuation_already_resolved``
+     (a bounded client-scoped tombstone ring keeps post-terminal
+     replays precise), a foreign client's replay is indistinguishably
+     ``404 continuation_not_found``, and every fingerprint mismatch
+     (model, effort, tools, tool_choice, prefix, assistant echo, extra
+     tool messages) is ``400 continuation_mismatch``. Prompt, tool
+     arguments and tool results are never stored — only bounded
+     digests.
+  4. **One absolute lifetime — reuse, not a new policy.** The logical
+     model turn's budget is the ORIGINAL attempt's admission deadline
+     (``execution_time_limit_seconds`` from the initial dispatch). The
+     worker's existing deadline timer (already armed on the execute
+     frame) interrupts the suspended Codex turn at expiry; the
+     gateway's reaper tick additionally expires the registry record and
+     cancels the worker turn; a later tool result receives the typed
+     expired/not-found response. No per-leg reset exists, so no request
+     pattern can keep a Codex process alive indefinitely, and no new
+     client-expandable knob was introduced.
+  5. **Narrowly scoped experimental API.** The stable surface keeps
+     ``initialize`` with empty ``capabilities`` byte-for-byte. ONLY a
+     request that actually carries client tools opts into
+     ``capabilities.experimentalApi = true`` and declares the client's
+     function tools verbatim as thread-scoped ``dynamicTools`` (no
+     renaming, truncation, schema weakening or sanitization; bounded
+     count/bytes/depth; anything unrepresentable is a typed
+     pre-execution rejection). Tool-``choice`` modes the surface cannot
+     enforce (``required``/named/``none``) are refused before
+     execution — no prompt-based emulation; ``parallel_tool_calls``
+     keeps its existing refuse-not-drop treatment (it lands in
+     ``generation_params``), and sequential multi-round turns are
+     bounded (32 rounds/turn) with one pending call at a time.
+  6. **The ``success`` semantic: explicit OWNER DECISION — an
+     accepted lossy protocol translation (resolves the 2026-09-28
+     decision packet; supersedes the interim answer-point STOP).**
+     Upstream (verified first-hand at ``openai/codex`` @ ``36650394``,
+     ``codex-rs/protocol/src/protocol.rs``) defines the dynamic-tool
+     answer's ``success`` as "Whether the tool call succeeded" — a
+     REQUIRED ``bool`` with no default. The generic Chat Completions
+     ``role:"tool"`` message (execution surface v1: text-only, closed
+     field set) carries NO independent boolean expressing whether the
+     external tool OPERATION succeeded, so the richer upstream
+     distinction cannot be preserved across this source contract. The
+     OWNER has therefore accepted, for the generic Chat Completions
+     execution surface, the explicit compatibility rule: **a
+     syntactically valid ``role:"tool"`` message with the expected
+     ``tool_call_id`` is represented on the Codex side as
+     ``DynamicToolCallResponse {success: true, contentItems:
+     [{"type": "inputText", "text": <verbatim message content>}]}``.**
+     This is an owner-accepted LOSSY protocol translation and must be
+     read exactly as follows: it is NOT the native meaning of Codex
+     ``success`` (the upstream fact above stands); ``success: true``
+     does NOT prove the external operation succeeded; it asserts only
+     that the generic result is represented as a successfully returned
+     function-call output on the Codex side. Semantic/tool failures
+     may still be represented by the harness in the verbatim result
+     content, which Scarcity Router never inspects, parses,
+     pattern-matches or reinterprets; ``success: false`` is never
+     inferred from content, HTTP outcomes or id validity. The rule
+     applies generically to every conforming Chat Completions client —
+     no client-specific branch exists. The mapping is applied only
+     after ALL continuation validation has succeeded (exact client,
+     exact continuation, digest-validated echo, exactly-once claim,
+     current hard-authority recheck, absolute deadline). The
+     interim answer-point STOP (refusing the answer as
+     ``tool_result_success_unresolved``) is superseded by this
+     decision and removed.
+  7. **Honest audit across the multi-request turn.** The initial leg
+     audits ``completed`` with an ``unknown``-status, usage-free call
+     observation (the provider call is open) plus the additive reason
+     code ``suspended_for_client_tool``; the terminal continuation leg
+     audits ``completed`` with the turn's SINGLE usage-bearing
+     observation plus ``continuation_resumed`` and repeats the
+     original decision/target identity. Usage is therefore carried
+     exactly once; records correlate by shared ``decision_id``. Additive
+     reason codes only; the frozen field set is unchanged.
+  8. **Capability honesty and rolling upgrade.** ``tool_calls`` and
+     ``tool_results`` move UNSUPPORTED → PARTIAL (dated 2026-09-28:
+     mechanism evidence + the deterministic round trip under the pt 6
+     owner-approved ``success`` mapping; signed-in live acceptance
+     still outstanding — neither cell is claimed PASS) and the Codex
+     surface registration fact ``tool_calls`` becomes true — but tool
+     eligibility additionally requires the LIVE worker session to
+     negotiate protocol v3, so an old worker never becomes tool-call
+     eligible because the static matrix moved. A tool-bearing request
+     selected onto a v3-less worker fails closed with a typed backend
+     failure before any experimental API use.
+  9. **Sticky vs revocable.** Competitive changes (D-059 campaigns,
+     blackouts, scarcity, quota, newly-cheaper resources) can never
+     move or re-rank a suspended turn — the continuation path performs
+     no routing I/O at all. Hard authority is separate: worker/source
+     revocation, source disappearance, session loss and expiry
+     terminate the pending turn (interrupt + bounded process teardown)
+     and fail the continuation closed.
+- **Reason:** The investigation's evidence (mechanism-level, three
+  agreeing classes) leaves exactly one protocol-native design, and the
+  frozen #137 constraints (generic OpenAI continuation carrier, no
+  cross-client access, bounded lifetime, closed versioned worker
+  contract, honest evidence) each map onto one mechanism above. Reusing
+  the admission deadline as the turn lifetime avoids a second policy
+  surface while satisfying the no-loophole requirement.
+- **Alternatives considered:** Family B stateless reconstruction
+  (rejected: semantic equivalence unproved — the #137 STOP rule);
+  passing Codex's ``callId`` through as the client-visible tool_call_id
+  (rejected: leaks worker-internal correlation ids and grants nothing
+  back — an opaque server-issued token is strictly safer); a new
+  administrator ``continuation_ttl_seconds`` (rejected for now: the
+  admission deadline already bounds the whole turn and a second
+  configurable lifetime invites divergence; revisiting is cheap if a
+  real workload needs a longer tool budget than its inference budget);
+  enabling ``experimentalApi`` globally (rejected: scope creep on the
+  experimental surface); serving parallel dynamic-tool fan-out
+  (rejected: unevidenced; ``parallel_tool_calls`` stays
+  refuse-not-drop); durable continuation state (rejected: in-memory is
+  the honest architecture — a gateway restart loses pending
+  continuations and says so).
+- **Reconciliation:** D-056 pt 5 (the client-owned tool lifecycle) is
+  implemented for the Codex source; D-043's worker-protocol closedness
+  is preserved through an explicit version bump; D-058's effective
+  limits, output-limit normalization and audit provenance are
+  untouched and apply to the initial tool-bearing leg as to any Codex
+  request; D-059's policy semantics govern initial selection only and
+  by construction cannot reroute a suspended turn. The #137 frozen
+  scope's non-goals stand: no Responses API, no Anthropic/MCP bridge,
+  no worker-side or router-side tool execution. The pt 6 ``success``
+  mapping is an amendment to THIS record resolving its own decision
+  packet — no new decision number is created, and the upstream fact it
+  cites ("Whether the tool call succeeded") remains the authoritative
+  description of Codex's native semantic.
+- **Boundary:** ``worker_protocol.py``, ``worker_endpoint.py``,
+  ``worker_client.py``, ``worker_bridged_adapter.py``,
+  ``worker_codex_adapter.py``, ``worker_local_adapters.py``,
+  ``gateway_continuation.py`` (new), ``gateway_adapters.py``,
+  ``gateway_coordinator.py``, ``gateway_contracts.py``,
+  ``routing_core.py`` (the live v3 availability gate, the
+  ``continuation_capable_resource_ids`` request input and the
+  compatibility reason-code dedup), ``control_api.py``,
+  ``control_server.py``, ``codex_worker_evidence.py``,
+  ``execution_sources.py``, tests,
+  ``docs/worker-protocol.md``, ``docs/execution-surface.md``,
+  ``docs/codex-adapter-stage1-evidence.md`` and this record. The live
+  signed-in acceptance remains open; no cell above PARTIAL is claimed.

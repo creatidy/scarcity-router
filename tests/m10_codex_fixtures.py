@@ -238,6 +238,12 @@ def trace_methods(path: Path) -> list[str]:
     ]
 
 
+def trace_events(path: Path, event: str) -> list[dict[str, object]]:
+    """Every trace record of one named event kind (tool answers,
+    initialize probes, ...)."""
+    return [record for record in read_trace(path) if record.get("event") == event]
+
+
 def trace_request(path: Path, method: str) -> dict[str, object] | None:
     for record in read_trace(path):
         if record.get("event") == "request" and record.get("method") == method:

@@ -73,24 +73,37 @@ from .selection_types import ModelIdentity
 
 #: The protocol version this build speaks. Version 2 (D-053, #120) adds
 #: the OPTIONAL bounded ``inventories`` section on state reports; every
-#: version-1 message shape is unchanged. The server still ACCEPTS v1
-#: peers (see :data:`SERVER_SUPPORTED_PROTOCOL_VERSIONS`), so an old
-#: worker negotiates version 1 and behaves exactly as before; a new
-#: worker against an old server fails cleanly at the handshake (deploy
-#: the server first, the standard rolling-upgrade order).
-WORKER_PROTOCOL_VERSION = 2
+#: version-1 message shape is unchanged. Version 3 (#137, the D-062
+#: client-tool continuation) adds exactly two attempt-scoped messages:
+#: ``execute_tool_call`` (worker -> server: the suspended backend turn
+#: requests a CLIENT-owned tool) and ``execute_tool_result`` (server ->
+#: worker: the harness's tool result for that call). The vocabulary stays
+#: closed and version-gated: a v1/v2 session never carries the v3
+#: messages, and a v3 session carries them only for the continuation
+#: semantics D-062 defines — there is still no arbitrary-command surface.
+#: The server still ACCEPTS v1/v2 peers (see
+#: :data:`SERVER_SUPPORTED_PROTOCOL_VERSIONS`), so an old worker
+#: negotiates its own version and behaves exactly as before (and is never
+#: considered tool-continuation-capable); a new worker against an old
+#: server fails cleanly at the handshake (deploy the server first, the
+#: standard rolling-upgrade order).
+WORKER_PROTOCOL_VERSION = 3
 
 #: Versions the server-side endpoint accepts from workers. Version 1
 #: workers never send the version-2 inventory section; version negotiation
 #: picks the highest mutually supported version.
-SERVER_SUPPORTED_PROTOCOL_VERSIONS: tuple[int, ...] = (2, 1)
+SERVER_SUPPORTED_PROTOCOL_VERSIONS: tuple[int, ...] = (3, 2, 1)
 
 # ── Framing bounds ────────────────────────────────────────────────────────────
 
 # Bounded frames (D-043 strict parsing): 4-byte length prefix, then at most
-# this many payload bytes. The gateway's default request-body admission limit
-# is 1 MiB; the frame bound leaves bounded headroom for JSON encoding of one
-# admitted call plus envelope, and nothing larger can ever enter a session.
+# this many payload bytes — the SAME order as the gateway's default
+# request-body admission limit (16 MiB since D-058; the earlier "1 MiB
+# default" note was stale). The bound does not claim headroom over an
+# admitted body: one admitted call plus envelope is expected to fit
+# because the coordinator's limits cap input context far below the byte
+# bound in practice, and encode/decode failures are typed protocol
+# errors — nothing larger can ever enter a session.
 MAX_FRAME_BYTES = 16 * 1_048_576
 
 _LENGTH_PREFIX = struct.Struct(">I")
@@ -104,6 +117,7 @@ MSG_STATE_REPORT = "state_report"  # worker -> server: M01 worker report
 MSG_EXECUTE_CHUNK = "execute_chunk"  # worker -> server: one stream chunk
 MSG_EXECUTE_RESULT = "execute_result"  # worker -> server: terminal result
 MSG_ATTEMPT_INTERRUPTED = "attempt_interrupted"  # worker -> server: lost attempt
+MSG_EXECUTE_TOOL_CALL = "execute_tool_call"  # worker -> server: v3 client-tool suspension
 MSG_ROTATE_CREDENTIAL = "rotate_credential"  # worker -> server: rotate identity
 MSG_HELLO_ACK = "hello_ack"  # server -> worker: session accepted
 MSG_PAIR_RESULT = "pair_result"  # server -> worker: issued device identity
@@ -111,6 +125,7 @@ MSG_HEARTBEAT_ACK = "heartbeat_ack"  # server -> worker: liveness confirmed
 MSG_STATE_REPORT_ACK = "state_report_ack"  # server -> worker: report applied
 MSG_EXECUTE = "execute"  # server -> worker: run one allowlisted local adapter
 MSG_CANCEL = "cancel"  # server -> worker: stop one attempt
+MSG_EXECUTE_TOOL_RESULT = "execute_tool_result"  # server -> worker: v3 harness tool result
 MSG_CREDENTIAL_ROTATED = "credential_rotated"  # server -> worker: new credential
 MSG_ERROR = "error"  # server -> worker: typed protocol error
 
@@ -122,6 +137,7 @@ WORKER_TO_SERVER_TYPES: frozenset[str] = frozenset({
     MSG_EXECUTE_CHUNK,
     MSG_EXECUTE_RESULT,
     MSG_ATTEMPT_INTERRUPTED,
+    MSG_EXECUTE_TOOL_CALL,
     MSG_ROTATE_CREDENTIAL,
 })
 
@@ -132,6 +148,7 @@ SERVER_TO_WORKER_TYPES: frozenset[str] = frozenset({
     MSG_STATE_REPORT_ACK,
     MSG_EXECUTE,
     MSG_CANCEL,
+    MSG_EXECUTE_TOOL_RESULT,
     MSG_CREDENTIAL_ROTATED,
     MSG_ERROR,
 })
@@ -176,6 +193,13 @@ _MAX_NOTE = 200
 _MAX_CHUNK_TEXT = 1_048_576
 _MAX_TOOL_ARGUMENTS = 1_048_576
 _MAX_IDENTIFIER_TEXT = 256
+#: D-062 (#137): the harness tool-result text bound for the v3
+#: ``execute_tool_result`` message. A 4 MiB string stays under the 16 MiB
+#: frame bound even in the worst JSON-escaping case, and no OpenAI
+#: text-only tool result admitted by the execution surface legitimately
+#: needs more; anything larger fails closed at the gateway before the
+#: frame is ever built.
+_MAX_TOOL_RESULT_TEXT = 4 * 1_048_576
 #: D-053: at most this many source inventory documents per state report
 #: (each document is bounded again by the inventory contract itself).
 MAX_INVENTORIES_PER_REPORT = 8
@@ -1147,6 +1171,109 @@ class AttemptInterruptedMessage:
 
 
 @dataclass(frozen=True)
+class ExecuteToolCallMessage:
+    """Worker -> server (protocol version 3): a CLIENT tool is requested.
+
+    The worker's local adapter reached the evidenced D-062 suspension
+    point: the backend turn is SUSPENDED and asks for a client-owned
+    tool. ``call_id`` is the backend's own correlation id for the pending
+    call (it never reaches any client — the gateway returns its own
+    opaque tool_call id); ``name``/``arguments`` carry the requested tool
+    exactly as the backend emitted it (arguments stay an opaque JSON
+    TEXT string, never parsed, repaired or executed anywhere in Scarcity
+    Router); ``content`` optionally carries the assistant text produced
+    before the suspension (the pre-tool segment of the same turn). The
+    adapter emits AT MOST ONE pending tool call per attempt: a second
+    concurrent call is a typed adapter failure, never a queued one.
+    """
+
+    attempt_id: str
+    call_id: str
+    name: str
+    arguments: str
+    content: str | None = None
+
+    def to_payload(self) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "type": MSG_EXECUTE_TOOL_CALL,
+            "attempt_id": self.attempt_id,
+            "call_id": self.call_id,
+            "name": self.name,
+            "arguments": self.arguments,
+        }
+        if self.content is not None:
+            payload["content"] = self.content
+        return payload
+
+    @classmethod
+    def from_payload(cls, d: object) -> "ExecuteToolCallMessage":
+        dd = _payload_shape(
+            d, ("type", "attempt_id", "call_id", "name", "arguments"),
+            ("content",), "execute_tool_call",
+        )
+        _typed(dd, MSG_EXECUTE_TOOL_CALL)
+        try:
+            return cls(
+                attempt_id=v_safe_id(dd["attempt_id"], "execute_tool_call.attempt_id"),
+                call_id=v_text(dd["call_id"], "execute_tool_call.call_id", max_len=_MAX_IDENTIFIER_TEXT),
+                name=v_text(dd["name"], "execute_tool_call.name", max_len=_MAX_IDENTIFIER_TEXT),
+                arguments=v_text(
+                    dd["arguments"], "execute_tool_call.arguments", max_len=_MAX_TOOL_ARGUMENTS
+                ),
+                content=(
+                    None
+                    if dd.get("content") is None
+                    else v_text(dd["content"], "execute_tool_call.content", max_len=_MAX_CHUNK_TEXT)
+                ),
+            )
+        except ValueError as exc:
+            raise WorkerProtocolError(ERR_MALFORMED, str(exc)) from None
+
+
+@dataclass(frozen=True)
+class ExecuteToolResultMessage:
+    """Server -> worker (protocol version 3): the harness tool result.
+
+    Delivers ONE harness-owned tool result into the EXACT suspended call
+    (``attempt_id`` + ``call_id``) so the SAME backend turn continues.
+    ``content`` is the OpenAI ``role: "tool"`` message's text content,
+    transported verbatim; execution surface v1 is text-only, so nothing
+    else is representable (and nothing else is invented). The server
+    delivers each result at most once; the worker answers the suspended
+    backend request with it and never re-delivers or reinterprets it.
+    """
+
+    attempt_id: str
+    call_id: str
+    content: str
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "type": MSG_EXECUTE_TOOL_RESULT,
+            "attempt_id": self.attempt_id,
+            "call_id": self.call_id,
+            "content": self.content,
+        }
+
+    @classmethod
+    def from_payload(cls, d: object) -> "ExecuteToolResultMessage":
+        dd = _payload_shape(
+            d, ("type", "attempt_id", "call_id", "content"), (), "execute_tool_result"
+        )
+        _typed(dd, MSG_EXECUTE_TOOL_RESULT)
+        try:
+            return cls(
+                attempt_id=v_safe_id(dd["attempt_id"], "execute_tool_result.attempt_id"),
+                call_id=v_text(dd["call_id"], "execute_tool_result.call_id", max_len=_MAX_IDENTIFIER_TEXT),
+                content=v_text(
+                    dd["content"], "execute_tool_result.content", max_len=_MAX_TOOL_RESULT_TEXT
+                ),
+            )
+        except ValueError as exc:
+            raise WorkerProtocolError(ERR_MALFORMED, str(exc)) from None
+
+
+@dataclass(frozen=True)
 class RotateCredentialMessage:
     """Worker -> server: rotate this device's credential (authenticated)."""
 
@@ -1287,6 +1414,8 @@ def parse_worker_message(payload: Mapping[str, object]) -> object:
         return ExecuteResultMessage.from_payload(payload)
     if message_type == MSG_ATTEMPT_INTERRUPTED:
         return AttemptInterruptedMessage.from_payload(payload)
+    if message_type == MSG_EXECUTE_TOOL_CALL:
+        return ExecuteToolCallMessage.from_payload(payload)
     if message_type == MSG_ROTATE_CREDENTIAL:
         return RotateCredentialMessage.from_payload(payload)
     raise WorkerProtocolError(ERR_UNKNOWN_MESSAGE, f"unknown worker message type {message_type!r}")
@@ -1307,6 +1436,8 @@ def parse_server_message(payload: Mapping[str, object]) -> object:
         return ExecuteMessage.from_payload(payload)
     if message_type == MSG_CANCEL:
         return CancelMessage.from_payload(payload)
+    if message_type == MSG_EXECUTE_TOOL_RESULT:
+        return ExecuteToolResultMessage.from_payload(payload)
     if message_type == MSG_CREDENTIAL_ROTATED:
         return CredentialRotatedMessage.from_payload(payload)
     if message_type == MSG_ERROR:
@@ -1342,6 +1473,8 @@ __all__ = [
     "MSG_EXECUTE",
     "MSG_EXECUTE_CHUNK",
     "MSG_EXECUTE_RESULT",
+    "MSG_EXECUTE_TOOL_CALL",
+    "MSG_EXECUTE_TOOL_RESULT",
     "MSG_ERROR",
     "MSG_HELLO",
     "MSG_HELLO_ACK",
@@ -1359,6 +1492,8 @@ __all__ = [
     "ExecuteChunkMessage",
     "ExecuteMessage",
     "ExecuteResultMessage",
+    "ExecuteToolCallMessage",
+    "ExecuteToolResultMessage",
     "FrameReader",
     "FrameTransport",
     "FrameWriter",

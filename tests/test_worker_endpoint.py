@@ -608,5 +608,189 @@ def request_call_resource(execute: ExecuteMessage) -> str:
     return RESOURCE_ID
 
 
+class EndpointContinuationTests(EndpointTestCase):
+    """Protocol version 3 at the endpoint: suspension routing and
+    deterministic tool-result delivery (D-062)."""
+
+    def _connect_v3(self) -> ScriptedWorker:
+        worker = self.connect_worker()
+        code = self.store.begin_pairing(label="test-device")
+        worker.send_raw(
+            {
+                "type": "pair_request",
+                "pairing_code": code.pairing_code,
+                "supported_versions": [3, 2, 1],
+                "device_label": "test-device",
+            }
+        )
+        answer = worker.read_server_message()
+        assert isinstance(answer, PairResultMessage), answer
+        self.assertEqual(3, answer.negotiated_version)
+        worker_id, _credential = answer.worker_id, answer.credential
+        self.assign(RESOURCE_ID, worker_id)
+        _ = worker.send_state_report(
+            build_worker_report(worker_id=worker_id, resource_id=RESOURCE_ID)
+        )
+        return worker
+
+    def _dispatch(self, session: WorkerSession) -> tuple[str, PendingAttempt]:
+        call: AdapterCall = _worker_call()
+        message = ExecuteMessage(
+            request_id="chatcmpl-1",
+            attempt_id="wa-tool0001",
+            adapter_id="synthetic",
+            deadline="2030-01-01T00:00:00.000Z",
+            call=call,
+        )
+        return message.attempt_id, session.submit_execute(message)
+
+    def test_suspension_routes_to_the_attempt_and_keeps_it_tracked(self) -> None:
+        worker = self._connect_v3()
+        session = self.bound_session()
+        attempt_id, pending = self._dispatch(session)
+        worker.send_raw(
+            {
+                "type": "execute_tool_call",
+                "attempt_id": attempt_id,
+                "call_id": "call-synthetic-1",
+                "name": "synthetic_lookup",
+                "arguments": '{"n": 0}',
+                "content": "pre",
+            }
+        )
+        kind, payload = pending.take(5.0)
+        self.assertEqual("suspension", kind)
+        from scarcity_router.worker_protocol import ExecuteToolCallMessage
+
+        suspension = cast(ExecuteToolCallMessage, payload)
+        self.assertEqual("call-synthetic-1", suspension.call_id)
+        # The attempt REMAINS tracked while suspended (the continuation
+        # resolves into the same tracker).
+        self.assertIsNotNone(session.pending_attempt(attempt_id))
+
+    def test_second_concurrent_suspension_is_refused(self) -> None:
+        worker = self._connect_v3()
+        session = self.bound_session()
+        attempt_id, pending = self._dispatch(session)
+        _ = worker.read_raw()  # the queued execute frame
+        frame = {
+            "type": "execute_tool_call",
+            "attempt_id": attempt_id,
+            "call_id": "call-synthetic-1",
+            "name": "t",
+            "arguments": "{}",
+        }
+        worker.send_raw(dict(frame))
+        worker.send_raw(dict(frame))
+        kind, _payload = pending.take(5.0)
+        self.assertEqual("suspension", kind)
+        error = worker.read_raw()
+        assert error is not None
+        self.assertEqual("error", error.get("type"))
+        self.assertEqual("malformed_message", error.get("code"))
+        self.assertIs(False, error.get("fatal"))
+        # Exactly one suspension event exists for the attempt; the
+        # refused duplicate never queued a second consumer.
+        kind, _payload = pending.take(0.5)
+        self.assertEqual("timeout", kind)
+
+    def test_sequential_suspension_after_consumption_is_a_new_round(self) -> None:
+        worker = self._connect_v3()
+        session = self.bound_session()
+        attempt_id, pending = self._dispatch(session)
+        _ = worker.read_raw()  # the queued execute frame
+        worker.send_raw(
+            {
+                "type": "execute_tool_call",
+                "attempt_id": attempt_id,
+                "call_id": "call-synthetic-1",
+                "name": "t",
+                "arguments": "{}",
+            }
+        )
+        kind, payload = pending.take(5.0)
+        self.assertEqual("suspension", kind)
+        # The first suspension was consumed (its leg answers it); a
+        # further suspension on the SAME tracker is the turn's next
+        # sequential tool round, not a duplicate.
+        worker.send_raw(
+            {
+                "type": "execute_tool_call",
+                "attempt_id": attempt_id,
+                "call_id": "call-synthetic-2",
+                "name": "t",
+                "arguments": "{}",
+            }
+        )
+        kind, payload = pending.take(5.0)
+        self.assertEqual("suspension", kind)
+        from scarcity_router.worker_protocol import ExecuteToolCallMessage
+
+        assert isinstance(payload, ExecuteToolCallMessage)
+        self.assertEqual("call-synthetic-2", payload.call_id)
+
+    def test_tool_result_delivery_is_deterministic(self) -> None:
+        worker = self._connect_v3()
+        session = self.bound_session()
+        attempt_id, _pending = self._dispatch(session)
+        execute = worker.read_server_message()
+        assert isinstance(execute, ExecuteMessage), execute
+        self.assertEqual(
+            WorkerSession.TOOL_RESULT_SENT,
+            session.send_tool_result(attempt_id, "call-synthetic-1", "R"),
+        )
+        message = worker.read_server_message()
+        from scarcity_router.worker_protocol import ExecuteToolResultMessage
+
+        assert isinstance(message, ExecuteToolResultMessage)
+        self.assertEqual("R", message.content)
+        self.assertEqual("call-synthetic-1", message.call_id)
+
+    def test_tool_result_on_v2_session_is_refused_by_contract(self) -> None:
+        worker = self.connect_worker()
+        worker_id, _credential = self.pair_worker(worker)
+        self.assign(RESOURCE_ID, worker_id)
+        _ = worker.send_state_report(
+            build_worker_report(worker_id=worker_id, resource_id=RESOURCE_ID)
+        )
+        session = self.bound_session()
+        self.assertEqual(1, session.negotiated_version)
+        attempt_id, _pending = self._dispatch(session)
+        self.assertEqual(
+            WorkerSession.TOOL_RESULT_NOT_SENT,
+            session.send_tool_result(attempt_id, "c", "R"),
+        )
+        # And a v1/v2 session carrying the v3 vocabulary is FATAL (the
+        # session cannot be trusted with open attempts).
+        _ = worker.read_raw()  # the queued execute frame
+        worker.send_raw(
+            {
+                "type": "execute_tool_call",
+                "attempt_id": attempt_id,
+                "call_id": "c",
+                "name": "t",
+                "arguments": "{}",
+            }
+        )
+        error = worker.read_raw()
+        assert error is not None
+        self.assertEqual("error", error.get("type"))
+        self.assertEqual("malformed_message", error.get("code"))
+        self.assertIs(True, error.get("fatal"))
+        self.assertTrue(wait_until(lambda: session.pending_attempt(attempt_id) is None))
+
+    def test_tool_result_on_closed_session_is_not_sent(self) -> None:
+        _ = self._connect_v3()
+        session = self.bound_session()
+        attempt_id, _pending = self._dispatch(session)
+        session.close(note="test")
+        self.assertEqual(
+            WorkerSession.TOOL_RESULT_NOT_SENT,
+            session.send_tool_result(attempt_id, "c", "R"),
+        )
+        # The suspended attempt resolved as interrupted with the close.
+        self.assertIsNone(session.pending_attempt(attempt_id))
+
+
 if __name__ == "__main__":
     _ = unittest.main()

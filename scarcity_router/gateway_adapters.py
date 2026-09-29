@@ -244,6 +244,17 @@ class ExecutionContext:
     deadline: str
     cancel_event: threading.Event = field(default_factory=threading.Event)
     emit_chunk: Callable[["AdapterStreamChunk"], None] | None = None
+    #: D-062 continuation registration seam (review round 2, finding 4).
+    #: A continuation-capable adapter MUST call this with the suspension
+    #: handle BEFORE the tool_call id becomes observable (before a
+    #: ``tool_call`` chunk is emitted and before a suspension result is
+    #: returned): the invariant is "if the client can observe the token,
+    #: it already names a live registered continuation". ``False`` means
+    #: the gateway could not register (pending bound) — the adapter then
+    #: cancels the suspended turn and fails the attempt typed, exposing
+    #: nothing. ``None`` means this dispatch has no continuation surface
+    #: (same bounded failure).
+    register_continuation: Callable[["SuspensionHandle", str], bool] | None = None
 
     def __post_init__(self) -> None:
         _ = v_safe_id(self.request_id, "execution_context.request_id")
@@ -532,6 +543,97 @@ class ClientDisconnectedError(Exception):
     """
 
 
+class ContinuationLostError(Exception):
+    """The suspended execution is gone before its tool result reached it.
+
+    The D-062 suspension was lost (worker disconnect, App Server process
+    death, gateway restart, expiry) BEFORE the harness's tool result was
+    delivered, so nothing consumed it and nothing can be duplicated: the
+    coordinator fails the continuation closed with a typed
+    not-found/lost error and never reconstructs or re-executes (D-062).
+    A loss AFTER delivery raises :class:`AdapterAmbiguousError` instead —
+    the result may have been consumed.
+    """
+
+
+@dataclass(frozen=True)
+class SuspensionHandle:
+    """The adapter-side identity of one suspended backend execution.
+
+    Held by the continuation-capable adapter and referenced through the
+    registry record; ``continuation_token`` is the opaque server-issued
+    id the harness sees as the ``tool_call_id`` — every other member is
+    internal and never client-visible.
+    """
+
+    continuation_token: str
+    attempt_id: str
+    resource_id: str
+    call_id: str
+    tool_name: str
+
+    def __post_init__(self) -> None:
+        _ = v_safe_id(self.attempt_id, "suspension_handle.attempt_id")
+        _ = v_safe_id(self.resource_id, "suspension_handle.resource_id")
+        _ = v_text(self.continuation_token, "suspension_handle.token", max_len=256)
+        _ = v_text(self.call_id, "suspension_handle.call_id", max_len=256)
+        _ = v_text(self.tool_name, "suspension_handle.tool_name", max_len=256)
+
+
+@dataclass(frozen=True)
+class ToolSuspension:
+    """A NEW client-tool suspension produced during a continuation leg.
+
+    Sequential tool rounds (the model asks for a further tool after the
+    first result resumed the same turn) surface as this outcome: the
+    caller ends the current HTTP leg with the new ``tool_calls`` response
+    and registers the next continuation, exactly as for the initial leg.
+    """
+
+    continuation_token: str
+    tool_name: str
+    arguments: str
+    content: str | None = None
+
+    def __post_init__(self) -> None:
+        _ = v_text(self.continuation_token, "tool_suspension.token", max_len=256)
+        _ = v_text(self.tool_name, "tool_suspension.tool_name", max_len=256)
+        _ = v_text(self.arguments, "tool_suspension.arguments", max_len=1_048_576)
+        if self.content is not None:
+            _ = v_text(self.content, "tool_suspension.content", max_len=16_777_216)
+
+
+@runtime_checkable
+class ContinuationCapableAdapter(Protocol):
+    """The D-062 continuation surface an adapter may additionally implement.
+
+    ``suspension_handle`` resolves a ``tool_call`` id the adapter issued
+    on a suspension it produced. ``deliver_tool_result`` transports one
+    harness tool result into the EXACT suspended execution and waits for
+    the SAME turn's terminal outcome — or a further :class:`ToolSuspension`
+    for sequential tool rounds. ``cancel_suspension`` stops the suspended
+    turn best-effort (registry expiry/cancellation). ``suspension_alive``
+    reports whether the suspended execution is still tracked (the
+    registry's liveness probe). Implementations raise
+    :class:`ContinuationLostError` when the suspension died before the
+    result was delivered and :class:`AdapterAmbiguousError` when it died
+    after.
+    """
+
+    def suspension_handle(self, continuation_token: str) -> SuspensionHandle | None: ...
+
+    def deliver_tool_result(
+        self,
+        handle: SuspensionHandle,
+        content: str,
+        context: ExecutionContext,
+    ) -> "AdapterResult | ToolSuspension": ...
+
+    def cancel_suspension(self, handle: SuspensionHandle) -> None: ...
+
+    def suspension_alive(self, handle: SuspensionHandle) -> bool: ...
+
+
 __all__ = [
     "CALL_CANCELLED",
     "CALL_COMPLETED",
@@ -561,6 +663,10 @@ __all__ = [
     "CallObservation",
     "ClientDisconnectedError",
     "CompletionOutcome",
+    "ContinuationCapableAdapter",
+    "ContinuationLostError",
     "ExecutionContext",
     "ExecutionAdapter",
+    "SuspensionHandle",
+    "ToolSuspension",
 ]
