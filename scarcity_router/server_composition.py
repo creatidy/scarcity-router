@@ -23,6 +23,8 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 
 from .codex_worker_evidence import default_codex_worker_cells
+from .worker_zcode_adapter import ZCODE_ADAPTER_ID, ZCODE_PROVIDER
+from .zcode_worker_evidence import default_zcode_worker_cells
 from .execution_sources import SourceRegistry
 from .gateway_adapters import AdapterRegistry
 from .providers.http_origin import ProviderCredential, ProviderOrigin
@@ -352,7 +354,20 @@ def build_compatibility_cells(
     if source_registry is not None:
         for registration in source_registry.derived_registrations():
             identity = registration.identity
-            if source_registry.adapter_of(identity.resource_id) is None:
+            adapter_id = source_registry.adapter_of(identity.resource_id)
+            if adapter_id is None:
+                continue
+            if adapter_id.startswith(f"{ZCODE_ADAPTER_ID}:"):
+                # D-063: the plan-managed lane is served through the ZCode
+                # worker-local adapter, whose reviewed evidence speaks for
+                # the lane's own provider — never transplanted.
+                if identity.provider != ZCODE_PROVIDER:
+                    continue
+                cells.extend(
+                    default_zcode_worker_cells(
+                        provider=identity.provider, model=identity.model
+                    )
+                )
                 continue
             if identity.provider != "openai":
                 continue

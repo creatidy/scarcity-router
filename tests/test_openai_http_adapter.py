@@ -959,6 +959,11 @@ class ZaiWithoutZcodeTest(AdapterTestCase):
         )
         self.server.enqueue_completion(content="glm reply")
         adapter = make_adapter(binding)
+        # The Z.ai Coding Plan path must never depend on ZCode machinery.
+        # Snapshot around THIS dispatch: unrelated suites may legitimately
+        # have a ZCode module loaded already (M07 added one); the guarded
+        # property is that the dispatch itself imports none.
+        before = set(sys.modules)
         result = adapter.execute(
             make_call(
                 resource_id="zai-http",
@@ -978,7 +983,7 @@ class ZaiWithoutZcodeTest(AdapterTestCase):
         self.assertFalse(
             any(
                 name.startswith("scarcity_router") and "zcode" in name
-                for name in sys.modules
+                for name in set(sys.modules) - before
             )
         )
 

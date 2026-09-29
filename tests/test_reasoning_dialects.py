@@ -144,7 +144,7 @@ class DialectNormalizationTests(unittest.TestCase):
                     _ = parse_chat_request(_body(**extra))
 
     def test_echoed_reasoning_output_is_unknown_parameter(self) -> None:
-        """D-063 (#158): reasoning output is response-only. A client that
+        """D-064 (#158): reasoning output is response-only. A client that
         echoes `reasoning_content` back in message history receives the
         standard typed rejection — never a silent drop and never an
         unexplained forward to the backend."""

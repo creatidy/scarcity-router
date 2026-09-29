@@ -40,7 +40,7 @@ import re
 from pathlib import Path
 from typing import cast
 
-from .gateway_validation import exact_shape, v_str
+from .gateway_validation import exact_shape, v_bool, v_str
 from .selection_types import (
     CAPABILITY_DIMENSIONS,
     CONFIDENCE_VALUES,
@@ -188,7 +188,17 @@ class TrackFloor:
 
 
 class ModelTrack:
-    """One stable capability family: pattern, classification, floor."""
+    """One stable capability family: pattern, classification, floor.
+
+    ``plan_managed`` marks the owner-approved exception for a
+    VENDOR-MANAGED EXECUTION LANE (D-063): the runtime cannot list or
+    steer its physical model, so the lane is adopted from a single
+    reserved effort-less slug and never claims a physical model,
+    variant-calibrated effort, or context/output ceiling. The flag is
+    repository-artifact evidence like the floor itself — the runtime
+    never sets it, and a plan_managed track must be ``standard`` with a
+    floor and no effort restriction (efforts are vendor-managed).
+    """
 
     __slots__: tuple[str, ...] = (
         "provider",
@@ -199,6 +209,7 @@ class ModelTrack:
         "floor",
         "notes",
         "effort_restriction",
+        "plan_managed",
     )
 
     def __init__(
@@ -211,6 +222,7 @@ class ModelTrack:
         floor: TrackFloor | None,
         notes: str = "",
         effort_restriction: str | None = None,
+        plan_managed: bool = False,
     ) -> None:
         from .gateway_validation import v_safe_id
 
@@ -243,6 +255,22 @@ class ModelTrack:
                 + "and never assert a capability floor"
             )
         self.floor: TrackFloor | None = floor
+        # plan_managed arrives from the reviewed JSON artifact; the
+        # constructor annotation types the in-process path, and v_bool
+        # has already validated the document path in from_dict.
+        _ = plan_managed
+        if plan_managed:
+            if classification != "standard" or floor is None:
+                raise TrackRegistryError(
+                    f"model_track {provider}/{track}: a plan_managed lane must be "
+                    + "a standard track with a floor"
+                )
+            if effort_restriction is not None:
+                raise TrackRegistryError(
+                    f"model_track {provider}/{track}: a plan_managed lane carries "
+                    + "no effort restriction (efforts are vendor-managed)"
+                )
+        self.plan_managed: bool = plan_managed
         if len(notes) > _MAX_RATIONALE:
             raise TrackRegistryError("model_track.notes too long")
         self.notes: str = notes
@@ -295,6 +323,8 @@ class ModelTrack:
             out["notes"] = self.notes
         if self.effort_restriction is not None:
             out["effort_restriction"] = self.effort_restriction
+        if self.plan_managed:
+            out["plan_managed"] = True
         return out
 
     @classmethod
@@ -308,7 +338,7 @@ class ModelTrack:
                 "slug_pattern",
                 "classification",
             ),
-            ("floor", "notes", "effort_restriction"),
+            ("floor", "notes", "effort_restriction", "plan_managed"),
             "model_track",
         )
         floor_raw = dd.get("floor")
@@ -330,6 +360,11 @@ class ModelTrack:
                 v_str(dd["effort_restriction"], "model_track.effort_restriction")
                 if "effort_restriction" in dd
                 else None
+            ),
+            plan_managed=(
+                v_bool(dd["plan_managed"], "model_track.plan_managed")
+                if "plan_managed" in dd
+                else False
             ),
         )
 

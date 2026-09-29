@@ -157,7 +157,7 @@ else:
   resolves suspended attempts as interrupted like any other in-flight
   attempt — the honest ambiguous outcome, never a reconstruction.
 
-## Version 4: the message `reasoning` member (D-063, #158)
+## Version 4: the message `reasoning` member (D-064, #158)
 
 Version 4 adds ONE optional member on top of the COMPLETE version-3
 semantics and changes nothing else:
@@ -165,9 +165,9 @@ semantics and changes nothing else:
 - A conversation `message` (the assistant result the worker returns)
   MAY carry `reasoning`: the backend's opaque reasoning output, a
   bounded string, translated per the resource preset's evidenced
-  reasoning-output policy (D-063). The streamed `execute_chunk`
+  reasoning-output policy (D-064). The streamed `execute_chunk`
   vocabulary needs no new member: the normalized `reasoning_delta`
-  chunk kind (D-063) rides the existing generic chunk serialization
+  chunk kind (D-064) rides the existing generic chunk serialization
   (`kind` + optional `text`), so v4 streaming reasoning crosses the
   protocol without schema change.
 - **Version gating is exact.** A `reasoning` member on a session that

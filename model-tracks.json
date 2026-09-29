@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated_on": "2026-09-24",
+  "updated_on": "2026-09-29",
   "description": "Reviewed model-track registry (D-053, issue #117): stable capability families over changing physical slugs. Slug patterns, classifications and conservative capability floors are owner-approved evidence; the runtime never derives them. Exact model-catalog.json entries always take precedence over a track floor.",
   "tracks": [
     {
@@ -91,6 +91,34 @@
       "classification": "restricted",
       "floor": null,
       "notes": "Restricted security-review capability (D-053 point 9): separate approval/access may be required; discovery never proves execution authorization. Restricted tracks are surfaced honestly in inventory but never materialized as routable resources, never silently substituted, and consumed only by the explicit independent security-review gate."
+    },
+    {
+      "provider": "zai",
+      "track": "plan",
+      "display_name": "Z.ai Coding Plan lane (ZCode, plan-managed)",
+      "slug_pattern": "^plan-managed$",
+      "classification": "standard",
+      "plan_managed": true,
+      "notes": "Vendor-managed execution lane (D-063): the official ZCode CLI exposes no model listing and no headless model steering, so the lane's physical model is plan/vendor-managed and not controllable by Scarcity Router. The reserved descriptor slug 'plan-managed' is a router-side lane name, never a physical model claim. Routing to it means exactly 'execute through this ZCode plan-managed lane in the authorized workspace'.",
+      "floor": {
+        "ratings": {
+          "reasoning": 1,
+          "coding": 1,
+          "scientific_methodological": 1,
+          "writing_editorial": 1,
+          "tool_use": 1,
+          "translation_multilingual": 1
+        },
+        "assessed_on": "2026-09-29",
+        "confidence": "low",
+        "decision": "D-063",
+        "rationale": "The only honest floor for a lane whose physical model is vendor-managed and unverifiable: the minimum of the rating scale on every dimension. This lane asserts NO model capability beyond 'a paid-plan coding lane exists'; strong ratings require a future supported surface that evidences the executing physical model. Execution-level facts are carried separately by the dated adapter compatibility cells (usage UNKNOWN, streaming/tools/structured output/effort control UNSUPPORTED).",
+        "hard_properties_continuity": {
+          "input_context_tokens": 1000000,
+          "output_tokens": 128000
+        },
+        "continuity_rationale": "Family-continuity assumption over the reviewed plan family: model-catalog.json calibrates both GLM Coding Plan models (glm-5.3, glm-5.3-flash) at 1000000 input / 128000 output tokens, and the lane's physical model is vendor-managed within that plan. Deliberately conservative pending a supported surface that evidences the executing model; the runtime remains the true enforcement boundary."
+      }
     }
   ]
 }

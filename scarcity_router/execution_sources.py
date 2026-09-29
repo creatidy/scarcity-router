@@ -68,6 +68,13 @@ RETIRE_AFTER_MISSES = 3
 #: this bounds only the in-memory bookkeeping.
 MAX_RETAINED_RETIRED = 64
 
+#: The catalog variant id of a plan-managed lane's single floor entry
+#: (D-063). It is a LANE qualifier, never a reasoning effort: the entry
+#: carries ``reasoning_effort=None`` and ``supports_reasoning_mode=False``,
+#: so an effort-bearing request can never resolve onto the lane (the
+#: gateway rejects it as an unsupported effort — exact-identity preserved).
+PLAN_LANE_VARIANT = "plan"
+
 #: Closed adoption states for the source view.
 ADOPTION_STATES: tuple[str, ...] = (
     "discovered",
@@ -118,6 +125,63 @@ CODEX_SURFACE_CAPABILITIES: dict[str, object] = {
     "usage_reporting": True,
     "cancellation": True,
     "output_limit_control": False,
+}
+
+#: Registration-owned capability facts of the ZCODE EXECUTION SURFACE
+#: (D-061, evidence 2026-09-28, CLI v3.14.3 / bundle 0.16.9): derived
+#: resources served through this surface inherit exactly what the dated
+#: evidence supports and nothing about any specific model. The D-043
+#: matrix remains the per-request admission authority.
+#:
+#: - ``context_limit_tokens: 1_000_000`` — the OWNER-REVIEWED
+#:   registration fact of the 2026-09-29 remediation (D-063): no
+#:   context ceiling is published on any supported ZCode surface, so
+#:   the lane carries the reviewed plan-family calibration minimum
+#:   (model-catalog.json: glm-5.3 and glm-5.3-flash both calibrate
+#:   1_000_000 input tokens) exactly the way the codex surface carries
+#:   its owner-reviewed 272_000 registration fact — a bounded
+#:   admission ceiling, never a per-model claim; the runtime remains
+#:   the enforcement backstop. ``output_limit_tokens: 128_000`` — the
+#:   same reviewed family output calibration; ``output_limit_control``
+#:   stays False (no honored explicit-limit control exists, so the
+#:   #136 normalization governs).
+#: - ``streaming: False`` — the stream carries progress events only; the
+#:   single evidenced answer surface is the terminal result line, so no
+#:   incremental text delivery is evidenced.
+#: - ``tool_calls: False`` — client tools return to clients (D-043); the
+#:   ZCode agent's internal tools are its own under the explicit safe
+#:   permission mode, never client tool calls.
+#: - ``structured_output: False`` / ``reasoning_controls: False`` /
+#:   ``output_limit_control: False`` — no supported control exists on the
+#:   evidenced headless surface (no model/effort steering, no output
+#:   schema, no output-token control).
+#: - ``usage_reporting: None`` — the terminal result carries an OPTIONAL
+#:   usage member whose internal field names are NOT evidenced; nothing
+#:   is mapped, and unknown stays unknown (never invented telemetry).
+ZCODE_SURFACE_CAPABILITIES: dict[str, object] = {
+    "context_limit_tokens": 1_000_000,
+    "streaming": False,
+    "tool_calls": False,
+    "structured_output": False,
+    "reasoning_controls": False,
+    "usage_reporting": None,
+    "cancellation": True,
+    "output_limit_tokens": 128_000,
+    "output_limit_control": False,
+}
+
+#: Per-kind registration-owned capability facts (D-053 sources; D-061
+#: added the zcode kind).
+_SURFACE_CAPABILITIES_BY_KIND: dict[str, dict[str, object]] = {
+    "codex_subscription": CODEX_SURFACE_CAPABILITIES,
+    "zcode_subscription": ZCODE_SURFACE_CAPABILITIES,
+}
+
+#: The worker-local adapter id prefix each source kind's instances use
+#: (``<prefix>:<source_id>``; the worker registers exactly these ids).
+_ADAPTER_PREFIX_BY_KIND: dict[str, str] = {
+    "codex_subscription": "codex",
+    "zcode_subscription": "zcode",
 }
 
 #: Closed reason codes for non-adopted models (audit + UX remediations).
@@ -241,6 +305,14 @@ class SourceRegistry:
         decisions: list[AdoptionDecision] = []
         present: set[str] = set()
         authenticated = source_inventory.auth_state == "authenticated"
+        # D-063: a plan-managed lane adopts from a healthy-but-unverified
+        # observation too. "unverified" is the honest steady state for a
+        # source whose runtime exposes no non-inference auth probe (the
+        # ZCode CLI): the probes prove the runtime, the vendor manages
+        # sign-in visibility, and an actual sign-in failure surfaces as a
+        # typed execution failure. Physical-model sources (codex) keep
+        # the strict authenticated gate unchanged.
+        healthy = source_inventory.auth_state in ("authenticated", "unverified")
         routable_now: set[str] = set()
         for model in source_inventory.models:
             slug = model.slug
@@ -266,7 +338,13 @@ class SourceRegistry:
                     AdoptionDecision(slug, "classified", track.track_id(), "track_not_allowed", None, model.reasoning_efforts)
                 )
                 continue
-            if not authenticated:
+            if track.plan_managed:
+                if not healthy:
+                    decisions.append(
+                        AdoptionDecision(slug, "classified", track.track_id(), "source_not_authenticated", None, model.reasoning_efforts)
+                    )
+                    continue
+            elif not authenticated:
                 decisions.append(
                     AdoptionDecision(slug, "classified", track.track_id(), "source_not_authenticated", None, model.reasoning_efforts)
                 )
@@ -276,12 +354,35 @@ class SourceRegistry:
                     AdoptionDecision(slug, "classified", track.track_id(), "unclassified_track", None, model.reasoning_efforts)
                 )
                 continue
-            if not any(effort in REASONING_EFFORTS for effort in model.reasoning_efforts):
+            if not track.plan_managed and not any(
+                effort in REASONING_EFFORTS for effort in model.reasoning_efforts
+            ):
+                # A physical-model source must advertise at least one
+                # policy effort. A plan-managed lane is the deliberate
+                # exception (D-063): its efforts are vendor-managed and
+                # the effort-less report IS the honest lane.
                 decisions.append(
                     AdoptionDecision(slug, "classified", track.track_id(), "effort_not_reported", None, model.reasoning_efforts)
                 )
                 continue
             routable_now.add(slug)
+            if track.plan_managed:
+                # One effort-less lane adoption: the derived resource
+                # carries NO variant (there is no effort to bind) and the
+                # resource id has no effort suffix.
+                _ = _resource_id(config.source_id, slug)
+                state.adopted[slug] = (track.track_id(), ())
+                decisions.append(
+                    AdoptionDecision(
+                        slug,
+                        "routable",
+                        track.track_id(),
+                        None,
+                        _resource_id(config.source_id, slug),
+                        model.reasoning_efforts,
+                    )
+                )
+                continue
             policy_efforts = sorted(
                 e for e in model.reasoning_efforts if e in REASONING_EFFORTS
             )
@@ -344,7 +445,40 @@ class SourceRegistry:
                 continue
             for slug in sorted(state.adopted):
                 _track_id, efforts = state.adopted[slug]
-                # Daybreak finding 3: ONE exact resource per ADVERTISED
+                if not efforts:
+                    # D-063: an effort-less adopted model is a plan-managed
+                    # lane — ONE variant-less exact resource. No effort or
+                    # physical-model qualifier is ever bound to it; a
+                    # variant-qualified request can never select it
+                    # (routing_core: a variant-less resource binds the
+                    # model's calibrated variants, and the lane's single
+                    # catalog entry is effort-less — an effort-bearing
+                    # request is rejected before admission).
+                    identity = ResourceIdentity(
+                        resource_id=_resource_id(source_id, slug),
+                        channel="worker_bridged",
+                        provider=state.config.provider(),
+                        model=slug,
+                        variant=None,
+                        entitlement=state.config.entitlement,
+                        quota_pool_ids=(state.config.pool_id(),),
+                    )
+                    registrations.append(
+                        ResourceRegistration(
+                            identity=identity,
+                            freshness_ttl_seconds=self._ttl,
+                            capabilities=ExecutionCapabilities.from_dict(
+                                dict(
+                                    _SURFACE_CAPABILITIES_BY_KIND.get(
+                                        state.config.kind,
+                                        CODEX_SURFACE_CAPABILITIES,
+                                    )
+                                )
+                            ),
+                        )
+                    )
+                    continue
+                # Daybreak finding 3: one exact resource per ADVERTISED
                 # effort, variant-qualified, so a resource can never bind
                 # a variant its own runtime did not advertise.
                 for effort in sorted(e for e in efforts if e in REASONING_EFFORTS):
@@ -361,12 +495,17 @@ class SourceRegistry:
                         ResourceRegistration(
                             identity=identity,
                             freshness_ttl_seconds=self._ttl,
-                            # Registration-owned capability facts of the
-                            # CODEX EXECUTION SURFACE (evidenced,
+                            # Registration-owned capability facts of THIS
+                            # source kind's execution surface (evidenced,
                             # model-independent): the D-043 matrix stays
                             # the per-request authority.
                             capabilities=ExecutionCapabilities.from_dict(
-                                dict(CODEX_SURFACE_CAPABILITIES)
+                                dict(
+                                    _SURFACE_CAPABILITIES_BY_KIND.get(
+                                        state.config.kind,
+                                        CODEX_SURFACE_CAPABILITIES,
+                                    )
+                                )
                             ),
                         )
                     )
@@ -399,6 +538,24 @@ class SourceRegistry:
                     state.config.provider(), track_id.split("/", 1)[1]
                 )
                 if track is None or track.floor is None:
+                    continue
+                if not efforts:
+                    # D-063: a plan-managed lane gets ONE effort-less
+                    # floor entry. Its variant is the lane qualifier
+                    # (PLAN_LANE_VARIANT), its effort is None, and it
+                    # never claims reasoning support — so an
+                    # effort-bearing request can never resolve onto the
+                    # lane, while a plain "model" request resolves to the
+                    # single legal variant through the normal D-055
+                    # resolution.
+                    key = (state.config.provider(), slug, PLAN_LANE_VARIANT)
+                    if key not in existing:
+                        existing.add(key)
+                        extra.append(
+                            _lane_floor_entry(
+                                track.track_id(), track.floor, slug, state.config
+                            )
+                        )
                     continue
                 allowed = track.restrict_floor_efforts(tuple(efforts))
                 for effort in [e for e in allowed if e in REASONING_EFFORTS]:
@@ -434,9 +591,13 @@ class SourceRegistry:
         if parsed is None:
             return None
         source_id, _slug = parsed
-        if source_id not in self._sources:
+        state = self._sources.get(source_id)
+        if state is None:
             return None
-        return f"codex:{source_id}"
+        prefix = _ADAPTER_PREFIX_BY_KIND.get(state.config.kind)
+        if prefix is None:
+            return None
+        return f"{prefix}:{source_id}"
 
     def source_view(self) -> tuple[dict[str, object], ...]:
         """The read-only per-source view (UI/diagnostics; no raw payloads)."""
@@ -548,10 +709,14 @@ def _floor_entry(
         )
         for dim in CAPABILITY_DIMENSIONS
     }
-    _ = config
     continuity = floor.hard_properties_continuity or {}
     return ModelCatalogEntry(
-        identity=ModelIdentity(provider="openai", model=slug, variant=effort),
+        # The floor entry serves THIS source kind's provider — never a
+        # hard-coded one (a zai-kind source's floor entry must be a zai
+        # identity, exactly like the codex kind's openai one).
+        identity=ModelIdentity(
+            provider=config.provider(), model=slug, variant=effort
+        ),
         display_name=slug,
         # supports_reasoning_mode is EVIDENCED, not inherited: the entry
         # exists because the runtime itself advertises this reasoning
@@ -572,11 +737,76 @@ def _floor_entry(
     )
 
 
+def _lane_floor_entry(
+    track_id: str,
+    floor: object,
+    slug: str,
+    config: SourceConfig,
+) -> ModelCatalogEntry:
+    """One effort-less plan-managed lane floor entry (D-063).
+
+    The variant is the LANE qualifier (``PLAN_LANE_VARIANT``), never an
+    effort: ``reasoning_effort`` stays None and reasoning support is
+    evidenced-absent (the vendor manages model selection headless), so
+    an effort-bearing request can never resolve onto the lane while a
+    plain model request resolves to the single legal variant. Hard
+    properties stay honestly UNKNOWN (no continuity assumption exists
+    for an unverifiable physical model) and the floor ratings are the
+    reviewed lane floor — the minimum of the scale, never a model claim.
+    """
+    from .model_tracks import TrackFloor
+
+    assert isinstance(floor, TrackFloor)
+    evidence = (
+        EvidenceRef(
+            source="model-tracks.json",
+            identifier=track_id,
+            version="1",
+            date=floor.assessed_on,
+        ),
+    )
+    assessments: dict[str, CapabilityAssessment] = {
+        dim: CapabilityAssessment(
+            rating=floor.ratings[dim],
+            evidence=evidence,
+            confidence=floor.confidence,
+            assessed_on=floor.assessed_on,
+            rationale=(
+                f"plan-managed lane floor for {track_id}; vendor-managed "
+                + "physical model, never an exact-model claim (D-063)"
+            ),
+        )
+        for dim in CAPABILITY_DIMENSIONS
+    }
+    continuity = floor.hard_properties_continuity or {}
+    return ModelCatalogEntry(
+        identity=ModelIdentity(
+            provider=config.provider(), model=slug, variant=PLAN_LANE_VARIANT
+        ),
+        display_name=slug,
+        # Context/output come from the floor's OWNER-REVIEWED
+        # family-continuity assumption (the reviewed plan-family
+        # calibration; the runtime is the enforcement boundary); reasoning
+        # support stays evidenced-absent (no headless steering).
+        hard_properties=ModelHardProperties(
+            supports_reasoning_mode=False,
+            input_context_tokens=continuity.get("input_context_tokens"),
+            output_tokens=continuity.get("output_tokens"),
+        ),
+        capabilities=CapabilityAssessments(**assessments),
+        capacity_bindings=None,
+        reasoning_effort=None,
+        model_version_date=None,
+        last_reviewed_on=floor.assessed_on,
+    )
+
+
 __all__ = [
     "ADOPTION_EXCLUSION_CODES",
     "is_source_resource_id",
     "ADOPTION_STATES",
     "AdoptionDecision",
+    "PLAN_LANE_VARIANT",
     "RETIRE_AFTER_MISSES",
     "SourceAdoptionError",
     "SourceRegistry",

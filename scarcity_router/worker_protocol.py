@@ -81,7 +81,7 @@ from .selection_types import ModelIdentity
 #: closed and version-gated: a v1/v2 session never carries the v3
 #: messages, and a v3 session carries them only for the continuation
 #: semantics D-062 defines — there is still no arbitrary-command surface.
-#: Version 4 (D-063, #158) adds the OPTIONAL bounded ``reasoning`` member
+#: Version 4 (D-064, #158) adds the OPTIONAL bounded ``reasoning`` member
 #: on conversation messages — the assistant result's opaque reasoning
 #: output — on top of the COMPLETE v3 semantics; every v3 message shape is
 #: unchanged. A ``reasoning`` member on a session that negotiated below 4
@@ -409,7 +409,7 @@ def message_to_dict(message: AdapterMessage) -> dict[str, object]:
     if message.content is not None:
         out["content"] = message.content
     if message.reasoning is not None:
-        # Version 4 (D-063, #158): the assistant result's opaque reasoning
+        # Version 4 (D-064, #158): the assistant result's opaque reasoning
         # output — v4-only, gated by the negotiated session version.
         out["reasoning"] = message.reasoning
     if message.tool_call_id is not None:

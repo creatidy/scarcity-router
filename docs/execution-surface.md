@@ -495,7 +495,7 @@ Frozen rules, implemented by the coordinator:
 - headers and the first frame (assistant role delta) go out with the
   first adapter chunk, so pre-dispatch failures remain clean HTTP errors;
 - normalized adapter chunks render as content deltas, reasoning deltas
-  (`delta.reasoning_content`, D-063), complete tool-call deltas, a
+  (`delta.reasoning_content`, D-064), complete tool-call deltas, a
   terminal finish chunk and — only when `stream_options.include_usage`
   is true — a final usage chunk with an empty `choices` array;
 - the stream always ends with the `data: [DONE]` sentinel;
@@ -529,7 +529,7 @@ structural zeros, never a fabricated "provider reported zero").
 `estimated_usage` repeats the estimate alongside the reported numbers so
 the two stay distinguishable (D-043).
 
-### Reasoning output (D-063, #158)
+### Reasoning output (D-064, #158)
 
 When the selected backend's preset evidences a reasoning-output field
 (DeepSeek/Z.ai `reasoning_content`, OpenRouter `reasoning`), the
@@ -538,7 +538,7 @@ response carries ONE additive client-facing member —
 `choices[0].delta.reasoning_content` (streaming) — holding the
 backend's opaque reasoning text verbatim. The member is present only
 when reasoning was preserved; ordinary responses are byte-identical to
-the pre-D-063 shape. Reasoning output is response-only: request
+the pre-D-064 shape. Reasoning output is response-only: request
 history keeps its closed message key set, so a client echoing
 `reasoning_content` back receives the standard `unknown_parameter`
 400. A reasoning shape a preset does not evidence (including OpenAI-,

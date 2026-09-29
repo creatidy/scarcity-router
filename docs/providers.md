@@ -220,9 +220,67 @@ and contracts are in [`docs/architecture.md`](architecture.md).
   recorded single-owner scope — Stage 2 is reopened, with retained
   exclusions (third-party or multi-user exposure, credential
   extraction, direct coding-endpoint calls, quota pooling) and the
-  explicit-safe-mode constraint; the adapter implementation follows as
-  its own task
+  explicit-safe-mode constraint
   ([`docs/zcode-adapter-stage2-evidence.md`](zcode-adapter-stage2-evidence.md)).
+
+### M07 status: ZCode execution source (issue #92, 2026-09-28)
+
+Implemented as ONE worker-side source adapter
+(`scarcity_router/worker_zcode_adapter.py`, design record **D-063**)
+behind the existing D-053 source architecture — the same
+source-instance / inventory / allowlist machinery as the Codex
+adapter, with the official ZCode CLI as the only execution boundary.
+
+- **Enablement.** `scarcity-router-worker run --zcode-source <id>
+  --zcode-workspace <dir>` (repeatable source; `--zcode-bin` pins the
+  binary; the authorized workspace is REQUIRED) enables the source
+  instance; the server learns the kind through source configuration
+  (`kind: "zcode_subscription"`, provider `zai`). Authentication is
+  the owner's own official `zcode login zai` against ZCode's own
+  installation — the adapter never wraps login and never touches
+  credentials or ZCode's configuration/security files.
+- **Capability probing is non-inference only** (`--version`,
+  `doctor --json`, bounded; dated evidence: CLI v3.14.3 / bundle
+  0.16.9, D-061 evidence 2026-09-28). An installed-but-broken CLI is
+  `unavailable`; a healthy CLI is honestly `unverified` — no
+  supported non-inference auth probe exists on the evidenced surface,
+  and the binary's presence is never treated as health.
+- **Execution** is one headless run per dispatched call against THE
+  AUTHORIZED PROJECT WORKSPACE:
+  `--prompt <text> --cwd <authorized workspace> --mode edit
+  --output-format stream-json --no-browser`, argv only (no shell
+  exists anywhere on the path). The workspace is administrator
+  configuration (`--zcode-workspace`): canonicalized with realpath,
+  verified, re-validated per run, passed as both `--cwd` and the
+  process cwd; request content can never select a path and the
+  adapter keeps no execution directory of its own. `--mode edit` is
+  always explicit and is the LEAST-AUTHORITY officially supported
+  mode that permits the coding workflow (first-party evidence:
+  `permission/service.ts` at the D-061-pinned commit, identical in
+  the shipped bundle — edit mode explicitly allows workspace-scoped
+  file edits, `mode.edit.fileEdit`; every other side-effecting or
+  high/critical-risk tool still requires an `ask` a headless run
+  cannot answer, so the vendor's default broker denies it, fail
+  closed). The headless yolo default is never relied on.
+- **Model identity is never invented, and the lane routes as itself**
+  (D-063, amended 2026-09-29): ZCode exposes no supported listing or
+  steering, so the source serves exactly one effort-less plan-lane
+  descriptor (`<source_id>:plan-managed`, no variant, no physical
+  model claim). The owner-reviewed `zai/plan` track
+  (`plan_managed: true`, conservative floor with the plan-family
+  context/output continuity) makes the lane adopt and route through
+  the NORMAL selector: a plain `model: "plan-managed"` request means
+  exactly "execute through this ZCode plan-managed lane in the
+  authorized workspace"; an effort-bearing request is a typed
+  `unsupported_reasoning_effort` rejection; `glm-5.3` and other
+  physical slugs classify nowhere on `zai`, so nothing is ever
+  silently substituted. Usage stays unmapped (the result's optional
+  usage member has no evidenced field names); unknown stays unknown.
+- **Honest endings:** completion requires the documented terminal
+  result line AND exit 0; every other ending is a typed failure or an
+  explicit `unknown` observation (stderr content is never read).
+  Exactly one invocation per dispatched call — no retry, no
+  fallback.
 - **Contract tests:** every execution adapter ships redacted fixtures,
   parser/protocol tests and compatibility-matrix evidence with dated
   versions; provider drift disables the affected adapter safely while the
@@ -290,7 +348,7 @@ is explicitly refused (never silently dropped or forwarded on a guess).
   be re-verified stay `PARTIAL`/`UNKNOWN`, and the generic preset is
   `UNKNOWN` in every cell (fail closed) until the administrator supplies
   evidence.
-- **Reasoning output (D-063, #158).** The same one-implementation
+- **Reasoning output (D-064, #158).** The same one-implementation
   discipline covers response-side reasoning: each preset's translation
   policy records the reasoning-output field its dated evidence documents
   (DeepSeek and Z.ai `reasoning_content`; OpenRouter `reasoning` with

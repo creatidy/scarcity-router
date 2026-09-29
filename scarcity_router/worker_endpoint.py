@@ -66,6 +66,7 @@ from typing import Protocol, cast
 from .errors import CapacityValidationError
 from .gateway_validation import v_int
 from .model_inventory import (
+    AUTH_UNPROBEABLE_KINDS,
     ModelInventoryError,
     ModelInventoryReport,
     is_source_resource_id,
@@ -747,6 +748,10 @@ class WorkerSession:
             for inv in applied_inventories
             for s in inv.sources
             if s.auth_state != "authenticated"
+            and not (
+                s.kind in AUTH_UNPROBEABLE_KINDS
+                and s.auth_state == "unverified"
+            )
         }
         for snapshot in report.resources:
             rid = snapshot.identity.resource_id
@@ -864,7 +869,7 @@ class WorkerSession:
             self._state.negotiated_version is None
             or self._state.negotiated_version < 4
         ) and message.message is not None and "reasoning" in message.message:
-            # D-063 exactness: the `reasoning` member is version-4-only.
+            # D-064 exactness: the `reasoning` member is version-4-only.
             # A below-v4 session carrying it is a schema violation — the
             # attempt fails closed with a structural note (never parsed,
             # never forwarded, never silently dropped) and the violation

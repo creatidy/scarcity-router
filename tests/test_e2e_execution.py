@@ -573,7 +573,7 @@ class WorkerBridgedExecutionTests(WorkerWorld):
             store.close()
 
     def test_scenario_09b_worker_loopback_reasoning_preserved_end_to_end(self) -> None:
-        """Transport parity (D-063/#158): the SAME translation core serves
+        """Transport parity (D-064/#158): the SAME translation core serves
         the worker-loopback path, so an evidenced reasoning-output field
         survives the full composed path (server -> worker session over
         protocol v4 -> loopback adapter -> origin -> back) and reaches the

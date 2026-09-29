@@ -722,11 +722,11 @@ class PrivacyTests(unittest.TestCase):
         self.assertNotIn("x_scarcity_router", encoded)
 
 
-# ── Worker protocol v4 gates (D-063 on top of the complete v3) ────────────────
+# ── Worker protocol v4 gates (D-064 on top of the complete v3) ────────────────
 
 
 class WorkerVersionGateTests(unittest.TestCase):
-    """The no-silent-loss negotiation gate (D-063): a v4 worker holding a
+    """The no-silent-loss negotiation gate (D-064): a v4 worker holding a
     reasoning-bearing result under a negotiated version below 4 fails the
     attempt closed with a structural note; on v4 the reasoning member is
     serialized."""

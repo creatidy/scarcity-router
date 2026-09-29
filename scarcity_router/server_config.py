@@ -59,12 +59,17 @@ from .routing_core import (
 CONFIG_SCHEMA_VERSION = 2
 
 #: Closed execution-source kinds (D-053). ``codex_subscription`` is the
-#: first evidenced kind; new kinds arrive only through an explicit
-#: decision with their own provider/adapter evidence.
-SOURCE_KINDS: tuple[str, ...] = ("codex_subscription",)
+#: first evidenced kind; ``zcode_subscription`` (the official ZCode CLI
+#: plan lane) arrived through decision D-061 (issue #92). New kinds
+#: arrive only through an explicit decision with their own
+#: provider/adapter evidence.
+SOURCE_KINDS: tuple[str, ...] = ("codex_subscription", "zcode_subscription")
 
 #: The provider each source kind executes through.
-_SOURCE_KIND_PROVIDER: dict[str, str] = {"codex_subscription": "openai"}
+_SOURCE_KIND_PROVIDER: dict[str, str] = {
+    "codex_subscription": "openai",
+    "zcode_subscription": "zai",
+}
 
 #: Upper bound for source ids: the derived resource id
 #: ``<source_id>:<slug>`` must stay inside the safe-id contract.
@@ -357,9 +362,12 @@ class SourceConfig:
             )
         if self.kind not in SOURCE_KINDS:
             raise ServerConfigError(f"source.kind: unknown kind {self.kind!r}")
-        if self.kind == "codex_subscription" and self.entitlement != "subscription_included":
+        if (
+            self.kind in ("codex_subscription", "zcode_subscription")
+            and self.entitlement != "subscription_included"
+        ):
             raise ServerConfigError(
-                "source.entitlement: codex_subscription capacity is "
+                "source.entitlement: subscription-backed source capacity is "
                 + "subscription_included by the evidenced provider terms"
             )
         if not self.label or len(self.label) > 200:
