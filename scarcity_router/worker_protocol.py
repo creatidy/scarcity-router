@@ -81,18 +81,28 @@ from .selection_types import ModelIdentity
 #: closed and version-gated: a v1/v2 session never carries the v3
 #: messages, and a v3 session carries them only for the continuation
 #: semantics D-062 defines — there is still no arbitrary-command surface.
-#: The server still ACCEPTS v1/v2 peers (see
-#: :data:`SERVER_SUPPORTED_PROTOCOL_VERSIONS`), so an old worker
-#: negotiates its own version and behaves exactly as before (and is never
-#: considered tool-continuation-capable); a new worker against an old
-#: server fails cleanly at the handshake (deploy the server first, the
-#: standard rolling-upgrade order).
-WORKER_PROTOCOL_VERSION = 3
+#: Version 4 (D-064, #158) adds the OPTIONAL bounded ``reasoning`` member
+#: on conversation messages — the assistant result's opaque reasoning
+#: output — on top of the COMPLETE v3 semantics; every v3 message shape is
+#: unchanged. A ``reasoning`` member on a session that negotiated below 4
+#: is a schema violation (the receiver rejects it typed), and a v4 worker
+#: holding a reasoning-bearing result under a lower negotiated version
+#: fails the execution closed rather than silently dropping the reasoning
+#: (negotiation can never silently lose it). The server still ACCEPTS
+#: v1/v2/v3 peers (see :data:`SERVER_SUPPORTED_PROTOCOL_VERSIONS`), so an
+#: old worker negotiates its own version and behaves exactly as before
+#: (v1/v2 are never tool-continuation-capable and never send the
+#: reasoning member); a new worker against an old server fails cleanly at
+#: the handshake (deploy the server first, the standard rolling-upgrade
+#: order).
+WORKER_PROTOCOL_VERSION = 4
 
-#: Versions the server-side endpoint accepts from workers. Version 1
-#: workers never send the version-2 inventory section; version negotiation
-#: picks the highest mutually supported version.
-SERVER_SUPPORTED_PROTOCOL_VERSIONS: tuple[int, ...] = (3, 2, 1)
+#: Versions the server-side endpoint accepts from workers. Version 1/2
+#: workers never send the version-3 continuation messages (or the
+#: version-2 inventory section); version 1/2/3 workers never send the
+#: version-4 message ``reasoning`` member; version negotiation picks the
+#: highest mutually supported version.
+SERVER_SUPPORTED_PROTOCOL_VERSIONS: tuple[int, ...] = (4, 3, 2, 1)
 
 # ── Framing bounds ────────────────────────────────────────────────────────────
 
@@ -398,6 +408,10 @@ def message_to_dict(message: AdapterMessage) -> dict[str, object]:
     out: dict[str, object] = {"role": message.role}
     if message.content is not None:
         out["content"] = message.content
+    if message.reasoning is not None:
+        # Version 4 (D-064, #158): the assistant result's opaque reasoning
+        # output — v4-only, gated by the negotiated session version.
+        out["reasoning"] = message.reasoning
     if message.tool_call_id is not None:
         out["tool_call_id"] = message.tool_call_id
     if message.name is not None:
@@ -419,7 +433,7 @@ def message_from_dict(d: object) -> AdapterMessage:
     dd = _payload_shape(
         d,
         ("role",),
-        ("content", "tool_calls", "tool_call_id", "name"),
+        ("content", "reasoning", "tool_calls", "tool_call_id", "name"),
         "protocol.message",
     )
     raw_calls = dd.get("tool_calls")
@@ -463,6 +477,11 @@ def message_from_dict(d: object) -> AdapterMessage:
                 None
                 if dd.get("name") is None
                 else v_text(dd["name"], "protocol.message.name", max_len=256)
+            ),
+            reasoning=(
+                None
+                if dd.get("reasoning") is None
+                else v_str(dd["reasoning"], "protocol.message.reasoning")
             ),
         )
     except ValueError as exc:

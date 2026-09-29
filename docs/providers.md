@@ -348,6 +348,16 @@ is explicitly refused (never silently dropped or forwarded on a guess).
   be re-verified stay `PARTIAL`/`UNKNOWN`, and the generic preset is
   `UNKNOWN` in every cell (fail closed) until the administrator supplies
   evidence.
+- **Reasoning output (D-064, #158).** The same one-implementation
+  discipline covers response-side reasoning: each preset's translation
+  policy records the reasoning-output field its dated evidence documents
+  (DeepSeek and Z.ai `reasoning_content`; OpenRouter `reasoning` with
+  `reasoning_content` as its documented identical alias; none for OpenAI,
+  Ollama and the generic preset — re-retrieved 2026-09-28). Evidenced
+  reasoning is preserved through the normalized seam and rendered as one
+  additive client-facing field; a known reasoning shape a preset does not
+  evidence fails the execution closed instead of being silently
+  discarded.
 
 ### M06 status: Codex execution adapter (issue #91 Stage 2, 2026-09-20)
 

@@ -55,6 +55,7 @@ from .gateway_adapters import (
     AdapterToolCall,
     CallObservation,
     CHUNK_FINISH,
+    CHUNK_REASONING_DELTA,
     CHUNK_TEXT_DELTA,
     CHUNK_TOOL_CALL,
     CHUNK_USAGE,
@@ -356,6 +357,7 @@ class LoopbackOllamaAdapter:
                 f"the loopback endpoint answered HTTP {response.status}",
             )
         text_parts: list[str] = []
+        reasoning_parts: list[str] = []
         tool_calls: list[AdapterToolCall] = []
         # Usage and the terminal reason are collected in lists because the
         # absorbing helper runs before the terminal checks below.
@@ -373,6 +375,9 @@ class LoopbackOllamaAdapter:
                 return
             if chunk.kind == CHUNK_TOOL_CALL and chunk.tool_call is not None:
                 tool_calls.append(chunk.tool_call)
+            elif chunk.kind == CHUNK_REASONING_DELTA and chunk.text is not None:
+                # Reasoning stays distinct from content (issue #158).
+                reasoning_parts.append(chunk.text)
             elif chunk.kind == CHUNK_TEXT_DELTA and chunk.text is not None:
                 text_parts.append(chunk.text)
             emit(chunk)
@@ -410,6 +415,7 @@ class LoopbackOllamaAdapter:
                 role="assistant",
                 content="".join(text_parts) or None,
                 tool_calls=tuple(tool_calls),
+                reasoning="".join(reasoning_parts) or None,
             ),
             finish_reason=finish_reasons[-1],
         )

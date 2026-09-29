@@ -39,6 +39,9 @@ T_EVAL = datetime(2026, 9, 20, 12, 0, tzinfo=timezone.utc)
 #: acceptance asserts it NEVER appears in audit, export or diagnostics.
 PROMPT_MARKER = "SYNTHETIC-E2E-PROMPT-MARKER-q7x2"
 RESPONSE_MARKER = "SYNTHETIC-E2E-RESPONSE-MARKER-m3k9"
+#: Reasoning marker for the reasoning-output semantics tests (issue #158);
+#: acceptance asserts it NEVER appears in audit, export or diagnostics.
+REASONING_MARKER = "SYNTHETIC-E2E-REASONING-MARKER-r5t8"
 
 
 # ── Real-clock composed-server harness ────────────────────────────────────────

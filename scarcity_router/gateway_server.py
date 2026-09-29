@@ -85,6 +85,7 @@ from typing import Protocol, cast, override
 from .config import resolve_default_selector_policy
 from .gateway_adapters import (
     CHUNK_FINISH,
+    CHUNK_REASONING_DELTA,
     CHUNK_TEXT_DELTA,
     CHUNK_TOOL_CALL,
     CHUNK_USAGE,
@@ -761,6 +762,15 @@ class _StreamState:
         """Render a completed whole-message result as a chunk sequence."""
         self._begin(created=outcome.created)
         message = outcome.message
+        if message.reasoning:
+            # Reasoning precedes content — the deterministic evidenced
+            # order (issue #158).
+            self._render_chunk(
+                AdapterStreamChunk(
+                    kind=CHUNK_REASONING_DELTA, text=message.reasoning
+                ),
+                created=outcome.created,
+            )
         if message.content:
             self._render_chunk(
                 AdapterStreamChunk(kind=CHUNK_TEXT_DELTA, text=message.content),

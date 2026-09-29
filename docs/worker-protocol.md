@@ -8,7 +8,7 @@ reconnect-safety semantics (D-043), and the state-report path. Nothing
 here changes selection, routing, capacity or provider semantics; those
 remain owned by their existing authoritative documents.
 
-- **Status:** Versioned contract, implemented ("worker protocol v1").
+- **Status:** Versioned contract, implemented ("worker protocol v1"; current version 3, #158).
   The protocol negotiates its own version independently of every other
   contract family (D-043/D-045).
 - **Implementation:** `scarcity_router/worker_protocol.py` (framing,
@@ -156,6 +156,37 @@ else:
   result is routed where the initial execution went. Session loss
   resolves suspended attempts as interrupted like any other in-flight
   attempt — the honest ambiguous outcome, never a reconstruction.
+
+## Version 4: the message `reasoning` member (D-064, #158)
+
+Version 4 adds ONE optional member on top of the COMPLETE version-3
+semantics and changes nothing else:
+
+- A conversation `message` (the assistant result the worker returns)
+  MAY carry `reasoning`: the backend's opaque reasoning output, a
+  bounded string, translated per the resource preset's evidenced
+  reasoning-output policy (D-064). The streamed `execute_chunk`
+  vocabulary needs no new member: the normalized `reasoning_delta`
+  chunk kind (D-064) rides the existing generic chunk serialization
+  (`kind` + optional `text`), so v4 streaming reasoning crosses the
+  protocol without schema change.
+- **Version gating is exact.** A `reasoning` member on a session that
+  negotiated below 4 is a schema violation: the server rejects the
+  result typed (the attempt fails closed with a structural note) — a
+  v3 peer cannot smuggle v4-only semantics, and no parser guesses the
+  peer's implementation. Symmetrically, a v4 worker holding a
+  reasoning-bearing result under a negotiated version below 4 FAILS
+  THE EXECUTION CLOSED worker-side (typed translation failure) rather
+  than silently dropping the reasoning: negotiation falling back to v3
+  can never lose reasoning silently.
+- **Rolling upgrade invariants.** v1/v2/v3 workers never send the
+  member; the server accepts those peers
+  (`SERVER_SUPPORTED_PROTOCOL_VERSIONS = (4, 3, 2, 1)`), so an old
+  worker negotiates its own version and behaves exactly as before —
+  v1/v2 are never tool-continuation-capable and a v3 worker keeps every
+  D-062 continuation behavior (it simply has no reasoning
+  representation). A v4 worker against a v3-only server fails cleanly
+  at the handshake — deploy the server first.
 
 ## Pairing, identity, rotation, revocation (D-044)
 

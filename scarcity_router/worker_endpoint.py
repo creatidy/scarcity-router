@@ -865,6 +865,32 @@ class WorkerSession:
                 )
             )
             return
+        if (
+            self._state.negotiated_version is None
+            or self._state.negotiated_version < 4
+        ) and message.message is not None and "reasoning" in message.message:
+            # D-064 exactness: the `reasoning` member is version-4-only.
+            # A below-v4 session carrying it is a schema violation — the
+            # attempt fails closed with a structural note (never parsed,
+            # never forwarded, never silently dropped) and the violation
+            # is answered typed, like every other version-gated frame.
+            attempt.resolve(
+                AttemptOutcome(
+                    status="failed",
+                    note=(
+                        "protocol violation: reasoning member on a session "
+                        + "that negotiated below protocol version 4"
+                    ),
+                )
+            )
+            self._send_error(
+                ErrorMessage(
+                    code=ERR_MALFORMED,
+                    message="execute_result.message.reasoning requires protocol version 4",
+                    fatal=False,
+                )
+            )
+            return
         attempt.resolve(AttemptOutcome(status=status, result=message))
 
     def _register_interrupted(self, message: AttemptInterruptedMessage) -> None:

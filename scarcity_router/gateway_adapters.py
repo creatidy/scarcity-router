@@ -104,12 +104,14 @@ CALL_STATUSES: frozenset[str] = frozenset({
 
 # Closed normalized stream-chunk kinds.
 CHUNK_TEXT_DELTA = "text_delta"
+CHUNK_REASONING_DELTA = "reasoning_delta"
 CHUNK_TOOL_CALL = "tool_call"
 CHUNK_FINISH = "finish"
 CHUNK_USAGE = "usage"
 
 CHUNK_KINDS: frozenset[str] = frozenset({
     CHUNK_TEXT_DELTA,
+    CHUNK_REASONING_DELTA,
     CHUNK_TOOL_CALL,
     CHUNK_FINISH,
     CHUNK_USAGE,
@@ -158,6 +160,15 @@ class AdapterMessage:
     tool-call ids) at the request boundary and passes the validated values
     through unchanged. Adapter implementations translate them into their
     backend's wire format; the coordinator never reads their content.
+
+    ``reasoning`` is the provider's opaque reasoning output on an assistant
+    message (issue #158): translated per the preset's evidenced response
+    shape, transported verbatim, and rendered to the client under the
+    documented additive semantics. It is never parsed, never used for
+    routing and never merged into ``content``. The request-history wire
+    builder refuses to forward it — no preset evidences reasoning
+    re-injection, so a request carrying it fails rather than silently
+    drops it.
     """
 
     role: str
@@ -165,6 +176,7 @@ class AdapterMessage:
     tool_calls: tuple[AdapterToolCall, ...] = ()
     tool_call_id: str | None = None
     name: str | None = None
+    reasoning: str | None = None
 
     def __post_init__(self) -> None:
         _ = v_safe_id(self.role, "adapter_message.role")
@@ -173,6 +185,12 @@ class AdapterMessage:
             if len(content) > 16_777_216:
                 raise ValueError(
                     "adapter_message.content: exceeds maximum length 16777216"
+                )
+        if self.reasoning is not None:
+            reasoning = v_str(self.reasoning, "adapter_message.reasoning")
+            if len(reasoning) > 16_777_216:
+                raise ValueError(
+                    "adapter_message.reasoning: exceeds maximum length 16777216"
                 )
         if self.tool_call_id is not None:
             _ = v_text(self.tool_call_id, "adapter_message.tool_call_id", max_len=256)
@@ -326,12 +344,14 @@ class CallObservation:
 class AdapterStreamChunk:
     """One normalized stream chunk emitted by an adapter.
 
-    ``text_delta`` carries incremental assistant text; ``tool_call``
-    carries one complete tool call (the coordinator never fragments or
-    reassembles tool calls); ``finish`` carries the terminal finish reason
-    (exactly once, last content chunk); ``usage`` carries aggregated token
-    usage for the whole response. The OpenAI wire mapping renders these
-    into ``chat.completion.chunk`` SSE frames.
+    ``text_delta`` carries incremental assistant text; ``reasoning_delta``
+    carries incremental reasoning text (issue #158 — a distinct kind, so
+    reasoning is never merged into normal content); ``tool_call`` carries
+    one complete tool call (the coordinator never fragments or reassembles
+    tool calls); ``finish`` carries the terminal finish reason (exactly
+    once, last content chunk); ``usage`` carries aggregated token usage
+    for the whole response. The OpenAI wire mapping renders these into
+    ``chat.completion.chunk`` SSE frames.
     """
 
     kind: str
@@ -344,6 +364,8 @@ class AdapterStreamChunk:
         _ = v_enum(self.kind, CHUNK_KINDS, "adapter_stream_chunk.kind")
         if self.kind == CHUNK_TEXT_DELTA:
             _ = v_text(self.text, "adapter_stream_chunk.text", max_len=1_048_576)
+        elif self.kind == CHUNK_REASONING_DELTA:
+            _ = v_text(self.text, "adapter_stream_chunk.text", max_len=1_048_576)
         elif self.kind == CHUNK_TOOL_CALL:
             _ = v_instance(
                 self.tool_call, AdapterToolCall, "adapter_stream_chunk.tool_call"
@@ -354,9 +376,13 @@ class AdapterStreamChunk:
             )
         elif self.kind == CHUNK_USAGE:
             _ = v_instance(self.usage, UsageTokens, "adapter_stream_chunk.usage")
-        if self.text is not None and self.kind != CHUNK_TEXT_DELTA:
+        if (
+            self.text is not None
+            and self.kind not in (CHUNK_TEXT_DELTA, CHUNK_REASONING_DELTA)
+        ):
             raise ValueError(
-                "adapter_stream_chunk: text is only valid on a text_delta chunk"
+                "adapter_stream_chunk: text is only valid on a text_delta "
+                + "or reasoning_delta chunk"
             )
         if self.tool_call is not None and self.kind != CHUNK_TOOL_CALL:
             raise ValueError(
@@ -642,6 +668,7 @@ __all__ = [
     "CALL_UNKNOWN",
     "CHUNK_FINISH",
     "CHUNK_KINDS",
+    "CHUNK_REASONING_DELTA",
     "CHUNK_TEXT_DELTA",
     "CHUNK_TOOL_CALL",
     "CHUNK_USAGE",

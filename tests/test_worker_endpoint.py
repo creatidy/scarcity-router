@@ -608,6 +608,139 @@ def request_call_resource(execute: ExecuteMessage) -> str:
     return RESOURCE_ID
 
 
+class EndpointReasoningVersionTests(EndpointTestCase):
+    """Protocol version 4 exactness (D-064 on top of the complete v3):
+
+    the `reasoning` member is legal ONLY on a session that negotiated 4;
+    a below-v4 session carrying it is a schema violation that fails the
+    attempt closed (never parsed, never forwarded, never silently
+    dropped), while v3 tool-continuation behavior is untouched."""
+
+    def _connect(self, *, versions: list[int], expected: int) -> ScriptedWorker:
+        worker = self.connect_worker()
+        code = self.store.begin_pairing(label="test-device")
+        worker.send_raw(
+            {
+                "type": "pair_request",
+                "pairing_code": code.pairing_code,
+                "supported_versions": versions,
+                "device_label": "test-device",
+            }
+        )
+        answer = worker.read_server_message()
+        assert isinstance(answer, PairResultMessage), answer
+        self.assertEqual(expected, answer.negotiated_version)
+        worker_id, _credential = answer.worker_id, answer.credential
+        self.assign(RESOURCE_ID, worker_id)
+        _ = worker.send_state_report(
+            build_worker_report(worker_id=worker_id, resource_id=RESOURCE_ID)
+        )
+        return worker
+
+    def _dispatch(self, session: WorkerSession) -> tuple[str, PendingAttempt]:
+        message = ExecuteMessage(
+            request_id="chatcmpl-1",
+            attempt_id="wa-rsn00001",
+            adapter_id="synthetic",
+            deadline="2030-01-01T00:00:00.000Z",
+            call=_worker_call(),
+        )
+        return message.attempt_id, session.submit_execute(message)
+
+    def test_v4_session_negotiates_and_preserves_reasoning(self) -> None:
+        worker = self._connect(versions=[4, 3, 2, 1], expected=4)
+        session = self.bound_session()
+        attempt_id, pending = self._dispatch(session)
+        _execute = worker.next_execute()
+        worker.send_raw(
+            {
+                "type": "execute_result",
+                "attempt_id": attempt_id,
+                "status": "completed",
+                "calls": [],
+                "message": {
+                    "role": "assistant",
+                    "content": "answer",
+                    "reasoning": "why the answer",
+                },
+                "finish_reason": "stop",
+            }
+        )
+        kind, payload = pending.take(5.0)
+        self.assertEqual("outcome", kind)
+        outcome = cast(AttemptOutcome, payload)
+        self.assertEqual("completed", outcome.status)
+        assert outcome.result is not None and outcome.result.message is not None
+        self.assertEqual("why the answer", outcome.result.message.get("reasoning"))
+        # The session stays healthy on a v4 session (heartbeat answers).
+        from scarcity_router.worker_protocol import HeartbeatAckMessage
+
+        ack = worker.send_heartbeat(seq=1)
+        self.assertIsInstance(ack, HeartbeatAckMessage)
+        _ = ack
+
+    def test_v3_session_cannot_carry_the_reasoning_member(self) -> None:
+        worker = self._connect(versions=[3, 2, 1], expected=3)
+        session = self.bound_session()
+        attempt_id, pending = self._dispatch(session)
+        _execute = worker.next_execute()
+        worker.send_raw(
+            {
+                "type": "execute_result",
+                "attempt_id": attempt_id,
+                "status": "completed",
+                "calls": [],
+                "message": {
+                    "role": "assistant",
+                    "content": "answer",
+                    "reasoning": "smuggled",
+                },
+                "finish_reason": "stop",
+            }
+        )
+        kind, payload = pending.take(5.0)
+        self.assertEqual("outcome", kind)
+        outcome = cast(AttemptOutcome, payload)
+        self.assertEqual("failed", outcome.status)
+        assert outcome.note is not None
+        self.assertIn("below protocol version 4", outcome.note)
+        # The violation is answered typed and non-fatal (the session
+        # survives; a well-behaved v3 worker never sends the member).
+        error = worker.read_raw()
+        assert error is not None
+        self.assertEqual("error", error.get("type"))
+        self.assertEqual("malformed_message", error.get("code"))
+        self.assertIs(False, error.get("fatal"))
+
+    def test_v3_session_without_reasoning_still_completes(self) -> None:
+        worker = self._connect(versions=[3, 2, 1], expected=3)
+        session = self.bound_session()
+        attempt_id, pending = self._dispatch(session)
+        _execute = worker.next_execute()
+        worker.send_raw(
+            {
+                "type": "execute_result",
+                "attempt_id": attempt_id,
+                "status": "completed",
+                "calls": [],
+                "message": {"role": "assistant", "content": "plain"},
+                "finish_reason": "stop",
+            }
+        )
+        kind, payload = pending.take(5.0)
+        self.assertEqual("outcome", kind)
+        outcome = cast(AttemptOutcome, payload)
+        self.assertEqual("completed", outcome.status)
+        assert outcome.result is not None and outcome.result.message is not None
+        self.assertNotIn("reasoning", outcome.result.message)
+
+    def test_server_still_accepts_v3_only_handshake(self) -> None:
+        # G: a genuine v3 peer (no v4 extension) negotiates exactly 3
+        # against the (4, 3, 2, 1) server list — the D-062 lifecycle
+        # keeps its own negotiated version.
+        _ = self._connect(versions=[3], expected=3)
+
+
 class EndpointContinuationTests(EndpointTestCase):
     """Protocol version 3 at the endpoint: suspension routing and
     deterministic tool-result delivery (D-062)."""

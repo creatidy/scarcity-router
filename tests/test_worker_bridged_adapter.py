@@ -38,6 +38,7 @@ from tests.worker_fixtures import (  # noqa: E402
 from scarcity_router.gateway_adapters import (  # noqa: E402
     AdapterAmbiguousError,
     AdapterCall,
+    AdapterMessage,
     AdapterPermanentError,
     AdapterResult,
     AdapterStreamChunk,
@@ -60,6 +61,8 @@ from scarcity_router.worker_identity_store import WorkerIdentityStore  # noqa: E
 from scarcity_router.worker_protocol import (  # noqa: E402
     PairResultMessage,
     StateReportAckMessage,
+    ExecuteResultMessage,
+    message_to_dict,
 )
 
 RESOURCE_ID = "openai-worker"
@@ -262,6 +265,95 @@ class AdapterHappyPathTests(unittest.TestCase):
         assert reported is not None
         self.assertEqual((5, 7), (reported.prompt_tokens, reported.completion_tokens))
         self.assertEqual(["work", "er reply"], chunks)
+
+    def _connect_v4_worker(self) -> ScriptedWorker:
+        """A worker bound to the world's resource over a negotiated
+        protocol version 4 session (the harness default pairs at v1)."""
+        worker_side, server_side = MemoryTransport.pair()
+        session = self.world.endpoint.attach_transport(server_side)
+        thread = threading.Thread(target=session.run, daemon=True)
+        thread.start()
+        _ = session  # the daemon session thread runs for the test's life
+        scripted = ScriptedWorker(worker_side)
+        self.world.workers.append(scripted)
+        code = self.world.store.begin_pairing(label="adapter-test-v4")
+        scripted.send_raw(
+            {
+                "type": "pair_request",
+                "pairing_code": code.pairing_code,
+                "supported_versions": [4, 3, 2, 1],
+                "device_label": "adapter-test-v4",
+            }
+        )
+        answer = scripted.read_server_message()
+        assert isinstance(answer, PairResultMessage), answer
+        self.assertEqual(4, answer.negotiated_version)
+        self.world.owners[RESOURCE_ID] = answer.worker_id
+        report_answer = scripted.send_state_report(
+            build_worker_report(
+                worker_id=answer.worker_id,
+                resource_id=RESOURCE_ID,
+                provider="openai",
+                model="gpt-5.6-luna",
+                entitlement="subscription_included",
+                reported_at=GATEWAY_T_NOW,
+            )
+        )
+        assert isinstance(report_answer, StateReportAckMessage), report_answer
+        return scripted
+
+    def test_v4_reasoning_chunk_and_message_reach_the_adapter(self) -> None:
+        """Combined D-064 x protocol v4: a reasoning_delta chunk crosses
+        the worker protocol and is re-emitted as the distinct normalized
+        kind (never a text delta), and the result message's reasoning
+        member survives to the coordinator — streamed and whole-message
+        reasoning over ONE negotiated-v4 session."""
+        worker = self._connect_v4_worker()
+        adapter = self.world.make_adapter()
+        kinds: list[str] = []
+
+        def emit(chunk: AdapterStreamChunk) -> None:
+            kinds.append(chunk.kind)
+
+        run = run_dispatch(adapter, make_context(emit=emit))
+        execute = worker.next_execute()
+        worker.send_chunk(
+            execute.attempt_id, {"kind": "reasoning_delta", "text": "thin"}
+        )
+        worker.send_chunk(
+            execute.attempt_id, {"kind": "reasoning_delta", "text": "king"}
+        )
+        worker.send_chunk(
+            execute.attempt_id, {"kind": "text_delta", "text": "reply"}
+        )
+        worker_result = ExecuteResultMessage(
+            attempt_id=execute.attempt_id,
+            status="completed",
+            calls=(),
+            message=message_to_dict(
+                AdapterMessage(
+                    role="assistant",
+                    content="reply",
+                    reasoning="thinking",
+                )
+            ),
+            finish_reason="stop",
+        )
+        worker._writer.write_message(worker_result.to_payload())  # pyright: ignore[reportPrivateUsage] - fixture write end
+        run.join(10)
+        self.assertFalse(run.alive)
+        if run.error is not None:
+            self.fail(f"dispatch failed: {run.error!r}")
+        result = run.result
+        assert result is not None
+        self.assertEqual("completed", result.status)
+        assert result.message is not None
+        self.assertEqual("thinking", result.message.reasoning)
+        self.assertEqual("reply", result.message.content)
+        # Reasoning arrives as its own kind, in order, before the text.
+        self.assertEqual(
+            ["reasoning_delta", "reasoning_delta", "text_delta"], kinds
+        )
 
     def test_worker_failure_is_a_permanent_error(self) -> None:
         adapter = self.world.make_adapter()

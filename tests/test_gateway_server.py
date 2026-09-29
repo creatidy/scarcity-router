@@ -307,6 +307,43 @@ class SurfaceTests(ServerHarness):
         final_usage = as_dict(usage_chunks[0])
         self.assertEqual(as_dict(final_usage["usage"])["prompt_tokens"], 11)
 
+    def test_chunkless_reasoning_synthesizes_reasoning_before_content(self) -> None:
+        """D-064 (#158): a whole-message result carrying reasoning renders
+        the reasoning delta BEFORE the content delta in the synthesized
+        sequence — reasoning is never merged into content and never
+        dropped when a streaming dispatch completes without chunks."""
+        adapter = ScriptedAdapter(
+            behavior=chunkless_behavior(
+                content="the answer", reasoning="why the answer"
+            )
+        )
+        port = self.make_server(adapters=[adapter])
+        response = self.post_chat(
+            port,
+            {
+                "model": "deep-coding",
+                "messages": [{"role": "user", "content": "hi"}],
+                "stream": True,
+            },
+        )
+        self.assertEqual(response.status, 200)
+        frames = self.read_sse_frames(response)
+        self.assertEqual(frames[-1], "[DONE]")
+        chunks = [cast("dict[str, object]", json.loads(frame)) for frame in frames[:-1]]
+        order: list[tuple[str, str]] = []
+        for chunk in chunks:
+            chunk_choices = as_list(chunk["choices"])
+            if not chunk_choices:
+                continue
+            delta = as_dict(as_dict(chunk_choices[0])["delta"])
+            if delta.get("reasoning_content"):
+                order.append(("reasoning", cast("str", delta["reasoning_content"])))
+            if delta.get("content"):
+                order.append(("content", cast("str", delta["content"])))
+        self.assertEqual(
+            [("reasoning", "why the answer"), ("content", "the answer")], order
+        )
+
     def test_chunkless_completed_stream_is_synthesized_never_silent(self) -> None:
         """A whole-message result for stream:true still yields full SSE.
 

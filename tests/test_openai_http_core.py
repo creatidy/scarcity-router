@@ -292,7 +292,12 @@ class ResponseParseTest(unittest.TestCase):
         assert parsed.usage is not None
         self.assertEqual(parsed.usage.total_tokens, 5)
 
-    def test_reasoning_content_is_tolerated_and_ignored(self) -> None:
+    def test_reasoning_content_is_preserved_not_ignored(self) -> None:
+        """D-064 (#158): the deepseek preset's evidenced reasoning-output
+        field is preserved on the normalized message — this test once
+        pinned the OLD silent-discard behavior and now pins its opposite;
+        it would fail loudly if preservation ever regressed to a silent
+        content-only drop."""
         document = {
             "choices": [
                 {
@@ -308,6 +313,7 @@ class ResponseParseTest(unittest.TestCase):
         }
         parsed = parse_chat_completion_response(document, preset("deepseek").policy)
         self.assertEqual(parsed.message.content, "answer")
+        self.assertEqual(parsed.message.reasoning, "hidden chain")
 
     def test_tool_call_response_normalizes_empty_arguments(self) -> None:
         document = {
@@ -474,7 +480,8 @@ class StreamInterpretationTest(unittest.TestCase):
 
     def test_openai_style_usage_chunk_with_empty_choices(self) -> None:
         view = interpret_stream_frame(
-            {"choices": [], "usage": {"prompt_tokens": 1, "completion_tokens": 2}}
+            {"choices": [], "usage": {"prompt_tokens": 1, "completion_tokens": 2}},
+            preset("openai-api").policy,
         )
         self.assertIsNone(view.text_delta)
         assert view.usage is not None
@@ -487,7 +494,7 @@ class StreamInterpretationTest(unittest.TestCase):
             ],
             "usage": {"prompt_tokens": 4, "completion_tokens": 0},
         }
-        view = interpret_stream_frame(frame)
+        view = interpret_stream_frame(frame, preset("openrouter").policy)
         self.assertEqual(view.finish_reason, "stop")
         assert view.usage is not None
 
@@ -510,7 +517,8 @@ class StreamInterpretationTest(unittest.TestCase):
                         }
                     }
                 ]
-            }
+            },
+            preset("openai-api").policy,
         )
         self.assertEqual(len(view.tool_fragments), 1)
 
