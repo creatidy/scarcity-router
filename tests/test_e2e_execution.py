@@ -1053,7 +1053,10 @@ class CancellationTests(EvidencedWorkerWorld):
             worker.send_chunk(execute.attempt_id, {"kind": "text_delta", "text": "tial"})
             _ = raw.settimeout(0.5)
             deadline = time.monotonic() + 15
-            while time.monotonic() < deadline and not worker.cancels:
+            while (
+                time.monotonic() < deadline
+                and execute.attempt_id not in worker.cancels
+            ):
                 try:
                     piece = raw.recv(4096)  # drain; may EOF or time out
                     if not piece:
@@ -1061,10 +1064,11 @@ class CancellationTests(EvidencedWorkerWorld):
                 except (TimeoutError, OSError):
                     continue
             # The assertion synchronizes on the real observable contract —
-            # the worker reader's cancel record — for the remaining budget,
-            # never on socket EOF alone (issue #143).
+            # the worker reader's record of THIS attempt's cancellation —
+            # for the remaining budget, never on socket EOF alone. An
+            # unrelated cancel never satisfies it (issue #143).
             wait_until(
-                lambda: bool(worker.cancels),
+                lambda: execute.attempt_id in worker.cancels,
                 timeout=max(0.0, deadline - time.monotonic()),
                 message="cancel never reached the worker",
             )
@@ -1094,15 +1098,20 @@ class CancellationTests(EvidencedWorkerWorld):
             worker.send_chunk(execute.attempt_id, {"kind": "text_delta", "text": "tial"})
             _ = raw.settimeout(0.5)
             deadline = time.monotonic() + 15
-            while time.monotonic() < deadline and not worker.cancels:
+            while (
+                time.monotonic() < deadline
+                and execute.attempt_id not in worker.cancels
+            ):
                 try:
                     piece = raw.recv(4096)
                     if not piece:
                         break
                 except (TimeoutError, OSError):
                     continue
+            # THIS attempt's cancellation, not "some cancellation arrived"
+            # (issue #143 review blocker 2).
             wait_until(
-                lambda: bool(worker.cancels),
+                lambda: execute.attempt_id in worker.cancels,
                 timeout=max(0.0, deadline - time.monotonic()),
                 message="cancel never reached the worker",
             )
