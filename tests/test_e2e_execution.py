@@ -1044,8 +1044,11 @@ class CancellationTests(EvidencedWorkerWorld):
             # The client disconnects: a clean FIN on the request socket.
             _ = raw.shutdown(socket.SHUT_WR)
             # The next worker chunk drives the gateway's disconnect check;
-            # the cancellation must propagate back to the worker. The
-            # reader thread records the cancel while the test drains.
+            # the cancellation must propagate back to the worker. The drain
+            # ends at the server's close, but a clean EOF only proves the
+            # cancel was SENT (the handler thread writes it before closing
+            # the client connection) — the worker's reader thread records
+            # it asynchronously.
             worker.start_reader()
             worker.send_chunk(execute.attempt_id, {"kind": "text_delta", "text": "tial"})
             _ = raw.settimeout(0.5)
@@ -1054,10 +1057,17 @@ class CancellationTests(EvidencedWorkerWorld):
                 try:
                     piece = raw.recv(4096)  # drain; may EOF or time out
                     if not piece:
-                        break  # the server closed its side after cancelling
+                        break  # the server closed its side; cancel in flight
                 except (TimeoutError, OSError):
                     continue
-            self.assertTrue(worker.cancels, "cancel never reached the worker")
+            # The assertion synchronizes on the real observable contract —
+            # the worker reader's cancel record — for the remaining budget,
+            # never on socket EOF alone (issue #143).
+            wait_until(
+                lambda: bool(worker.cancels),
+                timeout=max(0.0, deadline - time.monotonic()),
+                message="cancel never reached the worker",
+            )
         finally:
             raw.close()
 
@@ -1077,6 +1087,9 @@ class CancellationTests(EvidencedWorkerWorld):
             self.assertTrue(first or b"chunk" in _head)
             _ = raw.settimeout(0.5)
             _ = raw.shutdown(socket.SHUT_WR)
+            # Same contract as the propagates-cancel scenario (issue #143):
+            # client EOF proves the cancel was sent, not that the worker's
+            # reader thread has recorded it yet — wait on that record.
             worker.start_reader()
             worker.send_chunk(execute.attempt_id, {"kind": "text_delta", "text": "tial"})
             _ = raw.settimeout(0.5)
@@ -1088,7 +1101,11 @@ class CancellationTests(EvidencedWorkerWorld):
                         break
                 except (TimeoutError, OSError):
                     continue
-            self.assertTrue(worker.cancels)
+            wait_until(
+                lambda: bool(worker.cancels),
+                timeout=max(0.0, deadline - time.monotonic()),
+                message="cancel never reached the worker",
+            )
             # No cancel (or anything else) ever reaches a second session.
             self.assertEqual([], bystander.cancels)
         finally:
