@@ -258,13 +258,22 @@ def wait_until(
     interval: float = 0.02,
     message: str = "condition not met",
 ) -> None:
-    """Poll a condition with a hard deadline (real-clock tests only)."""
+    """Poll a condition with a hard deadline (real-clock tests only).
+
+    Condition-first (issue #143 review blocker 1): the predicate always
+    receives at least one evaluation, so an already-satisfied condition
+    succeeds even at a zero or exhausted budget, and timeout failure is
+    decided only after a final check. The deadline stays hard: a false
+    condition fails immediately at exhaustion — no budget extension, no
+    extra sleep on the failure path.
+    """
     deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
+    while True:
         if condition():
             return
+        if time.monotonic() >= deadline:
+            raise AssertionError(message)
         time.sleep(interval)
-    raise AssertionError(message)
 
 
 # ── trustme-backed TLS materials ──────────────────────────────────────────────
