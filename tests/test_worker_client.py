@@ -9,6 +9,7 @@ injected so timing is deterministic.
 from __future__ import annotations
 
 import io
+import os
 import signal
 import socket
 import sys
@@ -1029,6 +1030,34 @@ class RunSingleInstanceLockTests(unittest.TestCase):
                 self.assertEqual([], made)
             finally:
                 holder.release()
+
+    def test_run_refuses_a_planted_lock_symlink_without_touching_the_target(
+        self,
+    ) -> None:
+        # Daybreak blocker: a planted worker.lock symlink is never
+        # followed — the target file is untouched and the run fails closed
+        # before any runtime exists.
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory[str]() as tmp:
+            decoy = Path(tmp) / "decoy.txt"
+            _ = decoy.write_text("DO-NOT-TOUCH")
+            os.symlink(
+                str(decoy),
+                os.path.join(tmp, WorkerStateDirLock.LOCK_FILE_NAME),
+            )
+            made: list[ScriptedCliRuntime] = []
+            factory = scripted_runtime_factory([], run_result="requested", made=made)
+            with unittest.mock.patch.object(
+                worker_client, "WorkerRuntime", factory
+            ), redirect_stderr(stderr):
+                exit_code = worker_client.main(
+                    ["run", "--server", self.ORIGIN, "--state-dir", tmp]
+                )
+            self.assertEqual(2, exit_code)
+            self.assertIn("refusing to follow", stderr.getvalue())
+            self.assertEqual("DO-NOT-TOUCH", decoy.read_text())
+            self.assertTrue(os.path.islink(os.path.join(tmp, WorkerStateDirLock.LOCK_FILE_NAME)))
+            self.assertEqual([], made)
 
     def test_run_acquires_and_releases_the_lock_around_the_loop(self) -> None:
         with tempfile.TemporaryDirectory[str]() as tmp:

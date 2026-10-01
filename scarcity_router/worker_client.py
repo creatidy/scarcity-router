@@ -77,6 +77,7 @@ from .worker_local_store import (
     WorkerLocalIdentity,
     WorkerLocalStore,
     WorkerStateDirLock,
+    WorkerStateDirLockUnavailable,
     WorkerStateDirLocked,
     default_worker_state_dir,
 )
@@ -1599,6 +1600,12 @@ def main(argv: list[str] | None = None) -> int:
                 lock = WorkerStateDirLock(_resolved_state_dir(state_dir))
                 try:
                     lock.acquire()
+                except WorkerStateDirLockUnavailable as exc:
+                    # Fail closed: a planted worker.lock (symlink or other
+                    # non-regular object) is never followed — its target is
+                    # untouched and this process does not run.
+                    print(f"worker: {exc}", file=sys.stderr)
+                    return 2
                 except WorkerStateDirLocked as exc:
                     # Fail closed: a foreground run and the service (or a
                     # second foreground run) must never share a state

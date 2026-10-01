@@ -167,6 +167,21 @@ class ServiceWorld:
             systemctl=systemctl, loginctl=loginctl
         )
 
+    def pair_state_dir(self, state_dir: Path) -> None:
+        """Pair a NON-default state directory (the world pairs only its own)."""
+        store = open_worker_store(str(state_dir))
+        try:
+            store.save_identity(
+                WorkerLocalIdentity(
+                    worker_id="worker-138",
+                    credential=SYNTHETIC_CREDENTIAL,
+                    server_origin=SYNTHETIC_ORIGIN,
+                    device_label=None,
+                )
+            )
+        finally:
+            store.close()
+
     def install_arguments(
         self, **overrides: object
     ) -> dict[str, object]:
@@ -214,6 +229,57 @@ class ServiceWorld:
                 build_registry=build_registry,
             )
         return code, stdout.getvalue(), stderr.getvalue()
+
+
+def systemd_words(value: str) -> list[str]:
+    """Tokenize one rendered directive value the way systemd parses it.
+
+    Reverses the renderer's escaping in systemd's own documented
+    order: specifier resolution first on the raw text (a single
+    left-to-right pass in which ``%%`` yields one literal ``%``),
+    then command-line unquoting (surrounding double quotes removed,
+    the C-style escapes the renderer emits — ``\\\\`` and ``\\"`` —
+    decoded). A rendered word that does NOT round-trip to its
+    original input means systemd would address a DIFFERENT path than
+    the one the administrator configured.
+    """
+    words: list[str] = []
+    index = 0
+    total = len(value)
+    while index < total:
+        while index < total and value[index] == " ":
+            index += 1
+        if index >= total:
+            break
+        characters: list[str] = []
+        quoted = value[index] == '"'
+        if quoted:
+            index += 1
+        while index < total:
+            character = value[index]
+            if character == "%" and index + 1 < total and value[index + 1] == "%":
+                characters.append("%")
+                index += 2
+                continue
+            if (
+                quoted
+                and character == "\\"
+                and index + 1 < total
+                and value[index + 1] in ('"', "\\")
+            ):
+                characters.append(value[index + 1])
+                index += 2
+                continue
+            if quoted and character == '"':
+                index += 1
+                break
+            if not quoted and character == " ":
+                index += 1
+                break
+            characters.append(character)
+            index += 1
+        words.append("".join(characters))
+    return words
 
 
 class UnitRenderingTests(unittest.TestCase):
@@ -325,57 +391,6 @@ class UnitRenderingTests(unittest.TestCase):
 
     # ── systemd substitution round-trip oracle ────────────────────────
 
-    @staticmethod
-    def _systemd_words(value: str) -> list[str]:
-        """Tokenize one rendered directive value the way systemd parses it.
-
-        Reverses the renderer's escaping in systemd's own documented
-        order: specifier resolution first on the raw text (a single
-        left-to-right pass in which ``%%`` yields one literal ``%``),
-        then command-line unquoting (surrounding double quotes removed,
-        the C-style escapes the renderer emits — ``\\\\`` and ``\\"`` —
-        decoded). A rendered word that does NOT round-trip to its
-        original input means systemd would address a DIFFERENT path than
-        the one the administrator configured.
-        """
-        words: list[str] = []
-        index = 0
-        total = len(value)
-        while index < total:
-            while index < total and value[index] == " ":
-                index += 1
-            if index >= total:
-                break
-            characters: list[str] = []
-            quoted = value[index] == '"'
-            if quoted:
-                index += 1
-            while index < total:
-                character = value[index]
-                if character == "%" and index + 1 < total and value[index + 1] == "%":
-                    characters.append("%")
-                    index += 2
-                    continue
-                if (
-                    quoted
-                    and character == "\\"
-                    and index + 1 < total
-                    and value[index + 1] in ('"', "\\")
-                ):
-                    characters.append(value[index + 1])
-                    index += 2
-                    continue
-                if quoted and character == '"':
-                    index += 1
-                    break
-                if not quoted and character == " ":
-                    index += 1
-                    break
-                characters.append(character)
-                index += 1
-            words.append("".join(characters))
-        return words
-
     def _directive(self, unit: str, name: str) -> list[str]:
         line = next(
             line
@@ -385,7 +400,7 @@ class UnitRenderingTests(unittest.TestCase):
         value = line.removeprefix(f"{name}=")
         if name == "ExecStart":
             value = value.removeprefix(":")
-        return self._systemd_words(value)
+        return systemd_words(value)
 
     def test_literal_percent_is_doubled_and_round_trips(self) -> None:
         unit = worker_service.render_unit(
@@ -1067,6 +1082,480 @@ class StatusRestartUninstallTests(unittest.TestCase):
         code, _out, err = self._run("teleport")
         self.assertEqual(2, code)
         self.assertIn("unknown service subcommand", err)
+
+
+class PathNormalizationTests(unittest.TestCase):
+    """Daybreak blocker 1: resolve once at install, persist canonical paths.
+
+    A user manager resolves the service's relative paths against its own
+    working-directory context (not the installer's shell), so every
+    filesystem-valued argument must enter the unit as the exact canonical
+    absolute path that was validated at install time. Each test here
+    passes a RELATIVE input that would resolve differently under systemd
+    (a relative workspace from a cwd that is not ``$HOME`` would become
+    ``$HOME`` after reboot) and pins the canonical outcome.
+    """
+
+    _tmp: tempfile.TemporaryDirectory[str]
+    world: ServiceWorld
+
+    def __init__(self, method_name: str = "runTest") -> None:
+        super().__init__(method_name)
+        self._tmp = cast("tempfile.TemporaryDirectory[str]", object())
+        self.world = cast("ServiceWorld", object())
+
+    @override
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory[str]()
+        self.addCleanup(self._tmp.cleanup)
+        self.world = ServiceWorld(Path(self._tmp.name))
+
+    def _chdir(self, target: Path) -> None:
+        previous = os.getcwd()
+        os.chdir(target)
+        self.addCleanup(os.chdir, previous)
+
+    def _pair(self, state_dir: Path) -> None:
+        return self.world.pair_state_dir(state_dir)
+
+    def _exec_start_words(self) -> list[str]:
+        unit = self.world.unit_path.read_text(encoding="utf-8")
+        line = next(
+            l for l in unit.splitlines() if l.startswith("ExecStart=")
+        )
+        value = line.removeprefix("ExecStart=").removeprefix(":")
+        return systemd_words(value)
+
+    def test_relative_workspace_dot_resolves_to_the_install_time_directory(
+        self,
+    ) -> None:
+        # Installed from INSIDE the workspace with '.': the unit must pin
+        # the installation-time directory, never '.' — under systemd '.'
+        # would be the user manager's working directory ($HOME), a
+        # DIFFERENT workspace after reboot.
+        workspace = self.world.workspace_dir
+        self._chdir(workspace)
+        code, _out, err = self.world.install(
+            codex_sources=[],
+            zcode_sources=["zai-plan"],
+            zcode_workspace=".",
+        )
+        self.assertEqual(0, code, err)
+        words = self._exec_start_words()
+        flag_index = words.index("--zcode-workspace")
+        self.assertEqual(str(workspace.resolve()), words[flag_index + 1])
+        self.assertNotIn(".", words)
+        read_write = next(
+            l
+            for l in self.world.unit_path.read_text(encoding="utf-8").splitlines()
+            if l.startswith("ReadWritePaths=")
+        )
+        self.assertIn(str(workspace.resolve()), read_write)
+
+    def test_relative_pinned_binary_resolves_to_the_exact_validated_executable(
+        self,
+    ) -> None:
+        # Installed with a cwd-relative --zcode-bin that goes through a
+        # symlink: the unit carries the canonical real executable that was
+        # validated, never the relative spelling.
+        bin_dir = self.world.tmp / "bin"
+        real = bin_dir / "zcode-real"
+        _ = real.write_text("#!/bin/sh\nexit 0\n")
+        _ = real.chmod(0o755)
+        alias = bin_dir / "zcode-link"
+        os.symlink(str(real), str(alias))
+        self._chdir(self.world.tmp)
+        code, _out, err = self.world.install(
+            codex_sources=[],
+            zcode_sources=["zai-plan"],
+            zcode_bin="bin/zcode-link",
+            zcode_workspace="workspace",
+        )
+        self.assertEqual(0, code, err)
+        words = self._exec_start_words()
+        flag_index = words.index("--zcode-bin")
+        self.assertEqual(str(real.resolve()), words[flag_index + 1])
+        self.assertNotIn("bin/zcode-link", words)
+
+    def test_relative_codex_pinned_binary_resolves_the_same_way(self) -> None:
+        bin_dir = self.world.tmp / "bin"
+        _ = bin_dir.mkdir(exist_ok=True)
+        real = bin_dir / "codex-real"
+        _ = real.write_text("#!/bin/sh\nexit 0\n")
+        _ = real.chmod(0o755)
+        self._chdir(self.world.tmp)
+        code, _out, err = self.world.install(codex_bin="bin/codex-real")
+        self.assertEqual(0, code, err)
+        words = self._exec_start_words()
+        flag_index = words.index("--codex-bin")
+        self.assertEqual(str(real.resolve()), words[flag_index + 1])
+
+    def test_relative_state_dir_resolves_to_the_install_time_directory(
+        self,
+    ) -> None:
+        self._chdir(self.world.tmp)
+        self._pair(self.world.tmp / "state-rel")
+        code, _out, err = self.world.install(state_dir="state-rel")
+        self.assertEqual(0, code, err)
+        words = self._exec_start_words()
+        flag_index = words.index("--state-dir")
+        self.assertEqual(
+            str((self.world.tmp / "state-rel").resolve()),
+            words[flag_index + 1],
+        )
+
+    def test_generated_unit_contains_no_relative_filesystem_arguments(
+        self,
+    ) -> None:
+        self._chdir(self.world.tmp)
+        bin_dir = self.world.tmp / "bin"
+        _ = bin_dir.mkdir(exist_ok=True)
+        zbin = bin_dir / "zcode"
+        _ = zbin.write_text("#!/bin/sh\nexit 0\n")
+        _ = zbin.chmod(0o755)
+        self._pair(self.world.tmp / "state-rel")
+        code, _out, err = self.world.install(
+            codex_sources=[],
+            zcode_sources=["zai-plan"],
+            zcode_bin="bin/zcode",
+            zcode_workspace="workspace",
+            state_dir="state-rel",
+        )
+        self.assertEqual(0, code, err)
+        words = self._exec_start_words()
+        for flag in (
+            "--state-dir",
+            "--zcode-workspace",
+            "--zcode-bin",
+            "--codex-bin",
+        ):
+            if flag in words:
+                self.assertTrue(
+                    os.path.isabs(words[words.index(flag) + 1]),
+                    f"{flag} persisted a relative value: {words}",
+                )
+
+    def test_bare_command_name_pinned_binary_is_refused_not_path_resolved(
+        self,
+    ) -> None:
+        # A bare name would make the unit depend on whatever PATH the
+        # installer happened to have; it is refused, never resolved.
+        code, _out, err = self.world.install(
+            codex_sources=[],
+            zcode_sources=["zai-plan"],
+            zcode_bin="zcode",
+            zcode_workspace=str(self.world.workspace_dir),
+        )
+        self.assertEqual(2, code)
+        self.assertIn("--zcode-bin", err)
+        self.assertIn("not an existing regular executable", err)
+        self.assertFalse(self.world.unit_path.exists())
+        self.assertEqual([], self.world.systemctl_calls)
+
+    def test_non_executable_pinned_binary_is_refused(self) -> None:
+        not_exec = self.world.tmp / "not-executable"
+        _ = not_exec.write_text("data")
+        code, _out, err = self.world.install(
+            codex_sources=[],
+            zcode_sources=["zai-plan"],
+            zcode_bin=str(not_exec),
+            zcode_workspace=str(self.world.workspace_dir),
+        )
+        self.assertEqual(2, code)
+        self.assertIn("not an existing regular executable", err)
+        self.assertFalse(self.world.unit_path.exists())
+
+    def test_missing_relative_workspace_is_refused_before_anything_is_written(
+        self,
+    ) -> None:
+        self._chdir(self.world.tmp)
+        code, _out, err = self.world.install(
+            codex_sources=[],
+            zcode_sources=["zai-plan"],
+            zcode_workspace="does-not-exist",
+        )
+        self.assertEqual(2, code)
+        self.assertIn("does-not-exist", err)
+        self.assertIn("not an existing directory", err)
+        self.assertFalse(self.world.unit_path.exists())
+        self.assertEqual([], self.world.systemctl_calls)
+
+
+class WritableGrantPolicyTests(unittest.TestCase):
+    """Daybreak blocker 2: broad writable grants are refused at install.
+
+    No ``ReadWritePaths`` role may be the filesystem root or the home
+    directory; the ZCode state home must stay the dedicated ZCode subtree
+    (a ``~/.zcode`` symlink to ``$HOME`` or ``/`` fails installation);
+    a workspace must never contain a protected boundary. Every refusal
+    happens BEFORE the unit is written, before ``daemon-reload`` and
+    before any ``systemctl`` call.
+    """
+
+    _tmp: tempfile.TemporaryDirectory[str]
+    world: ServiceWorld
+
+    def __init__(self, method_name: str = "runTest") -> None:
+        super().__init__(method_name)
+        self._tmp = cast("tempfile.TemporaryDirectory[str]", object())
+        self.world = cast("ServiceWorld", object())
+
+    @override
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory[str]()
+        self.addCleanup(self._tmp.cleanup)
+        self.world = ServiceWorld(Path(self._tmp.name))
+
+    def _pair(self, state_dir: Path) -> None:
+        return self.world.pair_state_dir(state_dir)
+
+    def _zcode_install(self, **overrides: object) -> tuple[int, str, str]:
+        arguments: dict[str, object] = {
+            "zcode_workspace": str(self.world.workspace_dir)
+        }
+        arguments.update(overrides)
+        return self.world.install(
+            codex_sources=[],
+            zcode_sources=["zai-plan"],
+            **arguments,
+        )
+
+    def _replant_zcode_state_home(self, target: Path) -> None:
+        planted = self.world.home_dir / ".zcode"
+        planted.rmdir()
+        os.symlink(str(target), str(planted))
+
+    def test_workspace_filesystem_root_is_refused(self) -> None:
+        code, _out, err = self.world.install(
+            codex_sources=[],
+            zcode_sources=["zai-plan"],
+            zcode_workspace="/",
+        )
+        self.assertEqual(2, code)
+        self.assertIn("filesystem root", err)
+        self.assertFalse(self.world.unit_path.exists())
+        self.assertEqual([], self.world.systemctl_calls)
+
+    def test_workspace_home_itself_is_refused(self) -> None:
+        code, _out, err = self._zcode_install(
+            zcode_workspace=str(self.world.home_dir),
+        )
+        self.assertEqual(2, code)
+        self.assertIn("home directory itself", err)
+        self.assertFalse(self.world.unit_path.exists())
+        self.assertEqual([], self.world.systemctl_calls)
+
+    def test_workspace_ancestor_of_home_is_refused(self) -> None:
+        code, _out, err = self._zcode_install(
+            zcode_workspace=str(self.world.tmp),
+        )
+        self.assertEqual(2, code)
+        self.assertIn("broad ancestor grant", err)
+        self.assertFalse(self.world.unit_path.exists())
+
+    def test_workspace_containing_the_state_dir_is_refused(self) -> None:
+        alt_state = self.world.tmp / "alt" / "state"
+        self._pair(alt_state)
+        code, _out, err = self.world.install(
+            state_dir=str(alt_state),
+            codex_sources=[],
+            zcode_sources=["zai-plan"],
+            zcode_workspace=str(self.world.tmp / "alt"),
+        )
+        self.assertEqual(2, code)
+        self.assertIn("contains or equals the worker state directory", err)
+        self.assertFalse(self.world.unit_path.exists())
+        self.assertEqual([], self.world.systemctl_calls)
+
+    def test_workspace_equal_to_the_state_dir_is_refused(self) -> None:
+        alt_state = self.world.tmp / "alt" / "state"
+        self._pair(alt_state)
+        code, _out, err = self.world.install(
+            state_dir=str(alt_state),
+            codex_sources=[],
+            zcode_sources=["zai-plan"],
+            zcode_workspace=str(alt_state),
+        )
+        self.assertEqual(2, code)
+        self.assertIn("contains or equals the worker state directory", err)
+        self.assertFalse(self.world.unit_path.exists())
+
+    def test_zcode_state_home_symlink_to_home_is_refused(self) -> None:
+        self._replant_zcode_state_home(self.world.home_dir)
+        code, _out, err = self._zcode_install()
+        self.assertEqual(2, code)
+        self.assertIn("resolves to the invoking user's home directory", err)
+        self.assertFalse(self.world.unit_path.exists())
+        self.assertEqual([], self.world.systemctl_calls)
+
+    def test_zcode_state_home_symlink_to_root_is_refused(self) -> None:
+        self._replant_zcode_state_home(Path("/"))
+        code, _out, err = self._zcode_install()
+        self.assertEqual(2, code)
+        self.assertIn("filesystem root", err)
+        self.assertFalse(self.world.unit_path.exists())
+        self.assertEqual([], self.world.systemctl_calls)
+
+    def test_zcode_state_home_broader_ancestor_is_refused(self) -> None:
+        # ~/.zcode -> the tmp root (an ancestor of $HOME): broader than
+        # the dedicated ZCode state subtree, so install refuses.
+        self._replant_zcode_state_home(self.world.tmp)
+        code, _out, err = self._zcode_install()
+        self.assertEqual(2, code)
+        self.assertIn(
+            "broader than the dedicated ZCode state subtree", err
+        )
+        self.assertFalse(self.world.unit_path.exists())
+
+    def test_normal_workspace_under_home_and_dedicated_state_dir_accepted(
+        self,
+    ) -> None:
+        workspace = self.world.home_dir / "projects" / "foo"
+        _ = workspace.mkdir(parents=True)
+        code, _out, _err = self._zcode_install(zcode_workspace=str(workspace))
+        self.assertEqual(0, code)
+        self.assertTrue(self.world.unit_path.is_file())
+
+    def test_normal_workspace_outside_home_is_accepted(self) -> None:
+        # A workspace outside $HOME is legitimate (no arbitrary
+        # must-be-under-home rule): only containment-destroying values
+        # are refused.
+        outside = self.world.tmp / "elsewhere" / "project"
+        _ = outside.mkdir(parents=True)
+        code, _out, _err = self._zcode_install(zcode_workspace=str(outside))
+        self.assertEqual(0, code)
+        self.assertTrue(self.world.unit_path.is_file())
+
+    def test_group_writable_state_dir_is_refused_by_install(self) -> None:
+        shared = self.world.tmp / "shared-state"
+        _ = shared.mkdir()
+        # A REAL paired state directory whose permissions were loosened
+        # (or a shared directory an operator pointed the worker at): the
+        # policy refuses it as the ReadWritePaths grant and the lock
+        # location — it never chmod's it into compliance silently.
+        self._pair(shared)
+        _ = shared.chmod(0o777)
+        code, _out, err = self.world.install(state_dir=str(shared))
+        self.assertEqual(2, code)
+        self.assertIn("group- or world-writable", err)
+        self.assertIn(str(shared), err)
+        self.assertFalse(self.world.unit_path.exists())
+        self.assertEqual([], self.world.systemctl_calls)
+
+
+class UnitWriterSecurityTests(unittest.TestCase):
+    """Daybreak blocker 3: the unit write is secure and atomic.
+
+    The unit directory is trust-checked (owned by the user, closed to
+    group/other writes); the temporary file is a randomized exclusive
+    creation inside that directory — a planted predictable temp path or
+    a planted unit symlink can neither redirect the write nor clobber an
+    unrelated target.
+    """
+
+    _tmp: tempfile.TemporaryDirectory[str]
+    world: ServiceWorld
+
+    def __init__(self, method_name: str = "runTest") -> None:
+        super().__init__(method_name)
+        self._tmp = cast("tempfile.TemporaryDirectory[str]", object())
+        self.world = cast("ServiceWorld", object())
+
+    @override
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory[str]()
+        self.addCleanup(self._tmp.cleanup)
+        self.world = ServiceWorld(Path(self._tmp.name))
+
+    def _make_unit_dir(self) -> Path:
+        unit_dir = self.world.unit_path.parent
+        unit_dir.mkdir(parents=True, exist_ok=True)
+        return unit_dir
+
+    def test_group_writable_unit_directory_is_refused(self) -> None:
+        unit_dir = self._make_unit_dir()
+        _ = unit_dir.chmod(0o777)
+        code, _out, err = self.world.install()
+        self.assertEqual(2, code)
+        self.assertIn("group- or world-writable", err)
+        self.assertIn(str(unit_dir), err)
+        self.assertFalse(self.world.unit_path.exists())
+        # Refusal happens BEFORE daemon-reload / enable --now.
+        self.assertEqual([], self.world.systemctl_calls)
+
+    def test_preexisting_unit_directory_mode_is_never_silently_changed(
+        self,
+    ) -> None:
+        unit_dir = self._make_unit_dir()
+        _ = unit_dir.chmod(0o755)
+        code, _out, _err = self.world.install()
+        self.assertEqual(0, code)
+        self.assertEqual(0o755, os.stat(unit_dir).st_mode & 0o777)
+        self.assertTrue(self.world.unit_path.is_file())
+
+    def test_missing_unit_directory_is_created_private(self) -> None:
+        code, _out, _err = self.world.install()
+        self.assertEqual(0, code)
+        self.assertEqual(0o700, os.stat(self.world.unit_path.parent).st_mode & 0o777)
+
+    def test_planted_predictable_temp_paths_cannot_redirect_or_clobber(
+        self,
+    ) -> None:
+        # The previous writer opened a predictable '.tmp-<pid>' path by
+        # name: a pre-planted regular file there was clobbered and a
+        # planted symlink there was followed. The randomized exclusive
+        # temp name can collide with neither.
+        unit_dir = self._make_unit_dir()
+        decoy = self.world.tmp / "decoy.txt"
+        _ = decoy.write_text("DECOY-CONTENT")
+        planted_regular = unit_dir / (
+            worker_service.SERVICE_UNIT_NAME + f".tmp-{os.getpid()}"
+        )
+        _ = planted_regular.write_text("PLANTED-REGULAR")
+        planted_link = unit_dir / (worker_service.SERVICE_UNIT_NAME + ".tmp-evil")
+        os.symlink(str(decoy), str(planted_link))
+        code, _out, _err = self.world.install()
+        self.assertEqual(0, code)
+        self.assertEqual("DECOY-CONTENT", decoy.read_text())
+        self.assertEqual("PLANTED-REGULAR", planted_regular.read_text())
+        self.assertTrue(os.path.islink(planted_link))
+        unit_text = self.world.unit_path.read_text(encoding="utf-8")
+        self.assertTrue(unit_text.startswith(worker_service.UNIT_MARKER_LINE))
+        self.assertTrue(self.world.unit_path.is_file())
+        self.assertFalse(os.path.islink(self.world.unit_path))
+
+    def test_planted_unit_symlink_is_replaced_without_touching_its_target(
+        self,
+    ) -> None:
+        # A marker-carrying symlink AT the unit path: the atomic rename
+        # replaces the LINK with a real file; the link's target — which
+        # the old write_text-through-the-temp flow could have reached —
+        # is never modified.
+        target = self.world.tmp / "unrelated-target"
+        _ = target.write_text(worker_service.UNIT_MARKER_LINE + "\nold\n")
+        _ = self._make_unit_dir()
+        os.symlink(str(target), str(self.world.unit_path))
+        code, _out, _err = self.world.install()
+        self.assertEqual(0, code)
+        self.assertEqual(
+            worker_service.UNIT_MARKER_LINE + "\nold\n", target.read_text()
+        )
+        self.assertTrue(os.path.islink(target) is False)
+        self.assertFalse(os.path.islink(self.world.unit_path))
+        self.assertIn("Restart=on-failure", self.world.unit_path.read_text(encoding="utf-8"))
+
+    def test_successful_write_stays_marker_compatible_and_atomic(self) -> None:
+        code, out, _err = self.world.install()
+        self.assertEqual(0, code)
+        unit_text = self.world.unit_path.read_text(encoding="utf-8")
+        self.assertTrue(unit_text.startswith(worker_service.UNIT_MARKER_LINE))
+        self.assertIn("unit written", out)
+        # The 0o644 unit mode is set on the open descriptor before the
+        # rename: the final file never exists with a different mode.
+        self.assertEqual(0o644, os.stat(self.world.unit_path).st_mode & 0o777)
+        self.assertEqual(
+            [], list(self.world.unit_path.parent.glob("*.tmp-*"))
+        )
 
 
 if __name__ == "__main__":

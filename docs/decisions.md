@@ -5326,7 +5326,16 @@ Do not rewrite history or change an accepted decision silently.
      manager's PATH is minimal) and the ACTUAL worker state directory
      (`--state-dir` always pinned), plus the same adapter-selection
      flags `run` accepts (`--codex-source` instances, loopback Ollama,
-     ZCode sources, the legacy single-Codex triple). Every rendered
+     ZCode sources, the legacy single-Codex triple). Every
+     filesystem-valued argument that enters the unit — `--state-dir`,
+     the worker executable, `--codex-bin`, `--zcode-bin`,
+     `--zcode-workspace` — is resolved EXACTLY ONCE at install time to
+     the canonical absolute path that was validated (`realpath`
+     canonicalization; relative input resolves against the INSTALLER's
+     working directory, and a pinned bare command name is refused rather
+     than PATH-resolved), so a user manager can never re-resolve a
+     relative or non-canonical value against its own different
+     working-directory context after reboot. Every rendered
      value follows systemd's own substitution semantics: a literal `%`
      is doubled to `%%` wherever specifier expansion applies (`ExecStart`
      AND `ReadWritePaths`; quoting never suppresses that expansion), and
@@ -5349,7 +5358,20 @@ Do not rewrite history or change an accepted decision silently.
      An existing unit WITHOUT the marker is never overwritten or
      removed: install/uninstall refuse with the inspection/removal
      recipe. This retires the copied-example workflow; the example unit
-     is deleted and the refusal message names the migration.
+     is deleted and the refusal message names the migration. The write
+     itself is a SECURE ATOMIC replacement (Daybreak review): the unit
+     directory is trust-checked first (created 0o700 by this tooling
+     when missing; an existing directory must be owned by the invoking
+     user and closed to group/other writes — a shared or attacker-
+     writable `XDG_CONFIG_HOME` is refused, never chmod'd silently),
+     the content goes through a RANDOMIZED EXCLUSIVELY CREATED temporary
+     file inside that same directory (never a predictable
+     `.tmp-<pid>` path, never a symlink target), the descriptor is
+     `fstat`-verified regular, the 0o644 mode is set on the open fd, the
+     bytes are written and fsync'd through the fd, and the replacement
+     is one same-directory `rename` (via dir fds) followed by a
+     directory fsync where supported — a planted predictable temp path
+     can neither redirect the write nor clobber an unrelated file.
   4. **Hardening matching the worker's actual needs.** `Restart=
      on-failure` + `RestartSec=5s` (the runtime's bounded reconnect
      backoff already covers connection loss; the unit restart covers
@@ -5371,7 +5393,22 @@ Do not rewrite history or change an accepted decision silently.
      workspace edit). The state home must already exist: install
      refuses with the `zcode login zai` remediation instead of
      rendering an impossible path, and the tooling never creates, reads
-     or writes ZCode's own state (D-061 constraint 3).
+     or writes ZCode's own state (D-061 constraint 3). Every
+     `ReadWritePaths` grant is additionally ROLE-VALIDATED before
+     anything is written (Daybreak review; a small fixed policy, not a
+     sandbox subsystem): no grant may resolve to the filesystem root or
+     the invoking user's home directory itself; the ZCode state home
+     must stay the dedicated ZCode state subtree (`~/.zcode -> $HOME`
+     or `~/.zcode -> /` fails installation, as does any ancestor of
+     `$HOME` broader than that subtree); the worker state directory
+     must be a dedicated private tree (existing, owner-owned, not
+     group/world-writable — the same policy the single-instance lock
+     enforces at run time); a workspace may live outside `$HOME` but
+     never contains — or equals — the worker state directory or the
+     ZCode state home, and a state home that is a broad parent of the
+     workspace is refused, so no broader grant can subsume a narrower
+     boundary. Every refusal names the offending canonical path and the
+     reason and happens before `daemon-reload`/`enable --now`.
   5. **Linger is deliberate and visible, never fatal.** Install queries
      `loginctl show-user --property=Linger`, attempts
      `enable-linger` for the invoking user, and reports the outcome in
@@ -5389,7 +5426,23 @@ Do not rewrite history or change an accepted decision silently.
      the lock on every exit path — clean stop, exception, SIGKILL — so
      a stale lock can never block a later start. `pair`, `codex-login`
      and the `service` subcommands never take the lock (they do not run
-     the loop).
+     the loop). The lock file itself is opened WITHOUT FOLLOWING LINKS
+     (Daybreak review): on POSIX the open is `openat`-relative to the
+     verified private state directory with `O_NOFOLLOW` and the
+     descriptor is `fstat`-verified regular with the 0o600 mode
+     enforced on the open fd — a planted `worker.lock` symlink (or
+     FIFO/device) produces a typed refusal and its target is never
+     touched; on Windows the open carries `FILE_FLAG_OPEN_REPARSE_POINT`
+     (the name is resolved exactly once and never traverses a reparse
+     point — a planted symlink or junction is detected via
+     `FILE_ATTRIBUTE_REPARSE_POINT` and refused), so no check-then-open
+     window exists on either platform. The state directory must pass
+     the private-tree verification before the lock is taken, the holder
+     pid is written only AFTER the advisory lock is acquired (byte 0 is
+     the reserved lock byte; the pid line follows it, so a Windows
+     contender can read it despite the held byte-range lock) and is
+     read back through the already-open descriptor — no second pathname
+     resolution, and no unlink/recreate race on release.
   7. **Clean SIGTERM.** The `run` command wires SIGTERM/SIGINT to the
      runtime's existing deterministic stop path (stop event set, active
      transport closed, in-flight attempts cancelled and reported

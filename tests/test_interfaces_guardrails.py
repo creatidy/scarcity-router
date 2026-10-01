@@ -1534,7 +1534,8 @@ class NoExecutionAndNoIdeMutationTests(GuardrailTestCase):
           library and is confined to the same state directory.)
         - ``worker_local_store.py`` — the #138 single-instance run lock
           (``<state_dir>/worker.lock``, ``0o600``, inside the worker's own
-          ``0o700`` state directory): the ONLY content is the holder pid.
+          ``0o700`` state directory): the only content is a reserved lock
+          byte and the holder pid.
         - ``worker_service.py`` — the #138 generated systemd user unit,
           written atomically into the invoking user's own
           ``~/.config/systemd/user/`` (``0o644``; no secret material by

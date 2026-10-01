@@ -46,9 +46,11 @@ import hmac
 import os
 import secrets
 import sqlite3
+import stat
+import sys
 import threading
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import cast
@@ -573,6 +575,82 @@ def ensure_private_tree(path: str) -> None:
     for directory in reversed(missing):
         os.mkdir(directory, 0o700)
         os.chmod(directory, 0o700)
+
+
+def verify_private_state_dir(
+    path: str | os.PathLike[str],
+    *,
+    env: Mapping[str, str] | None = None,
+) -> None:
+    """Refuse a worker state directory that is not a dedicated private tree.
+
+    The complementary read-side check to :func:`ensure_private_tree` (which
+    only CREATES missing directories): an EXISTING directory handed to the
+    worker as its state directory — and therefore as the ``ReadWritePaths``
+    grant of the generated service unit and the location of the
+    single-instance lock file — must be a directory the invoking user owns,
+    closed to group/other writes, and neither the filesystem root nor the
+    user's home directory itself (a broad authority grant, not a dedicated
+    private store). Every refusal names the offending path and the reason;
+    a pre-existing directory is never chmod'd or chown'd into compliance —
+    the operator fixes it, so the fix is visible.
+
+    On Windows the POSIX ownership/mode bits do not exist; the honest
+    subset is enforced (real existing directory, not the drive root, not
+    the user profile) — ACL verification would be a separate, larger
+    change and is deliberately not claimed.
+    """
+    resolved = os.path.realpath(os.fsdecode(path))
+    environment = os.environ if env is None else env
+    if sys.platform == "win32":
+        if not os.path.isdir(resolved):
+            raise ValueError(
+                "the worker state directory is not an existing directory: "
+                + resolved
+            )
+        _tail = os.path.splitdrive(resolved)[1]
+        if _tail in ("\\", "/"):
+            raise ValueError(
+                "the worker state directory must not be the drive root: "
+                + resolved
+            )
+        profile = environment.get("USERPROFILE", "")
+        if profile and resolved == os.path.realpath(profile):
+            raise ValueError(
+                "the worker state directory must not be the user profile "
+                + "directory itself: " + resolved
+            )
+        return
+    st = os.stat(resolved)
+    if not stat.S_ISDIR(st.st_mode):
+        raise ValueError(
+            "the worker state directory is not an existing directory: "
+            + resolved
+        )
+    if st.st_uid != os.geteuid():
+        raise ValueError(
+            "the worker state directory is not owned by the current user "
+            + f"(uid {os.geteuid()}): {resolved}"
+        )
+    if st.st_mode & 0o022:
+        raise ValueError(
+            "the worker state directory is group- or world-writable "
+            + f"(mode {stat.S_IMODE(st.st_mode):04o}); make it private "
+            + f"(chmod 700 {resolved}) so the pairing credential and the "
+            + "worker lock file stay owner-only: " + resolved
+        )
+    home = environment.get("HOME", "") or os.path.expanduser("~")
+    home_real = os.path.realpath(home)
+    if resolved == os.path.realpath(os.path.sep):
+        raise ValueError(
+            "the worker state directory must not be the filesystem root: "
+            + resolved
+        )
+    if resolved == home_real:
+        raise ValueError(
+            "the worker state directory must not be the home directory "
+            + "itself: " + resolved
+        )
 
 
 

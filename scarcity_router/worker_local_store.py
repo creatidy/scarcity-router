@@ -32,17 +32,19 @@ physical machine (they are separate devices with separate identities).
 
 from __future__ import annotations
 
+import errno
 import os
 import sqlite3
+import stat
 import sys
 import threading
 from dataclasses import dataclass
 from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
-from typing import cast
+from typing import final, cast
 
 from .gateway_validation import v_safe_id, v_text
-from .worker_identity_store import ensure_private_tree
+from .worker_identity_store import ensure_private_tree, verify_private_state_dir
 
 WORKER_LOCAL_STORE_SCHEMA_VERSION = 1
 
@@ -296,6 +298,17 @@ class WorkerStateDirLocked(Exception):
         )
 
 
+class WorkerStateDirLockUnavailable(ValueError):
+    """The lock file exists but is not a safe regular file.
+
+    A planted ``worker.lock`` — a symlink or another non-regular object —
+    is never followed: acquisition refuses without reading or writing the
+    planted object's target (the Daybreak review blocker: following it
+    would truncate and overwrite an attacker-chosen file with the
+    authority of the worker process).
+    """
+
+
 class WorkerStateDirLock:
     """The lifetime single-instance lock for one worker state directory.
 
@@ -307,6 +320,13 @@ class WorkerStateDirLock:
     on Windows), so it is released by the OS on EVERY exit — clean stop,
     unhandled exception, SIGKILL — and a stale lock file can never block
     a later start.
+
+    The lock file itself is opened without following symlinks or reparse
+    points and only inside the verified private state directory (the
+    Daybreak review blocker): a planted ``worker.lock`` symlink produces
+    a typed refusal and its target is never touched. The holder pid is
+    read back through the ALREADY-OPEN descriptor, so no second pathname
+    resolution can be redirected either.
     """
 
     LOCK_FILE_NAME: str = "worker.lock"
@@ -324,21 +344,35 @@ class WorkerStateDirLock:
         """
         if self._fd is not None:
             raise WorkerStateDirLocked(self._directory, None)
+        # Create any missing tree as 0o700 (unchanged), then VERIFY the
+        # private-boundary policy — an existing directory that is not a
+        # dedicated owner-only tree is refused, never silently used.
         ensure_private_tree(self._directory)
-        path = os.path.join(self._directory, self.LOCK_FILE_NAME)
-        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+        verify_private_state_dir(self._directory)
+        fd = _open_lock_file(self._directory, self.LOCK_FILE_NAME)
         try:
-            _lock_fd_exclusive(fd)
-        except (OSError, ValueError):
-            os.close(fd)
-            raise WorkerStateDirLocked(self._directory, self._read_holder_pid(path)) from None
-        # Locked: record the holder pid for the failure message of the
-        # NEXT contender. Never remove this file on release (a removal
-        # would race a concurrent opener); its content is advisory only.
-        _ = os.ftruncate(fd, 0)
-        _ = os.lseek(fd, 0, os.SEEK_SET)
-        _ = os.write(fd, f"{os.getpid()}\n".encode())
-        os.fsync(fd)
+            try:
+                _lock_fd_exclusive(fd)
+            except (OSError, ValueError):
+                holder = _holder_pid_from_fd(fd)
+                raise WorkerStateDirLocked(self._directory, holder) from None
+            # Locked: record the holder pid for the failure message of the
+            # NEXT contender. Byte 0 stays reserved for the advisory lock
+            # itself (msvcrt.locking locks exactly that byte on Windows,
+            # and a locked byte denies reads to contenders — so the pid
+            # line starts at byte 1 and stays readable while held). Never
+            # remove this file on release (a removal would race a
+            # concurrent opener); its content is advisory only.
+            _ = os.ftruncate(fd, 0)
+            _ = os.lseek(fd, 0, os.SEEK_SET)
+            _ = os.write(fd, b"\n" + f"{os.getpid()}\n".encode())
+            os.fsync(fd)
+        except BaseException:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            raise
         self._fd = fd
 
     def release(self) -> None:
@@ -352,17 +386,221 @@ class WorkerStateDirLock:
         finally:
             os.close(fd)
 
-    @staticmethod
-    def _read_holder_pid(path: str) -> int | None:
+
+# ── Lock-file opening (no symlink/reparse-point following) ────────────────────
+
+_O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+_O_CLOEXEC = getattr(os, "O_CLOEXEC", 0)
+_O_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
+
+
+def _open_lock_file(directory: str, name: str) -> int:
+    """Open (or create) the lock file WITHOUT following a planted link.
+
+    POSIX: the file is opened relative to an already-open descriptor for
+    the verified private state directory (``openat`` style, minimizing
+    pathname re-resolution) with ``O_NOFOLLOW`` so a planted symlink
+    fails with ``ELOOP`` instead of being followed, and the opened
+    descriptor is verified with ``fstat`` to be a regular file (a FIFO or
+    device planted under the lock name is refused, never opened into).
+    The 0o600 mode is enforced on the open descriptor either way, so a
+    pre-existing loosened file is tightened before any content is written.
+
+    Windows: the equivalent real protection opens the path with
+    ``FILE_FLAG_OPEN_REPARSE_POINT``, which never traverses a reparse
+    point — a planted ``worker.lock`` symlink yields a handle to the
+    LINK ITSELF, which is detected and refused; a regular file yields a
+    handle to the real file. There is no check-then-open window: the
+    name is resolved exactly once by ``CreateFileW``.
+    """
+    if sys.platform == "win32":
+        return _open_lock_file_windows(os.path.join(directory, name))
+    dir_fd = os.open(directory, os.O_RDONLY | _O_DIRECTORY | _O_CLOEXEC)
+    try:
         try:
-            with open(path, encoding="utf-8") as handle:
-                text = handle.read(64).strip()
+            fd = os.open(
+                name,
+                os.O_RDWR | os.O_CREAT | _O_NOFOLLOW | _O_CLOEXEC,
+                0o600,
+                dir_fd=dir_fd,
+            )
+        except OSError as exc:
+            if exc.errno == errno.ELOOP:
+                raise WorkerStateDirLockUnavailable(
+                    f"the worker lock file {os.path.join(directory, name)} "
+                    + "is a symlink (planted?); refusing to follow it — "
+                    + "remove it and retry"
+                ) from None
+            raise
+    finally:
+        os.close(dir_fd)
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise WorkerStateDirLockUnavailable(
+                f"the worker lock file {os.path.join(directory, name)} is "
+                + "not a regular file; refusing to use it — remove it and "
+                + "retry"
+            )
+        os.fchmod(fd, 0o600)
+    except BaseException:
+        try:
+            os.close(fd)
         except OSError:
-            return None
+            pass
+        raise
+    return fd
+
+
+def _open_lock_file_windows(path: str) -> int:
+    """The Windows openat-equivalent: never traverse a reparse point.
+
+    ``CreateFileW`` with ``FILE_FLAG_OPEN_REPARSE_POINT`` resolves the
+    name exactly once; for a regular file the returned handle IS the
+    real file, for a planted symlink/reparse point the returned handle
+    is the LINK itself — detected via ``FILE_ATTRIBUTE_REPARSE_POINT``
+    and refused without ever opening the target. The handle is
+    non-inheritable and converted to a CPython descriptor for the
+    unchanged ``msvcrt.locking`` path.
+    """
+    import ctypes
+    import msvcrt
+
+    # Windows-only Win32 open through the untyped ctypes shell; the
+    # narrow suppressions below are the explicit justification (same
+    # discipline as windows_tray.py): constant arguments only, no
+    # credential data, and the alternative — following a planted
+    # reparse point — is exactly what this function refuses to do.
+    kernel32: object = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_file = getattr(kernel32, "CreateFileW")  # pyright: ignore[reportAny]
+    get_file_info = getattr(kernel32, "GetFileInformationByHandle")  # pyright: ignore[reportAny]
+    close_handle = getattr(kernel32, "CloseHandle")  # pyright: ignore[reportAny]
+    create_file.restype = ctypes.c_void_p
+    create_file.argtypes = [
+        ctypes.c_wchar_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+    ]
+
+    @final
+    class _FILETIME(ctypes.Structure):
+        _fields_ = [("dw_low", ctypes.c_uint32), ("dw_high", ctypes.c_uint32)]
+
+    @final
+    class _BY_HANDLE_FILE_INFORMATION(ctypes.Structure):
+        _fields_ = [
+            ("dwFileAttributes", ctypes.c_uint32),
+            ("ftCreationTime", _FILETIME),
+            ("ftLastAccessTime", _FILETIME),
+            ("ftLastWriteTime", _FILETIME),
+            ("dwVolumeSerialNumber", ctypes.c_uint32),
+            ("nFileSizeHigh", ctypes.c_uint32),
+            ("nFileSizeLow", ctypes.c_uint32),
+            ("nNumberOfLinks", ctypes.c_uint32),
+            ("nFileIndexHigh", ctypes.c_uint32),
+            ("nFileIndexLow", ctypes.c_uint32),
+        ]
+
+    GENERIC_READ = 0x80000000
+    GENERIC_WRITE = 0x40000000
+    FILE_SHARE_READ = 0x1
+    FILE_SHARE_WRITE = 0x2
+    OPEN_ALWAYS = 4
+    FILE_ATTRIBUTE_NORMAL = 0x80
+    FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
+    INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+    handle: int | None = create_file(  # pyright: ignore[reportAny]
+        path,
+        GENERIC_READ | GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        None,
+        OPEN_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
+        None,
+    )
+    if handle is None or handle == INVALID_HANDLE_VALUE:
+        error = ctypes.get_last_error()
+        if error == 5:  # ERROR_ACCESS_DENIED
+            # A planted directory junction (or a directory symlink) cannot
+            # be opened without BACKUP_SEMANTICS, and neither can a file
+            # this user has no write access to — either way the lock path
+            # is not a usable private regular file: refuse typed, never
+            # follow anything.
+            raise WorkerStateDirLockUnavailable(
+                f"the worker lock file {path} could not be opened for "
+                + "private exclusive access (access denied) — it is a "
+                + "planted directory/junction or its permissions are "
+                + "wrong; refusing without following it"
+            )
+        raise OSError(
+            error, f"could not open the worker lock file: {path}"
+        )
+    FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+    FILE_ATTRIBUTE_DIRECTORY = 0x10
+    try:
+        info = _BY_HANDLE_FILE_INFORMATION()
+        inspected: int = get_file_info(  # pyright: ignore[reportAny]
+            ctypes.c_void_p(handle), ctypes.byref(info)
+        )
+        if not inspected:
+            raise OSError(
+                ctypes.get_last_error(),
+                f"could not inspect the worker lock file: {path}",
+            )
+        attributes = cast(int, info.dwFileAttributes)
+        if attributes & FILE_ATTRIBUTE_REPARSE_POINT:
+            raise WorkerStateDirLockUnavailable(
+                f"the worker lock file {path} is a symlink or reparse "
+                + "point (planted?); refusing to follow it — remove it "
+                + "and retry"
+            )
+        if attributes & FILE_ATTRIBUTE_DIRECTORY:
+            raise OSError(
+                f"the worker lock path {path} is a directory, not a "
+                + "regular lock file"
+            )
+        fd = msvcrt.open_osfhandle(
+            handle, os.O_RDWR | os.O_NOINHERIT | os.O_BINARY
+        )
+        if fd < 0:
+            raise OSError(f"could not adopt the worker lock handle: {path}")
+    except BaseException:
+        close_handle(ctypes.c_void_p(handle))
+        raise
+    return fd
+
+
+def _holder_pid_from_fd(fd: int) -> int | None:
+    """The holder pid recorded in the lock file, read via the open fd.
+
+    Reading the ALREADY-OPEN descriptor (never the path again) keeps the
+    pid telemetry on the same object that was verified at open time — no
+    second pathname resolution that a planted symlink could redirect. On
+    Windows the read starts at byte 1: byte 0 is the byte the holding
+    process has locked, and a locked byte denies reads to this contender
+    (``flock`` on POSIX locks no bytes, so the full read works there).
+    """
+    try:
+        if sys.platform == "win32":
+            _ = os.lseek(fd, 1, os.SEEK_SET)
+            text = os.read(fd, 64).decode("utf-8", errors="replace")
+        else:
+            text = os.pread(fd, 64, 0).decode("utf-8", errors="replace")
+    except OSError:
+        return None
+    for line in text.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
         try:
-            return int(text.split("\n")[0])
-        except (ValueError, IndexError):
+            return int(line)
+        except ValueError:
             return None
+    return None
 
 
 def _lock_fd_exclusive(fd: int) -> None:
@@ -398,6 +636,7 @@ __all__ = [
     "WorkerLocalIdentity",
     "WorkerLocalStore",
     "WorkerStateDirLock",
+    "WorkerStateDirLockUnavailable",
     "WorkerStateDirLocked",
     "default_worker_state_dir",
     "worker_state_dir",

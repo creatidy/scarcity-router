@@ -45,6 +45,22 @@ worker launcher. This module owns the whole lifecycle surface of
   single-instance lock (:class:`scarcity_router.worker_local_store.WorkerStateDirLock`)
   makes a foreground worker and the service worker mutually exclusive;
   the second process fails closed with a useful message.
+- **Install-time path discipline (Daybreak review).** Every
+  filesystem-valued argument that enters the unit (``--state-dir``, the
+  worker executable, ``--codex-bin``, ``--zcode-bin``,
+  ``--zcode-workspace``) is resolved EXACTLY ONCE at install time to a
+  canonical absolute path — the same path that was validated — so a user
+  manager can never re-resolve a relative value against its own (different)
+  working-directory context. The writable grants the unit declares are
+  role-validated before anything is written: the filesystem root, the
+  invoking user's home directory, and any grant that subsumes a protected
+  boundary (the credential store, the ZCode state home) are refused with
+  an actionable error. The unit itself is written through a randomized,
+  exclusively created, fd-verified temporary file inside a
+  trust-checked unit directory and atomically renamed — a planted
+  predictable temp path or a shared config directory cannot redirect or
+  clobber anything, and the lock file is opened without following
+  symlinks/reparse points.
 
 Security boundaries kept intact (D-044; the #138 comment on worker
 transport): the worker origin is never an install input, so service
@@ -69,13 +85,16 @@ from __future__ import annotations
 
 import os
 import shutil
+import stat
 import subprocess
 import sys
+import tempfile
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import cast
 
+from .worker_identity_store import verify_private_state_dir
 from .worker_local_store import WorkerLocalStore, default_worker_state_dir
 from .worker_zcode_adapter import zcode_state_home
 
@@ -119,6 +138,17 @@ class ServiceZCodeStateHomeError(Exception):
     Raised BEFORE any unit is written: a ``ReadWritePaths`` entry that
     names a non-existent directory would make the unit fail to start at
     all, so install refuses with the remediation instead.
+    """
+
+
+class ServicePathError(ValueError):
+    """A filesystem-valued install argument was refused before any write.
+
+    Raised during install-time path normalization and writable-grant
+    validation (the Daybreak review blockers): the message names the
+    offending flag, the operator's value, the canonical path it resolves
+    to and the reason, and install exits 2 without writing a unit, without
+    a ``daemon-reload`` and without touching ``systemctl``.
     """
 
 
@@ -529,6 +559,202 @@ def _print_tool_failure(result: ServiceToolResult) -> None:
     print(f"worker service: systemctl failed{suffix}", file=sys.stderr)
 
 
+# ── Install-time path normalization (resolve once, persist canonical) ────────
+
+
+def _canonical_existing_directory(flag: str, value: str) -> Path:
+    """The canonical absolute directory an operator-supplied path names.
+
+    Relative input is resolved against the INSTALLER's working directory
+    and every symlink/``..`` is resolved with ``realpath`` — exactly once,
+    here, at install time. Only the canonical absolute result may enter
+    the unit: a user manager resolves the service's relative paths against
+    its own working-directory context (``/`` by default, not this shell's
+    cwd), so a persisted relative or non-canonical path would name a
+    DIFFERENT directory after reboot than the one validated here.
+    """
+    resolved = Path(os.path.realpath(value))
+    if not resolved.is_dir():
+        raise ServicePathError(
+            f"{flag} {value!r} resolves to {resolved}, which is not an "
+            + "existing directory; create it (or pass its absolute path) "
+            + "and run install again"
+        )
+    return resolved
+
+
+def _canonical_pinned_executable(flag: str, value: str) -> Path:
+    """The canonical absolute executable an operator pinned by path.
+
+    Same resolve-once discipline as :func:`_canonical_existing_directory`
+    (the Daybreak review blocker: a relative or PATH-dependent pinned
+    value in the unit would resolve differently under the user manager),
+    plus the pinned-target contract the adapters enforce at dispatch: the
+    resolved target must be an existing regular executable file. A bare
+    command name is refused rather than resolved through the installer's
+    ``PATH`` — the unit must never depend on any ``PATH`` at all.
+    """
+    resolved = Path(os.path.realpath(value))
+    if not resolved.is_file() or not os.access(resolved, os.X_OK):
+        raise ServicePathError(
+            f"{flag} {value!r} resolves to {resolved}, which is not an "
+            + "existing regular executable file; pass the absolute path "
+            + "of the binary to pin (a bare command name is never "
+            + "resolved via PATH for the unit)"
+        )
+    return resolved
+
+
+def normalize_selection_paths(selection: ServiceSelection) -> ServiceSelection:
+    """Canonicalize EVERY filesystem-valued selection argument.
+
+    The one place a persisted filesystem argument is resolved (the
+    Daybreak review blocker: arguments were validated relative to the
+    installer process but persisted relative, so systemd later resolved
+    them in a different working-directory context). Affected arguments:
+    ``--zcode-workspace`` (existing directory), ``--codex-bin`` and
+    ``--zcode-bin`` (pinned regular executables). ``--state-dir`` and the
+    worker executable are already canonicalized by their own resolvers
+    (:func:`_resolved_state_dir`, :func:`resolve_worker_executable`). The
+    normalized selection is what gets validated through ``build_registry``
+    and what is rendered into the unit, so the validated path, the
+    persisted path and the executed path are the same canonical string by
+    construction. Relative input stays allowed as UX; only the canonical
+    absolute result enters the unit.
+    """
+    updates: dict[str, object] = {}
+    if selection.zcode_workspace is not None:
+        updates["zcode_workspace"] = str(
+            _canonical_existing_directory("--zcode-workspace", selection.zcode_workspace)
+        )
+    if selection.codex_bin is not None:
+        updates["codex_bin"] = str(
+            _canonical_pinned_executable("--codex-bin", selection.codex_bin)
+        )
+    if selection.zcode_bin is not None:
+        updates["zcode_bin"] = str(
+            _canonical_pinned_executable("--zcode-bin", selection.zcode_bin)
+        )
+    return replace(selection, **updates) if updates else selection
+
+
+# ── Writable-grant policy (small, role-aware; not a sandbox subsystem) ───────
+
+
+def _canonical_home(env: Mapping[str, str] | None) -> Path:
+    """The invoking user's home directory, canonicalized for comparisons."""
+    environment = os.environ if env is None else env
+    home = environment.get("HOME", "") or os.path.expanduser("~")
+    return Path(os.path.realpath(home))
+
+
+def _refuse_broad_grant(role: str, path: Path, reason: str) -> None:
+    raise ServicePathError(
+        f"refusing the {role} write grant {path}: {reason}; install wrote "
+        + "nothing — choose a dedicated narrower path and run install again"
+    )
+
+
+def validate_writable_grants(
+    *,
+    state_dir: Path,
+    workspace: Path | None,
+    zcode_home: Path | None,
+    env: Mapping[str, str] | None = None,
+) -> None:
+    """The role-aware rejection policy for every ``ReadWritePaths`` grant.
+
+    Small and fixed (the Daybreak review blocker; deliberately NOT a
+    general-purpose sandbox-policy subsystem):
+
+    - **Universal:** no grant may resolve to the filesystem root or to
+      the invoking user's home directory itself.
+    - **Worker state directory:** verified separately by
+      :func:`scarcity_router.worker_identity_store.verify_private_state_dir`
+      (existing, owner-owned, not group/world-writable, not root/home) —
+      the same policy the single-instance lock enforces at run time.
+    - **ZCode state home:** must stay the dedicated ZCode state subtree —
+      never the home, never an ancestor of it (``~/.zcode -> $HOME`` or
+      ``~/.zcode -> /`` fail installation), never a broad parent of
+      another role's grant.
+    - **Workspace:** may legitimately live outside ``$HOME``, but never
+      the root, never the home (or an ancestor of it), and never a path
+      that contains — or equals — the worker state directory (the
+      credential store) or the ZCode state home: a broader grant that
+      subsumes a narrower boundary is rejected rather than pretending
+      three narrow grants still exist. Identical grants are deduplicated
+      at render time; containment between roles is rejected here.
+
+    Every refusal names the offending canonical path and the reason and
+    happens BEFORE any unit is written or enabled.
+    """
+    home = _canonical_home(env)
+    root = Path(state_dir.anchor)
+    if workspace is not None:
+        if workspace == root:
+            _refuse_broad_grant("workspace", workspace, "it is the filesystem root")
+        if workspace == home:
+            _refuse_broad_grant(
+                "workspace", workspace, "it is the invoking user's home directory itself"
+            )
+        if home.is_relative_to(workspace):
+            _refuse_broad_grant(
+                "workspace",
+                workspace,
+                "it contains the invoking user's home directory (a broad "
+                + "ancestor grant, not an application workspace)",
+            )
+        if state_dir.is_relative_to(workspace):
+            _refuse_broad_grant(
+                "workspace",
+                workspace,
+                "it contains or equals the worker state directory "
+                + f"{state_dir} (the credential store) — the workspace "
+                + "grant would subsume that security boundary",
+            )
+        if zcode_home is not None and zcode_home.is_relative_to(workspace):
+            _refuse_broad_grant(
+                "workspace",
+                workspace,
+                "it contains or equals the ZCode CLI state home "
+                + f"{zcode_home} — the workspace grant would subsume "
+                + "that boundary",
+            )
+    if zcode_home is not None:
+        if zcode_home == root:
+            _refuse_broad_grant(
+                "ZCode state home", zcode_home, "it is the filesystem root"
+            )
+        if zcode_home == home:
+            _refuse_broad_grant(
+                "ZCode state home",
+                zcode_home,
+                "it resolves to the invoking user's home directory itself",
+            )
+        if home.is_relative_to(zcode_home):
+            _refuse_broad_grant(
+                "ZCode state home",
+                zcode_home,
+                "it is an ancestor of the invoking user's home directory — "
+                + "broader than the dedicated ZCode state subtree",
+            )
+        if state_dir.is_relative_to(zcode_home):
+            _refuse_broad_grant(
+                "ZCode state home",
+                zcode_home,
+                f"it contains or equals the worker state directory {state_dir} "
+                + "(the credential store)",
+            )
+        if workspace is not None and workspace.is_relative_to(zcode_home):
+            _refuse_broad_grant(
+                "ZCode state home",
+                zcode_home,
+                f"it contains or equals the authorized workspace {workspace} "
+                + "— a broad parent of another role's grant, wider than "
+                + "the dedicated ZCode state subtree",
+            )
+
+
 # ── Lifecycle operations ──────────────────────────────────────────────────────
 
 
@@ -573,9 +799,17 @@ def install_service(
         )
         return 2
     selection = ServiceSelection.from_arguments(arguments)
+    # Daybreak blocker: every filesystem-valued argument resolves ONCE,
+    # here, to the canonical absolute path that is both validated and
+    # persisted — never a relative or PATH-dependent value in the unit.
+    selection = normalize_selection_paths(selection)
     # Validate the EXACT configuration the unit will carry, through the
     # same builder `run` uses — an invalid selection never reaches disk.
     _ = build_registry(selection.as_run_arguments(), state_dir=str(state_dir))
+    # The state-directory grant must be a dedicated private tree (the
+    # same policy the single-instance lock enforces at run time); a broad
+    # or shared directory is refused before anything is written.
+    verify_private_state_dir(str(state_dir), env=env)
     executable = resolve_worker_executable(argv0)
     zcode_home: Path | None = None
     if selection.zcode_sources:
@@ -583,6 +817,12 @@ def install_service(
         # CLI state home does not exist — never an impossible
         # ReadWritePaths entry, never a created ZCode state directory.
         zcode_home = resolve_zcode_state_home(env=env)
+    workspace: Path | None = (
+        Path(selection.zcode_workspace) if selection.zcode_workspace else None
+    )
+    validate_writable_grants(
+        state_dir=state_dir, workspace=workspace, zcode_home=zcode_home, env=env
+    )
     unit_text = render_unit(
         executable=executable,
         state_dir=state_dir,
@@ -814,20 +1054,121 @@ def run_service_command(
         return 2
 
 
-def _atomic_write(unit_path: Path, unit_text: str) -> None:
-    """One atomic unit replacement (never a half-written unit on disk)."""
-    unit_path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = unit_path.with_name(f"{unit_path.name}.tmp-{os.getpid()}")
-    try:
-        _ = temporary.write_text(unit_text, encoding="utf-8")
-        os.chmod(temporary, 0o644)
-        os.replace(temporary, unit_path)
-    except BaseException:
+_O_CLOEXEC = getattr(os, "O_CLOEXEC", 0)
+_O_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
+
+
+def _verify_unit_directory(directory: Path) -> None:
+    """Trust check for the user-unit directory BEFORE anything is written.
+
+    The Daybreak review blocker: a shared or attacker-writable
+    ``XDG_CONFIG_HOME`` must be rejected, not operated in. The directory
+    must exist (missing ancestors are created 0o700 when this tooling
+    creates them; pre-existing directories are never chmod'd silently),
+    be a real directory owned by the current user, and be closed to
+    group/other writes — otherwise install refuses with an actionable
+    error naming the directory.
+    """
+    missing: list[Path] = []
+    probe = directory
+    while not probe.exists():
+        missing.append(probe)
+        parent = probe.parent
+        if parent == probe:
+            break
+        probe = parent
+    for component in reversed(missing):
         try:
-            temporary.unlink()
-        except OSError:
-            pass
-        raise
+            os.mkdir(component, 0o700)
+        except FileExistsError:
+            pass  # created concurrently; the verification below decides
+    st = os.stat(directory)
+    if not stat.S_ISDIR(st.st_mode):
+        raise ServicePathError(
+            f"the service unit directory is not a directory: {directory}"
+        )
+    if hasattr(os, "geteuid") and st.st_uid != os.geteuid():
+        raise ServicePathError(
+            f"the service unit directory is not owned by the current user "
+            + f"(uid {os.geteuid()}): {directory}"
+        )
+    if st.st_mode & 0o022:
+        raise ServicePathError(
+            f"the service unit directory {directory} is group- or "
+            + f"world-writable (mode {stat.S_IMODE(st.st_mode):04o}); a "
+            + "shared or attacker-writable config directory is not safe "
+            + "for unit installation — fix its permissions yourself "
+            + "(never loosen ownership of ~/.config) and retry"
+        )
+
+
+def _atomic_write(unit_path: Path, unit_text: str) -> None:
+    """One secure atomic unit replacement (the Daybreak review blocker).
+
+    The unit directory is verified first (:func:`_verify_unit_directory`),
+    then the content is written through a RANDOMIZED, EXCLUSIVELY CREATED
+    temporary file inside that same directory (``tempfile.mkstemp``:
+    unpredictable name, ``O_EXCL`` creation, never a symlink target, fd
+    is non-inheritable) — never a predictable ``.tmp-<pid>`` name opened
+    by path, which a second process could pre-plant as a symlink to make
+    this tooling clobber an unrelated file. The descriptor is verified
+    regular with ``fstat``, the final 0o644 mode is set on the OPEN fd,
+    the bytes are written through the fd and fsync'd, and the rename is a
+    like-for-like ``rename`` INSIDE the directory (via dir fds, so no
+    pathname is re-resolved), followed by a directory fsync where the
+    filesystem supports one. An uncommitted temporary file is removed on
+    any failure; no shell and no external ``mv`` is involved, and the
+    marker-gated overwrite decision is made by the caller before this
+    writer runs.
+    """
+    target_dir = unit_path.parent
+    _verify_unit_directory(target_dir)
+    dir_fd = os.open(target_dir, os.O_RDONLY | _O_DIRECTORY | _O_CLOEXEC)
+    try:
+        fd, tmp_path = tempfile.mkstemp(
+            prefix=f".{unit_path.name}.tmp-", dir=str(target_dir)
+        )
+        tmp_name = os.path.basename(tmp_path)
+        committed = False
+        fd_closed = False
+        try:
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode):
+                raise ServicePathError(
+                    f"the temporary unit file {tmp_path} is not a regular file"
+                )
+            os.fchmod(fd, 0o644)
+            data = memoryview(unit_text.encode("utf-8"))
+            while data:
+                written = os.write(fd, data)
+                data = data[written:]
+            os.fsync(fd)
+            os.close(fd)
+            fd_closed = True
+            os.rename(
+                tmp_name,
+                unit_path.name,
+                src_dir_fd=dir_fd,
+                dst_dir_fd=dir_fd,
+            )
+            committed = True
+            try:
+                os.fsync(dir_fd)
+            except OSError:
+                pass  # directory fsync is best-effort where supported
+        finally:
+            if not fd_closed:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            if not committed:
+                try:
+                    os.unlink(tmp_name, dir_fd=dir_fd)
+                except OSError:
+                    pass
+    finally:
+        os.close(dir_fd)
 
 
 __all__ = [
@@ -835,6 +1176,7 @@ __all__ = [
     "SERVICE_UNIT_NAME",
     "RegistryBuilder",
     "ServiceExecutableError",
+    "ServicePathError",
     "ServiceSelection",
     "ServiceTool",
     "ServiceToolError",
@@ -845,6 +1187,7 @@ __all__ = [
     "UNIT_MARKER_LINE",
     "default_service_tools",
     "install_service",
+    "normalize_selection_paths",
     "render_unit",
     "resolve_worker_executable",
     "resolve_zcode_state_home",
@@ -854,4 +1197,5 @@ __all__ = [
     "systemd_quote",
     "unit_install_path",
     "uninstall_service",
+    "validate_writable_grants",
 ]

@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import os
+import sys
 import tempfile
 import unittest
+import unittest.mock
+from pathlib import Path
 from typing import cast, override
 
 from scarcity_router.worker_local_store import (
     WorkerLocalIdentity,
     WorkerLocalStore,
     WorkerStateDirLock,
+    WorkerStateDirLockUnavailable,
     WorkerStateDirLocked,
     worker_state_dir,
 )
@@ -212,6 +216,161 @@ class WorkerStateDirLockTests(unittest.TestCase):
         with tempfile.TemporaryDirectory[str]() as tmp:
             lock = WorkerStateDirLock(tmp)
             lock.release()
+
+
+class WorkerStateDirLockHardeningTests(unittest.TestCase):
+    """Daybreak blocker 4: the lock never follows a planted link.
+
+    The private state-directory boundary is verified at acquisition (an
+    existing directory that is group/world-writable, root, or the home
+    directory itself is refused), the lock file is opened without
+    following symlinks and verified to be a regular file, and the holder
+    pid is read back through the already-open descriptor — so a planted
+    ``worker.lock`` can neither redirect the write nor leak its target's
+    content into an error message.
+    """
+
+    def test_planted_lock_symlink_is_refused_and_target_untouched(self) -> None:
+        # The exact previous attack: worker.lock -> decoy. The old code
+        # followed the link and ftruncate'd/wrote the TARGET.
+        with tempfile.TemporaryDirectory[str]() as tmp:
+            decoy = Path(tmp) / "decoy.txt"
+            _ = decoy.write_text("DO-NOT-TOUCH")
+            lock_path = os.path.join(tmp, WorkerStateDirLock.LOCK_FILE_NAME)
+            os.symlink(str(decoy), lock_path)
+            lock = WorkerStateDirLock(tmp)
+            with self.assertRaises(WorkerStateDirLockUnavailable) as caught:
+                lock.acquire()
+            self.assertIn("symlink", str(caught.exception))
+            self.assertIn("refusing to follow", str(caught.exception))
+            self.assertEqual("DO-NOT-TOUCH", decoy.read_text())
+            self.assertTrue(os.path.islink(lock_path))
+            # Once the plant is removed, acquisition works normally again.
+            os.unlink(lock_path)
+            fresh = WorkerStateDirLock(tmp)
+            fresh.acquire()
+            fresh.release()
+
+    def test_planted_fifo_is_refused_never_opened_into(self) -> None:
+        with tempfile.TemporaryDirectory[str]() as tmp:
+            lock_path = os.path.join(tmp, WorkerStateDirLock.LOCK_FILE_NAME)
+            os.mkfifo(lock_path)
+            lock = WorkerStateDirLock(tmp)
+            with self.assertRaises(WorkerStateDirLockUnavailable) as caught:
+                lock.acquire()
+            self.assertIn("not a regular file", str(caught.exception))
+            self.assertTrue(os.path.exists(lock_path))
+
+    def test_group_writable_state_dir_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory[str]() as tmp:
+            os.chmod(tmp, 0o771)
+            lock = WorkerStateDirLock(tmp)
+            with self.assertRaises(ValueError) as caught:
+                lock.acquire()
+            self.assertIn("group- or world-writable", str(caught.exception))
+            self.assertIn("chmod 700", str(caught.exception))
+            self.assertFalse(
+                os.path.exists(os.path.join(tmp, WorkerStateDirLock.LOCK_FILE_NAME))
+            )
+
+    def test_state_dir_equal_to_home_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory[str]() as tmp:
+            with unittest.mock.patch.dict(os.environ, {"HOME": tmp}):
+                lock = WorkerStateDirLock(tmp)
+                with self.assertRaises(ValueError) as caught:
+                    lock.acquire()
+                self.assertIn("home directory itself", str(caught.exception))
+
+    def test_filesystem_root_state_dir_is_refused(self) -> None:
+        lock = WorkerStateDirLock("/")
+        with self.assertRaises(ValueError) as caught:
+            lock.acquire()
+        message = str(caught.exception)
+        # Refused by the private-tree policy; which check fires first
+        # depends on the host (root is not owned by the invoking user).
+        self.assertIn("/", message)
+        self.assertTrue(
+            "filesystem root" in message
+            or "not owned by the current user" in message,
+            message,
+        )
+
+
+@unittest.skipUnless(
+    sys.platform == "win32", "Windows reparse-point lock protection"
+)
+class WorkerStateDirLockWindowsTests(unittest.TestCase):
+    """The Windows branch of the no-follow lock (Daybreak blocker 4).
+
+    The open uses ``FILE_FLAG_OPEN_REPARSE_POINT``: a planted symlink or
+    junction at ``worker.lock`` yields a handle to the LINK itself, which
+    is detected via ``FILE_ATTRIBUTE_REPARSE_POINT`` and refused — the
+    target is never opened. The normal path exercises the unchanged
+    ``msvcrt.locking`` advisory lock.
+    """
+
+    def test_normal_acquire_release_and_contention_round_trip(self) -> None:
+        with tempfile.TemporaryDirectory[str]() as tmp:
+            first = WorkerStateDirLock(tmp)
+            first.acquire()
+            second = WorkerStateDirLock(tmp)
+            with self.assertRaises(WorkerStateDirLocked) as caught:
+                second.acquire()
+            self.assertEqual(os.getpid(), caught.exception.holder_pid)
+            first.release()
+            third = WorkerStateDirLock(tmp)
+            third.acquire()
+            third.release()
+
+    def test_lock_file_content_is_the_holder_pid(self) -> None:
+        # Content is read AFTER release: byte 0 is the byte the holder
+        # has locked (msvcrt.locking denies reads of a locked byte range
+        # to every other handle, unlike POSIX flock).
+        with tempfile.TemporaryDirectory[str]() as tmp:
+            lock = WorkerStateDirLock(tmp)
+            lock.acquire()
+            lock.release()
+            content = (
+                Path(tmp) / WorkerStateDirLock.LOCK_FILE_NAME
+            ).read_text(encoding="utf-8")
+            self.assertEqual(str(os.getpid()), content.strip())
+
+    def test_planted_symlink_lock_is_refused_and_target_untouched(self) -> None:
+        with tempfile.TemporaryDirectory[str]() as tmp:
+            decoy = Path(tmp) / "decoy.txt"
+            _ = decoy.write_text("DO-NOT-TOUCH")
+            lock_path = Path(tmp) / WorkerStateDirLock.LOCK_FILE_NAME
+            try:
+                os.symlink(str(decoy), str(lock_path))
+            except OSError:
+                self.skipTest(
+                    "symbolic link privilege unavailable on this Windows host"
+                )
+            lock = WorkerStateDirLock(tmp)
+            with self.assertRaises(WorkerStateDirLockUnavailable) as caught:
+                lock.acquire()
+            self.assertIn("reparse", str(caught.exception))
+            self.assertEqual("DO-NOT-TOUCH", decoy.read_text())
+
+    def test_planted_junction_lock_is_refused(self) -> None:
+        # A junction needs no privilege to plant and is a reparse point:
+        # it must be refused exactly like a symlink (never traversed).
+        with tempfile.TemporaryDirectory[str]() as tmp:
+            target_dir = Path(tmp) / "junction-target"
+            _ = target_dir.mkdir()
+            lock_path = Path(tmp) / WorkerStateDirLock.LOCK_FILE_NAME
+            import subprocess
+
+            result = subprocess.run(
+                ["cmd", "/c", "mklink", "/J", str(lock_path), str(target_dir)],
+                capture_output=True,
+                check=False,
+            )
+            if result.returncode != 0:
+                self.skipTest("junction creation unavailable on this host")
+            lock = WorkerStateDirLock(tmp)
+            with self.assertRaises(WorkerStateDirLockUnavailable):
+                lock.acquire()
 
 
 if __name__ == "__main__":
