@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import sys
 import threading
 from dataclasses import dataclass
 from collections.abc import Callable, Mapping
@@ -274,12 +275,130 @@ class WorkerLocalStore:
         return None if row is None else str(row[0])
 
 
+class WorkerStateDirLocked(Exception):
+    """Another worker process already holds the state directory.
+
+    ``holder_pid`` is best-effort telemetry read from the lock file (the
+    OS releases the advisory lock on any process death, so a held lock
+    always means a LIVE holder — the pid line can only be stale across
+    an unclean kill that also left a new process to reuse the pid).
+    """
+
+    def __init__(self, state_dir: str, holder_pid: int | None) -> None:
+        self.state_dir: str = state_dir
+        self.holder_pid: int | None = holder_pid
+        suffix = f" (pid {holder_pid})" if holder_pid is not None else ""
+        super().__init__(
+            "another worker process is already running for this worker "
+            + f"state directory{suffix}; stop it first (with the service "
+            + "installed: `systemctl --user stop scarcity-router-worker`), "
+            + "or choose a different --state-dir"
+        )
+
+
+class WorkerStateDirLock:
+    """The lifetime single-instance lock for one worker state directory.
+
+    Exactly one worker runtime may serve a state directory at a time
+    (issue #138): a foreground ``run`` and the systemd service must never
+    run concurrently — two runtimes would double-report state and race
+    for dispatches. The lock is an OS advisory lock on
+    ``<state_dir>/worker.lock`` (``flock`` on POSIX, ``msvcrt.locking``
+    on Windows), so it is released by the OS on EVERY exit — clean stop,
+    unhandled exception, SIGKILL — and a stale lock file can never block
+    a later start.
+    """
+
+    LOCK_FILE_NAME: str = "worker.lock"
+
+    def __init__(self, state_dir: str | os.PathLike[str]) -> None:
+        self._directory: str = os.fspath(state_dir)
+        self._fd: int | None = None
+
+    def acquire(self) -> None:
+        """Take the exclusive lock; :class:`WorkerStateDirLocked` when held.
+
+        Fails closed: an acquisition error is never downgraded to a
+        warning, because running a second runtime against one state
+        directory corrupts the honest single-worker assumption.
+        """
+        if self._fd is not None:
+            raise WorkerStateDirLocked(self._directory, None)
+        ensure_private_tree(self._directory)
+        path = os.path.join(self._directory, self.LOCK_FILE_NAME)
+        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            _lock_fd_exclusive(fd)
+        except (OSError, ValueError):
+            os.close(fd)
+            raise WorkerStateDirLocked(self._directory, self._read_holder_pid(path)) from None
+        # Locked: record the holder pid for the failure message of the
+        # NEXT contender. Never remove this file on release (a removal
+        # would race a concurrent opener); its content is advisory only.
+        _ = os.ftruncate(fd, 0)
+        _ = os.lseek(fd, 0, os.SEEK_SET)
+        _ = os.write(fd, f"{os.getpid()}\n".encode())
+        os.fsync(fd)
+        self._fd = fd
+
+    def release(self) -> None:
+        """Release the lock (idempotent; safe after any process state)."""
+        fd = self._fd
+        if fd is None:
+            return
+        self._fd = None
+        try:
+            _unlock_fd(fd)
+        finally:
+            os.close(fd)
+
+    @staticmethod
+    def _read_holder_pid(path: str) -> int | None:
+        try:
+            with open(path, encoding="utf-8") as handle:
+                text = handle.read(64).strip()
+        except OSError:
+            return None
+        try:
+            return int(text.split("\n")[0])
+        except (ValueError, IndexError):
+            return None
+
+
+def _lock_fd_exclusive(fd: int) -> None:
+    """Take the non-blocking exclusive advisory lock on ``fd``."""
+    if sys.platform == "win32":
+        import msvcrt
+
+        _ = os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+    else:
+        import fcntl
+
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def _unlock_fd(fd: int) -> None:
+    """Release the advisory lock taken by :func:`_lock_fd_exclusive`."""
+    if sys.platform == "win32":
+        import msvcrt
+
+        _ = os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+    else:
+        import fcntl
+
+        fcntl.flock(fd, fcntl.LOCK_UN)
+
+
 __all__ = [
     "STATE_DIR_NAME",
     "WORKER_LOCAL_STORE_SCHEMA_VERSION",
     "WORKER_STATE_DIR_NAME",
     "WorkerLocalIdentity",
     "WorkerLocalStore",
+    "WorkerStateDirLock",
+    "WorkerStateDirLocked",
     "default_worker_state_dir",
     "worker_state_dir",
 ]

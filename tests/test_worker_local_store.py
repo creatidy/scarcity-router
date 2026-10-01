@@ -10,6 +10,8 @@ from typing import cast, override
 from scarcity_router.worker_local_store import (
     WorkerLocalIdentity,
     WorkerLocalStore,
+    WorkerStateDirLock,
+    WorkerStateDirLocked,
     worker_state_dir,
 )
 
@@ -124,6 +126,92 @@ class LocalStoreTests(unittest.TestCase):
         # assertion locks that the worker id and origin are readable while
         # no code path renders the credential into logs.
         self.assertIn(b"w-x", raw)
+
+
+class WorkerStateDirLockTests(unittest.TestCase):
+    """The lifetime single-instance lock per state directory (issue #138).
+
+    A foreground ``run`` and the systemd service worker must be mutually
+    exclusive on one state directory: the second contender fails closed
+    with a useful message, and the OS (not this code) guarantees release
+    on every exit path — including SIGKILL.
+    """
+
+    def test_second_acquire_fails_closed_with_holder_pid(self) -> None:
+        with tempfile.TemporaryDirectory[str]() as tmp:
+            first = WorkerStateDirLock(tmp)
+            first.acquire()
+            try:
+                second = WorkerStateDirLock(tmp)
+                with self.assertRaises(WorkerStateDirLocked) as caught:
+                    second.acquire()
+                self.assertEqual(os.getpid(), caught.exception.holder_pid)
+                message = str(caught.exception)
+                self.assertIn("already running", message)
+                self.assertIn("systemctl --user stop", message)
+                self.assertNotIn(str(tmp), message)
+            finally:
+                first.release()
+
+    def test_release_allows_the_next_holder(self) -> None:
+        with tempfile.TemporaryDirectory[str]() as tmp:
+            first = WorkerStateDirLock(tmp)
+            first.acquire()
+            first.release()
+            second = WorkerStateDirLock(tmp)
+            second.acquire()
+            second.release()
+
+    def test_lock_is_re_acquirable_in_a_fresh_object_after_release(self) -> None:
+        with tempfile.TemporaryDirectory[str]() as tmp:
+            for _ in range(3):
+                lock = WorkerStateDirLock(tmp)
+                lock.acquire()
+                lock.release()
+
+    def test_lock_file_is_private_and_survives_release(self) -> None:
+        # The lock file stays behind (removing it would race a concurrent
+        # opener); it must never widen permissions and never carry more
+        # than the holder pid.
+        with tempfile.TemporaryDirectory[str]() as tmp:
+            lock = WorkerStateDirLock(tmp)
+            lock.acquire()
+            lock.release()
+            path = os.path.join(tmp, WorkerStateDirLock.LOCK_FILE_NAME)
+            self.assertTrue(os.path.isfile(path))
+            mode = os.stat(path).st_mode & 0o777
+            self.assertEqual(0o600, mode)
+            with open(path, encoding="utf-8") as handle:
+                content = handle.read().strip()
+            self.assertEqual(str(os.getpid()), content)
+
+    def test_lock_succeeds_when_state_dir_does_not_exist_yet(self) -> None:
+        # The service/run path may lock before anything else created the
+        # directory; the lock creates it with the private-tree rule.
+        with tempfile.TemporaryDirectory[str]() as tmp:
+            nested = os.path.join(tmp, "worker")
+            lock = WorkerStateDirLock(nested)
+            lock.acquire()
+            try:
+                self.assertTrue(os.path.isdir(nested))
+                self.assertEqual(0o700, os.stat(nested).st_mode & 0o777)
+            finally:
+                lock.release()
+
+    def test_double_acquire_on_one_object_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory[str]() as tmp:
+            lock = WorkerStateDirLock(tmp)
+            lock.acquire()
+            try:
+                with self.assertRaises(WorkerStateDirLocked):
+                    lock.acquire()
+            finally:
+                lock.release()
+
+    def test_release_without_acquire_is_a_noop(self) -> None:
+        with tempfile.TemporaryDirectory[str]() as tmp:
+            lock = WorkerStateDirLock(tmp)
+            lock.release()
 
 
 if __name__ == "__main__":

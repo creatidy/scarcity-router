@@ -5291,3 +5291,132 @@ Do not rewrite history or change an accepted decision silently.
   not a compatibility-matrix gate); the Codex (M06) adapter's
   `item/reasoning/*` summary handling is adjacent observed behavior on a
   different protocol/evidence path and is deliberately unchanged.
+### D-065 — First-class worker service lifecycle: the generated systemd user unit as the supported Linux/WSL deployment
+
+- **Status:** Accepted 2026-10-01 (issue #138, child F of the #132
+  program; branch `task/138-worker-service-lifecycle`)
+- **Date:** 2026-10-01
+- **Base:** `develop` @ `db4e1bd`
+- **Confidence:** High for the lifecycle shape (every mechanism is
+  pre-existing: the `run` entry point, the `WorkerLocalStore` identity,
+  systemd's own unit semantics; the decision fixes how they compose and
+  what the tooling refuses to do).
+- **Context:** Until #138 the supported Linux background path was a
+  static example unit (`examples/scarcity-router-worker.service`) that
+  an administrator copied to `~/.config/systemd/user/` and hand-edited
+  (M10/#95). That path could not preserve the D-053 source selection,
+  had no idempotency, no overwrite protection, no foreground/service
+  exclusion, and the Sources UI recommended the foreground `run`
+  command for deployment. Child F froze the scope: `service
+  install/status/restart/uninstall`, user unit only, no secrets in
+  units, no ad-hoc `SSL_CERT_FILE` hacks, lifetime single-instance lock
+  per worker state directory.
+- **Decision:**
+  1. **One generated user unit, one fixed name.**
+     `scarcity-router-worker service install` renders
+     `scarcity-router-worker.service` into the invoking user's
+     `$XDG_CONFIG_HOME/systemd/user/` (default `~/.config/systemd/user/`).
+     The unit name is fixed: the supported shape is one worker service
+     per user account; a second worker on one host is a second user
+     account with its own state directory. No root, no system units, no
+     own daemonizing logic (systemd owns the lifecycle; `Type=simple`).
+  2. **The unit is derived, never configured.** `ExecStart` names the
+     ACTUAL installed executable (the console script or packaged binary
+     the command ran through, resolved to an absolute path — a user
+     manager's PATH is minimal) and the ACTUAL worker state directory
+     (`--state-dir` always pinned), plus the same adapter-selection
+     flags `run` accepts (`--codex-source` instances, loopback Ollama,
+     ZCode sources, the legacy single-Codex triple). The frozen issue
+     scope's `--server` is deliberately ABSENT from `service install`:
+     the service uses the stored server origin of the already-paired
+     identity, so service tooling can never introduce a new worker
+     origin (and therefore cannot weaken the D-044 verified-TLS
+     `srws://` rule that D-056 explicitly preserved for workers).
+  3. **Idempotency and ownership by content marker.** The rendered unit
+     is deterministic (no timestamps): identical inputs render
+     identical bytes, so idempotency is content equality. Every unit
+     this tooling writes starts with a generation marker; a DIFFERENT
+     marked unit is replaced (the documented configuration-update path,
+     applied by `service restart` — install never restarts on its own).
+     An existing unit WITHOUT the marker is never overwritten or
+     removed: install/uninstall refuse with the inspection/removal
+     recipe. This retires the copied-example workflow; the example unit
+     is deleted and the refusal message names the migration.
+  4. **Hardening matching the worker's actual needs.** `Restart=
+     on-failure` + `RestartSec=5s` (the runtime's bounded reconnect
+     backoff already covers connection loss; the unit restart covers
+     process death), `TimeoutStopSec=30s`, `NoNewPrivileges`,
+     `PrivateTmp`, `ProtectSystem=strict`, `ProtectHome=read-only`,
+     `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6`, and
+     `ReadWritePaths` limited to the state directory plus a configured
+     ZCode authorized workspace (a ZCode source executes edits OUTSIDE
+     the state directory; without the explicit exception
+     `ProtectHome=read-only` would break every workspace edit).
+  5. **Linger is deliberate and visible, never fatal.** Install queries
+     `loginctl show-user --property=Linger`, attempts
+     `enable-linger` for the invoking user, and reports the outcome in
+     every case; a failure (polkit, no loginctl) is a remediation-
+     bearing warning naming the exact `sudo loginctl enable-linger`
+     command — the install itself still succeeds. Uninstall never
+     touches linger (other units may depend on it).
+  6. **Lifetime single-instance lock per state directory.** One worker
+     runtime per state directory, enforced by an OS advisory lock
+     (`<state_dir>/worker.lock`; `flock` on POSIX, `msvcrt.locking` on
+     Windows) acquired by the `run` command before the runtime is
+     built: a foreground worker and the service worker are mutually
+     exclusive, and the second contender fails closed (exit 2) with a
+     message naming the holder and the stop command. The OS releases
+     the lock on every exit path — clean stop, exception, SIGKILL — so
+     a stale lock can never block a later start. `pair`, `codex-login`
+     and the `service` subcommands never take the lock (they do not run
+     the loop).
+  7. **Clean SIGTERM.** The `run` command wires SIGTERM/SIGINT to the
+     runtime's existing deterministic stop path (stop event set, active
+     transport closed, in-flight attempts cancelled and reported
+     interrupted per D-043) instead of the default kill disposition;
+     exit 0 on a requested stop. systemd stop/journal logs need no new
+     machinery: the worker logs redacted diagnostics to
+     stdout/stderr already, which the user manager owns.
+  8. **Exit codes stay the worker CLI's.** 0 success (idempotent
+     repeats included), 2 refused configuration/failed operation;
+     `service status`/`restart` pass `systemctl`'s own exit code
+     through (e.g. 3 = inactive) rather than re-interpreting it. The
+     `service` subcommand never opens the worker store as a side
+     effect of `status`/`restart`.
+- **Security posture:** no secret enters the unit file, the CLI output
+  or an error message (negative-scanned by tests): pairing identity and
+  provider-controlled homes stay in the 0700 state directory the unit
+  only points at; no credential-bearing command line (the only
+  subprocess arguments are unit names and systemctl verbs); no CA/TLS
+  configuration here at all — child G (#139) persists custom CA trust
+  through the supported worker configuration, and this decision freezes
+  that unit files never carry `SSL_CERT_FILE` shell hacks.
+- **Sources UI:** the admin Sources page now prints the service install
+  command as the NORMAL deployment step and frames the foreground `run`
+  command as debugging (the frozen scope's "Sources UI promotes service
+  installation").
+- **Rejected alternatives:** (a) keeping the copy-and-edit example
+  unit — cannot preserve source selection, no overwrite protection,
+  exactly the manual lifecycle the issue retires; (b) a root system
+  unit or a root-managed installer — a per-user worker needs no
+  privileges and a root service would widen the credential boundary
+  across accounts (D-044); (c) baking secrets or `EnvironmentFile=`
+  into the unit — unnecessary (the identity store already persists the
+  credential with 0600 semantics) and a new credential surface;
+  (d) auto-restart inside install — makes configuration updates
+  unpredictable when the frozen scope defines `service restart`;
+  (e) deriving the unit name from the state directory — a second
+  per-account worker is already excluded by the fixed name and the
+  state-dir lock; dynamic names would invite unbounded parallel workers
+  against one provider account; (f) relying on PID files or our own
+  daemonizer — systemd owns the lifecycle; the lock is advisory state
+  only.
+- **Boundary:** `scarcity_router/worker_service.py` (new),
+  `worker_client.py` (`service` subcommand, run lock, signal wiring),
+  `worker_local_store.py` (`WorkerStateDirLock`), `control_api.py` /
+  `server_ui.py` (Sources UI promotion), tests, `README.md`,
+  `docs/m10-acceptance.md` (supersede note), this record. No selector,
+  routing, capacity, provider, catalog, protocol-version or server
+  composition change; `run`/`pair` semantics are unchanged except the
+  lock and signal wiring; the Windows tray path is untouched (no
+  Windows service mechanics).

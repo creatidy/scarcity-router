@@ -1082,7 +1082,10 @@ def _sources(
             + f"source auth: {_esc(auth)}<br>"
             + f"<span class=\"muted\">on the worker host (SSH) run once: "
             + f"<code>{_esc(str(source.get('login_command')))}</code> — a device "
-            + f"code prints; complete it in any browser — then "
+            + f"code prints; complete it in any browser — then install the "
+            + f"worker service (normal deployment): "
+            + f"<code>{_esc(str(source.get('install_command')))}</code> — "
+            + f"foreground debugging run: "
             + f"<code>{_esc(str(source.get('run_command')))}</code></span></td>"
             + (
                 f"<td><ul>{model_lines}</ul><p class=\"muted\">{counts}</p></td>"

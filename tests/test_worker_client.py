@@ -9,6 +9,7 @@ injected so timing is deterministic.
 from __future__ import annotations
 
 import io
+import signal
 import socket
 import sys
 import tempfile
@@ -40,6 +41,7 @@ from tests.worker_fixtures import (  # noqa: E402
     realtime_canonical,
 )
 from scarcity_router import worker_client  # noqa: E402
+from scarcity_router import worker_service  # noqa: E402
 from scarcity_router.gateway_adapters import (  # noqa: E402
     AdapterCall,
     AdapterResult,
@@ -67,6 +69,7 @@ from scarcity_router.worker_local_adapters import (  # noqa: E402
 from scarcity_router.worker_local_store import (  # noqa: E402
     WorkerLocalIdentity,
     WorkerLocalStore,
+    WorkerStateDirLock,
 )
 from scarcity_router.worker_protocol import (  # noqa: E402
     ExecuteToolCallMessage,
@@ -922,6 +925,169 @@ class MainStoreOwnershipTests(unittest.TestCase):
         self.assertIn("synthetic socket failure", stderr.getvalue())
         assert made[0].closes_when_run_started == 0
         assert_stores_closed_exactly_once(self, recorded)
+
+
+class ServiceCommandDispatchTests(unittest.TestCase):
+    """``service`` routes to the lifecycle module, never touching a store.
+
+    The service lifecycle manages the systemd UNIT; it resolves its own
+    state directory, so ``main`` must dispatch before any store is
+    opened (a bare ``service status`` must not create worker state).
+    """
+
+    def test_service_dispatches_without_opening_the_store(self) -> None:
+        recorded: list[CloseCountingStore] = []
+        calls: list[dict[str, object]] = []
+
+        def fake_run(arguments: dict[str, object], **_kwargs: object) -> int:
+            calls.append(dict(arguments))
+            return 7
+
+        with tempfile.TemporaryDirectory[str]() as tmp:
+            with (
+                unittest.mock.patch.object(
+                    worker_client, "_open_store", counting_store_opener(recorded)
+                ),
+                unittest.mock.patch.object(
+                    worker_service, "run_service_command", fake_run
+                ),
+            ):
+                exit_code = worker_client.main(
+                    ["service", "install", "--state-dir", str(tmp)]
+                )
+        self.assertEqual(7, exit_code)
+        self.assertEqual("install", calls[0]["service_command"])
+        self.assertEqual([], recorded)
+
+    def test_service_install_config_error_exits_two_through_main(self) -> None:
+        # The unpaired store refuses first: install operates on the
+        # paired identity, so an unpaired directory never reaches the
+        # unit builder (and never spawns systemctl).
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory[str]() as tmp:
+            with redirect_stderr(stderr):
+                exit_code = worker_client.main(
+                    ["service", "install", "--state-dir", str(tmp)]
+                )
+        self.assertEqual(2, exit_code)
+        self.assertIn("not paired", stderr.getvalue())
+
+    def test_service_install_bad_selection_surfaces_through_main(self) -> None:
+        # A PAIRED store with an invalid selection: the typed registry
+        # error propagates out of the service module and main's existing
+        # handler renders it as exit 2 — the composition contract.
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory[str]() as tmp:
+            store = worker_client.open_worker_store(tmp)
+            try:
+                store.save_identity(
+                    WorkerLocalIdentity(
+                        worker_id="worker-cli-service",
+                        credential=SYNTHETIC_CREDENTIAL,
+                        server_origin="srws://gateway.local:8790",
+                    )
+                )
+            finally:
+                store.close()
+            with redirect_stderr(stderr):
+                exit_code = worker_client.main(
+                    [
+                        "service",
+                        "install",
+                        "--allow-ollama",
+                        "--state-dir",
+                        str(tmp),
+                    ]
+                )
+        self.assertEqual(2, exit_code)
+        self.assertIn("--resource is required", stderr.getvalue())
+
+
+class RunSingleInstanceLockTests(unittest.TestCase):
+    """The lifetime lock makes foreground and service workers exclusive."""
+
+    ORIGIN: str = "srws://gateway.local:8790"
+
+    def test_run_fails_closed_when_the_state_dir_is_already_held(self) -> None:
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory[str]() as tmp:
+            holder = WorkerStateDirLock(tmp)
+            holder.acquire()
+            try:
+                made: list[ScriptedCliRuntime] = []
+                factory = scripted_runtime_factory([], run_result="requested", made=made)
+                with unittest.mock.patch.object(
+                    worker_client, "WorkerRuntime", factory
+                ), redirect_stderr(stderr):
+                    exit_code = worker_client.main(
+                        ["run", "--server", self.ORIGIN, "--state-dir", tmp]
+                    )
+                self.assertEqual(2, exit_code)
+                self.assertIn("already running", stderr.getvalue())
+                self.assertIn("systemctl --user stop", stderr.getvalue())
+                # Fail closed BEFORE the runtime exists.
+                self.assertEqual([], made)
+            finally:
+                holder.release()
+
+    def test_run_acquires_and_releases_the_lock_around_the_loop(self) -> None:
+        with tempfile.TemporaryDirectory[str]() as tmp:
+            factory = scripted_runtime_factory([], run_result="requested")
+            with unittest.mock.patch.object(
+                worker_client, "WorkerRuntime", factory
+            ):
+                exit_code = worker_client.main(
+                    ["run", "--server", self.ORIGIN, "--state-dir", tmp]
+                )
+            self.assertEqual(0, exit_code)
+            # Released: a fresh contender acquires cleanly.
+            lock = WorkerStateDirLock(tmp)
+            lock.acquire()
+            lock.release()
+
+
+class StopSignalWiringTests(unittest.TestCase):
+    """SIGTERM/SIGINT reach the runtime's deterministic stop path (#138)."""
+
+    def test_handlers_route_signals_to_request_stop(self) -> None:
+        class Probe:
+            stops: int
+
+            def __init__(self) -> None:
+                self.stops = 0
+
+            def request_stop(self) -> None:
+                self.stops += 1
+
+        probe = Probe()
+        restore = worker_client.install_stop_signal_handlers(probe)
+        try:
+            for number in (signal.SIGTERM, signal.SIGINT):
+                handler = cast(
+                    "Callable[[int, object], None]",
+                    signal.getsignal(number),
+                )
+                handler(number, None)
+        finally:
+            restore()
+        self.assertEqual(2, probe.stops)
+
+    def test_restore_returns_the_previous_handlers(self) -> None:
+        before = signal.getsignal(signal.SIGTERM)
+        restore = worker_client.install_stop_signal_handlers(
+            _SignalProbeRuntime()
+        )
+        restore()
+        self.assertEqual(before, signal.getsignal(signal.SIGTERM))
+
+    def test_runtime_without_stop_seam_is_a_noop(self) -> None:
+        restore = worker_client.install_stop_signal_handlers(object())
+        restore()
+
+
+class _SignalProbeRuntime:
+    def request_stop(self) -> None:
+        return None
 
 
 _ = SYNTHETIC_CREDENTIAL

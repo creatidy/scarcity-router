@@ -1532,12 +1532,24 @@ class NoExecutionAndNoIdeMutationTests(GuardrailTestCase):
           ``0o700`` adapter-owned tree, never the user's ``~/.codex``. (The
           M05 worker store's sqlite file is created through the sqlite
           library and is confined to the same state directory.)
+        - ``worker_local_store.py`` — the #138 single-instance run lock
+          (``<state_dir>/worker.lock``, ``0o600``, inside the worker's own
+          ``0o700`` state directory): the ONLY content is the holder pid.
+        - ``worker_service.py`` — the #138 generated systemd user unit,
+          written atomically into the invoking user's own
+          ``~/.config/systemd/user/`` (``0o644``; no secret material by
+          construction — negative-scanned by ``tests/test_worker_service.py``).
 
         This is the structural guarantee behind "Scarcity Router does not
         automatically modify a user's global IDE configuration".
         """
         package_dir = REPO / "scarcity_router"
-        provisioning_modules = {"config.py", "worker_codex_adapter.py"}
+        provisioning_modules = {
+            "config.py",
+            "worker_codex_adapter.py",
+            "worker_local_store.py",
+            "worker_service.py",
+        }
         offenders: list[str] = []
         write_call_names = {"write_text", "write_bytes", "fdopen"}
         write_flag_markers = ("WRONLY", "RDWR", "CREAT", "TRUNC", "APPEND")
