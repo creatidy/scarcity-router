@@ -388,7 +388,13 @@ One service per user account: a second worker on the same host is a
 second user account with its own paired state. A foreground process can
 never run next to the service — every worker holds a lifetime lock on
 its state directory and the second process fails with a message naming
-the holder. Custom CA trust is not configured through the unit (see the
+the holder. Service installation requires a private worker state directory
+and a trusted configuration path: no group/world-writable non-sticky
+ancestor, and no symlinked systemd unit-directory chain. For custom paths,
+choose a private canonical `XDG_CONFIG_HOME` and an existing, paired
+`--state-dir`; unsafe directories are refused rather than silently repaired.
+The normal missing default state/config trees are provisioned privately
+through trusted parents. Custom CA trust is not configured through the unit (see the
 TLS/certificate lifecycle when that ships; unit files never carry
 `SSL_CERT_FILE` workarounds).
 

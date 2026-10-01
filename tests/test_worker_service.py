@@ -42,6 +42,7 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from typing import cast, override
+from unittest.mock import Mock, patch
 
 from scarcity_router import worker_service
 from scarcity_router.worker_client import (
@@ -49,7 +50,7 @@ from scarcity_router.worker_client import (
     open_worker_store,
 )
 from scarcity_router.worker_client import WorkerConfigError
-from scarcity_router.worker_local_store import WorkerLocalIdentity
+from scarcity_router.worker_local_store import WorkerLocalIdentity, WorkerLocalStore
 from scarcity_router.worker_zcode_adapter import zcode_state_home
 
 SYNTHETIC_CREDENTIAL = "SYNTHETIC-PAIRING-CREDENTIAL-138-NEVER-LEAK"
@@ -485,7 +486,7 @@ class UnitRenderingTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             _ = self.render(selection(zcode_sources=("zsrc",)))
 
-    def test_writable_paths_are_canonicalized_symlinks_cannot_widen(self) -> None:
+    def test_installation_normalizes_paths_before_rendering(self) -> None:
         with tempfile.TemporaryDirectory[str]() as tmp:
             base = Path(tmp).resolve()
             real_home = base / "real-home"
@@ -501,11 +502,13 @@ class UnitRenderingTests(unittest.TestCase):
             unit = worker_service.render_unit(
                 executable=Path("/opt/tools/scarcity-router-worker"),
                 state_dir=base / "state",
-                selection=selection(
+                selection=worker_service.normalize_selection_paths(selection(
                     zcode_sources=("zsrc",),
                     zcode_workspace=str(linked_home / ".." / "real-project"),
+                )),
+                zcode_state_home=worker_service.resolve_zcode_state_home(
+                    {"HOME": str(linked_home)}
                 ),
-                zcode_state_home=linked_home / ".zcode",
             )
             read_write_line = next(
                 line
@@ -516,6 +519,52 @@ class UnitRenderingTests(unittest.TestCase):
             self.assertIn(str(real_workspace), read_write_line)
             self.assertNotIn("linked-home", read_write_line)
             self.assertNotIn("..", read_write_line)
+
+    def test_renderer_serializes_validated_paths_after_pathname_replacement(self) -> None:
+        for changed_role in ("workspace", "zcode-home"):
+            with self.subTest(role=changed_role), tempfile.TemporaryDirectory() as tmp:
+                base = Path(tmp).resolve()
+                workspace = base / "workspace"
+                workspace.mkdir()
+                home = base / "home"
+                (home / ".zcode").mkdir(parents=True)
+                chosen = worker_service.normalize_selection_paths(selection(
+                    zcode_sources=("zsrc",), zcode_workspace=str(workspace)
+                ))
+                zhome = worker_service.resolve_zcode_state_home({"HOME": str(home)})
+                changed = workspace if changed_role == "workspace" else zhome
+                original = changed.with_name(changed.name + "-original")
+                replacement = base / "replacement"
+                replacement.mkdir()
+                _ = changed.rename(original)
+                changed.symlink_to(replacement, target_is_directory=True)
+                self.assertNotEqual(changed, changed.resolve())
+                unit = worker_service.render_unit(
+                    executable=Path("/opt/scarcity-router-worker"),
+                    state_dir=base / "state", selection=chosen, zcode_state_home=zhome,
+                )
+                grants = systemd_words(next(
+                    line.removeprefix("ReadWritePaths=") for line in unit.splitlines()
+                    if line.startswith("ReadWritePaths=")
+                ))
+                self.assertEqual([str(base / "state"), str(zhome), str(workspace)], grants)
+                self.assertNotIn(str(replacement), unit)
+
+    def test_renderer_does_not_consult_filesystem_or_path_lookup(self) -> None:
+        chosen = selection(
+            codex_bin="/tools/codex", zcode_bin="/tools/zcode",
+            zcode_sources=("zsrc",), zcode_workspace="/work/project",
+        )
+        with patch.object(Path, "resolve", side_effect=AssertionError("resolve")), \
+                patch.object(Path, "absolute", side_effect=AssertionError("absolute")), \
+                patch.object(os.path, "realpath", side_effect=AssertionError("realpath")), \
+                patch.object(shutil, "which", side_effect=AssertionError("PATH")):
+            unit = worker_service.render_unit(
+                executable=Path("/tools/worker"), state_dir=Path("/data/worker"),
+                selection=chosen, zcode_state_home=Path("/home/u/.zcode"),
+            )
+        for value in ("/tools/worker", "/data/worker", "/tools/codex", "/tools/zcode", "/work/project", "/home/u/.zcode"):
+            self.assertIn(value, unit)
 
     def test_codex_only_unit_never_renders_a_zcode_state_home(self) -> None:
         unit = self.render(selection())
@@ -1471,6 +1520,130 @@ class UnitWriterSecurityTests(unittest.TestCase):
         unit_dir = self.world.unit_path.parent
         unit_dir.mkdir(parents=True, exist_ok=True)
         return unit_dir
+
+    def test_directory_replacement_cannot_redirect_inspection_or_publication(self) -> None:
+        for replace_ancestor in (False, True):
+            with self.subTest(ancestor=replace_ancestor), tempfile.TemporaryDirectory() as tmp:
+                world = ServiceWorld(Path(tmp))
+                unit_dir = world.unit_path.parent
+                unit_dir.mkdir(parents=True)
+                _ = world.unit_path.write_text(worker_service.UNIT_MARKER_LINE + "\nold\n")
+                source = unit_dir.parent.parent if replace_ancestor else unit_dir
+                retained = source.with_name(source.name + "-validated")
+                def verify(directory: Path) -> int:
+                    from scarcity_router.worker_identity_store import open_trusted_worker_directory
+                    return open_trusted_worker_directory(directory, create=True)
+
+                def replace_after_verification(directory: Path) -> int:
+                    fd = verify(directory)
+                    _ = source.rename(retained)
+                    unit_dir.mkdir(parents=True)
+                    _ = world.unit_path.write_text("UNRELATED UNIT IN REPLACEMENT\n")
+                    return fd
+
+                with patch.object(
+                    worker_service, "_verify_unit_directory", replace_after_verification
+                ):
+                    code, _out, err = world.install()
+                self.assertEqual(2, code, err)
+                self.assertIn("changed during installation", err)
+                self.assertEqual("UNRELATED UNIT IN REPLACEMENT\n", world.unit_path.read_text())
+                old_unit = retained / world.unit_path.relative_to(source)
+                self.assertIn("Restart=on-failure", old_unit.read_text())
+                self.assertEqual([], world.systemctl_calls)
+
+    def test_writable_ancestor_refused_before_provisioning(self) -> None:
+        parent = self.world.unit_path.parent.parent.parent
+        parent.mkdir()
+        parent.chmod(0o777)
+        code, _out, err = self.world.install()
+        self.assertEqual(2, code)
+        self.assertIn(str(parent), err)
+        self.assertIn("choose a private location", err)
+        self.assertFalse((parent / "systemd").exists())
+        self.assertEqual([], self.world.systemctl_calls)
+
+    def test_implicit_systemd_path_cannot_use_an_alternate_symlink_chain(self) -> None:
+        safe = self.world.tmp / "safe-config"
+        safe.mkdir()
+        shared = self.world.tmp / "shared-config-parent"
+        shared.mkdir()
+        shared.chmod(0o777)
+        alias = shared / "config"
+        alias.symlink_to(safe, target_is_directory=True)
+        self.world.unit_path = alias / "systemd" / "user" / worker_service.SERVICE_UNIT_NAME
+        code, _out, err = self.world.install()
+        self.assertEqual(2, code)
+        self.assertIn("private canonical configuration location", err)
+        self.assertEqual([], list(safe.iterdir()))
+        self.assertEqual([], self.world.systemctl_calls)
+
+    def test_unsafe_state_symlink_refused_before_any_store_access(self) -> None:
+        victim = self.world.tmp / "victim.db"
+        _ = victim.write_bytes(b"UNCHANGED VICTIM")
+        victim.chmod(0o644)
+        database = self.world.state_dir / "worker-state.db"
+        database.unlink()
+        database.symlink_to(victim)
+        self.world.state_dir.chmod(0o777)
+        opener = Mock(wraps=open_worker_store)
+        with redirect_stderr(io.StringIO()), redirect_stdout(io.StringIO()):
+            code = worker_service.run_service_command(
+                self.world.install_arguments(), argv0=str(self.world.executable),
+                tools=self.world.tools(), unit_path=self.world.unit_path,
+                env=self.world.environment, open_store=opener, build_registry=build_registry,
+            )
+        self.assertEqual(2, code)
+        opener.assert_not_called()
+        self.assertEqual(b"UNCHANGED VICTIM", victim.read_bytes())
+        self.assertEqual(0o644, victim.stat().st_mode & 0o777)
+        self.assertTrue(database.is_symlink())
+        self.assertEqual([], self.world.systemctl_calls)
+
+    def test_state_ancestor_refused_before_store_access(self) -> None:
+        shared = self.world.tmp / "shared"
+        shared.mkdir(mode=0o777)
+        shared.chmod(0o777)
+        state = shared / "private-leaf"
+        state.mkdir(mode=0o700)
+        opener = Mock(wraps=open_worker_store)
+        with redirect_stderr(io.StringIO()), redirect_stdout(io.StringIO()):
+            code = worker_service.run_service_command(
+                self.world.install_arguments(state_dir=str(state)),
+                argv0=str(self.world.executable), tools=self.world.tools(),
+                unit_path=self.world.unit_path, env=self.world.environment,
+                open_store=opener, build_registry=build_registry,
+            )
+        self.assertEqual(2, code)
+        opener.assert_not_called()
+        self.assertEqual([], list(state.iterdir()))
+
+    def test_default_first_run_is_provisioned_before_store_open(self) -> None:
+        state = self.world.tmp / "new-data" / "scarcity-router" / "worker"
+        seen: list[str] = []
+
+        def open_verified(path: str) -> WorkerLocalStore:
+            self.assertTrue(state.is_dir())
+            self.assertEqual(0o700, state.stat().st_mode & 0o777)
+            seen.append(path)
+            return open_worker_store(path)
+
+        with patch.object(worker_service, "default_worker_state_dir", return_value=str(state)):
+            with redirect_stderr(io.StringIO()), redirect_stdout(io.StringIO()):
+                code = worker_service.run_service_command(
+                    self.world.install_arguments(state_dir=None),
+                    argv0=str(self.world.executable), tools=self.world.tools(),
+                    unit_path=self.world.unit_path, env=self.world.environment,
+                    open_store=open_verified, build_registry=build_registry,
+                )
+        self.assertEqual(2, code)  # safely provisioned but not paired yet
+        self.assertEqual([str(state)], seen)
+
+    def test_missing_custom_state_is_not_created_by_store(self) -> None:
+        state = self.world.tmp / "custom-missing"
+        code, _out, _err = self.world.install(state_dir=str(state))
+        self.assertEqual(2, code)
+        self.assertFalse(state.exists())
 
     def test_group_writable_unit_directory_is_refused(self) -> None:
         unit_dir = self._make_unit_dir()

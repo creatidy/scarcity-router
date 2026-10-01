@@ -5329,13 +5329,17 @@ Do not rewrite history or change an accepted decision silently.
      ZCode sources, the legacy single-Codex triple). Every
      filesystem-valued argument that enters the unit — `--state-dir`,
      the worker executable, `--codex-bin`, `--zcode-bin`,
-     `--zcode-workspace` — is resolved EXACTLY ONCE at install time to
+      `--zcode-workspace`, and the ZCode state home — is resolved EXACTLY
+      ONCE at install time to
      the canonical absolute path that was validated (`realpath`
      canonicalization; relative input resolves against the INSTALLER's
      working directory, and a pinned bare command name is refused rather
      than PATH-resolved), so a user manager can never re-resolve a
      relative or non-canonical value against its own different
-     working-directory context after reboot. Every rendered
+      working-directory context after reboot. Rendering is serialization,
+      not filesystem validation: it emits those exact canonical strings
+      without resolving them again, even if a pathname changes afterward.
+      Every rendered
      value follows systemd's own substitution semantics: a literal `%`
      is doubled to `%%` wherever specifier expansion applies (`ExecStart`
      AND `ReadWritePaths`; quoting never suppresses that expansion), and
@@ -5360,18 +5364,34 @@ Do not rewrite history or change an accepted decision silently.
      recipe. This retires the copied-example workflow; the example unit
      is deleted and the refusal message names the migration. The write
      itself is a SECURE ATOMIC replacement (Daybreak review): the unit
-     directory is trust-checked first (created 0o700 by this tooling
-     when missing; an existing directory must be owned by the invoking
-     user and closed to group/other writes — a shared or attacker-
-     writable `XDG_CONFIG_HOME` is refused, never chmod'd silently),
+      directory's complete chain is opened component-by-component with
+      `O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC`, relative to retained parent
+      descriptors, and `fstat`-checked before traversal or provisioning.
+      Every component belongs to root or the invoking user; non-sticky
+      group/other-writable parents are refused. A sticky parent is accepted
+      only with a root/current-user-owned next component: neither the
+      parent nor that component belongs to another user, so sticky unlink/
+      rename restrictions protect it. The final directory must belong to
+      the invoking user and be closed to group/other writes. Missing
+      components are created 0o700 relative to trusted parent descriptors;
+      existing modes are never silently repaired. Unit-directory spellings
+      containing symlinks are refused with a private canonical
+      `XDG_CONFIG_HOME` remedy: systemd's implicit search path must not
+      traverse a different, replaceable chain from the canonical writer.
+      The final verified directory descriptor is retained from marker
+      inspection through exclusive temp creation, publication and fsync;
      the content goes through a RANDOMIZED EXCLUSIVELY CREATED temporary
      file inside that same directory (never a predictable
      `.tmp-<pid>` path, never a symlink target), the descriptor is
      `fstat`-verified regular, the 0o644 mode is set on the open fd, the
      bytes are written and fsync'd through the fd, and the replacement
-     is one same-directory `rename` (via dir fds) followed by a
+      is one same-directory `rename` (source/destination use the SAME
+      retained dir fd) followed by a
      directory fsync where supported — a planted predictable temp path
-     can neither redirect the write nor clobber an unrelated file.
+      can neither redirect the write nor clobber an unrelated file. The
+      visible directory identity is compared with the retained fd before
+      systemctl is invoked; the trusted chain excludes cross-user swaps
+      after that comparison too.
   4. **Hardening matching the worker's actual needs.** `Restart=
      on-failure` + `RestartSec=5s` (the runtime's bounded reconnect
      backoff already covers connection loss; the unit restart covers
@@ -5402,8 +5422,16 @@ Do not rewrite history or change an accepted decision silently.
      or `~/.zcode -> /` fails installation, as does any ancestor of
      `$HOME` broader than that subtree); the worker state directory
      must be a dedicated private tree (existing, owner-owned, not
-     group/world-writable — the same policy the single-instance lock
-     enforces at run time); a workspace may live outside `$HOME` but
+      group/world-writable, with the same trusted ancestor-chain rule as
+      the unit directory). This boundary is established BEFORE opening
+      `WorkerLocalStore` or touching SQLite. The product-owned default
+      tree is provisioned through trusted directory descriptors when
+      missing; a missing custom state directory is refused, and a shared
+      custom directory is never silently repaired. SQLite's filename
+      open is safe against cross-principal substitution because both its
+      directory chain and leaf are unavailable for other-user replacement;
+      a planted non-regular database entry is refused before store access.
+      A workspace may live outside `$HOME` but
      never contains — or equals — the worker state directory or the
      ZCode state home, and a state home that is a broad parent of the
      workspace is refused, so no broader grant can subsume a narrower
@@ -5432,11 +5460,21 @@ Do not rewrite history or change an accepted decision silently.
      descriptor is `fstat`-verified regular with the 0o600 mode
      enforced on the open fd — a planted `worker.lock` symlink (or
      FIFO/device) produces a typed refusal and its target is never
-     touched; on Windows the open carries `FILE_FLAG_OPEN_REPARSE_POINT`
-     (the name is resolved exactly once and never traverses a reparse
-     point — a planted symlink or junction is detected via
-     `FILE_ATTRIBUTE_REPARSE_POINT` and refused), so no check-then-open
-     window exists on either platform. The state directory must pass
+      touched. The POSIX directory fd is returned by the trusted-chain
+      traversal and retained for the entire lock lifetime: it is never
+      closed and reopened by pathname between verification and child open.
+      On Windows, `NtCreateFile` opens each single component relative to
+      the preceding directory handle (`RootDirectory`), with
+      `FILE_OPEN_REPARSE_POINT`; handle information/type rejects reparses
+      and non-filesystem objects before child lookup. Missing directories
+      are provisioned handle-relative. The entire handle chain is retained
+      without write-data/delete sharing, so directory/ancestor swaps cannot
+      redirect lock lookup. Attribute-only in-place reparse conversion is
+      not prevented by sharing: the next no-follow handle-relative open
+      fails closed before lock creation or truncation (tested on native
+      Windows). Lock-file read/write sharing preserves ordinary contention.
+      No check-then-`CreateFileW(path)` sequence and no `realpath` that
+      resolves away junctions exist. The state directory must pass
      the private-tree verification before the lock is taken, the holder
      pid is written only AFTER the advisory lock is acquired (byte 0 is
      the reserved lock byte; the pid line follows it, so a Windows

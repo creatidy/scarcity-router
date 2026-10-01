@@ -84,17 +84,17 @@ with its own state directory and service.
 from __future__ import annotations
 
 import os
+import secrets
 import shutil
 import stat
 import subprocess
 import sys
-import tempfile
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import cast
 
-from .worker_identity_store import verify_private_state_dir
+from .worker_identity_store import open_private_state_dir, open_trusted_worker_directory
 from .worker_local_store import WorkerLocalStore, default_worker_state_dir
 from .worker_zcode_adapter import zcode_state_home
 
@@ -353,6 +353,16 @@ def render_unit(
             + "home (install resolves it; render_unit must be called "
             + "with zcode_state_home)"
         )
+    persisted_paths = [executable, state_dir]
+    persisted_paths.extend(
+        Path(value) for value in (
+            selection.codex_bin, selection.zcode_bin, selection.zcode_workspace,
+        ) if value is not None
+    )
+    if zcode_state_home is not None:
+        persisted_paths.append(zcode_state_home)
+    if any(not path.is_absolute() for path in persisted_paths):
+        raise ValueError("render_unit requires installation-normalized absolute paths")
     argv = [str(executable), "run", "--state-dir", str(state_dir)]
     argv += selection.exec_start_arguments()
     # The ':' prefix (systemd.service(5) "Command Lines") suppresses
@@ -377,13 +387,10 @@ def render_unit(
     if selection.zcode_workspace:
         zcode_writable.append(Path(selection.zcode_workspace))
     for raw_path in zcode_writable:
-        # Canonical entries only: a symlinked or non-canonical configured
-        # path grants exactly the directory it resolves to — the same
-        # directory ZCode itself works in — and never a second, differently
-        # spelled grant. state_dir arrives resolved already.
-        resolved = str(Path(raw_path).resolve())
-        if resolved not in write_paths:
-            write_paths.append(resolved)
+        # Rendering serializes the validated values, never filesystem identity.
+        value = str(raw_path)
+        if value not in write_paths:
+            write_paths.append(value)
     read_write_paths = " ".join(systemd_quote(path) for path in write_paths)
     lines = [
         UNIT_MARKER_LINE,
@@ -670,7 +677,7 @@ def validate_writable_grants(
     - **Universal:** no grant may resolve to the filesystem root or to
       the invoking user's home directory itself.
     - **Worker state directory:** verified separately by
-      :func:`scarcity_router.worker_identity_store.verify_private_state_dir`
+      :func:`scarcity_router.worker_identity_store.open_private_state_dir`
       (existing, owner-owned, not group/world-writable, not root/home) —
       the same policy the single-instance lock enforces at run time.
     - **ZCode state home:** must stay the dedicated ZCode state subtree —
@@ -785,11 +792,36 @@ def install_service(
     CLI-owned worker seams (pairing check and selection validation).
     """
     state_dir = _resolved_state_dir(arguments)
-    store = open_store(str(state_dir))
+    # SQLite opens by filename. This complete trusted/private chain excludes
+    # cross-principal directory and leaf replacement BEFORE any store access.
+    raw_state = arguments.get("state_dir")
     try:
-        identity = store.load_identity()
+        state_fd = open_private_state_dir(
+            state_dir, env=env, create=not (isinstance(raw_state, str) and raw_state)
+        )
+    except FileNotFoundError:
+        raise ServicePathError(
+            f"custom worker state directory does not exist: {state_dir}; "
+            + "choose an existing private location and pair it before installing"
+        ) from None
+    try:
+        try:
+            database = os.stat("worker-state.db", dir_fd=state_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            if not stat.S_ISREG(database.st_mode):
+                raise ServicePathError(
+                    f"worker database is not a regular file in private state directory "
+                    + f"{state_dir}; remove the planted entry and retry"
+                )
+        store = open_store(str(state_dir))
+        try:
+            identity = store.load_identity()
+        finally:
+            store.close()
     finally:
-        store.close()
+        os.close(state_fd)
     if identity is None:
         print(
             "worker: this worker is not paired yet; pair first — service "
@@ -806,10 +838,6 @@ def install_service(
     # Validate the EXACT configuration the unit will carry, through the
     # same builder `run` uses — an invalid selection never reaches disk.
     _ = build_registry(selection.as_run_arguments(), state_dir=str(state_dir))
-    # The state-directory grant must be a dedicated private tree (the
-    # same policy the single-instance lock enforces at run time); a broad
-    # or shared directory is refused before anything is written.
-    verify_private_state_dir(str(state_dir), env=env)
     executable = resolve_worker_executable(argv0)
     zcode_home: Path | None = None
     if selection.zcode_sources:
@@ -829,28 +857,50 @@ def install_service(
         selection=selection,
         zcode_state_home=zcode_home,
     )
-    target = unit_path if unit_path is not None else unit_install_path()
-    existing = (
-        target.read_text(encoding="utf-8") if target.is_file() else None
-    )
-    if (
-        existing is not None
-        and existing != unit_text
-        and not existing.startswith(UNIT_MARKER_LINE)
-    ):
-        print(
-            "worker: refusing to overwrite an existing unit this tooling "
-            + f"did not generate: {target}. Inspect it; if it is an old "
-            + "manual copy (formerly examples/scarcity-router-worker.service), "
-            + "remove it and run this command again.",
-            file=sys.stderr,
+    selected_target = unit_path if unit_path is not None else unit_install_path()
+    target = selected_target.parent.resolve() / selected_target.name
+    # systemd's search path is implicit, not the canonical string we write.
+    # Do not accept an alternate symlink chain that its later lookup could
+    # traverse even though our canonical publication directory is trusted.
+    if Path(os.path.abspath(selected_target.parent)) != target.parent:
+        raise ServicePathError(
+            f"service unit directory uses a symlinked path: {selected_target.parent}; "
+            + "choose a private canonical configuration location (XDG_CONFIG_HOME) "
+            + "so systemd and the installer use the same trusted directory chain"
         )
-        return 2
-    if existing == unit_text:
-        print(f"worker service: unit already installed (unchanged): {target}")
-    else:
-        _atomic_write(target, unit_text)
-        print(f"worker service: unit written: {target}")
+    dir_fd = _verify_unit_directory(target.parent)
+    try:
+        existing = _read_unit(dir_fd, target.name)
+        if (
+            existing is not None
+            and existing != unit_text
+            and not existing.startswith(UNIT_MARKER_LINE)
+        ):
+            print(
+                "worker: refusing to overwrite an existing unit this tooling "
+                + f"did not generate: {target}. Inspect it; if it is an old "
+                + "manual copy (formerly examples/scarcity-router-worker.service), "
+                + "remove it and run this command again.",
+                file=sys.stderr,
+            )
+            return 2
+        if existing == unit_text:
+            print(f"worker service: unit already installed (unchanged): {target}")
+        else:
+            _atomic_write(target, unit_text, dir_fd)
+            print(f"worker service: unit written: {target}")
+        # Not a validation followed by pathname use: publication already used
+        # the retained fd. Detect even same-user swaps before asking systemd
+        # to consume a pathname. The trusted chain excludes other-user swaps.
+        visible = os.stat(target.parent, follow_symlinks=False)
+        retained = os.fstat(dir_fd)
+        if (visible.st_dev, visible.st_ino) != (retained.st_dev, retained.st_ino):
+            raise ServicePathError(
+                f"service unit directory changed during installation: {target.parent}; "
+                + "choose a private location and retry"
+            )
+    finally:
+        os.close(dir_fd)
     reloaded = tools.systemctl(["daemon-reload"])
     if reloaded.returncode != 0:
         _print_tool_failure(reloaded)
@@ -1055,120 +1105,54 @@ def run_service_command(
 
 
 _O_CLOEXEC = getattr(os, "O_CLOEXEC", 0)
-_O_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
 
 
-def _verify_unit_directory(directory: Path) -> None:
-    """Trust check for the user-unit directory BEFORE anything is written.
-
-    The Daybreak review blocker: a shared or attacker-writable
-    ``XDG_CONFIG_HOME`` must be rejected, not operated in. The directory
-    must exist (missing ancestors are created 0o700 when this tooling
-    creates them; pre-existing directories are never chmod'd silently),
-    be a real directory owned by the current user, and be closed to
-    group/other writes — otherwise install refuses with an actionable
-    error naming the directory.
-    """
-    missing: list[Path] = []
-    probe = directory
-    while not probe.exists():
-        missing.append(probe)
-        parent = probe.parent
-        if parent == probe:
-            break
-        probe = parent
-    for component in reversed(missing):
-        try:
-            os.mkdir(component, 0o700)
-        except FileExistsError:
-            pass  # created concurrently; the verification below decides
-    st = os.stat(directory)
-    if not stat.S_ISDIR(st.st_mode):
-        raise ServicePathError(
-            f"the service unit directory is not a directory: {directory}"
-        )
-    if hasattr(os, "geteuid") and st.st_uid != os.geteuid():
-        raise ServicePathError(
-            f"the service unit directory is not owned by the current user "
-            + f"(uid {os.geteuid()}): {directory}"
-        )
-    if st.st_mode & 0o022:
-        raise ServicePathError(
-            f"the service unit directory {directory} is group- or "
-            + f"world-writable (mode {stat.S_IMODE(st.st_mode):04o}); a "
-            + "shared or attacker-writable config directory is not safe "
-            + "for unit installation — fix its permissions yourself "
-            + "(never loosen ownership of ~/.config) and retry"
-        )
+def _verify_unit_directory(directory: Path) -> int:
+    """Provision through trusted parents and retain the verified unit fd."""
+    return open_trusted_worker_directory(directory, create=True)
 
 
-def _atomic_write(unit_path: Path, unit_text: str) -> None:
-    """One secure atomic unit replacement (the Daybreak review blocker).
-
-    The unit directory is verified first (:func:`_verify_unit_directory`),
-    then the content is written through a RANDOMIZED, EXCLUSIVELY CREATED
-    temporary file inside that same directory (``tempfile.mkstemp``:
-    unpredictable name, ``O_EXCL`` creation, never a symlink target, fd
-    is non-inheritable) — never a predictable ``.tmp-<pid>`` name opened
-    by path, which a second process could pre-plant as a symlink to make
-    this tooling clobber an unrelated file. The descriptor is verified
-    regular with ``fstat``, the final 0o644 mode is set on the OPEN fd,
-    the bytes are written through the fd and fsync'd, and the rename is a
-    like-for-like ``rename`` INSIDE the directory (via dir fds, so no
-    pathname is re-resolved), followed by a directory fsync where the
-    filesystem supports one. An uncommitted temporary file is removed on
-    any failure; no shell and no external ``mv`` is involved, and the
-    marker-gated overwrite decision is made by the caller before this
-    writer runs.
-    """
-    target_dir = unit_path.parent
-    _verify_unit_directory(target_dir)
-    dir_fd = os.open(target_dir, os.O_RDONLY | _O_DIRECTORY | _O_CLOEXEC)
+def _read_unit(dir_fd: int, name: str) -> str | None:
+    """Inspect the marker through the same directory identity as publication."""
     try:
-        fd, tmp_path = tempfile.mkstemp(
-            prefix=f".{unit_path.name}.tmp-", dir=str(target_dir)
+        fd = os.open(name, os.O_RDONLY | _O_CLOEXEC | os.O_NONBLOCK, dir_fd=dir_fd)
+    except FileNotFoundError:
+        return None
+    with os.fdopen(fd, "r", encoding="utf-8") as handle:
+        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+            raise ServicePathError(f"the existing service unit is not regular: {name}")
+        return handle.read()
+
+
+def _atomic_write(unit_path: Path, unit_text: str, dir_fd: int) -> None:
+    """Exclusive temp creation, publication and cleanup on the retained fd."""
+    tmp_name = f".{unit_path.name}.tmp-{secrets.token_hex(16)}"
+    fd = os.open(
+        tmp_name,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | _O_CLOEXEC,
+        0o600,
+        dir_fd=dir_fd,
+    )
+    committed = False
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                raise ServicePathError(f"the temporary unit is not regular: {tmp_name}")
+            os.fchmod(handle.fileno(), 0o644)
+            _ = handle.write(unit_text.encode("utf-8"))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.rename(
+            tmp_name, unit_path.name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd
         )
-        tmp_name = os.path.basename(tmp_path)
-        committed = False
-        fd_closed = False
+        committed = True
         try:
-            st = os.fstat(fd)
-            if not stat.S_ISREG(st.st_mode):
-                raise ServicePathError(
-                    f"the temporary unit file {tmp_path} is not a regular file"
-                )
-            os.fchmod(fd, 0o644)
-            data = memoryview(unit_text.encode("utf-8"))
-            while data:
-                written = os.write(fd, data)
-                data = data[written:]
-            os.fsync(fd)
-            os.close(fd)
-            fd_closed = True
-            os.rename(
-                tmp_name,
-                unit_path.name,
-                src_dir_fd=dir_fd,
-                dst_dir_fd=dir_fd,
-            )
-            committed = True
-            try:
-                os.fsync(dir_fd)
-            except OSError:
-                pass  # directory fsync is best-effort where supported
-        finally:
-            if not fd_closed:
-                try:
-                    os.close(fd)
-                except OSError:
-                    pass
-            if not committed:
-                try:
-                    os.unlink(tmp_name, dir_fd=dir_fd)
-                except OSError:
-                    pass
+            os.fsync(dir_fd)
+        except OSError:
+            pass  # directory fsync is best-effort where supported
     finally:
-        os.close(dir_fd)
+        if not committed:
+            os.unlink(tmp_name, dir_fd=dir_fd)
 
 
 __all__ = [

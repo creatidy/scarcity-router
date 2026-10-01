@@ -47,9 +47,9 @@ import os
 import secrets
 import sqlite3
 import stat
-import sys
 import threading
 import uuid
+from pathlib import Path
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -577,81 +577,84 @@ def ensure_private_tree(path: str) -> None:
         os.chmod(directory, 0o700)
 
 
-def verify_private_state_dir(
+def open_trusted_worker_directory(path: Path, *, create: bool = False) -> int:
+    """Open the #138 POSIX boundary by identity, retaining the final fd.
+
+    Callers canonicalize once. Every component is opened relative to its
+    already-checked parent, without following links. Only root/current-user
+    owners are trusted. A writable sticky parent is safe only when the next
+    component belongs to root/current-user too: other users can neither
+    rename nor unlink it. Non-sticky shared parents are always refused.
+    Missing components are provisioned relative to trusted parents, never
+    by a store constructor or a later pathname reopen.
+    """
+    if not path.is_absolute() or ".." in path.parts:
+        raise ValueError("worker boundary requires a canonical absolute path")
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    fd = os.open(path.anchor, flags)
+    current = Path(path.anchor)
+    uid = os.geteuid()
+    try:
+        for name in (*path.parts[1:], None):
+            info = os.fstat(fd)
+            if not stat.S_ISDIR(info.st_mode) or info.st_uid not in (0, uid):
+                raise ValueError(
+                    f"untrusted worker path component {current}: not owned by "
+                    + "root or the current user; choose a private location"
+                )
+            writable = info.st_mode & 0o022
+            sticky = info.st_mode & stat.S_ISVTX
+            if writable and (not sticky or name is None):
+                raise ValueError(
+                    f"worker path component {current} is group- or world-writable "
+                    + f"(mode {stat.S_IMODE(info.st_mode):04o}); choose a private "
+                    + f"location (chmod 700 {current})"
+                )
+            if name is None:
+                if info.st_uid != uid:
+                    raise ValueError(
+                        f"worker directory is not owned by the current user: {current}"
+                    )
+                return fd
+            try:
+                child = os.open(name, flags, dir_fd=fd)
+            except FileNotFoundError:
+                if not create:
+                    raise
+                try:
+                    os.mkdir(name, 0o700, dir_fd=fd)
+                except FileExistsError:
+                    pass  # validate the concurrently created object, not its name
+                child = os.open(name, flags, dir_fd=fd)
+            os.close(fd)
+            fd = child
+            current /= name
+        raise AssertionError("directory traversal did not reach its boundary")
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def open_private_state_dir(
     path: str | os.PathLike[str],
     *,
     env: Mapping[str, str] | None = None,
-) -> None:
-    """Refuse a worker state directory that is not a dedicated private tree.
-
-    The complementary read-side check to :func:`ensure_private_tree` (which
-    only CREATES missing directories): an EXISTING directory handed to the
-    worker as its state directory — and therefore as the ``ReadWritePaths``
-    grant of the generated service unit and the location of the
-    single-instance lock file — must be a directory the invoking user owns,
-    closed to group/other writes, and neither the filesystem root nor the
-    user's home directory itself (a broad authority grant, not a dedicated
-    private store). Every refusal names the offending path and the reason;
-    a pre-existing directory is never chmod'd or chown'd into compliance —
-    the operator fixes it, so the fix is visible.
-
-    On Windows the POSIX ownership/mode bits do not exist; the honest
-    subset is enforced (real existing directory, not the drive root, not
-    the user profile) — ACL verification would be a separate, larger
-    change and is deliberately not claimed.
-    """
-    resolved = os.path.realpath(os.fsdecode(path))
+    create: bool = False,
+) -> int:
+    """Retain a canonical POSIX state boundary before any store/lock access."""
+    resolved = Path(path)
     environment = os.environ if env is None else env
-    if sys.platform == "win32":
-        if not os.path.isdir(resolved):
-            raise ValueError(
-                "the worker state directory is not an existing directory: "
-                + resolved
-            )
-        _tail = os.path.splitdrive(resolved)[1]
-        if _tail in ("\\", "/"):
-            raise ValueError(
-                "the worker state directory must not be the drive root: "
-                + resolved
-            )
-        profile = environment.get("USERPROFILE", "")
-        if profile and resolved == os.path.realpath(profile):
-            raise ValueError(
-                "the worker state directory must not be the user profile "
-                + "directory itself: " + resolved
-            )
-        return
-    st = os.stat(resolved)
-    if not stat.S_ISDIR(st.st_mode):
-        raise ValueError(
-            "the worker state directory is not an existing directory: "
-            + resolved
-        )
-    if st.st_uid != os.geteuid():
-        raise ValueError(
-            "the worker state directory is not owned by the current user "
-            + f"(uid {os.geteuid()}): {resolved}"
-        )
-    if st.st_mode & 0o022:
-        raise ValueError(
-            "the worker state directory is group- or world-writable "
-            + f"(mode {stat.S_IMODE(st.st_mode):04o}); make it private "
-            + f"(chmod 700 {resolved}) so the pairing credential and the "
-            + "worker lock file stay owner-only: " + resolved
-        )
     home = environment.get("HOME", "") or os.path.expanduser("~")
-    home_real = os.path.realpath(home)
-    if resolved == os.path.realpath(os.path.sep):
+    if resolved == Path(resolved.anchor):
         raise ValueError(
-            "the worker state directory must not be the filesystem root: "
-            + resolved
+            f"the worker state directory must not be the filesystem root: {resolved}"
         )
-    if resolved == home_real:
+    if resolved == Path(os.path.realpath(home)):
         raise ValueError(
             "the worker state directory must not be the home directory "
-            + "itself: " + resolved
+            + f"itself: {resolved}"
         )
-
+    return open_trusted_worker_directory(resolved, create=create)
 
 
 class WorkerAdminService:

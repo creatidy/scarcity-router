@@ -230,6 +230,69 @@ class WorkerStateDirLockHardeningTests(unittest.TestCase):
     content into an error message.
     """
 
+    def test_directory_replacement_keeps_lock_inside_verified_object(self) -> None:
+        from scarcity_router import worker_local_store
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / "state"
+            state.mkdir(mode=0o700)
+            retained = Path(tmp) / "validated-state"
+            victim = Path(tmp) / "victim"
+            _ = victim.write_text("UNCHANGED")
+            victim.chmod(0o644)
+            from scarcity_router.worker_identity_store import open_private_state_dir
+            verify = open_private_state_dir
+
+            def replace_after_verification(path: str, *, create: bool = False) -> int:
+                fd = verify(path, create=create)
+                _ = state.rename(retained)
+                state.mkdir(mode=0o700)
+                (state / "worker.lock").symlink_to(victim)
+                return fd
+
+            lock = WorkerStateDirLock(str(state))
+            with unittest.mock.patch.object(worker_local_store, "open_private_state_dir", replace_after_verification):
+                lock.acquire()
+            try:
+                self.assertEqual(str(os.getpid()), (retained / "worker.lock").read_text().strip())
+                self.assertTrue((state / "worker.lock").is_symlink())
+                self.assertEqual("UNCHANGED", victim.read_text())
+                self.assertEqual(0o644, victim.stat().st_mode & 0o777)
+            finally:
+                lock.release()
+
+    def test_shared_ancestor_refused_without_creating_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = Path(tmp) / "shared"
+            parent.mkdir()
+            parent.chmod(0o777)
+            state = parent / "state"
+            state.mkdir(mode=0o700)
+            with self.assertRaisesRegex(ValueError, "choose a private location"):
+                WorkerStateDirLock(str(state)).acquire()
+            self.assertEqual([], list(state.iterdir()))
+
+    def test_owned_sticky_parent_protects_private_next_component(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = Path(tmp) / "sticky-parent"
+            parent.mkdir()
+            parent.chmod(0o1777)
+            state = parent / "private-worker"
+            state.mkdir(mode=0o700)
+            lock = WorkerStateDirLock(state)
+            lock.acquire()
+            lock.release()
+            self.assertEqual(str(os.getpid()), (state / "worker.lock").read_text().strip())
+            self.assertEqual(0o1777, parent.stat().st_mode & 0o7777)
+
+    def test_state_directory_itself_cannot_be_sticky_shared(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / "sticky-state"
+            state.mkdir()
+            state.chmod(0o1777)
+            with self.assertRaisesRegex(ValueError, "group- or world-writable"):
+                WorkerStateDirLock(state).acquire()
+            self.assertEqual([], list(state.iterdir()))
+
     def test_planted_lock_symlink_is_refused_and_target_untouched(self) -> None:
         # The exact previous attack: worker.lock -> decoy. The old code
         # followed the link and ftruncate'd/wrote the TARGET.
@@ -302,17 +365,75 @@ class WorkerStateDirLockHardeningTests(unittest.TestCase):
 class WorkerStateDirLockWindowsTests(unittest.TestCase):
     """The Windows branch of the no-follow lock (Daybreak blocker 4).
 
-    The open uses ``FILE_FLAG_OPEN_REPARSE_POINT``: a planted symlink or
-    junction at ``worker.lock`` yields a handle to the LINK itself, which
-    is detected via ``FILE_ATTRIBUTE_REPARSE_POINT`` and refused — the
-    target is never opened. The normal path exercises the unchanged
-    ``msvcrt.locking`` advisory lock.
+    Native NtCreateFile lookups pin every ancestor, reject reparses on the
+    opened objects, and retain that chain over the msvcrt lock lifetime.
     """
+
+    def _junction(self, path: Path, target: Path) -> None:
+        import subprocess
+
+        result = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(path), str(target)],
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(0, result.returncode, "native junction creation failed")
+        self.addCleanup(os.rmdir, path)
+
+    def _set_junction_in_place(
+        self, path: Path, target: Path, access: int, *, delete: bool = False,
+    ) -> tuple[str, int]:
+        """Actual native attack, including a positive-control-valid payload."""
+        import ctypes
+        import struct
+
+        kernel32: object = ctypes.WinDLL("kernel32", use_last_error=True)
+        create_file = getattr(kernel32, "CreateFileW")  # pyright: ignore[reportAny]
+        ioctl = getattr(kernel32, "DeviceIoControl")  # pyright: ignore[reportAny]
+        close_handle = getattr(kernel32, "CloseHandle")  # pyright: ignore[reportAny]
+        create_file.argtypes = [
+            ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p,
+            ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p,
+        ]
+        create_file.restype = ctypes.c_void_p
+        ioctl.argtypes = [
+            ctypes.c_void_p, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_uint32,
+            ctypes.c_void_p, ctypes.c_uint32, ctypes.POINTER(ctypes.c_uint32),
+            ctypes.c_void_p,
+        ]
+        ioctl.restype = ctypes.c_int
+        close_handle.argtypes = [ctypes.c_void_p]
+        close_handle.restype = ctypes.c_int
+        handle: int | None = create_file(  # pyright: ignore[reportAny]
+            str(path), access, 0x7, None, 3, 0x02200000, None,
+            # OPEN_EXISTING, BACKUP_SEMANTICS | OPEN_REPARSE_POINT; share all.
+        )
+        if handle is None or handle == ctypes.c_void_p(-1).value:
+            return "open", ctypes.get_last_error()
+        substitute = ("\\??\\" + str(target)).encode("utf-16-le")
+        printable = str(target).encode("utf-16-le")
+        data = struct.pack("<HHHH", 0, len(substitute), len(substitute) + 2, len(printable))
+        data += substitute + b"\0\0" + printable + b"\0\0"
+        payload = struct.pack("<IHH", 0xA0000003, len(data), 0) + data
+        if delete:
+            payload = struct.pack("<IHH", 0xA0000003, 0, 0)
+        buffer = ctypes.create_string_buffer(payload)
+        returned = ctypes.c_uint32()
+        try:
+            success: int = ioctl(  # pyright: ignore[reportAny]
+                ctypes.c_void_p(handle), 0x900AC if delete else 0x900A4,
+                buffer, len(payload), None, 0,
+                ctypes.byref(returned), None,  # FSCTL_DELETE/SET_REPARSE_POINT
+            )
+            return "set", 0 if success else ctypes.get_last_error()
+        finally:
+            _ = close_handle(ctypes.c_void_p(handle))  # pyright: ignore[reportAny]
 
     def test_normal_acquire_release_and_contention_round_trip(self) -> None:
         with tempfile.TemporaryDirectory[str]() as tmp:
             first = WorkerStateDirLock(tmp)
             first.acquire()
+            self.addCleanup(first.release)
             second = WorkerStateDirLock(tmp)
             with self.assertRaises(WorkerStateDirLocked) as caught:
                 second.acquire()
@@ -358,19 +479,249 @@ class WorkerStateDirLockWindowsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory[str]() as tmp:
             target_dir = Path(tmp) / "junction-target"
             _ = target_dir.mkdir()
+            decoy = target_dir / "decoy.txt"
+            _ = decoy.write_text("DO-NOT-TOUCH")
             lock_path = Path(tmp) / WorkerStateDirLock.LOCK_FILE_NAME
-            import subprocess
+            self._junction(lock_path, target_dir)
+            try:
+                lock = WorkerStateDirLock(tmp)
+                with self.assertRaises(WorkerStateDirLockUnavailable):
+                    lock.acquire()
+                self.assertEqual("DO-NOT-TOUCH", decoy.read_text())
+            finally:
+                self.doCleanups()
 
-            result = subprocess.run(
-                ["cmd", "/c", "mklink", "/J", str(lock_path), str(target_dir)],
-                capture_output=True,
-                check=False,
-            )
-            if result.returncode != 0:
-                self.skipTest("junction creation unavailable on this host")
-            lock = WorkerStateDirLock(tmp)
-            with self.assertRaises(WorkerStateDirLockUnavailable):
+    def test_state_junction_is_refused_without_touching_target(self) -> None:
+        with tempfile.TemporaryDirectory[str]() as tmp:
+            target = Path(tmp) / "target"
+            target.mkdir()
+            decoy = target / WorkerStateDirLock.LOCK_FILE_NAME
+            _ = decoy.write_text("DO-NOT-TOUCH")
+            state = Path(tmp) / "state"
+            self._junction(state, target)
+            try:
+                with self.assertRaises(WorkerStateDirLockUnavailable):
+                    WorkerStateDirLock(state).acquire()
+                self.assertEqual("DO-NOT-TOUCH", decoy.read_text())
+            finally:
+                self.doCleanups()
+
+    def test_ancestor_junction_is_refused_before_missing_tree_creation(self) -> None:
+        with tempfile.TemporaryDirectory[str]() as tmp:
+            target = Path(tmp) / "target"
+            target.mkdir()
+            decoy = target / "decoy.txt"
+            _ = decoy.write_text("DO-NOT-TOUCH")
+            ancestor = Path(tmp) / "ancestor"
+            self._junction(ancestor, target)
+            try:
+                with self.assertRaises(WorkerStateDirLockUnavailable):
+                    WorkerStateDirLock(ancestor / "missing" / "worker").acquire()
+                self.assertEqual([decoy], list(target.iterdir()))
+                self.assertEqual("DO-NOT-TOUCH", decoy.read_text())
+            finally:
+                self.doCleanups()
+
+    def test_missing_tree_is_created_handle_relative_without_pathname_mkdir(self) -> None:
+        with tempfile.TemporaryDirectory[str]() as tmp:
+            state = Path(tmp) / "new" / "nested" / "worker"
+            lock = WorkerStateDirLock(state)
+            with unittest.mock.patch(
+                "os.mkdir", side_effect=AssertionError("unsafe pathname creation")
+            ), unittest.mock.patch(
+                "os.path.realpath", side_effect=AssertionError("reparse canonicalization")
+            ):
                 lock.acquire()
+                lock.release()
+            self.assertEqual(
+                str(os.getpid()),
+                (state / WorkerStateDirLock.LOCK_FILE_NAME).read_text().strip(),
+            )
+
+    def test_state_ancestor_and_lock_cannot_be_replaced_until_release(self) -> None:
+        with tempfile.TemporaryDirectory[str]() as tmp:
+            ancestor = Path(tmp) / "ancestor"
+            state = ancestor / "worker"
+            lock = WorkerStateDirLock(state)
+            lock.acquire()
+            try:
+                for path in (ancestor, state, state / WorkerStateDirLock.LOCK_FILE_NAME):
+                    with self.subTest(path=path.name):
+                        with self.assertRaises(OSError) as caught:
+                            os.rename(path, path.with_name(path.name + "-moved"))
+                        self.assertEqual(32, caught.exception.winerror)
+            finally:
+                lock.release()
+            # All ancestor handles are released, not just the lock descriptor.
+            os.rename(state, ancestor / "moved")
+            os.rename(ancestor, Path(tmp) / "moved-ancestor")
+
+    def test_in_place_reparse_after_inspection_cannot_redirect_lock_lookup(self) -> None:
+        import ctypes
+
+        with tempfile.TemporaryDirectory[str]() as tmp:
+            state = Path(tmp) / "ancestor" / "worker"
+            state.mkdir(parents=True)
+            target = Path(tmp) / "target"
+            target.mkdir()
+            decoy = target / WorkerStateDirLock.LOCK_FILE_NAME
+            _ = decoy.write_text("DO-NOT-TOUCH")
+            kernel32: object = ctypes.WinDLL("kernel32", use_last_error=True)
+            get_file_info = getattr(kernel32, "GetFileInformationByHandle")  # pyright: ignore[reportAny]
+            inspected = 0
+            attempted = False
+
+            def inspect_and_attempt_replacement(handle: object, info: object) -> int:
+                nonlocal inspected, attempted
+                result: int = get_file_info(handle, info)  # pyright: ignore[reportAny]
+                inspected += 1
+                if inspected == len(state.parts):
+                    # Real API completed final-directory inspection. Attack
+                    # before the very next NtCreateFile (worker.lock lookup).
+                    attempted = True
+                    with self.assertRaises(OSError) as caught:
+                        os.rename(state, state.with_name("moved"))
+                    self.assertEqual(32, caught.exception.winerror)
+                    self.assertFalse((state / WorkerStateDirLock.LOCK_FILE_NAME).exists())
+                    self.assertEqual(
+                        ("open", 32), self._set_junction_in_place(state, target, 0x40000000),
+                        "GENERIC_WRITE must be denied by directory share mode",
+                    )
+                    self.assertEqual(
+                        ("set", 0), self._set_junction_in_place(state, target, 0x100),
+                        "FILE_WRITE_ATTRIBUTES must really convert the inspected directory",
+                    )
+                    self.assertTrue(os.path.isjunction(state))
+                return result
+
+            loader = ctypes.WinDLL
+
+            def load_library(library: str, *, use_last_error: bool = False) -> object:
+                if library == "kernel32":
+                    return kernel32
+                return loader(library, use_last_error=use_last_error)
+
+            setattr(
+                kernel32, "GetFileInformationByHandle",
+                unittest.mock.Mock(side_effect=inspect_and_attempt_replacement),
+            )
+            lock = WorkerStateDirLock(state)
+            try:
+                with unittest.mock.patch("ctypes.WinDLL", side_effect=load_library):
+                    with self.assertRaises(WorkerStateDirLockUnavailable) as caught:
+                        lock.acquire()
+                self.assertTrue(attempted)
+                self.assertIn("could not be opened safely", str(caught.exception))
+                self.assertEqual("DO-NOT-TOUCH", decoy.read_text())
+            finally:
+                lock.release()
+                if attempted:
+                    self.assertEqual(
+                        ("set", 0), self._set_junction_in_place(state, target, 0x100, delete=True)
+                    )
+            # Native RootDirectory + OPEN_REPARSE_POINT refused the mutated
+            # parent before creating/writing ANY lock, original or redirected.
+            self.assertFalse((state / WorkerStateDirLock.LOCK_FILE_NAME).exists())
+            self.assertEqual("DO-NOT-TOUCH", decoy.read_text())
+
+    def test_profile_equality_is_refused_structurally_without_realpath(self) -> None:
+        with tempfile.TemporaryDirectory[str]() as tmp:
+            with unittest.mock.patch.dict(os.environ, {"USERPROFILE": tmp.swapcase()}):
+                with unittest.mock.patch(
+                    "os.path.realpath", side_effect=AssertionError("filesystem reinterpretation")
+                ):
+                    with self.assertRaises(WorkerStateDirLockUnavailable) as caught:
+                        WorkerStateDirLock(Path(tmp) / ".").acquire()
+            self.assertIn("home directory itself", str(caught.exception))
+            self.assertFalse((Path(tmp) / WorkerStateDirLock.LOCK_FILE_NAME).exists())
+
+    def test_drive_root_is_refused_before_lock_creation(self) -> None:
+        import ntpath
+
+        with tempfile.TemporaryDirectory[str]() as tmp:
+            root = ntpath.splitdrive(tmp)[0] + "\\"
+            with self.assertRaises(WorkerStateDirLockUnavailable) as caught:
+                WorkerStateDirLock(root).acquire()
+            self.assertIn("filesystem root", str(caught.exception))
+
+    def test_failed_reparse_open_releases_all_retained_directories(self) -> None:
+        with tempfile.TemporaryDirectory[str]() as tmp:
+            ancestor = Path(tmp) / "ancestor"
+            state = ancestor / "worker"
+            state.mkdir(parents=True)
+            target = Path(tmp) / "target"
+            target.mkdir()
+            lock_path = state / WorkerStateDirLock.LOCK_FILE_NAME
+            self._junction(lock_path, target)
+            try:
+                with self.assertRaises(WorkerStateDirLockUnavailable):
+                    WorkerStateDirLock(state).acquire()
+            finally:
+                self.doCleanups()
+            os.rename(state, ancestor / "moved")
+            os.rename(ancestor, Path(tmp) / "moved-ancestor")
+
+    def test_contention_failure_releases_only_contender_directory_handles(self) -> None:
+        with tempfile.TemporaryDirectory[str]() as tmp:
+            state = Path(tmp) / "worker"
+            first = WorkerStateDirLock(state)
+            first.acquire()
+            try:
+                with self.assertRaises(WorkerStateDirLocked):
+                    WorkerStateDirLock(state).acquire()
+                with self.assertRaises(OSError):
+                    os.rename(state, Path(tmp) / "moved")
+            finally:
+                first.release()
+            os.rename(state, Path(tmp) / "moved")
+
+    def test_pid_write_failure_releases_lock_and_directory_handles(self) -> None:
+        with tempfile.TemporaryDirectory[str]() as tmp:
+            state = Path(tmp) / "worker"
+            lock = WorkerStateDirLock(state)
+            with unittest.mock.patch("os.write", side_effect=OSError("synthetic write failure")):
+                with self.assertRaises(OSError):
+                    lock.acquire()
+            fresh = WorkerStateDirLock(state)
+            fresh.acquire()
+            fresh.release()
+            lock.release()
+            os.rename(state / WorkerStateDirLock.LOCK_FILE_NAME, state / "moved.lock")
+            os.rename(state, Path(tmp) / "moved")
+
+    def test_process_death_releases_lock_and_directory_handles(self) -> None:
+        import subprocess
+
+        with tempfile.TemporaryDirectory[str]() as tmp:
+            state = Path(tmp) / "ancestor" / "worker"
+            code = (
+                "import os, sys; sys.path.insert(0, sys.argv[2]); "
+                "from scarcity_router.worker_local_store import WorkerStateDirLock; "
+                "lock = WorkerStateDirLock(sys.argv[1]); lock.acquire(); "
+                "print(os.getpid(), flush=True); sys.stdin.read()"
+            )
+            process: subprocess.Popen[str] = subprocess.Popen(
+                [sys.executable, "-c", code, str(state), str(Path(__file__).resolve().parents[1])],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True,
+            )
+            try:
+                assert process.stdout is not None
+                line = cast(str, process.stdout.readline())
+                self.assertEqual(str(process.pid), line.strip())
+                with self.assertRaises(WorkerStateDirLocked) as caught:
+                    WorkerStateDirLock(state).acquire()
+                self.assertEqual(process.pid, caught.exception.holder_pid)
+                process.kill()
+                _ = process.communicate(timeout=10)
+                fresh = WorkerStateDirLock(state)
+                fresh.acquire()
+                fresh.release()
+                os.rename(state.parent, Path(tmp) / "moved")
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                _ = process.communicate(timeout=10)
 
 
 if __name__ == "__main__":
