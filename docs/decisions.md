@@ -5423,7 +5423,24 @@ Do not rewrite history or change an accepted decision silently.
      `$HOME` broader than that subtree); the worker state directory
      must be a dedicated private tree (existing, owner-owned, not
       group/world-writable, with the same trusted ancestor-chain rule as
-      the unit directory). This boundary is established BEFORE opening
+      the unit directory). The trusted-ancestor rule is
+      NAMESPACE-AWARE for the sandboxed service (Phase-A live
+      acceptance, PR #167): under `ProtectSystem=strict` +
+      `ProtectHome=read-only` systemd establishes its read-only mounts
+      inside a mount namespace whose user mapping excludes host root,
+      so host-root-owned ancestors (`/`, `/home`) legitimately report
+      the overflow uid 65534. A NON-FINAL ancestor is therefore
+      accepted despite an untrusted displayed owner only when its mode
+      is closed to group/other writes AND the mount it resides on is
+      read-only in the process's own `/proc/self/mountinfo` view — the
+      kernel then denies every principal the rename/unlink the
+      ownership check exists for. UID 65534 is never globally trusted:
+      an untrusted owner on a WRITABLE mount (a genuinely nobody-owned
+      path, or any root-owned tree outside the read-only view, such as
+      `/tmp`) is refused, and the boundary itself must still be owned
+      by the invoking user — so a service-compatible state directory
+      lives in the user's own home subtree or another user-owned
+      dedicated tree. This boundary is established BEFORE opening
       `WorkerLocalStore` or touching SQLite. The product-owned default
       tree is provisioned through trusted directory descriptors when
       missing; a missing custom state directory is refused, and a shared
@@ -5475,7 +5492,8 @@ Do not rewrite history or change an accepted decision silently.
       Windows). Lock-file read/write sharing preserves ordinary contention.
       No check-then-`CreateFileW(path)` sequence and no `realpath` that
       resolves away junctions exist. The state directory must pass
-     the private-tree verification before the lock is taken, the holder
+     the private-tree verification (namespace-aware, per point 4)
+     before the lock is taken, the holder
      pid is written only AFTER the advisory lock is acquired (byte 0 is
      the reserved lock byte; the pid line follows it, so a Windows
      contender can read it despite the held byte-range lock) and is

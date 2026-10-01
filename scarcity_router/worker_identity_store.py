@@ -577,6 +577,68 @@ def ensure_private_tree(path: str) -> None:
         os.chmod(directory, 0o700)
 
 
+_PROC_MOUNTINFO = "/proc/self/mountinfo"
+
+
+def _read_mount_table() -> str | None:
+    """This process's own mount-namespace view, or ``None`` when absent.
+
+    Linux-only by nature; every other platform (and an unreadable table)
+    yields ``None`` so the caller fails closed.
+    """
+    try:
+        with open(_PROC_MOUNTINFO, encoding="utf-8") as handle:
+            return handle.read()
+    except OSError:
+        return None
+
+
+def _unescape_mount_field(field: str) -> str:
+    """kernel path escaping in ``mountinfo`` (space, tab, newline, backslash)."""
+    for escaped, literal in (("\\040", " "), ("\\011", "\t"), ("\\012", "\n")):
+        field = field.replace(escaped, literal)
+    return field.replace("\\134", "\\")
+
+
+def _is_mount_prefix(mount_point: str, path: str) -> bool:
+    return path == mount_point or mount_point == "/" or path.startswith(mount_point + "/")
+
+
+def _mount_point_is_readonly(path: str) -> bool:
+    """Whether ``path`` sits on a read-only mount in OUR namespace view.
+
+    systemd's ``ProtectSystem``/``ProtectHome`` sandbox establishes its
+    read-only mounts inside a mount namespace whose user mapping does not
+    include the host's root account, so protected ancestor directories
+    report the overflow uid (``nobody``, 65534) instead of the on-disk
+    owner. On such a mount the KERNEL denies every principal — that owner
+    included — any rename, unlink or creation, so the cross-principal
+    replacement danger that the ownership check exists for cannot be
+    exercised there. The same owner on a writable mount stays untrusted:
+    this lookup is per mount point (longest matching prefix wins), parsed
+    from the caller's own ``/proc/self/mountinfo``, never from a global
+    notion of "trusted uid".
+    """
+    table = _read_mount_table()
+    if table is None:
+        return False
+    normalized = path.rstrip("/") or "/"
+    # Deepest covering mount point wins; among entries stacked on the same
+    # point, the later mountinfo line is the top (shadowing) mount.
+    best: tuple[int, int, bool] | None = None  # (depth, order, readonly)
+    for order, line in enumerate(table.splitlines()):
+        fields = line.split()
+        if len(fields) < 6:
+            continue
+        mount_point = _unescape_mount_field(fields[4])
+        if not _is_mount_prefix(mount_point, normalized):
+            continue
+        candidate = (mount_point.count("/"), order, "ro" in fields[5].split(","))
+        if best is None or candidate[:2] > best[:2]:
+            best = candidate
+    return best[2] if best is not None else False
+
+
 def open_trusted_worker_directory(path: Path, *, create: bool = False) -> int:
     """Open the #138 POSIX boundary by identity, retaining the final fd.
 
@@ -587,6 +649,19 @@ def open_trusted_worker_directory(path: Path, *, create: bool = False) -> int:
     rename nor unlink it. Non-sticky shared parents are always refused.
     Missing components are provisioned relative to trusted parents, never
     by a store constructor or a later pathname reopen.
+
+    Sandboxed-systemd exception (Phase-A live acceptance, PR #167): under
+    ``ProtectSystem=strict``/``ProtectHome=read-only`` the synthetic
+    read-only ancestor mounts report the overflow uid for host-root-owned
+    directories such as ``/`` and ``/home``. A NON-FINAL ancestor with an
+    untrusted owner is therefore accepted only when its mode is closed to
+    group/other writes AND the mount it resides on is read-only in this
+    process's own namespace view (:func:`_mount_point_is_readonly`): the
+    kernel forbids every principal from modifying the tree there, so the
+    ancestor cannot replace the components beneath it. The boundary itself
+    must still be owned by the current user, and an untrusted owner on a
+    writable mount — a real nobody-owned path — is refused exactly as
+    before.
     """
     if not path.is_absolute() or ".." in path.parts:
         raise ValueError("worker boundary requires a canonical absolute path")
@@ -597,7 +672,17 @@ def open_trusted_worker_directory(path: Path, *, create: bool = False) -> int:
     try:
         for name in (*path.parts[1:], None):
             info = os.fstat(fd)
-            if not stat.S_ISDIR(info.st_mode) or info.st_uid not in (0, uid):
+            trusted = stat.S_ISDIR(info.st_mode) and info.st_uid in (0, uid)
+            if (
+                not trusted
+                and name is not None
+                and not info.st_mode & 0o022
+                and _mount_point_is_readonly(str(current))
+            ):
+                # A sandboxed read-only ancestor mount: kernel-enforced
+                # immutability replaces the ownership evidence (above).
+                trusted = True
+            if not trusted:
                 raise ValueError(
                     f"untrusted worker path component {current}: not owned by "
                     + "root or the current user; choose a private location"
