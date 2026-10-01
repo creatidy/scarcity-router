@@ -5326,12 +5326,20 @@ Do not rewrite history or change an accepted decision silently.
      manager's PATH is minimal) and the ACTUAL worker state directory
      (`--state-dir` always pinned), plus the same adapter-selection
      flags `run` accepts (`--codex-source` instances, loopback Ollama,
-     ZCode sources, the legacy single-Codex triple). The frozen issue
-     scope's `--server` is deliberately ABSENT from `service install`:
-     the service uses the stored server origin of the already-paired
-     identity, so service tooling can never introduce a new worker
-     origin (and therefore cannot weaken the D-044 verified-TLS
-     `srws://` rule that D-056 explicitly preserved for workers).
+     ZCode sources, the legacy single-Codex triple). Every rendered
+     value follows systemd's own substitution semantics: a literal `%`
+     is doubled to `%%` wherever specifier expansion applies (`ExecStart`
+     AND `ReadWritePaths`; quoting never suppresses that expansion), and
+     `ExecStart` carries the documented `:` executable prefix so
+     `$`-variable substitution is suppressed for the whole command line
+     — a literal `$` in a path stays literal (`ExecStart` is not a shell
+     line, and `ReadWritePaths` does no variable substitution). The
+     frozen issue scope's `--server` is deliberately ABSENT from
+     `service install`: the service uses the stored server origin of the
+     already-paired identity, so service tooling can never introduce a
+     new worker origin (and therefore cannot weaken the D-044
+     verified-TLS `srws://` rule that D-056 explicitly preserved for
+     workers).
   3. **Idempotency and ownership by content marker.** The rendered unit
      is deterministic (no timestamps): identical inputs render
      identical bytes, so idempotency is content equality. Every unit
@@ -5348,10 +5356,22 @@ Do not rewrite history or change an accepted decision silently.
      process death), `TimeoutStopSec=30s`, `NoNewPrivileges`,
      `PrivateTmp`, `ProtectSystem=strict`, `ProtectHome=read-only`,
      `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6`, and
-     `ReadWritePaths` limited to the state directory plus a configured
-     ZCode authorized workspace (a ZCode source executes edits OUTSIDE
-     the state directory; without the explicit exception
-     `ProtectHome=read-only` would break every workspace edit).
+     `ReadWritePaths` limited to the state directory, a configured ZCode
+     authorized workspace, and — for a ZCode source — the ZCode CLI's
+     own resolved state home (`$HOME/.zcode`, canonicalized with
+     `realpath`; the ZCode adapter's own `HOME` contract). Service mode
+     is sandboxed with `ProtectHome=read-only`, and normal ZCode CLI
+     execution writes session/runtime/log/rollout and database state
+     under that supported state home, so the unit must except exactly
+     that one directory or ZCode execution breaks under the service —
+     and the write grant stays worker state + that one directory + the
+     authorized workspace, never a writable `$HOME` (a ZCode source
+     executes its edits OUTSIDE the state directory; without the
+     workspace exception `ProtectHome=read-only` would break every
+     workspace edit). The state home must already exist: install
+     refuses with the `zcode login zai` remediation instead of
+     rendering an impossible path, and the tooling never creates, reads
+     or writes ZCode's own state (D-061 constraint 3).
   5. **Linger is deliberate and visible, never fatal.** Install queries
      `loginctl show-user --property=Linger`, attempts
      `enable-linger` for the invoking user, and reports the outcome in

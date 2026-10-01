@@ -8,6 +8,18 @@ script in a temporary directory. The suite pins the #138 contract:
 - unit generation is deterministic (idempotent install), carries the
   ACTUAL executable, the ACTUAL state directory and the preserved
   adapter selection, and embeds NO credential material (negative scan);
+- systemd substitution safety (review remediation): every literal ``%``
+  is doubled where specifier expansion applies (``ExecStart`` AND
+  ``ReadWritePaths``, quotes never suppress it) and the ``ExecStart``
+  line suppresses ``$``-variable substitution with the documented ``:``
+  prefix — rendered words round-trip to the ORIGINAL literal paths,
+  proven by a parsing oracle and, where available, the host's real
+  ``systemd-analyze verify``;
+- a ZCode-source unit excepts exactly the resolved ZCode CLI state home
+  (``$HOME/.zcode``) in ``ReadWritePaths`` (service mode must not be
+  stricter than a foreground run), canonicalized against symlink or
+  non-canonical input, refused at install when missing, and absent from
+  every non-ZCode unit;
 - install/update/uninstall discipline: marker-gated replacement, an
   unrelated unit is never overwritten or removed, repeats are safe,
   failures are visible and honestly exited;
@@ -23,6 +35,8 @@ from __future__ import annotations
 
 import io
 import os
+import shutil
+import subprocess
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -36,6 +50,7 @@ from scarcity_router.worker_client import (
 )
 from scarcity_router.worker_client import WorkerConfigError
 from scarcity_router.worker_local_store import WorkerLocalIdentity
+from scarcity_router.worker_zcode_adapter import zcode_state_home
 
 SYNTHETIC_CREDENTIAL = "SYNTHETIC-PAIRING-CREDENTIAL-138-NEVER-LEAK"
 SYNTHETIC_PAIRING_CODE = "SYNTHETIC-ONE-TIME-CODE-138"
@@ -86,6 +101,11 @@ class ServiceWorld:
     def __init__(self, tmp: Path) -> None:
         self.tmp = tmp
         self.state_dir = tmp / "state"
+        self.workspace_dir: Path = tmp / "workspace"
+        self.home_dir: Path = tmp / "home"
+        _ = (self.home_dir / ".zcode").mkdir(parents=True)
+        _ = self.workspace_dir.mkdir()
+        self.environment: dict[str, str] = {"HOME": str(self.home_dir)}
         store = open_worker_store(str(self.state_dir))
         try:
             store.save_identity(
@@ -177,6 +197,7 @@ class ServiceWorld:
                 argv0=str(self.executable),
                 tools=self.tools(),
                 unit_path=self.unit_path,
+                env=self.environment,
                 open_store=open_worker_store,
                 build_registry=build_registry,
             )
@@ -196,11 +217,16 @@ class ServiceWorld:
 
 
 class UnitRenderingTests(unittest.TestCase):
-    def render(self, selected: worker_service.ServiceSelection) -> str:
+    def render(
+        self,
+        selected: worker_service.ServiceSelection,
+        zcode_state_home: Path | None = None,
+    ) -> str:
         return worker_service.render_unit(
             executable=Path("/opt/tools/scarcity-router-worker"),
             state_dir=Path("/home/u/.local/share/scarcity-router/worker"),
             selection=selected,
+            zcode_state_home=zcode_state_home,
         )
 
     def test_render_is_deterministic_and_marked(self) -> None:
@@ -211,8 +237,11 @@ class UnitRenderingTests(unittest.TestCase):
 
     def test_exec_start_carries_actual_executable_state_dir_and_sources(self) -> None:
         unit = self.render(selection())
+        # The ':' executable prefix (systemd.service(5)) suppresses
+        # $-variable substitution for the whole command line: every word
+        # below stays the literal path/value it was rendered from.
         self.assertIn(
-            "ExecStart=/opt/tools/scarcity-router-worker run "
+            "ExecStart=:/opt/tools/scarcity-router-worker run "
             + "--state-dir /home/u/.local/share/scarcity-router/worker "
             + "--codex-source precision-codex-live",
             unit,
@@ -230,7 +259,8 @@ class UnitRenderingTests(unittest.TestCase):
                 resource="my-ollama",
                 ollama_host=None,
                 ollama_port=11500,
-            )
+            ),
+            zcode_state_home=Path("/home/u/.zcode"),
         )
         self.assertIn("--codex-source src-a --codex-source src-b", unit)
         self.assertIn("--codex-bin /opt/codex", unit)
@@ -272,13 +302,221 @@ class UnitRenderingTests(unittest.TestCase):
             selection=selection(zcode_workspace='/home/u/we"ird'),
         )
         self.assertIn(
-            'ExecStart="/opt/my tools/scarcity-router-worker" run', unit
+            'ExecStart=:"/opt/my tools/scarcity-router-worker" run', unit
         )
         self.assertIn('--state-dir "/home/u/my state"', unit)
         self.assertIn('--zcode-workspace "/home/u/we\\"ird"', unit)
         self.assertIn(
             'ReadWritePaths="/home/u/my state" "/home/u/we\\"ird"', unit
         )
+
+    def test_paths_with_spaces_are_quoted_under_the_colon_prefix(self) -> None:
+        # The ':' prefix attaches outside the quoting: a quoted executable
+        # path is still parsed as the command (verified against systemd
+        # 255's own parser by SystemdAnalyzeTests below).
+        unit = worker_service.render_unit(
+            executable=Path("/opt/my tools/scarcity-router-worker"),
+            state_dir=Path("/home/u/my state"),
+            selection=selection(),
+        )
+        self.assertIn(
+            'ExecStart=:"/opt/my tools/scarcity-router-worker" run', unit
+        )
+
+    # ── systemd substitution round-trip oracle ────────────────────────
+
+    @staticmethod
+    def _systemd_words(value: str) -> list[str]:
+        """Tokenize one rendered directive value the way systemd parses it.
+
+        Reverses the renderer's escaping in systemd's own documented
+        order: specifier resolution first on the raw text (a single
+        left-to-right pass in which ``%%`` yields one literal ``%``),
+        then command-line unquoting (surrounding double quotes removed,
+        the C-style escapes the renderer emits — ``\\\\`` and ``\\"`` —
+        decoded). A rendered word that does NOT round-trip to its
+        original input means systemd would address a DIFFERENT path than
+        the one the administrator configured.
+        """
+        words: list[str] = []
+        index = 0
+        total = len(value)
+        while index < total:
+            while index < total and value[index] == " ":
+                index += 1
+            if index >= total:
+                break
+            characters: list[str] = []
+            quoted = value[index] == '"'
+            if quoted:
+                index += 1
+            while index < total:
+                character = value[index]
+                if character == "%" and index + 1 < total and value[index + 1] == "%":
+                    characters.append("%")
+                    index += 2
+                    continue
+                if (
+                    quoted
+                    and character == "\\"
+                    and index + 1 < total
+                    and value[index + 1] in ('"', "\\")
+                ):
+                    characters.append(value[index + 1])
+                    index += 2
+                    continue
+                if quoted and character == '"':
+                    index += 1
+                    break
+                if not quoted and character == " ":
+                    index += 1
+                    break
+                characters.append(character)
+                index += 1
+            words.append("".join(characters))
+        return words
+
+    def _directive(self, unit: str, name: str) -> list[str]:
+        line = next(
+            line
+            for line in unit.splitlines()
+            if line.startswith(f"{name}=")
+        )
+        value = line.removeprefix(f"{name}=")
+        if name == "ExecStart":
+            value = value.removeprefix(":")
+        return self._systemd_words(value)
+
+    def test_literal_percent_is_doubled_and_round_trips(self) -> None:
+        unit = worker_service.render_unit(
+            executable=Path("/opt/tools/scarcity-router-worker"),
+            state_dir=Path("/home/u/st%20ate"),
+            selection=selection(
+                zcode_sources=("zsrc",),
+                zcode_workspace="/home/u/proj%20ect",
+            ),
+            zcode_state_home=Path("/home/u/%h/.zcode"),
+        )
+        # Every '%' is doubled wherever specifier expansion applies —
+        # quoted or not (quotes never suppress systemd specifier
+        # expansion); a specifier-looking segment can never survive raw.
+        for directive in ("ExecStart", "ReadWritePaths"):
+            line = next(
+                line
+                for line in unit.splitlines()
+                if line.startswith(f"{directive}=")
+            )
+            self.assertNotRegex(
+                line, r"(^|[^%])%[0-9a-zA-Z]", directive
+            )
+        self.assertIn("--state-dir /home/u/st%%20ate", unit)
+        self.assertIn("--zcode-workspace /home/u/proj%%20ect", unit)
+        self.assertIn(
+            "ReadWritePaths=/home/u/st%%20ate /home/u/%%h/.zcode "
+            + "/home/u/proj%%20ect",
+            unit,
+        )
+        # Round trip: after systemd's OWN processing the unit addresses
+        # the original literal paths — '%h' is NOT silently substituted
+        # by a (different) home directory.
+        self.assertIn("/home/u/st%20ate", self._directive(unit, "ExecStart"))
+        self.assertIn(
+            "/home/u/proj%20ect", self._directive(unit, "ExecStart")
+        )
+        self.assertEqual(
+            [
+                "/home/u/st%20ate",
+                "/home/u/%h/.zcode",
+                "/home/u/proj%20ect",
+            ],
+            self._directive(unit, "ReadWritePaths"),
+        )
+
+    def test_literal_dollar_stays_literal_in_exec_start(self) -> None:
+        unit = worker_service.render_unit(
+            executable=Path("/opt/tools/scarcity-router-worker"),
+            state_dir=Path("/home/u/$st ate"),
+            selection=selection(
+                zcode_sources=("zsrc",), zcode_workspace="/home/u/w$orks"
+            ),
+            zcode_state_home=Path("/home/u/.zcode"),
+        )
+        exec_line = next(
+            line for line in unit.splitlines() if line.startswith("ExecStart=")
+        )
+        # The ':' executable prefix is systemd's documented switch that
+        # suppresses environment-variable substitution for the whole
+        # command line — so a literal '$' needs no doubling anywhere.
+        self.assertTrue(exec_line.startswith("ExecStart=:"))
+        self.assertNotIn("$$", unit)
+        self.assertIn('--state-dir "/home/u/$st ate"', unit)
+        self.assertIn('--zcode-workspace "/home/u/w$orks"', unit)
+        # ReadWritePaths does NOT do variable substitution at all: '$'
+        # renders literally there, unmodified.
+        self.assertEqual(
+            [
+                "/home/u/$st ate",
+                "/home/u/.zcode",
+                "/home/u/w$orks",
+            ],
+            self._directive(unit, "ReadWritePaths"),
+        )
+        # And the ExecStart words round-trip to the literal '$' paths.
+        exec_words = self._directive(unit, "ExecStart")
+        self.assertIn("/home/u/$st ate", exec_words)
+        self.assertIn("/home/u/w$orks", exec_words)
+
+    def test_a_zcode_unit_without_the_state_home_cannot_render(self) -> None:
+        with self.assertRaises(ValueError):
+            _ = self.render(selection(zcode_sources=("zsrc",)))
+
+    def test_writable_paths_are_canonicalized_symlinks_cannot_widen(self) -> None:
+        with tempfile.TemporaryDirectory[str]() as tmp:
+            base = Path(tmp).resolve()
+            real_home = base / "real-home"
+            _ = (real_home / ".zcode").mkdir(parents=True)
+            linked_home = base / "linked-home"
+            _ = linked_home.symlink_to(real_home, target_is_directory=True)
+            real_workspace = base / "real-project"
+            _ = real_workspace.mkdir()
+            # A symlinked state home and a non-canonical workspace
+            # spelling: the unit must grant exactly the REAL directory
+            # ZCode itself resolves to — never a second, differently
+            # spelled (or symlink-named) entry.
+            unit = worker_service.render_unit(
+                executable=Path("/opt/tools/scarcity-router-worker"),
+                state_dir=base / "state",
+                selection=selection(
+                    zcode_sources=("zsrc",),
+                    zcode_workspace=str(linked_home / ".." / "real-project"),
+                ),
+                zcode_state_home=linked_home / ".zcode",
+            )
+            read_write_line = next(
+                line
+                for line in unit.splitlines()
+                if line.startswith("ReadWritePaths=")
+            )
+            self.assertIn(str(real_home / ".zcode"), read_write_line)
+            self.assertIn(str(real_workspace), read_write_line)
+            self.assertNotIn("linked-home", read_write_line)
+            self.assertNotIn("..", read_write_line)
+
+    def test_codex_only_unit_never_renders_a_zcode_state_home(self) -> None:
+        unit = self.render(selection())
+        self.assertNotIn(".zcode", unit)
+        self.assertIn(
+            "ReadWritePaths=/home/u/.local/share/scarcity-router/worker",
+            unit,
+        )
+
+    def test_state_home_with_no_zcode_source_is_refused(self) -> None:
+        # The write grant can never leak into a Codex-only unit by a
+        # confused call site: the combination is a hard error.
+        with self.assertRaises(ValueError):
+            _ = self.render(
+                selection(), zcode_state_home=Path("/home/u/.zcode")
+            )
 
     def test_systemd_quote_leaves_safe_words_unquoted(self) -> None:
         self.assertEqual("plain", worker_service.systemd_quote("plain"))
@@ -289,6 +527,120 @@ class UnitRenderingTests(unittest.TestCase):
         self.assertEqual('"a b"', worker_service.systemd_quote("a b"))
         self.assertEqual('"a\\"b"', worker_service.systemd_quote('a"b'))
         self.assertEqual('"a\\\\b"', worker_service.systemd_quote("a\\b"))
+        # Literal '%' is doubled BEFORE the quoting decision, so a
+        # specifier-looking word can never reach systemd un-escaped.
+        self.assertEqual("a%%b", worker_service.systemd_quote("a%b"))
+        self.assertEqual("%%h", worker_service.systemd_quote("%h"))
+        self.assertEqual('"/a %%b c"', worker_service.systemd_quote("/a %b c"))
+
+
+class SystemdAnalyzeTests(unittest.TestCase):
+    """The rendered unit must LOAD under the host's real systemd parser.
+
+    Skipped where systemd-analyze is unavailable (CI); where present it
+    is the authoritative oracle: an un-escaped '%20' or a raw specifier
+    fails the unit to load ("Invalid specifier"), exactly the failure
+    mode the review proved against the pre-remediation renderer.
+    """
+
+    @unittest.skipUnless(
+        shutil.which("systemd-analyze"), "systemd-analyze unavailable"
+    )
+    def test_hostile_rendered_unit_loads(self) -> None:
+        with tempfile.TemporaryDirectory[str]() as tmp:
+            base = Path(tmp).resolve()
+            exe = base / "scarcity-router-worker"
+            _ = exe.write_text("#!/bin/sh\nexit 0\n")
+            _ = exe.chmod(0o755)
+            hostile_state = base / "st%20ate dir"
+            hostile_home = base / "%h zcode"
+            hostile_workspace = base / "proj$ect x"
+            for directory in (hostile_state, hostile_home, hostile_workspace):
+                _ = directory.mkdir()
+            unit = worker_service.render_unit(
+                executable=exe,
+                state_dir=hostile_state,
+                selection=selection(
+                    zcode_sources=("zsrc",),
+                    zcode_workspace=str(hostile_workspace),
+                ),
+                zcode_state_home=hostile_home,
+            )
+            unit_file = base / "hostile-probe.service"
+            _ = unit_file.write_text(unit, encoding="utf-8")
+            completed = subprocess.run(
+                ["systemd-analyze", "verify", str(unit_file)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(0, completed.returncode, completed.stderr)
+            self.assertNotIn("specifier", completed.stderr)
+            self.assertNotIn("bad unit file setting", completed.stderr)
+
+    @unittest.skipUnless(
+        shutil.which("systemd-analyze"), "systemd-analyze unavailable"
+    )
+    def test_unescaped_percent_would_fail_to_load(self) -> None:
+        # The control: systemd's own parser rejects the raw '%20' the
+        # renderer is required to escape — the oracle is discriminating.
+        with tempfile.TemporaryDirectory[str]() as tmp:
+            unit_file = Path(tmp) / "control.service"
+            _ = unit_file.write_text(
+                "[Unit]\nDescription=control\n[Service]\nType=oneshot\n"
+                + "ExecStart=/bin/true /home/u/st%20ate\n",
+                encoding="utf-8",
+            )
+            completed = subprocess.run(
+                ["systemd-analyze", "verify", str(unit_file)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(0, completed.returncode)
+            self.assertIn("specifier", completed.stderr)
+
+
+class ZCodeStateHomeTests(unittest.TestCase):
+    """The ZCode CLI state home the service unit must allow (blocker 2).
+
+    Service mode runs with ``ProtectHome=read-only``, and normal ZCode
+    CLI execution writes session/runtime/log/rollout and database state
+    under its supported state home — so a ZCode-source unit must except
+    exactly that resolved directory, and nothing wider.
+    """
+
+    def test_location_follows_the_adapter_home_contract(self) -> None:
+        self.assertEqual(
+            Path("/home/u/.zcode"), zcode_state_home({"HOME": "/home/u"})
+        )
+        # HOME unset falls back to the invoking user's home.
+        fallback = zcode_state_home({})
+        self.assertTrue(str(fallback).endswith("/.zcode"))
+
+    def test_resolver_returns_the_realpath_canonical_directory(self) -> None:
+        with tempfile.TemporaryDirectory[str]() as tmp:
+            base = Path(tmp).resolve()
+            real_home = base / "real-home"
+            _ = (real_home / ".zcode").mkdir(parents=True)
+            linked_home = base / "linked-home"
+            _ = linked_home.symlink_to(real_home, target_is_directory=True)
+            resolved = worker_service.resolve_zcode_state_home(
+                {"HOME": str(linked_home)}
+            )
+            self.assertEqual(real_home / ".zcode", resolved)
+
+    def test_missing_state_home_is_refused_with_remediation(self) -> None:
+        with tempfile.TemporaryDirectory[str]() as tmp:
+            with self.assertRaises(
+                worker_service.ServiceZCodeStateHomeError
+            ) as caught:
+                _ = worker_service.resolve_zcode_state_home({"HOME": str(tmp)})
+        message = str(caught.exception)
+        self.assertIn("does not exist", message)
+        # The remediation names the owner's own supported sign-in path;
+        # the tooling never creates ZCode's state home itself.
+        self.assertIn("zcode login zai", message)
 
     def test_ollama_without_resource_cannot_render(self) -> None:
         with self.assertRaises(ValueError):
@@ -501,6 +853,56 @@ class InstallLifecycleTests(unittest.TestCase):
         self.assertIn("--resource is required", str(caught.exception))
         self.assertFalse(self.world.unit_path.exists())
         self.assertEqual([], self.world.systemctl_calls)
+
+    def test_zcode_install_grants_exactly_the_resolved_state_home(self) -> None:
+        code, _out, err = self.world.install(
+            codex_sources=[],
+            zcode_sources=["zai-plan"],
+            zcode_workspace=str(self.world.workspace_dir),
+        )
+        self.assertEqual(0, code, err)
+        unit_text = self.world.unit_path.read_text(encoding="utf-8")
+        expected_home = (self.world.home_dir / ".zcode").resolve()
+        # The full ReadWritePaths value: worker state, the EXACT resolved
+        # ZCode CLI state home, the authorized workspace — nothing wider
+        # (in particular never the whole $HOME the state home sits in).
+        self.assertEqual(
+            [
+                f"ReadWritePaths={self.world.state_dir} {expected_home} "
+                + f"{self.world.workspace_dir}",
+            ],
+            [
+                line
+                for line in unit_text.splitlines()
+                if line.startswith("ReadWritePaths=")
+            ],
+        )
+        self.assertIn("ProtectHome=read-only", unit_text)
+        # No credential material on the ZCode path either.
+        self.assertNotIn(SYNTHETIC_CREDENTIAL, unit_text)
+        self.assertNotRegex(unit_text, r"--code[ =]")
+
+    def test_install_refuses_when_zcode_state_home_is_missing(self) -> None:
+        # The required directory must already exist (the owner's own
+        # interactive ZCode usage creates it): install refuses instead of
+        # writing a unit whose ReadWritePaths names an impossible path —
+        # and it never creates ZCode's state home itself.
+        self.world.environment = {
+            "HOME": str(self.world.tmp / "home-without-zcode")
+        }
+        code, _out, err = self.world.install(
+            codex_sources=[],
+            zcode_sources=["zai-plan"],
+            zcode_workspace=str(self.world.workspace_dir),
+        )
+        self.assertEqual(2, code)
+        self.assertIn("ZCode CLI state home", err)
+        self.assertIn("zcode login zai", err)
+        self.assertFalse(self.world.unit_path.exists())
+        self.assertEqual([], self.world.systemctl_calls)
+        self.assertFalse(
+            (self.world.tmp / "home-without-zcode" / ".zcode").exists()
+        )
 
     def test_enable_failure_is_visible_and_exits_two(self) -> None:
         self.world.systemctl_failures["enable"] = 1

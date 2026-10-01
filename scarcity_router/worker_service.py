@@ -9,11 +9,21 @@ worker launcher. This module owns the whole lifecycle surface of
   (the console script or packaged binary this command ran through) and
   the ACTUAL worker state directory, preserving the adapter selection
   (``--codex-source`` instances, loopback Ollama, ZCode sources, or the
-  legacy single-Codex flags) as ``ExecStart`` arguments. It operates on
-  the already-paired identity and uses the STORED server origin — there
-  is no ``--server`` here. The unit embeds no credential: pairing
-  identity, provider-controlled homes and rotation state all live in the
-  0700 state directory the unit merely points at.
+  legacy single-Codex flags) as ``ExecStart`` arguments. Rendering
+  follows systemd's own substitution rules: every literal ``%`` is
+  doubled (specifier expansion applies to ``ExecStart`` AND
+  ``ReadWritePaths``, regardless of quoting) and the ``ExecStart`` line
+  suppresses ``$``-variable substitution with the documented ``:``
+  executable prefix — every path stays the literal path it was rendered
+  from. It operates on the already-paired identity and uses the STORED
+  server origin — there is no ``--server`` here. The unit embeds no
+  credential: pairing identity, provider-controlled homes and rotation
+  state all live in the 0700 state directory the unit merely points at.
+  A ZCode-source unit additionally excepts exactly the ZCode CLI's own
+  resolved state home (``$HOME/.zcode``) from ``ProtectHome=read-only``
+  — normal ZCode execution writes its session/runtime state there — so
+  the write grant is worker state + that one directory + the authorized
+  workspace, never a writable ``$HOME``.
 - **Idempotent and honest.** The rendered unit is deterministic
   (byte-stable for identical inputs): re-running install with the same
   flags re-writes nothing and stays green. A DIFFERENT generated unit
@@ -67,6 +77,7 @@ from pathlib import Path
 from typing import cast
 
 from .worker_local_store import WorkerLocalStore, default_worker_state_dir
+from .worker_zcode_adapter import zcode_state_home
 
 #: Opens the worker store for one state directory (injected by the CLI,
 #: which owns the ``worker_client`` seam — this module never imports it,
@@ -100,6 +111,15 @@ class ServiceToolError(Exception):
 
 class ServiceExecutableError(Exception):
     """The installed worker executable could not be resolved (safe message)."""
+
+
+class ServiceZCodeStateHomeError(Exception):
+    """The ZCode CLI state home a ZCode unit must allow is unusable.
+
+    Raised BEFORE any unit is written: a ``ReadWritePaths`` entry that
+    names a non-existent directory would make the unit fail to start at
+    all, so install refuses with the remediation instead.
+    """
 
 
 @dataclass(frozen=True)
@@ -243,18 +263,28 @@ _SAFE_UNQUOTED = frozenset(
 
 
 def systemd_quote(word: str) -> str:
-    """One ``ExecStart`` word in systemd's own quoting rules.
+    """One systemd unit word in systemd's own parsing rules.
 
-    Unquoted when it consists solely of characters systemd treats
+    Every literal ``%`` is doubled first (``%%``): BOTH ``ExecStart``
+    and ``ReadWritePaths`` resolve unit specifiers on the raw setting
+    value BEFORE quoting is processed, and double quotes never suppress
+    that expansion (verified against systemd 255: a literal ``%20`` in
+    either setting fails the unit to load with "Invalid specifier",
+    quoted or not; ``%%20`` loads and expands back to ``%20``). Unquoted
+    when the escaped word consists solely of characters systemd treats
     literally; otherwise double-quoted with C-style escapes for the
     characters systemd would reinterpret. Applied to every path so a
     state directory or workspace with spaces renders a VALID unit, and
     so no value can break out of its word (quotes and backslashes are
-    escaped, never passed through).
+    escaped, never passed through). ``$`` is deliberately NOT handled
+    here: variable substitution applies only to ``Exec*`` command lines,
+    never to ``ReadWritePaths`` — ``render_unit`` handles it once for
+    ``ExecStart`` with the documented ``:`` prefix.
     """
+    escaped = word.replace("%", "%%")
     if word and all(character in _SAFE_UNQUOTED for character in word):
-        return word
-    escaped = word.replace("\\", "\\\\").replace('"', '\\"')
+        return escaped
+    escaped = escaped.replace("\\", "\\\\").replace('"', '\\"')
     return f'"{escaped}"'
 
 
@@ -263,22 +293,67 @@ def render_unit(
     executable: Path,
     state_dir: Path,
     selection: ServiceSelection,
+    zcode_state_home: Path | None = None,
 ) -> str:
     """The deterministic systemd user unit for one paired worker.
 
     Byte-stable for identical inputs (no timestamps), so idempotency is
     plain content equality. No secret appears anywhere: the pairing
     credential lives only inside the state directory the unit points at.
+
+    ``zcode_state_home`` is the ZCode CLI's resolved state directory and
+    is REQUIRED whenever ``selection`` carries a ZCode source (a
+    :class:`ValueError` otherwise — the writable-home contract cannot be
+    silently omitted), and is ignored for units without one. Both
+    systemd substitution layers are handled here: literal ``%`` is
+    doubled by :func:`systemd_quote` (specifier expansion applies to
+    ``ExecStart`` AND ``ReadWritePaths`` regardless of quoting), and the
+    ``ExecStart`` line carries the documented ``:`` executable prefix so
+    ``$``-variable substitution is suppressed for the whole command
+    line — every word stays the literal path/value it was rendered from
+    (``ExecStart`` is not a shell line; ``ReadWritePaths`` never does
+    variable substitution, so ``$`` there needs no escaping at all).
     """
+    if selection.zcode_sources and zcode_state_home is None:
+        # The writable-home contract cannot be silently omitted: a
+        # ZCode-source unit without the state home would predictably
+        # break every ZCode execution under ProtectHome=read-only.
+        raise ValueError(
+            "a ZCode source unit requires the resolved ZCode CLI state "
+            + "home (install resolves it; render_unit must be called "
+            + "with zcode_state_home)"
+        )
     argv = [str(executable), "run", "--state-dir", str(state_dir)]
     argv += selection.exec_start_arguments()
-    exec_start = " ".join(systemd_quote(word) for word in argv)
+    # The ':' prefix (systemd.service(5) "Command Lines") suppresses
+    # environment-variable substitution for the ENTIRE command line: a
+    # literal '$' in any path must never silently expand to an
+    # environment value — or to nothing. Specifier expansion is NOT
+    # suppressed by the prefix, so systemd_quote still doubles '%'.
+    exec_start = ":" + " ".join(systemd_quote(word) for word in argv)
     write_paths = [str(state_dir)]
-    if selection.zcode_workspace and selection.zcode_workspace not in write_paths:
-        # A ZCode source executes edits in its authorized workspace, which
-        # usually sits OUTSIDE the state directory: ProtectHome=read-only
-        # needs this explicit write exception or every workspace edit fails.
-        write_paths.append(selection.zcode_workspace)
+    zcode_writable: list[Path] = []
+    if zcode_state_home is not None:
+        if not selection.zcode_sources:
+            raise ValueError(
+                "zcode_state_home is only rendered for ZCode sources"
+            )
+        # Service mode must not be stricter than a foreground `run`:
+        # normal ZCode CLI execution writes its session/runtime/log/
+        # rollout and database state under its own supported state home,
+        # which ProtectHome=read-only would refuse. Exactly this one
+        # resolved directory is the exception — never a writable $HOME.
+        zcode_writable.append(zcode_state_home)
+    if selection.zcode_workspace:
+        zcode_writable.append(Path(selection.zcode_workspace))
+    for raw_path in zcode_writable:
+        # Canonical entries only: a symlinked or non-canonical configured
+        # path grants exactly the directory it resolves to — the same
+        # directory ZCode itself works in — and never a second, differently
+        # spelled grant. state_dir arrives resolved already.
+        resolved = str(Path(raw_path).resolve())
+        if resolved not in write_paths:
+            write_paths.append(resolved)
     read_write_paths = " ".join(systemd_quote(path) for path in write_paths)
     lines = [
         UNIT_MARKER_LINE,
@@ -293,6 +368,8 @@ def render_unit(
         "",
         "[Service]",
         "Type=simple",
+        "# ':' prefix: no $-variable substitution on this line — every word",
+        "# is the literal path/value rendered below; '%' is written as '%%'.",
         f"ExecStart={exec_start}",
         "# The runtime reconnects with bounded backoff on its own; this",
         "# restart covers process death (crash, exhausted reconnect budget).",
@@ -301,8 +378,9 @@ def render_unit(
         "# SIGTERM takes the deterministic stop path (stop event, socket",
         "# closed, in-flight attempts cancelled and reported interrupted).",
         "TimeoutStopSec=30s",
-        "# Hardening: outbound TCP only; writes are confined to the worker",
-        "# state directory (and a configured ZCode workspace).",
+        "# Hardening: outbound TCP only; every writable path is listed in",
+        "# ReadWritePaths (the worker state directory; for ZCode sources",
+        "# also the ZCode CLI's own state home and the authorized workspace).",
         "NoNewPrivileges=true",
         "PrivateTmp=true",
         "ProtectSystem=strict",
@@ -337,6 +415,32 @@ def unit_install_path(
             resolve_home = home if home is not None else os.path.expanduser
             base = Path(resolve_home("~")) / ".config"
     return base / "systemd" / "user" / SERVICE_UNIT_NAME
+
+
+def resolve_zcode_state_home(env: Mapping[str, str] | None = None) -> Path:
+    """The EXACT resolved ZCode CLI state directory a ZCode unit allows.
+
+    Service mode is sandboxed with ``ProtectHome=read-only``, and normal
+    ZCode CLI execution writes session/runtime/log/rollout and database
+    state under its supported state home (``$HOME/.zcode`` — the ZCode
+    adapter's own ``HOME`` contract), so a ZCode-source unit must except
+    exactly that one directory in ``ReadWritePaths`` — and nothing
+    wider. The real directory must already exist: the owner's own
+    interactive ZCode usage (the official ``zcode login zai`` sign-in
+    path) creates it, and a missing directory would make the unit fail
+    to start at all — so install refuses with the remediation instead of
+    rendering an impossible path. This tooling never creates ZCode's
+    state home and never reads or writes its contents (D-061 constraint 3).
+    """
+    resolved = Path(os.path.realpath(zcode_state_home(env)))
+    if not resolved.is_dir():
+        raise ServiceZCodeStateHomeError(
+            f"the ZCode CLI state home {resolved} does not exist; run "
+            + "the official ZCode CLI once as this user (e.g. 'zcode "
+            + "login zai') before installing the service, so the unit "
+            + "can grant exactly that one directory write access"
+        )
+    return resolved
 
 
 # ── Executable resolution ─────────────────────────────────────────────────────
@@ -443,12 +547,15 @@ def install_service(
     open_store: StoreOpener,
     build_registry: RegistryBuilder,
     unit_path: Path | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> int:
     """Generate (or keep) the unit, then daemon-reload + enable --now.
 
     ``unit_path`` overrides the resolved user-unit location (test seam;
     production always passes ``None`` and installs to the real per-user
-    systemd directory). ``open_store`` and ``build_registry`` are the
+    systemd directory). ``env`` overrides the environment the ZCode CLI
+    state home is resolved from (test seam; production uses the process
+    environment). ``open_store`` and ``build_registry`` are the
     CLI-owned worker seams (pairing check and selection validation).
     """
     state_dir = _resolved_state_dir(arguments)
@@ -470,8 +577,17 @@ def install_service(
     # same builder `run` uses — an invalid selection never reaches disk.
     _ = build_registry(selection.as_run_arguments(), state_dir=str(state_dir))
     executable = resolve_worker_executable(argv0)
+    zcode_home: Path | None = None
+    if selection.zcode_sources:
+        # Refuses (before anything is written) when the required ZCode
+        # CLI state home does not exist — never an impossible
+        # ReadWritePaths entry, never a created ZCode state directory.
+        zcode_home = resolve_zcode_state_home(env=env)
     unit_text = render_unit(
-        executable=executable, state_dir=state_dir, selection=selection
+        executable=executable,
+        state_dir=state_dir,
+        selection=selection,
+        zcode_state_home=zcode_home,
     )
     target = unit_path if unit_path is not None else unit_install_path()
     existing = (
@@ -651,6 +767,7 @@ def run_service_command(
     argv0: str | None = None,
     tools: ServiceTools | None = None,
     unit_path: Path | None = None,
+    env: Mapping[str, str] | None = None,
     open_store: StoreOpener,
     build_registry: RegistryBuilder,
 ) -> int:
@@ -659,7 +776,7 @@ def run_service_command(
     Exit codes follow the worker CLI conventions: 0 success (including
     idempotent repeats), 2 refused configuration/failed operation;
     ``status``/``restart`` pass ``systemctl``'s own exit code through.
-    ``argv0``, ``tools``, ``unit_path``, ``open_store`` and
+    ``argv0``, ``tools``, ``unit_path``, ``env``, ``open_store`` and
     ``build_registry`` are injectable seams (tests); production resolves
     the real ones in ``worker_client.main``. A
     :class:`WorkerConfigError` from validation propagates to the CLI's
@@ -677,6 +794,7 @@ def run_service_command(
                 open_store=open_store,
                 build_registry=build_registry,
                 unit_path=unit_path,
+                env=env,
             )
         if subcommand == "status":
             return status_service(resolved_tools)
@@ -685,7 +803,13 @@ def run_service_command(
         if subcommand == "uninstall":
             return uninstall_service(resolved_tools, unit_path=unit_path)
         raise ValueError(f"unknown service subcommand: {subcommand!r}")
-    except (ServiceExecutableError, ServiceToolError, ValueError, OSError) as exc:
+    except (
+        ServiceExecutableError,
+        ServiceToolError,
+        ServiceZCodeStateHomeError,
+        ValueError,
+        OSError,
+    ) as exc:
         print(f"worker: {exc}", file=sys.stderr)
         return 2
 
@@ -716,12 +840,14 @@ __all__ = [
     "ServiceToolError",
     "ServiceToolResult",
     "ServiceTools",
+    "ServiceZCodeStateHomeError",
     "StoreOpener",
     "UNIT_MARKER_LINE",
     "default_service_tools",
     "install_service",
     "render_unit",
     "resolve_worker_executable",
+    "resolve_zcode_state_home",
     "restart_service",
     "run_service_command",
     "status_service",

@@ -301,6 +301,32 @@ def _minimal_environment(env: Mapping[str, str] | None = None) -> dict[str, str]
     return child
 
 
+#: The ZCode CLI's supported home-state directory name. Normal CLI
+#: execution keeps its session/runtime, log, rollout and database state
+#: under ``$HOME/.zcode`` — the same supported installation and login
+#: state location ``_minimal_environment`` preserves ``HOME`` for. This
+#: module never reads or writes that tree (D-061 constraint 3); the one
+#: consumer that must NAME it is the service unit manager, whose
+#: ``ReadWritePaths`` has to except exactly this directory so service
+#: mode is not stricter than a foreground ``run``.
+ZCODE_STATE_DIR_NAME = ".zcode"
+
+
+def zcode_state_home(env: Mapping[str, str] | None = None) -> Path:
+    """The ZCode CLI's supported home-state directory: ``$HOME/.zcode``.
+
+    Resolved from ``HOME`` — the same variable the adapter's child
+    environment passes through so the CLI finds its own installation
+    and login state — falling back to the invoking user's home when
+    ``HOME`` is unset. Naming the path is not touching it: callers
+    canonicalize the result with ``realpath`` and never read, write or
+    enumerate its contents (D-061 constraint 3).
+    """
+    parent = dict(os.environ) if env is None else dict(env)
+    home = parent.get("HOME") or os.path.expanduser("~")
+    return Path(home) / ZCODE_STATE_DIR_NAME
+
+
 # ── Discovery (deterministic, bounded, allowlisted) ───────────────────────────
 
 
@@ -1412,6 +1438,7 @@ __all__ = [
     "VERSION_PROBE_TIMEOUT_SECONDS",
     "ZCODE_ADAPTER_ID",
     "ZCODE_PROVIDER",
+    "ZCODE_STATE_DIR_NAME",
     "ZCodeBinary",
     "ZCodeIneligible",
     "ZCodeLocalAdapter",
@@ -1426,4 +1453,5 @@ __all__ = [
     "probe_zcode_doctor",
     "probe_zcode_version",
     "source_resource_id",
+    "zcode_state_home",
 ]
