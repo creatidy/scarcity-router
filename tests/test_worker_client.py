@@ -963,12 +963,18 @@ class ServiceCommandDispatchTests(unittest.TestCase):
     def test_service_install_config_error_exits_two_through_main(self) -> None:
         # The unpaired store refuses first: install operates on the
         # paired identity, so an unpaired directory never reaches the
-        # unit builder (and never spawns systemctl).
+        # unit builder (and never spawns systemctl). The state directory
+        # sits under a fake $HOME — the narrowed D-065 service contract.
         stderr = io.StringIO()
         with tempfile.TemporaryDirectory[str]() as tmp:
-            with redirect_stderr(stderr):
+            home = Path(tmp) / "home"
+            state = home / ".local" / "share" / "scarcity-router" / "worker"
+            state.mkdir(parents=True, mode=0o700)
+            with redirect_stderr(stderr), unittest.mock.patch.dict(
+                os.environ, {"HOME": str(home)}
+            ):
                 exit_code = worker_client.main(
-                    ["service", "install", "--state-dir", str(tmp)]
+                    ["service", "install", "--state-dir", str(state)]
                 )
         self.assertEqual(2, exit_code)
         self.assertIn("not paired", stderr.getvalue())
@@ -976,10 +982,14 @@ class ServiceCommandDispatchTests(unittest.TestCase):
     def test_service_install_bad_selection_surfaces_through_main(self) -> None:
         # A PAIRED store with an invalid selection: the typed registry
         # error propagates out of the service module and main's existing
-        # handler renders it as exit 2 — the composition contract.
+        # handler renders it as exit 2 — the composition contract. The
+        # state directory sits under a fake $HOME (the narrowed D-065
+        # service contract).
         stderr = io.StringIO()
         with tempfile.TemporaryDirectory[str]() as tmp:
-            store = worker_client.open_worker_store(tmp)
+            home = Path(tmp) / "home"
+            state = home / ".local" / "share" / "scarcity-router" / "worker"
+            store = worker_client.open_worker_store(str(state))
             try:
                 store.save_identity(
                     WorkerLocalIdentity(
@@ -990,14 +1000,16 @@ class ServiceCommandDispatchTests(unittest.TestCase):
                 )
             finally:
                 store.close()
-            with redirect_stderr(stderr):
+            with redirect_stderr(stderr), unittest.mock.patch.dict(
+                os.environ, {"HOME": str(home)}
+            ):
                 exit_code = worker_client.main(
                     [
                         "service",
                         "install",
                         "--allow-ollama",
                         "--state-dir",
-                        str(tmp),
+                        str(state),
                     ]
                 )
         self.assertEqual(2, exit_code)

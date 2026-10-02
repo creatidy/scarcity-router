@@ -5294,7 +5294,10 @@ Do not rewrite history or change an accepted decision silently.
 ### D-065 — First-class worker service lifecycle: the generated systemd user unit as the supported Linux/WSL deployment
 
 - **Status:** Accepted 2026-10-01 (issue #138, child F of the #132
-  program; branch `task/138-worker-service-lifecycle`)
+  program; branch `task/138-worker-service-lifecycle`); amended
+  2026-10-02 (PR #167 review): the service-mode filesystem contract is
+  narrowed to the invoking user's home subtree and the mountinfo
+  read-only-trust relaxation is removed (points 1, 3, 4 and 6)
 - **Date:** 2026-10-01
 - **Base:** `develop` @ `db4e1bd`
 - **Confidence:** High for the lifecycle shape (every mechanism is
@@ -5315,7 +5318,10 @@ Do not rewrite history or change an accepted decision silently.
   1. **One generated user unit, one fixed name.**
      `scarcity-router-worker service install` renders
      `scarcity-router-worker.service` into the invoking user's
-     `$XDG_CONFIG_HOME/systemd/user/` (default `~/.config/systemd/user/`).
+     `$XDG_CONFIG_HOME/systemd/user/` (default `~/.config/systemd/user/`),
+     which must lie beneath the invoking user's canonical home directory:
+     an `XDG_CONFIG_HOME` outside home is refused for `service install`
+     (2026-10-02 narrowing; the normal default location qualifies).
      The unit name is fixed: the supported shape is one worker service
      per user account; a second worker on one host is a second user
      account with its own state directory. No root, no system units, no
@@ -5367,7 +5373,14 @@ Do not rewrite history or change an accepted decision silently.
       directory's complete chain is opened component-by-component with
       `O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC`, relative to retained parent
       descriptors, and `fstat`-checked before traversal or provisioning.
-      Every component belongs to root or the invoking user; non-sticky
+      Because the unit directory lies beneath the invoking user's
+      canonical home (point 1), the walk ANCHORS AT the home directory:
+      the home anchor must be a real directory owned by the effective
+      user and closed to group/other writes, and only the components
+      BELOW it are checked — the admin-managed namespace above home
+      (`/`, `/home`) is never opened or inspected, and mount ownership
+      is never security evidence. Below the anchor the conservative
+      component checks apply: non-sticky
       group/other-writable parents are refused. A sticky parent is accepted
       only with a root/current-user-owned next component: neither the
       parent nor that component belongs to another user, so sticky unlink/
@@ -5421,34 +5434,53 @@ Do not rewrite history or change an accepted decision silently.
      must stay the dedicated ZCode state subtree (`~/.zcode -> $HOME`
      or `~/.zcode -> /` fails installation, as does any ancestor of
      `$HOME` broader than that subtree); the worker state directory
-     must be a dedicated private tree (existing, owner-owned, not
-      group/world-writable, with the same trusted ancestor-chain rule as
-      the unit directory). The trusted-ancestor rule is
-      NAMESPACE-AWARE for the sandboxed service (Phase-A live
-      acceptance, PR #167): under `ProtectSystem=strict` +
-      `ProtectHome=read-only` systemd establishes its read-only mounts
-      inside a mount namespace whose user mapping excludes host root,
-      so host-root-owned ancestors (`/`, `/home`) legitimately report
-      the overflow uid 65534. A NON-FINAL ancestor is therefore
-      accepted despite an untrusted displayed owner only when its mode
-      is closed to group/other writes AND the mount it resides on is
-      read-only in the process's own `/proc/self/mountinfo` view — the
-      kernel then denies every principal the rename/unlink the
-      ownership check exists for. UID 65534 is never globally trusted:
-      an untrusted owner on a WRITABLE mount (a genuinely nobody-owned
-      path, or any root-owned tree outside the read-only view, such as
-      `/tmp`) is refused, and the boundary itself must still be owned
-      by the invoking user — so a service-compatible state directory
-      lives in the user's own home subtree or another user-owned
-      dedicated tree. This boundary is established BEFORE opening
-      `WorkerLocalStore` or touching SQLite. The product-owned default
-      tree is provisioned through trusted directory descriptors when
-      missing; a missing custom state directory is refused, and a shared
-      custom directory is never silently repaired. SQLite's filename
-      open is safe against cross-principal substitution because both its
-      directory chain and leaf are unavailable for other-user replacement;
-      a planted non-regular database entry is refused before store access.
-      A workspace may live outside `$HOME` but
+     must be a dedicated private tree STRICTLY BENEATH the invoking
+      user's canonical home directory — the narrowed service-mode
+      contract (2026-10-02): the filesystem root, the home directory
+      itself and every location outside home — including a custom state
+      directory, or a symlink, that resolves outside home — are refused
+      at install with an actionable error naming the offending canonical
+      path, BEFORE anything is validated, written or enabled; the
+      tooling never relocates them. The normal
+      `$HOME/.local/share/scarcity-router/worker` location is the
+      primary supported path, and an explicit custom state directory
+      beneath home remains supported when it satisfies the
+      private-tree requirements (existing, owner-owned, not
+      group/world-writable). The boundary is established BEFORE opening
+      `WorkerLocalStore` or touching SQLite, through the HOME-ANCHORED
+      descriptor walk shared with the unit directory (point 3): open
+      the canonical home directory, require the opened home to be a
+      real directory owned by the effective user and closed to
+      group/other writes, retain that home descriptor, and traverse
+      each descendant component relative to the retained fd with
+      `O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC`, preserving the existing
+      ownership/private-mode checks below home and retaining the
+      verified final directory fd. This home-anchored traversal IS the
+      systemd-compatible security boundary: under
+      `ProtectSystem=strict` + `ProtectHome=read-only` the synthetic
+      read-only sandbox ancestors (`/`, `/home`, displaying the
+      overflow uid 65534 in systemd's user mapping) are simply outside
+      the trust computation — the walk never consults them, and mount
+      ownership/mountinfo is not security evidence anywhere. The
+      earlier namespace-aware relaxation (accepting an untrusted
+      read-only-mount ancestor selected from `/proc/self/mountinfo`)
+      is REMOVED, not corrected: selecting the effective mount from
+      mountinfo requires mount-ID/parent-ID reasoning the review found
+      unsound as a trust input, so the owner decision removed the
+      dependency from the trust model instead of extending it. The
+      product-owned default tree is provisioned through trusted
+      directory descriptors when missing; a missing custom state
+      directory is refused, and a shared custom directory is never
+      silently repaired. SQLite's filename open is safe against
+      cross-principal substitution because both its directory chain and
+      leaf are unavailable for other-user replacement; a planted
+      non-regular database entry is refused before store access. A
+      dedicated private state directory OUTSIDE home remains a
+      FOREGROUND `run` capability with the conservative root-to-leaf
+      ownership/permission validation and NO read-only-mount
+      relaxation: an untrusted displayed owner stays untrusted there.
+      A workspace may still live outside `$HOME` (the workspace is not
+      the worker's identity/security boundary) but
      never contains — or equals — the worker state directory or the
      ZCode state home, and a state home that is a broad parent of the
      workspace is refused, so no broader grant can subsume a narrower
@@ -5492,7 +5524,7 @@ Do not rewrite history or change an accepted decision silently.
       Windows). Lock-file read/write sharing preserves ordinary contention.
       No check-then-`CreateFileW(path)` sequence and no `realpath` that
       resolves away junctions exist. The state directory must pass
-     the private-tree verification (namespace-aware, per point 4)
+     the private-tree verification (home-anchored, per point 4)
      before the lock is taken, the holder
      pid is written only AFTER the advisory lock is acquired (byte 0 is
      the reserved lock byte; the pid line follows it, so a Windows

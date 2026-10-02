@@ -51,7 +51,15 @@ worker launcher. This module owns the whole lifecycle surface of
   ``--zcode-workspace``) is resolved EXACTLY ONCE at install time to a
   canonical absolute path — the same path that was validated — so a user
   manager can never re-resolve a relative value against its own (different)
-  working-directory context. The writable grants the unit declares are
+  working-directory context. In service mode the filesystem contract is
+  deliberately NARROW (D-065): the worker state directory AND the systemd
+  user-unit directory must lie strictly beneath the invoking user's
+  canonical home directory — ``/``, the home itself and every
+  outside-home location are refused before anything is written (the
+  foreground ``run`` keeps accepting dedicated private directories
+  outside home), and the home-anchored descriptor walk never inspects
+  the admin-managed namespace above home, whose synthetic sandbox owners
+  are not security evidence. The writable grants the unit declares are
   role-validated before anything is written: the filesystem root, the
   invoking user's home directory, and any grant that subsumes a protected
   boundary (the credential store, the ZCode state home) are refused with
@@ -94,7 +102,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import cast
 
-from .worker_identity_store import open_private_state_dir, open_trusted_worker_directory
+from .worker_identity_store import canonical_home, open_private_state_dir, open_trusted_worker_directory
 from .worker_local_store import WorkerLocalStore, default_worker_state_dir
 from .worker_zcode_adapter import zcode_state_home
 
@@ -648,13 +656,6 @@ def normalize_selection_paths(selection: ServiceSelection) -> ServiceSelection:
 # ── Writable-grant policy (small, role-aware; not a sandbox subsystem) ───────
 
 
-def _canonical_home(env: Mapping[str, str] | None) -> Path:
-    """The invoking user's home directory, canonicalized for comparisons."""
-    environment = os.environ if env is None else env
-    home = environment.get("HOME", "") or os.path.expanduser("~")
-    return Path(os.path.realpath(home))
-
-
 def _refuse_broad_grant(role: str, path: Path, reason: str) -> None:
     raise ServicePathError(
         f"refusing the {role} write grant {path}: {reason}; install wrote "
@@ -676,10 +677,13 @@ def validate_writable_grants(
 
     - **Universal:** no grant may resolve to the filesystem root or to
       the invoking user's home directory itself.
-    - **Worker state directory:** verified separately by
+    - **Worker state directory:** in service mode it must in the first
+      place be a private directory strictly beneath the invoking user's
+      canonical home (the narrowed D-065 contract, enforced by
+      ``install_service`` before validation); it is then verified by
       :func:`scarcity_router.worker_identity_store.open_private_state_dir`
-      (existing, owner-owned, not group/world-writable, not root/home) —
-      the same policy the single-instance lock enforces at run time.
+      (owner-owned, not group/world-writable, not root/home) — the same
+      policy the single-instance lock enforces at run time.
     - **ZCode state home:** must stay the dedicated ZCode state subtree —
       never the home, never an ancestor of it (``~/.zcode -> $HOME`` or
       ``~/.zcode -> /`` fail installation), never a broad parent of
@@ -695,7 +699,7 @@ def validate_writable_grants(
     Every refusal names the offending canonical path and the reason and
     happens BEFORE any unit is written or enabled.
     """
-    home = _canonical_home(env)
+    home = canonical_home(env)
     root = Path(state_dir.anchor)
     if workspace is not None:
         if workspace == root:
@@ -784,14 +788,35 @@ def install_service(
 ) -> int:
     """Generate (or keep) the unit, then daemon-reload + enable --now.
 
+    Refuses (before anything is written or enabled) any worker state
+    directory or user-unit directory outside the invoking user's
+    canonical home — the narrowed D-065 service-mode contract.
+
     ``unit_path`` overrides the resolved user-unit location (test seam;
     production always passes ``None`` and installs to the real per-user
-    systemd directory). ``env`` overrides the environment the ZCode CLI
-    state home is resolved from (test seam; production uses the process
-    environment). ``open_store`` and ``build_registry`` are the
-    CLI-owned worker seams (pairing check and selection validation).
+    systemd directory). ``env`` overrides the environment the home
+    directory and the ZCode CLI state home are resolved from (test seam;
+    production uses the process environment). ``open_store`` and
+    ``build_registry`` are the CLI-owned worker seams (pairing check and
+    selection validation).
     """
     state_dir = _resolved_state_dir(arguments)
+    # D-065 service-mode contract (narrowed): security-sensitive mutable
+    # state lives under the invoking user's canonical home. This is an
+    # intentional security boundary, decided before anything else runs:
+    # `/`, the home directory itself and every location outside home (a
+    # foreground `run` capability) are refused here, before any state is
+    # opened, paired or written.
+    home = canonical_home(env)
+    if state_dir == home or not state_dir.is_relative_to(home):
+        raise ServicePathError(
+            f"the service state directory must be a private directory "
+            + f"strictly beneath the current user's home directory {home}: "
+            + f"{state_dir} is not; use the default state directory "
+            + "(~/.local/share/scarcity-router/worker) or an explicit "
+            + "private directory under $HOME (foreground 'run' still "
+            + "accepts dedicated private directories outside home)"
+        )
     # SQLite opens by filename. This complete trusted/private chain excludes
     # cross-principal directory and leaf replacement BEFORE any store access.
     raw_state = arguments.get("state_dir")
@@ -868,7 +893,18 @@ def install_service(
             + "choose a private canonical configuration location (XDG_CONFIG_HOME) "
             + "so systemd and the installer use the same trusted directory chain"
         )
-    dir_fd = _verify_unit_directory(target.parent)
+    # Same D-065 narrowing for the unit location: the user-unit directory
+    # must lie beneath the invoking user's canonical home. The normal
+    # ~/.config/systemd/user location qualifies; an XDG_CONFIG_HOME (or
+    # any other resolution) outside home is refused for service install.
+    if target.parent == home or not target.parent.is_relative_to(home):
+        raise ServicePathError(
+            f"the systemd user unit directory must lie beneath the current "
+            + f"user's home directory {home}: {target.parent} does not; use "
+            + "the default ~/.config/systemd/user location (or point "
+            + "XDG_CONFIG_HOME beneath $HOME) for service install"
+        )
+    dir_fd = _verify_unit_directory(target.parent, env=env)
     try:
         existing = _read_unit(dir_fd, target.name)
         if (
@@ -1107,9 +1143,18 @@ def run_service_command(
 _O_CLOEXEC = getattr(os, "O_CLOEXEC", 0)
 
 
-def _verify_unit_directory(directory: Path) -> int:
-    """Provision through trusted parents and retain the verified unit fd."""
-    return open_trusted_worker_directory(directory, create=True)
+def _verify_unit_directory(
+    directory: Path, *, env: Mapping[str, str] | None = None
+) -> int:
+    """Provision through trusted parents and retain the verified unit fd.
+
+    The directory lies beneath the invoking user's canonical home
+    (enforced by ``install_service``), so the walk anchors at the home
+    directory: the admin-managed namespace above home — whose synthetic
+    sandbox owners under ``ProtectHome=read-only`` are not security
+    evidence — is never consulted.
+    """
+    return open_trusted_worker_directory(directory, create=True, env=env)
 
 
 def _read_unit(dir_fd: int, name: str) -> str | None:

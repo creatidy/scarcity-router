@@ -362,33 +362,26 @@ class WorkerStateDirLockHardeningTests(unittest.TestCase):
 
 
 @unittest.skipUnless(
-    sys.platform.startswith("linux"), "/proc/self/fd and /proc/self/mountinfo"
+    sys.platform.startswith("linux"), "/proc/self/fd is a Linux interface"
 )
-class SystemdSandboxNamespaceTests(unittest.TestCase):
-    """Phase-A live-acceptance regression (PR #167): the sandbox view.
+class HomeAnchoredBoundaryTests(unittest.TestCase):
+    """The home-anchored trust boundary (D-065, narrowed service contract).
 
-    The generated user unit runs under ``ProtectSystem=strict`` +
-    ``ProtectHome=read-only``. Inside that mount namespace the sandbox's
-    user mapping does not include the host's root account, so host-root-
-    owned directories such as ``/`` and ``/home`` legitimately report the
-    overflow uid 65534 on READ-ONLY mounts, while the user's own subtree
-    below reports the real mapped uid. The live worker failed with
-    ``untrusted worker path component /`` because the trusted-ancestor
-    walk rejected those synthetic ancestors.
+    For a boundary strictly beneath the canonical home the walk anchors
+    AT the home directory: the admin-managed namespace above it (``/``,
+    ``/home``) is never opened or inspected, and mount ownership is
+    never security evidence. Under systemd's ``ProtectSystem=strict`` +
+    ``ProtectHome=read-only`` sandbox those synthetic read-only
+    ancestors legitimately display the overflow uid 65534 — the removed
+    mountinfo exception needed read-only-mount reasoning to accept
+    them; the home-anchored walk is simply outside their reach.
 
-    Each test models the namespace with a patched ``os.fstat`` (overflow
-    uid for the modeled ancestor directories, resolved through
-    ``/proc/self/fd``) and a patched ``_mount_point_is_readonly`` — no
-    root, no live systemd, fully deterministic.
+    Each test models the namespace view with a patched ``os.fstat``
+    (overflow uid for the modeled directories, resolved through
+    ``/proc/self/fd``) — no root, no live systemd, fully deterministic.
     """
 
-    def install_namespace(
-        self,
-        overflow_uids: dict[str, int],
-        readonly: set[str],
-    ) -> None:
-        from scarcity_router import worker_identity_store
-
+    def install_view(self, overflow_uids: dict[str, int]) -> None:
         real_fstat = os.fstat
 
         def sandboxed_fstat(fd: int) -> os.stat_result:
@@ -406,142 +399,132 @@ class SystemdSandboxNamespaceTests(unittest.TestCase):
                 info.st_ctime,
             ))
 
-        def readonly_for(mount_path: str) -> bool:
-            return mount_path in readonly
+        patcher = unittest.mock.patch("os.fstat", sandboxed_fstat)
+        _ = patcher.start()
+        self.addCleanup(patcher.stop)
 
-        fstat_patch = unittest.mock.patch("os.fstat", sandboxed_fstat)
-        readonly_patch = unittest.mock.patch.object(
-            worker_identity_store, "_mount_point_is_readonly", readonly_for
-        )
-        _ = fstat_patch.start()
-        _ = readonly_patch.start()
-        self.addCleanup(fstat_patch.stop)
-        self.addCleanup(readonly_patch.stop)
-    def test_sandboxed_synthetic_ancestors_accept_private_state_dir(self) -> None:
+    def test_synthetic_sandbox_ancestors_are_outside_the_trust_computation(
+        self,
+    ) -> None:
+        # `/` and the home's parent display the overflow uid, exactly as
+        # in the real ProtectHome sandbox; the private under-home
+        # boundary is accepted WITHOUT any mount/read-only reasoning —
+        # and the walk would refuse if it ever consulted those
+        # ancestors.
         with tempfile.TemporaryDirectory() as tmp:
-            state = Path(tmp) / "scarcity-router" / "worker"
+            home = Path(tmp) / "home"
+            state = home / ".local" / "share" / "scarcity-router" / "worker"
             state.mkdir(parents=True, mode=0o700)
-            self.install_namespace(
-                overflow_uids={"/": 65534, tmp: 65534},
-                readonly={"/", tmp},
-            )
-            lock = WorkerStateDirLock(str(state))
-            lock.acquire()
-            try:
-                self.assertEqual(
-                    str(os.getpid()), (state / "worker.lock").read_text().strip()
-                )
-            finally:
-                lock.release()
+            self.install_view({"/": 65534, tmp: 65534})
+            with unittest.mock.patch.dict(os.environ, {"HOME": str(home)}):
+                lock = WorkerStateDirLock(str(state))
+                lock.acquire()
+                try:
+                    self.assertEqual(
+                        str(os.getpid()),
+                        (state / "worker.lock").read_text().strip(),
+                    )
+                finally:
+                    lock.release()
 
-    def test_untrusted_owner_on_writable_mount_is_still_refused(self) -> None:
-        # The same overflow-uid view WITHOUT read-only mounts — i.e. a
-        # real nobody-owned path on the writable host — must keep the
-        # original refusal: nothing globally trusts uid 65534.
+    def test_untrusted_owner_below_home_is_refused_without_mount_reasoning(
+        self,
+    ) -> None:
+        # An untrusted displayed owner BELOW home remains untrusted —
+        # there is no read-only-mount exception left to reach for.
         with tempfile.TemporaryDirectory() as tmp:
-            state = Path(tmp) / "state"
-            state.mkdir(mode=0o700)
-            self.install_namespace(
-                overflow_uids={"/": 65534, tmp: 65534},
-                readonly=set(),
-            )
-            with self.assertRaisesRegex(
-                ValueError, "untrusted worker path component /"
-            ):
-                WorkerStateDirLock(str(state)).acquire()
+            home = Path(tmp) / "home"
+            shared = home / "shared"
+            state = shared / "worker"
+            state.mkdir(parents=True, mode=0o700)
+            self.install_view({str(shared): 65534})
+            with unittest.mock.patch.dict(os.environ, {"HOME": str(home)}):
+                with self.assertRaisesRegex(
+                    ValueError, "untrusted worker path component"
+                ):
+                    WorkerStateDirLock(str(state)).acquire()
             self.assertEqual([], list(state.iterdir()))
 
-    def test_untrusted_final_directory_is_refused_even_on_readonly_mount(self) -> None:
-        # The relaxation covers only traversal ancestors: the boundary
-        # itself must belong to the invoking user, mount state aside.
+    def test_untrusted_final_directory_below_home_is_refused(self) -> None:
+        # The boundary itself must belong to the invoking user: a
+        # root-owned (or otherwise foreign-owned) final directory below
+        # home is refused even there.
         with tempfile.TemporaryDirectory() as tmp:
-            state = Path(tmp) / "state"
-            state.mkdir(mode=0o700)
-            self.install_namespace(
-                overflow_uids={"/": 65534, tmp: 65534, str(state): 65534},
-                readonly={"/", tmp, str(state)},
-            )
-            with self.assertRaisesRegex(
-                ValueError, "untrusted worker path component .* not owned by"
-            ):
-                WorkerStateDirLock(str(state)).acquire()
+            home = Path(tmp) / "home"
+            state = home / "worker"
+            state.mkdir(parents=True, mode=0o700)
+            self.install_view({str(state): 0})
+            with unittest.mock.patch.dict(os.environ, {"HOME": str(home)}):
+                with self.assertRaisesRegex(
+                    ValueError, "not owned by the current user"
+                ):
+                    WorkerStateDirLock(str(state)).acquire()
             self.assertEqual([], list(state.iterdir()))
 
-    def test_world_writable_ancestor_is_refused_even_in_sandbox_view(self) -> None:
-        # A loosened mode is refused even where the mount is read-only:
-        # the same tree viewed on the writable host (foreground run)
-        # would allow cross-principal replacement.
+    def test_world_writable_directory_below_home_is_refused(self) -> None:
+        # A loosened mode is refused on its own: the same tree on the
+        # writable host would allow cross-principal replacement.
         with tempfile.TemporaryDirectory() as tmp:
-            shared = Path(tmp) / "shared"
-            shared.mkdir(mode=0o777)
-            shared.chmod(0o777)
-            state = shared / "state"
-            state.mkdir(mode=0o700)
-            self.install_namespace(
-                overflow_uids={"/": 65534, tmp: 65534, str(shared): 65534},
-                readonly={"/", tmp, str(shared)},
-            )
-            with self.assertRaisesRegex(
-                ValueError, "untrusted worker path component"
-            ):
-                WorkerStateDirLock(str(state)).acquire()
+            home = Path(tmp) / "home"
+            shared = home / "shared"
+            state = shared / "worker"
+            state.mkdir(parents=True, mode=0o777)
+            _ = shared.chmod(0o777)
+            with unittest.mock.patch.dict(os.environ, {"HOME": str(home)}):
+                with self.assertRaisesRegex(
+                    ValueError, "group- or world-writable"
+                ):
+                    WorkerStateDirLock(str(state)).acquire()
+            self.assertEqual([], list(state.iterdir()))
+
+    def test_home_anchor_owned_by_another_principal_is_refused(self) -> None:
+        # The anchor carries the whole trust decision: a home displaying
+        # another principal's uid is refused — the walk never falls back
+        # to trusting anything above or instead of it.
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            state = home / "worker"
+            state.mkdir(parents=True, mode=0o700)
+            self.install_view({str(home): 65534})
+            with unittest.mock.patch.dict(os.environ, {"HOME": str(home)}):
+                with self.assertRaisesRegex(
+                    ValueError, "home anchor .* not a directory owned by"
+                ):
+                    WorkerStateDirLock(str(state)).acquire()
+            self.assertEqual([], list(state.iterdir()))
+
+    def test_group_writable_home_anchor_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            state = home / "worker"
+            state.mkdir(parents=True, mode=0o700)
+            _ = home.chmod(0o773)
+            with unittest.mock.patch.dict(os.environ, {"HOME": str(home)}):
+                with self.assertRaisesRegex(
+                    ValueError, "home anchor .* group- or world-writable"
+                ):
+                    WorkerStateDirLock(str(state)).acquire()
             self.assertEqual([], list(state.iterdir()))
 
 
-_MOUNTINFO_FIXTURE = "\n".join(
-    [
-        # fields: id parent dev root MOUNT-POINT OPTIONS [optional] - fstype ...
-        "33 1 8:2 / / rw,relatime - ext4 /dev/sda2 rw,relatime",
-        "41 33 8:2 /home /home ro,relatime master:1 - ext4 /dev/sda2 ro,relatime",
-        "44 33 0:44 / /run/user rw,nosuid,nodev - tmpfs tmpfs rw",
-        "45 44 0:45 / /run/user ro,relatime - tmpfs tmpfs rw",
-        "47 33 8:2 /dir /mnt/my\\040dir ro - ext4 /dev/sda2 ro",
-        "49 33 8:2 /sub /mnt/my\\040dir/sub rw - ext4 /dev/sda2 rw",
-    ]
-)
+class MountinfoIsNotPartOfTheTrustModelTests(unittest.TestCase):
+    """The rejected mountinfo mechanism is REMOVED, not dormant (D-065).
 
+    Selecting the effective mount from ``/proc/self/mountinfo`` requires
+    mount-ID/parent-ID reasoning the review found unsound as a trust
+    input; the owner decision removed the dependency instead of
+    correcting it. This test pins the removal so no relaxation can
+    quietly grow back.
+    """
 
-@unittest.skipUnless(
-    sys.platform.startswith("linux"), "/proc/self/mountinfo is a Linux interface"
-)
-class MountInfoReadonlyLookupTests(unittest.TestCase):
-    """The namespace-aware read-only lookup over a known mount table."""
+    def test_the_walk_module_no_longer_reads_mount_tables(self) -> None:
+        import inspect
 
-    def lookup(self, path: str) -> bool:
         from scarcity_router import worker_identity_store
 
-        with unittest.mock.patch.object(
-            worker_identity_store, "_read_mount_table", lambda: _MOUNTINFO_FIXTURE
-        ):
-            return worker_identity_store._mount_point_is_readonly(path)  # pyright: ignore[reportPrivateUsage] - the namespace seam under test
-
-    def test_readonly_and_writable_roots(self) -> None:
-        self.assertFalse(self.lookup("/"))
-        self.assertTrue(self.lookup("/home/adrian/.local/share/scarcity-router/worker"))
-
-    def test_prefix_safety_does_not_confuse_sibling_names(self) -> None:
-        # /homeX is not under the /home mount: it falls back to / (rw).
-        self.assertFalse(self.lookup("/homeX/sub"))
-
-    def test_deepest_covering_mount_wins_over_its_readonly_parent(self) -> None:
-        self.assertTrue(self.lookup("/mnt/my dir/state"))
-        self.assertFalse(self.lookup("/mnt/my dir/sub/state"))
-
-    def test_later_stacked_mount_shadows_earlier(self) -> None:
-        self.assertTrue(self.lookup("/run/user/1000"))
-
-    def test_kernel_path_escaping_is_decoded(self) -> None:
-        self.assertTrue(self.lookup("/mnt/my dir/state"))
-
-    def test_unreadable_table_fails_closed(self) -> None:
-        from scarcity_router import worker_identity_store
-
-        with unittest.mock.patch.object(
-            worker_identity_store, "_read_mount_table", lambda: None
-        ):
-            self.assertFalse(
-                worker_identity_store._mount_point_is_readonly("/home/x")  # pyright: ignore[reportPrivateUsage] - the namespace seam under test
-            )
+        source = inspect.getsource(worker_identity_store)
+        self.assertNotIn("mountinfo", source)
+        self.assertNotIn("/proc/self/mounts", source)
 
 
 @unittest.skipUnless(
@@ -551,8 +534,16 @@ class MountInfoReadonlyLookupTests(unittest.TestCase):
 class SystemdRunNamespaceAcceptanceTests(unittest.TestCase):
     """Acceptance against a REAL ``systemd-run --user`` sandbox.
 
-    Skipped wherever no working user manager exists; the deterministic
-    suite above never requires one.
+    The deployment shape under test — a dedicated private tree under the
+    user's canonical home (the default state-dir location) — must be
+    accepted by the home-anchored walk inside a real
+    ``ProtectSystem=strict`` + ``ProtectHome=read-only`` sandbox with the
+    exact ``ReadWritePaths`` grant the generated unit renders, even
+    though the sandbox's synthetic ``/`` and ``/home`` display the
+    overflow uid. NO mountinfo exception is involved (pinned by
+    ``MountinfoIsNotPartOfTheTrustModelTests``). Skipped wherever no
+    working user manager exists; the deterministic suite above never
+    requires one.
     """
 
     def test_sandbox_accepts_the_private_state_boundary(self) -> None:
@@ -564,11 +555,6 @@ class SystemdRunNamespaceAcceptanceTests(unittest.TestCase):
         )
         if probe.returncode != 0:
             self.skipTest(f"no working systemd user manager: {probe.stderr.strip()}")
-        # The deployment shape under test: a dedicated private tree in the
-        # user's own home subtree (the default state-dir location), which
-        # the sandbox maps to the real uid — not /tmp, whose root-owned
-        # components display the overflow uid on their WRITABLE bind and
-        # are refused by design ("choose a private location").
         import getpass
         import shutil
         import uuid

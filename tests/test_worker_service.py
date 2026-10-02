@@ -23,6 +23,13 @@ script in a temporary directory. The suite pins the #138 contract:
 - install/update/uninstall discipline: marker-gated replacement, an
   unrelated unit is never overwritten or removed, repeats are safe,
   failures are visible and honestly exited;
+- the narrowed service-mode filesystem contract (D-065): the worker
+  state directory AND the systemd user-unit directory must lie strictly
+  beneath the invoking user's canonical home — ``/``, the home itself,
+  outside-home locations and symlink escapes are refused before anything
+  is written, and ``XDG_CONFIG_HOME`` outside home is refused for
+  install — while outside-home state directories remain a foreground
+  ``run`` capability with the conservative root-to-leaf checks;
 - linger is handled deliberately and visibly, never fatally.
 
 The single-instance lock has its own suite next to the store tests
@@ -101,10 +108,15 @@ class ServiceWorld:
 
     def __init__(self, tmp: Path) -> None:
         self.tmp = tmp
-        self.state_dir = tmp / "state"
-        self.workspace_dir: Path = tmp / "workspace"
+        # The narrowed D-065 service contract: the worker state directory
+        # and the systemd user-unit directory live UNDER the user's home
+        # (the world's $HOME is a fake home inside tmp).
         self.home_dir: Path = tmp / "home"
         _ = (self.home_dir / ".zcode").mkdir(parents=True)
+        self.state_dir = (
+            self.home_dir / ".local" / "share" / "scarcity-router" / "worker"
+        )
+        self.workspace_dir: Path = tmp / "workspace"
         _ = self.workspace_dir.mkdir()
         self.environment: dict[str, str] = {"HOME": str(self.home_dir)}
         store = open_worker_store(str(self.state_dir))
@@ -125,7 +137,11 @@ class ServiceWorld:
         _ = self.executable.write_text("#!/bin/sh\nexit 0\n")
         _ = self.executable.chmod(0o755)
         self.unit_path = (
-            tmp / "config" / "systemd" / "user" / worker_service.SERVICE_UNIT_NAME
+            self.home_dir
+            / ".config"
+            / "systemd"
+            / "user"
+            / worker_service.SERVICE_UNIT_NAME
         )
         self.systemctl_calls: list[list[str]] = []
         self.loginctl_calls: list[list[str]] = []
@@ -951,10 +967,12 @@ class InstallLifecycleTests(unittest.TestCase):
         # interactive ZCode usage creates it): install refuses instead of
         # writing a unit whose ReadWritePaths names an impossible path —
         # and it never creates ZCode's state home itself.
-        self.world.environment = {
-            "HOME": str(self.world.tmp / "home-without-zcode")
-        }
+        alt_home = self.world.tmp / "home-without-zcode"
+        alt_state = alt_home / ".local" / "share" / "scarcity-router" / "worker"
+        self.world.pair_state_dir(alt_state)
+        self.world.environment = {"HOME": str(alt_home)}
         code, _out, err = self.world.install(
+            state_dir=str(alt_state),
             codex_sources=[],
             zcode_sources=["zai-plan"],
             zcode_workspace=str(self.world.workspace_dir),
@@ -964,9 +982,7 @@ class InstallLifecycleTests(unittest.TestCase):
         self.assertIn("zcode login zai", err)
         self.assertFalse(self.world.unit_path.exists())
         self.assertEqual([], self.world.systemctl_calls)
-        self.assertFalse(
-            (self.world.tmp / "home-without-zcode" / ".zcode").exists()
-        )
+        self.assertFalse((alt_home / ".zcode").exists())
 
     def test_enable_failure_is_visible_and_exits_two(self) -> None:
         self.world.systemctl_failures["enable"] = 1
@@ -1013,6 +1029,7 @@ class InstallLifecycleTests(unittest.TestCase):
                     loginctl=broken,
                 ),
                 unit_path=self.world.unit_path,
+                env=self.world.environment,
                 open_store=open_worker_store,
                 build_registry=build_registry,
             )
@@ -1242,27 +1259,28 @@ class PathNormalizationTests(unittest.TestCase):
     def test_relative_state_dir_resolves_to_the_install_time_directory(
         self,
     ) -> None:
-        self._chdir(self.world.tmp)
-        self._pair(self.world.tmp / "state-rel")
+        self._chdir(self.world.home_dir)
+        self._pair(self.world.home_dir / "state-rel")
         code, _out, err = self.world.install(state_dir="state-rel")
         self.assertEqual(0, code, err)
         words = self._exec_start_words()
         flag_index = words.index("--state-dir")
         self.assertEqual(
-            str((self.world.tmp / "state-rel").resolve()),
+            str((self.world.home_dir / "state-rel").resolve()),
             words[flag_index + 1],
         )
 
     def test_generated_unit_contains_no_relative_filesystem_arguments(
         self,
     ) -> None:
-        self._chdir(self.world.tmp)
-        bin_dir = self.world.tmp / "bin"
+        self._chdir(self.world.home_dir)
+        _ = (self.world.home_dir / "workspace").mkdir()
+        bin_dir = self.world.home_dir / "bin"
         _ = bin_dir.mkdir(exist_ok=True)
         zbin = bin_dir / "zcode"
         _ = zbin.write_text("#!/bin/sh\nexit 0\n")
         _ = zbin.chmod(0o755)
-        self._pair(self.world.tmp / "state-rel")
+        self._pair(self.world.home_dir / "state-rel")
         code, _out, err = self.world.install(
             codex_sources=[],
             zcode_sources=["zai-plan"],
@@ -1403,13 +1421,13 @@ class WritableGrantPolicyTests(unittest.TestCase):
         self.assertFalse(self.world.unit_path.exists())
 
     def test_workspace_containing_the_state_dir_is_refused(self) -> None:
-        alt_state = self.world.tmp / "alt" / "state"
+        alt_state = self.world.home_dir / "alt" / "state"
         self._pair(alt_state)
         code, _out, err = self.world.install(
             state_dir=str(alt_state),
             codex_sources=[],
             zcode_sources=["zai-plan"],
-            zcode_workspace=str(self.world.tmp / "alt"),
+            zcode_workspace=str(self.world.home_dir / "alt"),
         )
         self.assertEqual(2, code)
         self.assertIn("contains or equals the worker state directory", err)
@@ -1417,7 +1435,7 @@ class WritableGrantPolicyTests(unittest.TestCase):
         self.assertEqual([], self.world.systemctl_calls)
 
     def test_workspace_equal_to_the_state_dir_is_refused(self) -> None:
-        alt_state = self.world.tmp / "alt" / "state"
+        alt_state = self.world.home_dir / "alt" / "state"
         self._pair(alt_state)
         code, _out, err = self.world.install(
             state_dir=str(alt_state),
@@ -1476,7 +1494,7 @@ class WritableGrantPolicyTests(unittest.TestCase):
         self.assertTrue(self.world.unit_path.is_file())
 
     def test_group_writable_state_dir_is_refused_by_install(self) -> None:
-        shared = self.world.tmp / "shared-state"
+        shared = self.world.home_dir / "shared-state"
         _ = shared.mkdir()
         # A REAL paired state directory whose permissions were loosened
         # (or a shared directory an operator pointed the worker at): the
@@ -1490,6 +1508,147 @@ class WritableGrantPolicyTests(unittest.TestCase):
         self.assertIn(str(shared), err)
         self.assertFalse(self.world.unit_path.exists())
         self.assertEqual([], self.world.systemctl_calls)
+
+
+class ServiceHomeContractTests(unittest.TestCase):
+    """The narrowed D-065 service-mode filesystem contract.
+
+    Security-sensitive mutable state for the systemd user service lives
+    under the invoking user's canonical home: ``service install``
+    accepts the default state directory and an explicit private custom
+    state directory beneath ``$HOME``, and refuses ``/``, the home
+    itself and every location outside home (including a symlink that
+    resolves outside) BEFORE anything is validated, written or enabled.
+    The systemd user-unit directory carries the same boundary: the
+    normal ``~/.config/systemd/user`` location is supported and an
+    ``XDG_CONFIG_HOME`` outside the canonical home is refused for
+    install. Dedicated private directories outside home remain a
+    FOREGROUND ``run`` capability.
+    """
+
+    _tmp: tempfile.TemporaryDirectory[str]
+    world: ServiceWorld
+
+    def __init__(self, method_name: str = "runTest") -> None:
+        super().__init__(method_name)
+        self._tmp = cast("tempfile.TemporaryDirectory[str]", object())
+        self.world = cast("ServiceWorld", object())
+
+    @override
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory[str]()
+        self.addCleanup(self._tmp.cleanup)
+        self.world = ServiceWorld(Path(self._tmp.name))
+
+    def _pair(self, state_dir: Path) -> None:
+        return self.world.pair_state_dir(state_dir)
+
+    def _install_through_env(
+        self, *, unit_path: Path | None
+    ) -> tuple[int, str, str]:
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            code = worker_service.run_service_command(
+                self.world.install_arguments(),
+                argv0=str(self.world.executable),
+                tools=self.world.tools(),
+                unit_path=unit_path,
+                env=self.world.environment,
+                open_store=open_worker_store,
+                build_registry=build_registry,
+            )
+        return code, stdout.getvalue(), stderr.getvalue()
+
+    def test_default_state_layout_under_home_installs(self) -> None:
+        # The world's own state directory IS the primary supported path:
+        # $HOME/.local/share/scarcity-router/worker.
+        self.assertEqual(
+            self.world.home_dir / ".local" / "share" / "scarcity-router" / "worker",
+            self.world.state_dir,
+        )
+        code, _out, err = self.world.install()
+        self.assertEqual(0, code, err)
+        self.assertTrue(self.world.unit_path.is_file())
+
+    def test_explicit_private_custom_state_dir_beneath_home_installs(self) -> None:
+        custom = self.world.home_dir / "worker-state"
+        custom.mkdir(mode=0o700)
+        self._pair(custom)
+        code, _out, err = self.world.install(state_dir=str(custom))
+        self.assertEqual(0, code, err)
+        unit_text = self.world.unit_path.read_text(encoding="utf-8")
+        self.assertIn(f"--state-dir {custom}", unit_text)
+
+    def test_state_dir_equal_to_home_is_refused(self) -> None:
+        code, _out, err = self.world.install(state_dir=str(self.world.home_dir))
+        self.assertEqual(2, code)
+        self.assertIn("strictly beneath", err)
+        self.assertFalse(self.world.unit_path.exists())
+        self.assertEqual([], self.world.systemctl_calls)
+
+    def test_state_dir_at_the_filesystem_root_is_refused(self) -> None:
+        code, _out, err = self.world.install(state_dir="/")
+        self.assertEqual(2, code)
+        self.assertIn("strictly beneath", err)
+        self.assertFalse(self.world.unit_path.exists())
+        self.assertEqual([], self.world.systemctl_calls)
+
+    def test_state_dir_outside_home_is_refused(self) -> None:
+        outside = self.world.tmp / "srv" / "scarcity-worker"
+        outside.mkdir(parents=True, mode=0o700)
+        self._pair(outside)
+        code, _out, err = self.world.install(state_dir=str(outside))
+        self.assertEqual(2, code)
+        self.assertIn("strictly beneath", err)
+        self.assertIn(str(outside), err)
+        self.assertFalse(self.world.unit_path.exists())
+        self.assertEqual([], self.world.systemctl_calls)
+
+    def test_symlinked_state_dir_resolving_outside_home_is_refused(self) -> None:
+        target = self.world.tmp / "elsewhere" / "worker"
+        target.mkdir(parents=True, mode=0o700)
+        self._pair(target)
+        link = self.world.home_dir / "worker-link"
+        os.symlink(str(target), str(link))
+        code, _out, err = self.world.install(state_dir=str(link))
+        self.assertEqual(2, code)
+        self.assertIn("strictly beneath", err)
+        self.assertFalse(self.world.unit_path.exists())
+        self.assertEqual([], self.world.systemctl_calls)
+
+    def test_unit_directory_through_xdg_outside_home_is_refused(self) -> None:
+        outside_config = self.world.tmp / "outside-config"
+        outside_config.mkdir()
+        with patch.dict(
+            os.environ,
+            {
+                "HOME": str(self.world.home_dir),
+                "XDG_CONFIG_HOME": str(outside_config),
+            },
+        ):
+            code, _out, err = self._install_through_env(unit_path=None)
+        self.assertEqual(2, code)
+        self.assertIn("must lie beneath the current user's home", err)
+        self.assertFalse(
+            (outside_config / "systemd").exists(),
+            "the refused unit directory must not even be provisioned",
+        )
+        self.assertEqual([], self.world.systemctl_calls)
+
+    def test_unit_directory_through_xdg_beneath_home_is_accepted(self) -> None:
+        custom_config = self.world.home_dir / ".config-custom"
+        with patch.dict(
+            os.environ,
+            {
+                "HOME": str(self.world.home_dir),
+                "XDG_CONFIG_HOME": str(custom_config),
+            },
+        ):
+            code, _out, err = self._install_through_env(unit_path=None)
+        self.assertEqual(0, code, err)
+        unit = custom_config / "systemd" / "user" / worker_service.SERVICE_UNIT_NAME
+        self.assertTrue(unit.is_file())
+        self.assertEqual(0o700, os.stat(unit.parent).st_mode & 0o777)
 
 
 class UnitWriterSecurityTests(unittest.TestCase):
@@ -1530,12 +1689,14 @@ class UnitWriterSecurityTests(unittest.TestCase):
                 _ = world.unit_path.write_text(worker_service.UNIT_MARKER_LINE + "\nold\n")
                 source = unit_dir.parent.parent if replace_ancestor else unit_dir
                 retained = source.with_name(source.name + "-validated")
-                def verify(directory: Path) -> int:
+                def verify(directory: Path, *, env: object = None) -> int:
                     from scarcity_router.worker_identity_store import open_trusted_worker_directory
-                    return open_trusted_worker_directory(directory, create=True)
+                    return open_trusted_worker_directory(
+                        directory, create=True, env=env  # pyright: ignore[reportArgumentType]
+                    )
 
-                def replace_after_verification(directory: Path) -> int:
-                    fd = verify(directory)
+                def replace_after_verification(directory: Path, *, env: object = None) -> int:
+                    fd = verify(directory, env=env)
                     _ = source.rename(retained)
                     unit_dir.mkdir(parents=True)
                     _ = world.unit_path.write_text("UNRELATED UNIT IN REPLACEMENT\n")
@@ -1601,7 +1762,7 @@ class UnitWriterSecurityTests(unittest.TestCase):
         self.assertEqual([], self.world.systemctl_calls)
 
     def test_state_ancestor_refused_before_store_access(self) -> None:
-        shared = self.world.tmp / "shared"
+        shared = self.world.home_dir / "shared"
         shared.mkdir(mode=0o777)
         shared.chmod(0o777)
         state = shared / "private-leaf"
@@ -1619,7 +1780,9 @@ class UnitWriterSecurityTests(unittest.TestCase):
         self.assertEqual([], list(state.iterdir()))
 
     def test_default_first_run_is_provisioned_before_store_open(self) -> None:
-        state = self.world.tmp / "new-data" / "scarcity-router" / "worker"
+        state = (
+            self.world.home_dir / "new-data" / "scarcity-router" / "worker"
+        )
         seen: list[str] = []
 
         def open_verified(path: str) -> WorkerLocalStore:
@@ -1640,7 +1803,7 @@ class UnitWriterSecurityTests(unittest.TestCase):
         self.assertEqual([str(state)], seen)
 
     def test_missing_custom_state_is_not_created_by_store(self) -> None:
-        state = self.world.tmp / "custom-missing"
+        state = self.world.home_dir / "custom-missing"
         code, _out, _err = self.world.install(state_dir=str(state))
         self.assertEqual(2, code)
         self.assertFalse(state.exists())

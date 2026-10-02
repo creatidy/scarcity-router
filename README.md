@@ -388,11 +388,20 @@ One service per user account: a second worker on the same host is a
 second user account with its own paired state. A foreground process can
 never run next to the service — every worker holds a lifetime lock on
 its state directory and the second process fails with a message naming
-the holder. Service installation requires a private worker state directory
-and a trusted configuration path: no group/world-writable non-sticky
-ancestor, and no symlinked systemd unit-directory chain. For custom paths,
-choose a private canonical `XDG_CONFIG_HOME` and an existing, paired
-`--state-dir`; unsafe directories are refused rather than silently repaired.
+the holder. Service mode deliberately narrows the filesystem contract
+(D-065): the worker state directory AND the systemd user-unit directory
+must lie beneath your home directory. The default state location
+`~/.local/share/scarcity-router/worker` and the normal
+`~/.config/systemd/user` unit location just work; an explicit custom
+state directory under `$HOME` is supported when it is private
+(owner-owned, not group/world-writable), and `XDG_CONFIG_HOME` must
+point beneath `$HOME` for install. `/`, your home itself and every
+location outside home are refused for the service — with the exact path
+and reason named — rather than silently relocated; a dedicated private
+state directory outside home remains supported for foreground `run`.
+Unsafe directories are never silently repaired, and no group/world-
+writable non-sticky ancestor or symlinked unit-directory chain is
+accepted.
 The normal missing default state/config trees are provisioned privately
 through trusted parents. Custom CA trust is not configured through the unit (see the
 TLS/certificate lifecycle when that ships; unit files never carry
