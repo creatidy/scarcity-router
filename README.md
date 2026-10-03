@@ -392,7 +392,11 @@ The official `codex login --device-auth` flow prints a URL and one-time
 code; complete it in any browser (SSH-safe: no localhost callback). The
 running worker picks the fresh credentials up on its next eligibility
 check. With no (or several) configured Codex sources the command refuses
-with the exact remediation instead of guessing.
+with the exact remediation instead of guessing. A unit written by hand
+(the retired copied-example shape, with `%h`-anchored paths) still works:
+its `--codex-source`/`--state-dir` are read off the command line it runs,
+and the output names the one-time `service install` migration to the
+generated unit.
 
 Install enables `loginctl linger` for your user (headless operation
 without an active login session) and reports the outcome; when your

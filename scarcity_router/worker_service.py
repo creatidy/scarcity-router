@@ -26,11 +26,14 @@ worker launcher. This module owns the whole lifecycle surface of
   workspace, never a writable ``$HOME``.
 - **read-back** (issue #168): the installed unit is the persisted home of
   the operator's adapter selection, so :func:`read_installed_service_configuration`
-  parses a GENERATED unit's ``ExecStart`` back into the executable, state
-  directory and :class:`ServiceSelection` — the discovery half of
-  ``codex-login`` (``make codex-login``), which must never retype the
-  host-specific source id. Only units carrying the generated marker are
-  interpreted; anything else is refused.
+  reads its ``ExecStart`` back into the executable, state directory and
+  :class:`ServiceSelection` — the discovery half of ``codex-login``
+  (``make codex-login``), which must never retype the host-specific
+  source id. Two fidelity tiers: a GENERATED unit (marker first line) is
+  parsed against its full documented shape; a hand-written unit (the
+  retired pre-tooling deployment, in service on Precision) is read by a
+  targeted flag scan that refuses anything systemd would expand or that
+  does not invoke ``run``. The marker keeps gating every WRITE.
 - **Idempotent and honest.** The rendered unit is deterministic
   (byte-stable for identical inputs): re-running install with the same
   flags re-writes nothing and stays green. A DIFFERENT generated unit
@@ -503,30 +506,32 @@ class ServiceUnitReadError(Exception):
 class InstalledServiceConfiguration:
     """What the installed unit actually runs, read back from disk.
 
-    The read-back counterpart of one :func:`render_unit` result: the
-    executable, the worker state directory and the preserved
-    :class:`ServiceSelection` (the adapter selection the operator
-    installed). Consumers that only need one configured execution source
-    (e.g. ``codex-login`` discovery) read it off ``selection``.
+    The read-back counterpart of the run configuration the unit carries:
+    the executable, the worker state directory and the selection flags
+    (the adapter selection the operator installed). ``generated`` records
+    which read-back fidelity applied: ``True`` for a unit this tooling
+    rendered (parsed strictly against its full documented shape), ``False``
+    for a hand-written unit (issue #168 Precision evidence) read by the
+    targeted flag scan — same flags, coarser grammar. Consumers that only
+    need one configured execution source (e.g. ``codex-login`` discovery)
+    read it off ``selection``.
     """
 
     unit_path: Path
     executable: Path
     state_dir: Path
     selection: ServiceSelection
+    generated: bool = True
 
 
-def parse_exec_start(value: str) -> tuple[Path, Path, ServiceSelection]:
-    """The inverse of :func:`render_unit`'s ``ExecStart`` rendering.
+def _split_exec_start_words(value: str) -> list[str]:
+    """Tokenize one ``ExecStart`` VALUE the way systemd splits it.
 
-    Accepts the raw ``ExecStart`` VALUE (the text after ``ExecStart=``),
-    undoes the rendering layer by layer — the ``:`` no-substitution
-    prefix, systemd word splitting (double quotes, ``\\`` escapes inside
-    quotes) and the ``%%`` specifier unescaping — and validates the shape
-    every generated unit has (``<executable> run --state-dir <dir>`` plus
-    the preserved selection flags). Unknown flags, a missing value or a
-    stray positional raise :class:`ServiceUnitReadError`: a unit this
-    tooling did not render is never interpreted by guesswork.
+    Undoes the rendering layers word by word: the ``:`` no-substitution
+    prefix, double-quote grouping (with the ``\\`` escapes the renderer
+    emits inside quotes) and the ``%%`` specifier unescaping — the exact
+    inverse of :func:`systemd_quote`. An unterminated quote raises
+    :class:`ServiceUnitReadError`.
     """
 
     def unescape(text: str) -> str:
@@ -551,14 +556,22 @@ def parse_exec_start(value: str) -> tuple[Path, Path, ServiceSelection]:
     current: list[str] = []
     has_word = False
     quoted = False
+    single_quoted = False
     index = 0
     while index < len(body):
         char = body[index]
-        if char == '"':
+        if char == '"' and not single_quoted:
             quoted = not quoted
             has_word = True
             index += 1
-        elif not quoted and char.isspace():
+        elif char == "'" and not quoted:
+            # systemd's single-quote grouping: no escapes inside, the
+            # closing quote ends the section. Inside double quotes a
+            # single quote is an ordinary literal.
+            single_quoted = not single_quoted
+            has_word = True
+            index += 1
+        elif not quoted and not single_quoted and char.isspace():
             if has_word:
                 words.append(unescape("".join(current)))
                 current = []
@@ -576,10 +589,25 @@ def parse_exec_start(value: str) -> tuple[Path, Path, ServiceSelection]:
             current.append(char)
             has_word = True
             index += 1
-    if quoted:
+    if quoted or single_quoted:
         raise ServiceUnitReadError("the ExecStart line ends inside a quoted word")
     if has_word:
         words.append(unescape("".join(current)))
+    return words
+
+
+def parse_exec_start(value: str) -> tuple[Path, Path, ServiceSelection]:
+    """The inverse of :func:`render_unit`'s ``ExecStart`` rendering.
+
+    Accepts the raw ``ExecStart`` VALUE (the text after ``ExecStart=``),
+    tokenizes it the way systemd would (:func:`_split_exec_start_words`)
+    and validates the shape every GENERATED unit has
+    (``<executable> run --state-dir <dir>`` plus the preserved selection
+    flags). Unknown flags, a missing value or a stray positional raise
+    :class:`ServiceUnitReadError`: a unit this tooling rendered is never
+    interpreted by guesswork.
+    """
+    words = _split_exec_start_words(value)
     if len(words) < 4 or words[1] != "run" or words[2] != "--state-dir":
         raise ServiceUnitReadError(
             "the ExecStart line does not have the generated "
@@ -625,6 +653,170 @@ def parse_exec_start(value: str) -> tuple[Path, Path, ServiceSelection]:
     return executable, state_dir, ServiceSelection.from_arguments(mapping)
 
 
+#: Characters whose presence in a NON-generated unit's ``ExecStart`` means
+#: systemd would expand something (a ``$`` variable) or run shell-like
+#: syntax the targeted flag scan cannot model exactly. Such a line is
+#: refused with the migration recipe, never half-interpreted. The ``%``
+#: user specifiers are handled exactly instead (:func:`_expand_user_specifiers`).
+_FOREIGN_EXPANSION_CHARACTERS = frozenset("$;|&`")
+
+
+def _specifier_home(*, env: Mapping[str, str] | None = None) -> str:
+    """The user home ``%h`` resolves to — the same source systemd uses.
+
+    A user manager expands ``%h`` to the invoking user's passwd home
+    directory; production resolves exactly that. ``env`` overrides the
+    resolution (test seam): when an explicit environment mapping is given
+    (tests), its ``HOME`` is used.
+    """
+    if env is not None:
+        home_value = env.get("HOME", "")
+        if home_value:
+            return home_value
+    else:
+        try:
+            import pwd
+
+            entry = pwd.getpwuid(os.getuid())
+            if entry.pw_dir:
+                return entry.pw_dir
+        except (ImportError, KeyError, OSError):
+            pass
+        home_value = os.environ.get("HOME", "")
+        if home_value:
+            return home_value
+    raise ServiceUnitReadError(
+        "the ExecStart line uses the %h specifier but the user's home "
+        + "directory cannot be resolved; regenerate the unit with "
+        + "'scarcity-router-worker service install --codex-source "
+        + "SOURCE_ID' or pass --source"
+    )
+
+
+def _expand_user_specifiers(
+    value: str, *, env: Mapping[str, str] | None = None
+) -> str:
+    """Resolve the systemd user specifiers a hand-written unit may carry.
+
+    The retired example unit anchored every path at ``%h`` (issue #168
+    Precision evidence), and specifier expansion applies to the whole
+    setting value BEFORE word splitting — so the exact, documented
+    resolutions are applied here: ``%%`` to a literal ``%`` and ``%h`` to
+    the user's home directory. Any other specifier (``%S``, ``%E``, ``%t``,
+    ...) is refused with the migration recipe: its value comes from the
+    manager's own environment and guessing it would be half-interpretation.
+    """
+    expanded: list[str] = []
+    index = 0
+    while index < len(value):
+        char = value[index]
+        if char != "%":
+            expanded.append(char)
+            index += 1
+            continue
+        following = value[index + 1 : index + 2]
+        if following == "%":
+            expanded.append("%")
+            index += 2
+            continue
+        if following == "h":
+            expanded.append(_specifier_home(env=env))
+            index += 2
+            continue
+        raise ServiceUnitReadError(
+            f"the ExecStart line uses the systemd specifier %{following or ''} "
+            + "whose value this tooling cannot resolve exactly; regenerate "
+            + "the unit with 'scarcity-router-worker service install "
+            + "--codex-source SOURCE_ID' (remove the hand-written unit "
+            + "first) or pass --source"
+        )
+    return "".join(expanded)
+
+
+def _selection_from_foreign_exec_start(
+    value: str, *, env: Mapping[str, str] | None = None
+) -> tuple[Path, Path, ServiceSelection]:
+    """Read the run flags off a HAND-WRITTEN unit's ``ExecStart``.
+
+    Precision's worker (issue #168 field evidence) runs under the retired
+    pre-tooling unit shape, so discovery cannot demand the generated
+    marker. Instead of refusing the host's only persisted configuration,
+    this reads exactly the three flags the login needs (``--codex-source``,
+    ``--state-dir``, ``--codex-bin``) off the tokenized command line and
+    tolerates wrapper variation (``env``, prefixes) in everything else.
+    The fidelity claim stays honest by construction: shell-like syntax and
+    ``$`` variables are refused, the ``%h``/``%%`` user specifiers are
+    resolved exactly (:func:`_expand_user_specifiers`), a relative
+    ``--state-dir`` is refused (systemd resolves it against its own
+    working directory), and a line that does not invoke the worker's
+    ``run`` command at all is refused — the migration recipe replaces
+    every guess.
+    """
+    for char in sorted(_FOREIGN_EXPANSION_CHARACTERS):
+        if char in value:
+            raise ServiceUnitReadError(
+                f"the ExecStart line uses systemd expansion ({char!r}) that "
+                + "cannot be read back exactly; regenerate the unit with "
+                + "'scarcity-router-worker service install --codex-source "
+                + "SOURCE_ID' (it never replaces a unit it did not generate "
+                + "— remove the hand-written unit first) or pass --source"
+            )
+    if value.rstrip().endswith("\\"):
+        raise ServiceUnitReadError(
+            "the ExecStart line continues onto another line (trailing "
+            + "backslash), which cannot be read back exactly; regenerate "
+            + "the unit with 'scarcity-router-worker service install "
+            + "--codex-source SOURCE_ID' or pass --source"
+        )
+    words = _split_exec_start_words(_expand_user_specifiers(value, env=env))
+    if "run" not in words:
+        raise ServiceUnitReadError(
+            "the ExecStart line does not invoke the worker's 'run' "
+            + "command; regenerate the unit with 'scarcity-router-worker "
+            + "service install --codex-source SOURCE_ID' (remove the "
+            + "hand-written unit first) or pass --source"
+        )
+    sources: list[str] = []
+    state_dir: Path | None = None
+    codex_bin: str | None = None
+    index = 0
+    while index < len(words):
+        word = words[index]
+        index += 1
+        if word == "--codex-source":
+            if index >= len(words):
+                raise ServiceUnitReadError("--codex-source has no value in ExecStart")
+            sources.append(words[index])
+            index += 1
+        elif word == "--state-dir":
+            if index >= len(words):
+                raise ServiceUnitReadError("--state-dir has no value in ExecStart")
+            state_dir = Path(words[index])
+            index += 1
+        elif word == "--codex-bin":
+            if index >= len(words):
+                raise ServiceUnitReadError("--codex-bin has no value in ExecStart")
+            codex_bin = words[index]
+            index += 1
+    if state_dir is None:
+        # 'run' without --state-dir uses the platform default state
+        # directory — derivable exactly, never a guess.
+        state_dir = Path(default_worker_state_dir())
+    elif not state_dir.is_absolute():
+        raise ServiceUnitReadError(
+            f"the ExecStart line's --state-dir {str(state_dir)!r} is not "
+            + "absolute (systemd would resolve it against its own working "
+            + "directory); regenerate the unit with 'scarcity-router-worker "
+            + "service install --codex-source SOURCE_ID' or pass --source"
+        )
+    executable = Path(words[0])
+    return (
+        executable,
+        state_dir,
+        ServiceSelection(codex_sources=tuple(sources), codex_bin=codex_bin),
+    )
+
+
 def read_installed_service_configuration(
     *,
     unit_path: Path | None = None,
@@ -633,14 +825,18 @@ def read_installed_service_configuration(
     """Read back the run configuration the INSTALLED unit carries.
 
     The local discovery half of ``codex-login`` (issue #168): the
-    persisted home of the operator's adapter selection is the generated
-    unit itself, so the source id, state directory and pinned Codex
-    binary an operator never has to retype are read from there. Only a
-    unit this tooling generated (marker first line) is interpreted — a
-    foreign unit is refused exactly like install/uninstall refuse to
-    touch it. ``unit_path`` overrides the resolved user-unit location and
-    ``env`` the home resolution (test seams, mirroring
-    :func:`install_service`).
+    persisted home of the operator's adapter selection is the unit the
+    user manager runs, so the source id, state directory and pinned
+    Codex binary an operator never has to retype are read from there.
+    Two fidelity tiers: a unit this tooling generated (marker first
+    line) is parsed strictly against its full documented shape; a
+    hand-written unit — Precision's pre-tooling deployment — is read by
+    the targeted flag scan
+    (:func:`_selection_from_foreign_exec_start`), which refuses anything
+    systemd would expand or that does not invoke ``run``. The marker
+    keeps gating every WRITE (install/uninstall), exactly as before.
+    ``unit_path`` overrides the resolved user-unit location and ``env``
+    the home resolution (test seams, mirroring :func:`install_service`).
     """
     target = unit_path if unit_path is not None else unit_install_path(env=env)
     try:
@@ -656,24 +852,25 @@ def read_installed_service_configuration(
             f"the installed worker service unit could not be read: {exc}"
         ) from exc
     lines = text.splitlines()
-    if not lines or lines[0] != UNIT_MARKER_LINE:
-        raise ServiceUnitReadError(
-            f"{target} was not generated by this tooling (missing managed "
-            + "marker); pass the source explicitly"
-        )
+    generated = bool(lines) and lines[0] == UNIT_MARKER_LINE
     exec_starts = [line for line in lines if line.startswith("ExecStart=")]
     if len(exec_starts) != 1:
         raise ServiceUnitReadError(
             f"{target} does not carry exactly one ExecStart line"
         )
-    executable, state_dir, selection = parse_exec_start(
-        exec_starts[0].removeprefix("ExecStart=")
-    )
+    value = exec_starts[0].removeprefix("ExecStart=")
+    if generated:
+        executable, state_dir, selection = parse_exec_start(value)
+    else:
+        executable, state_dir, selection = _selection_from_foreign_exec_start(
+            value, env=env
+        )
     return InstalledServiceConfiguration(
         unit_path=target,
         executable=executable,
         state_dir=state_dir,
         selection=selection,
+        generated=generated,
     )
 
 

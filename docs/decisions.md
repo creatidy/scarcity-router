@@ -5585,7 +5585,13 @@ Do not rewrite history or change an accepted decision silently.
 ### D-066 — `make codex-login`: the installed worker unit is the Codex login's source of truth
 
 - **Status:** Accepted 2026-10-04 (issue #168; branch
-  `task/168-codex-login-make-target`)
+  `task/168-codex-login-make-target`); amended 2026-10-04 (owner field
+  test on Precision): the read-back is TIERED — the strict generated-unit
+  parse applies to marker-carrying units, and a hand-written unit (the
+  retired pre-tooling deployment actually in service on Precision) is
+  read by a targeted, still-fail-closed flag scan with exact
+  `%h`/`%%` user-specifier resolution; the marker keeps gating every
+  WRITE (point 1 rewritten)
 - **Base:** `develop` @ `5792d2d`
 - **Confidence:** High for the contracts (marker gating, fail-closed
   parsing, flag precedence, no-restart pickup); parse mechanics are
@@ -5599,20 +5605,41 @@ Do not rewrite history or change an accepted decision silently.
   Precision use different source ids, and the requested UX is one
   identical command on both hosts (`make codex-login`) with no second
   credential store, no `~/.codex` fallback, no Codex installation and no
-  new authorization mechanism.
+  new authorization mechanism. Field evidence (2026-10-04, owner test):
+  Precision's worker runs under a HAND-WRITTEN unit at the standard user
+  unit path — the retired copied-example shape (`%h`-anchored paths),
+  the exact deployment D-065 retired — so a marker-only read-back
+  refused the host's only persisted configuration, and the first
+  `make codex-login` there failed with "missing managed marker".
 - **Decision:**
-  1. **Discovery reads the generated unit, nothing else.**
-     `read_installed_service_configuration` parses the INSTALLED unit's
-     `ExecStart` back into the executable, state directory and
-     `ServiceSelection` — the exact inverse of `render_unit`'s rendering
-     (the `:` no-substitution prefix, systemd word quoting and the `%%`
-     specifier unescaping, in that order). Only a unit carrying the
-     generated marker is interpreted; a missing unit, a foreign unit, an
-     unknown flag, a wrong shape or a dangling flag value fails closed
-     with the remediation (the exact
-     `service install --codex-source SOURCE_ID` recipe) — the worker's
-     configuration is never guessed and nothing is read outside the unit
-     (no `/proc` scraping, no `~/.codex`).
+  1. **Discovery reads the installed unit, tiered by fidelity.**
+     `read_installed_service_configuration` reads back the INSTALLED
+     unit's `ExecStart` into the executable, state directory and
+     selection flags. A unit this tooling generated (marker first line)
+     is parsed by `parse_exec_start`, the exact inverse of
+     `render_unit`'s rendering (`:` no-substitution prefix, systemd word
+     quoting, `%%` unescaping, full generated-shape validation; unknown
+     flags, wrong shapes and dangling values fail closed). A HAND-WRITTEN
+     unit is read by a targeted flag scan
+     (`_selection_from_foreign_exec_start`) that extracts exactly the
+     three flags the login needs (`--codex-source`, `--state-dir`,
+     `--codex-bin`), tolerates wrapper variation (`env`, prefixes) in
+     everything else, resolves the documented user specifiers exactly
+     (`%%` literal, `%h` = the invoking user's passwd home — the same
+     source systemd uses; the retired example unit anchored every path
+     at `%h`), and REFUSES everything it cannot model exactly: `$`
+     variables and shell-like syntax, unsupported specifiers (`%S`,
+     `%E`, `%t`, ...), continuation lines, a relative `--state-dir`
+     (systemd would resolve it against its own working directory), and a
+     line that does not invoke the worker's `run` command — each refusal
+     carries the migration recipe. `run` without `--state-dir` uses the
+     platform default state directory (derivable, never a guess). The
+     marker keeps gating every WRITE: install/uninstall still never
+     replace or remove a unit they did not generate. A missing unit
+     fails with the install recipe, and nothing is read outside the unit
+     (no `/proc` scraping, no `~/.codex`). A successful login against a
+     hand-written unit prints a one-line note naming the unit and the
+     `service install` regeneration path.
   2. **`codex-login` without `--source` discovers.** Exactly one
      configured `--codex-source` is required: zero or several refuse
      with an actionable message (the configured ids listed, `--source`
@@ -5642,12 +5669,23 @@ Do not rewrite history or change an accepted decision silently.
   parser outside the tooling that renders the file; (d) persisting the
   selection into the worker settings document — that document is the
   GUI settings surface and knows only loopback Ollama today; the unit is
-  where `service install` already persists the selection, so reading it
-  back introduces no second configuration store; (e) a `~/.codex`
-  fallback — forbidden; the controlled per-source home is the only
-  credential location this program touches (D-018/D-044/D-053).
+  where the selection is persisted, so reading it back introduces no
+  second configuration store; (e) a `~/.codex` fallback — forbidden; the
+  controlled per-source home is the only credential location this
+  program touches (D-018/D-044/D-053); (f) keeping the marker as a hard
+  gate on READING (the original amendment-free shape) — it refused the
+  host's only persisted configuration on the very deployment (Precision)
+  the target must serve; the tiered scan keeps every fidelity guarantee
+  that matters (exact specifier resolution, refusal of unresolvable
+  constructs) while working on the retired deployment shape;
+  (g) requiring the operator to migrate the hand-written unit to
+  `service install` BEFORE the login works — correct long-term (the
+  note after every hand-written-unit login says so) but it blocks the
+  one-command UX the issue defines on a live host.
 - **Boundary:** `scarcity_router/worker_service.py`
-  (`parse_exec_start`, `read_installed_service_configuration`,
+  (`parse_exec_start`, `_split_exec_start_words`,
+  `_expand_user_specifiers`, `_selection_from_foreign_exec_start`,
+  `read_installed_service_configuration`,
   `InstalledServiceConfiguration`, `ServiceUnitReadError`),
   `worker_client.py` (`codex-login` discovery branch; `--source` now
   optional), `Makefile` (`codex-login` target), `README.md`, tests,

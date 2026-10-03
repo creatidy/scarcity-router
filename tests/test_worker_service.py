@@ -713,22 +713,151 @@ class ExecStartReadBackTests(unittest.TestCase):
         self.assertEqual(state_dir, parsed_state_dir)
         self.assertEqual(selection, parsed_selection)
 
-    def test_read_back_needs_the_generated_marker(self) -> None:
+    def test_a_hand_written_unit_is_read_by_the_targeted_scan(self) -> None:
+        # Precision's pre-tooling deployment (issue #168 field evidence):
+        # the host's only persisted configuration is a hand-written unit.
+        # Discovery reads exactly the three login flags off its ExecStart
+        # and reports generated=False.
         with tempfile.TemporaryDirectory[str]() as tmp:
             unit_path = Path(tmp) / "scarcity-router-worker.service"
             _ = unit_path.write_text(
                 "# somebody's own hand-written unit\n"
                 + "[Service]\n"
-                + "ExecStart=/bin/true run --state-dir /tmp\n",
+                + "ExecStart=/usr/bin/env scarcity-router-worker run "
+                + "--state-dir /home/u/worker-state "
+                + "--codex-source precision-codex-live\n",
                 encoding="utf-8",
             )
+            installed = worker_service.read_installed_service_configuration(
+                unit_path=unit_path
+            )
+        self.assertFalse(installed.generated)
+        self.assertEqual(
+            ("precision-codex-live",), installed.selection.codex_sources
+        )
+        self.assertEqual(Path("/home/u/worker-state"), installed.state_dir)
+        self.assertEqual(
+            Path("/usr/bin/env"), installed.executable
+        )
+
+    def test_a_hand_written_unit_without_state_dir_uses_the_default(self) -> None:
+        # 'run' without --state-dir means the platform default state
+        # directory — derivable exactly, never a guess.
+        unit = (
+            "# hand-written\n[Service]\n"
+            + "ExecStart=/opt/tools/scarcity-router-worker run "
+            + "--codex-source src\n"
+        )
+        with tempfile.TemporaryDirectory[str]() as tmp:
+            unit_path = Path(tmp) / "scarcity-router-worker.service"
+            _ = unit_path.write_text(unit, encoding="utf-8")
+            with patch.object(
+                worker_service,
+                "default_worker_state_dir",
+                return_value="/def/state",
+            ):
+                installed = worker_service.read_installed_service_configuration(
+                    unit_path=unit_path
+                )
+        self.assertEqual(Path("/def/state"), installed.state_dir)
+        self.assertEqual(("src",), installed.selection.codex_sources)
+
+    def test_a_hand_written_unit_with_systemd_expansion_is_refused(self) -> None:
+        # '$HOME' would be expanded by systemd at runtime from the
+        # manager's own environment, so the file text is NOT the executed
+        # command line — refuse with the migration recipe instead of
+        # half-interpreting it. Unsupported specifiers get the same
+        # treatment (their values come from the manager's environment).
+        for value in ("$HOME/state", "%S/state", "%t"):
+            unit = (
+                "# hand-written\n[Service]\n"
+                + "ExecStart=/opt/tools/scarcity-router-worker run "
+                + f"--state-dir {value} --codex-source src\n"
+            )
+            with tempfile.TemporaryDirectory[str]() as tmp:
+                unit_path = Path(tmp) / "scarcity-router-worker.service"
+                _ = unit_path.write_text(unit, encoding="utf-8")
+                with self.assertRaises(
+                    worker_service.ServiceUnitReadError
+                ) as caught:
+                    _ = worker_service.read_installed_service_configuration(
+                        unit_path=unit_path
+                    )
+            self.assertIn(
+                "cannot be read back exactly"
+                if value == "$HOME/state"
+                else "specifier",
+                str(caught.exception),
+            )
+            self.assertIn("service install", str(caught.exception))
+
+    def test_a_hand_written_unit_percent_h_specifier_is_resolved(self) -> None:
+        # The retired example unit anchored every path at '%h' — exactly
+        # the invoking user's home in a user manager, so discovery
+        # resolves it instead of refusing the host's only configuration.
+        unit = (
+            "# hand-written\n[Service]\n"
+            + "ExecStart=%h/.local/bin/scarcity-router-worker run "
+            + "--codex-source precision-codex-live\n"
+        )
+        with tempfile.TemporaryDirectory[str]() as tmp:
+            unit_path = Path(tmp) / "scarcity-router-worker.service"
+            _ = unit_path.write_text(unit, encoding="utf-8")
+            with patch.object(
+                worker_service,
+                "default_worker_state_dir",
+                return_value="/def/state",
+            ):
+                installed = worker_service.read_installed_service_configuration(
+                    unit_path=unit_path, env={"HOME": "/home/u"}
+                )
+        self.assertFalse(installed.generated)
+        self.assertEqual(
+            Path("/home/u/.local/bin/scarcity-router-worker"),
+            installed.executable,
+        )
+        self.assertEqual(Path("/def/state"), installed.state_dir)
+        self.assertEqual(
+            ("precision-codex-live",), installed.selection.codex_sources
+        )
+
+    def test_a_hand_written_unit_that_does_not_run_the_worker_is_refused(
+        self,
+    ) -> None:
+        # A 'sh -c' wrapper hides the flags inside one quoted word — the
+        # scan refuses rather than reporting an (unfounded) no-source.
+        unit = (
+            "# hand-written\n[Service]\n"
+            + "ExecStart=/bin/sh -c 'exec scarcity-router-worker run "
+            + "--state-dir /s --codex-source src'\n"
+        )
+        with tempfile.TemporaryDirectory[str]() as tmp:
+            unit_path = Path(tmp) / "scarcity-router-worker.service"
+            _ = unit_path.write_text(unit, encoding="utf-8")
             with self.assertRaises(
                 worker_service.ServiceUnitReadError
             ) as caught:
                 _ = worker_service.read_installed_service_configuration(
                     unit_path=unit_path
                 )
-        self.assertIn("not generated by this tooling", str(caught.exception))
+        self.assertIn("does not invoke the worker's 'run' command", str(caught.exception))
+
+    def test_a_hand_written_unit_relative_state_dir_is_refused(self) -> None:
+        unit = (
+            "# hand-written\n[Service]\n"
+            + "ExecStart=/opt/tools/scarcity-router-worker run "
+            + "--state-dir relative/state --codex-source src\n"
+        )
+        with tempfile.TemporaryDirectory[str]() as tmp:
+            unit_path = Path(tmp) / "scarcity-router-worker.service"
+            _ = unit_path.write_text(unit, encoding="utf-8")
+            with self.assertRaises(
+                worker_service.ServiceUnitReadError
+            ) as caught:
+                _ = worker_service.read_installed_service_configuration(
+                    unit_path=unit_path
+                )
+        self.assertIn("is not absolute", str(caught.exception))
 
     def test_read_back_refuses_a_missing_unit_with_the_install_recipe(
         self,
