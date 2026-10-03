@@ -99,8 +99,8 @@ This exposes exactly four commands:
 - `scarcity-router-mcp` — the stdio MCP adapter;
 - `scarcity-router-server` — the loopback REST adapter;
 - `scarcity-router-worker` — the native worker of the optional execution
-  gateway (`pair` / `run`). The standalone Windows package does not
-  contain these console scripts: it ships one executable,
+  gateway (`pair` / `run` / `service`). The standalone Windows package
+  does not contain these console scripts: it ships one executable,
   `scarcity-worker.exe`, which opens a first-run setup dialog on first
   launch and provides the same `pair` / `run` commands directly (see
   the worker section below).
@@ -349,14 +349,73 @@ the web UI (Workers page); the worker redeems it over verified TLS:
 
 ```bash
 scarcity-router-worker pair --server srws://SERVER-HOST:8790 --code CODE
-scarcity-router-worker run --allow-ollama --resource my-ollama
 ```
 
 The worker connects outbound only (no inbound port), holds no provider
 credentials and enforces its local adapter allowlist even against server
-requests. Background operation on Linux is a systemd **user** service —
-`examples/scarcity-router-worker.service` documents install, enable,
-start/stop/status/logs and lingering.
+requests.
+
+#### Linux/WSL: run it as a service (the normal deployment)
+
+A paired worker installs itself as a systemd **user** service — no root,
+no hand-edited unit files, no secrets in the unit. Requires a systemd
+user manager (WSL2: `systemd=true` under `[boot]` in `/etc/wsl.conf`).
+The generated unit
+comes from the ACTUAL installed executable and the ACTUAL state
+directory, and preserves the adapter selection you pass (here: one Codex
+execution source):
+
+```bash
+# 1. pair once (above), then:
+scarcity-router-worker service install --codex-source precision-codex-live
+#    (idempotent; re-run with new flags to change the selection, then
+#     `service restart` to apply)
+# 2. operate it with normal systemd verbs — all no-root:
+scarcity-router-worker service status      # linger state + systemctl --user status
+scarcity-router-worker service restart     # after a configuration change
+scarcity-router-worker service uninstall   # stops/disables and removes the
+                                           # generated unit; pairing, identity
+                                           # and worker state are KEPT
+journalctl --user -u scarcity-router-worker -f   # follow the worker's logs
+```
+
+Install enables `loginctl linger` for your user (headless operation
+without an active login session) and reports the outcome; when your
+distribution requires confirmation for that, it prints the exact
+`sudo loginctl enable-linger` command to run once. `systemctl --user
+enable/disable/start/stop/restart scarcity-router-worker` work as usual.
+One service per user account: a second worker on the same host is a
+second user account with its own paired state. A foreground process can
+never run next to the service — every worker holds a lifetime lock on
+its state directory and the second process fails with a message naming
+the holder. Service mode deliberately narrows the filesystem contract
+(D-065): the worker state directory AND the systemd user-unit directory
+must lie beneath your home directory. The default state location
+`~/.local/share/scarcity-router/worker` and the normal
+`~/.config/systemd/user` unit location just work; an explicit custom
+state directory under `$HOME` is supported when it is private
+(owner-owned, not group/world-writable), and `XDG_CONFIG_HOME` must
+point beneath `$HOME` for install. `/`, your home itself and every
+location outside home are refused for the service — with the exact path
+and reason named — rather than silently relocated; a dedicated private
+state directory outside home remains supported for foreground `run`.
+Unsafe directories are never silently repaired, and no group/world-
+writable non-sticky ancestor or symlinked unit-directory chain is
+accepted.
+The normal missing default state/config trees are provisioned privately
+through trusted parents. Custom CA trust is not configured through the unit (see the
+TLS/certificate lifecycle when that ships; unit files never carry
+`SSL_CERT_FILE` workarounds).
+
+#### Foreground run (debugging)
+
+`run` is the same runtime in a foreground shell — for development and
+debugging, not for keeping a worker alive:
+
+```bash
+scarcity-router-worker run --codex-source precision-codex-live   # debugging
+scarcity-router-worker run --allow-ollama --resource my-ollama   # debugging
+```
 
 **Windows (standalone package, no Python required).** The release ZIP
 (`scarcity-worker-X.Y.Z-windows-x64.zip`) contains a single executable,
@@ -393,13 +452,17 @@ exactly what is and is not verified.
 ### Updates and uninstall
 
 - Linux/WSL package: `uv tool upgrade scarcity-router` (or `pipx upgrade`);
-  restart any server/worker processes.
+  then `scarcity-router-worker service restart` (the generated unit points
+  at the resolved executable path, so an upgrade needs the restart to run
+  the new code). Server/container: restart any server processes.
 - Container: pull the new image tag, `docker compose up -d`; the named
   volume keeps identities, configuration and keys (store schema migrations
   are explicit and refuse future versions — never downgrade across one).
 - Windows worker: reinstall the new release package; restart the worker.
-- Uninstall: `uv tool uninstall scarcity-router` (or remove the container
-  and volume); user state lives in `~/.config/scarcity-router/` (user
+- Uninstall: `scarcity-router-worker service uninstall` removes the worker
+  service first (identity and state are kept); `uv tool uninstall
+  scarcity-router` (or remove the container and volume) removes the
+  program; user state lives in `~/.config/scarcity-router/` (user
   policy), `~/.local/share/scarcity-router/` (server store + worker state,
   `%LOCALAPPDATA%\scarcity-router` on Windows) — delete it only when you
   mean to lose keys and configuration.

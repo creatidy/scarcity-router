@@ -46,9 +46,11 @@ import hmac
 import os
 import secrets
 import sqlite3
+import stat
 import threading
 import uuid
-from collections.abc import Callable
+from pathlib import Path
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import cast
@@ -574,6 +576,154 @@ def ensure_private_tree(path: str) -> None:
         os.mkdir(directory, 0o700)
         os.chmod(directory, 0o700)
 
+
+def canonical_home(env: Mapping[str, str] | None = None) -> Path:
+    """The invoking user's home directory, canonicalized for comparisons.
+
+    Resolved from ``HOME`` (the injected mapping when given, else the
+    process environment) with the password database as the fallback, then
+    ``realpath``-canonicalized so every comparison and walk uses one
+    canonical form.
+    """
+    environment = os.environ if env is None else env
+    home = environment.get("HOME", "") or os.path.expanduser("~")
+    return Path(os.path.realpath(home))
+
+
+def _check_trusted_component(
+    current: Path, info: os.stat_result, *, final: bool
+) -> None:
+    """The per-component checks of the conservative root-to-leaf walk.
+
+    Only root/current-user owners are trusted. A writable sticky parent
+    is safe only when the next component belongs to root/current-user
+    too: other users can neither rename nor unlink it. Non-sticky shared
+    parents are always refused, and the boundary itself must belong to
+    the effective user.
+    """
+    uid = os.geteuid()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid not in (0, uid):
+        raise ValueError(
+            f"untrusted worker path component {current}: not owned by "
+            + "root or the current user; choose a private location"
+        )
+    writable = info.st_mode & 0o022
+    if writable and (not info.st_mode & stat.S_ISVTX or final):
+        raise ValueError(
+            f"worker path component {current} is group- or world-writable "
+            + f"(mode {stat.S_IMODE(info.st_mode):04o}); choose a private "
+            + f"location (chmod 700 {current})"
+        )
+    if final and info.st_uid != uid:
+        raise ValueError(
+            f"worker directory is not owned by the current user: {current}"
+        )
+
+
+def _check_home_anchor(current: Path, info: os.stat_result) -> None:
+    """The home anchor: the effective user's own closed directory.
+
+    The admin-managed namespace ABOVE home is never consulted, so the
+    anchor itself carries the whole trust decision: a real directory,
+    owned by the effective user (not root, not another principal), and
+    closed to group/other writes.
+    """
+    uid = os.geteuid()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != uid:
+        raise ValueError(
+            f"worker home anchor {current} is not a directory owned by "
+            + "the current user"
+        )
+    if info.st_mode & 0o022:
+        raise ValueError(
+            f"worker home anchor {current} is group- or world-writable "
+            + f"(mode {stat.S_IMODE(info.st_mode):04o})"
+        )
+
+
+def open_trusted_worker_directory(
+    path: Path,
+    *,
+    create: bool = False,
+    env: Mapping[str, str] | None = None,
+) -> int:
+    """Open the #138 POSIX boundary by identity, retaining the final fd.
+
+    Callers canonicalize once. Every component is opened relative to its
+    already-checked parent, without following links, and missing
+    components are provisioned relative to trusted parents — never by a
+    store constructor or a later pathname reopen.
+
+    The anchor is chosen by topology. A boundary strictly beneath the
+    canonical home directory is anchored AT the home directory: the home
+    anchor must be a real directory owned by the effective user and
+    closed to group/other writes, and only the components BELOW it are
+    checked. The admin-managed namespace above home (``/``, ``/home``)
+    is never opened or inspected — this is the D-065 service contract,
+    and it is what makes the boundary work unchanged under systemd's
+    ``ProtectSystem=strict``/``ProtectHome=read-only`` sandbox, where
+    those synthetic read-only ancestors legitimately display the
+    overflow uid. Mount ownership is never security evidence. A boundary
+    outside home (a foreground ``run`` capability) keeps the
+    conservative root-to-leaf walk (:func:`_check_trusted_component`),
+    with no read-only-mount or other namespace relaxation: an untrusted
+    displayed owner there remains untrusted.
+    """
+    if not path.is_absolute() or ".." in path.parts:
+        raise ValueError("worker boundary requires a canonical absolute path")
+    home = canonical_home(env)
+    anchored = path != home and path.is_relative_to(home)
+    anchor = home if anchored else Path(path.anchor)
+    parts = path.relative_to(home).parts if anchored else path.parts[1:]
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    fd = os.open(anchor, flags)
+    current = anchor
+    try:
+        info = os.fstat(fd)
+        if anchored:
+            _check_home_anchor(current, info)
+        else:
+            _check_trusted_component(current, info, final=not parts)
+        for index, name in enumerate(parts):
+            final = index == len(parts) - 1
+            try:
+                child = os.open(name, flags, dir_fd=fd)
+            except FileNotFoundError:
+                if not create:
+                    raise
+                try:
+                    os.mkdir(name, 0o700, dir_fd=fd)
+                except FileExistsError:
+                    pass  # validate the concurrently created object, not its name
+                child = os.open(name, flags, dir_fd=fd)
+            os.close(fd)
+            fd = child
+            current = current / name
+            _check_trusted_component(current, os.fstat(fd), final=final)
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def open_private_state_dir(
+    path: str | os.PathLike[str],
+    *,
+    env: Mapping[str, str] | None = None,
+    create: bool = False,
+) -> int:
+    """Retain a canonical POSIX state boundary before any store/lock access."""
+    resolved = Path(path)
+    if resolved == Path(resolved.anchor):
+        raise ValueError(
+            f"the worker state directory must not be the filesystem root: {resolved}"
+        )
+    if resolved == canonical_home(env):
+        raise ValueError(
+            "the worker state directory must not be the home directory "
+            + f"itself: {resolved}"
+        )
+    return open_trusted_worker_directory(resolved, create=create, env=env)
 
 
 class WorkerAdminService:

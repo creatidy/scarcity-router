@@ -35,18 +35,22 @@ runtime:
   coordinator dispatches, or refuses it.
 
 Entry points: ``python -m scarcity_router.worker_client pair`` (redeem a
-one-time code) and ``python -m scarcity_router.worker_client run``
-(connect and serve). Windows autostart/service mechanics are M10 scope.
+one-time code), ``... run`` (connect and serve) and ``... service``
+(install/status/restart/uninstall of the systemd user service, the
+normal Linux/WSL deployment — ``run`` is the foreground debugging form;
+issue #138). Windows autostart/service mechanics are M10 scope.
 """
 
 from __future__ import annotations
 
 import argparse
+import signal
 import socket
 import ssl
 import sys
 import threading
 import time
+import types
 from collections import deque
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -72,6 +76,9 @@ from .worker_local_adapters import (
 from .worker_local_store import (
     WorkerLocalIdentity,
     WorkerLocalStore,
+    WorkerStateDirLock,
+    WorkerStateDirLockUnavailable,
+    WorkerStateDirLocked,
     default_worker_state_dir,
 )
 from .worker_protocol import (
@@ -111,6 +118,9 @@ DEFAULT_RECONNECT_INITIAL_DELAY_SECONDS = 1.0
 DEFAULT_RECONNECT_MAX_DELAY_SECONDS = 60.0
 DEFAULT_MAX_RECONNECT_ATTEMPTS = 10
 DEFAULT_MAX_CONCURRENT_ADAPTERS = 4
+
+#: The signal-handler shape ``install_stop_signal_handlers`` restores.
+SignalHandler = Callable[[int, "types.FrameType | None"], object]
 
 _loopback_hosts: frozenset[str] = frozenset({"127.0.0.1", "localhost", "::1"})
 
@@ -1163,6 +1173,59 @@ class _ActiveSession:
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 
+def _add_selection_arguments(parser: argparse.ArgumentParser) -> None:
+    """The adapter-selection flags shared by ``run`` and ``service install``.
+
+    One definition for both surfaces, so the service unit can preserve
+    exactly the selection ``run`` accepts (issue #138) — the flags, help
+    text and defaults can never drift apart.
+    """
+    _ = parser.add_argument("--state-dir", default=None, metavar="DIR",
+                          help="worker state directory (platform default when omitted)")
+    _ = parser.add_argument("--allow-ollama", action="store_true",
+                         help="allow the loopback Ollama local adapter")
+    _ = parser.add_argument("--resource", default=None, metavar="ID",
+                         help="the registry resource id the enabled adapter serves "
+                              + "(the Ollama adapter's resource when both are enabled)")
+    _ = parser.add_argument("--ollama-host", default="127.0.0.1", metavar="HOST")
+    _ = parser.add_argument("--ollama-port", type=int, default=11434, metavar="PORT")
+    _ = parser.add_argument("--allow-codex", action="store_true",
+                         help="allow the Codex local adapter (official app-server)")
+    _ = parser.add_argument("--codex-model", default=None, metavar="SLUG",
+                         help="the physical model slug the Codex resource "
+                              + "represents (required with --allow-codex; must "
+                              + "match a calibrated catalog model, e.g. "
+                              + "gpt-5.6-sol)")
+    _ = parser.add_argument("--codex-resource", default=None, metavar="ID",
+                         help="the registry resource id the Codex adapter serves "
+                              + "(required with --resource when both adapters are "
+                              + "enabled)")
+    _ = parser.add_argument("--codex-source", action="append", default=None,
+                              metavar="SOURCE_ID", dest="codex_sources",
+                              help="enable a codex execution SOURCE instance "
+                                   + "(repeatable; D-053 dynamic discovery "
+                                   + "replaces --codex-model/--codex-resource)")
+    _ = parser.add_argument("--codex-bin", default=None, metavar="PATH",
+                         help="pin the Codex binary path (regular executable "
+                              + "file; discovery falls back to PATH and the "
+                              + "VS Code extension layout)")
+    _ = parser.add_argument("--zcode-source", action="append", default=None,
+                              metavar="SOURCE_ID", dest="zcode_sources",
+                              help="enable a ZCode execution SOURCE instance "
+                                   + "(repeatable; official ZCode CLI plan "
+                                   + "lane, D-061. Authentication is the "
+                                   + "official 'zcode login zai' — never "
+                                   + "wrapped or copied)")
+    _ = parser.add_argument("--zcode-bin", default=None, metavar="PATH",
+                         help="pin the ZCode binary path (regular executable "
+                              + "file; discovery falls back to PATH)")
+    _ = parser.add_argument("--zcode-workspace", default=None, metavar="DIR",
+                         help="the ONE authorized project workspace the ZCode "
+                              + "source executes in (required with "
+                              + "--zcode-source; canonicalized and verified; "
+                              + "request content can never select a path)")
+
+
 def build_parser() -> argparse.ArgumentParser:
     invoked = Path(sys.argv[0]).name if sys.argv and sys.argv[0] else ""
     if invoked == "scarcity-router-worker":
@@ -1192,53 +1255,11 @@ def build_parser() -> argparse.ArgumentParser:
                           help="a short device label (safe id)")
     _ = pair.add_argument("--state-dir", default=None, metavar="DIR",
                           help="worker state directory (platform default when omitted)")
-    run = commands.add_parser("run", help="connect and serve (reconnecting)")
+    run = commands.add_parser("run", help="connect and serve (reconnecting; the foreground debugging form of the service)")
     _ = run.add_argument("--server", default=None, metavar="URL",
                          help="server origin (stored value when omitted)")
     _ = run.add_argument("--label", default=None, metavar="LABEL")
-    _ = run.add_argument("--state-dir", default=None, metavar="DIR")
-    _ = run.add_argument("--allow-ollama", action="store_true",
-                         help="allow the loopback Ollama local adapter")
-    _ = run.add_argument("--resource", default=None, metavar="ID",
-                         help="the registry resource id the enabled adapter serves "
-                              + "(the Ollama adapter's resource when both are enabled)")
-    _ = run.add_argument("--ollama-host", default="127.0.0.1", metavar="HOST")
-    _ = run.add_argument("--ollama-port", type=int, default=11434, metavar="PORT")
-    _ = run.add_argument("--allow-codex", action="store_true",
-                         help="allow the Codex local adapter (official app-server)")
-    _ = run.add_argument("--codex-model", default=None, metavar="SLUG",
-                         help="the physical model slug the Codex resource "
-                              + "represents (required with --allow-codex; must "
-                              + "match a calibrated catalog model, e.g. "
-                              + "gpt-5.6-sol)")
-    _ = run.add_argument("--codex-resource", default=None, metavar="ID",
-                         help="the registry resource id the Codex adapter serves "
-                              + "(required with --resource when both adapters are "
-                              + "enabled)")
-    _ = run.add_argument("--codex-source", action="append", default=None,
-                              metavar="SOURCE_ID", dest="codex_sources",
-                              help="enable a codex execution SOURCE instance "
-                                   + "(repeatable; D-053 dynamic discovery "
-                                   + "replaces --codex-model/--codex-resource)")
-    _ = run.add_argument("--codex-bin", default=None, metavar="PATH",
-                         help="pin the Codex binary path (regular executable "
-                              + "file; discovery falls back to PATH and the "
-                              + "VS Code extension layout)")
-    _ = run.add_argument("--zcode-source", action="append", default=None,
-                              metavar="SOURCE_ID", dest="zcode_sources",
-                              help="enable a ZCode execution SOURCE instance "
-                                   + "(repeatable; official ZCode CLI plan "
-                                   + "lane, D-061. Authentication is the "
-                                   + "official 'zcode login zai' — never "
-                                   + "wrapped or copied)")
-    _ = run.add_argument("--zcode-bin", default=None, metavar="PATH",
-                         help="pin the ZCode binary path (regular executable "
-                              + "file; discovery falls back to PATH)")
-    _ = run.add_argument("--zcode-workspace", default=None, metavar="DIR",
-                         help="the ONE authorized project workspace the ZCode "
-                              + "source executes in (required with "
-                              + "--zcode-source; canonicalized and verified; "
-                              + "request content can never select a path)")
+    _add_selection_arguments(run)
     login = commands.add_parser(
         "codex-login",
         help="run the OFFICIAL codex login against one source's controlled home",
@@ -1248,12 +1269,53 @@ def build_parser() -> argparse.ArgumentParser:
                                 + "(the same id given to run --codex-source)")
     _ = login.add_argument("--state-dir", default=None, metavar="DIR")
     _ = login.add_argument("--codex-bin", default=None, metavar="PATH")
+    service = commands.add_parser(
+        "service",
+        help="manage the systemd user service (Linux/WSL; the normal deployment)",
+        description=(
+            "Install, inspect, restart or remove the systemd USER service "
+            + "for this paired worker. Operates on the already-paired "
+            + "identity and the stored server origin; no root, no secrets "
+            + "in the unit (issue #138). `run` stays the foreground "
+            + "debugging form."
+        ),
+    )
+    service_commands = service.add_subparsers(
+        dest="service_command", required=True
+    )
+    service_install = service_commands.add_parser(
+        "install",
+        help="generate, enable and start the systemd user unit (idempotent)",
+        description=(
+            "Render the systemd user unit from the installed executable "
+            + "and the worker state directory, preserving the adapter "
+            + "selection, then daemon-reload, enable and start. Idempotent; "
+            + "refuses to touch a unit this tooling did not generate."
+        ),
+    )
+    _add_selection_arguments(service_install)
+    _ = service_commands.add_parser(
+        "status",
+        help="show the service status (plus the linger state)",
+    )
+    _ = service_commands.add_parser(
+        "restart",
+        help="restart the service (applies a re-installed configuration)",
+    )
+    _ = service_commands.add_parser(
+        "uninstall",
+        help="stop, disable and remove the generated unit (identity and state are kept)",
+    )
     return parser
 
 
+def _resolved_state_dir(state_dir: str | None) -> Path:
+    """The worker state directory an explicit flag selects (default otherwise)."""
+    return Path(state_dir) if state_dir else Path(default_worker_state_dir())
+
+
 def _open_store(state_dir: str | None) -> WorkerLocalStore:
-    directory = state_dir if state_dir else default_worker_state_dir()
-    return WorkerLocalStore(Path(directory) / "worker-state.db")
+    return WorkerLocalStore(_resolved_state_dir(state_dir) / "worker-state.db")
 
 
 def open_worker_store(state_dir: str | None = None) -> WorkerLocalStore:
@@ -1479,6 +1541,19 @@ def main(argv: list[str] | None = None) -> int:
     arguments = cast("dict[str, object]", vars(parser.parse_args(argv)))
     command = arguments.get("command")
     try:
+        if command == "service":
+            # The service lifecycle manages the UNIT, not this process's
+            # store: it resolves the state directory itself and must not
+            # create/open one as a side effect of `status`/`restart`. The
+            # worker seams are injected here so the lifecycle module
+            # never imports this one (no import cycle).
+            from .worker_service import run_service_command
+
+            return run_service_command(
+                arguments,
+                open_store=open_worker_store,
+                build_registry=build_registry,
+            )
         store = _open_store(
             str(arguments["state_dir"]) if arguments.get("state_dir") else None
         )
@@ -1522,10 +1597,28 @@ def main(argv: list[str] | None = None) -> int:
                     str(arguments["state_dir"]) if arguments.get("state_dir") else None
                 )
                 registry = build_registry(arguments, state_dir=state_dir)
+                lock = WorkerStateDirLock(_resolved_state_dir(state_dir))
+                try:
+                    lock.acquire()
+                except WorkerStateDirLockUnavailable as exc:
+                    # Fail closed: a planted worker.lock (symlink or other
+                    # non-regular object) is never followed — its target is
+                    # untouched and this process does not run.
+                    print(f"worker: {exc}", file=sys.stderr)
+                    return 2
+                except WorkerStateDirLocked as exc:
+                    # Fail closed: a foreground run and the service (or a
+                    # second foreground run) must never share a state
+                    # directory (issue #138).
+                    print(f"worker: {exc}", file=sys.stderr)
+                    return 2
                 runtime = WorkerRuntime(origin=origin, store=store, local_adapters=registry)
+                restore_handlers = install_stop_signal_handlers(runtime)
                 try:
                     reason = runtime.run()
                 finally:
+                    restore_handlers()
+                    lock.release()
                     for line in runtime.diagnostics():
                         print(f"worker: {line}", file=sys.stderr)
                 if reason == "reconnect_budget_exhausted":
@@ -1539,6 +1632,50 @@ def main(argv: list[str] | None = None) -> int:
     except (WorkerConfigError, ValueError, OSError) as exc:
         print(f"worker: {exc}", file=sys.stderr)
         return 2
+
+
+def install_stop_signal_handlers(runtime: object) -> Callable[[], None]:
+    """Wire SIGTERM/SIGINT to ``runtime.request_stop`` (clean service stop).
+
+    The systemd stop signal reaches ``run`` as SIGTERM; without this
+    wiring the default disposition kills the process outright. The
+    handler drives the runtime's deterministic stop path (stop event,
+    socket closed) so the process exits cleanly and any in-flight
+    attempt is cancelled and reported interrupted. Installs from the
+    main thread only — elsewhere (and for runtimes without a stop seam)
+    this is a no-op. Returns a callable restoring the previous handlers.
+    """
+    stop = getattr(runtime, "request_stop", None)
+    if not callable(stop):
+        return lambda: None
+
+    def _request_stop(
+        signum: int, frame: types.FrameType | None
+    ) -> None:
+        _ = signum, frame
+        _ = stop()
+
+    restored: list[tuple[int, SignalHandler]] = []
+    for number in (signal.SIGTERM, signal.SIGINT):
+        try:
+            previous = cast(
+                "SignalHandler", signal.getsignal(number)
+            )
+            _ = signal.signal(number, _request_stop)
+        except (ValueError, OSError):
+            # Not the main thread, or the platform refuses this signal:
+            # skip it rather than fail the run.
+            continue
+        restored.append((number, previous))
+
+    def restore() -> None:
+        for number, previous in restored:
+            try:
+                _ = signal.signal(number, previous)
+            except (ValueError, OSError):
+                pass
+
+    return restore
 
 
 __all__ = [
@@ -1555,6 +1692,7 @@ __all__ = [
     "build_parser",
     "build_local_adapter_registry",
     "default_connect_factory",
+    "install_stop_signal_handlers",
     "main",
     "open_worker_store",
     "tls_context_for_worker",

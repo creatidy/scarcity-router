@@ -1306,11 +1306,19 @@ class ControlPlane:
                     "retired": live.get("retired", []),
                     "observed_at": live.get("observed_at"),
                     # The worker-side actions are printed, never derived
-                    # by the user: the ONE login command, and the run flag
-                    # that connects the source's adapter (both required —
-                    # logging in alone never materializes models).
+                    # by the user: the ONE login command, the service
+                    # install command (the normal deployment, issue
+                    # #138), and the foreground run command (debugging).
+                    # All three are required for their step — logging in
+                    # alone never materializes models, and a foreground
+                    # run next to an installed service fails closed on
+                    # the state-directory lock.
                     "login_command": (
                         "scarcity-router-worker codex-login --source "
+                        + source.source_id
+                    ),
+                    "install_command": (
+                        "scarcity-router-worker service install --codex-source "
                         + source.source_id
                     ),
                     "run_command": (

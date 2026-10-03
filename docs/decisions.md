@@ -5291,3 +5291,293 @@ Do not rewrite history or change an accepted decision silently.
   not a compatibility-matrix gate); the Codex (M06) adapter's
   `item/reasoning/*` summary handling is adjacent observed behavior on a
   different protocol/evidence path and is deliberately unchanged.
+### D-065 — First-class worker service lifecycle: the generated systemd user unit as the supported Linux/WSL deployment
+
+- **Status:** Accepted 2026-10-01 (issue #138, child F of the #132
+  program; branch `task/138-worker-service-lifecycle`); amended
+  2026-10-02 (PR #167 review): the service-mode filesystem contract is
+  narrowed to the invoking user's home subtree and the mountinfo
+  read-only-trust relaxation is removed (points 1, 3, 4 and 6)
+- **Date:** 2026-10-01
+- **Base:** `develop` @ `db4e1bd`
+- **Confidence:** High for the lifecycle shape (every mechanism is
+  pre-existing: the `run` entry point, the `WorkerLocalStore` identity,
+  systemd's own unit semantics; the decision fixes how they compose and
+  what the tooling refuses to do).
+- **Context:** Until #138 the supported Linux background path was a
+  static example unit (`examples/scarcity-router-worker.service`) that
+  an administrator copied to `~/.config/systemd/user/` and hand-edited
+  (M10/#95). That path could not preserve the D-053 source selection,
+  had no idempotency, no overwrite protection, no foreground/service
+  exclusion, and the Sources UI recommended the foreground `run`
+  command for deployment. Child F froze the scope: `service
+  install/status/restart/uninstall`, user unit only, no secrets in
+  units, no ad-hoc `SSL_CERT_FILE` hacks, lifetime single-instance lock
+  per worker state directory.
+- **Decision:**
+  1. **One generated user unit, one fixed name.**
+     `scarcity-router-worker service install` renders
+     `scarcity-router-worker.service` into the invoking user's
+     `$XDG_CONFIG_HOME/systemd/user/` (default `~/.config/systemd/user/`),
+     which must lie beneath the invoking user's canonical home directory:
+     an `XDG_CONFIG_HOME` outside home is refused for `service install`
+     (2026-10-02 narrowing; the normal default location qualifies).
+     The unit name is fixed: the supported shape is one worker service
+     per user account; a second worker on one host is a second user
+     account with its own state directory. No root, no system units, no
+     own daemonizing logic (systemd owns the lifecycle; `Type=simple`).
+  2. **The unit is derived, never configured.** `ExecStart` names the
+     ACTUAL installed executable (the console script or packaged binary
+     the command ran through, resolved to an absolute path — a user
+     manager's PATH is minimal) and the ACTUAL worker state directory
+     (`--state-dir` always pinned), plus the same adapter-selection
+     flags `run` accepts (`--codex-source` instances, loopback Ollama,
+     ZCode sources, the legacy single-Codex triple). Every
+     filesystem-valued argument that enters the unit — `--state-dir`,
+     the worker executable, `--codex-bin`, `--zcode-bin`,
+      `--zcode-workspace`, and the ZCode state home — is resolved EXACTLY
+      ONCE at install time to
+     the canonical absolute path that was validated (`realpath`
+     canonicalization; relative input resolves against the INSTALLER's
+     working directory, and a pinned bare command name is refused rather
+     than PATH-resolved), so a user manager can never re-resolve a
+     relative or non-canonical value against its own different
+      working-directory context after reboot. Rendering is serialization,
+      not filesystem validation: it emits those exact canonical strings
+      without resolving them again, even if a pathname changes afterward.
+      Every rendered
+     value follows systemd's own substitution semantics: a literal `%`
+     is doubled to `%%` wherever specifier expansion applies (`ExecStart`
+     AND `ReadWritePaths`; quoting never suppresses that expansion), and
+     `ExecStart` carries the documented `:` executable prefix so
+     `$`-variable substitution is suppressed for the whole command line
+     — a literal `$` in a path stays literal (`ExecStart` is not a shell
+     line, and `ReadWritePaths` does no variable substitution). The
+     frozen issue scope's `--server` is deliberately ABSENT from
+     `service install`: the service uses the stored server origin of the
+     already-paired identity, so service tooling can never introduce a
+     new worker origin (and therefore cannot weaken the D-044
+     verified-TLS `srws://` rule that D-056 explicitly preserved for
+     workers).
+  3. **Idempotency and ownership by content marker.** The rendered unit
+     is deterministic (no timestamps): identical inputs render
+     identical bytes, so idempotency is content equality. Every unit
+     this tooling writes starts with a generation marker; a DIFFERENT
+     marked unit is replaced (the documented configuration-update path,
+     applied by `service restart` — install never restarts on its own).
+     An existing unit WITHOUT the marker is never overwritten or
+     removed: install/uninstall refuse with the inspection/removal
+     recipe. This retires the copied-example workflow; the example unit
+     is deleted and the refusal message names the migration. The write
+     itself is a SECURE ATOMIC replacement (Daybreak review): the unit
+      directory's complete chain is opened component-by-component with
+      `O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC`, relative to retained parent
+      descriptors, and `fstat`-checked before traversal or provisioning.
+      Because the unit directory lies beneath the invoking user's
+      canonical home (point 1), the walk ANCHORS AT the home directory:
+      the home anchor must be a real directory owned by the effective
+      user and closed to group/other writes, and only the components
+      BELOW it are checked — the admin-managed namespace above home
+      (`/`, `/home`) is never opened or inspected, and mount ownership
+      is never security evidence. Below the anchor the conservative
+      component checks apply: non-sticky
+      group/other-writable parents are refused. A sticky parent is accepted
+      only with a root/current-user-owned next component: neither the
+      parent nor that component belongs to another user, so sticky unlink/
+      rename restrictions protect it. The final directory must belong to
+      the invoking user and be closed to group/other writes. Missing
+      components are created 0o700 relative to trusted parent descriptors;
+      existing modes are never silently repaired. Unit-directory spellings
+      containing symlinks are refused with a private canonical
+      `XDG_CONFIG_HOME` remedy: systemd's implicit search path must not
+      traverse a different, replaceable chain from the canonical writer.
+      The final verified directory descriptor is retained from marker
+      inspection through exclusive temp creation, publication and fsync;
+     the content goes through a RANDOMIZED EXCLUSIVELY CREATED temporary
+     file inside that same directory (never a predictable
+     `.tmp-<pid>` path, never a symlink target), the descriptor is
+     `fstat`-verified regular, the 0o644 mode is set on the open fd, the
+     bytes are written and fsync'd through the fd, and the replacement
+      is one same-directory `rename` (source/destination use the SAME
+      retained dir fd) followed by a
+     directory fsync where supported — a planted predictable temp path
+      can neither redirect the write nor clobber an unrelated file. The
+      visible directory identity is compared with the retained fd before
+      systemctl is invoked; the trusted chain excludes cross-user swaps
+      after that comparison too.
+  4. **Hardening matching the worker's actual needs.** `Restart=
+     on-failure` + `RestartSec=5s` (the runtime's bounded reconnect
+     backoff already covers connection loss; the unit restart covers
+     process death), `TimeoutStopSec=30s`, `NoNewPrivileges`,
+     `PrivateTmp`, `ProtectSystem=strict`, `ProtectHome=read-only`,
+     `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6`, and
+     `ReadWritePaths` limited to the state directory, a configured ZCode
+     authorized workspace, and — for a ZCode source — the ZCode CLI's
+     own resolved state home (`$HOME/.zcode`, canonicalized with
+     `realpath`; the ZCode adapter's own `HOME` contract). Service mode
+     is sandboxed with `ProtectHome=read-only`, and normal ZCode CLI
+     execution writes session/runtime/log/rollout and database state
+     under that supported state home, so the unit must except exactly
+     that one directory or ZCode execution breaks under the service —
+     and the write grant stays worker state + that one directory + the
+     authorized workspace, never a writable `$HOME` (a ZCode source
+     executes its edits OUTSIDE the state directory; without the
+     workspace exception `ProtectHome=read-only` would break every
+     workspace edit). The state home must already exist: install
+     refuses with the `zcode login zai` remediation instead of
+     rendering an impossible path, and the tooling never creates, reads
+     or writes ZCode's own state (D-061 constraint 3). Every
+     `ReadWritePaths` grant is additionally ROLE-VALIDATED before
+     anything is written (Daybreak review; a small fixed policy, not a
+     sandbox subsystem): no grant may resolve to the filesystem root or
+     the invoking user's home directory itself; the ZCode state home
+     must stay the dedicated ZCode state subtree (`~/.zcode -> $HOME`
+     or `~/.zcode -> /` fails installation, as does any ancestor of
+     `$HOME` broader than that subtree); the worker state directory
+     must be a dedicated private tree STRICTLY BENEATH the invoking
+      user's canonical home directory — the narrowed service-mode
+      contract (2026-10-02): the filesystem root, the home directory
+      itself and every location outside home — including a custom state
+      directory, or a symlink, that resolves outside home — are refused
+      at install with an actionable error naming the offending canonical
+      path, BEFORE anything is validated, written or enabled; the
+      tooling never relocates them. The normal
+      `$HOME/.local/share/scarcity-router/worker` location is the
+      primary supported path, and an explicit custom state directory
+      beneath home remains supported when it satisfies the
+      private-tree requirements (existing, owner-owned, not
+      group/world-writable). The boundary is established BEFORE opening
+      `WorkerLocalStore` or touching SQLite, through the HOME-ANCHORED
+      descriptor walk shared with the unit directory (point 3): open
+      the canonical home directory, require the opened home to be a
+      real directory owned by the effective user and closed to
+      group/other writes, retain that home descriptor, and traverse
+      each descendant component relative to the retained fd with
+      `O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC`, preserving the existing
+      ownership/private-mode checks below home and retaining the
+      verified final directory fd. This home-anchored traversal IS the
+      systemd-compatible security boundary: under
+      `ProtectSystem=strict` + `ProtectHome=read-only` the synthetic
+      read-only sandbox ancestors (`/`, `/home`, displaying the
+      overflow uid 65534 in systemd's user mapping) are simply outside
+      the trust computation — the walk never consults them, and mount
+      ownership/mountinfo is not security evidence anywhere. The
+      earlier namespace-aware relaxation (accepting an untrusted
+      read-only-mount ancestor selected from `/proc/self/mountinfo`)
+      is REMOVED, not corrected: selecting the effective mount from
+      mountinfo requires mount-ID/parent-ID reasoning the review found
+      unsound as a trust input, so the owner decision removed the
+      dependency from the trust model instead of extending it. The
+      product-owned default tree is provisioned through trusted
+      directory descriptors when missing; a missing custom state
+      directory is refused, and a shared custom directory is never
+      silently repaired. SQLite's filename open is safe against
+      cross-principal substitution because both its directory chain and
+      leaf are unavailable for other-user replacement; a planted
+      non-regular database entry is refused before store access. A
+      dedicated private state directory OUTSIDE home remains a
+      FOREGROUND `run` capability with the conservative root-to-leaf
+      ownership/permission validation and NO read-only-mount
+      relaxation: an untrusted displayed owner stays untrusted there.
+      A workspace may still live outside `$HOME` (the workspace is not
+      the worker's identity/security boundary) but
+     never contains — or equals — the worker state directory or the
+     ZCode state home, and a state home that is a broad parent of the
+     workspace is refused, so no broader grant can subsume a narrower
+     boundary. Every refusal names the offending canonical path and the
+     reason and happens before `daemon-reload`/`enable --now`.
+  5. **Linger is deliberate and visible, never fatal.** Install queries
+     `loginctl show-user --property=Linger`, attempts
+     `enable-linger` for the invoking user, and reports the outcome in
+     every case; a failure (polkit, no loginctl) is a remediation-
+     bearing warning naming the exact `sudo loginctl enable-linger`
+     command — the install itself still succeeds. Uninstall never
+     touches linger (other units may depend on it).
+  6. **Lifetime single-instance lock per state directory.** One worker
+     runtime per state directory, enforced by an OS advisory lock
+     (`<state_dir>/worker.lock`; `flock` on POSIX, `msvcrt.locking` on
+     Windows) acquired by the `run` command before the runtime is
+     built: a foreground worker and the service worker are mutually
+     exclusive, and the second contender fails closed (exit 2) with a
+     message naming the holder and the stop command. The OS releases
+     the lock on every exit path — clean stop, exception, SIGKILL — so
+     a stale lock can never block a later start. `pair`, `codex-login`
+     and the `service` subcommands never take the lock (they do not run
+     the loop). The lock file itself is opened WITHOUT FOLLOWING LINKS
+     (Daybreak review): on POSIX the open is `openat`-relative to the
+     verified private state directory with `O_NOFOLLOW` and the
+     descriptor is `fstat`-verified regular with the 0o600 mode
+     enforced on the open fd — a planted `worker.lock` symlink (or
+     FIFO/device) produces a typed refusal and its target is never
+      touched. The POSIX directory fd is returned by the trusted-chain
+      traversal and retained for the entire lock lifetime: it is never
+      closed and reopened by pathname between verification and child open.
+      On Windows, `NtCreateFile` opens each single component relative to
+      the preceding directory handle (`RootDirectory`), with
+      `FILE_OPEN_REPARSE_POINT`; handle information/type rejects reparses
+      and non-filesystem objects before child lookup. Missing directories
+      are provisioned handle-relative. The entire handle chain is retained
+      without write-data/delete sharing, so directory/ancestor swaps cannot
+      redirect lock lookup. Attribute-only in-place reparse conversion is
+      not prevented by sharing: the next no-follow handle-relative open
+      fails closed before lock creation or truncation (tested on native
+      Windows). Lock-file read/write sharing preserves ordinary contention.
+      No check-then-`CreateFileW(path)` sequence and no `realpath` that
+      resolves away junctions exist. The state directory must pass
+     the private-tree verification (home-anchored, per point 4)
+     before the lock is taken, the holder
+     pid is written only AFTER the advisory lock is acquired (byte 0 is
+     the reserved lock byte; the pid line follows it, so a Windows
+     contender can read it despite the held byte-range lock) and is
+     read back through the already-open descriptor — no second pathname
+     resolution, and no unlink/recreate race on release.
+  7. **Clean SIGTERM.** The `run` command wires SIGTERM/SIGINT to the
+     runtime's existing deterministic stop path (stop event set, active
+     transport closed, in-flight attempts cancelled and reported
+     interrupted per D-043) instead of the default kill disposition;
+     exit 0 on a requested stop. systemd stop/journal logs need no new
+     machinery: the worker logs redacted diagnostics to
+     stdout/stderr already, which the user manager owns.
+  8. **Exit codes stay the worker CLI's.** 0 success (idempotent
+     repeats included), 2 refused configuration/failed operation;
+     `service status`/`restart` pass `systemctl`'s own exit code
+     through (e.g. 3 = inactive) rather than re-interpreting it. The
+     `service` subcommand never opens the worker store as a side
+     effect of `status`/`restart`.
+- **Security posture:** no secret enters the unit file, the CLI output
+  or an error message (negative-scanned by tests): pairing identity and
+  provider-controlled homes stay in the 0700 state directory the unit
+  only points at; no credential-bearing command line (the only
+  subprocess arguments are unit names and systemctl verbs); no CA/TLS
+  configuration here at all — child G (#139) persists custom CA trust
+  through the supported worker configuration, and this decision freezes
+  that unit files never carry `SSL_CERT_FILE` shell hacks.
+- **Sources UI:** the admin Sources page now prints the service install
+  command as the NORMAL deployment step and frames the foreground `run`
+  command as debugging (the frozen scope's "Sources UI promotes service
+  installation").
+- **Rejected alternatives:** (a) keeping the copy-and-edit example
+  unit — cannot preserve source selection, no overwrite protection,
+  exactly the manual lifecycle the issue retires; (b) a root system
+  unit or a root-managed installer — a per-user worker needs no
+  privileges and a root service would widen the credential boundary
+  across accounts (D-044); (c) baking secrets or `EnvironmentFile=`
+  into the unit — unnecessary (the identity store already persists the
+  credential with 0600 semantics) and a new credential surface;
+  (d) auto-restart inside install — makes configuration updates
+  unpredictable when the frozen scope defines `service restart`;
+  (e) deriving the unit name from the state directory — a second
+  per-account worker is already excluded by the fixed name and the
+  state-dir lock; dynamic names would invite unbounded parallel workers
+  against one provider account; (f) relying on PID files or our own
+  daemonizer — systemd owns the lifecycle; the lock is advisory state
+  only.
+- **Boundary:** `scarcity_router/worker_service.py` (new),
+  `worker_client.py` (`service` subcommand, run lock, signal wiring),
+  `worker_local_store.py` (`WorkerStateDirLock`), `control_api.py` /
+  `server_ui.py` (Sources UI promotion), tests, `README.md`,
+  `docs/m10-acceptance.md` (supersede note), this record. No selector,
+  routing, capacity, provider, catalog, protocol-version or server
+  composition change; `run`/`pair` semantics are unchanged except the
+  lock and signal wiring; the Windows tray path is untouched (no
+  Windows service mechanics).
