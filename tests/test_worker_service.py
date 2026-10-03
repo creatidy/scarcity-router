@@ -614,6 +614,213 @@ class UnitRenderingTests(unittest.TestCase):
         self.assertEqual('"/a %%b c"', worker_service.systemd_quote("/a %b c"))
 
 
+class ExecStartReadBackTests(unittest.TestCase):
+    """The installed unit reads back into what rendered it (issue #168).
+
+    ``read_installed_service_configuration`` is the discovery half of
+    ``codex-login``: the persisted home of the operator's adapter
+    selection is the generated unit itself, so a host-specific source id
+    never has to be typed twice. The read-back is exact (the same
+    executable, state directory and :class:`ServiceSelection` the unit
+    was rendered from, hostile paths included), marker-gated (only units
+    this tooling generated are interpreted) and fail-closed (unknown
+    flags, wrong shapes and ambiguity are loud refusals, never guesses).
+    """
+
+    def render(
+        self,
+        selection: worker_service.ServiceSelection | None = None,
+        *,
+        executable: Path | None = None,
+        state_dir: Path | None = None,
+        zcode_state_home: Path | None = None,
+    ) -> str:
+        return worker_service.render_unit(
+            executable=executable if executable is not None else Path("/opt/tools/scarcity-router-worker"),
+            state_dir=state_dir
+            if state_dir is not None
+            else Path("/home/u/.local/share/scarcity-router/worker"),
+            selection=selection if selection is not None else worker_service.ServiceSelection(),
+            zcode_state_home=zcode_state_home,
+        )
+
+    def _exec_value(self, unit: str) -> str:
+        return next(
+            line.removeprefix("ExecStart=")
+            for line in unit.splitlines()
+            if line.startswith("ExecStart=")
+        )
+
+    def test_read_back_round_trips_a_codex_selection_with_hostile_paths(
+        self,
+    ) -> None:
+        selection = worker_service.ServiceSelection(
+            codex_sources=("precision-codex-live",),
+            codex_bin="/opt/my tools/co%dex\"bin$",
+        )
+        executable = Path("/opt/my tools/scarcity-router-worker")
+        state_dir = Path("/home/u/st ate%20")
+        unit = self.render(selection, executable=executable, state_dir=state_dir)
+        with tempfile.TemporaryDirectory[str]() as tmp:
+            unit_path = Path(tmp) / "scarcity-router-worker.service"
+            _ = unit_path.write_text(unit, encoding="utf-8")
+            installed = worker_service.read_installed_service_configuration(
+                unit_path=unit_path
+            )
+        self.assertEqual(executable, installed.executable)
+        self.assertEqual(state_dir, installed.state_dir)
+        self.assertEqual(selection, installed.selection)
+        self.assertEqual(unit_path, installed.unit_path)
+
+    def test_read_back_parse_agrees_with_the_systemd_word_oracle(self) -> None:
+        # Two independent tokenizations of the same rendered line (the
+        # production parser and the test's systemd-parsing oracle) must
+        # see the same words — the round-trip claim then rests on
+        # agreement, not on one implementation checking itself.
+        executable = Path("/opt/my tools/scarcity-router-worker")
+        state_dir = Path("/home/u/st%20ate")
+        selection = worker_service.ServiceSelection(
+            codex_sources=("precision-codex-live", "second src"),
+            zcode_sources=("zsrc",),
+            zcode_workspace="/home/u/w$orks",
+        )
+        unit = self.render(
+            selection,
+            executable=executable,
+            state_dir=state_dir,
+            zcode_state_home=Path("/home/u/.zcode"),
+        )
+        oracle = systemd_words(self._exec_value(unit).removeprefix(":"))
+        expected = [
+            str(executable),
+            "run",
+            "--state-dir",
+            str(state_dir),
+            "--codex-source",
+            "precision-codex-live",
+            "--codex-source",
+            "second src",
+            "--zcode-source",
+            "zsrc",
+            "--zcode-workspace",
+            "/home/u/w$orks",
+        ]
+        self.assertEqual(expected, oracle)
+        parsed_executable, parsed_state_dir, parsed_selection = (
+            worker_service.parse_exec_start(self._exec_value(unit))
+        )
+        self.assertEqual(executable, parsed_executable)
+        self.assertEqual(state_dir, parsed_state_dir)
+        self.assertEqual(selection, parsed_selection)
+
+    def test_read_back_needs_the_generated_marker(self) -> None:
+        with tempfile.TemporaryDirectory[str]() as tmp:
+            unit_path = Path(tmp) / "scarcity-router-worker.service"
+            _ = unit_path.write_text(
+                "# somebody's own hand-written unit\n"
+                + "[Service]\n"
+                + "ExecStart=/bin/true run --state-dir /tmp\n",
+                encoding="utf-8",
+            )
+            with self.assertRaises(
+                worker_service.ServiceUnitReadError
+            ) as caught:
+                _ = worker_service.read_installed_service_configuration(
+                    unit_path=unit_path
+                )
+        self.assertIn("not generated by this tooling", str(caught.exception))
+
+    def test_read_back_refuses_a_missing_unit_with_the_install_recipe(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory[str]() as tmp:
+            with self.assertRaises(
+                worker_service.ServiceUnitReadError
+            ) as caught:
+                _ = worker_service.read_installed_service_configuration(
+                    unit_path=Path(tmp) / "absent.service"
+                )
+        self.assertIn("no installed worker service unit", str(caught.exception))
+        self.assertIn("service install", str(caught.exception))
+
+    def test_read_back_refuses_a_unit_with_an_unknown_flag(self) -> None:
+        exec_value = self._exec_value(self.render())
+        with tempfile.TemporaryDirectory[str]() as tmp:
+            unit_path = Path(tmp) / "scarcity-router-worker.service"
+            _ = unit_path.write_text(
+                worker_service.UNIT_MARKER_LINE + "\n"
+                + "[Service]\n"
+                + f"ExecStart={exec_value} --future-flag yes\n",
+                encoding="utf-8",
+            )
+            with self.assertRaises(
+                worker_service.ServiceUnitReadError
+            ) as caught:
+                _ = worker_service.read_installed_service_configuration(
+                    unit_path=unit_path
+                )
+        self.assertIn("--future-flag", str(caught.exception))
+
+    def test_read_back_refuses_a_non_run_shape(self) -> None:
+        with tempfile.TemporaryDirectory[str]() as tmp:
+            unit_path = Path(tmp) / "scarcity-router-worker.service"
+            _ = unit_path.write_text(
+                worker_service.UNIT_MARKER_LINE + "\n"
+                + "[Service]\n"
+                + "ExecStart=:"
+                + self._exec_value(self.render()).removeprefix(":")
+                .replace(" run ", " serve ", 1)
+                + "\n",
+                encoding="utf-8",
+            )
+            with self.assertRaises(
+                worker_service.ServiceUnitReadError
+            ) as caught:
+                _ = worker_service.read_installed_service_configuration(
+                    unit_path=unit_path
+                )
+        self.assertIn("shape", str(caught.exception))
+
+    def test_read_back_refuses_a_dangling_flag_value(self) -> None:
+        value = self._exec_value(self.render())
+        with self.assertRaises(worker_service.ServiceUnitReadError) as caught:
+            _ = worker_service.parse_exec_start(value + " --codex-source")
+        self.assertIn("no value", str(caught.exception))
+
+    def test_read_back_carries_every_configured_source_in_order(self) -> None:
+        _, _, parsed = worker_service.parse_exec_start(
+            self._exec_value(
+                self.render(
+                    worker_service.ServiceSelection(
+                        codex_sources=("precision-codex-live", "rog-codex-live"),
+                    )
+                )
+            )
+        )
+        self.assertEqual(
+            ("precision-codex-live", "rog-codex-live"), parsed.codex_sources
+        )
+
+    def test_read_back_preserves_the_ollama_and_zcode_selection(self) -> None:
+        selection = worker_service.ServiceSelection(
+            codex_sources=("src",),
+            allow_ollama=True,
+            resource="ollama-res",
+            ollama_port=11500,
+            zcode_sources=("zsrc",),
+            zcode_workspace="/home/u/project",
+        )
+        _, _, parsed = worker_service.parse_exec_start(
+            self._exec_value(
+                self.render(
+                    selection,
+                    zcode_state_home=Path("/home/u/.zcode"),
+                )
+            )
+        )
+        self.assertEqual(selection, parsed)
+
+
 class SystemdAnalyzeTests(unittest.TestCase):
     """The rendered unit must LOAD under the host's real systemd parser.
 

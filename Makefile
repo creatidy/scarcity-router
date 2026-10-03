@@ -7,11 +7,14 @@
 # `##` markers on each target are the single source of that listing.
 
 .DEFAULT_GOAL := help
-.PHONY: check help install guardrails typecheck test package-check
+.PHONY: check help install guardrails typecheck test package-check codex-login
 
 help: ## list available targets
 	@awk 'BEGIN { FS = ":.*?## " } \
 		/^[a-zA-Z_-]+:.*?## / { printf "  make %-16s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
+
+codex-login: ## refresh the local worker's Codex credentials (official device-auth login for the source configured in the installed worker service; same command on every host)
+	uv run scarcity-router-worker codex-login
 
 check: test typecheck ## run the full gate (test + typecheck); must exit 0 before every commit/PR
 

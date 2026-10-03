@@ -42,6 +42,7 @@ from tests.worker_fixtures import (  # noqa: E402
     realtime_canonical,
 )
 from scarcity_router import worker_client  # noqa: E402
+from scarcity_router import worker_codex_adapter  # noqa: E402
 from scarcity_router import worker_service  # noqa: E402
 from scarcity_router.gateway_adapters import (  # noqa: E402
     AdapterCall,
@@ -1014,6 +1015,179 @@ class ServiceCommandDispatchTests(unittest.TestCase):
                 )
         self.assertEqual(2, exit_code)
         self.assertIn("--resource is required", stderr.getvalue())
+
+
+class CodexLoginDiscoveryTests(unittest.TestCase):
+    """``codex-login`` without ``--source`` discovers the configured source.
+
+    The installed worker service unit is the persisted home of the
+    operator's adapter selection, so the host-specific source id never
+    has to be typed twice (issue #168): discovery reads the generated
+    unit, requires exactly one ``--codex-source`` and reuses the unit's
+    state directory (and pinned Codex binary) so the login addresses
+    exactly the controlled home the running worker probes. Explicit
+    flags keep their exact prior semantics; absent or ambiguous
+    configuration refuses with the remediation instead of guessing, and
+    ``~/.codex`` is never consulted.
+    """
+
+    def _home_with_unit(
+        self,
+        base: Path,
+        *,
+        selection: worker_service.ServiceSelection | None = None,
+        state_dir: Path | None = None,
+        marker: bool = True,
+        write: bool = True,
+    ) -> Path:
+        home = base / "home"
+        resolved_state = (
+            state_dir
+            if state_dir is not None
+            else home / ".local" / "share" / "scarcity-router" / "worker"
+        )
+        if write:
+            unit_dir = home / ".config" / "systemd" / "user"
+            unit_dir.mkdir(parents=True)
+            if marker:
+                unit = worker_service.render_unit(
+                    executable=Path("/opt/tools/scarcity-router-worker"),
+                    state_dir=resolved_state,
+                    selection=(
+                        selection if selection is not None else worker_service.ServiceSelection()
+                    ),
+                )
+            else:
+                unit = "# somebody's own hand-written unit\n[Service]\nExecStart=/bin/true\n"
+            _ = (unit_dir / worker_service.SERVICE_UNIT_NAME).write_text(
+                unit, encoding="utf-8"
+            )
+        return home
+
+    def _login(
+        self, home: Path, *argv: str
+    ) -> tuple[int, str, str, list[dict[str, object]]]:
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        stores: list[CloseCountingStore] = []
+        logins: list[dict[str, object]] = []
+
+        def fake_login(**kwargs: object) -> int:
+            logins.append(dict(kwargs))
+            return 0
+
+        def fake_opener(_state_dir: str | None) -> CloseCountingStore:
+            store = CloseCountingStore(home / "opener-state.db")
+            stores.append(store)
+            return store
+
+        with (
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+            unittest.mock.patch.dict(
+                os.environ, {"HOME": str(home), "XDG_CONFIG_HOME": ""}
+            ),
+            unittest.mock.patch.object(worker_client, "_open_store", fake_opener),
+            unittest.mock.patch.object(
+                worker_codex_adapter, "run_official_codex_login", fake_login
+            ),
+        ):
+            exit_code = worker_client.main(["codex-login", *argv])
+        assert_stores_closed_exactly_once(self, stores)
+        return exit_code, stdout.getvalue(), stderr.getvalue(), logins
+
+    def test_discovers_the_configured_source_and_reuses_its_state_dir(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory[str]() as tmp:
+            state_dir = Path(tmp) / "custom-state"
+            _ = state_dir.mkdir()
+            home = self._home_with_unit(
+                Path(tmp),
+                selection=worker_service.ServiceSelection(
+                    codex_sources=("precision-codex-live",),
+                    codex_bin="/opt/pinned/codex",
+                ),
+                state_dir=state_dir,
+            )
+            exit_code, stdout, _, logins = self._login(home)
+        self.assertEqual(0, exit_code)
+        self.assertEqual(
+            [
+                {
+                    "source_id": "precision-codex-live",
+                    "state_dir": str(state_dir),
+                    "pinned_binary": "/opt/pinned/codex",
+                }
+            ],
+            logins,
+        )
+        self.assertIn("precision-codex-live", stdout)
+
+    def test_an_explicit_source_keeps_its_exact_prior_semantics(self) -> None:
+        # No unit exists at all: the explicit form must behave exactly as
+        # before discovery existed (default state-dir machinery, no
+        # pinned binary) and never touch the service read-back.
+        with tempfile.TemporaryDirectory[str]() as tmp:
+            home = self._home_with_unit(Path(tmp), write=False)
+            exit_code, _, _, logins = self._login(
+                home, "--source", "explicit-src"
+            )
+        self.assertEqual(0, exit_code)
+        self.assertEqual(
+            [
+                {
+                    "source_id": "explicit-src",
+                    "state_dir": None,
+                    "pinned_binary": None,
+                }
+            ],
+            logins,
+        )
+
+    def test_a_worker_without_a_codex_source_refuses_with_the_recipe(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory[str]() as tmp:
+            home = self._home_with_unit(Path(tmp))
+            exit_code, _, stderr, logins = self._login(home)
+        self.assertEqual(2, exit_code)
+        self.assertEqual([], logins)
+        self.assertIn("runs no --codex-source", stderr)
+        self.assertIn("service install", stderr)
+
+    def test_ambiguous_sources_refuse_and_name_the_explicit_choice(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory[str]() as tmp:
+            home = self._home_with_unit(
+                Path(tmp),
+                selection=worker_service.ServiceSelection(
+                    codex_sources=("rog-codex-live", "precision-codex-live"),
+                ),
+            )
+            exit_code, _, stderr, logins = self._login(home)
+        self.assertEqual(2, exit_code)
+        self.assertEqual([], logins)
+        self.assertIn("rog-codex-live", stderr)
+        self.assertIn("precision-codex-live", stderr)
+        self.assertIn("--source", stderr)
+
+    def test_a_missing_unit_refuses_with_the_install_recipe(self) -> None:
+        with tempfile.TemporaryDirectory[str]() as tmp:
+            home = self._home_with_unit(Path(tmp), write=False)
+            exit_code, _, stderr, logins = self._login(home)
+        self.assertEqual(2, exit_code)
+        self.assertEqual([], logins)
+        self.assertIn("no installed worker service unit", stderr)
+
+    def test_a_foreign_unit_refuses(self) -> None:
+        with tempfile.TemporaryDirectory[str]() as tmp:
+            home = self._home_with_unit(Path(tmp), marker=False)
+            exit_code, _, stderr, logins = self._login(home)
+        self.assertEqual(2, exit_code)
+        self.assertEqual([], logins)
+        self.assertIn("not generated by this tooling", stderr)
 
 
 class RunSingleInstanceLockTests(unittest.TestCase):
