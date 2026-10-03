@@ -5581,3 +5581,76 @@ Do not rewrite history or change an accepted decision silently.
   composition change; `run`/`pair` semantics are unchanged except the
   lock and signal wiring; the Windows tray path is untouched (no
   Windows service mechanics).
+
+### D-066 — `make codex-login`: the installed worker unit is the Codex login's source of truth
+
+- **Status:** Accepted 2026-10-04 (issue #168; branch
+  `task/168-codex-login-make-target`)
+- **Base:** `develop` @ `5792d2d`
+- **Confidence:** High for the contracts (marker gating, fail-closed
+  parsing, flag precedence, no-restart pickup); parse mechanics are
+  pinned by round-trip tests against the renderer and the existing
+  systemd word oracle.
+- **Context:** Refreshing a Codex execution source's credentials required
+  the operator to retype the host-specific source id
+  (`scarcity-router-worker codex-login --source <id>`), although the id
+  was already recorded once — at `service install --codex-source` time —
+  in the generated systemd user unit's `ExecStart` (D-065). ROG and
+  Precision use different source ids, and the requested UX is one
+  identical command on both hosts (`make codex-login`) with no second
+  credential store, no `~/.codex` fallback, no Codex installation and no
+  new authorization mechanism.
+- **Decision:**
+  1. **Discovery reads the generated unit, nothing else.**
+     `read_installed_service_configuration` parses the INSTALLED unit's
+     `ExecStart` back into the executable, state directory and
+     `ServiceSelection` — the exact inverse of `render_unit`'s rendering
+     (the `:` no-substitution prefix, systemd word quoting and the `%%`
+     specifier unescaping, in that order). Only a unit carrying the
+     generated marker is interpreted; a missing unit, a foreign unit, an
+     unknown flag, a wrong shape or a dangling flag value fails closed
+     with the remediation (the exact
+     `service install --codex-source SOURCE_ID` recipe) — the worker's
+     configuration is never guessed and nothing is read outside the unit
+     (no `/proc` scraping, no `~/.codex`).
+  2. **`codex-login` without `--source` discovers.** Exactly one
+     configured `--codex-source` is required: zero or several refuse
+     with an actionable message (the configured ids listed, `--source`
+     named as the explicit choice). The discovered state directory (and
+     the pinned `--codex-bin`, when the unit carries one) is passed
+     through, so the login addresses the source's own controlled home
+     (`<state_dir>/codex-sources/<source_id>/`) — exactly the home the
+     running worker probes. Explicit `--source`/`--state-dir`/
+     `--codex-bin` flags keep their exact prior semantics; discovery
+     only fills what was omitted.
+  3. **The Make target is the UX, not a new mechanism.**
+     `make codex-login` runs `uv run scarcity-router-worker
+     codex-login` — the same CLI path and the same official
+     `codex login --device-auth` flow against the source-controlled
+     `CODEX_HOME` (D-053), byte-identical on every host. Listed in the
+     normal `make help`. No `.dev`/`.prd` variants, no host-specific
+     arguments, no second credential store, no Codex installation.
+  4. **No worker restart is required.** The Codex adapter re-probes
+     account auth from the controlled home on every eligibility check,
+     so a completed device-auth login is picked up by the running
+     worker on its next check without a restart.
+- **Rejected alternatives:** (a) hard-coding
+  `precision-codex-live` — bakes one transient deployment into the repo
+  and breaks the second host; (b) host-specific Make targets
+  (`.dev`/`.prd`) — the exact UX the issue forbids; (c) shell-parsing
+  the unit inside Make or scraping running processes — a second, weaker
+  parser outside the tooling that renders the file; (d) persisting the
+  selection into the worker settings document — that document is the
+  GUI settings surface and knows only loopback Ollama today; the unit is
+  where `service install` already persists the selection, so reading it
+  back introduces no second configuration store; (e) a `~/.codex`
+  fallback — forbidden; the controlled per-source home is the only
+  credential location this program touches (D-018/D-044/D-053).
+- **Boundary:** `scarcity_router/worker_service.py`
+  (`parse_exec_start`, `read_installed_service_configuration`,
+  `InstalledServiceConfiguration`, `ServiceUnitReadError`),
+  `worker_client.py` (`codex-login` discovery branch; `--source` now
+  optional), `Makefile` (`codex-login` target), `README.md`, tests,
+  this record. No protocol, catalog, selector, server, capacity or
+  serialized contract change; `codex-login --source` behavior is
+  unchanged.

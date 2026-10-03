@@ -24,6 +24,13 @@ worker launcher. This module owns the whole lifecycle surface of
   — normal ZCode execution writes its session/runtime state there — so
   the write grant is worker state + that one directory + the authorized
   workspace, never a writable ``$HOME``.
+- **read-back** (issue #168): the installed unit is the persisted home of
+  the operator's adapter selection, so :func:`read_installed_service_configuration`
+  parses a GENERATED unit's ``ExecStart`` back into the executable, state
+  directory and :class:`ServiceSelection` — the discovery half of
+  ``codex-login`` (``make codex-login``), which must never retype the
+  host-specific source id. Only units carrying the generated marker are
+  interpreted; anything else is refused.
 - **Idempotent and honest.** The rendered unit is deterministic
   (byte-stable for identical inputs): re-running install with the same
   flags re-writes nothing and stays green. A DIFFERENT generated unit
@@ -460,6 +467,214 @@ def unit_install_path(
             resolve_home = home if home is not None else os.path.expanduser
             base = Path(resolve_home("~")) / ".config"
     return base / "systemd" / "user" / SERVICE_UNIT_NAME
+
+
+# ── Installed-unit read-back ──────────────────────────────────────────────────
+
+#: The selection flags :meth:`ServiceSelection.exec_start_arguments` renders,
+#: keyed by their run-flag spelling — the exact vocabulary parse_exec_start
+#: accepts back. Anything else fails closed (a unit carrying an unknown flag
+#: was rendered by different tooling and is never interpreted by guesswork).
+_EXEC_START_APPEND_FLAGS = {
+    "--codex-source": "codex_sources",
+    "--zcode-source": "zcode_sources",
+}
+_EXEC_START_VALUE_FLAGS = {
+    "--codex-bin": "codex_bin",
+    "--zcode-bin": "zcode_bin",
+    "--zcode-workspace": "zcode_workspace",
+    "--resource": "resource",
+    "--ollama-host": "ollama_host",
+    "--codex-model": "codex_model",
+    "--codex-resource": "codex_resource",
+}
+_EXEC_START_FLAG_FLAGS = {
+    "--allow-ollama": "allow_ollama",
+    "--allow-codex": "allow_codex",
+}
+
+
+class ServiceUnitReadError(Exception):
+    """The installed unit cannot be read back as our own run configuration
+    (safe, actionable message; no secrets — the unit embeds none)."""
+
+
+@dataclass(frozen=True)
+class InstalledServiceConfiguration:
+    """What the installed unit actually runs, read back from disk.
+
+    The read-back counterpart of one :func:`render_unit` result: the
+    executable, the worker state directory and the preserved
+    :class:`ServiceSelection` (the adapter selection the operator
+    installed). Consumers that only need one configured execution source
+    (e.g. ``codex-login`` discovery) read it off ``selection``.
+    """
+
+    unit_path: Path
+    executable: Path
+    state_dir: Path
+    selection: ServiceSelection
+
+
+def parse_exec_start(value: str) -> tuple[Path, Path, ServiceSelection]:
+    """The inverse of :func:`render_unit`'s ``ExecStart`` rendering.
+
+    Accepts the raw ``ExecStart`` VALUE (the text after ``ExecStart=``),
+    undoes the rendering layer by layer — the ``:`` no-substitution
+    prefix, systemd word splitting (double quotes, ``\\`` escapes inside
+    quotes) and the ``%%`` specifier unescaping — and validates the shape
+    every generated unit has (``<executable> run --state-dir <dir>`` plus
+    the preserved selection flags). Unknown flags, a missing value or a
+    stray positional raise :class:`ServiceUnitReadError`: a unit this
+    tooling did not render is never interpreted by guesswork.
+    """
+
+    def unescape(text: str) -> str:
+        # Exact inverse of the two escape layers systemd_quote applies:
+        # ``%%`` back to ``%`` (specifier expansion), and inside quotes
+        # ``\\``/``\"`` back to the literal characters. A trailing
+        # backslash or lone ``%`` cannot come from our renderer.
+        unescaped: list[str] = []
+        index = 0
+        while index < len(text):
+            char = text[index]
+            if char == "%" and text[index + 1 : index + 2] == "%":
+                unescaped.append("%")
+                index += 2
+                continue
+            unescaped.append(char)
+            index += 1
+        return "".join(unescaped)
+
+    body = value[1:] if value.startswith(":") else value
+    words: list[str] = []
+    current: list[str] = []
+    has_word = False
+    quoted = False
+    index = 0
+    while index < len(body):
+        char = body[index]
+        if char == '"':
+            quoted = not quoted
+            has_word = True
+            index += 1
+        elif not quoted and char.isspace():
+            if has_word:
+                words.append(unescape("".join(current)))
+                current = []
+                has_word = False
+            index += 1
+        elif (
+            quoted
+            and char == "\\"
+            and body[index + 1 : index + 2] in ('"', "\\")
+        ):
+            current.append(body[index + 1])
+            has_word = True
+            index += 2
+        else:
+            current.append(char)
+            has_word = True
+            index += 1
+    if quoted:
+        raise ServiceUnitReadError("the ExecStart line ends inside a quoted word")
+    if has_word:
+        words.append(unescape("".join(current)))
+    if len(words) < 4 or words[1] != "run" or words[2] != "--state-dir":
+        raise ServiceUnitReadError(
+            "the ExecStart line does not have the generated "
+            + "<executable> run --state-dir <dir> shape"
+        )
+    executable = Path(words[0])
+    state_dir = Path(words[3])
+    mapping: dict[str, object] = {}
+    index = 4
+    while index < len(words):
+        word = words[index]
+        index += 1
+        if word in _EXEC_START_APPEND_FLAGS:
+            if index >= len(words):
+                raise ServiceUnitReadError(f"{word} has no value in ExecStart")
+            values = cast(
+                "list[object]", mapping.setdefault(_EXEC_START_APPEND_FLAGS[word], [])
+            )
+            values.append(words[index])
+            index += 1
+        elif word in _EXEC_START_VALUE_FLAGS:
+            if index >= len(words):
+                raise ServiceUnitReadError(f"{word} has no value in ExecStart")
+            mapping[_EXEC_START_VALUE_FLAGS[word]] = words[index]
+            index += 1
+        elif word in _EXEC_START_FLAG_FLAGS:
+            mapping[_EXEC_START_FLAG_FLAGS[word]] = True
+        elif word == "--ollama-port":
+            if index >= len(words):
+                raise ServiceUnitReadError(f"{word} has no value in ExecStart")
+            try:
+                mapping["ollama_port"] = int(words[index])
+            except ValueError as exc:
+                raise ServiceUnitReadError(
+                    f"--ollama-port {words[index]!r} is not an integer"
+                ) from exc
+            index += 1
+        else:
+            raise ServiceUnitReadError(
+                f"unexpected ExecStart word {word!r}: the installed unit "
+                + "was not rendered by this tooling"
+            )
+    return executable, state_dir, ServiceSelection.from_arguments(mapping)
+
+
+def read_installed_service_configuration(
+    *,
+    unit_path: Path | None = None,
+    env: Mapping[str, str] | None = None,
+) -> InstalledServiceConfiguration:
+    """Read back the run configuration the INSTALLED unit carries.
+
+    The local discovery half of ``codex-login`` (issue #168): the
+    persisted home of the operator's adapter selection is the generated
+    unit itself, so the source id, state directory and pinned Codex
+    binary an operator never has to retype are read from there. Only a
+    unit this tooling generated (marker first line) is interpreted — a
+    foreign unit is refused exactly like install/uninstall refuse to
+    touch it. ``unit_path`` overrides the resolved user-unit location and
+    ``env`` the home resolution (test seams, mirroring
+    :func:`install_service`).
+    """
+    target = unit_path if unit_path is not None else unit_install_path(env=env)
+    try:
+        text = target.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        raise ServiceUnitReadError(
+            f"no installed worker service unit found at {target}; install "
+            + "the worker service ('scarcity-router-worker service install "
+            + "--codex-source SOURCE_ID') or pass the source explicitly"
+        ) from None
+    except OSError as exc:
+        raise ServiceUnitReadError(
+            f"the installed worker service unit could not be read: {exc}"
+        ) from exc
+    lines = text.splitlines()
+    if not lines or lines[0] != UNIT_MARKER_LINE:
+        raise ServiceUnitReadError(
+            f"{target} was not generated by this tooling (missing managed "
+            + "marker); pass the source explicitly"
+        )
+    exec_starts = [line for line in lines if line.startswith("ExecStart=")]
+    if len(exec_starts) != 1:
+        raise ServiceUnitReadError(
+            f"{target} does not carry exactly one ExecStart line"
+        )
+    executable, state_dir, selection = parse_exec_start(
+        exec_starts[0].removeprefix("ExecStart=")
+    )
+    return InstalledServiceConfiguration(
+        unit_path=target,
+        executable=executable,
+        state_dir=state_dir,
+        selection=selection,
+    )
 
 
 def resolve_zcode_state_home(env: Mapping[str, str] | None = None) -> Path:
@@ -1203,6 +1418,7 @@ def _atomic_write(unit_path: Path, unit_text: str, dir_fd: int) -> None:
 __all__ = [
     "DOCUMENTATION_URL",
     "SERVICE_UNIT_NAME",
+    "InstalledServiceConfiguration",
     "RegistryBuilder",
     "ServiceExecutableError",
     "ServicePathError",
@@ -1211,12 +1427,15 @@ __all__ = [
     "ServiceToolError",
     "ServiceToolResult",
     "ServiceTools",
+    "ServiceUnitReadError",
     "ServiceZCodeStateHomeError",
     "StoreOpener",
     "UNIT_MARKER_LINE",
     "default_service_tools",
     "install_service",
     "normalize_selection_paths",
+    "parse_exec_start",
+    "read_installed_service_configuration",
     "render_unit",
     "resolve_worker_executable",
     "resolve_zcode_state_home",

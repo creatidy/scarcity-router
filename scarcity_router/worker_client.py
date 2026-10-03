@@ -1264,9 +1264,12 @@ def build_parser() -> argparse.ArgumentParser:
         "codex-login",
         help="run the OFFICIAL codex login against one source's controlled home",
     )
-    _ = login.add_argument("--source", required=True, metavar="SOURCE_ID",
+    _ = login.add_argument("--source", default=None, metavar="SOURCE_ID",
                            help="the execution-source instance to log in "
-                                + "(the same id given to run --codex-source)")
+                                + "(the same id given to run --codex-source); "
+                                + "when omitted, the source configured in the "
+                                + "installed worker service is discovered "
+                                + "(issue #168)")
     _ = login.add_argument("--state-dir", default=None, metavar="DIR")
     _ = login.add_argument("--codex-bin", default=None, metavar="PATH")
     service = commands.add_parser(
@@ -1571,14 +1574,63 @@ def main(argv: list[str] | None = None) -> int:
             if command == "codex-login":
                 from .worker_codex_adapter import run_official_codex_login
 
+                source = arguments.get("source")
+                state_dir = arguments.get("state_dir")
+                codex_bin = arguments.get("codex_bin")
+                if not isinstance(source, str) or not source:
+                    # No explicit source: read the configured one from the
+                    # installed worker service unit (issue #168) — the
+                    # persisted home of the operator's adapter selection.
+                    # Explicit flags keep their meaning; discovery only
+                    # fills what was omitted, and nothing is guessed when
+                    # the configuration is absent or ambiguous.
+                    from .worker_service import (
+                        ServiceUnitReadError,
+                        read_installed_service_configuration,
+                    )
+
+                    try:
+                        installed = read_installed_service_configuration()
+                    except ServiceUnitReadError as exc:
+                        print(f"worker: {exc}", file=sys.stderr)
+                        return 2
+                    sources = installed.selection.codex_sources
+                    if len(sources) == 0:
+                        print(
+                            "worker: the installed worker service runs no "
+                            + "--codex-source; reinstall it with one "
+                            + "('scarcity-router-worker service install "
+                            + "--codex-source SOURCE_ID', then "
+                            + "'service restart') or pass --source",
+                            file=sys.stderr,
+                        )
+                        return 2
+                    if len(sources) > 1:
+                        print(
+                            "worker: the installed worker service runs "
+                            + f"{len(sources)} codex sources ("
+                            + ", ".join(sources)
+                            + "); pass --source to choose one",
+                            file=sys.stderr,
+                        )
+                        return 2
+                    source = sources[0]
+                    if not isinstance(state_dir, str) or not state_dir:
+                        state_dir = str(installed.state_dir)
+                    if not (isinstance(codex_bin, str) and codex_bin):
+                        codex_bin = installed.selection.codex_bin
+                    print(
+                        f"codex-login: using configured source {source!r} "
+                        + "(read from the installed worker service)"
+                    )
                 code = run_official_codex_login(
-                    source_id=str(arguments["source"]),
-                    state_dir=str(arguments["state_dir"])
-                    if arguments.get("state_dir")
+                    source_id=str(source),
+                    state_dir=state_dir
+                    if isinstance(state_dir, str) and state_dir
                     else None,
                     pinned_binary=(
-                        str(arguments["codex_bin"])
-                        if arguments.get("codex_bin")
+                        str(codex_bin)
+                        if isinstance(codex_bin, str) and codex_bin
                         else None
                     ),
                 )

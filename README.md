@@ -379,6 +379,21 @@ scarcity-router-worker service uninstall   # stops/disables and removes the
 journalctl --user -u scarcity-router-worker -f   # follow the worker's logs
 ```
 
+Refreshing the Codex credentials needs no source id and no restart — the
+login targets exactly the source (and controlled home) the installed
+service already runs, on any host:
+
+```bash
+make codex-login
+# equivalent explicit form: scarcity-router-worker codex-login
+```
+
+The official `codex login --device-auth` flow prints a URL and one-time
+code; complete it in any browser (SSH-safe: no localhost callback). The
+running worker picks the fresh credentials up on its next eligibility
+check. With no (or several) configured Codex sources the command refuses
+with the exact remediation instead of guessing.
+
 Install enables `loginctl linger` for your user (headless operation
 without an active login session) and reports the outcome; when your
 distribution requires confirmation for that, it prints the exact
