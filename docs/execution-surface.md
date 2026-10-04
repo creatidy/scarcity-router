@@ -34,6 +34,46 @@ owned by their existing authoritative documents
   execution channel exists for it, and the `local_app_adapter` channel
   itself remains unregistered. API-only operation works without a worker.
 
+## Shared-System Scope and Current Limits
+
+D-068 assigns task/workspace/harness/accepted-result lifecycle to Kernel;
+Router owns inventory/selection/admission/provider calls. A harness remains
+the tool-loop executor; client tools return to it. The integrated D-063
+workspace-editing ZCode lane is a preserved, explicit ownership conflict
+(U-014/#180), not target inference-only conformance.
+
+This implemented ingress is Chat Completions. Responses is accepted future
+direction under D-056, with actual subset/compatibility work registered in
+#181; Anthropic Messages is not an implemented ingress. Protocol naming
+alone proves neither compatibility nor a complete tool loop.
+
+The public `sr-pin:<resource_id>/<provider>/<model>/<variant>` and optional
+`@<decision_id>` go through exact `admit_pinned_target`, which rechecks
+current authorization/state without competitive reranking. Pins are not
+credentials, quota reservations or physical-model attestations for a
+plan-managed lane. Another authorized role/Attempt may obtain a new decision;
+no substitute occurs within a pinned Attempt. Non-pinned generic clients
+are not silently migrated into this rule.
+
+Known current limits are tracked, not hidden: #178 corrects a sibling-variant
+selection defect in pure `route_request`, not this correctly exact gateway
+admission path; #179 corrects discovery/logical-resolution inference of effort
+from opaque variant and proves identity/observed-effort guarantees. In
+particular, the plan lane's `plan` variant is not a reasoning effort. The
+logical-model/discovery sections below describe the shipped vocabulary and
+intended guarantees, qualified by those evidenced defects. Effort-less HTTP
+pins cannot universally guarantee native wire effort.
+
+`executed_target` records dispatch provenance, not independent physical-model
+verification. #179/#181 require evidence for actual harness/protocol/adapter/
+source versions. Configured subscription entitlement alone cannot establish
+observed access mode or free/eligible promotional usage (#184). Request
+limits and `SpendingLimit` rate ceiling are not an accepted-task spend cap;
+unknown usage/hidden calls stay unknown and uncontrollable output cannot
+promise hard cost. Kernel aggregates full-path budget; Router supplies and
+enforces only supported source/call facts. No additional API or payload is
+introduced by this qualification; #174 owns missing public consumer proof.
+
 ## Harness compatibility contract (D-056)
 
 This surface is the first protocol adapter over Scarcity Router's

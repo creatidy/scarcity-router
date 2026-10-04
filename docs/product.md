@@ -22,6 +22,13 @@ want it, without taking anything away from recommendation-only users.
 
 ## Value proposition
 
+Within Creatidy, the outcome being optimized is the path to an accepted
+result, including money, subscription quota, elapsed time, corrections,
+review and owner attention. Router contributes source/call facts and
+least-scarce-sufficient choices; Kernel aggregates and controls the task
+path. This direction does not introduce a new ranking formula or monetary
+budget in the current selector.
+
 Scarcity Router recommends the least scarce model that satisfies the task. It
 combines four independent inputs:
 
@@ -34,7 +41,7 @@ The result contains a selected model, ranked fallbacks and a human-readable,
 structured explanation.
 
 Optionally (D-040, program A0 / issues #85–#95), the execution gateway lets a
-user point any OpenAI-compatible client at one Scarcity Router endpoint and
+user point a compatible client at one Scarcity Router endpoint and
 have requests served from the best available authorized resource — API
 providers, Ollama/local inference, or the approved local Codex adapter —
 under the same least-scarce-capable discipline. The goal is efficient use of
@@ -44,8 +51,8 @@ prepaid APIs and local models/local GPU.
 ## Operating modes
 
 1. **Recommendation-only (default).** Exactly the product described above:
-   CLI, loopback REST and stdio MCP over one authoritative core. No server
-   component, worker, container or execution.
+   CLI, loopback REST and stdio MCP over one authoritative core. No execution
+   server component, worker, container or inference; local REST is optional.
 2. **Execution gateway (optional, explicit deployment).** An authenticated
    server component plus, where needed, a native worker. Every
    recommendation-only user and interface keeps working unchanged (M08/M10
@@ -65,8 +72,9 @@ is a **harness-independent execution backend** (D-056), not a backend for
 any one client: ZCode is the first demanding representative harness that
 exposed gaps in the execution contract, and the intended client population
 includes ZCode, Kilo, Cline, other coding-agent harnesses, OpenAI-compatible
-SDK clients, simple scripts and Scarcity Router's own future
-agent/orchestration algorithms. A harness must not need
+SDK clients, simple scripts and Kernel-controlled harnesses. Router does
+not own agent/orchestration algorithms (D-068 supersedes that D-056 phrase).
+A harness must not need
 Scarcity-Router-specific hacks merely to use a model.
 
 ## In scope
@@ -86,16 +94,31 @@ Scarcity-Router-specific hacks merely to use a model.
   compatible execution, generic HTTP/Ollama adapters, a native worker, the
   Codex adapter where evidence supports it, configuration/web UX,
   distribution — each behind its own module issue and validation gate. The
-  proposed ZCode execution adapter was cancelled by owner decision (D-047)
-  after M07 Stage-1 evidence; Z.ai Coding Plan execution itself stays in
-  scope through the generic HTTP adapter (M04).
+  proposed ZCode execution adapter was initially cancelled by D-047,
+  reopened by D-061 and integrated under D-063. Its workspace-editing
+  plan-managed lane is current code, not target-architecture conformance;
+  the ownership/migration conflict is tracked by #180 and U-014.
+
+The target ownership is Kernel for intent/TaskSpec/WorkUnit/Attempt,
+authority, workspace, harness lifecycle, durable outcome, verification and
+review/remediation; Router for execution sources, accounts/pools, private
+telemetry, channel compatibility, cost/selection policy, admission, gateway
+and provider calls; MI for versioned public evidence; Console for authorized
+cross-product views/commands. Existing harnesses run model-tool-result
+loops. Router does not acquire Kernel's task scheduler; Kernel does not
+duplicate Router inventory or ranking.
+Public products must not require private `creatidy-onprem`; public-module
+dependencies are permitted without requiring four daemons or shared storage.
 
 ## Explicit non-goals
 
 Absolute non-goals in every mode:
 
 - Reading user prompts beyond what an explicitly authorized execution request
-  contains; reading source code, repository content or browser sessions.
+  contains; taking ownership of source repositories or browser sessions.
+  Target inference adapters do not inspect/edit client repositories. The
+  integrated D-063 workspace-editing exception remains an explicit
+  current-state deviation pending #180, not permission for new such paths.
 - Replacing an agent or orchestration environment; autonomous fallback
   execution; issue-to-PR orchestration; repository management; a generic
   agent workflow framework.
@@ -104,7 +127,9 @@ Absolute non-goals in every mode:
   synchronous HTTP request.
 - Reset-credit redemption or similar benefit-consuming actions; they remain
   information unless a separate explicit decision authorizes acting on them.
-- Generic API-cost optimization or billing aggregation.
+- Generic API-cost optimization or third-party billing aggregation. Honest
+  source/call economics and local task-outcome analysis are required under
+  #184/#177; neither is a guarantee of accepted-result total spend.
 - A multi-tenant SaaS, distributed control plane or agent operating system;
   sharing one personal subscription with multiple independent users.
 - Maximizing provider count; publishing a universal model leaderboard.
@@ -115,7 +140,8 @@ D-040) and inside the optional execution gateway exactly as far as D-040
 through D-045 authorize. Client-supplied tools always return to the client as
 `tool_calls`; the router never executes them.
 
-The broker decides *where work should go*. In execution mode it also carries
+The broker decides *where authorized inference should go*. In execution mode
+it also carries
 the authorized request to the chosen resource — it still never decides *what
 the work is* and never performs the client's tool calls.
 
@@ -151,6 +177,12 @@ logged into.”** — applies only to collectors and adapters proven safe and
 supportable.
 
 ## Validation
+
+The [G01-G13 matrix](roadmap.md#creatidy-requirement-coverage) is the known
+scope, including proof-dependent work. Documentary alignment and registered
+issues do not establish READY_FOR_LIVE_TASK or a complete product. The
+registered contract/implementation tasks require separate execution and
+acceptance; no unknown integration is called complete from synthetic tests.
 
 Personal success means the owner uses the broker regularly, trusts its
 choices, checks provider dashboards less often and does not unexpectedly

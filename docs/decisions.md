@@ -2592,6 +2592,11 @@ what M4.1 forbids); a configurable per-provider eligibility policy
 
 ### D-047 — M07 closeout: no ZCode execution adapter; Stage 2 NO-GO
 
+Historical closeout: its Stage-2 NO-GO was superseded by D-061 and the
+implemented D-063 path. D-068 / U-014 now record the conflict between that
+path's workspace authority and shared-system ownership; this does not erase
+the original terms/interface evidence or silently remove the adapter.
+
 - **Status:** Accepted (owner product decision)
 - **Date:** 2026-09-20
 - **Issue:** BioMedical-IT/scarcity-router#92 (M07); resolves U-013
@@ -3941,6 +3946,12 @@ Do not rewrite history or change an accepted decision silently.
 
 ### D-056 — Harness-independent execution backend: responsibility boundary, semantic harness contract and local transport
 
+D-068 supersedes only the suggestion of Router-owned future agent/
+orchestration algorithms: Kernel owns that lifecycle. The semantic backend,
+client-owned tool and local-transport direction remain. Accepted direction
+must not be read as implementation or live evidence; #174/#179/#181 track
+the uncovered route-consumption/identity/protocol guarantees.
+
 - **Status:** Accepted (issue #146; architecture-only child of program
   #132; branch `arch/harness-independent-backend`)
 - **Date:** 2026-09-27
@@ -4900,6 +4911,14 @@ Do not rewrite history or change an accepted decision silently.
 
 ### D-063 — M07 Stage 2 implementation: the ZCode execution source behind the existing D-053 source architecture
 
+Current-state qualification (2026-10-04, #173): the workspace-editing path
+below is integrated and preserved in this documentation task. It conflicts
+with D-068's agreed Kernel/harness workspace ownership; U-014 / #180 require
+explicit compatibility/authority/migration disposition. Do not describe it as
+target conformance or replace it silently. PR #161 records historical live
+acceptance at `a89975f`, beyond the earlier TLS-blocked Stage-2 evidence;
+neither is a new live check of the current deployment.
+
 - **Status:** Accepted, AMENDED 2026-09-29 (issue #92; branch
   `task/92-zcode-stage2`; implements the scope D-061 authorized; the
   amendment records the owner-directed remediation round on PR #161 —
@@ -5739,3 +5758,82 @@ Do not rewrite history or change an accepted decision silently.
   breaks provider-managed isolation; silent first-source selection or merging
   account windows invents identity/pool semantics. Failing back from a
   malformed configured source to the user's home hides configuration errors.
+
+### D-068 - Creatidy shared-system ownership and evidence-backed alignment
+
+- **Status:** Accepted owner direction; documentation/planning only (#173).
+- **Date:** 2026-10-04.
+- **Source:** Creatidy shared architecture v1.0, 2026-10-04; supplied file/hash,
+  available brief, evidence baseline and status interpretation are recorded in
+  [`architecture.md`](architecture.md#creatidy-system-alignment). Full source
+  bytes were not found locally; no independent hash verification is claimed.
+- **Terminology clarification:** The owner's later 2026-10-04 instruction
+  supersedes the earlier brief's naming explanation. Use the actual distinct
+  Creatidy Kernel / `creatidy-kernel` and Scarcity Router / `scarcity-router`
+  names directly; remove erroneous explanatory naming text, without a
+  compatibility/deprecated alias, rename or additional component. Preserve
+  immutable history, not invalid current terminology.
+- **Decision:** Kernel owns intent/TaskSpec/WorkUnit/Attempt, authority,
+  workspace/harness lifecycle, durable state and accepted-result evidence;
+  Router owns sources/accounts/pools, private telemetry, channel compatibility,
+  cost/selection policy, admission/gateway/provider calls; MI owns versioned
+  public evidence; Console consumes authorized product-owned state/commands.
+  Reuse existing harnesses and local routing/admission/pin/UI mechanisms.
+  Public products cannot require private onprem. Product boundaries do not
+  mandate four services, a common database/broker or infrastructure platform.
+- **Selection invariants:** Eligible inventory is narrowed by authorization,
+  task quality, channel/harness compatibility, data/cost policy and sufficiently
+  fresh state. Savings never weaken quality minima. No solution is explained,
+  pins are optional and admission rechecks them without hidden substitution
+  within a pinned Attempt. Existing unpinned clients are not automatically
+  migrated into that contract. Opaque variant, effort, access mode, physical
+  model vs plan lane and requested/resolved/observed facts remain separate.
+- **Economics and knowledge:** Optimize accepted-result path, not token rate.
+  Router supplies/enforces only supported source/call facts/limits; Kernel
+  aggregates the path. no PAYG is access authorization; unknown is not zero,
+  tokens are not quota, local reservations are not provider reservations and
+  uncontrollable output is not a cost guarantee. MI snapshot consumption is
+  agreed; publication/admission/migration details remain To prove (#176/#185).
+  Preserve the working bootstrap; no second public-facts database. Local
+  outcome analysis (#177) is explicit, not automatic upload/learning.
+- **Observability:** Router status improvement does not wait for Console;
+  state/events need freshness/correlation/dedup/reconnect/gap semantics. Reuse
+  admin UI; no consumer DB reads or command authorization bypass (#182/#183).
+- **Supersession:** D-056's Router-owned agent/orchestration suggestion is
+  replaced by Kernel ownership. D-022's conceptual compound recommendations
+  do not authorize a Router task/review executor. D-047's no-adapter statement
+  is already superseded by D-061/D-063, not revived here. D-063's integrated
+  workspace behavior remains the documented conflict below, not silently
+  removed or asserted compliant.
+- **Proposed clarifications:** Existing composed surfaces and version families
+  should be reused for new consumers to avoid duplicate services/rankers; the
+  concrete exposure, MI admission, event transport and native-agent migration
+  options are recommendations requiring evidence and owner-reviewed decisions
+  in #174/#176/#180/#183/#185. No new API/flag/payload/protocol version or
+  numerical cost/quality/time budget is accepted by this record.
+- **Boundary and evidence:** No product code/schema/catalog rating/credential/
+  service/permission change, inference or live task. The full known backlog is
+  registered in Forgejo and mapped in
+  [`roadmap.md`](roadmap.md#creatidy-requirement-coverage); implemented code,
+  proposed PR, deployment and live acceptance stay distinct. Documentation
+  approval is not product completeness or READY_FOR_LIVE_TASK.
+
+### U-014 - Native coding backend versus Kernel-owned workspace lifecycle
+
+- **Status:** Open, evidence and owner-reviewed disposition required (#180).
+- **Conflict:** D-063 intentionally launches ZCode under `--mode edit` in an
+  administrator-authorized project; D-068 assigns workspaces/harness lifecycle
+  to Kernel and excludes uncoordinated internal/external agents editing one
+  workspace. Passing synthetic adapter tests or the historical PR #161 live
+  edit does not resolve that ownership conflict.
+- **Alternatives to prove:** A separately declared compatible coding lane with
+  explicit Kernel/harness authority; a supported inference-only native surface;
+  or justified adaptation/removal with operator/configuration migration. No
+  alternative is selected here, no working mode is silently downgraded, and no
+  second general sandbox is proposed.
+- **Decision evidence:** Exact official runtime/version/tool/control semantics,
+  authority/side-effect matrix, negative producer-consumer tests, compatible
+  operator journey, vendor-term scope, hidden-call/identity/cost limitations
+  and separately authorized live proof when necessary. #180 must conclude
+  feasibility, an evidenced adaptation or an exact owner decision; it is not
+  permission to run a real task or alter permissions now.

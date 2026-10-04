@@ -10,6 +10,25 @@ The portable descriptive class and profile policy is maintained in
 [`model-policy.json`](../model-policy.json); this document remains authoritative
 for the selector decision sequence and scarcity behavior.
 
+## Creatidy Requirements and Executable Consumption
+
+D-068 preserves this authoritative quality/ranking core. Kernel supplies
+work/harness requirements, not another provider/model inventory. Executable
+eligibility additionally intersects Router-registered/client-authorized
+resources with protocol/harness compatibility, data/cost authority and fresh
+state. No solution is a valid explained outcome; quota savings never relax
+quality minima. #175 owns richer requirement interpretation without a second
+scale, and #174 the public executable recommendation/admission/pin consumer
+contract; current recommendation v1 does not contain a resource binding.
+
+Two current-core/edge defects remain separate from this target: #178 fixes
+exact resource-pin model narrowing in `route_request` (the gateway exact
+admission path is already correct); #179 fixes gateway effort-from-variant
+projection. This documentation changes no selection algorithm or client
+behavior. no PAYG is an access-mode authorization rule, not a ranker preference
+or zero-rate ceiling. #184 owns honest source/call economic guarantees and
+unknowns; Kernel owns accepted-result total budget.
+
 ## Inputs
 
 - A task profile or explicit capability minima.
@@ -972,8 +991,20 @@ schedule without waiting for real peak hours or campaign nights.
 Replenishment availability and advisory health acceptance follow the same
 pattern.
 
-## Runtime feedback (deferred)
+## Runtime Feedback (Registered, Not Implemented)
 
-A future client may report quota exhaustion or temporary provider failure. Such
+The historical design below is now covered by
+[#177](https://forgejo.creatidy.com/BioMedical-IT/scarcity-router/issues/177):
+Kernel owns explicit local outcome exports; Router owns their authorized local
+consumption/correlation and cautious human-reviewed calibration. Trace/request
+usage is not an accepted-task financial ledger. No automatic central upload or
+learning is an implementation requirement. Producer format, consent/migration
+and conformance tests must be proved before integration.
+
+The existing gateway already records bounded execution/audit outcomes; that
+is not Kernel accepted-result feedback. A recommendation client may report
+quota exhaustion or temporary provider failure. Such
 feedback may create short-lived runtime state until refresh, but is not required
-for the first selector. It must never silently alter catalog capability.
+by the frozen recommendation v1 contract. It must never silently alter catalog
+capability. Known local outcome work is registered, not omitted as a first-
+selector shortcut.

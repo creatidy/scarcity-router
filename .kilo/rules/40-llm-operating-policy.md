@@ -8,6 +8,9 @@ Follow the full policy in [`docs/llm-operating-policy.md`](../../docs/llm-operat
 - Use a distinct reviewer session for consequential review.
 - LLM output is not evidence. Keep evidence preparation separate from expert
   scientific or methodological adjudication.
+- Follow D-068's ownership and Agreed/Verified/Proposed/To-prove distinction;
+  use `docs/architecture.md` and the G01-G13 matrix in `docs/roadmap.md`.
+  Registered proof-dependent work is not an implemented integration.
 - For large work, create an early durable checkpoint and continue in bounded
   units.
 - Repository and artifact state outrank session UI state. Before retrying,

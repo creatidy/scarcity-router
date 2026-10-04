@@ -1,5 +1,13 @@
 # Dynamic model routing with Scarcity Router
 
+This example is for the recommendation-only MCP contract, not gateway or
+Kernel integration. Project authority and the selected task scope remain
+governing; this recipe does not grant dispatch, effects or documentation-edit
+permissions. D-068 assigns work/harness/workspace/outcome lifecycle to Kernel
+and provider inventory/private telemetry/selection/admission/calls to Router.
+The executable route/pin consumer proof is registered as #174; do not derive
+a resource pin from a model-only recommendation or create a second inventory.
+
 You have access to the local Scarcity Router MCP server:
 
 ```text
@@ -20,12 +28,13 @@ It combines task requirements, calibrated model capabilities, current
 provider capacity and user routing policy, then recommends the least scarce
 model that is capable enough.
 
-It is a recommendation service only. It never executes model calls, never
-sees your prompts and never touches credentials. You remain the executor:
+These three MCP tools are recommendation-only. They do not execute model
+calls or receive your prompts/credentials; collectors use existing approved
+local authentication internally. You remain the authorized executor:
 read its decision, then dispatch the work yourself.
 
-This prompt is the routing authority in this project. It replaces static
-model assignment.
+This prompt is a routing recipe, not authority to override project governance,
+task requirements, security review gates or owner-selected model constraints.
 
 ## Retire static model assignments
 
@@ -50,7 +59,7 @@ do not maintain or extend it
 do not create a new static table anywhere else
 ```
 
-When you are already editing the document that contains the mapping, replace
+When your selected task authorizes editing the document containing the mapping, replace
 the mapping with a short pointer to dynamic Scarcity Router routing instead
 of refreshing the table. Propose deleting the file outright when the project
 process allows it.
@@ -117,7 +126,8 @@ repeatedly while the same bounded work unit is progressing normally
 The selected configuration is **sticky for the current bounded work unit**.
 Capacity changing while work is already progressing is not by itself a
 reason to restart or reroute the work. Querying more often does not route
-better; it only burns quota on the tools' providers.
+better; it adds unnecessary telemetry collection and attention. These tools
+do not perform inference to collect quota.
 
 ## Normal routing procedure
 
