@@ -447,16 +447,16 @@ class HomeAnchoredBoundaryTests(unittest.TestCase):
 
     def test_untrusted_final_directory_below_home_is_refused(self) -> None:
         # The boundary itself must belong to the invoking user: a
-        # root-owned (or otherwise foreign-owned) final directory below
-        # home is refused even there.
+        # foreign-owned final directory is refused, including under root CI.
+        foreign_uid = 1 if os.geteuid() == 0 else 0
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp) / "home"
             state = home / "worker"
             state.mkdir(parents=True, mode=0o700)
-            self.install_view({str(state): 0})
+            self.install_view({str(state): foreign_uid})
             with unittest.mock.patch.dict(os.environ, {"HOME": str(home)}):
                 with self.assertRaisesRegex(
-                    ValueError, "not owned by the current user"
+                    ValueError, "not owned by (root or )?the current user"
                 ):
                     WorkerStateDirLock(str(state)).acquire()
             self.assertEqual([], list(state.iterdir()))
