@@ -5591,7 +5591,11 @@ Do not rewrite history or change an accepted decision silently.
   retired pre-tooling deployment actually in service on Precision) is
   read by a targeted, still-fail-closed flag scan with exact
   `%h`/`%%` user-specifier resolution; the marker keeps gating every
-  WRITE (point 1 rewritten)
+  WRITE (point 1 rewritten); amended again 2026-10-04 (second owner field
+  test): the OpenAI CAPACITY acquisition now shares the same credential
+  location — when the installed worker runs exactly one Codex source,
+  `scarcity-router status` points the app-server at that source's
+  controlled home instead of the child's default state (point 5)
 - **Base:** `develop` @ `5792d2d`
 - **Confidence:** High for the contracts (marker gating, fail-closed
   parsing, flag precedence, no-restart pickup); parse mechanics are
@@ -5661,6 +5665,26 @@ Do not rewrite history or change an accepted decision silently.
      account auth from the controlled home on every eligibility check,
      so a completed device-auth login is picked up by the running
      worker on its next check without a restart.
+  5. **The capacity acquisition shares the credential location.**
+     Field evidence (second Precision test): a successful
+     `make codex-login` left `scarcity-router status` at
+     `openai status=unknown windows=none` because the OpenAI capacity
+     collector spawned its app-server with the INHERITED environment —
+     authenticating from the child's default state (`~/.codex`) — while
+     the login had refreshed the worker source's controlled home: two
+     credential locations for one host, one of them stale. The default
+     OpenAI collector in `status.py` now resolves the local worker's
+     EXACTLY-ONE configured Codex source (the same tiered unit
+     read-back as the login; `v_safe_id`-validated, so a hostile unit
+     id cannot steer the path) and hands that source's controlled home
+     to `collect_openai_codex_capacity` as the child's `CODEX_HOME` —
+     the acquisition module builds the variable but never opens the
+     home, preserving its no-credential contract. Precedence: an
+     explicit `CODEX_HOME` in the environment wins (an operator's
+     deliberate override); zero, several or refused configurations keep
+     the inherited-environment behavior, so worker-less hosts collect
+     exactly as before. One login therefore refreshes BOTH the
+     execution credentials and the provider telemetry on a worker host.
 - **Rejected alternatives:** (a) hard-coding
   `precision-codex-live` — bakes one transient deployment into the repo
   and breaks the second host; (b) host-specific Make targets
@@ -5682,13 +5706,25 @@ Do not rewrite history or change an accepted decision silently.
   `service install` BEFORE the login works — correct long-term (the
   note after every hand-written-unit login says so) but it blocks the
   one-command UX the issue defines on a live host.
-- **Boundary:** `scarcity_router/worker_service.py`
-  (`parse_exec_start`, `_split_exec_start_words`,
+- **Boundary:** `scarcity_router/worker_unit_selection.py` (NEW leaf:
+  `ServiceSelection`, `SERVICE_UNIT_NAME`/`UNIT_MARKER_LINE`,
+  `unit_install_path`, `parse_exec_start`, `_split_exec_start_words`,
   `_expand_user_specifiers`, `_selection_from_foreign_exec_start`,
   `read_installed_service_configuration`,
-  `InstalledServiceConfiguration`, `ServiceUnitReadError`),
-  `worker_client.py` (`codex-login` discovery branch; `--source` now
-  optional), `Makefile` (`codex-login` target), `README.md`, tests,
-  this record. No protocol, catalog, selector, server, capacity or
-  serialized contract change; `codex-login --source` behavior is
-  unchanged.
+  `InstalledServiceConfiguration`, `ServiceUnitReadError` — moved out of
+  `worker_service` and re-exported there, because `status.py` must
+  compose the read-back while sitting BELOW the worker stack in the
+  import graph: `worker_codex_adapter` reaches `worker_protocol` →
+  `selection_app` → `status`, so any worker-runtime import from `status`
+  is a static cycle), `worker_service.py` (re-exports; rendering and
+  lifecycle unchanged), `worker_client.py` (`codex-login` discovery
+  branch; `--source` now optional), `status.py`
+  (`_worker_controlled_codex_home` composing the default OpenAI
+  collector; the controlled-home layout is spelled there with tests
+  cross-checking the adapter's real `ControlledCodexHome`),
+  `providers/openai_codex_acquisition.py` (`codex_home` parameter,
+  `spawn_app_server` env seam), `Makefile` (`codex-login` target),
+  `README.md`, tests, this record. No protocol, catalog, selector,
+  server, capacity-vocabulary or serialized contract change;
+  `codex-login --source` behavior is unchanged; injected collector
+  seams (`StatusCollectors`) keep their shape.

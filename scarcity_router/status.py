@@ -5,6 +5,12 @@ interpreting provider payloads. Each invocation creates one observation
 timestamp, calls the collectors in a fixed order, and exposes either a compact
 human view or the existing v3 snapshot dictionaries plus — additively (D-039)
 — the OpenAI execution-eligibility report produced by the same observation.
+
+The default OpenAI collector also composes the D-066 credential location:
+when the installed worker service runs exactly one Codex execution source,
+acquisition points the app-server at that source's controlled home (the
+one ``make codex-login`` refreshes) instead of the child's default state,
+so worker credentials and provider telemetry stay one store per host.
 """
 
 from __future__ import annotations
@@ -21,11 +27,16 @@ from typing import Protocol, TextIO, cast
 
 from .capacity import CapacityDiagnostic, CapacitySnapshot, CapacityWindow
 from .eligibility import ExecutionEligibility
+from .gateway_validation import v_safe_id
 from .providers.openai_codex_acquisition import (
     OpenAICodexObservation,
     collect_openai_codex_capacity,
 )
 from .providers.zai_acquisition import collect_zai_capacity
+from .worker_unit_selection import (
+    ServiceUnitReadError,
+    read_installed_service_configuration,
+)
 
 _PROVIDER_ORDER = {"openai": 0, "zai": 1}
 _WINDOW_KIND_ORDER = {"five_hour": 0, "weekly": 1, "unknown": 2}
@@ -49,11 +60,50 @@ class ZaiCapacityCollector(Protocol):
 Clock = Callable[[], datetime]
 
 
+def _worker_controlled_codex_home() -> str | None:
+    """The local worker's controlled Codex home, when exactly one is running.
+
+    One host, one Codex credential location (D-066): when the installed
+    worker service runs exactly one Codex execution source, the OpenAI
+    capacity acquisition points the app-server at that source's controlled
+    home — the same home ``make codex-login`` refreshes and the worker's
+    adapter executes through, so a login immediately feeds provider
+    telemetry. An explicit ``CODEX_HOME`` in the environment keeps
+    precedence (an operator's deliberate override), and every other shape
+    — no unit, no source, several sources, a unit the read-back refuses,
+    an invalid source id — returns ``None`` so acquisition keeps its
+    inherited-environment behavior (the child's own default state).
+
+    The path layout (``<state_dir>/codex-sources/<source_id>/codex-home``)
+    is owned by the adapter's ``ControlledCodexHome``; importing that
+    module here is impossible (``worker_codex_adapter`` reaches
+    ``worker_protocol`` → ``selection_app`` → this module), so the layout
+    is spelled here once and pinned against the real class by tests.
+    """
+    if os.environ.get("CODEX_HOME", "").strip():
+        return None
+    try:
+        installed = read_installed_service_configuration()
+    except ServiceUnitReadError:
+        return None
+    sources = installed.selection.codex_sources
+    if len(sources) != 1:
+        return None
+    try:
+        source_id = v_safe_id(sources[0], "codex_source")
+    except ValueError:
+        return None
+    return str(
+        installed.state_dir / "codex-sources" / source_id / "codex-home"
+    )
+
+
 def _default_openai_collector(*, retrieved_at: str) -> OpenAICodexObservation:
     explicit_binary = os.environ.get(CODEX_BINARY_PATH_ENV, "").strip()
     return collect_openai_codex_capacity(
         retrieved_at=retrieved_at,
         binary_path=Path(explicit_binary) if explicit_binary else None,
+        codex_home=_worker_controlled_codex_home(),
     )
 
 

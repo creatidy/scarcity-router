@@ -391,10 +391,14 @@ make codex-login
 The official `codex login --device-auth` flow prints a URL and one-time
 code; complete it in any browser (SSH-safe: no localhost callback). The
 running worker picks the fresh credentials up on its next eligibility
-check. With no (or several) configured Codex sources the command refuses
-with the exact remediation instead of guessing. A unit written by hand
-(the retired copied-example shape, with `%h`-anchored paths) still works:
-its `--codex-source`/`--state-dir` are read off the command line it runs,
+check — and when the installed service runs exactly one Codex source,
+`scarcity-router status` reads the SAME source's controlled home, so the
+refreshed login immediately feeds the OpenAI provider windows too (an
+explicit `CODEX_HOME` in the environment keeps precedence). With no (or
+several) configured Codex sources the command refuses with the exact
+remediation instead of guessing. A unit written by hand (the retired
+copied-example shape, with `%h`-anchored paths) still works: its
+`--codex-source`/`--state-dir` are read off the command line it runs,
 and the output names the one-time `service install` migration to the
 generated unit.
 

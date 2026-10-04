@@ -5,8 +5,10 @@ from __future__ import annotations
 import io
 import json
 import os
+import tempfile
 import unittest
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import cast
 from unittest import mock
 
@@ -108,6 +110,179 @@ def _collector_set(
         StatusCollectors(openai=fakes.openai, zai=fakes.zai),
         fakes,
     )
+
+
+class ControlledHomeCompositionTests(unittest.TestCase):
+    """The default OpenAI collector composes the D-066 credential location.
+
+    When the installed worker service runs exactly one Codex source, the
+    collector points the app-server at that source's controlled home —
+    the same home ``make codex-login`` refreshes — so a login immediately
+    feeds provider telemetry. An explicit ``CODEX_HOME``, and every
+    ambiguous or absent configuration, keeps the inherited-environment
+    behavior instead. Everything is asserted through the PUBLIC
+    ``StatusCollectors().openai`` seam with the acquisition patched out
+    (no binary is ever spawned); the resolved home is cross-checked
+    against the adapter's real ``ControlledCodexHome`` so the spelled
+    layout in ``status`` can never drift from its owner.
+    """
+
+    def _home_with_unit(self, base: Path, unit_text: str) -> Path:
+        home = base / "home"
+        unit_dir = home / ".config" / "systemd" / "user"
+        unit_dir.mkdir(parents=True)
+        _ = (
+            unit_dir / "scarcity-router-worker.service"
+        ).write_text(unit_text, encoding="utf-8")
+        return home
+
+    def _generated_unit(self, state_dir: Path, sources: tuple[str, ...]) -> str:
+        from scarcity_router import worker_service
+
+        return worker_service.render_unit(
+            executable=Path("/opt/tools/scarcity-router-worker"),
+            state_dir=state_dir,
+            selection=worker_service.ServiceSelection(
+                codex_sources=sources
+            ),
+        )
+
+    def _environment(self, home: Path) -> dict[str, str]:
+        return {"HOME": str(home), "XDG_CONFIG_HOME": "", "PATH": "/usr/bin"}
+
+    def _collected_codex_home(self, home: Path) -> object:
+        """Run the default OpenAI collector seam; return captured kwargs."""
+        from scarcity_router import status
+
+        captured: dict[str, object] = {}
+
+        def fake_collect(**kwargs: object) -> object:
+            captured.update(kwargs)
+            return paired_observation(_snapshot("openai"))
+
+        with (
+            mock.patch.dict(os.environ, self._environment(home), clear=True),
+            mock.patch.object(
+                status, "collect_openai_codex_capacity", fake_collect
+            ),
+        ):
+            _ = StatusCollectors().openai(retrieved_at=RETRIEVED_AT)
+        return captured.get("codex_home")
+
+    def _controlled_home(self, state_dir: Path, source_id: str) -> str:
+        from scarcity_router.worker_codex_adapter import ControlledCodexHome
+
+        return str(
+            ControlledCodexHome(state_dir, name=f"codex-sources/{source_id}").path
+        )
+
+    def test_one_configured_source_resolves_its_controlled_home(self) -> None:
+        with tempfile.TemporaryDirectory[str]() as tmp:
+            state_dir = Path(tmp) / "worker-state"
+            home = self._home_with_unit(
+                Path(tmp), self._generated_unit(state_dir, ("precision-codex-live",))
+            )
+            self.assertEqual(
+                self._controlled_home(state_dir, "precision-codex-live"),
+                self._collected_codex_home(home),
+            )
+
+    def test_a_hand_written_unit_resolves_the_same_way(self) -> None:
+        # The Precision deployment shape: the targeted flag scan feeds the
+        # capacity collector exactly as it feeds codex-login.
+        unit = (
+            "# hand-written\n[Service]\n"
+            + "ExecStart=/usr/bin/env scarcity-router-worker run "
+            + "--state-dir /home/u/worker-state "
+            + "--codex-source precision-codex-live\n"
+        )
+        with tempfile.TemporaryDirectory[str]() as tmp:
+            home = self._home_with_unit(Path(tmp), unit)
+            self.assertEqual(
+                self._controlled_home(
+                    Path("/home/u/worker-state"), "precision-codex-live"
+                ),
+                self._collected_codex_home(home),
+            )
+
+    def test_an_explicit_codex_home_env_keeps_precedence(self) -> None:
+        with tempfile.TemporaryDirectory[str]() as tmp:
+            home = self._home_with_unit(
+                Path(tmp),
+                self._generated_unit(Path("/s"), ("precision-codex-live",)),
+            )
+            environment = self._environment(home)
+            environment["CODEX_HOME"] = "/operator/override"
+
+            from scarcity_router import status
+
+            captured: dict[str, object] = {}
+
+            def fake_collect(**kwargs: object) -> object:
+                captured.update(kwargs)
+                return paired_observation(_snapshot("openai"))
+
+            with (
+                mock.patch.dict(os.environ, environment, clear=True),
+                mock.patch.object(
+                    status, "collect_openai_codex_capacity", fake_collect
+                ),
+            ):
+                _ = StatusCollectors().openai(retrieved_at=RETRIEVED_AT)
+            self.assertIsNone(captured.get("codex_home"))
+
+    def test_zero_multiple_missing_or_invalid_sources_resolve_none(self) -> None:
+        with tempfile.TemporaryDirectory[str]() as tmp:
+            base = Path(tmp)
+            zero = self._home_with_unit(
+                base, self._generated_unit(Path("/s"), ())
+            )
+            self.assertIsNone(self._collected_codex_home(zero))
+            several = self._home_with_unit(
+                base / "a",
+                self._generated_unit(Path("/s"), ("one", "two")),
+            )
+            self.assertIsNone(self._collected_codex_home(several))
+            missing = base / "b" / "home"
+            missing.mkdir(parents=True)
+            self.assertIsNone(self._collected_codex_home(missing))
+            traversal = self._home_with_unit(
+                base / "c",
+                "# hand-written\n[Service]\n"
+                + "ExecStart=/opt/w run --codex-source ../escape\n",
+            )
+            self.assertIsNone(self._collected_codex_home(traversal))
+
+    def test_the_collector_passes_the_observation_timestamp_and_binary(self) -> None:
+        from scarcity_router import status
+
+        with tempfile.TemporaryDirectory[str]() as tmp:
+            state_dir = Path(tmp) / "worker-state"
+            home = self._home_with_unit(
+                Path(tmp), self._generated_unit(state_dir, ("precision-codex-live",))
+            )
+            captured: dict[str, object] = {}
+
+            def fake_collect(**kwargs: object) -> object:
+                captured.update(kwargs)
+                return paired_observation(_snapshot("openai"))
+
+            with (
+                mock.patch.dict(os.environ, self._environment(home), clear=True),
+                mock.patch.object(
+                    status, "collect_openai_codex_capacity", fake_collect
+                ),
+            ):
+                observation = StatusCollectors().openai(
+                    retrieved_at=RETRIEVED_AT
+                )
+            self.assertIsNotNone(observation)
+            self.assertEqual(
+                self._controlled_home(state_dir, "precision-codex-live"),
+                captured.get("codex_home"),
+            )
+            self.assertEqual(RETRIEVED_AT, captured.get("retrieved_at"))
+            self.assertIsNone(captured.get("binary_path"))
 
 
 class StatusApplicationTests(unittest.TestCase):

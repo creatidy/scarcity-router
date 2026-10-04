@@ -52,6 +52,7 @@ from typing import cast, override
 from unittest.mock import Mock, patch
 
 from scarcity_router import worker_service
+from scarcity_router import worker_unit_selection
 from scarcity_router.worker_client import (
     build_registry,
     open_worker_store,
@@ -752,7 +753,7 @@ class ExecStartReadBackTests(unittest.TestCase):
             unit_path = Path(tmp) / "scarcity-router-worker.service"
             _ = unit_path.write_text(unit, encoding="utf-8")
             with patch.object(
-                worker_service,
+                worker_unit_selection,
                 "default_worker_state_dir",
                 return_value="/def/state",
             ):
@@ -804,7 +805,7 @@ class ExecStartReadBackTests(unittest.TestCase):
             unit_path = Path(tmp) / "scarcity-router-worker.service"
             _ = unit_path.write_text(unit, encoding="utf-8")
             with patch.object(
-                worker_service,
+                worker_unit_selection,
                 "default_worker_state_dir",
                 return_value="/def/state",
             ):

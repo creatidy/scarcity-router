@@ -23,7 +23,7 @@ import sys
 import threading
 import time
 import unittest
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import cast, override
@@ -292,6 +292,7 @@ class _AcquisitionCase(unittest.TestCase):
     tmp: Path = Path("/")
     fake: _FakeAppServer | None = None
     spawn_calls: list[list[str]] = []
+    spawn_envs: list[dict[str, str] | None] = []
     stdout: io.StringIO = io.StringIO()
     stderr: io.StringIO = io.StringIO()
 
@@ -302,6 +303,7 @@ class _AcquisitionCase(unittest.TestCase):
         self.tmp = Path(tmp.name)
         self.fake = None
         self.spawn_calls = []
+        self.spawn_envs = []
         self.stdout = io.StringIO()
         self.stderr = io.StringIO()
 
@@ -324,9 +326,13 @@ class _AcquisitionCase(unittest.TestCase):
         self.fake = fake
 
         def fake_spawn(
-            argv: Sequence[str], *, executable_fd: int | None = None
+            argv: Sequence[str],
+            *,
+            executable_fd: int | None = None,
+            env: Mapping[str, str] | None = None,
         ) -> "subprocess.Popen[bytes]":
             self.spawn_calls.append(list(argv))
+            self.spawn_envs.append(dict(env) if env is not None else None)
             _ = executable_fd
             if error is not None:
                 raise error
@@ -343,9 +349,13 @@ class _AcquisitionCase(unittest.TestCase):
         self.fake = fake
 
         def fake_spawn(
-            argv: Sequence[str], *, executable_fd: int | None = None
+            argv: Sequence[str],
+            *,
+            executable_fd: int | None = None,
+            env: Mapping[str, str] | None = None,
         ) -> "subprocess.Popen[bytes]":
             self.spawn_calls.append(list(argv))
+            self.spawn_envs.append(dict(env) if env is not None else None)
             _ = executable_fd
             return cast("subprocess.Popen[bytes]", cast("object", fake))
 
@@ -385,6 +395,7 @@ class _AcquisitionCase(unittest.TestCase):
         startup_timeout: float | None = 5.0,
         session_timeout: float | None = 5.0,
         retrieved_at: str = RETRIEVED_AT,
+        codex_home: str | None = None,
     ) -> OpenAICodexObservation:
         assert startup_timeout is not None and session_timeout is not None
         with contextlib.redirect_stdout(self.stdout), contextlib.redirect_stderr(self.stderr):
@@ -394,6 +405,7 @@ class _AcquisitionCase(unittest.TestCase):
                 binary_path=binary_path,
                 startup_timeout=startup_timeout,
                 session_timeout=session_timeout,
+                codex_home=codex_home,
             )
 
     def _collect(
@@ -472,6 +484,35 @@ class SuccessfulSession(_AcquisitionCase):
                 )
                 self._assert_no_output()
                 _ = fake
+
+    def test_codex_home_sets_child_codex_home_only(self) -> None:
+        # D-066: the worker's controlled home is handed to the child as
+        # CODEX_HOME — the credential location the app-server
+        # authenticates from — while every other environment value is
+        # inherited unchanged and the module itself never opens the home.
+        _ = self._install_fake(self._happy_lines("ratelimits-ok-plus.json"))
+        roots = self._make_installation()
+        _ = self._collect_observation(
+            discovery_roots=[roots],
+            codex_home="/worker-state/codex-sources/src/codex-home",
+        )
+        self.assertEqual(1, len(self.spawn_envs))
+        child_env = self.spawn_envs[0]
+        assert child_env is not None
+        self.assertEqual(
+            "/worker-state/codex-sources/src/codex-home",
+            child_env["CODEX_HOME"],
+        )
+        for key, value in os.environ.items():
+            self.assertEqual(value, child_env.get(key), f"inherited {key} changed")
+
+    def test_no_codex_home_inherits_the_child_environment(self) -> None:
+        # Today's behavior for worker-less hosts: no env mapping is built
+        # and the child keeps its own default authenticated state.
+        _ = self._install_fake(self._happy_lines("ratelimits-ok-plus.json"))
+        roots = self._make_installation()
+        _ = self._collect_observation(discovery_roots=[roots])
+        self.assertEqual([None], self.spawn_envs)
 
     def test_protocol_exchange_shape_and_order(self) -> None:
         fake = self._install_fake(self._happy_lines("ratelimits-ok-plus.json"))
@@ -1393,10 +1434,14 @@ class SafeTermination(_AcquisitionCase):
         roots = self._make_installation()
 
         def fake_spawn(
-            argv: Sequence[str], *, executable_fd: int | None = None
+            argv: Sequence[str],
+            *,
+            executable_fd: int | None = None,
+            env: Mapping[str, str] | None = None,
         ) -> "subprocess.Popen[bytes]":
             _ = argv
             _ = executable_fd
+            _ = env
             return cast("subprocess.Popen[bytes]", cast("object", fake))
 
         with mock.patch.object(acq, "spawn_app_server", fake_spawn):

@@ -17,7 +17,11 @@ Security contract (docs/security.md):
 
 - no credential is read, stored, attached or exposed by this module: the
   app-server binary uses its own authenticated local state and this module
-  never opens it;
+  never opens it. The caller may point that state at the worker's
+  controlled home through ``codex_home`` (D-066): the value only becomes
+  the child's ``CODEX_HOME`` environment variable — the same home the
+  worker's adapter executes through and ``codex-login`` refreshes — and
+  the module still never reads the directory or its credential material;
 - the child's stderr is discarded at the process level (``DEVNULL``) and is
   never read into the process, so no upstream tool output can leak through
   exceptions, diagnostics or snapshots;
@@ -852,13 +856,18 @@ def spawn_app_server(
     argv: Sequence[str],
     *,
     executable_fd: int | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> "subprocess.Popen[bytes]":
     """Launch the Codex app-server subprocess.
 
     Exactly one process, never a shell; stdout is captured for the JSONL
     session and stderr is discarded at the process level (never a pipe, so
-    upstream tool output can never be read back or leak). Test seam: tests
-    replace this function with fakes; no test executes a real binary.
+    upstream tool output can never be read back or leak). ``env`` is the
+    child environment: ``None`` inherits the parent's (the child keeps its
+    own default authenticated state); the caller may instead hand a
+    mapping carrying ``CODEX_HOME`` (D-066 — the worker's controlled home),
+    which this module builds but never opens. Test seam: tests replace
+    this function with fakes; no test executes a real binary.
     """
     command = list(argv)
     pass_fds: tuple[int, ...] = ()
@@ -874,6 +883,7 @@ def spawn_app_server(
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
         pass_fds=pass_fds,
+        env=dict(env) if env is not None else None,
     )
 
 
@@ -1287,6 +1297,7 @@ def collect_openai_codex_capacity(
     binary_path: Path | None = None,
     startup_timeout: float | None = None,
     session_timeout: float | None = None,
+    codex_home: str | None = None,
 ) -> OpenAICodexObservation:
     """Acquire one OpenAI subscription-capacity observation via Codex app-server.
 
@@ -1295,13 +1306,20 @@ def collect_openai_codex_capacity(
     VS Code extension roots and exists for deterministic tests and
     controlled local configuration. ``binary_path`` (D-039) selects an
     explicit standalone installation (the production packaging path) and
-    overrides extension discovery. ``startup_timeout``/``session_timeout``
+    overrides extension discovery. ``startup_timeout``/`session_timeout``
     default to the module bounds and must be finite positive numbers (a
-    ``ValueError`` is raised before any process is spawned otherwise). The
-    discovered path and versions never enter the returned observation; every
-    expected operational condition normalizes to a safe failure snapshot
-    paired with a fail-closed ``unknown`` eligibility report instead of
-    leaking. An invalid ``retrieved_at`` keeps failing through
+    ``ValueError`` is raised before any process is spawned otherwise).
+    ``codex_home`` (D-066) points the child's authenticated state at the
+    worker's controlled home — the same home ``codex-login`` refreshes and
+    the worker's adapter executes through — by setting ``CODEX_HOME`` in
+    the child environment (an explicit value wins over an inherited one);
+    ``None`` keeps the inherited environment and the child's own default
+    state. This module still never reads, stores or exposes the home's
+    credential material; the provider's binary manages it. The discovered
+    path and versions never enter the returned observation; every expected
+    operational condition normalizes to a safe failure snapshot paired
+    with a fail-closed ``unknown`` eligibility report instead of leaking.
+    An invalid ``retrieved_at`` keeps failing through
     the typed contract validation rather than being misreported as
     provider telemetry.
     """
@@ -1315,6 +1333,10 @@ def collect_openai_codex_capacity(
         if session_timeout is None
         else _validated_timeout(session_timeout, "session_timeout")
     )
+    child_env: dict[str, str] | None = None
+    if codex_home is not None:
+        child_env = dict(os.environ)
+        child_env["CODEX_HOME"] = codex_home
     installation, outcome = discover_codex_installation(
         discovery_roots, binary_path=binary_path
     )
@@ -1325,7 +1347,9 @@ def collect_openai_codex_capacity(
 
     argv: list[str] = [str(installation.binary), "app-server"]
     try:
-        proc = spawn_app_server(argv, executable_fd=installation.binary_fd)
+        proc = spawn_app_server(
+            argv, executable_fd=installation.binary_fd, env=child_env
+        )
     except OSError:
         return _observation("unavailable", "source_unavailable", retrieved_at)
     finally:
