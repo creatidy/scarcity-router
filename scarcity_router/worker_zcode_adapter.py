@@ -309,22 +309,7 @@ def _minimal_environment(env: Mapping[str, str] | None = None) -> dict[str, str]
 #: consumer that must NAME it is the service unit manager, whose
 #: ``ReadWritePaths`` has to except exactly this directory so service
 #: mode is not stricter than a foreground ``run``.
-ZCODE_STATE_DIR_NAME = ".zcode"
-
-
-def zcode_state_home(env: Mapping[str, str] | None = None) -> Path:
-    """The ZCode CLI's supported home-state directory: ``$HOME/.zcode``.
-
-    Resolved from ``HOME`` — the same variable the adapter's child
-    environment passes through so the CLI finds its own installation
-    and login state — falling back to the invoking user's home when
-    ``HOME`` is unset. Naming the path is not touching it: callers
-    canonicalize the result with ``realpath`` and never read, write or
-    enumerate its contents (D-061 constraint 3).
-    """
-    parent = dict(os.environ) if env is None else dict(env)
-    home = parent.get("HOME") or os.path.expanduser("~")
-    return Path(home) / ZCODE_STATE_DIR_NAME
+from .worker_local_store import ZCODE_STATE_DIR_NAME, zcode_state_home  # noqa: E402
 
 
 # ── Discovery (deterministic, bounded, allowlisted) ───────────────────────────

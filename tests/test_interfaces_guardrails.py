@@ -1526,11 +1526,13 @@ class NoExecutionAndNoIdeMutationTests(GuardrailTestCase):
 
         - ``config.py`` — the D-036 selector-policy provisioning (the one
           product-owned write outside the package);
-        - ``worker_codex_adapter.py`` — the M06 adapter-owned controlled
+        - ``codex_home.py`` — the M06 adapter-owned controlled
           ``CODEX_HOME`` provisioning under the worker's own state directory
           (issue #91 Stage 2): one generated minimal ``config.toml`` inside a
           ``0o700`` adapter-owned tree, never the user's ``~/.codex``. (The
-          M05 worker store's sqlite file is created through the sqlite
+          lifecycle moved here from ``worker_codex_adapter.py`` in #171;
+          telemetry only validates the existing home and never provisions it.
+          The M05 worker store's sqlite file is created through the sqlite
           library and is confined to the same state directory.)
         - ``worker_local_store.py`` — the #138 single-instance run lock
           (``<state_dir>/worker.lock``, ``0o600``, inside the worker's own
@@ -1547,7 +1549,7 @@ class NoExecutionAndNoIdeMutationTests(GuardrailTestCase):
         package_dir = REPO / "scarcity_router"
         provisioning_modules = {
             "config.py",
-            "worker_codex_adapter.py",
+            "codex_home.py",
             "worker_local_store.py",
             "worker_service.py",
         }

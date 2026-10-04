@@ -93,6 +93,23 @@ Linux x86-64 hosts, with a validated `codex-package.json` and executable. No
 installation maps to `unavailable`; an installation whose layout cannot be
 validated maps to `unsupported`.
 
+Default recommendation collection also discovers the installed worker
+service's Codex source (D-067, issue #171). Exactly one configured source
+selects its existing controlled home and its pinned binary, or the worker's
+shared PATH-first/extension binary discovery when unpinned. The explicit
+`SCARCITY_ROUTER_CODEX_BIN` override still wins. The home is validated
+read-only and passed as `CODEX_HOME` only in the app-server child's
+environment: collection never provisions/repairs a home, reads credentials,
+copies tokens, or modifies the calling process's environment. Ordinary
+local collection keeps its existing extension discovery and inherited
+`CODEX_HOME` when no service/source is configured or when
+`SCARCITY_ROUTER_CODEX_SOURCE=@local` is explicit. Multiple sources require
+`SCARCITY_ROUTER_CODEX_SOURCE` naming one configured id. Invalid selection,
+unreadable/malformed configuration and unsafe/missing homes are actionable
+configuration errors, not fabricated provider-health observations; no
+fallback to another account occurs. Operational app-server/provider failures
+still normalize independently as before.
+
 The provisional `uv run python -m scarcity_router status` command composes this
 collector with the Z.ai normalized snapshot without exposing discovery paths or
 versions. The automated suite contains no live-account test and all transport

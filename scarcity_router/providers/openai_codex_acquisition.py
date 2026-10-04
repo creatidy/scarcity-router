@@ -92,6 +92,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import shutil
 import platform
 import queue
 import select
@@ -550,6 +551,58 @@ def _close_discovery_candidates(candidates: Sequence[_DiscoveryCandidate]) -> No
                 pass
 
 
+@dataclass(frozen=True)
+class CodexBinary:
+    """One discovered binary candidate (safe facts only)."""
+
+    path: Path
+    source: str  # "pinned" | "path" | "extension"
+
+
+def _regular_executable(path: Path, *, allow_symlink: bool) -> bool:
+    """Regular, executable file check; the pinned path must not be a symlink."""
+    try:
+        st = os.stat(path) if allow_symlink else os.lstat(path)
+    except OSError:
+        return False
+    if not allow_symlink and stat.S_ISLNK(st.st_mode):
+        return False
+    if not stat.S_ISREG(st.st_mode):
+        return False
+    return os.access(path, os.X_OK)
+
+
+def discover_codex_binary(
+    *,
+    pinned_binary: Path | None = None,
+    discovery_roots: Sequence[Path] | None = None,
+    path_lookup: Callable[[str], str | None] = shutil.which,
+) -> tuple[CodexBinary | None, str | None]:
+    """Shared worker/login discovery: pinned path, PATH, then U-001 layout.
+
+    Moved from worker_codex_adapter unchanged. Pins must be non-symlink
+    regular executables; PATH entries can legitimately be symlinks. An
+    invalid pin or PATH hit never falls back to a different installation.
+    """
+    if pinned_binary is not None:
+        if _regular_executable(pinned_binary, allow_symlink=False):
+            return CodexBinary(path=pinned_binary, source="pinned"), None
+        return None, "pinned_binary_invalid"
+    path_hit = path_lookup("codex")
+    if path_hit:
+        candidate = Path(path_hit)
+        if _regular_executable(candidate, allow_symlink=True):
+            return CodexBinary(path=candidate, source="path"), None
+        return None, "path_binary_invalid"
+    installation, outcome = discover_codex_installation(discovery_roots)
+    if installation is not None:
+        installation.close()
+        return CodexBinary(path=installation.binary, source="extension"), None
+    if outcome == "unsupported_installation":
+        return None, "unsupported_installation"
+    return None, "source_unavailable"
+
+
 def _explicit_installation(binary_path: Path) -> CodexInstallation | None:
     """Validate an explicit, operator-supplied binary path (D-039).
 
@@ -852,6 +905,7 @@ def spawn_app_server(
     argv: Sequence[str],
     *,
     executable_fd: int | None = None,
+    codex_home: Path | None = None,
 ) -> "subprocess.Popen[bytes]":
     """Launch the Codex app-server subprocess.
 
@@ -874,6 +928,7 @@ def spawn_app_server(
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
         pass_fds=pass_fds,
+        env={**os.environ, "CODEX_HOME": str(codex_home)} if codex_home is not None else None,
     )
 
 
@@ -1285,6 +1340,7 @@ def collect_openai_codex_capacity(
     retrieved_at: str,
     discovery_roots: Sequence[Path] | None = None,
     binary_path: Path | None = None,
+    codex_home: Path | None = None,
     startup_timeout: float | None = None,
     session_timeout: float | None = None,
 ) -> OpenAICodexObservation:
@@ -1298,7 +1354,10 @@ def collect_openai_codex_capacity(
     overrides extension discovery. ``startup_timeout``/``session_timeout``
     default to the module bounds and must be finite positive numbers (a
     ``ValueError`` is raised before any process is spawned otherwise). The
-    discovered path and versions never enter the returned observation; every
+    discovered path and versions never enter the returned observation.
+    ``codex_home`` selects an existing worker-source home for this child only;
+    without a binary pin it uses the same PATH/extension discovery as worker
+    login. No home is provisioned and no parent environment is changed. Every
     expected operational condition normalizes to a safe failure snapshot
     paired with a fail-closed ``unknown`` eligibility report instead of
     leaking. An invalid ``retrieved_at`` keeps failing through
@@ -1315,6 +1374,15 @@ def collect_openai_codex_capacity(
         if session_timeout is None
         else _validated_timeout(session_timeout, "session_timeout")
     )
+    if codex_home is not None and binary_path is None:
+        # Match the official worker-login discovery (standalone PATH first),
+        # without changing ordinary extension-based local collection.
+        binary, reason = discover_codex_binary()
+        if binary is None:
+            status = "unavailable" if reason == "source_unavailable" else "unsupported"
+            code = "source_unavailable" if status == "unavailable" else "unsupported_source"
+            return _observation(status, code, retrieved_at)
+        binary_path = binary.path
     installation, outcome = discover_codex_installation(
         discovery_roots, binary_path=binary_path
     )
@@ -1325,7 +1393,12 @@ def collect_openai_codex_capacity(
 
     argv: list[str] = [str(installation.binary), "app-server"]
     try:
-        proc = spawn_app_server(argv, executable_fd=installation.binary_fd)
+        if codex_home is None:
+            proc = spawn_app_server(argv, executable_fd=installation.binary_fd)
+        else:
+            proc = spawn_app_server(
+                argv, executable_fd=installation.binary_fd, codex_home=codex_home
+            )
     except OSError:
         return _observation("unavailable", "source_unavailable", retrieved_at)
     finally:

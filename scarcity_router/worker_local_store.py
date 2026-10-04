@@ -38,6 +38,7 @@ import sqlite3
 import stat
 import sys
 import threading
+from pathlib import Path
 from dataclasses import dataclass
 from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
@@ -52,6 +53,18 @@ STATE_DIR_NAME = "scarcity-router"
 WORKER_STATE_DIR_NAME = "worker"
 LOCALAPPDATA_DIR_NAME = "AppData"
 WORKER_IDENTITY_KEY = "identity"
+ZCODE_STATE_DIR_NAME = ".zcode"
+
+
+def zcode_state_home(env: Mapping[str, str] | None = None) -> Path:
+    """Name the official CLI's HOME-based state path without touching it.
+
+    Shared by the ZCode adapter and service configuration. Moved from
+    worker_zcode_adapter unchanged to keep configuration imports acyclic.
+    """
+    parent = dict(os.environ) if env is None else dict(env)
+    home = parent.get("HOME") or os.path.expanduser("~")
+    return Path(home) / ZCODE_STATE_DIR_NAME
 
 _ALL_KEYS: frozenset[str] = frozenset({
     "worker_id",

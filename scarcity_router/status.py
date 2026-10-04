@@ -36,6 +36,7 @@ _WINDOW_RESOURCE_ORDER = {"tokens": 0, "time": 1, "unknown": 2}
 # extension discovery and uses exactly this executable. The value is a path,
 # never a credential; it is read per invocation and never logged.
 CODEX_BINARY_PATH_ENV = "SCARCITY_ROUTER_CODEX_BIN"
+CODEX_SOURCE_ENV = "SCARCITY_ROUTER_CODEX_SOURCE"
 
 
 class OpenAIObservationCollector(Protocol):
@@ -51,9 +52,80 @@ Clock = Callable[[], datetime]
 
 def _default_openai_collector(*, retrieved_at: str) -> OpenAICodexObservation:
     explicit_binary = os.environ.get(CODEX_BINARY_PATH_ENV, "").strip()
+    source = os.environ.get(CODEX_SOURCE_ENV, "").strip()
+    codex_home: Path | None = None
+    if source != "@local":
+        from .gateway_validation import v_safe_id
+        from .codex_home import ControlledCodexHome
+        from .model_inventory import SOURCE_ID_MAX_LENGTH
+        from .providers.openai_codex_acquisition import discover_codex_binary
+        from .worker_service import (
+            ServiceUnitNotFoundError,
+            ServiceUnitReadError,
+            read_installed_service_configuration,
+        )
+
+        try:
+            installed = read_installed_service_configuration()
+        except ServiceUnitNotFoundError:
+            if source:
+                raise ValueError(
+                    f"{CODEX_SOURCE_ENV} requires an installed worker service; "
+                    + "install it or use @local for ordinary Codex telemetry"
+                ) from None
+        except (ServiceUnitReadError, ValueError):
+            raise ValueError(
+                "cannot resolve the installed worker's Codex configuration; "
+                + "repair the worker service configuration or set "
+                + f"{CODEX_SOURCE_ENV}=@local for ordinary Codex telemetry"
+            ) from None
+        else:
+            sources = installed.selection.codex_sources
+            if source and source not in sources:
+                raise ValueError(
+                    f"{CODEX_SOURCE_ENV} must name a configured --codex-source "
+                    + "or be @local for ordinary Codex telemetry"
+                )
+            if not source and len(sources) > 1:
+                raise ValueError(
+                    "the worker service has multiple Codex sources; set "
+                    + f"{CODEX_SOURCE_ENV} to the desired --codex-source "
+                    + "(or @local for ordinary Codex telemetry)"
+                )
+            if sources:
+                selected = source or sources[0]
+                # Never interpolate an unvalidated unit value into a home path.
+                if len(selected) > SOURCE_ID_MAX_LENGTH:
+                    raise ValueError("configured Codex source id is too long")
+                try:
+                    selected = v_safe_id(selected, "codex_source")
+                except ValueError:
+                    raise ValueError("configured Codex source id is invalid") from None
+                home = ControlledCodexHome(
+                    installed.state_dir, name=f"codex-sources/{selected}"
+                )
+                if home.path.resolve() != home.path or home.validate() is not None:
+                    raise ValueError(
+                        "the configured Codex source home is missing or unsafe; "
+                        + "run make codex-login to initialize/sign in to the source; "
+                        + "if it remains unsafe, repair its isolation configuration"
+                    )
+                codex_home = home.path
+                if not explicit_binary and installed.selection.codex_bin:
+                    binary, _ = discover_codex_binary(
+                        pinned_binary=Path(installed.selection.codex_bin)
+                    )
+                    if binary is None:
+                        raise ValueError(
+                            "the worker service's --codex-bin must be an existing "
+                            + "non-symlink regular executable; repair the service "
+                            + "binary pin or explicitly set SCARCITY_ROUTER_CODEX_BIN"
+                        )
+                    explicit_binary = str(binary.path)
     return collect_openai_codex_capacity(
         retrieved_at=retrieved_at,
         binary_path=Path(explicit_binary) if explicit_binary else None,
+        codex_home=codex_home,
     )
 
 
@@ -285,6 +357,7 @@ def main(
 
 __all__ = [
     "CODEX_BINARY_PATH_ENV",
+    "CODEX_SOURCE_ENV",
     "StatusCollectors",
     "StatusObservation",
     "build_parser",

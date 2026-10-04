@@ -597,6 +597,55 @@ class SuccessfulSession(_AcquisitionCase):
                     pass
 
 
+class ControlledHomeAcquisition(_AcquisitionCase):
+    def test_worker_home_and_path_binary_are_child_only_and_output_is_normalized(self) -> None:
+        binary = self.tmp / "codex"
+        _ = binary.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        binary.chmod(0o755)
+        home = self.tmp / "controlled-home"
+        fake = _FakeAppServer(
+            [INIT_RESPONSE, _read_response(_fixture_result("ratelimits-ok-plus.json"))]
+        )
+        self.addCleanup(fake.finalize)
+        with (
+            mock.patch.dict(os.environ, {"PATH": str(self.tmp), "CODEX_HOME": "/ordinary/home"}),
+            mock.patch.object(subprocess, "Popen", return_value=fake) as spawn,
+        ):
+            result = acq.collect_openai_codex_capacity(
+                retrieved_at=RETRIEVED_AT, codex_home=home,
+            )
+            environment = cast(dict[str, str], spawn.call_args.kwargs["env"])
+            self.assertEqual(environment["CODEX_HOME"], str(home))
+            self.assertEqual(environment["PATH"], str(self.tmp))
+            self.assertEqual(os.environ["CODEX_HOME"], "/ordinary/home")
+            self.assertEqual(spawn.call_args.kwargs["stderr"], subprocess.DEVNULL)
+            self.assertEqual(spawn.call_count, 1)
+        self.assertEqual(result.snapshot.status, "ok")
+        self.assertNotIn(str(home), json.dumps(result.snapshot.to_dict()))
+        self.assertFalse(home.exists())
+
+    def test_local_spawn_preserves_inherited_environment(self) -> None:
+        with mock.patch.object(subprocess, "Popen") as spawn:
+            _ = acq.spawn_app_server(["/synthetic/codex", "app-server"])
+        self.assertIsNone(cast(object, spawn.call_args.kwargs["env"]))
+
+    def test_missing_or_invalid_worker_binary_is_normalized_without_local_fallback(self) -> None:
+        for reason, expected in (
+            ("source_unavailable", "unavailable"),
+            ("path_binary_invalid", "unsupported"),
+        ):
+            with (
+                self.subTest(reason=reason),
+                mock.patch.object(acq, "discover_codex_binary", return_value=(None, reason)),
+                mock.patch.object(acq, "spawn_app_server") as spawn,
+            ):
+                result = acq.collect_openai_codex_capacity(
+                    retrieved_at=RETRIEVED_AT, codex_home=self.tmp / "home",
+                )
+                self.assertEqual(result.snapshot.status, expected)
+                spawn.assert_not_called()
+
+
 # ═════════════════════════ response matching ═════════════════════════════════
 
 
