@@ -113,8 +113,7 @@ from pathlib import Path
 from typing import cast
 
 from .worker_identity_store import canonical_home, open_private_state_dir, open_trusted_worker_directory
-from .worker_local_store import WorkerLocalStore, default_worker_state_dir
-from .worker_zcode_adapter import zcode_state_home
+from .worker_local_store import WorkerLocalStore, default_worker_state_dir, zcode_state_home
 
 #: Opens the worker store for one state directory (injected by the CLI,
 #: which owns the ``worker_client`` seam — this module never imports it,
@@ -502,6 +501,10 @@ class ServiceUnitReadError(Exception):
     (safe, actionable message; no secrets — the unit embeds none)."""
 
 
+class ServiceUnitNotFoundError(ServiceUnitReadError):
+    """No installed worker unit; ordinary local telemetry remains supported."""
+
+
 @dataclass(frozen=True)
 class InstalledServiceConfiguration:
     """What the installed unit actually runs, read back from disk.
@@ -621,7 +624,7 @@ def parse_exec_start(value: str) -> tuple[Path, Path, ServiceSelection]:
         word = words[index]
         index += 1
         if word in _EXEC_START_APPEND_FLAGS:
-            if index >= len(words):
+            if index >= len(words) or not words[index]:
                 raise ServiceUnitReadError(f"{word} has no value in ExecStart")
             values = cast(
                 "list[object]", mapping.setdefault(_EXEC_START_APPEND_FLAGS[word], [])
@@ -629,7 +632,7 @@ def parse_exec_start(value: str) -> tuple[Path, Path, ServiceSelection]:
             values.append(words[index])
             index += 1
         elif word in _EXEC_START_VALUE_FLAGS:
-            if index >= len(words):
+            if index >= len(words) or not words[index]:
                 raise ServiceUnitReadError(f"{word} has no value in ExecStart")
             mapping[_EXEC_START_VALUE_FLAGS[word]] = words[index]
             index += 1
@@ -783,21 +786,30 @@ def _selection_from_foreign_exec_start(
     while index < len(words):
         word = words[index]
         index += 1
-        if word == "--codex-source":
+        flag, separator, attached = word.partition("=")
+        known_flags = ("--codex-source", "--state-dir", "--codex-bin")
+        if flag not in known_flags:
+            if flag.startswith("--") and any(known.startswith(flag) for known in known_flags):
+                raise ServiceUnitReadError(
+                    "abbreviated source/state/binary flags cannot be read back "
+                    + "exactly; spell out --codex-source, --state-dir and --codex-bin"
+                )
+            continue
+        if separator:
+            argument = attached
+        else:
             if index >= len(words):
-                raise ServiceUnitReadError("--codex-source has no value in ExecStart")
-            sources.append(words[index])
+                raise ServiceUnitReadError(f"{flag} has no value in ExecStart")
+            argument = words[index]
             index += 1
-        elif word == "--state-dir":
-            if index >= len(words):
-                raise ServiceUnitReadError("--state-dir has no value in ExecStart")
-            state_dir = Path(words[index])
-            index += 1
-        elif word == "--codex-bin":
-            if index >= len(words):
-                raise ServiceUnitReadError("--codex-bin has no value in ExecStart")
-            codex_bin = words[index]
-            index += 1
+        if not argument or argument.startswith("--"):
+            raise ServiceUnitReadError(f"{flag} has no value in ExecStart")
+        if flag == "--codex-source":
+            sources.append(argument)
+        elif flag == "--state-dir":
+            state_dir = Path(argument)
+        else:
+            codex_bin = argument
     if state_dir is None:
         # 'run' without --state-dir uses the platform default state
         # directory — derivable exactly, never a guess.
@@ -842,7 +854,12 @@ def read_installed_service_configuration(
     try:
         text = target.read_text(encoding="utf-8")
     except FileNotFoundError:
-        raise ServiceUnitReadError(
+        if target.is_symlink():
+            raise ServiceUnitReadError(
+                "the installed worker service unit is a dangling symlink; "
+                + "repair the worker service configuration"
+            ) from None
+        raise ServiceUnitNotFoundError(
             f"no installed worker service unit found at {target}; install "
             + "the worker service ('scarcity-router-worker service install "
             + "--codex-source SOURCE_ID') or pass the source explicitly"
@@ -1624,6 +1641,7 @@ __all__ = [
     "ServiceToolError",
     "ServiceToolResult",
     "ServiceTools",
+    "ServiceUnitNotFoundError",
     "ServiceUnitReadError",
     "ServiceZCodeStateHomeError",
     "StoreOpener",

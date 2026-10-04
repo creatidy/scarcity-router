@@ -6,11 +6,16 @@ import io
 import json
 import os
 import unittest
+from contextlib import AbstractContextManager
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from datetime import datetime, timezone
-from typing import cast
+from typing import cast, override
 from unittest import mock
 
 from scarcity_router import CapacityDiagnostic, CapacitySnapshot, CapacityWindow
+from scarcity_router import status, worker_service
+from scarcity_router.codex_home import ControlledCodexHome
 from tests.observation import paired_observation
 from scarcity_router.providers.openai_codex_acquisition import OpenAICodexObservation
 from scarcity_router.status import (
@@ -167,6 +172,240 @@ class StatusApplicationTests(unittest.TestCase):
 
     def test_no_local_provider_can_be_injected_into_status_collectors(self) -> None:
         self.assertEqual(set(StatusCollectors.__dataclass_fields__), {"openai", "zai"})
+
+
+class OpenAISourceSelectionTests(unittest.TestCase):
+    """Actual unit parsing/home validation; only the provider boundary is fake."""
+
+    root: Path = Path("/")
+    unit: Path = Path("/")
+    state: Path = Path("/")
+    calls: list[tuple[str, Path | None, Path | None]] = []
+
+    @override
+    def setUp(self) -> None:
+        temporary = TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.unit = self.root / "worker.service"
+        self.state = self.root / "custom state"
+        environment = cast(
+            AbstractContextManager[object],
+            mock.patch.dict(os.environ, {"CODEX_HOME": "/ordinary/codex"}, clear=True),
+        )
+        _ = self.enterContext(environment)
+        location = mock.patch.object(worker_service, "unit_install_path", return_value=self.unit)
+        _ = location.start()
+        self.addCleanup(location.stop)
+        self.calls = []
+
+        def collect(
+            *, retrieved_at: str, binary_path: Path | None, codex_home: Path | None,
+        ) -> OpenAICodexObservation:
+            self.calls.append((retrieved_at, binary_path, codex_home))
+            return paired_observation(_healthy_snapshots()[0])
+
+        provider = mock.patch(
+            "scarcity_router.status.collect_openai_codex_capacity",
+            new=collect,
+        )
+        _ = provider.start()
+        self.addCleanup(provider.stop)
+
+    def _install(
+        self, sources: tuple[str, ...] = ("test-source",), *, binary: str | None = None,
+        generated: bool = True,
+    ) -> None:
+        text = worker_service.render_unit(
+            executable=self.root / "scarcity-router-worker",
+            state_dir=self.state,
+            selection=worker_service.ServiceSelection(codex_sources=sources, codex_bin=binary),
+        )
+        if not generated:
+            text = text.removeprefix(worker_service.UNIT_MARKER_LINE + "\n")
+        _ = self.unit.write_text(text, encoding="utf-8")
+        for source in sources:
+            ControlledCodexHome(self.state, name=f"codex-sources/{source}").ensure()
+
+    def _collect(self) -> OpenAICodexObservation:
+        return StatusCollectors().openai(retrieved_at=RETRIEVED_AT)
+
+    def test_single_source_uses_custom_home_for_generated_and_handwritten_units(self) -> None:
+        for generated in (True, False):
+            with self.subTest(generated=generated):
+                self._install(generated=generated)
+                with mock.patch.object(
+                    ControlledCodexHome, "ensure",
+                    side_effect=AssertionError("telemetry must not provision a home"),
+                ):
+                    result = self._collect()
+                self.assertEqual(
+                    self.calls[-1],
+                    (RETRIEVED_AT, None, self.state / "codex-sources/test-source/codex-home"),
+                )
+                self.assertEqual(os.environ["CODEX_HOME"], "/ordinary/codex")
+                self.assertEqual(result.snapshot.status, "ok")
+                self.assertNotIn(str(self.state), render_json((result.snapshot,)))
+
+    def test_missing_service_preserves_local_collection(self) -> None:
+        _ = self._collect()
+        self.assertEqual(self.calls, [(RETRIEVED_AT, None, None)])
+
+    def test_service_without_codex_source_preserves_local_collection(self) -> None:
+        self._install(())
+        _ = self._collect()
+        self.assertIsNone(self.calls[-1][2])
+
+    def test_binary_override_wins_over_service_pin(self) -> None:
+        binary = self.root / "codex"
+        _ = binary.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        binary.chmod(0o755)
+        self._install(binary=str(binary))
+        _ = self._collect()
+        self.assertEqual(self.calls[-1][1], binary)
+        os.environ[status.CODEX_BINARY_PATH_ENV] = "/explicit/codex"
+        _ = self._collect()
+        self.assertEqual(self.calls[-1][1], Path("/explicit/codex"))
+
+    def test_service_binary_symlink_is_refused_but_explicit_override_keeps_old_semantics(self) -> None:
+        binary = self.root / "real-codex"
+        _ = binary.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        binary.chmod(0o755)
+        link = self.root / "codex-link"
+        link.symlink_to(binary)
+        self._install(binary=str(link))
+        with self.assertRaisesRegex(ValueError, "non-symlink.*SCARCITY_ROUTER_CODEX_BIN"):
+            _ = self._collect()
+        self.assertEqual(self.calls, [])
+        os.environ[status.CODEX_BINARY_PATH_ENV] = str(link)
+        _ = self._collect()
+        self.assertEqual(self.calls[-1][1], link)
+
+    def test_handwritten_equals_flags_preserve_source_state_and_pin(self) -> None:
+        binary = self.root / "codex"
+        _ = binary.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        binary.chmod(0o755)
+        self._install()
+        _ = self.unit.write_text(
+            "ExecStart=/bin/worker run --codex-source=test-source "
+            + f'"--state-dir={self.state}" --codex-bin={binary}\n', encoding="utf-8",
+        )
+        _ = self._collect()
+        self.assertEqual(
+            self.calls[-1],
+            (RETRIEVED_AT, binary, self.state / "codex-sources/test-source/codex-home"),
+        )
+
+    def test_empty_configured_sources_never_look_like_no_source(self) -> None:
+        for generated, flag in (
+            (True, '--codex-source ""'),
+            (False, '--codex-source ""'),
+            (False, "--codex-source="),
+            (False, "--codex-sour=test-source"),
+        ):
+            with self.subTest(generated=generated, flag=flag):
+                prefix = worker_service.UNIT_MARKER_LINE + "\n" if generated else ""
+                _ = self.unit.write_text(
+                    prefix + f"ExecStart=/bin/worker run --state-dir {self.root} {flag}\n",
+                    encoding="utf-8",
+                )
+                with self.assertRaisesRegex(ValueError, "repair.*@local"):
+                    _ = self._collect()
+        self.assertEqual(self.calls, [])
+
+    def test_multiple_sources_require_choice_and_explicit_source_selects_exact_home(self) -> None:
+        self._install(("source-one", "source-two"))
+        with self.assertRaisesRegex(ValueError, "multiple.*SCARCITY_ROUTER_CODEX_SOURCE"):
+            _ = self._collect()
+        self.assertEqual(self.calls, [])
+        os.environ[status.CODEX_SOURCE_ENV] = "source-two"
+        _ = self._collect()
+        self.assertEqual(
+            self.calls[-1][2],
+            self.state / "codex-sources/source-two/codex-home",
+        )
+
+    def test_local_opt_out_skips_even_malformed_worker_configuration(self) -> None:
+        _ = self.unit.write_text("malformed unit", encoding="utf-8")
+        os.environ[status.CODEX_SOURCE_ENV] = "@local"
+        _ = self._collect()
+        self.assertIsNone(self.calls[-1][2])
+        self.assertEqual(os.environ["CODEX_HOME"], "/ordinary/codex")
+
+    def test_unknown_explicit_source_never_falls_back(self) -> None:
+        for installed in (False, True):
+            with self.subTest(installed=installed):
+                if installed:
+                    self._install()
+                os.environ[status.CODEX_SOURCE_ENV] = "SYNTHETIC_SECRET_DO_NOT_ECHO"
+                with self.assertRaises(ValueError) as raised:
+                    _ = self._collect()
+                self.assertIn("SCARCITY_ROUTER_CODEX_SOURCE", str(raised.exception))
+                self.assertNotIn("SYNTHETIC_SECRET_DO_NOT_ECHO", str(raised.exception))
+        self.assertEqual(self.calls, [])
+
+    def test_malformed_or_unreadable_service_never_falls_back_or_echoes_contents(self) -> None:
+        _ = self.unit.write_text("ExecStart=SYNTHETIC_SECRET_DO_NOT_ECHO\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "repair.*@local") as raised:
+            _ = self._collect()
+        self.assertNotIn("SYNTHETIC_SECRET_DO_NOT_ECHO", str(raised.exception))
+        self.unit.unlink()
+        self.unit.mkdir()
+        with self.assertRaisesRegex(ValueError, "repair.*@local"):
+            _ = self._collect()
+        self.assertEqual(self.calls, [])
+
+    def test_dangling_service_symlink_does_not_look_like_no_service(self) -> None:
+        self.unit.symlink_to(self.root / "missing-unit")
+        with self.assertRaisesRegex(ValueError, "repair.*@local"):
+            _ = self._collect()
+        self.assertEqual(self.calls, [])
+
+    def test_ambiguous_source_cli_error_is_actionable_without_traceback(self) -> None:
+        from scarcity_router import cli
+
+        self._install(("source-one", "source-two"))
+        stderr = io.StringIO()
+        stdout = io.StringIO()
+        with mock.patch("sys.stderr", stderr):
+            code = cli.main(["status"], stdout=stdout)
+        self.assertEqual(code, 1)
+        self.assertIn("SCARCITY_ROUTER_CODEX_SOURCE", stderr.getvalue())
+        self.assertNotIn("Traceback", stderr.getvalue())
+        self.assertNotIn(str(self.state), stderr.getvalue())
+        self.assertEqual(stdout.getvalue(), "")
+
+    def test_missing_home_is_not_provisioned(self) -> None:
+        self._install()
+        home = self.state / "codex-sources/test-source/codex-home"
+        (home / "config.toml").unlink()
+        home.rmdir()
+        with self.assertRaisesRegex(ValueError, "make codex-login"):
+            _ = self._collect()
+        self.assertFalse(home.exists())
+        self.assertEqual(self.calls, [])
+
+    def test_symlinked_source_ancestor_is_refused(self) -> None:
+        self._install()
+        sources = self.state / "codex-sources"
+        relocated = self.state / "relocated"
+        _ = sources.rename(relocated)
+        sources.symlink_to(relocated, target_is_directory=True)
+        with self.assertRaisesRegex(ValueError, "unsafe"):
+            _ = self._collect()
+        self.assertEqual(self.calls, [])
+
+    def test_unsafe_source_ids_are_refused_before_interpolating_paths(self) -> None:
+        self._install()
+        for source in ("../outside", "x" * 21):
+            with self.subTest(source=source):
+                _ = self.unit.write_text(
+                    f"ExecStart=/bin/worker run --codex-source {source} "
+                    + f"--state-dir {self.root}\n", encoding="utf-8",
+                )
+                with self.assertRaisesRegex(ValueError, "source id"):
+                    _ = self._collect()
+        self.assertEqual(self.calls, [])
 
 
 class StatusRenderingTests(unittest.TestCase):

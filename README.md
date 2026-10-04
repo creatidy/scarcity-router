@@ -137,6 +137,27 @@ Provider failures and unknown windows remain explicit status data; missing
 telemetry is never turned into zero or full capacity. Status collection does not
 issue a model prompt or model request.
 
+When an installed worker service has exactly one Codex source, OpenAI
+telemetry automatically uses that source's existing isolated session: the
+same one refreshed by `make codex-login`. An ambient `CODEX_HOME` does not
+override this discovered source. No extra login, token copying or worker
+restart is required. This selection is shared by CLI, MCP and REST.
+
+Without an installed worker service, or when it configures no Codex source,
+ordinary local Codex collection is unchanged. To explicitly use the local
+session even with a worker installed:
+
+```bash
+SCARCITY_ROUTER_CODEX_SOURCE=@local scarcity-router status
+```
+
+With multiple worker Codex sources, choose one of the configured source ids
+using `SCARCITY_ROUTER_CODEX_SOURCE=SOURCE_ID`. Ambiguous, invalid or unreadable
+source configuration fails with an actionable configuration error rather
+than silently reading another account. The existing `SCARCITY_ROUTER_CODEX_BIN`
+binary override takes precedence over the service's `--codex-bin`; otherwise
+worker-source telemetry uses the same binary discovery as worker login.
+
 ## Select A Model
 
 Use a calibrated task profile or provide a complete requirement document:

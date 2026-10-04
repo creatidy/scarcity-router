@@ -5690,5 +5690,52 @@ Do not rewrite history or change an accepted decision silently.
   `worker_client.py` (`codex-login` discovery branch; `--source` now
   optional), `Makefile` (`codex-login` target), `README.md`, tests,
   this record. No protocol, catalog, selector, server, capacity or
-  serialized contract change; `codex-login --source` behavior is
-  unchanged.
+   serialized contract change; `codex-login --source` behavior is
+   unchanged.
+
+### D-067 - Recommendation telemetry follows the installed Codex source
+
+- **Status:** Accepted 2026-10-04 for the owner-authorized fix, issue #171.
+- **Context:** D-066 makes `make codex-login` discover the installed worker's
+  source, but recommendation collection previously inherited ambient
+  `CODEX_HOME`. This contradicts the one-login operator path: a successful
+  worker-source login could leave plain `status` reading an unrelated session.
+  This supersedes only that default session selection, not D-018 recovery,
+  D-044 isolation or D-066 login discovery.
+- **Decision:** The shared default OpenAI collector reads the same installed
+  unit configuration as login. One Codex source selects that source's
+  existing controlled home, even when ambient `CODEX_HOME` points elsewhere.
+  No service or no configured source preserves the ordinary local path.
+  `SCARCITY_ROUTER_CODEX_SOURCE` selects one configured source explicitly;
+  `@local` deliberately opts out of worker discovery (the sentinel cannot
+  collide with a valid source id). Multiple sources without an explicit
+  choice, unknown ids, unreadable/malformed units and unsafe/missing homes
+  produce safe actionable configuration errors, never another account's
+  quota. `SCARCITY_ROUTER_CODEX_BIN` keeps precedence over the service's
+  binary pin; unpinned worker-source collection shares login's existing
+  PATH-first/extension discovery, while ordinary local collection keeps its
+  previous extension discovery.
+- **Security/compatibility:** Session selection validates the existing home
+  read-only, does not provision or repair it and passes `CODEX_HOME` only
+  through the child's explicit environment. Credentials stay provider-managed;
+  no new credential authority, store, endpoint, inference or global
+  environment/configuration write is introduced. CLI/REST/MCP use the same
+  collector; normalized capacity and eligibility contracts are unchanged.
+  Worker login, SSH/headless behavior and execution isolation are preserved.
+- **Implementation boundary:** Existing Codex home lifecycle code is moved to
+  `codex_home.py`, and binary discovery is moved to the existing acquisition
+  module, preserving the worker's imports and behavior. The existing ZCode
+  state-path helper moves to `worker_local_store.py` without behavior changes
+  so the installed-unit reader has no execution-adapter dependency. These
+  dependency-only moves avoid import cycles, not a new configuration framework.
+- **Evidence/confidence:** High. The owner-reported failure was reproduced on
+  2026-10-04; changing only the child's home restored normalized OpenAI windows.
+  Deterministic tests cover source precedence, real generated/handwritten
+  unit parsing, isolation validation, ambiguity, local compatibility and
+  child-only environment. Transient deployment paths and quota values belong
+  in issue evidence, not universal product policy.
+- **Rejected alternatives:** Global `export CODEX_HOME` changes unrelated
+  Codex usage and imposes recurring host-specific work; copying credentials
+  breaks provider-managed isolation; silent first-source selection or merging
+  account windows invents identity/pool semantics. Failing back from a
+  malformed configured source to the user's home hides configuration errors.
