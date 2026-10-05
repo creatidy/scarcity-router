@@ -102,13 +102,14 @@ Task routing is role- and requirement-driven. A role assignment is a useful
 starting reference; it does not override the active task profile, hard
 constraints, capability minima, capacity applicability or user reservations.
 
-The active selector remains the least-scarce-sufficient implementation. Catalog
-v2 (D-032) contains Luna Medium/Max, Terra Medium, Sol Medium/High and
-GLM-5.3/GLM-5.3-Flash Max. Existing M2 vectors are preserved; the three new
-Medium configurations have explicit approved calibration. Reference operating assignment and active
-selector eligibility are different layers: Astra is now a preferred external
-operating assignment, but Scarcity Router cannot recommend it until
-catalog/capacity onboarding is complete.
+The active selector remains the least-scarce-sufficient implementation. Current
+artifacts are catalog v5 / policy v9, including the reviewed D-053 Astra Low
+track floor. D-032's v2 configurations and calibration are historical records,
+not today's complete eligible set. Reference operating assignment and active
+selector eligibility are different layers: an Astra reference assignment does
+not confer capability, but the admitted catalog entry can be recommended when
+the actual requirement, applicability, policy and capacity gates pass. The
+lower-confidence floor is not the older proposed specialist calibration.
 
 ## Implementation vs judgment
 
@@ -345,12 +346,14 @@ D-032 implements effort-aware ranking among explicitly calibrated catalog
 configurations, not arbitrary dynamic effort generation. The selector compares
 known capacity, scarcity penalty, capability margin, lowest configured effort,
 preference and identity in that order after all eligibility gates. Effort comes
-from the catalog field, never from opaque variants. Existing GLM Max, Luna Max,
-Sol High and Flash Max capability vectors remain unchanged. The model-policy
-schema remains v1; compatible policy content is policy_version 6 because
+from the catalog field, never from opaque variants. Current capability vectors
+and eligible configurations come from catalog v5 / policy v9, including the
+subsequent reviewed corrections; this documentation does not alter them.
+Historically D-032 introduced policy content v6 when
 `reasoning_effort_policy.selector_support` changed from `not_implemented` to
-`calibrated_configurations`. Task profiles, profile minima and dated reference
-assignments are unchanged.
+`calibrated_configurations`. The model-policy schema remains v1 while current
+content is policy_version 9. Task profiles, profile minima and dated reference
+assignments are not changed by this alignment.
 
 ## Concurrency
 
