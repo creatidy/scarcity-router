@@ -22,8 +22,9 @@ from __future__ import annotations
 import json
 import threading
 import unittest
+from dataclasses import replace
 from datetime import datetime, timezone
-from typing import cast
+from typing import cast, override
 
 from scarcity_router.capacity import (
     CapacityDiagnostic,
@@ -75,7 +76,8 @@ from scarcity_router.selection_types import (
     ModelHardProperties,
     ModelIdentity,
 )
-from scarcity_router.server_config import SourceConfig
+from scarcity_router.server_config import ServerConfiguration, SourceConfig
+from scarcity_router.server_composition import build_compatibility_cells
 from tests.gateway_fixtures import (
     CLIENT_ID,
     CLIENT_KEY,
@@ -83,6 +85,8 @@ from tests.gateway_fixtures import (
     audit_records,
     build_aliases,
     build_profiles,
+    make_application,
+    parse_chat_request,
     make_sequential_request_ids,
 )
 from tests.test_gateway_server import ServerHarness, as_dict, as_list
@@ -457,6 +461,266 @@ class EffortRuleTests(DerivedHarness):
         self.assertEqual(
             as_dict(payload["error"])["code"], "reasoning_effort_required"
         )
+
+
+class CatalogEffortTests(DerivedHarness):
+    _http_started: bool = False
+
+    @override
+    def tearDown(self) -> None:
+        if self._http_started:
+            super().tearDown()
+
+    def _world(
+        self, configurations: tuple[tuple[str, str | None, bool | None], ...],
+        *, qualified: bool = True,
+    ) -> tuple[GatewayApplication, ScriptedAdapter]:
+        base = _catalog_entry("openai", "gpt-6-sol", "high")
+        entries = tuple(
+            replace(
+                base,
+                identity=ModelIdentity(provider="openai", model="gpt-6-sol", variant=variant),
+                reasoning_effort=effort,
+                hard_properties=replace(
+                    base.hard_properties,
+                    supports_reasoning_mode=support,
+                ),
+            ) for variant, effort, support in configurations
+        )
+        catalog = ModelCatalog(catalog_version=1, updated_on=DATE, entries=entries)
+        registry = ResourceRegistry(clock=lambda: OBSERVED)
+        for index, entry in enumerate(entries):
+            identity = ResourceIdentity(
+                resource_id=f"configuration-{index}", channel="worker_bridged",
+                provider="openai", model="gpt-6-sol", entitlement="subscription_included",
+                variant=entry.identity.variant if qualified else None,
+                quota_pool_ids=(),
+            )
+            registry.register(_registration_for(identity))
+            _ = registry.apply_snapshot(_healthy_snapshot(identity))
+        application = make_derived_application(registry, catalog)
+        adapter = application.adapters.resolve("worker_bridged")
+        assert isinstance(adapter, ScriptedAdapter)
+        return application, adapter
+
+    def test_http_discovery_and_logical_ingress_use_catalog_effort(self) -> None:
+        application, adapter = self._world((
+            ("opaque-high", "high", True), ("high", "none", True),
+        ))
+        port = self.make_derived_server(application)
+        self._http_started = True
+        metadata = as_dict(self.models_entry(port, "gpt-6-sol")["x_scarcity_router"])
+        self.assertEqual(metadata["reasoning_efforts"], ["high", "none"])
+        response = self.post_chat(port, {
+            "model": "gpt-6-sol", "messages": [{"role": "user", "content": "hi"}],
+            "reasoning_effort": "high", "reasoning": {"effort": "high"},
+        })
+        self.assertEqual(response.status, 200)
+        payload = cast("dict[str, object]", json.loads(response.read()))
+        self.assertEqual(payload["model"], "gpt-6-sol", "response model echoes requested identity")
+        self.assertEqual(adapter.dispatches[0].model.variant, "opaque-high")
+        self.assertEqual(adapter.dispatches[0].reasoning_effort, "high")
+        audit = audit_records(application)[-1]
+        self.assertEqual(audit.selected_target, audit.executed_target)
+        assert audit.executed_target is not None
+        self.assertEqual(audit.executed_target.variant, "opaque-high")
+        self.assertEqual(audit.adapter_version, adapter.adapter_version)
+        self.assertNotIn("observed_model", audit.to_dict())
+        self.assertNotIn("runtime_verified", audit.to_dict())
+        pin = "sr-pin:configuration-0/openai/gpt-6-sol/opaque-high"
+        response = self.post_chat(port, {
+            "model": pin, "messages": [{"role": "user", "content": "hi"}],
+            "reasoning_effort": "high",
+        })
+        self.assertEqual(response.status, 200)
+        payload = cast("dict[str, object]", json.loads(response.read()))
+        self.assertEqual(payload["model"], pin, "pin echo is not physical-model observation")
+        self.assertEqual(adapter.dispatches[-1].reasoning_effort, "high")
+        before = adapter.dispatch_count
+        response = self.post_chat(port, {
+            "model": "gpt-6-sol", "messages": [{"role": "user", "content": "hi"}],
+            "reasoning_effort": "high", "reasoning": {"effort": "low"},
+        })
+        self.assertEqual(response.status, 400)
+        payload = cast("dict[str, object]", json.loads(response.read()))
+        self.assertEqual(as_dict(payload["error"])["code"],
+                         "conflicting_reasoning_parameters")
+        self.assertEqual(adapter.dispatch_count, before)
+
+    def test_null_none_and_unknown_are_distinct(self) -> None:
+        for variant, effort, support, explicit_error in (
+            ("high", None, False, "unsupported_reasoning_effort"),
+            ("unknown", None, None, "compatibility_unknown"),
+            ("opaque-none", "none", True, "unsupported_reasoning_effort"),
+        ):
+            with self.subTest(effort=effort, support=support):
+                application, adapter = self._world(((variant, effort, support),))
+                infos = exposed_logical_models(application.catalog, application.registry, application.limits)
+                self.assertEqual(infos[0].reasoning_efforts, () if effort is None else (effort,))
+                _ = application.execute(client_id=CLIENT_ID, request=parse_chat_request({
+                    "model": "gpt-6-sol", "messages": [{"role": "user", "content": "hi"}],
+                }))
+                self.assertEqual(adapter.dispatches[0].reasoning_effort, effort)
+                with self.assertRaises(GatewayError) as caught:
+                    _ = application.execute(client_id=CLIENT_ID, request=parse_chat_request({
+                        "model": "gpt-6-sol", "messages": [{"role": "user", "content": "hi"}],
+                        "reasoning_effort": "high",
+                    }))
+                self.assertEqual(caught.exception.code, explicit_error)
+                self.assertEqual(adapter.dispatch_count, 1)
+
+    def test_same_effort_configurations_compete_without_inventing_effort(self) -> None:
+        application, adapter = self._world((
+            ("opaque-a", "high", True), ("opaque-b", "high", True),
+        ))
+        _ = application.execute(client_id=CLIENT_ID, request=parse_chat_request({
+            "model": "gpt-6-sol", "messages": [{"role": "user", "content": "hi"}],
+        }))
+        self.assertIn(adapter.dispatches[0].model.variant, ("opaque-a", "opaque-b"))
+        self.assertEqual(adapter.dispatches[0].reasoning_effort, "high")
+        weak = application.catalog.entries[0]
+        application.catalog = replace(application.catalog, entries=(
+            replace(weak, hard_properties=replace(weak.hard_properties, output_tokens=512)),
+            application.catalog.entries[1],
+        ))
+        _ = application.execute(client_id=CLIENT_ID, request=parse_chat_request({
+            "model": "gpt-6-sol", "messages": [{"role": "user", "content": "hi"}],
+            "max_completion_tokens": 128_000,
+        }))
+        self.assertEqual(adapter.dispatches[-1].model.variant, "opaque-b")
+        self.assertEqual(adapter.dispatches[-1].reasoning_effort, "high")
+        application, adapter = self._world((
+            ("opaque-a", "high", True), ("opaque-b", "low", True),
+        ))
+        with self.assertRaises(GatewayError) as caught:
+            _ = application.execute(client_id=CLIENT_ID, request=parse_chat_request({
+                "model": "gpt-6-sol", "messages": [{"role": "user", "content": "hi"}],
+            }))
+        self.assertEqual(caught.exception.code, "reasoning_effort_required")
+        self.assertEqual(adapter.dispatch_count, 0)
+
+    def test_mixed_null_and_literal_none_require_an_explicit_configured_choice(self) -> None:
+        application, adapter = self._world((
+            ("opaque-null", None, False), ("opaque-none", "none", True),
+        ))
+        body: dict[str, object] = {
+            "model": "gpt-6-sol", "messages": [{"role": "user", "content": "hi"}],
+        }
+        with self.assertRaises(GatewayError) as caught:
+            _ = application.execute(client_id=CLIENT_ID, request=parse_chat_request(body))
+        self.assertEqual(caught.exception.code, "reasoning_effort_required")
+        self.assertEqual(adapter.dispatch_count, 0)
+        body["reasoning_effort"] = "none"
+        _ = application.execute(client_id=CLIENT_ID, request=parse_chat_request(body))
+        self.assertEqual(adapter.dispatches[0].model.variant, "opaque-none")
+        self.assertEqual(adapter.dispatches[0].reasoning_effort, "none")
+
+    def test_omitted_logical_effort_is_carried_and_still_requires_channel_support(self) -> None:
+        application, adapter = self._world((("opaque-high", "high", True),), qualified=False)
+        request = parse_chat_request({
+            "model": "gpt-6-sol", "messages": [{"role": "user", "content": "hi"}],
+        })
+        _ = application.execute(client_id=CLIENT_ID, request=request)
+        self.assertEqual(adapter.dispatches[0].reasoning_effort, "high")
+        application.compatibility_cells = tuple(
+            replace(cell, value="UNSUPPORTED") if cell.feature == "reasoning_controls" else cell
+            for cell in application.compatibility_cells
+        )
+        with self.assertRaises(GatewayError) as caught:
+            _ = application.execute(client_id=CLIENT_ID, request=request)
+        self.assertEqual(caught.exception.code, "no_eligible_target")
+        self.assertEqual(adapter.dispatch_count, 1)
+        self.assertIsNone(audit_records(application)[-1].executed_target)
+
+    def test_pin_uses_exact_catalog_effort_and_preserves_omitted_wire_control(self) -> None:
+        for qualified in (False, True):
+            with self.subTest(qualified=qualified):
+                application, adapter = self._world((("opaque-high", "high", True),), qualified=qualified)
+                pin = "sr-pin:configuration-0/openai/gpt-6-sol/opaque-high"
+                for effort in ("high", None):
+                    body: dict[str, object] = {
+                        "model": pin, "messages": [{"role": "user", "content": "hi"}],
+                    }
+                    if effort is not None:
+                        body["reasoning_effort"] = effort
+                    _ = application.execute(client_id=CLIENT_ID, request=parse_chat_request(body))
+                    self.assertEqual(adapter.dispatches[-1].model.variant, "opaque-high")
+                    self.assertEqual(adapter.dispatches[-1].reasoning_effort,
+                                     "high" if qualified or effort is not None else None)
+                with self.assertRaises(GatewayError) as caught:
+                    _ = application.execute(client_id=CLIENT_ID, request=parse_chat_request({
+                        "model": pin, "messages": [{"role": "user", "content": "hi"}],
+                        "reasoning_effort": "low",
+                    }))
+                self.assertEqual(caught.exception.code, "effort_conflicts_with_target")
+                self.assertEqual(adapter.dispatch_count, 2)
+                self.assertIsNone(audit_records(application)[-1].executed_target)
+
+    def test_discovery_omits_efforts_without_a_matching_bound_configuration(self) -> None:
+        application, _ = self._world((("opaque-high", "high", True),))
+        other = replace(application.catalog.entries[0],
+                        identity=ModelIdentity(provider="openai", model="gpt-6-sol", variant="max"),
+                        reasoning_effort="max")
+        other_provider = replace(other,
+            identity=ModelIdentity(provider="zai", model="gpt-6-sol", variant="opaque-high"),
+            capacity_bindings=(CapacityScopeRef(provider="zai", scope_id="coding-plan"),),
+            reasoning_effort="low")
+        catalog = replace(application.catalog, entries=(*application.catalog.entries, other, other_provider))
+        infos = exposed_logical_models(catalog, application.registry, application.limits)
+        self.assertEqual(infos[0].reasoning_efforts, ("high",))
+
+    def test_actual_plan_lane_has_no_effort_or_physical_model_attestation(self) -> None:
+        sources = SourceRegistry(track_registry=load_track_registry())
+        config = SourceConfig(source_id="zai-plan-1", kind="zcode_subscription",
+                              label="synthetic plan", worker_id="worker-1")
+        sources.sync_configuration((config,))
+        _ = sources.apply_inventory(ModelInventoryReport(worker_id="worker-1", sources=(
+            SourceInventory(source_id=config.source_id, adapter_id="zcode:zai-plan-1",
+                            kind=config.kind, observed_at=OBSERVED, auth_state="unverified",
+                            runtime_name="zcode", runtime_version="0.16.9",
+                            models=(DiscoveredModel("plan-managed", ()),)),
+        )))
+        registry = ResourceRegistry(clock=lambda: OBSERVED)
+        for registration in sources.derived_registrations():
+            registry.register(registration)
+            _ = registry.apply_snapshot(replace(
+                _healthy_snapshot(registration.identity), quota_facts=(),
+            ))
+        adapter = ScriptedAdapter(channel="worker_bridged", adapter_name="synthetic-plan")
+        application = make_application(
+            registry=registry,
+            clock=lambda: EVALUATED,
+            catalog=sources.derived_catalog_entries(load_catalog(DEFAULT_CATALOG_PATH)),
+            adapters=(adapter,), aliases=build_aliases({}),
+            cells=build_compatibility_cells(ServerConfiguration(sources=(config,)),
+                                          provider_secret_reader=lambda _provider: "SYNTHETIC",
+                                          source_registry=sources),
+        )
+        port = self.make_derived_server(application)
+        self._http_started = True
+        metadata = as_dict(self.models_entry(port, "plan-managed")["x_scarcity_router"])
+        self.assertEqual(metadata["reasoning_efforts"], [])
+        for model in ("plan-managed", "sr-pin:zai-plan-1:plan-managed/zai/plan-managed/plan"):
+            response = self.post_chat(port, {
+                "model": model, "messages": [{"role": "user", "content": "hi"}],
+            })
+            payload = cast("dict[str, object]", json.loads(response.read()))
+            self.assertEqual(response.status, 200, payload)
+            self.assertEqual(adapter.dispatches[-1].model.model, "plan-managed")
+            self.assertEqual(adapter.dispatches[-1].model.variant, "plan")
+            self.assertIsNone(adapter.dispatches[-1].reasoning_effort)
+        self.assertEqual(audit_records(application)[-1].selected_target,
+                         audit_records(application)[-1].executed_target)
+        before = adapter.dispatch_count
+        for model, effort in (("plan-managed", "high"), ("plan-managed", "none"),
+                              ("glm-5.3", "high")):
+            body: dict[str, object] = {"model": model, "messages": [{"role": "user", "content": "hi"}]}
+            body["reasoning_effort"] = effort
+            response = self.post_chat(port, body)
+            self.assertNotEqual(response.status, 200)
+            _ = response.read()
+            self.assertIsNone(audit_records(application)[-1].executed_target)
+        self.assertEqual(adapter.dispatch_count, before)
 
 
 class ResolutionBoundaries(DerivedHarness):

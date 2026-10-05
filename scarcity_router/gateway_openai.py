@@ -110,6 +110,7 @@ MESSAGE_ALLOWED_KEYS: frozenset[str] = frozenset({
 })
 
 REASONING_EFFORTS: frozenset[str] = frozenset({
+    "none",
     "minimal",
     "low",
     "medium",

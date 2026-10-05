@@ -80,7 +80,9 @@ class ExecutedTarget:
     """The target actually addressed by one execution attempt (audit form).
 
     A serialization subset of the route target: the executable-target
-    reference plus the exact physical model identity. The coordinator never
+    reference plus the exact catalog identity (which may name a plan-managed
+    lane, not a physical model). This is dispatch provenance, not independently
+    observed model/effort or billing attestation. The coordinator never
     substitutes a target, so ``executed_target`` equals ``selected_target``
     whenever dispatch happened at all; both fields stay in the record so a
     future contract extension cannot silently blur the distinction D-043
