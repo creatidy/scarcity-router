@@ -1388,7 +1388,8 @@ class PinTests(unittest.TestCase):
                 pinned_target=_pin("zai-sub", "zai", "glm-5.3", "high")
             ), routing_profile=ClientRoutingProfile(profile_id="openai-only")),
             _request(request=RequestBinding(pinned_target=pin, requires_tool_calls=True),
-                     cells=_tool_cells(worker="UNSUPPORTED")),
+                     cells=_tool_cells(worker="UNSUPPORTED"),
+                     continuation_capable_resource_ids=frozenset({"openai-worker"})),
             _request(registry=offline, request=RequestBinding(pinned_target=pin)),
         )
         for request in cases:
@@ -1400,6 +1401,12 @@ class PinTests(unittest.TestCase):
                 self.assertEqual(decision.target_alternatives, ())
                 self.assertIn("pinned_request_failed", decision.reason_codes)
                 self.assertTrue(decision.target_exclusions or decision.selection.excluded)
+                if request.request.requires_tool_calls:
+                    exclusion = _exclusion_by_id(decision)["openai-worker"]
+                    self.assertEqual(exclusion.stage, "compatibility")
+                    self.assertEqual(exclusion.reason_codes, ("compatibility_unsupported",))
+                    self.assertEqual(exclusion.compatibility_feature, "tool_calls")
+                    self.assertEqual(exclusion.compatibility_value, "UNSUPPORTED")
 
     def test_unknown_target_pin_fails_explicitly(self) -> None:
         decision = route_request(
