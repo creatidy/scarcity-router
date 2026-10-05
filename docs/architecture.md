@@ -123,11 +123,11 @@ guarantee; admission rechecks current state and authority without a substitute.
 A new role or separately authorized Attempt may get a new decision. This
 does not redefine all existing non-pinned clients.
 
-Known deviations are not hidden by the target wording: `route_request`
-currently narrows a resource pin to all its bound identities and can choose
-a sibling variant (#178). A local synthetic probe pinned `max`, obtained
-`medium` from routing and `max` from admission. The public gateway pin path
-uses the correctly exact `admit_pinned_target`; these paths are not conflated.
+`route_request` narrows a resource pin to its exact provider/model/variant
+within that resource's currently bound identities (#178), never a sibling
+variant. Identity drift or contradictory explicit model/variant constraints
+produce no solution without substitution. The public gateway pin path uses
+the unchanged exact `admit_pinned_target`; these paths are not conflated.
 Gateway effort discovery/resolution also derives effort from opaque variants
 (#179), unlike the correct D-057 recommendation output.
 

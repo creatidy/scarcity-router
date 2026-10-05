@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import cast
 
@@ -1275,6 +1276,12 @@ class PinTests(unittest.TestCase):
         assert decision.target is not None
         self.assertEqual(decision.target.resource.resource_id, "openai-worker")
         self.assertEqual(decision.target.resource.channel, "worker_bridged")
+        self.assertEqual(
+            decision.target.model,
+            ModelIdentity(provider="openai", model="gpt-5.6-luna", variant="max"),
+        )
+        assert decision.selection.selected is not None
+        self.assertEqual(decision.selection.selected.identity, decision.target.model)
         self.assertEqual(decision.target_alternatives, ())
         self.assertEqual(decision.reason_codes, ("route_selected",))
 
@@ -1301,6 +1308,105 @@ class PinTests(unittest.TestCase):
             _exclusion_by_id(decision)["openai-worker"].reason_codes,
             ("resource_stale",),
         )
+
+    def test_target_pin_never_substitutes_an_unbound_identity(self) -> None:
+        for provider, model, variant in (
+            ("openai", "gpt-5.6-luna", "missing"),
+            ("openai", "gpt-5.6-terra", "medium"),
+            ("zai", "glm-5.3", "high"),
+        ):
+            with self.subTest(provider=provider, model=model, variant=variant):
+                decision = route_request(
+                    _request(request=RequestBinding(
+                        pinned_target=_pin("openai-worker", provider, model, variant)
+                    ))
+                )
+                self.assertEqual(decision.status, ROUTE_STATUS_NO_SOLUTION)
+                self.assertIsNone(decision.target)
+                self.assertIsNone(decision.selection.selected)
+                self.assertEqual(decision.target_alternatives, ())
+                self.assertIn("pinned_request_failed", decision.reason_codes)
+
+    def test_target_pin_refuses_catalog_or_registration_identity_drift(self) -> None:
+        original = _request(request=RequestBinding(
+            pinned_target=_pin("openai-worker", "openai", "gpt-5.6-luna", "max")
+        ))
+        catalog = replace(original.catalog, entries=tuple(
+            entry for entry in original.catalog.entries if entry.identity.variant != "max"
+        ))
+        identity = _identity(
+            "openai-worker", "worker_bridged", "openai", "gpt-5.6-luna",
+            "subscription_included", variant="medium",
+        )
+        registry = _registry_snapshot(
+            [_registration(identity)], {identity.resource_id: _observation(identity)}
+        )
+        for request in (replace(original, catalog=catalog),
+                        replace(original, registry_snapshot=registry)):
+            with self.subTest(request=request):
+                decision = route_request(request)
+                self.assertEqual(decision.status, ROUTE_STATUS_NO_SOLUTION)
+                self.assertIsNone(decision.target)
+                self.assertIn("pinned_request_failed", decision.reason_codes)
+
+    def test_target_pin_intersects_explicit_model_and_variant(self) -> None:
+        pin = _pin("openai-worker", "openai", "gpt-5.6-luna", "max")
+        for model, variant, expected in (
+            (ModelRef(provider="openai", model="gpt-5.6-luna"), "max", ROUTE_STATUS_SELECTED),
+            (ModelRef(provider="openai", model="gpt-5.6-terra"), None, ROUTE_STATUS_NO_SOLUTION),
+            (None, "medium", ROUTE_STATUS_NO_SOLUTION),
+        ):
+            with self.subTest(model=model, variant=variant):
+                decision = route_request(_request(request=RequestBinding(
+                    pinned_target=pin, explicit_model=model, explicit_variant=variant
+                )))
+                self.assertEqual(decision.status, expected)
+                if expected == ROUTE_STATUS_SELECTED:
+                    assert decision.target is not None
+                    self.assertEqual(decision.target.model, pin.model)
+                else:
+                    self.assertIsNone(decision.target)
+                    self.assertIn("pinned_request_failed", decision.reason_codes)
+
+    def test_target_pin_still_obeys_quality_protocol_and_health_gates(self) -> None:
+        pin = _pin("openai-worker", "openai", "gpt-5.6-luna", "max")
+        identity = _identity(
+            "openai-worker", "worker_bridged", "openai", "gpt-5.6-luna", "subscription_included"
+        )
+        offline = _registry_snapshot(
+            [_registration(identity)],
+            {identity.resource_id: _observation(identity, status="unavailable")},
+        )
+        cases = (
+            _request(request=RequestBinding(pinned_target=pin),
+                     profiles=TaskProfileCatalog(definitions=(TaskProfileDefinition(
+                profile_id="gateway-core", requirement=TaskRequirement(
+                task_level="L2", capability_minima=CapabilityMinima(reasoning=5),
+                hard_constraints=HardConstraints(),
+            )),))),
+            _request(request=RequestBinding(
+                pinned_target=_pin("zai-sub", "zai", "glm-5.3", "high")
+            ), routing_profile=ClientRoutingProfile(profile_id="openai-only")),
+            _request(request=RequestBinding(pinned_target=pin, requires_tool_calls=True),
+                     cells=_tool_cells(worker="UNSUPPORTED"),
+                     continuation_capable_resource_ids=frozenset({"openai-worker"})),
+            _request(registry=offline, request=RequestBinding(pinned_target=pin)),
+        )
+        for request in cases:
+            with self.subTest(request=request):
+                decision = route_request(request)
+                self.assertEqual(decision.status, ROUTE_STATUS_NO_SOLUTION)
+                self.assertIsNone(decision.target)
+                self.assertIsNone(decision.selection.selected)
+                self.assertEqual(decision.target_alternatives, ())
+                self.assertIn("pinned_request_failed", decision.reason_codes)
+                self.assertTrue(decision.target_exclusions or decision.selection.excluded)
+                if request.request.requires_tool_calls:
+                    exclusion = _exclusion_by_id(decision)["openai-worker"]
+                    self.assertEqual(exclusion.stage, "compatibility")
+                    self.assertEqual(exclusion.reason_codes, ("compatibility_unsupported",))
+                    self.assertEqual(exclusion.compatibility_feature, "tool_calls")
+                    self.assertEqual(exclusion.compatibility_value, "UNSUPPORTED")
 
     def test_unknown_target_pin_fails_explicitly(self) -> None:
         decision = route_request(

@@ -819,7 +819,10 @@ Pins and the binding seam:
   (unauthorized, blocked, stale, incompatible, profile-constrained)
   produces an explicit no-solution with the `pinned_request_failed` route
   code and the failing gate's typed exclusion — never a substituted
-  candidate.
+  candidate. Target pins intersect the named resource's current bindings with
+  the exact provider/model/opaque variant. Additional explicit model/variant
+  constraints intersect rather than override that pin; lost calibration or
+  changed registration cannot redirect it to a sibling identity.
 - **Promotions.** An active promotion whose evidenced scopes match the
   resource contributes a target-level preference (ordered ahead within the
   same model identity, like the D-035 happy-hour group); an expired one
