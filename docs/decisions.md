@@ -5867,6 +5867,39 @@ neither is a new live check of the current deployment.
   replaceable by ordinary review. Offline text contract tests are consistency
   evidence, not proof of live loop execution or dynamic native-agent discovery.
 
+### D-070 - Autonomous technical recovery before owner escalation
+
+- **Status:** Accepted owner-directed workflow/UX correction, 2026-10-05 (#190).
+- **Authority:** Owner explicitly requested consistent loop, implementation, review
+  and remediation correction; authorized this delivery's isolated worktree, PR,
+  independent exact-HEAD review and automatic gated merge, not a general standalone
+  merge grant. Issue registration was explicitly confirmed.
+- **Conflict resolved:** D-069's blanket no-worktree/alternate-checkout rule and the
+  one-corrected-retry/immediate-tool-blocker wording prevented safe autonomous
+  recovery. Supersede only those execution constraints with the generic shared
+  `.kilo/rules/35-technical-recovery.md` contract. Keep one designated delivery
+  checkout/mutator and prohibit parallel implementation controllers. Temporary
+  evidence checkouts/worktrees and ephemeral containers are execution mechanisms,
+  not product architecture/dependency adoption.
+- **Recovery:** Classify technical obstacles versus genuine owner commitments;
+  distinguish findings, infrastructure failures and unresolved judgment. Diagnose
+  and attempt the smallest existing authorized remedy before escalation, preserving
+  synthetic secret-safe environments and independently inspected pinned public
+  source provenance. Up to three materially changed recovery attempts per obstacle
+  and 120 minutes of technical recovery per delivery (or an existing smaller budget)
+  persist with every consumed review ordinal. No identical retries or counter reset.
+- **Escalation:** STOP_AND_ASK records exact decision, owner-controlled nature,
+  considered remedies, why they cannot avoid changing owner commitments, and the
+  smallest materially distinct choices. BLOCKED names exhausted authorized paths/
+  budget or an external dependency with no authorized workaround. Environment
+  inconvenience is neither a defect nor a fabricated owner question.
+- **Preserved:** Ten-review ceiling, fresh independent whole-PR exact-HEAD/base
+  review, frozen result schema, model-bound/restricted gates, full validation,
+  scope/acceptance, canonical merge authority/currentness, and all product/runtime,
+  credential/network, licensing and non-delivery model-policy contracts. No new
+  persistent infrastructure, broad permission grant or cross-repository mutation.
+  Text contract tests establish consistency, not live failover/isolation execution.
+
 ### U-014 - Native coding backend versus Kernel-owned workspace lifecycle
 
 - **Status:** Open, evidence and owner-reviewed disposition required (#180).

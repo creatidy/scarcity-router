@@ -39,6 +39,7 @@ Read these rules explicitly before work; do not rely on automatic nested discove
 - `.kilo/rules/10-task-system.md`: selection, branching and delivery gates.
 - `.kilo/rules/20-forgejo-mcp.md`: canonical authority and tool boundaries.
 - `.kilo/rules/30-implementation-discipline.md`: scope, autonomy and compatibility.
+- `.kilo/rules/35-technical-recovery.md`: bounded autonomous blocker recovery and escalation contracts.
 - `.kilo/rules/40-local-search.md`: evidence and excluded operational memory.
 - `.kilo/rules/40-llm-operating-policy.md`: model and evidence discipline.
 - `.kilo/rules/validation.md`: repository validation and handoff.
@@ -74,9 +75,10 @@ make a substantive task edit while checked out on `develop`; establish the
 issue and feature branch first. `main` is human-controlled and is not the
 ordinary agent integration branch.
 
-Use one normal checkout; do not use `git worktree` or alternate checkouts.
-Only one context may mutate it. Review frozen Git objects/current clean PR branch
-read-only; the parent must not edit or switch branches while the reviewer runs.
+Use one designated delivery checkout and one mutator. Temporary worktrees/isolated
+evidence checkouts are allowed under the technical-recovery rule, never parallel
+implementation controllers. Review frozen Git objects/current clean PR branch
+read-only; the parent must not edit or switch reviewed checkouts while the reviewer runs.
 Never stash/reset unrelated owner work or bypass unmet dependencies. Do not
 force-push, rewrite published history, merge
 `develop` or `main` into a feature branch, create synchronization merge
@@ -90,8 +92,9 @@ scope.
 
 Commands and agents are loaded from `.kilo/command/*` and `.kilo/agents/*` by the
 Kilo workspace runtime. Adding files does not guarantee dynamic availability;
-a workspace reload may be required. Missing native task/agent support is a finite
-blocker, not permission for parent self-review or external orchestration.
+a workspace reload may be required. Missing native task/agent support requires
+bounded authorized independent reviewer failover before a finite blocker, never
+permission for parent self-review, weakened gates or external orchestration.
 
 ## Product boundary
 
@@ -207,7 +210,8 @@ clean checkout, successful required validation and fresh canonical currentness
 yields READY_TO_MERGE. Standalone delivery stops there; only explicit `/loop`
 continues through merge, integrated acceptance, closure and SELECT. Genuine owner
 decisions stop the whole loop with STOP_AND_ASK; remaining actionable findings
-at the bound yield STOP_REVISE and finite infrastructure failures BLOCKED.
+at the bound yield STOP_REVISE. Infrastructure failures require diagnosed bounded
+technical recovery before BLOCKED, with failed/COMMENT ordinals preserved.
 
 General non-delivery work retains the descriptive `model-policy.json` defaults
 (one initial review, one remediation, narrow verification, 120-minute budget and
@@ -234,6 +238,11 @@ human decision point; no substitute model may close it — see
 The detailed operating policy is
 [`docs/llm-operating-policy.md`](docs/llm-operating-policy.md), and its
 machine-readable companion is [`model-policy.json`](model-policy.json).
+For command delivery, D-070's shared technical-recovery rule requires classifying
+engineering obstacles separately from owner decisions and attempting bounded
+secret-safe recovery automatically. Record changed conditions, consumed budgets
+and the STOP_AND_ASK/BLOCKED contracts before escalation; owner attention is not
+a substitute for ordinary execution diagnosis.
 
 ## Validation gate
 

@@ -21,12 +21,21 @@
   against the recorded canonical develop SHA. Stage explicit intended files only;
   exclude secrets, caches, runtime state and `.task_progress.md`. Verify exact
   HEAD, base ancestry and clean status afterwards; never undo others' work.
-- Parent prepares the offline development environment in the SAME normal checkout
-  at exact clean PR HEAD before review. No other checkout or branch switch during
-  review. Reviewer inspects frozen Git objects/full base delta and verifies HEAD
+- Parent prepares the offline locked development environment at exact clean PR HEAD
+  in the designated delivery or temporary evidence checkout under the recovery rule.
+  Use explicit sanitized child environments, synthetic HOME/cache/temp and fixture
+  values for tests that can observe inherited state. Never expose ambient secrets,
+  mount credential directories unnecessarily or print environment values. Prefer
+  read-only required mounts with separate writable synthetic scratch paths.
+  No edits or branch switches to reviewed checkouts during review.
+  Reviewer inspects frozen Git objects/full base delta and verifies HEAD
   and clean status before/after checks. Ignored validation artifacts are allowed;
   tracked edits and Git/Forgejo mutations are not. Inspect checks before running;
   an allowlist does not make arbitrary repository code safe.
+- Unavailable safe validation/tool state requires bounded technical recovery under
+  `.kilo/rules/35-technical-recovery.md`, not immediate owner escalation or skipped
+  checks. Independent source verification may use a separately prepared exact public
+  pinned checkout; reviewer verifies claims and provenance, not parent conclusions.
 - `/finish-pr` records each reserved ordinal, reviewed HEAD/base/verdict, remediation
   commits, checks and currentness in the excluded delivery ledger. Only an exact
   native reviewer result plus final MCP/Git currentness and required validation

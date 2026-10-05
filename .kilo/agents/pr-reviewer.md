@@ -65,14 +65,18 @@ never delegate, remediate or ask the owner to relay findings.
 GPT-6.1 Sol High is `openai/gpt-6.1-sol` with `variant: high`, established by the
 installed Kilo 7.8.3 model listing and config schema. If unavailable, return a
 precise model/tool blocker; do not silently fall back or invent an identifier.
+Classify it as review infrastructure failure in limitations, not a delivered-change
+finding. The parent applies bounded authorized recovery/failover; this reviewer must
+not widen permissions, change models or substitute a restricted model-bound gate.
 
 First fetch current PR metadata via Forgejo MCP, then query the canonical HTTPS
 repository with `git ls-remote`, using `refs/heads/develop` and the exact head ref
 from metadata. Do not guess branch names, use alternate transports or add options.
 Require open/unmerged develop target and exact expected HEAD/base. Mismatch means
-COMMENT with actual SHAs; do not review a different range. Require the SAME normal
-checkout to be clean at expected HEAD. Inspect exact frozen Git objects/current
-branch read-only; do not create another checkout. The primary owns Git fetch and
+COMMENT with actual SHAs; do not review a different range. Require the supplied
+designated delivery or parent-prepared evidence checkout to be clean at expected HEAD.
+Inspect exact frozen Git objects/current branch read-only; do not create another
+checkout. The primary owns temporary worktrees, isolation, Git fetch and
 safe branch switching. You must not fetch, switch/create branches, use git worktree,
 commit, push or mutate Git/Forgejo state.
 
@@ -88,6 +92,19 @@ validation artifacts are acceptable; never edit tracked files, run arbitrary
 shell/interpreter code or access private credentials. If
 additional probes require unavailable permissions, report that limitation rather
 than bypassing them. Permission checks do not make untrusted tests safe.
+Apply `.kilo/rules/35-technical-recovery.md`: tests observing inherited state need a
+parent-prepared explicit sanitized environment with synthetic test values, HOME,
+cache and temp paths, never real ambient credentials. If the allowlist cannot safely
+invoke that environment, return COMMENT with the exact infrastructure gap so the
+parent can prepare another authorized path; do not run unsafe tests or self-authorize
+Docker/network/permission changes. No permission grant is implied by this contract.
+
+For public research claims, independently inspect the cited pinned source material
+via available authorized reads or parent-staged exact-revision source bytes with
+origin/pin provenance. Check the material claims yourself; implementer research
+conclusions are not independent evidence. Inaccessible public sources in this process
+are infrastructure limitations, not findings against the change. Split source
+inspection from validation where needed while retaining whole-PR coverage.
 
 Recheck local HEAD/clean status and MCP before returning. Changed/dirty checkout,
 changed HEAD/base or unresolved review incompleteness yields COMMENT, not current
@@ -122,3 +139,7 @@ Use severity-ordered findings; empty findings is `[]`. Only executed checks belo
 in checks_run. Explain genuine owner/architecture decisions in limitations and
 required_remediation, not an invented fourth verdict. Returned JSON is the direct
 parent handoff. Never publish reviews/comments or other Forgejo mutations.
+Label limitations as infrastructure failure or unresolved judgment/owner decision
+where applicable. Record UX impact in the result of an executed source-inspection
+check when assessed; it is a
+mandatory review dimension, not a new result field. Do not fabricate checks or defects.

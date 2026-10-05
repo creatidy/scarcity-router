@@ -291,10 +291,21 @@ General non-delivery defaults remain one initial review, one remediation and
 narrow verification, as described by `model-policy.json`. Repository command
 delivery uses D-069's scoped override, not those generic round counts: at most
 10 whole-PR reviews, no review 11 or patches without remaining review capacity.
-One diagnosed corrected retry is allowed, never a retry on session/model change
-alone. At the bound, exact current APPROVE may advance; actionable defects yield
-STOP_REVISE, finite tool failures BLOCKED, and genuine owner decisions stop the
-entire `/loop` as STOP_AND_ASK. Complexity breaches stop for human adjudication.
+Command delivery follows [the shared technical-recovery contract](../.kilo/rules/35-technical-recovery.md)
+under D-070: distinguish engineering blockers from genuine owner decisions and
+review findings from infrastructure failure or unresolved judgment. Diagnose and
+automatically attempt the minimum sufficient authorized changed environment/strategy,
+including secret-safe synthetic environments, ephemeral containers/checkouts, locked
+dependencies, pinned public source inspection and independent native reviewer failover.
+Docker isolation is not product dependency adoption. No permission/model-bound gate
+is weakened. At most three materially different recovery attempts per obstacle and
+120 minutes of technical recovery per delivery (or an existing smaller budget) persist
+alongside all review ordinals. Session/model changes alone never justify retries.
+At the bound, exact current APPROVE may advance; actionable defects yield STOP_REVISE,
+exhausted technical paths/budget or external dependencies without an authorized
+workaround yield BLOCKED, and genuine owner decisions stop the entire `/loop` as
+STOP_AND_ASK. Record its five decision fields before asking; never ask artificial
+questions about execution trivia. Material scope/complexity commitments remain owner decisions.
 
 ## Review/remediation convergence
 
@@ -416,7 +427,9 @@ primary context of an explicit owner `/loop` has the narrowly checked PR merge
 and completed-issue closure authority. Never direct-push develop, touch main,
 release/deploy, mutate other repositories or use Scarcity Router for model
 selection, execution, orchestration, telemetry or operation of this loop.
-No second controller, daemon, scheduler, database or alternate checkout exists.
+No second controller, daemon, scheduler or database is authorized. D-070 permits
+bounded temporary worktrees/evidence checkouts, one designated delivery checkout and
+one mutator, preserving unrelated work and exact frozen read-only review.
 Security-critical work retains its additional independent restricted review gate.
 
 ## Failure handling

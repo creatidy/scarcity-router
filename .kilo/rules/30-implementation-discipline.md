@@ -29,8 +29,12 @@
   remediation before retrying; do not loop on the same failure.
 - Report blockers honestly; do not hide correctness or reliability gaps in
   final prose.
-- Normally allow one diagnosed corrected retry; session/model changes alone are
-  not diagnosis. STOP_REVISE is evidence, not restart or implicit reuse authority;
+- Apply `.kilo/rules/35-technical-recovery.md` before owner escalation: classify
+  class-A execution obstacles versus class-B decisions, try the minimum sufficient
+  existing mechanism and persist changed conditions/budgets. Command delivery uses
+  its bounded recovery attempts plus persistent review ordinals, not a one-failure
+  stop. General non-delivery retry defaults remain unchanged; session/model changes
+  alone are not diagnosis. STOP_REVISE is evidence, not restart or implicit reuse authority;
   resuming requires an explicit owner decision. Do not create follow-ups without
   explicit authorization or expand scope to keep a loop running.
 
@@ -63,7 +67,9 @@ selected issue, the PR, task progress or implementation reasoning.
   explicitly revised.
 - `Done` means integrated into `develop`; it does not imply production
   release or `main` promotion.
-- If a criterion cannot be met, document the blocker and request human input.
+- If a criterion cannot be met after bounded authorized recovery, document the exact
+  gap. Request human input only for a genuine owner decision, not an external
+  non-decision blocker; never silently weaken acceptance.
 
 ## Communication
 

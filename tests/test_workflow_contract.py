@@ -1,6 +1,5 @@
 """Offline consistency guards for command text, not proof of runtime execution."""
 
-import hashlib
 import re
 import unittest
 from pathlib import Path
@@ -91,16 +90,22 @@ class WorkflowContractTests(unittest.TestCase):
         ):
             self.assertIn(requirement, loop)
 
-    def test_independent_review_is_reused_and_unchanged(self) -> None:
-        # Frozen canonical adapted Git blobs: reference bytes with target identity
-        # and test_runner replacing Ruff permissions; all other reviewer bytes preserved.
-        for path, expected in (
-            (".kilo/agents/pr-reviewer.md", "bdf32656a630abce3f8e72477a17ebf8dbf243fe"),
-            (".kilo/command/review-pr.md", "5fc6973f26e33868eafd9c9b836b97ab62dac0d8"),
+    def test_independent_review_contract_is_reused(self) -> None:
+        reviewer = text(".kilo/agents/pr-reviewer.md")
+        for requirement in (
+            "never the implementation agent",
+            "Do not read parent conversations, local recall, progress notes or the shared board",
+            "Return ONLY one JSON object",
+            '"verdict": "APPROVE | REQUEST_CHANGES | COMMENT"',
+            "APPROVE requires sufficient acceptance evidence and no findings",
+            "Never publish reviews/comments or other Forgejo mutations",
         ):
-            data = (ROOT / path).read_bytes()
-            blob = b"blob " + str(len(data)).encode() + b"\0" + data
-            self.assertEqual(hashlib.sha1(blob).hexdigest(), expected, path)
+            self.assertIn(requirement, reviewer)
+        # Execution text may evolve; the original read-only permission boundary must not.
+        frontmatter = (ROOT / ".kilo/agents/pr-reviewer.md").read_text().split("---", 2)[1]
+        for permission in ("edit: deny", "write: deny", "apply_patch: deny", "task: deny", "external_directory: deny"):
+            self.assertIn(permission, frontmatter)
+        self.assertNotIn("docker", frontmatter)
         loop = text(".kilo/command/loop.md")
         self.assertIn("Use `.kilo/command/finish-pr.md` in this SAME primary context", loop)
         for path in (".kilo/command/loop.md", ".kilo/command/finish-pr.md"):
@@ -219,9 +224,9 @@ class WorkflowContractTests(unittest.TestCase):
         ):
             self.assertIn(boundary, loop)
         for requirement in (
-            "exactly one normal checkout",
+            "exactly one designated delivery checkout",
             "Only one context may mutate it at a time",
-            "No git worktree, alternate checkouts, stash/reset of unrelated owner work",
+            "No stash/reset of unrelated owner work",
             "second controller",
             "Do not use Scarcity Router for model selection, execution, orchestration, telemetry or operation",
             "No mutation outside BioMedical-IT/scarcity-router",
@@ -231,3 +236,67 @@ class WorkflowContractTests(unittest.TestCase):
             "Do not create speculative issues",
         ):
             self.assertIn(requirement, loop)
+
+    def test_recovery_contract_is_shared_across_commands_and_rules(self) -> None:
+        for path in (
+            "AGENTS.md", "README.md", "docs/llm-operating-policy.md",
+            ".kilo/command/loop.md", ".kilo/command/implement-issue.md",
+            ".kilo/command/review-pr.md", ".kilo/command/finish-pr.md",
+            ".kilo/agents/pr-reviewer.md", ".kilo/rules/10-task-system.md",
+            ".kilo/rules/20-forgejo-mcp.md",
+            ".kilo/rules/30-implementation-discipline.md", ".kilo/rules/40-local-search.md",
+            ".kilo/rules/40-llm-operating-policy.md", ".kilo/rules/validation.md",
+        ):
+            with self.subTest(path=path):
+                self.assertIn("35-technical-recovery.md", text(path))
+        for path in (".kilo/command/finish-pr.md", "docs/llm-operating-policy.md"):
+            self.assertNotIn("one diagnosed corrected retry", text(path).lower())
+        recovery = text(".kilo/rules/35-technical-recovery.md")
+        for requirement in (
+            "A: Engineering / execution blocker", "B: Genuine owner decision",
+            "three materially different recovery attempts per obstacle",
+            "120 minutes of technical recovery per issue delivery",
+            "Persist attempts/time across reentry, phases and sessions",
+            "including failed/COMMENT attempts and failover",
+            "never repeat a failed operation with the same relevant inputs and environment",
+            "Session/model change alone is not a diagnosis",
+            "minimum sufficient authorized technical remediation automatically",
+            "Owner attention is scarce",
+            "No persistent service, privileged container, Docker socket mount or security weakening",
+            "No blind retries", "Never dispatch review 11",
+        ):
+            self.assertIn(requirement, recovery)
+
+    def test_secret_safe_and_independent_public_evidence_recovery(self) -> None:
+        recovery = text(".kilo/rules/35-technical-recovery.md")
+        for requirement in (
+            "Environment-inheritance tests inherit synthetic test values, never real credentials",
+            "synthetic HOME, cache and temp directories",
+            "locked/approved development dependencies",
+            "Mount the repository read-only",
+            "only required paths", "do not copy secrets into images or print environment values",
+            "Diagnostics retain names/categories, not values",
+            "try an alternative available read path, then fetch/clone the exact public revision",
+            "preserve pin, origin and provenance",
+            "its research conclusions are not independent verification",
+            "connector failure is not an implementation finding",
+            "model-bound gates, read-only permissions and reviewer independence",
+            "Do not bypass tool restrictions or silently substitute a required restricted reviewer",
+        ):
+            self.assertIn(requirement, recovery)
+
+    def test_terminal_recovery_contracts_do_not_fabricate_decisions(self) -> None:
+        recovery = text(".kilo/rules/35-technical-recovery.md")
+        for requirement in (
+            "review finding", "infrastructure failure", "reviewer disagreement / uncertainty",
+            "The exact unresolved decision",
+            "Why it is owner-controlled rather than an engineering problem",
+            "Reasonable autonomous remediation paths considered",
+            "Why they cannot resolve it without changing authority, architecture, security, scope, cost",
+            "The smallest set of materially distinct choices",
+            "BLOCKED requires exhausted authorized technical paths/budget",
+            "Do not ask an artificial question for an external non-decision blocker",
+            "Never stop merely because the first reviewer environment is inconvenient",
+            "Preserve mandatory full validation",
+        ):
+            self.assertIn(requirement, recovery)
