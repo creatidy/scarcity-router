@@ -6,6 +6,14 @@ new dependencies, paid/live inference, external effects or broader access.
 
 ## Classify Before Escalating
 
+For `/loop`, first apply `.kilo/command/loop.md` post-selection eligibility
+revalidation. A confirmed pre-implementation prerequisite/producer/contract gate
+is issue ineligibility, not machinery failure or a new owner decision: retain
+history/counters and return nonterminally to SELECT with a fresh full queue.
+Unavailable inspection is not proof of a gate; recover tools/access first.
+Once substantive delivery exists, preserve it under existing rules. Genuine new
+owner decisions still stop; this exception never bypasses review or security gates.
+
 Before returning control to the owner, classify the obstacle and record evidence:
 
 - **A: Engineering / execution blocker.** Missing tools/runtime, unsafe ambient
