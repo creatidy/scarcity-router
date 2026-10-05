@@ -2637,7 +2637,9 @@ def route_request(request: RouteRequest) -> RouteDecision:
             routable_keys = set()
         else:
             routable_keys = {
-                _identity_key(identity) for identity in pinned_gate.bound_identities
+                _identity_key(identity)
+                for identity in pinned_gate.bound_identities
+                if _identity_key(identity) == _identity_key(pin.model)
             }
 
     if pin_model is not None or pin_variant is not None:
