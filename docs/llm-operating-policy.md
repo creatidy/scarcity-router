@@ -139,10 +139,18 @@ the default. Use one only when uncertainty remains, evidence conflicts, the
 consequence is unusually high or independent confirmation materially increases
 confidence.
 
-The existing Scarcity Router governance remains authoritative: freeze one
-immutable reviewed head, serialize worker/reviewer/remediation phases, allow
-one initial review, at most one remediation and one narrow final verification,
-then stop at the human merge gate. Review independence does not expand scope.
+Freeze immutable reviewed HEAD/base and serialize worker/reviewer/remediation
+phases. D-069 supersedes the development-delivery defaults: `/finish-pr` and
+`/loop` use fresh isolated foreground read-only whole-PR `pr-reviewer` tasks,
+with at most 10 invocations per issue delivery including initial, COMMENT,
+invalidated reviews and corrected retries. Reserve ordinals BEFORE dispatch in
+Git-locally excluded `.task_progress.md`; reentry/phase/task/model/session changes
+never reset them. Every HEAD/base change requires a new counted review. Missing
+or ambiguous recovery is BLOCKED. Implementation never self-approves or resumes
+a reviewer. Standalone review is read-only; standalone finish stops at exact
+READY_TO_MERGE, never merging. Only an explicit owner `/loop` may proceed through
+canonical Forgejo PR merge into develop, verified integrated acceptance and issue
+closure, then fresh selection. Review independence does not expand scope.
 
 ## UX is a mandatory review dimension (D-053, #121)
 
@@ -279,18 +287,25 @@ changed strategy. Progress means new durable state, such as an artifact,
 meaningful commit, advanced gate, new concrete blocker or validated checkpoint.
 Do not repeat identical failures.
 
-The project default remains one initial review, one remediation and one narrow
-final verification. Worker and reviewer retries remain bounded as specified in
-`model-policy.json` and `AGENTS.md`. Budget exhaustion or a complexity breach
-stops the task and escalates to a human.
+General non-delivery defaults remain one initial review, one remediation and
+narrow verification, as described by `model-policy.json`. Repository command
+delivery uses D-069's scoped override, not those generic round counts: at most
+10 whole-PR reviews, no review 11 or patches without remaining review capacity.
+One diagnosed corrected retry is allowed, never a retry on session/model change
+alone. At the bound, exact current APPROVE may advance; actionable defects yield
+STOP_REVISE, finite tool failures BLOCKED, and genuine owner decisions stop the
+entire `/loop` as STOP_AND_ASK. Complexity breaches stop for human adjudication.
 
 ## Review/remediation convergence
 
-Review findings are classified as `MERGE_BLOCKER` or `DEFER`. Remediation is
-mechanical where possible and is limited to the one permitted round. Final
-verification checks the identified blockers and obvious remediation
-regressions; it is not an invitation to start a new architecture review. A
-moving branch invalidates a review result.
+General non-delivery findings remain `MERGE_BLOCKER` or `DEFER`, with one
+mechanical remediation and narrow verification. Command delivery instead follows
+the unchanged Model Intelligence verdict contract APPROVE/REQUEST_CHANGES/COMMENT
+and severity-ordered actionable findings. In-scope remediation receives a fresh
+complete PR review within the persistent ceiling. Genuine architecture/scope
+decisions stop rather than widening authority. A moving HEAD/base invalidates
+the result; valid exact approval requires empty findings, required validation,
+clean checkout and fresh canonical state.
 
 ## Operational UX and compatibility review
 
@@ -393,9 +408,16 @@ health handling and honest unknown states. No local model is in the active
 catalog today; executable resources enter only through the execution-gateway
 module issues with evidence.
 
-The repository's multi-agent policy is also stricter than a generic two-round
-remediation suggestion. The one-remediation default, immutable review head,
-serialized phases and human merge gate remain in force.
+The portable `model-policy.json` artifact remains descriptive and unchanged.
+D-069 is the explicit repository-command override to its generic review/merge
+defaults; it does not redesign the model or change selectors/profiles/ratings.
+Immutable review objects and serialized phases remain mandatory. Only the sole
+primary context of an explicit owner `/loop` has the narrowly checked PR merge
+and completed-issue closure authority. Never direct-push develop, touch main,
+release/deploy, mutate other repositories or use Scarcity Router for model
+selection, execution, orchestration, telemetry or operation of this loop.
+No second controller, daemon, scheduler, database or alternate checkout exists.
+Security-critical work retains its additional independent restricted review gate.
 
 ## Failure handling
 

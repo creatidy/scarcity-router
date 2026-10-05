@@ -174,7 +174,7 @@ direction was chosen. Dates use UTC.
 
 ### D-015 — Bounded multi-agent orchestration
 
-- **Status:** Accepted
+- **Status:** Accepted; repository command delivery defaults superseded by D-069
 - **Date:** 2026-09-05
 - **Observed failure:** An unbounded review/fix feedback loop allowed an
   independent reviewer and implementation worker to keep expanding the work.
@@ -193,6 +193,9 @@ direction was chosen. Dates use UTC.
   retry budget or a complexity-budget breach stops orchestration and escalates
   to a human.
   Workers, reviewers and orchestrators never merge automatically.
+- **Supersession:** D-069 replaces only repository issue-delivery review/merge
+  defaults with the owner-authorized Model Intelligence command workflow. The
+  portable model artifact and general non-delivery defaults remain unchanged.
 
 ### D-016 — Provisional module status surface
 
@@ -1318,6 +1321,8 @@ direction was chosen. Dates use UTC.
   - Finite retries, bounded convergence, the immutable reviewed head, phase
     serialization and the existing stricter one-initial-review,
     one-remediation and one-narrow-final-verification policy remain in force.
+    D-069 subsequently supersedes those round counts for repository command
+    delivery only, preserving independent review, frozen objects and scope.
 - **Reason:** The owner's updated operating model requires durable separation
   between role guidance and selector data, deliberate effort selection,
   independent judgment, evidence adjudication, incremental durable work and
@@ -5817,6 +5822,50 @@ neither is a new live check of the current deployment.
   [`roadmap.md`](roadmap.md#creatidy-requirement-coverage); implemented code,
   proposed PR, deployment and live acceptance stay distinct. Documentation
   approval is not product completeness or READY_FOR_LIVE_TASK.
+
+### D-069 - Repository-local Model Intelligence development workflow
+
+- **Status:** Accepted owner-directed workflow migration, 2026-10-05 (#188).
+- **Authority/reference:** Adrian explicitly requested replacement with the
+  current local `/home/adrian/workspace/model-intelligence` commands, supporting
+  rules, independent reviewer and workflow-contract tests, not an older revision
+  or a new orchestration design. No local `.kilo/command/*` commands existed at
+  migration start. This decision authorizes the contract, not its own merge.
+- **Conflict resolved:** D-015/D-029, AGENTS and the operating policy previously
+  limited delivery to one initial review/one remediation/narrow verification and
+  a human-only merge gate. For repository command delivery only, the owner mandate
+  supersedes those defaults: at most 10 persistent whole-PR review invocations,
+  exact HEAD/base approval, and explicit `/loop`-only canonical Forgejo PR merge
+  into develop followed by verified integrated acceptance/issue closure/SELECT.
+  Standalone implement remains owner-selected; review is read-only; finish never
+  merges. The migration itself uses pre-migration review limits and remains open
+  for human integration; it cannot bootstrap merge authority from its new files.
+- **Preserved model:** The primary invocation context is the sole orchestrator,
+  using one normal checkout/one mutator, no worktrees/alternate checkouts or
+  stash/reset of owner work. The excluded `.task_progress.md` ledger persists
+  pre-dispatch ordinals across phase/finish/task/model/session changes; no review
+  11. Fresh isolated read-only reviewers inspect the complete frozen PR. Selection
+  pages all current open canonical issues, filters only exact case-insensitive
+  invalid/wontfix/duplicate, verifies explicit gates and orders by explicit
+  priority/required ordering/created_at/issue number. Issues, not PRs, select work.
+  Pre-merge excluded issues return nonterminally to SELECT without merge/closure.
+  Genuine owner decisions stop the entire loop; routine reversible choices are
+  autonomous. Merge, ancestry, acceptance and closure are verified before continuing.
+- **Boundaries/adaptation:** Only canonical BioMedical-IT/scarcity-router may be
+  mutated; no direct develop push, main, release, deploy or speculative issue
+  creation. Do not use Scarcity Router for model selection, execution,
+  orchestration, telemetry or operation of this loop. No external controller,
+  scheduler/service/daemon or Router dependency. Adapt only repository identity,
+  product/architecture context and existing validation (`uv sync --only-dev`,
+  `make check`, `uv run basedpyright`, `git diff --check`); reviewer permissions
+  preserve isolation and use available repository checks, not MI-only Ruff.
+- **Unchanged:** Runtime product architecture/ownership/security, generic
+  non-delivery governance, catalog/model policy/profiles/ratings, frozen public
+  contracts and licensing. The scoped command override takes precedence over
+  generic descriptive model-policy defaults, without mutating that artifact.
+  The restricted independent security-critical gate remains additional, not
+  replaceable by ordinary review. Offline text contract tests are consistency
+  evidence, not proof of live loop execution or dynamic native-agent discovery.
 
 ### U-014 - Native coding backend versus Kernel-owned workspace lifecycle
 

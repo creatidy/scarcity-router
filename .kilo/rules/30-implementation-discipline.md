@@ -13,12 +13,26 @@
 
 ## Execution
 
+- Commit count is not acceptance. Use small coherent reviewable commits as needed,
+  including remediation; never squash/amend/force-push or rewrite published history
+  merely to reduce commit count.
+- The selected issue authorizes ordinary safe/reversible scoped engineering
+  choices. State safe assumptions and proceed autonomously. Ask only for genuine
+  unresolved architecture/product direction, material public contracts/scope,
+  incompatible acceptance, security/privacy expansion, licensing/redistribution,
+  meaningful cost, external credentials/access, destructive/irreversible action
+  or explicitly owner-reserved decisions. In `/loop`, STOP_AND_ASK stops the whole
+  invocation, not just the issue.
 - Break complex changes into sequential, validated steps. Inspect the result
   of each risky step before continuing.
 - If a command or tool call fails, change the hypothesis, inputs, or
   remediation before retrying; do not loop on the same failure.
 - Report blockers honestly; do not hide correctness or reliability gaps in
   final prose.
+- Normally allow one diagnosed corrected retry; session/model changes alone are
+  not diagnosis. STOP_REVISE is evidence, not restart or implicit reuse authority;
+  resuming requires an explicit owner decision. Do not create follow-ups without
+  explicit authorization or expand scope to keep a loop running.
 
 ## Material refactors, redesigns and generalizations
 

@@ -10,6 +10,29 @@
 - Provider/capacity work requires redacted fixture and contract tests;
   selection work requires deterministic policy tests and explanation
   assertions.
+- Run `uv sync --only-dev`, `make check`, `uv run basedpyright` and
+  `git diff --check` before committing or opening/updating a PR. Preserve the
+  existing repository gate; do not add Model Intelligence's Ruff gate or weaken
+  type rules. Inspect staged whitespace with `git diff --cached --check` too.
+
+## Review and Handoff
+
+- Before commit inspect status, intended diff, recent commit style and full delta
+  against the recorded canonical develop SHA. Stage explicit intended files only;
+  exclude secrets, caches, runtime state and `.task_progress.md`. Verify exact
+  HEAD, base ancestry and clean status afterwards; never undo others' work.
+- Parent prepares the offline development environment in the SAME normal checkout
+  at exact clean PR HEAD before review. No other checkout or branch switch during
+  review. Reviewer inspects frozen Git objects/full base delta and verifies HEAD
+  and clean status before/after checks. Ignored validation artifacts are allowed;
+  tracked edits and Git/Forgejo mutations are not. Inspect checks before running;
+  an allowlist does not make arbitrary repository code safe.
+- `/finish-pr` records each reserved ordinal, reviewed HEAD/base/verdict, remediation
+  commits, checks and currentness in the excluded delivery ledger. Only an exact
+  native reviewer result plus final MCP/Git currentness and required validation
+  can yield READY_TO_MERGE. Standalone finish never merges or closes the issue.
+- Handoff includes issue/PR URLs, exact base/HEAD, substantive files, executed
+  checks/results and genuine blockers. Never claim unobserved validation or writes.
 
 ## Test Quality
 

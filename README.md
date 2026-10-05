@@ -627,6 +627,17 @@ onboarding:
 
 ## Development
 
+Repository-local commands are `/implement-issue`, `/review-pr`, `/finish-pr` and
+`/loop`; see [`AGENTS.md`](AGENTS.md) and [loop.md](.kilo/command/loop.md).
+Standalone implementation requires an owner-selected issue, review is read-only,
+and finish performs bounded independent review/remediation without merging.
+Only an explicit owner `/loop` authorizes autonomous canonical issue selection,
+exact-approved Forgejo PR merge into `develop`, verified acceptance/issue closure,
+and continuation. One normal checkout, no worktrees or external controller, and no
+Scarcity Router use for operating this development workflow. Kilo may require a
+workspace reload to discover new local commands/agents; missing native reviewer
+support is a finite blocker, not permission for implementation self-review.
+
 Run the repository gate from a checkout:
 
 ```bash
