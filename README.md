@@ -633,10 +633,14 @@ Standalone implementation requires an owner-selected issue, review is read-only,
 and finish performs bounded independent review/remediation without merging.
 Only an explicit owner `/loop` authorizes autonomous canonical issue selection,
 exact-approved Forgejo PR merge into `develop`, verified acceptance/issue closure,
-and continuation. One normal checkout, no worktrees or external controller, and no
+and continuation. One designated delivery checkout/mutator, bounded temporary
+worktrees or evidence checkouts for safe recovery, no external controller, and no
 Scarcity Router use for operating this development workflow. Kilo may require a
 workspace reload to discover new local commands/agents; missing native reviewer
-support is a finite blocker, not permission for implementation self-review.
+support requires bounded authorized independent reviewer failover before a finite
+blocker, not permission for implementation self-review. Technical blockers are
+self-remediated under [the shared recovery rule](.kilo/rules/35-technical-recovery.md);
+only genuine owner decisions require owner attention, with no weakened review or security gates.
 
 Run the repository gate from a checkout:
 

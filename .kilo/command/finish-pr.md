@@ -9,6 +9,9 @@ This invocation authorizes only the selected PR's linked issue scope and normal
 remediation commits/pushes; no additional issue, replacement PR or merge.
 An explicit owner `/loop` may reuse this procedure in its sole primary context;
 selection/merge/closure authority lives only in loop.md, never in `/finish-pr`.
+Apply `.kilo/rules/35-technical-recovery.md` before any terminal escalation. Its
+persistent technical recovery budget coexists with the ten-review ceiling below;
+every failed/COMMENT/failover whole-PR attempt consumes its reserved ordinal.
 
 Delivery budget: at most 10 whole-PR review invocations per issue delivery,
 INCLUDING the initial review, COMMENT, invalidated reviews and corrected retries.
@@ -24,21 +27,24 @@ delivery; STOP_REVISE still requires an explicit owner decision, not a new PR/na
 1. Fetch actual PR metadata and linked issue via `forgejo-mcp`. Require an open,
    unmerged canonical BioMedical-IT/scarcity-router PR targeting `develop`. Verify
    canonical remote, fetch current base/head and inspect status/branches. Use ONE
-   normal checkout; safely switch to the existing PR branch, or create its local
+   designated delivery checkout; safely switch to the existing PR branch, or create its local
    tracking branch at the fetched PR HEAD if absent. Never create a replacement
-   branch, git worktree or alternate checkout. Never stash/reset or overwrite
+   branch. Temporary delivery worktrees/evidence checkouts follow the recovery rule. Never stash/reset or overwrite
    others' work. Unrelated uncommitted changes preventing safe switching, local
-   divergence or conflicting work yield a precise blocker/owner decision.
+   divergence or conflicting work require diagnosis and safe isolated recovery;
+   never classify ordinary checkout inconvenience as an owner decision.
 2. Require the current PR branch to be clean and match MCP HEAD. Freeze exact
    HEAD, base and merge base; run required `make check`, prepare its offline locked
    environment and inspect
-   reviewer permissions. Review frozen objects/current clean branch in this SAME
-   checkout. The parent must not edit/switch branches while the reviewer is active.
-   Missing native task/agent is BLOCKED, never permission to self-review or use an
-   external service.
+   reviewer permissions and secret-safe execution strategy. Review frozen objects/current
+   clean branch in the designated checkout or prepared exact-revision evidence checkout.
+   The parent must not edit/switch branches while the reviewer is active.
+   Missing native task/agent requires diagnosed authorized native reviewer failover
+   before BLOCKED, never permission to self-review, widen permissions or use an external service.
 3. Spawn a fresh foreground native `task` with `subagent_type: pr-reviewer`,
    `background: false`, no `task_id`. Supply only PR URL/number, exact expected
-   HEAD/base and whole-PR review instructions with this checkout path.
+   HEAD/base and whole-PR review instructions with the exact checkout and prepared
+   environment/source paths plus provenance (not implementation conclusions).
    Do not supply past findings, implementation reasoning or a requested outcome.
    The agent owns the result contract/model. Parse its JSON and require the exact
    frozen SHAs and valid field types/verdict. Consume returned findings directly.
@@ -46,10 +52,10 @@ delivery; STOP_REVISE still requires an explicit owner decision, not a new PR/na
 4. Re-fetch PR metadata and canonical develop. APPROVE with empty findings,
    matching current HEAD/base SHAs, clean checkout, successful required validation
    and still open/unmerged develop target yields READY_TO_MERGE / APPROVE. Never merge.
-   Changed HEAD/base invalidates approval. Only a HEAD change caused by this loop
-   or another diagnosed transient permits one corrected retry of a review step;
-   unexplained external changes, malformed results and persistent infrastructure
-   failures stop with a precise BLOCKED. Never retry on a new session/model alone.
+   Changed HEAD/base invalidates approval. Diagnose external changes, malformed results
+   and infrastructure failures; recover safe currentness and use a materially changed
+   execution strategy within the persistent recovery/review budgets. Never race a
+   concurrent writer, approve stale state or retry on a new session/model alone.
 5. REQUEST_CHANGES: first check findings against accepted scope and authority.
    Genuine incompatible acceptance, architecture or material scope decisions
    yield OWNER_DECISION_NEEDED with concrete alternatives. Otherwise reproduce
@@ -71,9 +77,12 @@ delivery; STOP_REVISE still requires an explicit owner decision, not a new PR/na
    especially substantial new semantic/architectural defects across repository product boundaries. Never
    reset the issue delivery's review count or patch indefinitely. The ceiling is
    not a target: stop as soon as an owner decision is clearly required.
-8. COMMENT: distinguish stale/incomplete/tool failure from genuine architecture
-   uncertainty. Use only the one diagnosed corrected retry allowed in step 4;
-   otherwise return BLOCKED or OWNER_DECISION_NEEDED with the concrete reason.
+8. COMMENT: distinguish review findings, infrastructure failure and unresolved
+   judgment. Diagnose and automatically change the environment or authorized
+   independent reviewer/tool path for infrastructure failure; resolve uncertainty
+   through bounded evidence/adjudication, not a fabricated defect. Follow the recovery
+   rule's terminal contracts only when paths/budget are exhausted or a genuine owner
+   decision remains. Preserve all consumed ordinals, including malformed/failed attempts.
 
 Return one final report: issue/PR URLs, every reviewed HEAD/base/verdict,
 review ordinals, remediation commits, final exact HEAD, validation/limitations and exactly one

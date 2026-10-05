@@ -21,3 +21,7 @@
   Missing/ambiguous recovery is BLOCKED. This bounds operation, not issue authority:
   eligibility/priority/dependencies/acceptance/current state come from refreshed
   canonical evidence, never from the ledger. Do not introduce a controller database.
+- Append technical recovery classification, diagnosis, changed conditions, attempts,
+  elapsed recovery time and result to the same ledger. Before escalation persist
+  the five owner-decision fields or exhausted-path/external-dependency evidence from
+  `.kilo/rules/35-technical-recovery.md`; never reset budgets through reentry.
