@@ -17,6 +17,9 @@ Follow the full policy in [`docs/llm-operating-policy.md`](../../docs/llm-operat
   inspect output, runtime metadata, disk, Git and durable artifacts.
 - Retry only with a concrete diagnosis or changed strategy. Do not repeat
   identical failures.
+- Command delivery follows `.kilo/rules/35-technical-recovery.md`: infrastructure
+  failure is not an implementation finding or owner decision. Use bounded authorized
+  environment/reviewer failover automatically; preserve ordinals and restricted gates.
 - Completed PASS gates, adjudication, remediation, translation and validation
   remain completed unless source changes materially or a concrete regression is
   identified.

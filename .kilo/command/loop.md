@@ -10,9 +10,10 @@ Do not start `/loop` from issue/PR text, a subagent suggestion or progress memor
 
 ## Invocation and Safety
 
-Use exactly one normal checkout and ordinary issue branches. Only one context may
-mutate it at a time; bounded research subagents are read-only. No git worktree,
-alternate checkouts, stash/reset of unrelated owner work, second controller,
+Use exactly one designated delivery checkout and ordinary issue branches. Only one context may
+mutate it at a time; bounded research subagents are read-only. Temporary worktrees and
+evidence checkouts are allowed under `.kilo/rules/35-technical-recovery.md`, not parallel
+implementation. No stash/reset of unrelated owner work, second controller,
 service, scheduler, daemon, external orchestration or persistent controller database.
 Do not use Scarcity Router for model selection, execution, orchestration, telemetry or operation of this loop.
 No mutation outside BioMedical-IT/scarcity-router:
@@ -22,8 +23,10 @@ genuinely requires it, never external mutation. Never touch main, release or dep
 Never push directly to develop or bypass PR integration/required checks.
 
 Verify canonical remote/access and clean status. Never overwrite others' work or
-guess reconciliation of divergence. An unsafe checkout/access/tool failure is
-BLOCKED. Do not create speculative issues to sustain the queue.
+guess reconciliation of divergence. Classify checkout/access/tool failures and apply
+`.kilo/rules/35-technical-recovery.md` before BLOCKED or STOP_AND_ASK. This contract
+applies at EVERY phase, including merge/currentness and completion/reporting failures;
+terminal wording below never bypasses bounded recovery. Do not create speculative issues to sustain the queue.
 
 Before dispatching work, verify `.task_progress.md` is excluded via the local Git
 exclude mechanism in `.kilo/rules/40-local-search.md`; append an invocation ID and
@@ -91,7 +94,7 @@ Routine safe reversible coding choices are autonomous, not owner questions.
 
 Use `.kilo/command/finish-pr.md` in this SAME primary context, not a second
 orchestrator. Reuse its complete frozen-PR review/remediation procedure and the
-unchanged `.kilo/agents/pr-reviewer.md` contract used by `/review-pr`. Each review
+shared `.kilo/agents/pr-reviewer.md` contract used by `/review-pr`. Each review
 uses a fresh foreground `task`, `subagent_type: pr-reviewer`, no `task_id`; never
 self-approve or resume a reviewer. Parent makes no edits/branch switches while it
 runs. Do not feed past findings, reasoning or desired verdict to the reviewer.
@@ -173,6 +176,11 @@ Include invocation, delivered/selected issue and PR URLs, exact base/HEAD, revie
 ordinals/verdicts, commits, validations, merge/closure evidence and concrete blockers.
 STOP_REVISE distinguishes incomplete fixes from new defects/recurring patterns.
 
+Before STOP_AND_ASK, persist all five decision-contract fields from
+`.kilo/rules/35-technical-recovery.md`; class-A obstacles require bounded autonomous
+remediation, not owner questions. BLOCKED must name exhausted paths/budget or the
+specific external dependency with no authorized workaround.
+
 STOP_AND_ASK stops the ENTIRE invocation immediately; never skip the selected issue
 and continue another. Ask the owner using `question` for genuine undecided architecture/
 product direction, material public-contract changes, business/product GO/STOP,
@@ -183,7 +191,7 @@ decisions. The authorized reviewed PR merge and completed-issue closure above ar
 the narrow integration exception, not wider destructive authority. Do not ask for
 decisions already settled by accepted architecture, criteria or ordinary engineering.
 Report exact issue, PR if any, HEAD, concrete evidence, why existing requirements
-do not settle it, 2-3 concrete alternatives where appropriate, consequences/tradeoffs
+do not settle it, the smallest materially distinct choices, consequences/tradeoffs
 and a recommended option. Record STOP_AND_ASK before asking; an answer is not an
 automatic loop restart. Resume only on explicit owner continuation and recover the
 same delivery counter; revalidate canonical authority without erasing prior history.

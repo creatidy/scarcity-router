@@ -53,6 +53,12 @@
 
 ## Failure Handling
 
+- Apply `.kilo/rules/35-technical-recovery.md` before reporting a terminal platform
+  blocker: diagnose and try bounded authorized changed-condition remediation.
+  Existing authentication/configuration may be repaired only within already granted
+  access, never by exposing credentials, weakening TLS or changing transport authority.
+  Read actual remote state before retrying uncertain writes. Exhausted MCP capability
+  remains BLOCKED; technical recovery never authorizes direct REST/GitHub substitutes.
 - If a Forgejo MCP operation fails, name the blocked operation and provide
   the manual URL or command when useful.
 - Forgejo MCP failure must NOT cause an automatic fallback to GitHub writes
