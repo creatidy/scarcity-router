@@ -106,8 +106,9 @@ Before STOP_AND_ASK / OWNER_DECISION_NEEDED, record internally and durably:
 5. The smallest set of materially distinct choices; never fabricate alternatives
    when one sensible engineering remediation exists.
 
-BLOCKED requires exhausted authorized technical paths/budget, an external condition
-the agent cannot change without an authorized workaround, or a genuine owner decision.
+BLOCKED requires exhausted authorized technical paths/budget or an external condition
+the agent cannot change with any authorized workaround. Class-B decisions instead
+require STOP_AND_ASK / OWNER_DECISION_NEEDED with all five decision fields above.
 State the exact missing capability/dependency, attempted paths, remaining evidence gap
 and consumed budget. A reviewer lacking tools is insufficient while a suitable clean
 environment/container/alternate authorized reviewer path remains. Do not ask an

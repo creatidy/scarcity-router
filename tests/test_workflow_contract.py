@@ -295,8 +295,11 @@ class WorkflowContractTests(unittest.TestCase):
             "Why they cannot resolve it without changing authority, architecture, security, scope, cost",
             "The smallest set of materially distinct choices",
             "BLOCKED requires exhausted authorized technical paths/budget",
+            "Class-B decisions instead require STOP_AND_ASK / OWNER_DECISION_NEEDED with all five decision fields",
             "Do not ask an artificial question for an external non-decision blocker",
             "Never stop merely because the first reviewer environment is inconvenient",
             "Preserve mandatory full validation",
         ):
             self.assertIn(requirement, recovery)
+        blocked_contract = recovery.split("BLOCKED requires", 1)[1].split("State the exact", 1)[0]
+        self.assertNotIn("or a genuine owner decision", blocked_contract)
