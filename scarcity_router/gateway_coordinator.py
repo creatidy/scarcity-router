@@ -1460,10 +1460,7 @@ class GatewayApplication:
             requires_tool_calls=caps.requires_tool_calls,
             requires_structured_output=caps.requires_structured_output,
             requires_streaming=caps.requires_streaming,
-            requires_reasoning_controls=caps.requires_reasoning_controls or (
-                resolved.kind == LOGICAL_KIND
-                and any(entry.reasoning_effort is not None for entry in admission_catalog.entries)
-            ),
+            requires_reasoning_controls=caps.requires_reasoning_controls,
             minimum_input_context_tokens=caps.estimated_input_tokens,
             maximum_output_tokens=caps.requested_output_tokens,
             profile_alias=resolved.alias,
@@ -1700,6 +1697,13 @@ class GatewayApplication:
             if entry.identity == target.model
         )
         dispatched_effort = request.reasoning_effort
+        controls = _lookup_cell(
+            self.compatibility_cells, target.resource, "reasoning_controls"
+        )
+        native_default = (
+            target.resource.channel == "worker_bridged"
+            and controls is not None and controls.value in ("PASS", "PARTIAL")
+        )
         if (
             resolved.pinned_target is not None
             and dispatched_effort is not None
@@ -1712,12 +1716,13 @@ class GatewayApplication:
                 code="effort_conflicts_with_target",
             )
         if (
-            resolved.kind in (PIN_KIND, LOGICAL_KIND)
+            (resolved.kind in (PIN_KIND, LOGICAL_KIND) or target.resource.channel == "worker_bridged")
             and dispatched_effort is None
-            and (resolved.kind == LOGICAL_KIND or target.resource.variant is not None)
+            and (target.resource.variant is not None or native_default)
         ):
             # Qualified source resources carry catalog effort, not variant text.
-            # Plain HTTP pins retain their evidenced preset's omitted-wire mapping.
+            # Native worker calls carry catalog effort independently of opaque
+            # configuration; plain HTTP resources keep omitted wire controls.
             dispatched_effort = configured_effort
         state.executed_target = state.selected_target
         call = AdapterCall(

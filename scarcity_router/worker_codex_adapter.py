@@ -1727,6 +1727,8 @@ class CodexLocalAdapter:
         if self._resource is not None:
             served_model = self._resource.model
             served_provider = self._resource.provider
+            if self._resource.variant is not None and call.model.variant != self._resource.variant:
+                raise CodexIneligible("resource_not_served")
         else:
             assert self._source_id is not None
             discovered = self._discovered_resource_ids_locked_call()
@@ -1738,6 +1740,8 @@ class CodexLocalAdapter:
             # DIFFERENT resource (typed rejection, never a dispatch).
             if binding is not None and call.model.variant != binding[1]:
                 raise CodexIneligible("resource_not_served")
+            if binding is not None and call.reasoning_effort not in (None, binding[1]):
+                raise CodexIneligible("effort_conflicts_with_pin")
             if binding is not None and call.reasoning_effort is None:
                 # The resource IS the effort contract: an effort-less
                 # request dispatches the resource's bound effort, never
@@ -1754,25 +1758,9 @@ class CodexLocalAdapter:
                     max_output_tokens=call.max_output_tokens,
                     generation_params=call.generation_params,
                 )
-        # Daybreak blocker 7: the selected variant IS the codex effort.
-        # Bind it when the request omits an effort; reject a present
-        # conflict — the executed effort can never diverge from the
-        # audited selected variant.
-        if call.reasoning_effort is None:
-            call = AdapterCall(
-                resource=call.resource,
-                model=call.model,
-                messages=call.messages,
-                stream=call.stream,
-                tools=call.tools,
-                tool_choice=call.tool_choice,
-                response_format=call.response_format,
-                reasoning_effort=call.model.variant,
-                max_output_tokens=call.max_output_tokens,
-                generation_params=call.generation_params,
-            )
-        elif call.reasoning_effort != call.model.variant:
-            raise CodexIneligible("effort_conflicts_with_pin")
+        # Configured resources carry catalog effort separately. Null remains
+        # unconfigured; only source inventory above supplies a native default.
+        # An opaque variant is never interpreted as a reasoning control.
         if (
             call.model.provider != served_provider
             or served_model is None

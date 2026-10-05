@@ -60,6 +60,12 @@ path. #179/D-071 separates catalog effort from opaque variant in discovery,
 logical resolution and pin dispatch. The plan lane's `plan` variant is not a
 reasoning effort. Effort-less plain HTTP pins retain omitted wire control:
 their evidenced preset mapping, not the variant name, governs provider effort.
+Ordinary logical HTTP requests also preserve omission: choosing a sole configured
+variant does not promise that its effort was sent on a preset that cannot map it.
+Evidenced native worker defaults carry catalog effort; unsupported worker-loopback
+controls preserve omission. Codex independently checks
+its runtime's supported effort, never equates opaque variant with effort. Only an
+inventory-owned native binding can supply a default for an otherwise raw null call.
 
 `executed_target` records dispatch provenance, not independent physical-model
 verification. #179/#181 require evidence for actual harness/protocol/adapter/

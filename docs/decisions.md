@@ -5927,10 +5927,20 @@ neither is a new live check of the current deployment.
 - **Discovery/dispatch:** Advertise only non-null catalog efforts with a matching
   bound provider/model/configuration. Dispatch uses that configured effort, never
   variant text. Explicit pins compare effort to their exact catalog entry. Omitted
-  effort on plain HTTP pins keeps the shipped preset's omitted-wire semantics;
-  logical single-effort requests and variant-qualified source pins carry catalog
-  effort. Existing shipped variants already have matching configured efforts,
+  effort on plain HTTP pins AND ordinary logical HTTP requests keeps the shipped
+  preset's omitted-wire semantics; no max-to-high mapping is invented for Z.ai.
+  Worker defaults with PASS/PARTIAL reasoning-control evidence and variant-qualified
+  source pins carry catalog effort; unknown/unsupported loopback controls keep
+  omission. PARTIAL remains scoped evidence, not universal mapping or observation;
+  native runtime preflight still verifies the exact model/effort before any turn.
+  Existing shipped variants have matching configured efforts,
   so no pin/config/data migration is needed. Plan pins remain effort-less lane pins.
+  Codex validates carried effort against its runtime listing, separately from
+  opaque catalog identity. Source-mode native bindings still reject conflicting
+  efforts and supply their evidenced native effort when omitted. Raw unconfigured
+  legacy adapter calls retain null on the wire instead of inventing control from
+  variant text; composed known logical/pinned worker calls already supply catalog
+  effort. Model/resource checks, auth, isolation and runtime effort checks remain.
 - **Evidence boundary:** Requested, resolved and dispatched facts remain separate
   from independent observation. Frozen response/audit fields cannot attest actual
   physical model/effort or billing/access mode; `executed_target` is dispatch

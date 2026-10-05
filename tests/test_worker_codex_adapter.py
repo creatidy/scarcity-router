@@ -18,6 +18,7 @@ import sys
 import threading
 import unittest
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -59,6 +60,7 @@ from scarcity_router.worker_codex_adapter import (  # noqa: E402
     terminate_codex_process,
     validate_structured_schema,
     verify_model_and_effort,
+    source_resource_id,
 )
 from scarcity_router.worker_local_adapters import (  # noqa: E402
     AdapterNotAllowedError,
@@ -816,10 +818,7 @@ class CodexAdapterTests(unittest.TestCase):
         self.assertEqual(SLUG, params.get("model"))
         self.assertEqual("high", params.get("effort"))
 
-    def test_omitted_effort_binds_the_selected_variant(self) -> None:
-        # Daybreak blocker 7: an effort-less request dispatches the
-        # selected variant — never a runtime default — while the audit
-        # records that same variant.
+    def test_unconfigured_legacy_effort_is_not_inferred_from_variant(self) -> None:
         harness = self._harness()
         result = harness.adapter.invoke(
             _call(),
@@ -830,15 +829,22 @@ class CodexAdapterTests(unittest.TestCase):
         self.assertEqual("completed", result.status)
         params = harness.trace_request("turn/start")
         assert params is not None
-        self.assertEqual("high", params.get("effort"))
+        self.assertIsNone(params.get("effort"))
 
     def test_conflicting_effort_is_rejected_before_the_turn(self) -> None:
-        # Daybreak blocker 7: a request effort conflicting with the
-        # selected variant is a typed rejection — the executed effort can
-        # never diverge from the audited variant.
+        # Source inventory is an actual native binding, unlike opaque catalog text.
         harness = self._harness()
-        result = harness.adapter.invoke(
-            _call(reasoning_effort="low"),
+        adapter = CodexLocalAdapter(
+            source_id="synthetic-source", state_dir=harness.state_dir,
+            pinned_binary=FAKE, spawner=harness.spawner, path_lookup=_bwrap_lookup,
+            platform_name="linux", platform_release="6.x-generic",
+        )
+        _ = adapter.observe_inventory()
+        resource = replace(_resource(),
+                           resource_id=source_resource_id("synthetic-source", SLUG, "high"),
+                           variant="high")
+        result = adapter.invoke(
+            _call(reasoning_effort="low", resource=resource),
             cancel_event=threading.Event(),
             deadline=_future_deadline(),
             emit=lambda chunk: None,
@@ -848,6 +854,54 @@ class CodexAdapterTests(unittest.TestCase):
         self.assertEqual("effort_conflicts_with_pin", result.calls[0].note)
         params = harness.trace_request("turn/start")
         self.assertIsNone(params)
+
+    def test_gateway_opaque_identity_and_configured_effort_reach_real_codex_consumer(self) -> None:
+        from scarcity_router.resource_state import ResourceRegistration, ResourceRegistry
+        from scarcity_router.selection_types import ModelCatalog
+        from tests.gateway_fixtures import (
+            CLIENT_ID, T_OBS, ScriptedAdapter, build_aliases, build_catalog,
+            build_cells, build_registry, make_application, parse_chat_request,
+        )
+
+        for effort in ("high", None):
+            with self.subTest(effort=effort):
+                harness = self._harness()
+                identity = ModelIdentity(provider="openai", model=SLUG, variant="opaque-high")
+                base = build_catalog().entries[0]
+                entry = replace(base, identity=identity, reasoning_effort=effort,
+                                hard_properties=replace(base.hard_properties,
+                                    supports_reasoning_mode=True if effort is not None else None))
+                template = build_registry().registry_snapshot().entries[0]
+                assert template.observation is not None
+                registry = ResourceRegistry(clock=lambda: T_OBS)
+                registry.register(ResourceRegistration(
+                    identity=_resource(), freshness_ttl_seconds=300,
+                    capabilities=template.capabilities,
+                ))
+                _ = registry.apply_snapshot(replace(template.observation, identity=_resource()))
+                producer = ScriptedAdapter(channel="worker_bridged")
+                application = make_application(registry=registry, adapters=(producer,), catalog=ModelCatalog(
+                    catalog_version=1, updated_on="2026-09-15", entries=(entry,),
+                ), aliases=build_aliases({}), cells=tuple(
+                    replace(cell, model=SLUG) for cell in build_cells(include_worker=True)
+                    if cell.channel == "worker_bridged"
+                ))
+                for model in (SLUG, f"sr-pin:codex-local/openai/{SLUG}/opaque-high"):
+                    _ = application.execute(client_id=CLIENT_ID, request=parse_chat_request({
+                        "model": model, "messages": [{"role": "user", "content": "hi"}],
+                    }))
+                    call = producer.dispatches[-1]
+                    self.assertEqual(call.model, identity)
+                    self.assertEqual(call.reasoning_effort, effort)
+                    result = harness.adapter.invoke(
+                        call, cancel_event=threading.Event(), deadline=_future_deadline(),
+                        emit=lambda chunk: None,
+                    )
+                    self.assertEqual(result.status, "completed")
+                    params = harness.trace_request("turn/start")
+                    assert params is not None
+                    self.assertEqual(params.get("model"), SLUG)
+                    self.assertEqual(params.get("effort"), effort)
 
     def test_unlisted_model_is_rejected_before_execution(self) -> None:
         # The runtime's own model/list is the exact-binding authority for

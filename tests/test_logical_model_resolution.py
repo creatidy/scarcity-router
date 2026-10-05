@@ -76,6 +76,8 @@ from scarcity_router.selection_types import (
     ModelHardProperties,
     ModelIdentity,
 )
+from scarcity_router.providers.openai_http_core import build_chat_completion_request
+from scarcity_router.providers.openai_http_presets import OPENAI_API_PRESET, ZAI_CODING_PLAN_PRESET
 from scarcity_router.server_config import ServerConfiguration, SourceConfig
 from scarcity_router.server_composition import build_compatibility_cells
 from tests.gateway_fixtures import (
@@ -208,11 +210,12 @@ def make_derived_application(
     catalog: ModelCatalog,
     *,
     aliases: dict[str, ClientRoutingProfile] | None = None,
+    channel: str = "worker_bridged",
 ) -> GatewayApplication:
     """One derived-world application: a ``worker_bridged`` echo adapter,
     PASS cells for every registered identity, the given alias table."""
     adapter_registry = AdapterRegistry()
-    adapter_registry.register(ScriptedAdapter(channel="worker_bridged"))
+    adapter_registry.register(ScriptedAdapter(channel=channel))
     cells: list[CompatibilityCell] = []
     seen_pairs: set[tuple[str, str]] = set()
     for entry in registry.registry_snapshot().entries:
@@ -220,7 +223,7 @@ def make_derived_application(
         if pair in seen_pairs:
             continue
         seen_pairs.add(pair)
-        cells.extend(_pass_cells(*pair))
+        cells.extend(replace(cell, channel=channel) for cell in _pass_cells(*pair))
     snapshots = _openai_capacity_snapshots()
 
     def capacity_source(
@@ -491,15 +494,18 @@ class CatalogEffortTests(DerivedHarness):
         registry = ResourceRegistry(clock=lambda: OBSERVED)
         for index, entry in enumerate(entries):
             identity = ResourceIdentity(
-                resource_id=f"configuration-{index}", channel="worker_bridged",
+                resource_id=f"configuration-{index}",
+                channel="worker_bridged" if qualified else "server_direct_http",
                 provider="openai", model="gpt-6-sol", entitlement="subscription_included",
                 variant=entry.identity.variant if qualified else None,
                 quota_pool_ids=(),
             )
             registry.register(_registration_for(identity))
             _ = registry.apply_snapshot(_healthy_snapshot(identity))
-        application = make_derived_application(registry, catalog)
-        adapter = application.adapters.resolve("worker_bridged")
+        application = make_derived_application(
+            registry, catalog, channel="worker_bridged" if qualified else "server_direct_http"
+        )
+        adapter = application.adapters.resolve("worker_bridged" if qualified else "server_direct_http")
         assert isinstance(adapter, ScriptedAdapter)
         return application, adapter
 
@@ -520,6 +526,9 @@ class CatalogEffortTests(DerivedHarness):
         self.assertEqual(payload["model"], "gpt-6-sol", "response model echoes requested identity")
         self.assertEqual(adapter.dispatches[0].model.variant, "opaque-high")
         self.assertEqual(adapter.dispatches[0].reasoning_effort, "high")
+        wire = build_chat_completion_request(adapter.dispatches[0], OPENAI_API_PRESET.policy)
+        self.assertEqual(wire["reasoning_effort"], "high")
+        self.assertEqual(wire["model"], "gpt-6-sol")
         audit = audit_records(application)[-1]
         self.assertEqual(audit.selected_target, audit.executed_target)
         assert audit.executed_target is not None
@@ -616,7 +625,7 @@ class CatalogEffortTests(DerivedHarness):
         self.assertEqual(adapter.dispatches[0].reasoning_effort, "none")
 
     def test_omitted_logical_effort_is_carried_and_still_requires_channel_support(self) -> None:
-        application, adapter = self._world((("opaque-high", "high", True),), qualified=False)
+        application, adapter = self._world((("opaque-high", "high", True),))
         request = parse_chat_request({
             "model": "gpt-6-sol", "messages": [{"role": "user", "content": "hi"}],
         })
@@ -668,6 +677,38 @@ class CatalogEffortTests(DerivedHarness):
         catalog = replace(application.catalog, entries=(*application.catalog.entries, other, other_provider))
         infos = exposed_logical_models(catalog, application.registry, application.limits)
         self.assertEqual(infos[0].reasoning_efforts, ("high",))
+
+    def test_shipped_max_only_http_logical_request_preserves_real_preset_omission(self) -> None:
+        entry = next(
+            entry for entry in load_catalog(DEFAULT_CATALOG_PATH).entries
+            if entry.identity.provider == "zai" and entry.identity.model == "glm-5.3-flash"
+        )
+        self.assertEqual(entry.reasoning_effort, "max")
+        identity = ResourceIdentity(
+            resource_id="zai-http", channel="server_direct_http", provider="zai",
+            model=entry.identity.model, entitlement="subscription_included",
+        )
+        registry = ResourceRegistry(clock=lambda: OBSERVED)
+        registry.register(_registration_for(identity))
+        snapshot = _healthy_snapshot(identity)
+        _ = registry.apply_snapshot(replace(snapshot, quota_facts=tuple(
+            replace(fact, window=replace(fact.window, scope_id="coding-plan"))
+            for fact in snapshot.quota_facts
+        )))
+        catalog = ModelCatalog(catalog_version=1, updated_on=DATE, entries=(entry,))
+        application = make_derived_application(registry, catalog, channel="server_direct_http")
+        adapter = application.adapters.resolve("server_direct_http")
+        assert isinstance(adapter, ScriptedAdapter)
+        _ = application.execute(client_id=CLIENT_ID, request=parse_chat_request({
+            "model": entry.identity.model, "messages": [{"role": "user", "content": "hi"}],
+        }))
+        call = adapter.dispatches[0]
+        self.assertEqual(call.model, entry.identity)
+        self.assertIsNone(call.reasoning_effort)
+        wire = build_chat_completion_request(call, ZAI_CODING_PLAN_PRESET.policy)
+        self.assertEqual(wire["model"], entry.identity.model)
+        self.assertNotIn("reasoning_effort", wire)
+        self.assertNotIn("thinking", wire)
 
     def test_actual_plan_lane_has_no_effort_or_physical_model_attestation(self) -> None:
         sources = SourceRegistry(track_registry=load_track_registry())

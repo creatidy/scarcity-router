@@ -1441,6 +1441,7 @@ def _compatibility_failure(
     requirement: TaskRequirement,
     hard_output_tokens: int | None,
     variant_resolved: bool,
+    configured_reasoning_required: bool = False,
 ) -> tuple[tuple[str, ...], str | None, str | None]:
     """Compatibility-stage failure codes plus the first failing feature.
 
@@ -1463,7 +1464,9 @@ def _compatibility_failure(
     first_feature: str | None = None
     first_value: str | None = None
     for flag_getter, feature in _REQUEST_FEATURE_MAP:
-        if not flag_getter(request):
+        if not (flag_getter(request) or (
+            feature == "reasoning_controls" and configured_reasoning_required
+        )):
             continue
         cell = _lookup_cell(cells, entry.identity, feature)
         if cell is None:
@@ -1627,6 +1630,7 @@ def _evaluate_resource(
     eligibility_reports: tuple[ExecutionEligibility, ...],
     evaluated_at: datetime,
     continuation_capable_resource_ids: frozenset[str] | None = None,
+    configured_reasoning_required: bool = False,
 ) -> _ResourceGate:
     """Run the frozen gate pipeline for one resource.
 
@@ -1699,6 +1703,7 @@ def _evaluate_resource(
         cells,
         requirement,
         *_request_output_context(request, entry, catalog),
+        configured_reasoning_required=configured_reasoning_required,
     )
     if compatibility_codes:
         return _ResourceGate(
@@ -2629,6 +2634,22 @@ def route_request(request: RouteRequest) -> RouteDecision:
                 request.eligibility_reports,
                 request.evaluated_at,
                 request.continuation_capable_resource_ids,
+                configured_reasoning_required=request.candidate_identities is not None and any(
+                    candidate.identity in request.candidate_identities
+                    and candidate.identity.provider == entry.identity.provider
+                    and candidate.identity.model == entry.identity.model
+                    and (entry.identity.variant is None
+                         or candidate.identity.variant == entry.identity.variant)
+                    and (entry.identity.variant is not None or (
+                        entry.identity.channel == "worker_bridged"
+                        and (cell := _lookup_cell(
+                            request.compatibility_cells, entry.identity, "reasoning_controls"
+                        )) is not None
+                        and cell.value in ("PASS", "PARTIAL")
+                    ))
+                    and candidate.reasoning_effort is not None
+                    for candidate in request.catalog.entries
+                ),
             )
             for entry in request.registry_snapshot.entries
         ),
