@@ -16,6 +16,33 @@ every rule in the sections above remains in force for recommendation-only
 mode and for every collector. Nothing in this document is relaxed by the
 gateway — the gateway adds boundaries, it never subtracts them.
 
+## Creatidy Ownership and Unresolved Native-Agent Boundary
+
+D-068 keeps Kernel/harness/host responsible for workspace and harness
+lifecycle, Router for its source/call permissions and admission. Client
+shell/edit/read tools return to the harness; backend-native tools are a
+separate permission domain, not permission to execute arbitrary client tools.
+Compatibility must declare actual native permissions/side effects and
+unobservable helper calls, not assume every harness reveals or pins them.
+
+Current D-063 is a specific preserved exception: the official ZCode CLI
+executes coding work under `--mode edit` in an administrator-authorized
+project. That integrated authority conflicts with the target inference/
+workspace boundary (U-014 / #180). Do not claim compliance from a passing
+adapter test, silently downgrade its working mode, extend its repository
+access or allow uncoordinated internal/external editors in one workspace.
+#180 requires supported-interface evidence, explicit owner disposition and
+safe migration; future security-critical changes carry the additional
+independent security gate. This documentary record grants no new authority.
+
+MI receives public knowledge only, never private quota, prompts or credentials.
+Console consumes authorized Router state/commands, not its database; reuse
+existing admin UI. Pins are non-secret identity/provenance, not authorization
+credentials or reservations. Source entitlement/dispatched target do not
+prove observed free subscription use or physical model identity (#179/#184).
+An unsupported output cap cannot guarantee cost, unknown usage is not zero,
+and reset/credit/paid overflow actions require separate authority.
+
 ## Trust boundaries
 
 - Existing local credential/tool stores are outside the broker and remain the
@@ -311,6 +338,12 @@ from [`docs/decisions.md`](decisions.md) D-056:
   explicit decision changes them.
 
 ### Local runtime and adapter isolation
+
+The target restrictions below remain the normal adapter boundary. D-063's
+explicit authorized-project coding lane is the current exception/conflict,
+not an implicit relaxation for other adapters or shared Kernel workspaces.
+Its existing allowlists/provider-auth/TLS/path validation must be preserved
+until #180 receives explicit migration authority.
 
 - **No generic shell API:** no `/shell`, `/ssh` or arbitrary-command
   endpoint exists in any contract (server, worker or adapter); SSH is a way

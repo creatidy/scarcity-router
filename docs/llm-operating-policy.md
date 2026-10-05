@@ -26,8 +26,9 @@ in [`model-catalog.json`](../model-catalog.json) and
   mechanical-only or low-capability models. Escalate because of difficulty,
   not task size, prestige or file count.
 - Translation and multilingual quality are first-class concerns.
-- Scarcity Router recommends models and bounded alternatives; it does not
-  execute model calls or autonomous fallback workflows.
+- Recommendation-only mode recommends models and bounded alternatives,
+  without model calls. The optional gateway executes authorized calls;
+  neither mode executes autonomous fallback workflows.
 
 ## Stable capability archetypes
 
@@ -59,7 +60,7 @@ ordinary repository work, mechanical evidence preparation and QA.
 
 ### GPT-6 Astra / OpenAI / low
 
-The current reference specialist is `SCIENTIFIC_METHODOLOGICAL_SPECIALIST`,
+The role-assignment reference specialist is `SCIENTIFIC_METHODOLOGICAL_SPECIALIST`,
 `DEEP_TECHNICAL_REASONER` and `SEMANTIC_FIGURE_REVIEWER`. It fits
 scientific/methodological review, expert evidence adjudication, difficult
 cross-document reasoning, difficult technical reasoning, semantic scientific
@@ -67,9 +68,11 @@ figure review and final whole-project expert review. Its default approved
 reasoning effort is `low`; low effort is an effort setting, not a low
 capability rating.
 
-Astra appears in reference assignments only. It is not selector-eligible until
-separate capability, hard-property and capacity-applicability evidence is
-calibrated and accepted.
+The older reference assignment did not make Astra selector-eligible. The
+current catalog v5 does contain Astra Low under D-053's reviewed,
+lower-confidence track floor; that is not the stronger conditional specialist
+calibration. Actual eligibility comes from the active catalog/requirements/
+capacity, never from this role metadata. See `docs/model-calibration.md`.
 
 ### GPT-5.6 Sol / OpenAI / high
 
@@ -99,13 +102,14 @@ Task routing is role- and requirement-driven. A role assignment is a useful
 starting reference; it does not override the active task profile, hard
 constraints, capability minima, capacity applicability or user reservations.
 
-The active selector remains the least-scarce-sufficient implementation. Catalog
-v2 (D-032) contains Luna Medium/Max, Terra Medium, Sol Medium/High and
-GLM-5.3/GLM-5.3-Flash Max. Existing M2 vectors are preserved; the three new
-Medium configurations have explicit approved calibration. Reference operating assignment and active
-selector eligibility are different layers: Astra is now a preferred external
-operating assignment, but Scarcity Router cannot recommend it until
-catalog/capacity onboarding is complete.
+The active selector remains the least-scarce-sufficient implementation. Current
+artifacts are catalog v5 / policy v9, including the reviewed D-053 Astra Low
+track floor. D-032's v2 configurations and calibration are historical records,
+not today's complete eligible set. Reference operating assignment and active
+selector eligibility are different layers: an Astra reference assignment does
+not confer capability, but the admitted catalog entry can be recommended when
+the actual requirement, applicability, policy and capacity gates pass. The
+lower-confidence floor is not the older proposed specialist calibration.
 
 ## Implementation vs judgment
 
@@ -246,9 +250,27 @@ Do not infer runtime identity from a prompt, task title, UI label alone or model
 self-report. Historical provenance is immutable; changing today's assignment
 does not rewrite historical records.
 
-Scarcity Router currently recommends models but does not execute them. Runtime
-attestation is therefore execution-harness/orchestration governance, not a new
-`SelectionDecision` field and not selector implementation in this task.
+Recommendation-only mode does not execute. The optional gateway does execute
+authorized provider calls, but its dispatch audit is not runtime identity
+attestation. Kernel/harness owns task-level binding/evidence; Router reports
+what its adapter can actually prove (#179/#181). No new `SelectionDecision`
+field is introduced by this governance correction.
+
+## Shared-System and Evidence Discipline
+
+Follow D-068 and `docs/architecture.md#creatidy-system-alignment`: Agreed,
+Verified, Proposed clarification and To prove are distinct. Repository/artifact
+state outranks issue labels/UI status; integrated, proposed PR, deployment and
+live evidence must not be conflated. Fresh review covers the whole frozen
+base/HEAD and registered gap matrix, including UX, completeness and absence
+of unauthorized assumptions. A substantive verdict for a SHA is separate
+from Forgejo COMMENT/APPROVED state. If actual model dispatch is unobservable,
+record RUNTIME_UNOBSERVABLE, not a guessed model from a title/self-report.
+
+Known proof-dependent product work remains registered (#173's G01-G13
+matrix); development review/remediation here is not a Router product review
+loop. Kernel owns work/harness/workspace/outcome lifecycle. No reviewer model
+name or today's dispatch becomes permanent product architecture.
 
 ## Retry / anti-loop policy
 
@@ -324,12 +346,14 @@ D-032 implements effort-aware ranking among explicitly calibrated catalog
 configurations, not arbitrary dynamic effort generation. The selector compares
 known capacity, scarcity penalty, capability margin, lowest configured effort,
 preference and identity in that order after all eligibility gates. Effort comes
-from the catalog field, never from opaque variants. Existing GLM Max, Luna Max,
-Sol High and Flash Max capability vectors remain unchanged. The model-policy
-schema remains v1; compatible policy content is policy_version 6 because
+from the catalog field, never from opaque variants. Current capability vectors
+and eligible configurations come from catalog v5 / policy v9, including the
+subsequent reviewed corrections; this documentation does not alter them.
+Historically D-032 introduced policy content v6 when
 `reasoning_effort_policy.selector_support` changed from `not_implemented` to
-`calibrated_configurations`. Task profiles, profile minima and dated reference
-assignments are unchanged.
+`calibrated_configurations`. The model-policy schema remains v1 while current
+content is policy_version 9. Task profiles, profile minima and dated reference
+assignments are not changed by this alignment.
 
 ## Concurrency
 

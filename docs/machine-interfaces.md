@@ -12,6 +12,24 @@ owned by their existing authoritative documents.
   shared application/core directly. Their transport code owns no selection,
   scarcity, provider or capacity semantics.
 
+## Recommendation Versus Execution
+
+These v1 interfaces return `SelectionDecision`, not an executable resource,
+provider reservation or admission token. `reasoning_effort` is independently
+catalog-sourced; `variant` is opaque. Even the authenticated composed
+server's `/v1/select` delegates to the recommendation application, not
+resource-aware `route_request`. Do not reconstruct an `sr-pin:` from its
+model-only result or claim Kernel gateway integration from a parity test.
+
+[#174](https://forgejo.creatidy.com/BioMedical-IT/scarcity-router/issues/174)
+owns the executable recommendation/admission/pin producer-consumer proof;
+[#175](https://forgejo.creatidy.com/BioMedical-IT/scarcity-router/issues/175)
+owns rich requirement mapping. Both first inspect existing contracts and
+preserve this frozen recommendation surface. No new endpoint, payload,
+per-request allowlist or protocol version is introduced by documentary
+alignment (D-068). The local `scarcity-router-server` recommender is not an
+inference server; optional execution uses the composed control server.
+
 ## Principles
 
 1. **Recommend, do not proxy.** No interface accepts prompts, model traffic,

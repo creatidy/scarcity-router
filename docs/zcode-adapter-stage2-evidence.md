@@ -16,6 +16,21 @@
   remains a valid historical record; this document adds current
   observations against that reopen condition.
 
+## Historical Evidence Qualification (2026-10-04)
+
+The observations below are preserved at their stated dates. They are not a
+current deploy or live-acceptance report. Subsequent merged
+[PR #161](https://forgejo.creatidy.com/BioMedical-IT/scarcity-router/pulls/161)
+records an owner-authorized real sentinel-file edit at `a89975f`, after the
+earlier TLS-blocked probe described here. Later login/telemetry changes
+(D-066/D-067) do not themselves prove a fresh successful model turn.
+
+The now-integrated D-063 coding lane edits its authorized workspace; target
+Kernel/harness workspace ownership remains the explicit D-068 / U-014 / #180
+conflict. Neither historical live success nor synthetic fake-CLI tests resolve
+that authority/migration question. No new runtime call was performed in the
+documentation alignment (#173).
+
 ## 1. What changed since Stage 1 (2026-09-19)
 
 Stage 1 found **no official supported programmatic surface** and closed

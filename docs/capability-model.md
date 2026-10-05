@@ -6,6 +6,27 @@ A capability profile is a curated claim about what a model can reliably do.
 It does not change when quota changes. Capacity may make a model scarce or
 temporarily unusable; it never makes the model intrinsically weaker.
 
+## Shared-System Requirements and Knowledge
+
+Kernel produces task/harness requirements; Router interprets them through
+the existing multidimensional rubric and monotonic eligibility. Quality
+minima are independent of quota/cost, L-level shorthand alone is insufficient,
+and unrepresentable/unsupported requirements must not be silently dropped.
+The current nine hard-constraint members are not proof of a complete rich
+TaskSpec/harness/data-authority contract; #175 owns the exact coverage/mapping
+study and producer-consumer acceptance. No second quality scale or new fields
+are specified here.
+
+MI owns public model/interface/benchmark/offer evidence. Router's local
+catalog and reviewed adoption floors remain a working bootstrap/projection
+until #176 proves admitted versioned snapshot consumption and #185 migration.
+Retain provenance and calibration version; conflicting/expired knowledge must
+follow the future approved admission contract, never renew an expired
+promotion merely because refresh failed. No Router crawler or independent
+public-facts database, and no private quota/credentials sent to MI. Runtime
+outcome calibration (#177) needs local contextual evidence and human review;
+raw success percentages are not causal capability ratings.
+
 ## Task levels
 
 The stable provider-independent difficulty scale is:
@@ -243,7 +264,7 @@ selection.
 
 ## Model catalog entries
 
-The initial catalog is restricted to the models in the real workflow:
+The historical initial catalog was restricted to these real-workflow models:
 
 - GPT-5.6 Luna;
 - GPT-5.6 Terra;
@@ -251,7 +272,10 @@ The initial catalog is restricted to the models in the real workflow:
 - GLM-5.3;
 - GLM-5.3-Flash.
 
-No Claude, no local models, no universal catalog.
+The active artifact is catalog v5, including D-053 reviewed generation/track
+floor entries (e.g. Astra Low), not only that initial list. This is not a
+universal public model database. Local inference can be an execution resource
+under D-040; it is not automatically an entry in the subscription recommender.
 
 Each entry carries, conceptually:
 

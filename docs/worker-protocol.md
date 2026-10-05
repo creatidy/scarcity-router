@@ -1,4 +1,4 @@
-# Worker Protocol v3 (native worker transport)
+# Worker Protocol v4 (native worker transport)
 
 This document is the authoritative contract for the Scarcity Router
 worker protocol, implemented by M05 (#90). It defines the transport, the
@@ -8,7 +8,8 @@ reconnect-safety semantics (D-043), and the state-report path. Nothing
 here changes selection, routing, capacity or provider semantics; those
 remain owned by their existing authoritative documents.
 
-- **Status:** Versioned contract, implemented ("worker protocol v1"; current version 3, #158).
+- **Status:** Versioned contract, implemented (original v1; current v4,
+  D-064 / #158; server accepts v4/v3/v2/v1).
   The protocol negotiates its own version independently of every other
   contract family (D-043/D-045).
 - **Implementation:** `scarcity_router/worker_protocol.py` (framing,
@@ -26,6 +27,22 @@ remain owned by their existing authoritative documents.
   (the loopback adaptation of the shared M04 translation core — the
   production default of `LoopbackOllamaAdapter`; tests may inject
   synthetic translations).
+
+## Shared-System Compatibility Qualification
+
+Transport version alone does not prove harness/API compatibility. v3 gates
+client-tool suspension/continuation; v4 adds preserved reasoning. These are
+bounded provider-call semantics, not durable Kernel harness/workspace
+lifecycle. #181 owns actual harness/protocol/adapter/source combination
+evidence; #185 owns cross-product migration and producer-consumer negative
+tests. Deploy server before upgraded workers; downlevel transport cannot
+silently discard a required semantic field.
+
+ZCode's integrated native coding lane remains the D-063 / U-014 / #180
+workspace-authority conflict, not target Kernel integration. Client-owned
+tools are never executed by Router; native tools and helper-call identity/
+cost are separately declared and evidence-dependent. A reported selected
+target or worker dispatch acknowledgement is not physical-model proof.
 
 ## Topology and transport
 
@@ -84,8 +101,8 @@ Scarcity Router Server  <── outbound TLS ──  Native Worker  ──  loca
 
 ## Versioning and negotiation
 
-- `WORKER_PROTOCOL_VERSION` is the version this build speaks (3 since
-  D-062; see the per-version sections below). The worker's first frame
+- `WORKER_PROTOCOL_VERSION` is the version this build speaks (4 since
+  D-064; see the per-version sections below). The worker's first frame
   (`hello` or `pair_request`) carries `supported_versions` (1..8
   entries). The server selects the highest mutually supported version
   and echoes it in `hello_ack`/`pair_result` (`negotiated_version`).
@@ -98,14 +115,14 @@ Scarcity Router Server  <── outbound TLS ──  Native Worker  ──  loca
 
 Version 2 adds ONE optional member and changes nothing else:
 
-- `state_report` MAY carry `inventories` (protocol version 2 sessions
-  only): a bounded list (≤ 8) of discovery documents, each validated
+- `state_report` MAY carry `inventories` (negotiated version >= 2):
+  a bounded list (≤ 8) of discovery documents, each validated
   fail-closed by the `model_inventory` contract (`schema_version` 1,
   `worker_id` equal to the authenticated identity, ≤ 64 models per
   source, closed auth-state vocabulary, no credentials, no account
   metadata, no raw provider payloads).
-- A version-1 worker never sends the member; the server still accepts
-  version-1 peers (`SERVER_SUPPORTED_PROTOCOL_VERSIONS = (2, 1)`), so an
+- A version-1 worker never sends the member. At the v2 introduction the
+  server supported `(2, 1)`; today's server supports `(4, 3, 2, 1)`, so an
   old worker negotiates v1 and behaves exactly as before. A v2 worker
   against a v1-only server fails cleanly at the handshake — deploy the
   server first.

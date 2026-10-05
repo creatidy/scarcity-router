@@ -29,6 +29,29 @@ contracts served by the same one server process (D-041).
   `worker_endpoint.py`), with its listener enabled by the administrator
   through `--worker-listen-port` (off by default).
 
+## Creatidy Consumers and Mode Boundaries
+
+This composed server serves execution, control, administration and machine
+surfaces; the separate local recommendation REST process cannot execute.
+Authenticated `/v1/select` currently returns a catalog/model recommendation,
+not a client-grant-aware executable resource binding. Source/resource state
+views and exact gateway admission are implemented reuse seams, not a public
+Kernel executable-selection contract (#174).
+
+Console/CLI consume Router-owned authorized state and forward commands to
+Router; they must not read its SQLite state, carry a copied inventory/ranker
+or bypass administrator/inference-client/worker boundaries. Reuse/link this
+admin UI rather than reproducing its privileged views (#140).
+
+Existing polling/state/export/audit and worker reconnect do not prove a
+Console event contract. #183 owns evidence and any missing producer support
+for freshness, correlation, deduplication, reconnect, history-gap detection,
+resynchronization and meaningful-change notifications; #185 owns compatible
+artifact/version transitions. No new transport/API is accepted here.
+Request audit/trace export is diagnostics, not a settlement ledger. CLI
+status UX (#182) is independent of Console delivery and retains JSON/pipe/
+CI/unknown/no-color behavior.
+
 ## One server, four surfaces (D-041)
 
 One server process terminates all public surfaces; there is no separate

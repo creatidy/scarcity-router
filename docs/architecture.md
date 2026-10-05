@@ -31,13 +31,176 @@ execution backend** (D-056): it is not a backend for any one client — ZCode
 is the first demanding representative harness that exposed gaps in the
 execution contract, and the intended client population also includes Kilo,
 Cline, other coding-agent harnesses, OpenAI-compatible SDK clients, simple
-scripts and Scarcity Router's own future agent/orchestration algorithms. The
+scripts and Kernel-controlled harnesses. D-068 supersedes the earlier
+reference to Router-owned agent/orchestration algorithms. The
 full module map, contracts and security architecture of the gateway are in
 [Execution-gateway architecture](#execution-gateway-architecture-a0-program)
 below and in [`docs/security.md`](security.md); the harness responsibility
 boundary and semantic compatibility contract are in
 [Harness-independent execution backend](#harness-independent-execution-backend-d-056-146)
 below.
+
+## Creatidy System Alignment
+
+### Authority and evidence
+
+Source: **Creatidy shared system architecture**, v1.0, 2026-10-04,
+`Creatidy_architektura_systemu_2026-10-04.md`, owner-supplied SHA-256
+`4e64121599ac30896afb77574b2fd16cddfc3420afde37108611715c24b56e92`.
+The full file was not found in workspace searches; this alignment uses the
+owner's repository-specific brief covering source sections 1-5, 7-13 and
+14-18. The hash is a supplied reference, not independently verified bytes.
+The distinct products are Creatidy Kernel (`creatidy-kernel`) and Scarcity
+Router (`scarcity-router`), alongside Model Intelligence and Console. Only
+their actual canonical names are used; no alias, rename or extra product is
+introduced.
+
+The audit baseline is canonical `develop` at
+`8d9d4b04bcb23fe19ff702b6209fbcb1537cdf1b`, fetched on 2026-10-04. It happens
+to equal the source's historical Router checkpoint; neither is a deploy
+claim. Issue/PR state alone is not implementation evidence. This document
+uses four distinct statuses:
+
+- **Agreed:** binding owner direction, recorded by D-068.
+- **Verified:** a revision-specific code/test or attributed observation;
+  revalidate before calling it current. Reading a test is not running it.
+- **Proposed clarification:** a review recommendation with rationale;
+  requires owner review and an explicit decision before it changes a contract.
+- **To prove:** evidence or a decision is missing; the named contract/research
+  issue must conclude feasibility, an evidenced adaptation or an owner decision.
+
+The [G01-G13 matrix](roadmap.md#creatidy-requirement-coverage) links evidence,
+document ownership and registered work. It is not a second task queue.
+
+### Ownership and target flow
+
+The shared mission is an open, local-first, observable system for individuals
+and small teams, optimizing the path to an accepted result across money,
+subscription quota, time, corrections, review and owner attention.
+
+| Product / role | Owns | Does not own |
+| --- | --- | --- |
+| Kernel | Intent, TaskSpec/WorkUnit/Attempt, authority, workspace, harness lifecycle, durable state, verification, review/remediation and outcome evidence | Provider inventory, private quota telemetry or a copied Router ranker |
+| Scarcity Router | Providers/accounts/sources/pools, private telemetry, channel compatibility, cost/selection policy, admission, gateway and authorized provider calls | Task intake, workspace/harness orchestration, task acceptance or a generic sandbox |
+| Model Intelligence | External evidence about models/interfaces/benchmarks/public offers, provenance, validity, conflicts and versioned knowledge | Credentials, private remaining quota, local runtime authority or routing |
+| Console | Cross-product views and forwarding authorized commands to their owner | A scheduler, ranking, authority database or direct access to another product's state database |
+| Existing harness | Model-tool-result loop under Kernel's documented adapter control | Implicit expansion of task authority or hidden substitution within a pinned Attempt |
+
+Agreed target, **not today's proven end-to-end integration**:
+
+```text
+Kernel -> harness adapter -> existing harness -> workspace
+existing harness -> Router gateway -> authorized execution source
+MI -> admitted versioned knowledge -> Router
+Kernel / Router / MI -> owned state and events -> Console / CLI
+```
+
+Public products must not require private `creatidy-onprem`. Dependencies on
+public modules are allowed; separation does not require four daemons,
+Kubernetes, a common database or a message broker. Preserve the current
+single composed execution server and optional worker. The local REST
+recommender is not that execution server.
+
+### Selection, identity and authority
+
+Router chooses only within registered/client-authorized inventory intersected
+with task capability minima, protocol/harness compatibility, data/cost
+authority and sufficiently fresh source state. Quality minima cannot be
+relaxed to save quota. No candidate is a correct explained result; manual
+pinning is exceptional, not required normal UX. Kernel produces requirements,
+not another available-model catalog. The nine current hard constraints and
+structural channel requirements are not proof of complete rich TaskSpec
+coverage (#175); generic unprofiled requests currently use L0/no invented
+minima, and this audit does not change their shipped behavior.
+
+The current public recommendation (`SelectionDecision`) and executable
+route (`RouteDecision`) are different. Authenticated `/v1/select` still calls
+the recommendation seam, not resource-aware routing. The pure exact-admission
+mechanism and gateway `sr-pin:<resource_id>/<provider>/<model>/<variant>`
+with optional `@<decision_id>` are reuse points, not proof of Kernel/harness
+consumption (#174). A pin is not a credential, reservation or availability
+guarantee; admission rechecks current state and authority without a substitute.
+A new role or separately authorized Attempt may get a new decision. This
+does not redefine all existing non-pinned clients.
+
+Known deviations are not hidden by the target wording: `route_request`
+currently narrows a resource pin to all its bound identities and can choose
+a sibling variant (#178). A local synthetic probe pinned `max`, obtained
+`medium` from routing and `max` from admission. The public gateway pin path
+uses the correctly exact `admit_pinned_target`; these paths are not conflated.
+Gateway effort discovery/resolution also derives effort from opaque variants
+(#179), unlike the correct D-057 recommendation output.
+
+Model, provider, resource, source/account/pool, access mode, effort, harness
+and adapter version remain distinct. Variant is opaque; null, literal `none`,
+unknown and unsupported are not synonyms. Requested/resolved/dispatched/
+observed facts and their confidence are separate; dispatch audit is not
+physical-model attestation. A plan-managed channel may pin its lane without
+confirming the physical model, so it cannot satisfy a specific-model
+requirement it cannot prove. Configured subscription entitlement alone is
+not proof of observed billing or promotional eligibility (#179/#184).
+
+Chat Completions is implemented; Responses and Anthropic Messages ingress
+are not. Compatibility belongs to the actual harness/protocol/adapter/source
+version combination with PASS/PARTIAL/UNKNOWN/UNSUPPORTED and dated evidence.
+PARTIAL requires a documented mapping, not borrowed guarantees from a name.
+Worker v3 enables bounded tool continuation; current v4 adds reasoning
+preservation, with downlevel refusal where semantics cannot be retained
+(#181/#185). Auxiliary/subagent model identity, cost and control remain
+evidence-dependent, not presumed exposed by every harness (#180/#184).
+
+### Tools and the current ZCode conflict
+
+Client shell/edit/read tools return to the harness; Router never executes
+them. Backend-native tools are a separate declared capability/permission
+domain. The integrated D-063 ZCode path deliberately launches a coding
+harness in an administrator-authorized project under `--mode edit`. That is
+a current-state deviation from the target inference/workspace ownership,
+not proof the target is met. Do not silently remove it, switch to scratch
+or extend it to Kernel's workspace. U-014 / #180 require a supported boundary,
+explicit owner-reviewed authority and safe configuration/operator migration,
+excluding two uncoordinated agents editing the same workspace. Kernel,
+harness and host own workspace isolation; no second Router sandbox engine.
+
+### Knowledge, economics and observability
+
+Agreed: consume admitted versioned MI knowledge and retain snapshot and
+calibration provenance in decisions. Current local catalog and reviewed
+track floors remain the working bootstrap/projection until #176 proves a
+replacement; Router must not build another public-facts database/crawler.
+MI #9 is a bounded proof, not an approved publication/consumer contract;
+[MI #13](https://forgejo.creatidy.com/Creatidy/model-intelligence/issues/13)
+now owns publication and #15 its production producer. Router #176 owns
+consumption, with actual-used provenance retained by Kernel #55. These are
+registered obligations, not implemented integration. Historical replay needs
+a frozen evidence cut plus evaluation semantics, not just `knowledge(at)`.
+Refresh failure alone does not cancel a running Attempt; new decisions obey
+approved freshness, and promotions do not extend because refresh failed.
+Exact admission/freshness/migration details remain To prove, not new payloads.
+
+Subscription-first includes shared pools, reset windows, remaining capacity,
+channel/plan/model/harness-dependent promotions and quota opportunity cost.
+PAYG and local inference are supported resource classes, not the product's
+definition. No API key or always-cheaper GPU is assumed. Token rate, request
+limit and accepted-result budget differ: `SpendingLimit` is currently a rate
+ceiling, not total spend. no PAYG is a hard access-mode authorization rule,
+never a ranking preference or zero-price proxy. Unknown usage is not zero;
+tokens do not automatically convert to quota, balance deltas do not attribute
+one task amid other clients, local reservations do not reserve the provider,
+and an uncontrollable output cap cannot guarantee cost. Reset/credit/paid
+overflow actions need separate authority. #184 owns these source/call proofs;
+Kernel aggregates the task path. #177 owns explicit local outcome consumption
+and cautious, human-reviewed calibration, not central upload or automatic
+learning from raw success percentages.
+
+CLI status usability (#182) does not wait for Console. Snapshot/detail/JSON/
+pipe/CI/unknown/no-color behavior must remain coherent. TUI/watch consumes
+the same contract. Router-owned state/events (#183) must support freshness,
+correlation, deduplication, reconnect and gap detection; traces are not a
+settlement ledger. Meaningful-change notifications deduplicate. Reuse/link
+the existing admin UI (#140); consumers neither read Router SQLite directly
+nor bypass command authorization. #185/#186 own cross-product compatibility
+and uncovered public artifact/platform gates, alongside #139/#141.
 
 ## Components
 
@@ -122,8 +285,8 @@ dispatches `status`, `select`, `simulate` and `install-config`.
 
 - **CLI** is the primary local operational interface. The module dispatcher
   provides read-only `status`, `select` (with `--explain` and `--json`) and
-  `simulate` through one application path; a separate `doctor` command remains
-  deferred.
+  `simulate` through one application path; `doctor` provides implemented
+  offline/configuration diagnostics (M09), not inference readiness proof.
 - **REST** is the language-neutral machine contract. It binds to `127.0.0.1`
   by default and exposes exactly `/healthz`, `/v1/status`, `/v1/select` and
   `/v1/simulate`. `/v1/providers` and `/v1/providers/{provider}` remain
@@ -557,11 +720,13 @@ limits are never sourced from client request content.
 
 ### Recommendation-to-execution binding
 
-A client that first uses `select` (MCP, REST or CLI) receives a decision
-carrying `decision_id` and, for executable resources, an executable-target
-reference. To execute that choice through the gateway, the client pins the
-target reference in the execution request (carrying the decision id for
-audit provenance). The gateway then performs **admission only** —
+The internal `RouteDecision` can carry an executable-target reference and
+decision id. Current public `select` (MCP, REST, CLI and authenticated control)
+returns `SelectionDecision`, which lacks a resource binding: do not claim
+it already supplies an executable pin. #174 owns the missing public
+producer-consumer proof. Given a legitimate exact target reference, the
+client may pin it in an execution request with decision-id audit provenance.
+The gateway then performs **admission only** —
 authorization, limits, availability, compatibility — and dispatches; it does
 not re-run competitive ranking, so no unexpected second routing decision
 occurs. Frozen alongside (D-042): a recommendation is not automatically a
@@ -725,7 +890,7 @@ Two distinct relations must not be conflated:
   OpenAI Responses surface (not implemented, never faked through Chat
   Completions per D-043; its later addition must reuse the same
   resolution/selection/admission core without duplication), and internal
-  first-party execution consumers are adapters around the internal
+  Kernel/harness execution consumers are adapters around the internal
   semantic execution contract; none duplicates routing or selection
   policy into its own HTTP API.
 

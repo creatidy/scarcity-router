@@ -1,5 +1,15 @@
 # Model calibration
 
+This file preserves dated calibration records, not a chronological current-state
+summary. At the Creatidy alignment baseline (2026-10-04, `8d9d4b0`), active
+artifacts are catalog v5 / policy v9. The **Catalog v5 correction (D-054)**
+section below and the actual artifacts govern current entries/eligible sets;
+earlier v1/v2/v3 and conditional Astra absence/ratings are historical. Astra
+Low is present with a reviewed lower-confidence D-053 track floor, not the
+older proposed stronger calibration. No rating or policy artifact changes
+in #173. Future MI consumption/migration and local outcome calibration are
+registered separately as #176/#185/#177; provenance remains mandatory.
+
 ## GLM-5.3 reasoning-variant identities (issue #79, M3.1)
 
 2026-09-15 adds the two remaining officially supported GLM-5.3 reasoning

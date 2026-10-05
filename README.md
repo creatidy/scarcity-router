@@ -7,6 +7,16 @@ subscription-backed AI models. It combines current capacity, curated
 capabilities, task requirements and user policy, then returns a recommendation
 with alternatives and an explanation.
 
+It is the resource-selection and inference component of the local-first
+Creatidy system. Kernel owns work intent, authority, harness/workspace
+lifecycle and accepted-result evidence; Model Intelligence owns versioned
+public knowledge; Console consumes each product's authorized state. The
+goal is an accepted result with responsible use of money, subscription
+quota, time, review and owner attention, not the cheapest token. This is
+target ownership, not a claim that the integrations already work; see
+[`architecture.md`](docs/architecture.md#creatidy-system-alignment) and the
+[G01-G13 coverage matrix](docs/roadmap.md#creatidy-requirement-coverage).
+
 ## When To Use It
 
 **Use it when** you consume several subscription-backed AI models (for
@@ -20,15 +30,19 @@ manually or maintaining a static model table that goes stale.
 - a generic OpenAI-compatible reverse proxy for arbitrary LLM traffic — the
   optional execution gateway below serves only explicitly configured,
   authorized resources under its own deployment and security model;
-- an autonomous coding agent or orchestrator — Scarcity Router recommends
-  (and in gateway mode executes authorized requests); it never edits
-  repositories or completes development tasks itself;
+- an autonomous coding agent or orchestrator. Recommendation-only mode does
+  not edit repositories; ordinary gateway client tools remain client-owned.
+  The integrated ZCode coding lane is the explicit workspace-editing exception
+  and unresolved ownership/migration conflict described below, not a general
+  task executor or Kernel integration;
 - hosted multi-user quota pooling — this is a local, single-owner service
   that never shares or resells subscription quota.
 
-Current maturity: pre-release (v0.1.0); the automated repository gate
-(unit tests and type checks) is green, while live and external acceptance
-work remains tracked separately in
+Current maturity: pre-release (v0.1.0). Integrated implementations and
+deterministic tests do not establish complete cross-product or live
+acceptance. Known gaps are registered in
+[`docs/roadmap.md`](docs/roadmap.md); historical live and external acceptance
+evidence is tracked separately in
 [`docs/m10-acceptance.md`](docs/m10-acceptance.md); not yet published to a
 package index or container registry (see
 [Quick Start](#quick-start) for the checkout-based install).
@@ -58,11 +72,17 @@ bridge localhost-only resources to it over outbound TLS
 administration surface (control API, web UI, diagnostics) and the
 OpenAI-compatible provider adapters are implemented, with configuration,
 adapters and the worker transport composed in one process
-([`docs/control-surface.md`](docs/control-surface.md)); distribution and
-acceptance are complete subject to the explicit external gates recorded in
+([`docs/control-surface.md`](docs/control-surface.md)); public distribution,
+platform and integrated acceptance still have the explicit gates recorded in
 [`docs/m10-acceptance.md`](docs/m10-acceptance.md). This README
 documents the recommendation-only product, whose behavior is unchanged by
 the gateway.
+
+The integrated ZCode plan-managed backend is a special legacy coding lane
+that can edit an explicitly authorized workspace (D-063), not an inference
+route proven compatible with Kernel-owned workspaces. Its authority boundary
+and migration remain open under
+[#180](https://forgejo.creatidy.com/BioMedical-IT/scarcity-router/issues/180).
 
 ## Quick Start
 
@@ -336,6 +356,15 @@ provider-change behavior, and
 
 ## Deploying The Optional Execution Gateway
 
+Do not point an inference client at `scarcity-router-server` (local
+recommendation REST, default port 8765). Execution uses the composed
+`python -m scarcity_router.control_server` below (default HTTP port 8787,
+`/v1` client base URL, client authentication). The shared `/v1/` spelling
+does not make these servers interchangeable. Chat Completions is implemented;
+Responses and Anthropic Messages are not supported ingress protocols today.
+Compatibility is specific to the harness/protocol/adapter/source version,
+not guaranteed by the phrase OpenAI-compatible.
+
 The recommendation-only product above needs none of this. If you want one
 OpenAI-compatible endpoint served from your own heterogeneous resources
 (subscription plans, APIs, local inference), the execution gateway is a
@@ -491,11 +520,15 @@ exactly what is and is not verified.
 
 ### Updates and uninstall
 
-- Linux/WSL package: `uv tool upgrade scarcity-router` (or `pipx upgrade`);
+- Before publication: reinstall from the updated checkout with `make install`
+  (or `uv tool install --force /path/to/checkout`) or from the new built
+  wheel. After PyPI publication: `uv tool upgrade scarcity-router` (or
+  `pipx upgrade scarcity-router`);
   then `scarcity-router-worker service restart` (the generated unit points
   at the resolved executable path, so an upgrade needs the restart to run
   the new code). Server/container: restart any server processes.
-- Container: pull the new image tag, `docker compose up -d`; the named
+- Container: rebuild the local image before publication; after registry
+  publication, pull the new image tag, then `docker compose up -d`; the named
   volume keeps identities, configuration and keys (store schema migrations
   are explicit and refuse future versions — never downgrade across one).
 - Windows worker: reinstall the new release package; restart the worker.
@@ -583,6 +616,14 @@ onboarding:
 - [`docs/m3-acceptance.md`](docs/m3-acceptance.md)
 - [`docs/model-calibration.md`](docs/model-calibration.md)
 - [`docs/competitive-landscape.md`](docs/competitive-landscape.md)
+- [`docs/codex-adapter-stage1-evidence.md`](docs/codex-adapter-stage1-evidence.md)
+  — dated official-interface/compatibility evidence, not fresh live acceptance.
+- [`docs/zcode-adapter-stage1-evidence.md`](docs/zcode-adapter-stage1-evidence.md)
+  — historical D-047 closeout, superseded through its reopen procedure.
+- [`docs/zcode-adapter-stage2-evidence.md`](docs/zcode-adapter-stage2-evidence.md)
+  — dated reopen evidence and subsequent current-state qualification.
+- [`docs/history/daybreak-review-segmented-2026-09-25.md`](docs/history/daybreak-review-segmented-2026-09-25.md)
+  — historical bounded review evidence.
 
 ## Development
 
@@ -603,7 +644,7 @@ make package-check
 
 Development CI runs the same gate plus `make package-check` on every pull
 request to `develop` and every push to `develop` (workflow `ci`, job
-`check` — the stable required check for `develop` branch protection). Public
+`check` — a stable check name for owner-configured branch protection). Public
 releases are deliberate SemVer tags on stable `main`, published through the
 tag-driven GitHub workflow. The CI/release authority split, trust model and
 owner-action checklist live in

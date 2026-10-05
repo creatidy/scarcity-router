@@ -16,6 +16,29 @@ untrusted development input  !=  release authority
 No path from an ordinary pull request reaches publication authority or any
 provider or private-infrastructure secret.
 
+## Creatidy Contract and Public Delivery Coverage
+
+Shared-system alignment does not make unpublished artifacts or untested
+platforms available. #185 owns Router's compatibility/migration proof with
+Kernel executable consumers and MI artifacts; each producer retains its
+own versions/state, with no global ontology/version or common database.
+#186 owns uncovered GHCR/Windows artifact and public-platform acceptance;
+#139 retains TLS lifecycle and #141 composed install/client execution proof.
+These are known required deliveries, including external decision/access
+gates, not a reason to call distribution complete.
+
+Public installation must work without private `creatidy-onprem`; public-module
+dependencies are permitted. Clean installed-user evidence must cover runtime,
+authentication/TLS, filesystem, supervisor/service lifecycle and server-first
+upgrade ordering where relevant. Current checkout/wheel and local-image paths
+remain supported; index/registry upgrade commands below are future contracts
+until publication. A new recurring manual step needs evidenced justification.
+
+The statuses below describe artifact availability, not D-068's evidence/
+decision statuses. A configured workflow is not a successful run, publication
+or live platform proof. Owner-controlled release/tag/signing/deploy authority
+is unchanged; ordinary agents only open Forgejo PRs, never publish or merge.
+
 ## Status legend
 
 Every capability in this document carries exactly one status:

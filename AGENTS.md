@@ -16,6 +16,15 @@ market features and abstract platform design. Read the documentation map in
 If documents conflict, record the conflict and resolve it explicitly in
 `docs/decisions.md`; do not choose silently.
 
+Follow Creatidy ownership and the evidence/status rules in
+`docs/architecture.md#creatidy-system-alignment` (D-068); use the G01-G13
+coverage matrix in `docs/roadmap.md`, with Forgejo as the task source.
+Kernel owns task/workspace/harness lifecycle and outcome; Router owns
+inventory/private telemetry/selection/admission/provider calls; MI owns
+public knowledge; Console consumes authorized state/commands. Do not create
+a second inventory/ranker/sandbox or drop known requirements for a minimal
+delivery. Proof-dependent work belongs in a bounded contract/research issue.
+
 ## Repository workflow
 
 Forgejo (`https://forgejo.creatidy.com/BioMedical-IT/scarcity-router`) is the
@@ -54,8 +63,11 @@ the execution-gateway architecture in
   authenticated server component may receive prompts and execute/proxy model
   traffic to authorized resources under D-040 through D-045 — including
   Ollama and local inference as execution resources (D-017 superseded) and
-  the approved local Codex adapter (a ZCode execution adapter is not
-  planned — owner decision D-047). Still forbidden everywhere: autonomous
+  the approved local Codex adapter. D-047's ZCode cancellation was superseded
+  by D-061/D-063; that integrated workspace-editing lane remains a documented
+  ownership conflict (U-014, #180), not target conformance or permission to
+  extend repository access. Preserve it until explicit migration authority.
+  Still forbidden everywhere: autonomous
   fallback execution, issue-to-PR orchestration, repository management,
   generic agent workflow frameworks, general task schedulers,
   benefit-consuming actions (reset redemption stays informational) and

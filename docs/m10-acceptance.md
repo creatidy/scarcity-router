@@ -8,6 +8,22 @@ what is a recorded seam, and what this repository cannot claim. Platform
 honesty everywhere — nothing below claims a capability that was not
 built or tested.
 
+## Historical Ledger and Current Alignment Gates
+
+This is the dated original M10 evidence ledger, not a fresh acceptance run
+at every later HEAD. #173 statically revalidated integrated code at
+`8d9d4b04bcb23fe19ff702b6209fbcb1537cdf1b`; no live model/task/deployment test
+was authorized or run. Later continuation/reasoning/ZCode/login/telemetry
+work does not automatically close any original live/platform gate. PR #161
+records a separate historical ZCode sentinel edit, not Kernel integration.
+
+Known unclosed acceptance has actual owners: #139 TLS lifecycle; #141
+composed program/real client and Codex acceptance; #186 public artifacts and
+Windows/platform gates; #174/#175/#179/#180/#181 cross-product route/quality/
+identity/authority/protocol proofs; #185 version/migration conformance. Green
+synthetic tests or a documentary review do not establish READY_FOR_LIVE_TASK,
+full product completion or permission to run these future acceptance steps.
+
 ## Platform support table
 
 | Capability | Status | Evidence |
@@ -24,7 +40,7 @@ built or tested.
 | Windows worker MSIX (signed) | external gate | `EXTERNAL_RELEASE_GATE: WINDOWS_CODE_SIGNING` — fail-closed seam; no signature ever fabricated |
 | Windows tray UX | built/tested (logic), adapter Windows-gated | state machine/run-loop/log unit-tested everywhere (`tests/test_windows_tray.py`); pystray adapter lazy-imports and refuses off-Windows (`tests/test_windows_packaging.py::TrayViewAdapterTests`); `EXTERNAL_ACCEPTANCE_GATE: LIVE_WINDOWS_ACCEPTANCE` |
 | Windows first-run onboarding (setup dialog, packaged `pair` command, local settings — issue #113, D-051) | built/tested (logic), adapter Windows-gated | entry routing, cancel/partial-failure semantics, real pairing path, code non-persistence, settings strictness/precedence/restart, loopback-only Ollama, no-codex advertising all unit-tested on every platform (`tests/test_worker_first_run.py`); tkinter dialog adapter lazy-imports (`tests/test_windows_packaging.py::SetupViewAdapterTests`); packaged-CLI output path (`_attach_parent_console`) and the live double-click flow are covered by `EXTERNAL_ACCEPTANCE_GATE: LIVE_WINDOWS_ACCEPTANCE` |
-| Update path | built/documented | `uv tool upgrade scarcity-router` / container tag pull + `docker compose up -d` / reinstall the worker package; no background auto-update, no remote code execution |
+| Update path | documented, publication-dependent | Before publication: reinstall from checkout/wheel and rebuild local image. After publication: `uv tool upgrade scarcity-router` / registry tag pull + `docker compose up -d`; reinstall worker package. No background auto-update or remote code execution; #186 owns clean platform proof |
 | Version surface | built/tested | `scarcity-router --version`; server startup banner; `get_version()` single-source literal |
 | Codex execution path (worker-local adapter, subscription-included) | built/tested (deterministic e2e; live subscription gated) | `tests/test_e2e_codex_acceptance.py` + `tests/test_codex_real_binary_probe.py` (M10-B section below); `EXTERNAL_ACCEPTANCE_GATE: LIVE_CODEX_SUBSCRIPTION`; Windows-native Codex unevidenced (`platform_not_evidenced` by design) |
 

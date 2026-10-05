@@ -12,6 +12,37 @@ the core. It is not a public REST, MCP or CLI contract; those interfaces have
 separate versioned contracts. The record is an observation at one point in
 time, not a promise that the source remains available.
 
+## Creatidy Economics and Ownership
+
+Router owns private account/source/pool telemetry, applicability and supported
+call constraints; MI owns versioned public offers/conditions, Kernel the full
+path to accepted result. Subscription-first includes shared pools, reset
+windows, remaining capacity and quota opportunity cost. PAYG and local
+inference remain supported classes; neither API-key access nor cheaper GPU
+execution is assumed.
+
+Token price rate, request ceiling and accepted-result budget are distinct.
+Current `routing_core.SpendingLimit` is a rate ceiling, not total task spend.
+Hard no-PAYG uses access-mode authorization, never price ranking or a zero-rate
+proxy. Configured subscription entitlement is not independently observed
+billing mode. #184 owns unknown/mixed/overflow/source applicability proof and
+supported enforcement; no new numerical budget is declared here.
+
+Unknown usage is not zero; tokens do not automatically convert into subscription
+quota. A balance difference cannot be assigned to one task while other clients
+use the pool. Local admission reservations do not reserve provider capacity.
+An output cap the source cannot enforce is not a hard cost guarantee; hidden
+retry/helper/subagent calls retain unknown identity/usage where unobservable.
+Additional credits, reset redemption and paid overflow need separate authority.
+
+Confirmed pools are shared once, independently evidenced accounts distinct,
+unknown sharing remains unknown. Promotions require actual plan/model/channel/
+harness/time applicability and expire without refresh. Source-specific private
+observations must not become public MI facts or leak account identifiers into
+the normalized contract. #177 covers explicit local outcome correlation and
+cautious calibration; traces are not a financial ledger. This documentation
+does not change frozen telemetry, pool or reservation schemas.
+
 ## Versioning
 
 Every snapshot has the required top-level field `schema_version` with the integer
