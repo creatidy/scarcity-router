@@ -5941,6 +5941,9 @@ neither is a new live check of the current deployment.
   legacy adapter calls retain null on the wire instead of inventing control from
   variant text; composed known logical/pinned worker calls already supply catalog
   effort. Model/resource checks, auth, isolation and runtime effort checks remain.
+  A native alias's explicit effort cannot override the configuration whose profile
+  minima passed: a catalog-effort conflict refuses before dispatch, without
+  interpreting opaque text. Plain HTTP alias carried controls remain unchanged.
 - **Evidence boundary:** Requested, resolved and dispatched facts remain separate
   from independent observation. Frozen response/audit fields cannot attest actual
   physical model/effort or billing/access mode; `executed_target` is dispatch

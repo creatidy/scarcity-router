@@ -1705,13 +1705,13 @@ class GatewayApplication:
             and controls is not None and controls.value in ("PASS", "PARTIAL")
         )
         if (
-            resolved.pinned_target is not None
+            (resolved.pinned_target is not None or (native_default and resolved.kind == ALIAS_KIND))
             and dispatched_effort is not None
             and dispatched_effort != configured_effort
         ):
             raise GatewayError.invalid_request(
                 "the requested reasoning effort "
-                + f"{dispatched_effort!r} conflicts with the pinned "
+                + f"{dispatched_effort!r} conflicts with the selected "
                 + f"target's configured effort {configured_effort!r}",
                 code="effort_conflicts_with_target",
             )
