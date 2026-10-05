@@ -1,20 +1,55 @@
-# Task System Rules
+# Issue Delivery Workflow
 
-Forgejo Issues at `forgejo.creatidy.com/BioMedical-IT/scarcity-router` are the
-durable task source of truth for bugs, features, tech debt, governance and
-research. Docs hold strategy and current-state context, not operational
-queues. GitHub Issues are a read-only mirror and never the task source.
-
-## Execution Start
-
-- Implementation starts only from an issue Adrian explicitly selected by
-  number, URL, or unambiguous title, or one the active task explicitly
-  authorizes creating.
-- If no issue is selected, stop and say no active issue is selected.
-- Fetch the actual issue body before planning, then summarize the title and
-  acceptance criteria.
-- Do not infer active work from issue age, title order, links, labels, or
-  prior conversation memory.
+- Outside an explicit owner `/loop`, start implementation only when Adrian selects one Forgejo issue by
+  number, URL or unambiguous title. Fetch the actual issue via MCP before planning
+  or editing. If the selection is ambiguous, clarify; never infer work from order,
+  age, labels, milestones, Projects, branches, documentation queues or memory.
+- Do not create issues without explicit authorization. No Program Execution Mode,
+  external controller, execution graph or generic planning framework. Autonomous
+  selection is permitted ONLY by the explicit `/loop` exception below.
+  An explicit owner documentation/planning mandate can authorize deduplicated
+  registration of its main/gap issues; it does not authorize implementing the
+  registered features. Record the actual mandate and use returned Forgejo IDs.
+- `/loop` delegates successive issue selection to its sole primary invocation
+  context under `.kilo/command/loop.md`, not a second controller. Refresh all open
+  canonical Scarcity Router issues each cycle; exclude exact invalid/wontfix/duplicate labels
+  case-insensitively before historical PR interpretation, verify explicit gates,
+  then explicit priority/required ordering/oldest registration. Open PRs are not
+  planning authority. Unresolved owner decisions are ineligible; if a genuine
+  decision arises for selected work, STOP_AND_ASK terminates the entire loop.
+  Preserve STOP_REVISE dispositions; an open PR cannot authorize restarting them.
+  No issue registration is authorized merely to keep `/loop` running.
+- Verify the canonical remote, fetch current `develop`, record its exact SHA and
+  inspect files/status/branches. Demonstrate access by successful operations.
+  Use one normal checkout, never `git worktree` or alternate checkout management
+  and only one mutator at a time. Preserve unrelated changes/branches;
+  never stash/reset others' work. If unrelated changes prevent safe switching,
+  stop with a precise blocker.
+- Create an ordinary branch named `issue-<number>-<short-topic>` from that recorded
+  fetched SHA in this checkout. Use normal Git transport. Never implement
+  directly on `develop`; never target, modify, merge into or promote `main`.
+- Confirm accepted scope, implement the smallest coherent change, run checks,
+  inspect status/full base delta, commit only intended files, push to canonical
+  Forgejo, create one PR to `develop` via MCP and post a concise issue update.
+- Standalone implementation/finish/review never merge or auto-merge. Only explicit
+  `/loop` authorizes the supported Forgejo PR merge to develop after fresh exact
+  approval/currentness gates, verified integrated acceptance then issue closure.
+  Never direct-push develop, touch main, release, promote or deploy. Outside that
+  completion gate keep the issue open at handoff; use `Refs #N`,
+  not automatic closing keywords. Report issue/PR, base/head SHAs, validation and
+  genuine blockers; READY_FOR_REVIEW means implemented and verified, not approved.
+- `/finish-pr` selects an existing PR and authorizes only its linked issue's
+  accepted-scope remediation. Use a fresh foreground `pr-reviewer` native `task`
+  for each frozen whole-PR review; consume its result without owner relaying.
+  At most 10 whole-PR review invocations per issue delivery, including initial,
+  COMMENT and retries. Persist ordinals before dispatch in excluded progress;
+  finish reentry, internal phase, new task/model/session cannot reset the counter.
+  Current APPROVE yields READY_TO_MERGE, never a standalone merge; only `/loop`
+  may continue through its separate merge/completion gates.
+  At the bound return STOP_REVISE with new defects versus incomplete fixes and
+  recurring architectural/semantic patterns. Material scope/architecture decisions
+  yield OWNER_DECISION_NEEDED; unavailable tools yield a precise finite BLOCKED.
+  In `/loop` map OWNER_DECISION_NEEDED to STOP_AND_ASK; stop, never skip selected work.
 
 ## Issue Quality
 
@@ -31,20 +66,5 @@ Issue bodies must be implementation-grade, not copied plan fragments or
 scratch notes. Acceptance criteria must be verifiable. If scope changes
 materially, update the issue body before continuing.
 
-## One Issue, One Implementation
-
-- One issue drives one coherent implementation, one feature branch and one
-  Forgejo PR.
-- Use only default labels when useful (`bug`, `enhancement`,
-  `documentation`); do not create task-management label taxonomies.
-- Do not create duplicate or speculative follow-up issues; update or link an
-  existing issue instead.
-
-## Done and Closure
-
-- `Done` means acceptance criteria are satisfied and the change is integrated
-  into `develop`.
-- `Done` does not mean promoted or released to `main`; promotion is
-  human-controlled and not part of ordinary task completion.
-- Link the PR to its parent issue and report any Forgejo update that could
-  not be performed.
+Do not create duplicate or speculative follow-up issues; update or link an
+existing issue instead.

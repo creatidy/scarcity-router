@@ -155,9 +155,11 @@ minimum safe boundary for any runner that executes pull-request code:
   workflow is tag-triggered on the mirror.
 - **Public contribution code has no privileged path** into private
   infrastructure; the runner boundary forbids the paths that could create one.
-- **Release authority is separated from development CI**: a green `check` on
-  `develop` authorizes nothing except a human merge; publication authority
-  lives exclusively in the human-created release-tag path.
+- **Release authority is separated from development CI**: a green `check` alone
+  grants no merge or publishing authority. Development PR merge requires a human
+  or D-069's explicit owner `/loop` with exact independent approval/currentness
+  and acceptance gates; publication authority remains exclusively in the
+  human-created release-tag path. `/loop` never releases or deploys.
 - **Ordinary deterministic tests require no secrets**, so secret presence can
   never become a test requirement.
 

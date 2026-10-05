@@ -34,20 +34,64 @@ automatic read-only mirror. Do not create or mutate GitHub issues, pull
 requests, branches or tags unless Adrian explicitly requests a GitHub-specific
 operation.
 
-Use one selected issue, one feature branch and one Forgejo pull request. Branch
-from `develop`, target `develop`, and leave the PR open for human review. Never
+Read these rules explicitly before work; do not rely on automatic nested discovery:
+
+- `.kilo/rules/10-task-system.md`: selection, branching and delivery gates.
+- `.kilo/rules/20-forgejo-mcp.md`: canonical authority and tool boundaries.
+- `.kilo/rules/30-implementation-discipline.md`: scope, autonomy and compatibility.
+- `.kilo/rules/40-local-search.md`: evidence and excluded operational memory.
+- `.kilo/rules/40-llm-operating-policy.md`: model and evidence discipline.
+- `.kilo/rules/validation.md`: repository validation and handoff.
+
+Commands: `/implement-issue <number|URL|unambiguous title>`,
+`/review-pr <Forgejo PR number|URL>`, `/finish-pr <Forgejo PR number|URL>` and `/loop`.
+A plain `Implement issue #N` follows the implementation workflow. Standalone
+implementation requires owner selection. `/review-pr` is read-only; `/finish-pr`
+authorizes only the selected PR's accepted-scope remediation, never merging.
+Both use the same fresh isolated `.kilo/agents/pr-reviewer.md` native task;
+implementation self-review and resumed reviewers are not independent review.
+Consume task results directly; Forgejo review publication is optional, never
+orchestration state or an owner-relayed handoff.
+
+Only an explicit owner `/loop` delegates autonomous selection, approved canonical
+PR merge into `develop`, and completed-issue closure. Its primary invocation
+context is the sole orchestrator, reusing implement-issue/finish-pr. Read
+`.kilo/command/loop.md`: refresh all canonical open issues each cycle, exclude
+only exact invalid/wontfix/duplicate labels case-insensitively, verify explicit
+gates, then order by explicit priority, required ordering and oldest registration.
+Issues, not PRs, are planning authority. STOP_AND_ASK, STOP_REVISE and BLOCKED
+terminate the invocation; no eligible issue yields QUEUE_EMPTY. Pre-merge exact
+label exclusion returns nonterminally to SELECT after a safe checkout return,
+without merging or completing that issue. No speculative issues sustain the loop.
+Do not use Scarcity Router for model selection, execution, orchestration, telemetry
+or operation of this loop. No cross-repository mutation, main, release or deployment
+authority is granted. This is a repository development workflow, not Router product
+architecture or a second controller/service/scheduler/daemon.
+
+Use one selected issue, one feature branch and one Forgejo pull request per delivery.
+Branch from `develop`, target `develop`, and leave standalone PRs open. Never
 make a substantive task edit while checked out on `develop`; establish the
 issue and feature branch first. `main` is human-controlled and is not the
 ordinary agent integration branch.
 
-Do not bypass an unmet dependency with a clean secondary worktree. Preserve
-unrelated user work. Do not force-push, rewrite published history, merge
+Use one normal checkout; do not use `git worktree` or alternate checkouts.
+Only one context may mutate it. Review frozen Git objects/current clean PR branch
+read-only; the parent must not edit or switch branches while the reviewer runs.
+Never stash/reset unrelated owner work or bypass unmet dependencies. Do not
+force-push, rewrite published history, merge
 `develop` or `main` into a feature branch, create synchronization merge
-commits, merge a PR, or promote to `main` without explicit authorization.
+commits, or push directly to `develop`. Only `/loop` may merge through its
+supported canonical Forgejo PR operation and exact approval/currentness gates;
+never force/auto-merge or promote to `main`.
 
 Before completion, verify that `origin/develop..HEAD` contains only the current
 issue's change, there is no unintended merge commit, and touched files are in
 scope.
+
+Commands and agents are loaded from `.kilo/command/*` and `.kilo/agents/*` by the
+Kilo workspace runtime. Adding files does not guarantee dynamic availability;
+a workspace reload may be required. Missing native task/agent support is a finite
+blocker, not permission for parent self-review or external orchestration.
 
 ## Product boundary
 
@@ -146,21 +190,31 @@ durable product or deployment contract.
 
 ## Bounded review lifecycle
 
-Multi-model work is bounded by default. Before any worker or reviewer starts,
-freeze the task scope and threat model, record an expected complexity boundary,
-and declare an execution budget. The default lifecycle is:
+Multi-model work is bounded by default. Before workers or reviewers start, freeze
+scope/threat model, expected complexity boundary and execution budget. D-069
+supersedes D-015/D-029's development-delivery review/merge defaults only: repository
+issue delivery uses at most 10 whole-PR review invocations, including initial,
+COMMENT, invalidated reviews and corrected retries. `/finish-pr` and `/loop`
+reserve each ordinal BEFORE dispatch in Git-locally excluded `.task_progress.md`.
+Reentry, phase, task, model or session changes never reset the delivery counter;
+missing/ambiguous recovery is BLOCKED. Never dispatch review 11 or make patches
+that cannot receive a fresh review within the bound.
 
-`implementation -> independent review -> optional single remediation -> final verification -> human merge gate`
+Each review is fresh, foreground, read-only and covers the complete PR at exact
+frozen HEAD/base. Serialize dependent phases; no pushes/edits during review.
+Every HEAD/base change invalidates approval. Only exact APPROVE with empty findings,
+clean checkout, successful required validation and fresh canonical currentness
+yields READY_TO_MERGE. Standalone delivery stops there; only explicit `/loop`
+continues through merge, integrated acceptance, closure and SELECT. Genuine owner
+decisions stop the whole loop with STOP_AND_ASK; remaining actionable findings
+at the bound yield STOP_REVISE and finite infrastructure failures BLOCKED.
 
-Allow at most one initial review, one remediation and one narrow final
-verification, with worker and reviewer retries bounded independently at one and
-the default wall-clock budget at 120 minutes. Serialize dependent phases and
-freeze one immutable `reviewed_head`; workers must not push during review.
-Every finding is `MERGE_BLOCKER` or `DEFER`; only a blocker can trigger the one
-remediation. Final verification checks identified blockers and obvious
-remediation regressions, not a new architecture review. Budget exhaustion,
-stalled progress after the retry budget or a complexity breach stops work and
-escalates to a human. Workers, reviewers and orchestrators never merge.
+General non-delivery work retains the descriptive `model-policy.json` defaults
+(one initial review, one remediation, narrow verification, 120-minute budget and
+independently bounded worker/reviewer retries). The command-specific ceiling is
+not a target or an extension of product/model/security authority. Diagnose a retry;
+never restart merely because the session/model changed. Complexity breaches stop
+for a human decision.
 
 **UX is a mandatory review dimension.** Every review answers
 `UX impact: none` or assesses the user-facing consequences (first-run, happy
