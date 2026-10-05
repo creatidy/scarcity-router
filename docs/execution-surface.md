@@ -55,14 +55,17 @@ plan-managed lane. Another authorized role/Attempt may obtain a new decision;
 no substitute occurs within a pinned Attempt. Non-pinned generic clients
 are not silently migrated into this rule.
 
-Known current limits are tracked, not hidden: #178 corrects a sibling-variant
-selection defect in pure `route_request`, not this correctly exact gateway
-admission path; #179 corrects discovery/logical-resolution inference of effort
-from opaque variant and proves identity/observed-effort guarantees. In
-particular, the plan lane's `plan` variant is not a reasoning effort. The
-logical-model/discovery sections below describe the shipped vocabulary and
-intended guarantees, qualified by those evidenced defects. Effort-less HTTP
-pins cannot universally guarantee native wire effort.
+The #178 pure-core exact-pin correction preserves the gateway's exact admission
+path. #179/D-071 separates catalog effort from opaque variant in discovery,
+logical resolution and pin dispatch. The plan lane's `plan` variant is not a
+reasoning effort. Effort-less plain HTTP pins retain omitted wire control:
+their evidenced preset mapping, not the variant name, governs provider effort.
+Ordinary logical HTTP requests also preserve omission: choosing a sole configured
+variant does not promise that its effort was sent on a preset that cannot map it.
+Evidenced native worker defaults carry catalog effort; unsupported worker-loopback
+controls preserve omission. Codex independently checks
+its runtime's supported effort, never equates opaque variant with effort. Only an
+inventory-owned native binding can supply a default for an otherwise raw null call.
 
 `executed_target` records dispatch provenance, not independent physical-model
 verification. #179/#181 require evidence for actual harness/protocol/adapter/
@@ -73,6 +76,35 @@ unknown usage/hidden calls stay unknown and uncontrollable output cannot
 promise hard cost. Kernel aggregates full-path budget; Router supplies and
 enforces only supported source/call facts. No additional API or payload is
 introduced by this qualification; #174 owns missing public consumer proof.
+
+### Identity Evidence Boundary
+
+The following distinctions apply to every supported channel and its actual
+adapter/protocol version; existing response/audit fields are not attestations:
+
+| Fact | Existing evidence | Limit |
+| --- | --- | --- |
+| Requested | Parsed `model` and normalized request `reasoning_effort`; response `model` echoes the request | An echo is not execution observation |
+| Resolved | Exact admitted resource/provider/model/opaque variant and catalog configured effort | A catalog or source registration is configuration, not physical-model proof |
+| Dispatched | `executed_target`, adapter name/version, and the adapter call's carried effort | The target is assigned when dispatch starts, not when a model is independently observed |
+| Observed | No independent physical-model/effort attestation in the frozen response/audit contract | UNKNOWN/unattested on `server_direct_http`, `worker_bridged` and `client_direct`; never inferred from dispatch, provider-reported tokens or model self-report |
+
+`plan-managed` names only the configured lane. Its catalog effort is null and
+discovery advertises no effort; even literal `none` is an unsupported configured
+control there. Exact physical-model requests cannot resolve onto that lane. A
+consumer requiring attested physical identity must refuse an unattested route,
+not treat this metadata as RUNTIME_VERIFIED. No new physical-attestation request
+flag or guarantee is introduced; that consumer contract remains under #174/#175.
+
+Native Codex checks its configured model/effort arguments; ZCode 0.16.9 has no
+supported physical-model observation or effort control. Neither fact attests
+the physical model executed. Output, continuation, cancellation, usage and
+helper-call limitations stay channel/version-specific matrix and audit facts;
+missing usage or hidden-call evidence is unknown, not zero calls or free access.
+**REAL_HARNESS_IDENTITY_ACCEPTANCE** remains OPEN under #174/#181 for separately
+authorized version-pinned real-harness receipts. #180 still governs affected
+workspace-editing lanes; synthetic #179 acceptance does not resolve it or grant
+live inference, deployment, workspace or credential access.
 
 ## Harness compatibility contract (D-056)
 
@@ -383,11 +415,13 @@ pinned reference, then alias, then logical model.
    identity; normal capacity/scarcity/authorization policy chooses among
    the resources providing it. No cross-model substitution exists; no
    exact match fails explicitly. The reasoning effort is exact:
-   `unsupported_reasoning_effort` for a variant the identity does not
-   offer, `reasoning_effort_required` when no effort is requested and
-   several calibrated variants exist (a max-only family's single legal
-   effort — `max` — is used, per D-054). A slug carried by two providers
-   is `ambiguous_logical_model`.
+   `unsupported_reasoning_effort` for a configured effort the identity does
+   not offer (`compatibility_unknown` when reasoning support is unknown),
+   `reasoning_effort_required` when no effort is requested and several distinct
+   configured efforts exist (null and literal `none` remain distinct).
+   Several opaque configurations with the same effort compete normally.
+   A max-only family's single legal effort `max` is used, per D-054.
+   A slug carried by two providers is `ambiguous_logical_model`.
 
 `GET /v1/models` lists the configured aliases first, then the exposed
 logical models: a calibrated model identity is exposed only when at
@@ -398,7 +432,9 @@ misleading `model_not_found`). Restricted and unclassified models are
 never exposed or resolvable. Every entry carries the additive
 `x_scarcity_router` metadata block: `kind`
 (`routing_alias`/`logical_model`), and for logical models `provider`,
-`reasoning_efforts`, `effective_context_limit_tokens` (model hard
+`reasoning_efforts` (configured catalog efforts with matching bound routes,
+never opaque variant names; null is omitted, literal `none` retained),
+`effective_context_limit_tokens` (model hard
 context intersected with the bound channels' known context ceilings;
 `null` = unknown, never guessed) and `max_output_tokens`. A
 recommendation is not a reservation: pinned admission re-checks current
@@ -436,7 +472,7 @@ strictness:
   `tool_choice` accepts `"none"`, `"auto"`, `"required"` or a forced
   `{"type": "function", "function": {"name": ...}}`.
 - `response_format` accepts `"text"`, `"json_object"` and `"json_schema"`.
-- `reasoning_effort` accepts `minimal`, `low`, `medium`, `high`,
+- `reasoning_effort` accepts `none`, `minimal`, `low`, `medium`, `high`,
   `xhigh`, `max`, `ultra` (the runtime-reported GPT-6-generation efforts
   entered additively with D-053).
 

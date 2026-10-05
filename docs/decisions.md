@@ -5900,6 +5900,70 @@ neither is a new live check of the current deployment.
   persistent infrastructure, broad permission grant or cross-repository mutation.
   Text contract tests establish consistency, not live failover/isolation execution.
 
+### D-071 - Gateway effort is configured catalog data, not opaque variant identity
+
+- **Status:** Accepted correction under #179 and the owner's deterministic-scope
+  continuation, 2026-10-05T16:41:45Z.
+- **Conflict resolved:** D-055 points 2/5 describe calibrated variants as efforts;
+  D-057 already separates opaque variant and configured catalog effort, and D-063
+  adopts an effort-less plan lane. Supersede only D-055's variant-as-effort reading
+  with that existing catalog field. Provider/model narrowing, exact pin admission,
+  authorization, protocol/quality gates, audit schema and D-054 remain unchanged.
+- **Logical requests:** Explicit effort intersects exact logical identity with
+  catalog entries carrying that effort. Omitted effort uses the sole distinct
+  configured effort, including null for unconfigured entries; different efforts
+  require an explicit choice. Opaque variants sharing an effort compete through
+  the existing core. Null is not literal `none`; accepting configured `none` is
+  an additive ingress vocabulary correction, not an omission or disabled-flag
+  synonym. Previously valid dialects and conflict checks remain intact.
+  Unknown reasoning support yields
+  an explicit unknown refusal when a requested effort has no evidenced match;
+  known unsupported effort is an unsupported refusal. No effort is invented.
+  The internal competitive candidate intersection retains the complete catalog,
+  registry snapshot and confirmed quota pools for resource gates and diagnostics;
+  it narrows only the existing selector view. No wire field or second inventory
+  is introduced. Single-configuration output checks carry the exact opaque variant;
+  same-effort variant-qualified resources use their own output calibration.
+- **Discovery/dispatch:** Advertise only non-null catalog efforts with a matching
+  bound provider/model/configuration. Dispatch uses that configured effort, never
+  variant text. Explicit pins compare effort to their exact catalog entry. Omitted
+  effort on plain HTTP pins AND ordinary logical HTTP requests keeps the shipped
+  preset's omitted-wire semantics; no max-to-high mapping is invented for Z.ai.
+  Worker defaults with PASS/PARTIAL reasoning-control evidence and variant-qualified
+  source pins carry catalog effort; unknown/unsupported loopback controls keep
+  omission. PARTIAL remains scoped evidence, not universal mapping or observation;
+  native runtime preflight still verifies the exact model/effort before any turn.
+  Existing shipped variants have matching configured efforts,
+  so no pin/config/data migration is needed. Plan pins remain effort-less lane pins.
+  Codex validates carried effort against its runtime listing, separately from
+  opaque catalog identity. Source-mode native bindings still reject conflicting
+  efforts and supply their evidenced native effort when omitted. Raw unconfigured
+  legacy adapter calls retain null on the wire instead of inventing control from
+  variant text; composed known logical/pinned worker calls already supply catalog
+  effort. Model/resource checks, auth, isolation and runtime effort checks remain.
+  A native alias's explicit effort cannot override the configuration whose profile
+  minima passed: a catalog-effort conflict refuses before dispatch, without
+  interpreting opaque text. Plain HTTP alias carried controls remain unchanged.
+- **Evidence boundary:** Requested, resolved and dispatched facts remain separate
+  from independent observation. Frozen response/audit fields cannot attest actual
+  physical model/effort or billing/access mode; `executed_target` is dispatch
+  provenance. UNKNOWN/unattested identity never becomes RUNTIME_VERIFIED from
+  configuration, a dispatch echo, usage totals or model self-report. Physical-model
+  requirements cannot use a plan-only lane. A new attestation-requiring consumer
+  interface is not introduced here; missing consumer guarantees belong to #174/#175.
+- **Acceptance/authority:** Owner explicitly permits deterministic #179 delivery
+  and closure after full validation and independent technical/security/UX review.
+  **REAL_HARNESS_IDENTITY_ACCEPTANCE** stays OPEN under #174/#181 for separately
+  authorized version-pinned actual harness receipts. #180/U-014 retain affected
+  workspace-editing authority. No live inference, credentials, worker authority,
+  deployment, cross-repository mutation, catalog-rating change or readiness claim.
+- **Alternatives:** Inferring effort from variant text is rejected by D-057/null
+  semantics; adding another ranker/identity store is unnecessary. For same-effort
+  configurations, existing core competition preserves capability/scarcity policy
+  without inventing defaults. Requiring effort on an unconfigured lane invents a
+  nonexistent control. Making every omitted HTTP pin inject effort would change
+  proven preset behavior and is explicitly rejected absent migration authority.
+
 ### U-014 - Native coding backend versus Kernel-owned workspace lifecycle
 
 - **Status:** Open, evidence and owner-reviewed disposition required (#180).

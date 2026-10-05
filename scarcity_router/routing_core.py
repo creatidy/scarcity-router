@@ -1441,6 +1441,7 @@ def _compatibility_failure(
     requirement: TaskRequirement,
     hard_output_tokens: int | None,
     variant_resolved: bool,
+    configured_reasoning_required: bool = False,
 ) -> tuple[tuple[str, ...], str | None, str | None]:
     """Compatibility-stage failure codes plus the first failing feature.
 
@@ -1463,7 +1464,9 @@ def _compatibility_failure(
     first_feature: str | None = None
     first_value: str | None = None
     for flag_getter, feature in _REQUEST_FEATURE_MAP:
-        if not flag_getter(request):
+        if not (flag_getter(request) or (
+            feature == "reasoning_controls" and configured_reasoning_required
+        )):
             continue
         cell = _lookup_cell(cells, entry.identity, feature)
         if cell is None:
@@ -1588,10 +1591,22 @@ def _request_output_context(
     fact is reported unresolved (``variant_resolved=False``); the
     selector's per-entry ``evaluate_hard_constraints`` still gates each
     exact variant's hard properties there.
+    A logical model narrowed to same-effort configurations may leave variant
+    choice to the core; a variant-qualified resource still supplies its exact
+    catalog output fact. An unqualified multi-variant resource stays unresolved.
     """
     effective_variant = request.explicit_variant
     if effective_variant is None and request.pinned_target is not None:
         effective_variant = request.pinned_target.model.variant
+    if (
+        effective_variant is None
+        and request.explicit_model is not None
+        and request.explicit_model.provider == entry.identity.provider
+        and request.explicit_model.model == entry.identity.model
+    ):
+        # Same-effort logical configurations still use each qualified resource's
+        # exact calibration, never a sibling variant's output ceiling.
+        effective_variant = entry.identity.variant
     if effective_variant is None:
         return None, False
     identity = entry.identity
@@ -1615,6 +1630,7 @@ def _evaluate_resource(
     eligibility_reports: tuple[ExecutionEligibility, ...],
     evaluated_at: datetime,
     continuation_capable_resource_ids: frozenset[str] | None = None,
+    configured_reasoning_required: bool = False,
 ) -> _ResourceGate:
     """Run the frozen gate pipeline for one resource.
 
@@ -1687,6 +1703,7 @@ def _evaluate_resource(
         cells,
         requirement,
         *_request_output_context(request, entry, catalog),
+        configured_reasoning_required=configured_reasoning_required,
     )
     if compatibility_codes:
         return _ResourceGate(
@@ -2275,9 +2292,23 @@ class RouteRequest:
     #: mutated — this is per-resource live capability, never a backend
     #: matrix change.
     continuation_capable_resource_ids: frozenset[str] | None = None
+    #: Internal competitive candidate intersection; gate observations stay whole.
+    #: No public recommendation or gateway request field is added.
+    candidate_identities: tuple[ModelIdentity, ...] | None = None
 
     def __post_init__(self) -> None:
         _ = _v_instance_of(self.catalog, ModelCatalog, "route_request.catalog")
+        if self.candidate_identities is not None:
+            identities = _v_tuple_of(
+                self.candidate_identities, ModelIdentity, "route_request.candidate_identities"
+            )
+            keys = {_identity_key(identity) for identity in identities}
+            if len(keys) != len(identities) or not keys.issubset(
+                {_identity_key(entry.identity) for entry in self.catalog.entries}
+            ):
+                raise RouteContractValidationError(
+                    "route_request.candidate_identities: expected unique calibrated identities"
+                )
         _ = _v_instance_of(self.profiles, TaskProfileCatalog, "route_request.profiles")
         _ = _v_instance_of(
             self.registry_snapshot, RegistrySnapshot, "route_request.registry_snapshot"
@@ -2485,6 +2516,10 @@ def _narrowed_catalog(
     reported as ``unroutable_identities`` on the route decision. An empty
     view is valid and yields the selector's explicit no-solution result.
     """
+    if request.candidate_identities is not None:
+        routable_keys = routable_keys & {
+            _identity_key(identity) for identity in request.candidate_identities
+        }
     return ModelCatalog(
         catalog_version=request.catalog.catalog_version,
         updated_on=request.catalog.updated_on,
@@ -2599,6 +2634,22 @@ def route_request(request: RouteRequest) -> RouteDecision:
                 request.eligibility_reports,
                 request.evaluated_at,
                 request.continuation_capable_resource_ids,
+                configured_reasoning_required=request.candidate_identities is not None and any(
+                    candidate.identity in request.candidate_identities
+                    and candidate.identity.provider == entry.identity.provider
+                    and candidate.identity.model == entry.identity.model
+                    and (entry.identity.variant is None
+                         or candidate.identity.variant == entry.identity.variant)
+                    and (entry.identity.variant is not None or (
+                        entry.identity.channel == "worker_bridged"
+                        and (cell := _lookup_cell(
+                            request.compatibility_cells, entry.identity, "reasoning_controls"
+                        )) is not None
+                        and cell.value in ("PASS", "PARTIAL")
+                    ))
+                    and candidate.reasoning_effort is not None
+                    for candidate in request.catalog.entries
+                ),
             )
             for entry in request.registry_snapshot.entries
         ),

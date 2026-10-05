@@ -1253,6 +1253,26 @@ class QuotaPoolAndPromotionTests(unittest.TestCase):
 
 
 class PinTests(unittest.TestCase):
+    def test_internal_candidate_intersection_preserves_gates_and_registry(self) -> None:
+        original = _request()
+        identity = original.catalog.entries[0].identity
+        narrowed = replace(original, candidate_identities=(identity,))
+        self.assertIs(narrowed.registry_snapshot, original.registry_snapshot)
+        decision = route_request(narrowed)
+        assert decision.target is not None
+        self.assertEqual(decision.target.model, identity)
+        refused = route_request(replace(narrowed, client_authorization=ClientAuthorization(
+            allowed_providers=("zai",),
+        )))
+        self.assertEqual(refused.status, ROUTE_STATUS_NO_SOLUTION)
+        self.assertIsNone(refused.target)
+        self.assertTrue(any(
+            exclusion.stage == "authorization" for exclusion in refused.target_exclusions
+        ))
+        for identities in ((identity, identity), (replace(identity, variant="missing"),)):
+            with self.subTest(identities=identities), self.assertRaises(RouteContractValidationError):
+                _ = replace(original, candidate_identities=identities)
+
     def _first_decision_id(self) -> str:
         return cast(str, route_request(_request()).decision_id)
 

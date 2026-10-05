@@ -346,32 +346,47 @@ def resolve_model_string(
 
 
 def _resolve_logical_effort(
-    resolved: ResolvedModel, requested_effort: str | None
-) -> str:
-    """Resolve the reasoning-effort variant of a logical-model request.
-
-    An explicitly requested effort is honored exactly: a variant the
-    identity does not offer is an explicit typed rejection, never a
-    downgrade and never a substitution. An omitted effort uses the
-    identity's single legal calibrated variant (a max-only family uses
-    ``max``, consistent with D-054) and fails explicitly when several
-    variants exist — no effort is ever invented.
-    """
-    variants = resolved.available_variants
+    resolved: ResolvedModel, requested_effort: str | None, catalog: ModelCatalog
+) -> ModelCatalog:
+    """Intersect exact logical identity with configured effort, never variant text."""
+    assert resolved.explicit_model is not None
+    entries = tuple(
+        entry
+        for entry in catalog.entries
+        if entry.identity.provider == resolved.explicit_model.provider
+        and entry.identity.model == resolved.explicit_model.model
+        and entry.identity.variant in resolved.available_variants
+    )
     if requested_effort is not None:
-        if requested_effort not in variants:
+        matches = tuple(
+            entry for entry in entries if entry.reasoning_effort == requested_effort
+        )
+        if not matches:
+            if any(
+                entry.hard_properties.supports_reasoning_mode is None
+                for entry in entries
+            ):
+                raise GatewayError.invalid_request(
+                    "the requested reasoning effort has no evidenced configuration",
+                    code="compatibility_unknown",
+                    param="reasoning_effort",
+                )
             raise GatewayError.invalid_request(
                 "the requested reasoning effort is not offered by this model",
                 code="unsupported_reasoning_effort",
                 param="reasoning_effort",
             )
-        return requested_effort
-    if len(variants) == 1:
-        return variants[0]
-    raise GatewayError.invalid_request(
-        "this model requires an explicit reasoning_effort",
-        code="reasoning_effort_required",
-        param="reasoning_effort",
+        entries = matches
+    elif len({entry.reasoning_effort for entry in entries}) != 1:
+        raise GatewayError.invalid_request(
+            "this model requires an explicit reasoning_effort",
+            code="reasoning_effort_required",
+            param="reasoning_effort",
+        )
+    return ModelCatalog(
+        catalog_version=catalog.catalog_version,
+        updated_on=catalog.updated_on,
+        entries=entries,
     )
 
 
@@ -467,6 +482,7 @@ def exposed_logical_models(
             catalog_entry
             for catalog_entry in catalog.entries
             if catalog_entry.identity.model == model
+            and catalog_entry.identity.provider == providers[0]
         ]
         outputs = [
             catalog_entry.hard_properties.output_tokens
@@ -539,7 +555,16 @@ def exposed_logical_models(
             # contract never advertises what no bound route evidences.
             continue
         efforts = tuple(
-            sorted({identity.variant for identity in identities if identity.variant})
+            sorted({
+                catalog_entry.reasoning_effort
+                for catalog_entry in model_entries
+                if catalog_entry.reasoning_effort is not None
+                and any(
+                    entry.identity.variant is None
+                    or entry.identity.variant == catalog_entry.identity.variant
+                    for entry in entries
+                )
+            })
         )
         infos.append(
             LogicalModelInfo(
@@ -1416,13 +1441,17 @@ class GatewayApplication:
         state.registry_generated_at = registry_snapshot.generated_at
         explicit_model = None
         explicit_variant = None
+        admission_catalog = self.catalog
+        candidate_identities = None
         if resolved.kind == LOGICAL_KIND:
-            # D-055: the effort variant is resolved (or explicitly
-            # rejected) BEFORE any admission I/O — never guessed.
+            # D-071: narrow by catalog effort before the authoritative core.
             explicit_model = resolved.explicit_model
-            explicit_variant = _resolve_logical_effort(
-                resolved, request.reasoning_effort
+            admission_catalog = _resolve_logical_effort(
+                resolved, request.reasoning_effort, self.catalog
             )
+            if len(admission_catalog.entries) == 1:
+                explicit_variant = admission_catalog.entries[0].identity.variant
+            candidate_identities = tuple(entry.identity for entry in admission_catalog.entries)
         if resolved.profile is not None:
             state.routing_profile = resolved.profile.profile_id
             state.routing_policy_version = self.profile_policy_version
@@ -1466,6 +1495,7 @@ class GatewayApplication:
                     self.profile_policy_version if routing_profile is not None else None
                 ),
                 continuation_capable_resource_ids=continuation_capable,
+                candidate_identities=candidate_identities,
             )
         except (CapacityValidationError, SelectionContractError, ValueError):
             raise GatewayError.api(
@@ -1662,46 +1692,38 @@ class GatewayApplication:
             ),
         )
         state.context = context
-        # Exact-execution discipline (D-042/D-053, Daybreak finding 2):
-        # a PINNED request is admission-only — the pinned variant is part
-        # of the execution contract, so a conflicting request effort is a
-        # typed rejection before dispatch, never a silent downgrade while
-        # the audit records the selected variant. Non-pinned profile
-        # requests keep the carried-control semantics pinned by the
-        # existing contract (the effort is a request control; the variant
-        # is the catalog configuration identity).
-        # Daybreak blocker 7: for a PINNED request the selected variant is
-        # part of the execution contract — a request effort conflicting
-        # with it is a typed rejection BEFORE anything is dispatched
-        # (executed_target stays unset, the audit stays a rejection). For
-        # the codex path an effort-less pin binds the selected variant
-        # (codex variants are native runtime efforts); server-direct
-        # presets keep their evidenced wire mapping as the authority.
-        selected_variant = target.model.variant
+        configured_effort = next(
+            entry.reasoning_effort for entry in self.catalog.entries
+            if entry.identity == target.model
+        )
         dispatched_effort = request.reasoning_effort
+        controls = _lookup_cell(
+            self.compatibility_cells, target.resource, "reasoning_controls"
+        )
+        native_default = (
+            target.resource.channel == "worker_bridged"
+            and controls is not None and controls.value in ("PASS", "PARTIAL")
+        )
         if (
-            resolved.pinned_target is not None
+            (resolved.pinned_target is not None or (native_default and resolved.kind == ALIAS_KIND))
             and dispatched_effort is not None
-            and dispatched_effort != selected_variant
+            and dispatched_effort != configured_effort
         ):
             raise GatewayError.invalid_request(
                 "the requested reasoning effort "
-                + f"{dispatched_effort!r} conflicts with the pinned "
-                + f"target's effort {selected_variant!r}",
+                + f"{dispatched_effort!r} conflicts with the selected "
+                + f"target's configured effort {configured_effort!r}",
                 code="effort_conflicts_with_target",
             )
         if (
-            resolved.pinned_target is not None
+            (resolved.kind in (PIN_KIND, LOGICAL_KIND) or target.resource.channel == "worker_bridged")
             and dispatched_effort is None
-            and target.resource.variant is not None
+            and (target.resource.variant is not None or native_default)
         ):
-            # Only EFFORT-QUALIFIED resources (variant bound in the
-            # registration identity — the derived source resources) force
-            # the selected variant onto the wire. Plain resources (e.g.
-            # loopback Ollama) keep carried-control semantics: their
-            # preset's evidenced wire mapping is the authority and may
-            # have no mapping for catalog variants.
-            dispatched_effort = selected_variant
+            # Qualified source resources carry catalog effort, not variant text.
+            # Native worker calls carry catalog effort independently of opaque
+            # configuration; plain HTTP resources keep omitted wire controls.
+            dispatched_effort = configured_effort
         state.executed_target = state.selected_target
         call = AdapterCall(
             resource=target.resource,

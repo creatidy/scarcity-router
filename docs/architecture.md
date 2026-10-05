@@ -128,8 +128,9 @@ within that resource's currently bound identities (#178), never a sibling
 variant. Identity drift or contradictory explicit model/variant constraints
 produce no solution without substitution. The public gateway pin path uses
 the unchanged exact `admit_pinned_target`; these paths are not conflated.
-Gateway effort discovery/resolution also derives effort from opaque variants
-(#179), unlike the correct D-057 recommendation output.
+Gateway effort discovery/resolution and pinned dispatch use the catalog's
+independent configured effort (#179/D-071), like D-057 recommendation output.
+Opaque variants are never interpreted as effort; plan-managed lanes carry null.
 
 Model, provider, resource, source/account/pool, access mode, effort, harness
 and adapter version remain distinct. Variant is opaque; null, literal `none`,

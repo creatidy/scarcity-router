@@ -18,6 +18,7 @@ import sys
 import threading
 import unittest
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -35,6 +36,8 @@ from scarcity_router.gateway_adapters import (  # noqa: E402
     AdapterStreamChunk,
     AdapterToolCall,
 )
+from scarcity_router.gateway_coordinator import GatewayApplication  # noqa: E402
+from tests.gateway_fixtures import ScriptedAdapter  # noqa: E402
 from scarcity_router.resource_state import ResourceIdentity  # noqa: E402
 from scarcity_router.selection_types import ModelIdentity  # noqa: E402
 from scarcity_router.worker_client import (  # noqa: E402
@@ -59,6 +62,7 @@ from scarcity_router.worker_codex_adapter import (  # noqa: E402
     terminate_codex_process,
     validate_structured_schema,
     verify_model_and_effort,
+    source_resource_id,
 )
 from scarcity_router.worker_local_adapters import (  # noqa: E402
     AdapterNotAllowedError,
@@ -816,10 +820,7 @@ class CodexAdapterTests(unittest.TestCase):
         self.assertEqual(SLUG, params.get("model"))
         self.assertEqual("high", params.get("effort"))
 
-    def test_omitted_effort_binds_the_selected_variant(self) -> None:
-        # Daybreak blocker 7: an effort-less request dispatches the
-        # selected variant — never a runtime default — while the audit
-        # records that same variant.
+    def test_unconfigured_legacy_effort_is_not_inferred_from_variant(self) -> None:
         harness = self._harness()
         result = harness.adapter.invoke(
             _call(),
@@ -830,15 +831,22 @@ class CodexAdapterTests(unittest.TestCase):
         self.assertEqual("completed", result.status)
         params = harness.trace_request("turn/start")
         assert params is not None
-        self.assertEqual("high", params.get("effort"))
+        self.assertIsNone(params.get("effort"))
 
     def test_conflicting_effort_is_rejected_before_the_turn(self) -> None:
-        # Daybreak blocker 7: a request effort conflicting with the
-        # selected variant is a typed rejection — the executed effort can
-        # never diverge from the audited variant.
+        # Source inventory is an actual native binding, unlike opaque catalog text.
         harness = self._harness()
-        result = harness.adapter.invoke(
-            _call(reasoning_effort="low"),
+        adapter = CodexLocalAdapter(
+            source_id="synthetic-source", state_dir=harness.state_dir,
+            pinned_binary=FAKE, spawner=harness.spawner, path_lookup=_bwrap_lookup,
+            platform_name="linux", platform_release="6.x-generic",
+        )
+        _ = adapter.observe_inventory()
+        resource = replace(_resource(),
+                           resource_id=source_resource_id("synthetic-source", SLUG, "high"),
+                           variant="high")
+        result = adapter.invoke(
+            _call(reasoning_effort="low", resource=resource),
             cancel_event=threading.Event(),
             deadline=_future_deadline(),
             emit=lambda chunk: None,
@@ -848,6 +856,118 @@ class CodexAdapterTests(unittest.TestCase):
         self.assertEqual("effort_conflicts_with_pin", result.calls[0].note)
         params = harness.trace_request("turn/start")
         self.assertIsNone(params)
+
+    def _gateway_world(
+        self, effort: str | None, *, include_low: bool = False,
+    ) -> tuple[GatewayApplication, ScriptedAdapter]:
+        from scarcity_router.resource_state import ResourceRegistration, ResourceRegistry
+        from scarcity_router.selection_types import ModelCatalog
+        from tests.gateway_fixtures import (
+            T_OBS, build_aliases, build_catalog, build_cells, build_registry, make_application,
+        )
+        identity = ModelIdentity(provider="openai", model=SLUG, variant="opaque-high")
+        base = build_catalog().entries[0]
+        entry = replace(base, identity=identity, reasoning_effort=effort,
+                        hard_properties=replace(base.hard_properties,
+                            supports_reasoning_mode=True if effort is not None else None))
+        entries = (entry,)
+        if include_low:
+            entry = replace(entry, capabilities=replace(entry.capabilities, reasoning=replace(
+                entry.capabilities.reasoning, rating=4,
+                rationale="synthetic high-effort calibration",
+            )))
+            entries = (entry,)
+            low = replace(entry,
+                          identity=replace(identity, variant="opaque-low"), reasoning_effort="low",
+                          capabilities=replace(entry.capabilities, reasoning=replace(
+                              entry.capabilities.reasoning, rating=2,
+                              rationale="synthetic low-effort calibration",
+                          )))
+            entries = (*entries, low)
+        template = build_registry().registry_snapshot().entries[0]
+        assert template.observation is not None
+        registry = ResourceRegistry(clock=lambda: T_OBS)
+        registry.register(ResourceRegistration(
+            identity=_resource(), freshness_ttl_seconds=300, capabilities=template.capabilities,
+        ))
+        _ = registry.apply_snapshot(replace(template.observation, identity=_resource()))
+        producer = ScriptedAdapter(channel="worker_bridged")
+        application = make_application(registry=registry, adapters=(producer,), catalog=ModelCatalog(
+            catalog_version=1, updated_on="2026-09-15", entries=entries,
+        ), aliases=build_aliases({}), cells=tuple(
+            replace(cell, model=SLUG) for cell in build_cells(include_worker=True)
+            if cell.channel == "worker_bridged"
+        ))
+        return application, producer
+
+    def test_gateway_opaque_identity_and_configured_effort_reach_real_codex_consumer(self) -> None:
+        from tests.gateway_fixtures import CLIENT_ID, parse_chat_request
+        for effort in ("high", None):
+            with self.subTest(effort=effort):
+                harness = self._harness()
+                identity = ModelIdentity(provider="openai", model=SLUG, variant="opaque-high")
+                application, producer = self._gateway_world(effort)
+                for model in (SLUG, f"sr-pin:codex-local/openai/{SLUG}/opaque-high"):
+                    _ = application.execute(client_id=CLIENT_ID, request=parse_chat_request({
+                        "model": model, "messages": [{"role": "user", "content": "hi"}],
+                    }))
+                    call = producer.dispatches[-1]
+                    self.assertEqual(call.model, identity)
+                    self.assertEqual(call.reasoning_effort, effort)
+                    result = harness.adapter.invoke(
+                        call, cancel_event=threading.Event(), deadline=_future_deadline(),
+                        emit=lambda chunk: None,
+                    )
+                    self.assertEqual(result.status, "completed")
+                    params = harness.trace_request("turn/start")
+                    assert params is not None
+                    self.assertEqual(params.get("model"), SLUG)
+                    self.assertEqual(params.get("effort"), effort)
+
+    def test_native_alias_conflict_preserves_calibrated_profile_minima_before_turn(self) -> None:
+        from scarcity_router.gateway_contracts import GatewayError
+        from scarcity_router.routing_core import ClientRoutingProfile
+        from scarcity_router.selection_types import (
+            CapabilityMinima, HardConstraints, TaskProfileCatalog, TaskProfileDefinition, TaskRequirement,
+        )
+        from tests.gateway_fixtures import CLIENT_ID, audit_records, build_aliases, parse_chat_request
+
+        harness = self._harness()
+        application, producer = self._gateway_world("high", include_low=True)
+        application.profiles = TaskProfileCatalog(definitions=(TaskProfileDefinition(
+            profile_id="careful-quality", requirement=TaskRequirement(
+                task_level="L2", capability_minima=CapabilityMinima(reasoning=4),
+                hard_constraints=HardConstraints(),
+            ),
+        ),))
+        application.aliases = build_aliases({"careful": ClientRoutingProfile(
+            profile_id="careful-quality",
+        )})
+        with self.assertRaises(GatewayError) as caught:
+            _ = application.execute(client_id=CLIENT_ID, request=parse_chat_request({
+                "model": "careful", "reasoning_effort": "low",
+                "messages": [{"role": "user", "content": "hi"}],
+            }))
+        self.assertEqual(caught.exception.code, "effort_conflicts_with_target")
+        self.assertEqual(producer.dispatch_count, 0)
+        audit = audit_records(application)[-1]
+        assert audit.selected_target is not None
+        self.assertEqual(audit.selected_target.variant, "opaque-high")
+        self.assertIsNone(audit.executed_target)
+        self.assertIsNone(harness.trace_request("turn/start"))
+        _ = application.execute(client_id=CLIENT_ID, request=parse_chat_request({
+            "model": "careful", "reasoning_effort": "high",
+            "messages": [{"role": "user", "content": "hi"}],
+        }))
+        call = producer.dispatches[-1]
+        self.assertEqual(call.model.variant, "opaque-high")
+        self.assertEqual(call.reasoning_effort, "high")
+        result = harness.adapter.invoke(call, cancel_event=threading.Event(),
+            deadline=_future_deadline(), emit=lambda chunk: None)
+        self.assertEqual(result.status, "completed")
+        params = harness.trace_request("turn/start")
+        assert params is not None
+        self.assertEqual(params.get("effort"), "high")
 
     def test_unlisted_model_is_rejected_before_execution(self) -> None:
         # The runtime's own model/list is the exact-binding authority for
