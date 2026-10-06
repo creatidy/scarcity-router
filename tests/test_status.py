@@ -511,6 +511,19 @@ class StatusRenderingTests(unittest.TestCase):
         self.assertIn("do not use purchased credits", normalized)
         self.assertIn("reported time passed; refresh to confirm", normalized)
 
+    def test_terminal_does_not_claim_offline_doctor_checks_source_or_provider_access(self) -> None:
+        for state, code in (("unavailable", "source_unavailable"), ("unknown", "telemetry_unknown")):
+            with self.subTest(state=state):
+                snapshot = _snapshot("openai", state, diagnostics=(CapacityDiagnostic(code),))
+                text = " ".join(render_terminal(StatusObservation((snapshot,), ()),
+                    collected_at=RETRIEVED_AT).split())
+                self.assertIn("checks artifacts/configuration only, not provider/source access", text)
+                self.assertIn("configured binary", text)
+                self.assertIn("scarcity-router-worker service status", text)
+                self.assertIn("Retry", text)
+                self.assertNotIn("Check access with scarcity-router doctor", text)
+                self.assertNotIn("Check source access with scarcity-router doctor", text)
+
     def test_terminal_ambiguous_windows_identified_without_assuming_shared_pool(self) -> None:
         first = replace(_window("weekly", window_id="pool-a"), scope_id="codex")
         second = replace(first, window_id="pool-b", remaining_percent=20, used_percent=80)

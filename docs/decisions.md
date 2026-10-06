@@ -5992,6 +5992,10 @@ neither is a new live check of the current deployment.
   flags: use the same selected telemetry source and service settings, not a new
   default home. No source/private path values are rendered or automatically read
   by the formatter; login's discovery/authority remain unchanged.
+  Offline doctor diagnoses packaged artifacts/default configuration, not provider
+  credentials/source access/availability. Unavailable/unknown telemetry guidance
+  instead points to documented source/binary/service checks and a read-only retry;
+  no new live diagnostic authority is inferred from the doctor command.
 - **Rich evaluation:** Public Textualize/rich HEAD observed 2026-10-06 at immutable
   [`9d8f9a372cc5916fd4781fec207ced7ddac2f08f`](https://github.com/Textualize/rich/tree/9d8f9a372cc5916fd4781fec207ced7ddac2f08f),
   commit date 2026-06-23, source manifest version 15.0.0 (not a claimed published

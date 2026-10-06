@@ -175,6 +175,10 @@ needs its new state/events. Rich was evaluated at an immutable revision (D-072);
 this static ASCII view needs no new dependency. Recovery guidance uses existing offline
 `scarcity-router doctor`, worker service status/login or ordinary Codex login;
 never use inference to diagnose telemetry.
+Offline doctor checks packaged artifacts/default configuration, not provider
+credentials, collector availability or the selected source's access. For missing
+or uncertain telemetry, verify the documented source/binary configuration and
+existing worker service status where applicable, then retry read-only status.
 
 For an installed worker with multiple Codex sources, status selection via
 `SCARCITY_ROUTER_CODEX_SOURCE` is not automatically consumed by the login command.

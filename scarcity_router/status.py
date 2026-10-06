@@ -344,11 +344,11 @@ def render_terminal(
 
     labels = {"five_hour": "5-hour", "weekly": "Weekly", "unknown": "Unknown window"}
     recovery = {
-        "unavailable": "Check access with scarcity-router doctor (offline); for a worker source, use scarcity-router-worker service status.",
-        "auth_required": "Configure Z.ai access as documented and use scarcity-router doctor (offline). Do not probe with inference.",
-        "unsupported": "This collector/source is unsupported. Check scarcity-router doctor; do not infer available quota.",
-        "schema_changed": "Collector schema changed: check scarcity-router doctor and supported collector versions. Missing fields remain unknown.",
-        "unknown": "Telemetry is uncertain. Check source access with scarcity-router doctor; rerun status without inference.",
+        "unavailable": "Verify the documented telemetry source and configured binary; for a worker source use scarcity-router-worker service status. Retry status only after restoring that source. Offline scarcity-router doctor checks artifacts/configuration only, not provider/source access.",
+        "auth_required": "Configure Z.ai access as documented. Offline scarcity-router doctor checks artifacts/configuration only, not credentials or source access. Do not probe with inference.",
+        "unsupported": "This collector/source is unsupported. Check documented source and binary versions. Offline scarcity-router doctor checks artifacts/configuration only, not source availability. Do not infer available quota.",
+        "schema_changed": "Collector schema changed: check supported collector versions. Offline scarcity-router doctor checks artifacts/configuration only, not provider schema or access. Missing fields remain unknown.",
+        "unknown": "Telemetry is uncertain. Verify documented source selection and configured binary; worker sources can use scarcity-router-worker service status. Retry telemetry-only status; missing evidence stays unknown. Offline scarcity-router doctor checks artifacts/configuration only, not provider/source access. Do not probe with inference.",
     }
     lines = ["Capacity snapshot", f"Collection started: {collected_at}", "", "Overview"]
     for snapshot in ordered:
