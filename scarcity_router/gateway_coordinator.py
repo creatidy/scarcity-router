@@ -651,6 +651,7 @@ class GatewayApplication:
         limits: GatewayLimits | None = None,
         client_key_directory: ClientKeyDirectory | None = None,
         client_authorizations: Mapping[str, ClientAuthorization] | None = None,
+        client_authorization_source: Callable[[str], ClientAuthorization] | None = None,
         clock: Callable[[], datetime] | None = None,
         request_id_factory: RequestFactory | None = None,
         continuations: ContinuationRegistry | None = None,
@@ -714,6 +715,7 @@ class GatewayApplication:
         self.client_authorizations: Mapping[str, ClientAuthorization] | None = (
             client_authorizations
         )
+        self.client_authorization_source: Callable[[str], ClientAuthorization] | None = client_authorization_source
         self.clock: Callable[[], datetime] | None = clock
         self.request_id_factory: RequestFactory | None = request_id_factory
         #: D-062: the shared continuation registry (one instance per
@@ -769,6 +771,16 @@ class GatewayApplication:
         )
 
     def _client_grant(self, client_id: str) -> ClientAuthorization:
+        if self.client_authorization_source is not None:
+            try:
+                grant = self.client_authorization_source(client_id)
+                _ = v_instance(grant, ClientAuthorization, "current_client_authorization")
+                return grant
+            except Exception:  # A failed live authority read never restores a legacy grant.
+                raise GatewayError.api(
+                    "the client's current authorization is unavailable",
+                    code="state_unavailable", http_status=503,
+                ) from None
         if self.client_authorizations is None:
             return ClientAuthorization()
         return self.client_authorizations.get(client_id, ClientAuthorization())
@@ -1664,6 +1676,23 @@ class GatewayApplication:
         started: datetime,
         resolved: ResolvedModel,
     ) -> CompletionOutcome:
+        current_entry = next((
+            entry for entry in self.registry.registry_snapshot(now=canonical_instant(started)).entries
+            if entry.identity.resource_id == target.resource.resource_id
+        ), None)
+        effective = _effective_authorization(
+            self.admin_constraints, self._client_grant(state.client_id), resolved.profile,
+        )
+        if (
+            current_entry is None or current_entry.identity != target.resource
+            or _authorization_failure_codes(current_entry, effective)
+        ):
+            raise GatewayError.permission(
+                "the client's current authorization or registration no longer covers "
+                + "the selected target; inference-only clients require an authorized "
+                + "server-direct HTTP resource",
+                code="unauthorized_target",
+            )
         adapter = self.adapters.resolve(target.resource.channel)
         if adapter is None:
             raise GatewayError.api(

@@ -30,6 +30,26 @@ def eligibility_transitions() -> dict[str, tuple[str, str, str]]:
 
 
 class WorkflowContractTests(unittest.TestCase):
+    def test_daybreak_uses_direct_codex_after_ordinary_review_not_issue_discovery(self) -> None:
+        for path in ("AGENTS.md", "docs/llm-operating-policy.md", ".kilo/command/loop.md",
+                     ".kilo/command/finish-pr.md"):
+            with self.subTest(path=path):
+                contract = text(path)
+                self.assertIn("gpt-daybreak-blue-latest", contract)
+                self.assertIn("Codex", contract)
+                self.assertIn("not a pre-implementation eligibility gate", contract)
+                self.assertIn("does not imply `SECURITY_REVIEW_UNAVAILABLE`", contract)
+                self.assertIn("HEAD/base change", contract)
+        policy = text("docs/llm-operating-policy.md")
+        self.assertIn("directly through Codex", policy)
+        self.assertIn("never through Kilo discovery or reviewer dispatch", policy)
+        self.assertIn("no fallback reviewer is permitted", policy)
+        self.assertIn("after authorized bounded technical recovery", policy)
+        loop = text(".kilo/command/loop.md")
+        self.assertLess(loop.index("## FINISH"), loop.index("## Security Review"))
+        self.assertLess(loop.index("## Security Review"), loop.index("## MERGE"))
+        self.assertIn("security approval covers those same exact objects", loop)
+
     def test_pre_delivery_gates_refresh_queue_without_terminating_or_resetting_history(self) -> None:
         transitions = eligibility_transitions()
         gates = ("unmet_prerequisite", "missing_producer", "missing_contract_artifact", "known_dependency_gate")

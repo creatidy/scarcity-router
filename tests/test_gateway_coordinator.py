@@ -34,6 +34,7 @@ from scarcity_router.gateway_audit import (
 from scarcity_router.gateway_contracts import GatewayError
 from scarcity_router.gateway_coordinator import resolve_model_string
 from scarcity_router.resource_state import ResourceRegistry
+from scarcity_router.routing_core import ClientAuthorization
 from tests.gateway_fixtures import (
     BlockingAdapter,
     CLIENT_ID,
@@ -58,6 +59,43 @@ _USER_ONLY = {"role": "user", "content": "SECRET-CONTENT-MARKER-XYZ"}
 
 
 class NonStreamingExecutionTests(unittest.TestCase):
+    def test_new_inference_grant_after_admission_refuses_native_dispatch(self) -> None:
+        adapter = ScriptedAdapter()
+        application = make_application(
+            registry=build_registry(with_worker=True), cells=build_cells(include_worker=True), adapters=[adapter],
+        )
+        reads = 0
+
+        def current_grant(_client_id: str) -> ClientAuthorization:
+            nonlocal reads
+            reads += 1
+            return ClientAuthorization(inference_only=reads > 1)
+
+        application.client_authorization_source = current_grant
+        request = parse_chat_request({
+            "model": "sr-pin:openai-worker/openai/gpt-5.6-luna/max", "messages": [_USER_ONLY],
+        })
+        with self.assertRaises(GatewayError) as caught:
+            _ = application.execute(client_id=CLIENT_ID, request=request)
+        self.assertEqual(caught.exception.code, "unauthorized_target")
+        self.assertEqual(adapter.dispatch_count, 0)
+        self.assertIsNone(audit_records(application)[-1].executed_target)
+        self.assertEqual(reads, 2)
+
+    def test_failed_current_authority_read_cannot_restore_unrestricted_grant(self) -> None:
+        application = make_application()
+
+        def unavailable(_client_id: str) -> ClientAuthorization:
+            raise RuntimeError("SYNTHETIC-SECRET-MUST-NOT-ESCAPE")
+
+        application.client_authorization_source = unavailable
+        request = parse_chat_request({"model": "deep-coding", "messages": [_USER_ONLY]})
+        with self.assertRaises(GatewayError) as caught:
+            _ = application.execute(client_id=CLIENT_ID, request=request)
+        self.assertEqual(caught.exception.code, "state_unavailable")
+        self.assertNotIn("SYNTHETIC-SECRET", str(caught.exception))
+        self.assertIsNone(audit_records(application)[-1].executed_target)
+
     def test_round_trip_completes_with_openai_shaped_outcome(self) -> None:
         application = make_application()
         request = parse_chat_request(
@@ -528,6 +566,25 @@ class CompatibilityGateTests(unittest.TestCase):
 
 class ToolRoundTripTests(unittest.TestCase):
     """The representative client flow: a multi-turn tool round-trip."""
+
+    def test_inference_only_http_returns_client_edit_tool_without_executing_it(self) -> None:
+        adapter = ScriptedAdapter(behavior=tool_call_behavior("edit_file", '{"path":"/outside"}'))
+        application = make_application(
+            adapters=[adapter], client_authorizations={CLIENT_ID: ClientAuthorization(inference_only=True)},
+        )
+        request = parse_chat_request({
+            "model": "deep-coding", "messages": [_USER_ONLY],
+            "tools": [{"type": "function", "function": {
+                "name": "edit_file", "parameters": {"type": "object", "properties": {}},
+            }}],
+        })
+        outcome = application.execute(client_id=CLIENT_ID, request=request)
+        self.assertEqual(outcome.finish_reason, "tool_calls")
+        assert outcome.message.tool_calls
+        self.assertEqual(outcome.message.tool_calls[0].name, "edit_file")
+        self.assertEqual(outcome.message.tool_calls[0].arguments, '{"path":"/outside"}')
+        self.assertEqual(adapter.dispatch_count, 1)
+        self.assertEqual(adapter.dispatches[0].resource.channel, "server_direct_http")
 
     def test_multi_turn_tool_round_trip(self) -> None:
         adapter = ScriptedAdapter(behavior=tool_call_behavior())

@@ -33,7 +33,7 @@ manually or maintaining a static model table that goes stale.
 - an autonomous coding agent or orchestrator. Recommendation-only mode does
   not edit repositories; ordinary gateway client tools remain client-owned.
   The integrated ZCode coding lane is the explicit workspace-editing exception
-  and unresolved ownership/migration conflict described below, not a general
+  and staged ownership migration described below, not a general
   task executor or Kernel integration;
 - hosted multi-user quota pooling — this is a local, single-owner service
   that never shares or resells subscription quota.
@@ -81,7 +81,8 @@ the gateway.
 The integrated ZCode plan-managed backend is a special legacy coding lane
 that can edit an explicitly authorized workspace (D-063), not an inference
 route proven compatible with Kernel-owned workspaces. Its authority boundary
-and migration remain open under
+is now governed by the owner's staged migration decision (D-073); equivalent
+Kernel-controlled replacement and legacy retirement remain open under
 [#180](https://forgejo.creatidy.com/BioMedical-IT/scarcity-router/issues/180).
 
 ## Quick Start

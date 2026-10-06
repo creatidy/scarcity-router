@@ -2117,6 +2117,9 @@ class ControlPlane:
             limits=self._config.limits,
             client_key_directory=directory,
             client_authorizations=self._config.client_authorizations,
+            client_authorization_source=lambda client_id: self._config.client_authorizations.get(
+                client_id, ClientAuthorization()
+            ),
             clock=self._clock,
             continuations=self._continuations,
             continuation_capability_source=self._continuation_capable_resources,

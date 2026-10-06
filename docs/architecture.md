@@ -150,7 +150,7 @@ preservation, with downlevel refusal where semantics cannot be retained
 (#181/#185). Auxiliary/subagent model identity, cost and control remain
 evidence-dependent, not presumed exposed by every harness (#180/#184).
 
-### Tools and the current ZCode conflict
+### Tools and staged native-agent migration
 
 Client shell/edit/read tools return to the harness; Router never executes
 them. Backend-native tools are a separate declared capability/permission
@@ -158,10 +158,55 @@ domain. The integrated D-063 ZCode path deliberately launches a coding
 harness in an administrator-authorized project under `--mode edit`. That is
 a current-state deviation from the target inference/workspace ownership,
 not proof the target is met. Do not silently remove it, switch to scratch
-or extend it to Kernel's workspace. U-014 / #180 require a supported boundary,
-explicit owner-reviewed authority and safe configuration/operator migration,
-excluding two uncoordinated agents editing the same workspace. Kernel,
+or extend it to Kernel's workspace. The owner's 2026-10-06 disposition (D-073,
+#180) settles direction: Router is the inference/resource backend only; Kernel/
+harness owns workspace, coding-agent lifecycle, tools and repository editing.
+Retirement of the working legacy path still requires equivalent accepted
+Kernel-controlled functionality and an explicit compatible migration. Kernel,
 harness and host own workspace isolation; no second Router sandbox engine.
+
+The administrator issues Kernel/harness clients a grant with
+`"inference_only": true` through the existing client-key/configuration surface.
+This narrows the same authorization intersection to `server_direct_http`:
+Router invokes its HTTP inference adapter, never a native coding agent or a
+project workspace. Both normal routing and exact pins refuse other channels as
+`unauthorized_channel`; a pin or request metadata cannot override the grant.
+Dispatch rechecks the live grant, and suspended native continuations use the
+same current authorization check. This is a Router-side authority boundary,
+not a claim that a remote provider never uses hosted tools, hidden helper calls
+or billable work. Physical identity and usage remain evidence-dependent.
+
+| Current path | Router-side authority | Inference-only grant | Remaining limitations |
+| --- | --- | --- | --- |
+| Server-direct HTTP | Model requests and client-tool transport; shell/edit/read tool calls return to the harness | Supported, subject to existing capability/authorization gates | Remote provider-side tools, helper identity/cost and billing are not attested by HTTP transport |
+| Codex worker | Official app-server with per-attempt scratch, native sandbox controls and client dynamic-tool continuation | Refused: native operations are not proved disabled | Scratch writes and vendor-managed logs/config remain possible; no Kernel project grant or exclusive-editor lease |
+| Legacy ZCode worker | Official CLI with fixed `--mode edit` in one administrator-authorized project | Refused, including tool-free prompts and exact pins | Workspace edits/native reads remain enabled; auth unverified, physical/helper identity and cost unknown |
+
+Source evidence cut: Router baseline `1dae1948f372e0f1739896655bb7db97d6b08460`;
+official ZCode tag v3.14.3 at
+`29628c9acdb81b703bbd4080c207a0e7ce5e276e` (CLI bundle version 0.16.9),
+`apps/zcode-cli/packages/cli/src/run.ts` and
+`packages/core/src/permission/service.ts` (edit explicitly permits workspace
+file edits; plan/build are not tool-free inference replacements); official Codex
+schema tag rust-v0.155.1 at `be2951ea34f0d295ed0becf97079f92fa5f6950e`.
+These are pinned structural evidence, not current installed/live acceptance.
+The observed direct-review CLI 0.159.3 is a development review tool, not proof
+of the product adapter's supported runtime or a ZCode installation.
+
+| Negative/side-effect case | Router-phase evidence/boundary | Not proved |
+| --- | --- | --- |
+| Kernel client requests legacy lane by logical name or pin, or puts paths/authority in metadata | Administrator grant refuses before worker execution; request content cannot renew authority | Kernel consumer/installed replacement acceptance |
+| Client shell/edit/read tools over supported HTTP | Returned as client function calls, never run by Router | Harness permission or tool-result correctness |
+| Deleted/replaced/symlinked authorized project | Legacy adapter withdraws readiness/refuses; construction-time device/inode and canonical path rechecked after probes | Atomic check-to-spawn filesystem fencing, malicious host replacement during a run |
+| Client/worker authority revoked | Existing key/session and continuation checks plus current pre-dispatch inference grant | Undoing previous edits or instantaneous cancellation of every in-flight call |
+| Native helpers/hidden calls, exact model/billing demands | Keep existing unknown/unsupported facts and refusal; no inference auth probe or guessed zero cost | Physical/helper identity, provider settlement or total task budget |
+| Concurrent editors/lifecycle | Inference-only client cannot dispatch the Router-owned coding lane; legacy worker retains bounded cancellation/single-instance behavior | A lease coordinating arbitrary external editors, Kernel replacement or legacy retirement |
+
+An ordinary legacy grant (field omitted/false) and the existing source/workspace/
+binary/service flags retain their behavior; no scratch substitution, yolo mode,
+new workspace manager or external-editor mutex is introduced. If a project
+directory is deliberately replaced, restarting the configured worker explicitly
+renews its construction-time grant; it must not silently adopt a new inode.
 
 ### Knowledge, economics and observability
 

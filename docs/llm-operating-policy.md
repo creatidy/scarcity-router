@@ -179,6 +179,25 @@ security_critical -> independent Daybreak Blue review required
 
 Discipline:
 
+- For Scarcity Router repository delivery, invoke `gpt-daybreak-blue-latest`
+  **directly through Codex**, never through Kilo discovery or reviewer dispatch.
+  This is a mandatory **pre-completion / pre-merge gate**, not a pre-implementation
+  eligibility gate. Kilo model discovery
+  failure does not imply `SECURITY_REVIEW_UNAVAILABLE`.
+- After required validation and ordinary independent whole-PR review pass with
+  no further implementation changes pending, freeze exact PR base and HEAD.
+  The fresh independent Codex reviewer inspects the complete frozen PR and
+  relevant security/authority context, without prior findings or desired verdict.
+  Use read-only execution and preserve credential boundaries. Persist exact
+  reviewed base/HEAD, identity `gpt-daybreak-blue-latest`, Codex execution path,
+  security findings and final verdict. Any HEAD/base change invalidates approval
+  and requires a fresh security review; ordinary approval alone cannot close it.
+- Classify `SECURITY_REVIEW_UNAVAILABLE` only when the required direct Codex path
+  cannot be exercised after authorized bounded technical recovery. Diagnose
+  routine environment/tool problems automatically under the shared recovery rule,
+  never ask the owner to operate an available authorized path. New restricted
+  access/authority remains owner-controlled; no fallback reviewer is permitted.
+  Do not propagate this repository-specific path rule to other repositories.
 - Daybreak Blue (`gpt-daybreak-blue-latest`) is a RESTRICTED security-review
   capability: discovery in some runtime's inventory never proves execution
   authorization, restricted models are never general-routed, and there is NO

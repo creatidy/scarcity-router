@@ -16,7 +16,7 @@ every rule in the sections above remains in force for recommendation-only
 mode and for every collector. Nothing in this document is relaxed by the
 gateway — the gateway adds boundaries, it never subtracts them.
 
-## Creatidy Ownership and Unresolved Native-Agent Boundary
+## Creatidy Ownership and Staged Native-Agent Boundary
 
 D-068 keeps Kernel/harness/host responsible for workspace and harness
 lifecycle, Router for its source/call permissions and admission. Client
@@ -31,9 +31,28 @@ project. That integrated authority conflicts with the target inference/
 workspace boundary (U-014 / #180). Do not claim compliance from a passing
 adapter test, silently downgrade its working mode, extend its repository
 access or allow uncoordinated internal/external editors in one workspace.
-#180 requires supported-interface evidence, explicit owner disposition and
-safe migration; future security-critical changes carry the additional
-independent security gate. This documentary record grants no new authority.
+The owner disposition for #180 (D-073, 2026-10-06) adopts staged migration:
+Router is inference/resource backend only, with Kernel/harness owning workspaces,
+tools and coding-agent lifecycle. Preserve this legacy exception until equivalent
+supported replacement and explicit migration acceptance, not a silent removal.
+The administrator must issue Kernel-controlled inference clients an
+`inference_only: true` grant. It authorizes only the current server-direct HTTP
+transport; native worker routes, including scratch-based Codex, are refused
+before execution. Client tools still return to the harness. Missing/false grants
+preserve legacy semantics; client names/metadata never supply authority, so
+existing keys must not be assumed migrated by their label alone.
+
+The legacy project is canonicalized and bound to its device/inode at adapter
+construction, rechecked for readiness and before/after non-inference probes.
+Deletion, symlink substitution or replacement is not a renewed grant. This is
+not an atomic filesystem fence, native-tool isolation proof or external-editor
+lease. No new general sandbox or concurrent Kernel editor is authorized.
+Future native inference support must evidence its own controls; absence of
+client tools or changing `edit` to `build` cannot establish it. See the
+[authority/negative matrix](architecture.md#tools-and-staged-native-agent-migration).
+Security-critical delivery requires ordinary independent review plus exact-base/
+HEAD Daybreak review directly through Codex before completion/merge under
+`docs/llm-operating-policy.md`; this is not an implementation eligibility gate.
 
 MI receives public knowledge only, never private quota, prompts or credentials.
 Console consumes authorized Router state/commands, not its database; reuse

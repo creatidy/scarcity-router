@@ -569,6 +569,42 @@ class InvocationShapeTests(unittest.TestCase):
         self.assertIn("workspace_unavailable", result.calls[0].note)
         self.assertEqual(self.harness.spawner.run_specs, [])
 
+    def test_replacing_project_directory_does_not_renew_workspace_authority(self) -> None:
+        old_project = self.harness.workspace_real.with_name("original-project")
+        _ = self.harness.workspace_real.rename(old_project)
+        self.harness.workspace_real.mkdir()
+        self.assertEqual(self.harness.adapter.resource_ids, ())
+        result = self.harness.adapter.invoke(
+            _call(), cancel_event=threading.Event(), deadline=_future_deadline(), emit=_chunks(),
+        )
+        self.assertEqual(result.status, "failed")
+        assert result.calls is not None
+        self.assertEqual(result.calls[0].note, "workspace_invalid")
+        self.assertEqual(self.harness.spawner.run_specs, [])
+
+    def test_workspace_is_rechecked_after_non_inference_probes(self) -> None:
+        spawner = self.harness.spawner
+        workspace = self.harness.workspace_real
+
+        def replacing_probe(spec: CodexSpawnSpec) -> subprocess.Popen[bytes]:
+            proc = spawner(spec)
+            if list(spec.argv[1:2]) == ["doctor"]:
+                _ = workspace.rename(workspace.with_name("original-project"))
+                workspace.mkdir()
+            return proc
+
+        adapter = ZCodeLocalAdapter(
+            source_id="zc1", authorized_workspace=workspace,
+            pinned_binary=self.harness.bin_path, spawner=replacing_probe,
+        )
+        result = adapter.invoke(
+            _call(), cancel_event=threading.Event(), deadline=_future_deadline(), emit=_chunks(),
+        )
+        self.assertEqual(result.status, "failed")
+        assert result.calls is not None
+        self.assertEqual(result.calls[0].note, "workspace_invalid")
+        self.assertEqual(spawner.run_specs, [])
+
     def test_child_environment_is_minimal(self) -> None:
         emit = _chunks()
         result = self.harness.adapter.invoke(

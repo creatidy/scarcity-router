@@ -84,6 +84,17 @@ delivery; STOP_REVISE still requires an explicit owner decision, not a new PR/na
    rule's terminal contracts only when paths/budget are exhausted or a genuine owner
    decision remains. Preserve all consumed ordinals, including malformed/failed attempts.
 
+For `security_critical` work, ordinary APPROVE alone does not yield completion
+or READY_TO_MERGE. After required validation and ordinary review pass at a stable
+exact base/HEAD with no changes pending, run the additional independent
+`gpt-daybreak-blue-latest` review directly through Codex, not Kilo, under
+`docs/llm-operating-policy.md`. This is a pre-completion / pre-merge gate, not a
+pre-implementation eligibility gate. Kilo discovery failure does not imply
+`SECURITY_REVIEW_UNAVAILABLE`. Record exact reviewed base/HEAD, reviewer identity,
+Codex execution path, findings and verdict; any HEAD/base change requires fresh
+security review. No fallback reviewer is permitted. Apply bounded technical
+recovery to direct Codex problems before declaring required access unavailable.
+
 Return one final report: issue/PR URLs, every reviewed HEAD/base/verdict,
 review ordinals, remediation commits, final exact HEAD, validation/limitations and exactly one
 terminal status READY_TO_MERGE, STOP_REVISE, OWNER_DECISION_NEEDED or BLOCKED.

@@ -6020,9 +6020,74 @@ neither is a new live check of the current deployment.
   entry points prove one collection/clock and exact JSON/piped text. No live quota,
   account/source/service/real-harness or inference acceptance claimed.
 
+### D-073 - Staged native-agent authority migration and Router inference-only grants
+
+- **Status:** Accepted owner direction under #180, 2026-10-06T14:57:10Z;
+  implementation scoped to the Router boundary, not replacement/retirement.
+- **Conflict resolved:** D-063's working `--mode edit` lane is a temporary legacy
+  compatibility exception, not the D-068 target. Kernel/harness owns workspace,
+  coding-agent lifecycle, tools and repository edits. Preserve the legacy mode,
+  project, service/authentication/operator journey and required capabilities until
+  equivalent Kernel-controlled functionality and explicit migration are accepted.
+- **Router phase:** Add optional strict `ClientAuthorization.inference_only`
+  (default false/omitted for compatibility) to the administrator-issued grant.
+  It narrows existing channel authorization to `server_direct_http` using the
+  authoritative core, including exact pinned admission and continuation checks;
+  dispatch checks the current grant again. No request-supplied workspace, new
+  endpoint, wire field/version, inventory, ranker, sandbox or lifecycle is created.
+  Administrators explicitly issue Kernel clients this restricted key; arbitrary
+  labels/metadata and old unrestricted keys are not evidence of that migration.
+- **Support/refusal:** HTTP transport does not launch a Router-owned coding agent;
+  client tools return to the harness. This is not remote provider-native-tool,
+  hidden-call, physical-model or billing attestation. All other current channels
+  are unsupported for this grant: Codex scratch is not native-tool-free, and
+  ZCode edit is not inference-only. Do not relabel them or silently choose plan/
+  build, which lose legacy capabilities and still permit native reads/tools.
+  Worker-bridged HTTP support can be evidenced separately; conservatively refusing
+  it in this new opt-in grant changes no existing supported worker mode.
+- **Source/provenance:** Inspected official ZCode v3.14.3 commit
+  `29628c9acdb81b703bbd4080c207a0e7ce5e276e`, CLI 0.16.9, permission service
+  `checkEditMode` and headless mode selection; Codex schema rust-v0.155.1 commit
+  `be2951ea34f0d295ed0becf97079f92fa5f6950e`. Router baseline
+  `1dae1948f372e0f1739896655bb7db97d6b08460` supplies actual consumed controls.
+  Structural source/tests are not live vendor confinement or installed acceptance.
+  No upstream code/dependency adopted or redistributed; original Apache-2.0
+  source checkouts are evidence only. Service terms remain separately governed
+  by D-061's single-owner approval; no new credential or access scope.
+- **Legacy authority correction:** Pin construction-time canonical project
+  device/inode and recheck after structural probes. A different directory at
+  the same path cannot silently inherit the administrator's grant. Explicit
+  worker restart renews a deliberately replaced configured project. This does
+  not promise atomic filesystem fencing, external-editor exclusion, helper-model
+  control or undo on cancellation/revocation. No second workspace manager.
+- **Validation/remaining gates:** Core intersection/pins, composed restricted-key
+  refusal with zero native runs, client-tool return, malicious metadata/path,
+  project loss/replacement, legacy edit/argv/cancellation evidence. Kernel #50/#52
+  and composed installed/live receipt govern replacement and retirement, not
+  permission to begin this bounded Router phase. Do not close the full migration
+  or claim replacement/retirement merely from Router-phase delivery.
+
+### D-074 - Direct-Codex security review path and timing for Router delivery
+
+- **Status:** Accepted explicit owner clarification, 2026-10-06T19:44:26Z,
+  same invocation `2026-10-06T16:00:17Z`; #180 review count still zero at clarification.
+- **Correction:** Kilo discovery failure was incorrectly treated as restricted
+  reviewer unavailability and a pre-implementation gate. Daybreak is available
+  only through direct Codex. Implement normally, validate, obtain ordinary
+  independent whole-PR approval, then freeze the complete exact PR base/HEAD and
+  run fresh independent `gpt-daybreak-blue-latest` through read-only Codex before
+  completion or merge. Persist identity/path/SHAs/findings/verdict. HEAD/base
+  changes invalidate approval and require renewed exact review.
+- **Unavailability:** Only direct-Codex inability after authorized bounded recovery
+  establishes `SECURITY_REVIEW_UNAVAILABLE`. No substitute, waiver or permission
+  weakening; no owner mechanics handoff when the path can run autonomously.
+  This is Router-specific development governance, not a product inference route
+  or cross-repository propagation authority. Model-policy/catalog remain unchanged.
+
 ### U-014 - Native coding backend versus Kernel-owned workspace lifecycle
 
-- **Status:** Open, evidence and owner-reviewed disposition required (#180).
+- **Status:** Direction settled by D-073; replacement/retirement evidence remains
+  open under #180 and its Kernel counterparts.
 - **Conflict:** D-063 intentionally launches ZCode under `--mode edit` in an
   administrator-authorized project; D-068 assigns workspaces/harness lifecycle
   to Kernel and excludes uncoordinated internal/external agents editing one
@@ -6031,7 +6096,8 @@ neither is a new live check of the current deployment.
 - **Alternatives to prove:** A separately declared compatible coding lane with
   explicit Kernel/harness authority; a supported inference-only native surface;
   or justified adaptation/removal with operator/configuration migration. No
-  alternative is selected here, no working mode is silently downgraded, and no
+  alternative was selected in the original record; D-073 now selects staged
+  migration. No working mode is silently downgraded, and no
   second general sandbox is proposed.
 - **Decision evidence:** Exact official runtime/version/tool/control semantics,
   authority/side-effect matrix, negative producer-consumer tests, compatible
