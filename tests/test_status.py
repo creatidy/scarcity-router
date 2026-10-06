@@ -6,6 +6,7 @@ import io
 import json
 import os
 import unittest
+from dataclasses import replace
 from contextlib import AbstractContextManager
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -15,6 +16,8 @@ from unittest import mock
 
 from scarcity_router import CapacityDiagnostic, CapacitySnapshot, CapacityWindow
 from scarcity_router import status, worker_service
+from scarcity_router import cli
+from scarcity_router.eligibility import ExecutionEligibility
 from scarcity_router.codex_home import ControlledCodexHome
 from tests.observation import paired_observation
 from scarcity_router.providers.openai_codex_acquisition import OpenAICodexObservation
@@ -26,6 +29,7 @@ from scarcity_router.status import (
     main,
     render_human,
     render_json,
+    render_terminal,
 )
 
 RETRIEVED_AT = "2026-09-05T09:00:00.123Z"
@@ -409,6 +413,143 @@ class OpenAISourceSelectionTests(unittest.TestCase):
 
 
 class StatusRenderingTests(unittest.TestCase):
+    def test_terminal_overview_has_a_stable_healthy_content_golden(self) -> None:
+        text = render_terminal(StatusObservation(_healthy_snapshots(), ()), collected_at=RETRIEVED_AT, width=120)
+        overview = text.split("Overview\n", 1)[1].split("\n\nDetails", 1)[0]
+        self.assertEqual(overview, "\n".join((
+            "openai: collection ok; lowest reported 65% (5-hour tokens); policy not reported (unknown)",
+            "zai: collection ok; lowest reported 98% (5-hour tokens); policy not reported (unknown)",
+        )))
+
+    def test_terminal_overview_reports_limiting_weekly_and_short_windows_without_policy_ranking(self) -> None:
+        for kind in ("weekly", "five_hour"):
+            with self.subTest(kind=kind):
+                other = "five_hour" if kind == "weekly" else "weekly"
+                snapshot = _snapshot("openai", windows=(
+                    _window(other, used=10, remaining=90),
+                    _window(kind, used=95, remaining=5),
+                ))
+                observed = StatusObservation((snapshot,), ())
+                text = render_terminal(observed, collected_at=RETRIEVED_AT)
+                self.assertIn("Overview", text)
+                self.assertIn("lowest reported 5%", text)
+                self.assertIn("Details", text)
+                self.assertIn("policy not reported (unknown)", " ".join(text.split()))
+                self.assertIn("not execution readiness", " ".join(text.split()))
+                self.assertIn("never sum scopes", text)
+                self.assertNotIn("eligible", text)
+
+    def test_terminal_unknown_absent_and_exhausted_are_not_conflated(self) -> None:
+        unknown = _window("unknown", used=None, remaining=None, reset=None)
+        exhausted = _window("weekly", used=100, remaining=0, reset=None)
+        observed = StatusObservation((_snapshot("openai", windows=(unknown, exhausted)),), ())
+        text = render_terminal(observed, collected_at=RETRIEVED_AT)
+        normalized = " ".join(text.split())
+        self.assertIn("lowest reported 0%", text)
+        self.assertIn("unknown/unclassified window(s)", normalized)
+        self.assertIn("remaining unknown, used unknown", text)
+        self.assertIn("unknown (not immediate)", text)
+        self.assertIn("This reported window is exhausted", text)
+        absent = _snapshot("openai", "unavailable", diagnostics=(CapacityDiagnostic("source_unavailable"),))
+        text = render_terminal(StatusObservation((absent,), ()), collected_at=RETRIEVED_AT)
+        self.assertIn("quota unknown, not exhausted or full", text)
+        self.assertNotIn("lowest reported 0%", text)
+        self.assertNotIn("remaining 100%", text)
+
+    def test_terminal_collection_failures_have_safe_existing_recovery_without_inference(self) -> None:
+        for state, code in (
+            ("auth_required", "auth_required"), ("schema_changed", "schema_changed"),
+            ("unsupported", "unsupported_source"), ("unknown", "telemetry_unknown"),
+        ):
+            with self.subTest(state=state):
+                snapshot = _snapshot("openai", state, diagnostics=(CapacityDiagnostic(code),))
+                text = render_terminal(StatusObservation((snapshot,), ()), collected_at=RETRIEVED_AT)
+                self.assertIn(state, text)
+                self.assertIn("unknown", text)
+                self.assertIn("Recovery:", text)
+                self.assertNotIn("/home/", text)
+                self.assertNotIn("Authorization", text)
+                self.assertNotIn("remaining 0%", text)
+                if state == "auth_required":
+                    self.assertIn("scarcity-router-worker codex-login", " ".join(text.split()))
+                    self.assertIn("Do not probe with inference", " ".join(text.split()))
+
+    def test_terminal_fetch_age_and_policy_block_are_separate_from_quota(self) -> None:
+        healthy = _healthy_snapshots()[0]
+        snapshot = replace(healthy, retrieved_at="2026-09-04T09:00:00.123Z", windows=tuple(
+            replace(window, resets_at="2026-09-04T12:00:00.000Z") for window in healthy.windows
+        ))
+        report = ExecutionEligibility(schema_version=1, provider="openai", source=snapshot.source,
+            retrieved_at=snapshot.retrieved_at, state="policy_blocked", reason_codes=("purchased_credits_present",))
+        text = render_terminal(StatusObservation((snapshot,), (report,)), collected_at=RETRIEVED_AT)
+        normalized = " ".join(text.split())
+        self.assertIn("1d since fetch", text)
+        self.assertIn("not a freshness verdict", normalized)
+        self.assertIn("policy policy_blocked", normalized)
+        self.assertIn("purchased_credits_present", text)
+        self.assertIn("remaining 65%", text)
+        self.assertIn("do not use purchased credits", normalized)
+        self.assertIn("reported time passed; refresh to confirm", normalized)
+
+    def test_terminal_ambiguous_windows_identified_without_assuming_shared_pool(self) -> None:
+        first = replace(_window("weekly", window_id="pool-a"), scope_id="codex")
+        second = replace(first, window_id="pool-b", remaining_percent=20, used_percent=80)
+        observation = StatusObservation((_snapshot("openai", windows=(first, second)),), ())
+        text = render_terminal(observation, collected_at=RETRIEVED_AT)
+        self.assertIn("[pool-a]", text)
+        self.assertIn("[pool-b]", text)
+        self.assertIn("scope: codex", text)
+        self.assertIn("never sum scopes or assume a shared/account pool", " ".join(text.split()))
+        reversed_observation = replace(observation, snapshots=(replace(observation.snapshots[0], windows=(second, first)),))
+        self.assertEqual(text, render_terminal(reversed_observation, collected_at=RETRIEVED_AT))
+
+    def test_terminal_does_not_promote_an_unpaired_old_policy_report(self) -> None:
+        snapshot = _healthy_snapshots()[0]
+        report = ExecutionEligibility(schema_version=1, provider="openai", source=snapshot.source,
+            retrieved_at="2026-09-04T09:00:00.123Z", state="eligible", reason_codes=())
+        text = render_terminal(StatusObservation((snapshot,), (report,)), collected_at=RETRIEVED_AT)
+        self.assertIn("policy not reported (unknown)", " ".join(text.split()))
+        self.assertNotIn("policy: eligible", text)
+
+    def test_both_cli_entrypoints_use_one_clock_and_keep_json_and_pipes_byte_compatible(self) -> None:
+        class Terminal(io.StringIO):
+            @override
+            def isatty(self) -> bool:
+                return True
+
+        snapshots = _healthy_snapshots()
+        for entrypoint in (main, cli.main):
+            for tty, json_output in ((True, False), (False, False), (True, True), (False, True)):
+                with self.subTest(entrypoint=entrypoint.__module__, tty=tty, json=json_output):
+                    collectors, fakes = _collector_set(snapshots)
+                    output = Terminal() if tty else io.StringIO()
+                    calls = 0
+
+                    def clock() -> datetime:
+                        nonlocal calls
+                        calls += 1
+                        return datetime.fromisoformat(RETRIEVED_AT.replace("Z", "+00:00"))
+
+                    with TemporaryDirectory() as home, mock.patch.dict(os.environ, {
+                        "HOME": home, "XDG_CONFIG_HOME": str(Path(home) / "config"),
+                        "COLUMNS": "32", "NO_COLOR": "1", "FORCE_COLOR": "1",
+                    }, clear=True):
+                        result = entrypoint(["status", *( ["--json"] if json_output else [])],
+                            stdout=output, collectors=collectors, clock=clock)
+                    self.assertEqual(result, 0)
+                    self.assertEqual(calls, 1)
+                    self.assertEqual([item[0] for item in fakes.calls], ["openai", "zai"])
+                    if json_output:
+                        self.assertEqual(output.getvalue(), render_json(snapshots))
+                    elif tty:
+                        screen = output.getvalue()
+                        self.assertIn("Capacity snapshot", screen)
+                        self.assertLessEqual(max(map(len, screen.splitlines())), 32)
+                        self.assertTrue(all(character == "\n" or 32 <= ord(character) < 127 for character in screen))
+                        self.assertNotIn("\x1b", screen)
+                    else:
+                        self.assertEqual(output.getvalue(), render_human(snapshots))
+
     def test_human_and_json_contain_exactly_openai_and_zai(self) -> None:
         snapshots = _healthy_snapshots()
         text = render_human((snapshots[1], snapshots[0]))

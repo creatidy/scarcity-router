@@ -184,6 +184,14 @@ the same envelope. Excluded candidates in `/v1/select` decisions carry the
 paired report as `execution_eligibility` with the
 `execution_*` reason codes (D-039).
 
+CLI presentation remains deliberately separate: `status --json` is the frozen
+canonical snapshot **array**, not the REST/MCP envelope, and includes no policy
+reports. The terminal-only human view (D-072/#182) displays paired policy reports
+when present, collection/quotas/source/fetch age and safe recovery as distinct
+facts; no report is unknown, not eligible. Piped text and all JSON bytes/order,
+streams, exit codes and flags remain compatible. No extra collection or clock
+read, execution readiness claim, scope aggregation or watch service is added.
+
 Provider operational states — `unavailable`, `auth_required`,
 `unsupported`, `schema_changed`, `unknown`, exhausted windows — are DATA:
 they normally still produce a successful HTTP 200 `/v1/status` response

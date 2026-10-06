@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import sys
 from collections.abc import Sequence
 from datetime import datetime
@@ -57,6 +58,8 @@ from .status import (
     collect_status,
     render_human,
     render_json,
+    render_terminal,
+    observation_timestamp,
 )
 
 
@@ -502,12 +505,20 @@ def _run_status(
     json_output = args.get("json")
     if not isinstance(json_output, bool):
         raise RuntimeError("parser produced an invalid JSON output argument")
-    observation = collect_status(collectors=collectors, clock=clock)
-    _ = output.write(
-        render_json(observation.snapshots)
-        if json_output
-        else render_human(observation.snapshots)
+    collected_at = observation_timestamp(clock)
+    observation = collect_status(
+        collectors=collectors,
+        clock=lambda: datetime.fromisoformat(collected_at.replace("Z", "+00:00")),
     )
+    if json_output:
+        rendered = render_json(observation.snapshots)
+    elif output.isatty():
+        rendered = render_terminal(
+            observation, collected_at=collected_at, width=shutil.get_terminal_size().columns,
+        )
+    else:
+        rendered = render_human(observation.snapshots)
+    _ = output.write(rendered)
     return 0
 
 
