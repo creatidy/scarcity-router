@@ -176,6 +176,15 @@ this static ASCII view needs no new dependency. Recovery guidance uses existing 
 `scarcity-router doctor`, worker service status/login or ordinary Codex login;
 never use inference to diagnose telemetry.
 
+For an installed worker with multiple Codex sources, status selection via
+`SCARCITY_ROUTER_CODEX_SOURCE` is not automatically consumed by the login command.
+Use `scarcity-router-worker codex-login --source SOURCE_ID --state-dir STATE_DIR
+--codex-bin CODEX_BIN`, choosing that same source and the installed service's
+matching state directory and binary settings. Omit the binary flag only when the
+service has no pin. Bare login discovers settings only for a single source;
+explicit `--source` does not discover the omitted state directory/binary. The
+terminal guidance uses placeholders, never disclosing those private values.
+
 When an installed worker service has exactly one Codex source, OpenAI
 telemetry automatically uses that source's existing isolated session: the
 same one refreshed by `make codex-login`. An ambient `CODEX_HOME` does not

@@ -345,7 +345,7 @@ def render_terminal(
     labels = {"five_hour": "5-hour", "weekly": "Weekly", "unknown": "Unknown window"}
     recovery = {
         "unavailable": "Check access with scarcity-router doctor (offline); for a worker source, use scarcity-router-worker service status.",
-        "auth_required": "Sign in to the same telemetry source: scarcity-router-worker codex-login for a configured Codex worker, codex login for ordinary Codex, or configure Z.ai access as documented. Do not probe with inference.",
+        "auth_required": "Configure Z.ai access as documented and use scarcity-router doctor (offline). Do not probe with inference.",
         "unsupported": "This collector/source is unsupported. Check scarcity-router doctor; do not infer available quota.",
         "schema_changed": "Collector schema changed: check scarcity-router doctor and supported collector versions. Missing fields remain unknown.",
         "unknown": "Telemetry is uncertain. Check source access with scarcity-router doctor; rerun status without inference.",
@@ -405,7 +405,18 @@ def render_terminal(
         if diagnostic_line is not None:
             lines.append(diagnostic_line)
         if snapshot.status in recovery:
-            lines.append("  Recovery: " + recovery[snapshot.status])
+            guidance = recovery[snapshot.status]
+            if snapshot.status == "auth_required" and snapshot.provider == "openai":
+                guidance = (
+                    "For ordinary Codex telemetry use codex login. For a single installed worker source, "
+                    "scarcity-router-worker codex-login discovers its service settings. With multiple sources use "
+                    "scarcity-router-worker codex-login --source SOURCE_ID --state-dir STATE_DIR --codex-bin CODEX_BIN. "
+                    "Select the same source as SCARCITY_ROUTER_CODEX_SOURCE and matching installed-service state directory "
+                    "and binary pin; explicit --source does not discover those settings. Omit --codex-bin only if the "
+                    "service has no binary pin. Use existing service configuration, not another default home. "
+                    "Placeholders are not private paths or source values. Do not probe with inference."
+                )
+            lines.append("  Recovery: " + guidance)
         lines.append("")
     lines.extend((
         "Windows: never sum scopes or assume a shared/account pool from this view.",

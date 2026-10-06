@@ -329,6 +329,26 @@ class OpenAISourceSelectionTests(unittest.TestCase):
             self.state / "codex-sources/source-two/codex-home",
         )
 
+    def test_multisource_custom_state_and_binary_recovery_describes_the_same_home_without_paths(self) -> None:
+        binary = self.root / "codex"
+        _ = binary.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        binary.chmod(0o755)
+        self._install(("source-one", "source-two"), binary=str(binary))
+        os.environ[status.CODEX_SOURCE_ENV] = "source-two"
+        collected = self._collect()
+        self.assertEqual(self.calls[-1][1], binary)
+        self.assertEqual(self.calls[-1][2], self.state / "codex-sources/source-two/codex-home")
+        snapshot = replace(collected.snapshot, status="auth_required", windows=(),
+                           diagnostics=(CapacityDiagnostic("auth_required"),))
+        screen = " ".join(render_terminal(StatusObservation((snapshot,), ()),
+            collected_at=RETRIEVED_AT).split())
+        self.assertIn("--source SOURCE_ID --state-dir STATE_DIR --codex-bin CODEX_BIN", screen)
+        self.assertIn("same source as SCARCITY_ROUTER_CODEX_SOURCE", screen)
+        self.assertIn("explicit --source does not discover those settings", screen)
+        self.assertNotIn(str(self.root), screen)
+        self.assertNotIn("source-two", screen)
+        self.assertNotIn("source-one", screen)
+
     def test_local_opt_out_skips_even_malformed_worker_configuration(self) -> None:
         _ = self.unit.write_text("malformed unit", encoding="utf-8")
         os.environ[status.CODEX_SOURCE_ENV] = "@local"
