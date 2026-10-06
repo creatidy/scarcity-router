@@ -12,7 +12,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import sys
+import textwrap
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -313,6 +315,127 @@ def render_json(snapshots: Sequence[CapacitySnapshot]) -> str:
     return json.dumps(payload, indent=2, sort_keys=True) + "\n"
 
 
+def render_terminal(
+    observation: StatusObservation, *, collected_at: str, width: int = 80,
+) -> str:
+    """A static ASCII view of normalized facts, not a selector or readiness policy."""
+    now = datetime.fromisoformat(collected_at.replace("Z", "+00:00"))
+    reports = {
+        snapshot.provider: report
+        for snapshot in observation.snapshots
+        for report in observation.eligibility
+        if (report.provider, report.source, report.retrieved_at)
+        == (snapshot.provider, snapshot.source, snapshot.retrieved_at)
+    }
+    ordered = _ordered_snapshots(observation.snapshots)
+    if not ordered:
+        raise ValueError("status requires at least one provider snapshot")
+
+    def duration(seconds: float) -> str:
+        total = max(0, int(seconds))
+        parts: list[str] = []
+        for unit, size in (("d", 86_400), ("h", 3_600), ("m", 60), ("s", 1)):
+            value, total = divmod(total, size)
+            if value:
+                parts.append(f"{value}{unit}")
+            if len(parts) == 2:
+                break
+        return " ".join(parts) or "0s"
+
+    labels = {"five_hour": "5-hour", "weekly": "Weekly", "unknown": "Unknown window"}
+    recovery = {
+        "unavailable": "Verify the documented telemetry source and configured binary; for a worker source use scarcity-router-worker service status. Retry status only after restoring that source. Offline scarcity-router doctor checks artifacts/configuration only, not provider/source access.",
+        "auth_required": "Configure Z.ai access as documented. Offline scarcity-router doctor checks artifacts/configuration only, not credentials or source access. Do not probe with inference.",
+        "unsupported": "This collector/source is unsupported. Check documented source and binary versions. Offline scarcity-router doctor checks artifacts/configuration only, not source availability. Do not infer available quota.",
+        "schema_changed": "Collector schema changed: check supported collector versions. Offline scarcity-router doctor checks artifacts/configuration only, not provider schema or access. Missing fields remain unknown.",
+        "unknown": "Telemetry is uncertain. Verify documented source selection and configured binary; worker sources can use scarcity-router-worker service status. Retry telemetry-only status; missing evidence stays unknown. Offline scarcity-router doctor checks artifacts/configuration only, not provider/source access. Do not probe with inference.",
+    }
+    lines = ["Capacity snapshot", f"Collection started: {collected_at}", "", "Overview"]
+    for snapshot in ordered:
+        known = [window for window in snapshot.windows if (
+            window.remaining_percent is not None and window.kind != "unknown"
+            and window.resource != "unknown"
+        )]
+        if known:
+            lowest = min(known, key=lambda window: (cast(int, window.remaining_percent), _window_sort_key(window)))
+            quota = f"lowest reported {lowest.remaining_percent}% ({labels[lowest.kind]} {lowest.resource})"
+        else:
+            quota = "quota unknown (no comparable reported windows)"
+        uncertain = len(snapshot.windows) - len(known)
+        if uncertain:
+            quota += f"; {uncertain} unknown/unclassified window(s)"
+        report = reports.get(snapshot.provider)
+        policy = report.state if report is not None else "not reported (unknown)"
+        lines.append(f"{snapshot.provider}: collection {snapshot.status}; {quota}; policy {policy}")
+    lines.extend(("", "Details"))
+    for snapshot in ordered:
+        lines.append(f"Provider {snapshot.provider} | collection: {snapshot.status}")
+        lines.append(f"  Source: {snapshot.source}; plan: {snapshot.plan or 'unknown'}")
+        age = (now - datetime.fromisoformat(snapshot.retrieved_at.replace("Z", "+00:00"))).total_seconds()
+        age_text = duration(age) + " since fetch" if age >= 0 else "ahead of collection clock; timing unknown"
+        lines.append(f"  Fetched: {snapshot.retrieved_at} ({age_text})")
+        for window in sorted(snapshot.windows, key=_window_sort_key):
+            identity = (window.kind, window.resource, window.scope_id)
+            ambiguous = sum((other.kind, other.resource, other.scope_id) == identity for other in snapshot.windows) > 1
+            label = f"{labels[window.kind]} {window.resource}"
+            if ambiguous and window.window_id is not None:
+                label += f" [{window.window_id}]"
+            lines.append(f"  {label}: remaining {_format_percentage(window.remaining_percent)}, used {_format_percentage(window.used_percent)}")
+            if window.resets_at is None:
+                reset = "unknown (not immediate)"
+            else:
+                delta = (datetime.fromisoformat(window.resets_at.replace("Z", "+00:00")) - now).total_seconds()
+                relative = "in " + duration(delta) if delta > 0 else "reported time passed; refresh to confirm"
+                reset = window.resets_at + " (" + relative + ")"
+            lines.append(f"    Reset: {reset}; scope: {window.scope_id or 'unknown applicability'}")
+            if (window.remaining_percent == 0 and window.kind != "unknown"
+                    and window.resource != "unknown"):
+                lines.append("    This reported window is exhausted. Wait for its reset; do not redeem benefits or test with inference.")
+        if not snapshot.windows:
+            lines.append("  No reported windows: quota unknown, not exhausted or full.")
+        report = reports.get(snapshot.provider)
+        if report is None:
+            lines.append("  Included-allowance policy: not reported; no execution eligibility inferred.")
+        elif report.state == "eligible":
+            lines.append("  Included-allowance policy: eligible for this observation; not task/model fit or execution readiness.")
+        else:
+            lines.append(f"  Included-allowance policy: {report.state}; reasons: {', '.join(report.reason_codes)}")
+            lines.append("  Keep included-only execution blocked until these conditions are resolved; do not use purchased credits.")
+        diagnostic_line = _format_diagnostics(snapshot)
+        if diagnostic_line is not None:
+            lines.append(diagnostic_line)
+        if snapshot.status in recovery:
+            guidance = recovery[snapshot.status]
+            if snapshot.status == "auth_required" and snapshot.provider == "openai":
+                guidance = (
+                    "For ordinary Codex telemetry use codex login. For a single installed worker source, "
+                    "scarcity-router-worker codex-login discovers its service settings. With multiple sources use "
+                    "scarcity-router-worker codex-login --source SOURCE_ID --state-dir STATE_DIR --codex-bin CODEX_BIN. "
+                    "Select the same source as SCARCITY_ROUTER_CODEX_SOURCE and matching installed-service state directory "
+                    "and binary pin; explicit --source does not discover those settings. Omit --codex-bin only if the "
+                    "service has no binary pin. Use existing service configuration, not another default home. "
+                    "Placeholders are not private paths or source values. Do not probe with inference."
+                )
+            lines.append("  Recovery: " + guidance)
+        lines.append("")
+    lines.extend((
+        "Windows: never sum scopes or assume a shared/account pool from this view.",
+        "Fetch age is not a freshness verdict or evidence of worker health.",
+        "Collection/quota/policy facts are not execution readiness or task fit.",
+        "Recommendation-only does not execute; gateway authorization/health are separate.",
+        "Pipes keep original text; status --json keeps the canonical snapshot array.",
+    ))
+    bounded_width = max(12, min(width, 120))
+    wrapped: list[str] = []
+    for line in lines:
+        indent = len(line) - len(line.lstrip())
+        wrapped.append(textwrap.fill(
+            line, width=bounded_width, subsequent_indent=" " * indent,
+            break_long_words=True, break_on_hyphens=False,
+        ) if line else "")
+    return "\n".join(wrapped) + "\n"
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m scarcity_router",
@@ -343,15 +466,23 @@ def main(
     parser = build_parser()
     arguments = cast(dict[str, object], vars(parser.parse_args(argv)))
     output = sys.stdout if stdout is None else stdout
-    observation = collect_status(collectors=collectors, clock=clock)
+    collected_at = observation_timestamp(clock)
+    observation = collect_status(
+        collectors=collectors,
+        clock=lambda: datetime.fromisoformat(collected_at.replace("Z", "+00:00")),
+    )
     json_output = arguments.get("json")
     if not isinstance(json_output, bool):
         raise RuntimeError("parser produced an invalid JSON output argument")
-    _ = output.write(
-        render_json(observation.snapshots)
-        if json_output
-        else render_human(observation.snapshots)
-    )
+    if json_output:
+        rendered = render_json(observation.snapshots)
+    elif output.isatty():
+        rendered = render_terminal(
+            observation, collected_at=collected_at, width=shutil.get_terminal_size().columns,
+        )
+    else:
+        rendered = render_human(observation.snapshots)
+    _ = output.write(rendered)
     return 0
 
 
@@ -368,4 +499,5 @@ __all__ = [
     "observation_timestamp",
     "render_human",
     "render_json",
+    "render_terminal",
 ]

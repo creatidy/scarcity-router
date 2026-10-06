@@ -157,6 +157,38 @@ Provider failures and unknown windows remain explicit status data; missing
 telemetry is never turned into zero or full capacity. Status collection does not
 issue a model prompt or model request.
 
+In a terminal, `status` shows a plain-ASCII overview followed by each provider's
+window, reset, source, fetch age, included-allowance policy and recovery details.
+The lowest reported percentage is not a task-specific limit or model ranking;
+unknown scopes/windows are explicit and never combined into a shared-pool total.
+Fetch age is not a freshness verdict, and quota/policy facts do not establish
+gateway/worker health, task fit or execution readiness. Missing resets remain
+unknown; passed reset times require a new observation, not an assumed refill.
+
+`--json` remains the original canonical snapshot array, including when run in
+a terminal. Redirected/piped text retains its original layout and exit behavior.
+No color or new flags are required. Watch/TUI is **conditional/deferred**, not an
+implemented mode: a future client must consume the same status/state contract
+with bounded polling/reconnect/exit, without another collector or policy engine.
+Existing status snapshots are available now; #183 matters only if the client
+needs its new state/events. Rich was evaluated at an immutable revision (D-072);
+this static ASCII view needs no new dependency. Recovery guidance uses existing offline
+`scarcity-router doctor`, worker service status/login or ordinary Codex login;
+never use inference to diagnose telemetry.
+Offline doctor checks packaged artifacts/default configuration, not provider
+credentials, collector availability or the selected source's access. For missing
+or uncertain telemetry, verify the documented source/binary configuration and
+existing worker service status where applicable, then retry read-only status.
+
+For an installed worker with multiple Codex sources, status selection via
+`SCARCITY_ROUTER_CODEX_SOURCE` is not automatically consumed by the login command.
+Use `scarcity-router-worker codex-login --source SOURCE_ID --state-dir STATE_DIR
+--codex-bin CODEX_BIN`, choosing that same source and the installed service's
+matching state directory and binary settings. Omit the binary flag only when the
+service has no pin. Bare login discovers settings only for a single source;
+explicit `--source` does not discover the omitted state directory/binary. The
+terminal guidance uses placeholders, never disclosing those private values.
+
 When an installed worker service has exactly one Codex source, OpenAI
 telemetry automatically uses that source's existing isolated session: the
 same one refreshed by `make codex-login`. An ambient `CODEX_HOME` does not

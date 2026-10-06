@@ -5964,6 +5964,62 @@ neither is a new live check of the current deployment.
   nonexistent control. Making every omitted HTTP pin inject effort would change
   proven preset behavior and is explicitly rejected absent migration authority.
 
+### D-072 - Readable terminal status without changing JSON, pipes or collector semantics
+
+- **Status:** Accepted backward-compatible presentation choice under #182,
+  2026-10-06. Independent operator lane; no Console/MI rollout prerequisite.
+- **Existing operation:** Both installed/module CLI entry points collect fixed
+  provider order once with one injected UTC observation instant. Worker-source
+  session discovery/login alignment stays unchanged. CLI JSON is the canonical v3
+  snapshot array, unlike REST/MCP's separate envelope/eligibility reports. Ordinary
+  degraded provider data still exits zero; configuration failures retain exits.
+- **Choice:** Enhance TTY output only, with static plain ASCII overview and inline
+  details. Keep `render_human`, redirected/piped text, JSON bytes/order, streams,
+  exits, existing flags and normalization untouched. No optional flag/schema,
+  collector, selector, policy, live connection or new dependency is introduced.
+  Capture the same single clock before collection for deterministic fetch ages
+  and reset intervals; never infer a refill after a reported reset has passed.
+- **Evidence semantics:** Lowest reported percentages are facts, not model/policy
+  rankings or universal task bottlenecks; unknown/unclassified windows are separate.
+  No scopes/accounts/pools are summed or inferred. Missing resets are unknown,
+  not immediate. Fetch age is not a freshness verdict or worker health. Paired
+  included-allowance eligibility is not task/model fit, authorization or general
+  execution readiness; absent policy reports remain unknown. Recommendation-only
+  mode does not execute; optional gateway/worker readiness is separately established.
+  Recovery points to existing offline doctor/service/login commands, never inference,
+  paths/secrets, purchased-credit fallback or benefit redemption.
+  Multi-source worker recovery explicitly names existing source/state-dir/binary
+  flags: use the same selected telemetry source and service settings, not a new
+  default home. No source/private path values are rendered or automatically read
+  by the formatter; login's discovery/authority remain unchanged.
+  Offline doctor diagnoses packaged artifacts/default configuration, not provider
+  credentials/source access/availability. Unavailable/unknown telemetry guidance
+  instead points to documented source/binary/service checks and a read-only retry;
+  no new live diagnostic authority is inferred from the doctor command.
+- **Rich evaluation:** Public Textualize/rich HEAD observed 2026-10-06 at immutable
+  [`9d8f9a372cc5916fd4781fec207ced7ddac2f08f`](https://github.com/Textualize/rich/tree/9d8f9a372cc5916fd4781fec207ced7ddac2f08f),
+  commit date 2026-06-23, source manifest version 15.0.0 (not a claimed published
+  latest release). Inspected LICENSE (MIT, Will McGugan), pyproject.toml and
+  rich/console.py, table.py, live.py, cells.py, text.py, control.py, box.py. Console
+  supports explicit width/file/no-color/force-terminal controls; no-color alone
+  does not suppress all styles/control sequences. Default strings permit markup/
+  emoji/highlighting, tables use Unicode and may ellipsize, Live defaults to a
+  refresh thread/stream redirection. Rich is not a general input sanitizer.
+  New Rich/markdown-it-py/Pygments and update/license/output-maintenance obligations
+  are unnecessary for this one ASCII snapshot. Reuse stdlib textwrap and existing
+  normalized serializers instead of dependency adoption or a custom layout engine.
+  No upstream code copied; licensing notices need no adaptation here.
+- **Watch/TUI disposition:** Conditional/deferred client requirement, not implemented
+  or silently dropped. A future separately scoped client of the same state contract
+  must have bounded polling/reconnect/clean exit without another collector/policy/
+  service. Current status snapshots need no #183 prerequisite; that contract applies
+  only if a future client consumes its new state/events. No watch flag or runtime authority
+  is added by a static presentation correction.
+- **Validation:** Synthetic collectors/clock/eligibility/windows, actual renderer,
+  32-column/no-color screen content and control-character assertions; both CLI
+  entry points prove one collection/clock and exact JSON/piped text. No live quota,
+  account/source/service/real-harness or inference acceptance claimed.
+
 ### U-014 - Native coding backend versus Kernel-owned workspace lifecycle
 
 - **Status:** Open, evidence and owner-reviewed disposition required (#180).
