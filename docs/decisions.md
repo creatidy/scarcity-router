@@ -6033,7 +6033,11 @@ neither is a new live check of the current deployment.
   (default false/omitted for compatibility) to the administrator-issued grant.
   It narrows existing channel authorization to `server_direct_http` using the
   authoritative core, including exact pinned admission and continuation checks;
-  dispatch checks the current grant again. No request-supplied workspace, new
+  dispatch checks the current published registration, administrator/client grant,
+  active client identity and adapter composition again at a fresh clock. Failed
+  post-claim continuation authority reads terminally close/cancel, and rebinding
+  a native resource to HTTP cannot renew its suspended native authority.
+  No request-supplied workspace, new
   endpoint, wire field/version, inventory, ranker, sandbox or lifecycle is created.
   Administrators explicitly issue Kernel clients this restricted key; arbitrary
   labels/metadata and old unrestricted keys are not evidence of that migration.

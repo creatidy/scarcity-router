@@ -74,12 +74,13 @@ from .control_errors import (
     MACHINE_SIMULATE_PATH,
     MACHINE_STATUS_PATH,
 )
-from .errors import ApplicationInputError
+from .errors import ApplicationInputError, RouteContractValidationError
 from .gateway_adapters import AdapterRegistry
 from .gateway_audit import AuditRecord, BoundedAuditTrail
 from .gateway_contracts import (
     EXECUTION_SURFACE_VERSION,
     ClientKeyDirectory,
+    GatewayError,
     GatewayLimits,
     hash_client_key,
 )
@@ -1415,6 +1416,10 @@ class ControlPlane:
         if authorization is not None:
             try:
                 grant = ClientAuthorization.from_dict(authorization)
+            except RouteContractValidationError:
+                raise ControlHTTPError.invalid_request(
+                    "authorization must be a valid client grant; inference_only must be a boolean"
+                ) from None
             except (ValueError, ServerConfigError) as exc:
                 raise ControlHTTPError.invalid_request(str(exc)) from None
             authorizations = dict(self._config.client_authorizations)
@@ -2117,13 +2122,26 @@ class ControlPlane:
             limits=self._config.limits,
             client_key_directory=directory,
             client_authorizations=self._config.client_authorizations,
-            client_authorization_source=lambda client_id: self._config.client_authorizations.get(
-                client_id, ClientAuthorization()
-            ),
+            authority_source=self._current_execution_authority,
             clock=self._clock,
             continuations=self._continuations,
             continuation_capability_source=self._continuation_capable_resources,
         )
+
+    def _current_execution_authority(
+        self, client_id: str,
+    ) -> tuple[ResourceRegistry, AdministratorConstraints, ClientAuthorization, AdapterRegistry]:
+        # Read one published application, not a mixture of rebuilding config
+        # and an admitted request's old registry/adapters. No reranking occurs.
+        application = self.current_application()
+        directory = application.client_key_directory
+        if directory is None or client_id not in directory.client_ids:
+            raise GatewayError.permission(
+                "the inference client's authority has been revoked", code="unauthorized_target",
+            )
+        grants = application.client_authorizations
+        grant = ClientAuthorization() if grants is None else grants.get(client_id, ClientAuthorization())
+        return application.registry, application.admin_constraints, grant, application.adapters
 
     def _continuation_capable_resources(self) -> frozenset[str]:
         """The D-062 live worker-continuation capability fact (review

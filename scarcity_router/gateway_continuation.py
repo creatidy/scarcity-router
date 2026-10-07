@@ -405,7 +405,7 @@ class ContinuationRegistry:
         continued by a corrected request)."""
         record.restore_waiting()
 
-    def close(self, token: str, state: str) -> None:
+    def close(self, token: str, state: str, *, cancel_backend: bool = False) -> None:
         """Remove a continuation on its terminal transition.
 
         ``state`` must be a terminal one (completed/cancelled/expired/
@@ -413,6 +413,8 @@ class ContinuationRegistry:
         indistinguishable ``not_found`` — except that the token joins the
         bounded tombstone ring and a replayed result is answered with the
         explicit already-resolved conflict.
+        Optional best-effort cancellation belongs to the successful removal,
+        outside the lock; a repeated close or concurrent reaper cannot repeat it.
         """
         if state not in (
             CONTINUATION_COMPLETED,
@@ -428,6 +430,11 @@ class ContinuationRegistry:
             )
         if record is not None:
             record.mark_terminal(state)
+            if cancel_backend and record.cancel_callback is not None:
+                try:
+                    record.cancel_callback(record)
+                except Exception:
+                    pass  # Cleanup never replaces a typed lifecycle failure with backend details.
 
     # -- maintenance -------------------------------------------------------
 

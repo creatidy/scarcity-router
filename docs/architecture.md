@@ -171,8 +171,13 @@ This narrows the same authorization intersection to `server_direct_http`:
 Router invokes its HTTP inference adapter, never a native coding agent or a
 project workspace. Both normal routing and exact pins refuse other channels as
 `unauthorized_channel`; a pin or request metadata cannot override the grant.
-Dispatch rechecks the live grant, and suspended native continuations use the
-same current authorization check. This is a Router-side authority boundary,
+Dispatch reads one currently published registration/administrator/client/adapters
+composition with a fresh clock, not the admitted application's stale objects.
+Valid concurrent telemetry refresh does not rerank or substitute the target;
+unavailable authority/state is a typed refusal. Suspended native continuations
+use the same current authorization and original-binding checks; failed authority
+reads terminally close the claim and best-effort cancel without exposing details.
+This is a Router-side authority boundary,
 not a claim that a remote provider never uses hosted tools, hidden helper calls
 or billable work. Physical identity and usage remain evidence-dependent.
 

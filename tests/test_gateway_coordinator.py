@@ -17,9 +17,14 @@ from __future__ import annotations
 import json
 import threading
 import unittest
+from dataclasses import replace
+from datetime import timedelta
 from typing import cast
+from unittest.mock import patch
 
+from scarcity_router.errors import CapacityValidationError
 from scarcity_router.gateway_adapters import (
+    AdapterRegistry,
     AdapterStreamChunk,
     ClientDisconnectedError,
 )
@@ -33,8 +38,8 @@ from scarcity_router.gateway_audit import (
 )
 from scarcity_router.gateway_contracts import GatewayError
 from scarcity_router.gateway_coordinator import resolve_model_string
-from scarcity_router.resource_state import ResourceRegistry
-from scarcity_router.routing_core import ClientAuthorization
+from scarcity_router.resource_state import ResourceRegistration, ResourceRegistry
+from scarcity_router.routing_core import AdministratorConstraints, ClientAuthorization
 from tests.gateway_fixtures import (
     BlockingAdapter,
     CLIENT_ID,
@@ -59,6 +64,67 @@ _USER_ONLY = {"role": "user", "content": "SECRET-CONTENT-MARKER-XYZ"}
 
 
 class NonStreamingExecutionTests(unittest.TestCase):
+    def test_dispatch_snapshot_failure_is_typed_secret_safe_and_never_executes(self) -> None:
+        adapter = ScriptedAdapter()
+        application = make_application(adapters=[adapter])
+        failure = patch.object(application.registry, "registry_snapshot",
+                               side_effect=CapacityValidationError("SYNTHETIC-SNAPSHOT-SECRET"))
+        self.addCleanup(failure.stop)
+        reads = 0
+
+        def unavailable_after_admission(_client_id: str) -> tuple[ResourceRegistry, AdministratorConstraints, ClientAuthorization, AdapterRegistry]:
+            nonlocal reads
+            reads += 1
+            if reads == 2:
+                _ = failure.start()
+            return application.registry, application.admin_constraints, ClientAuthorization(), application.adapters
+
+        application.authority_source = unavailable_after_admission
+        request = parse_chat_request({"model": "deep-coding", "messages": [_USER_ONLY]})
+        with self.assertRaises(GatewayError) as caught:
+            _ = application.execute(client_id=CLIENT_ID, request=request)
+        self.assertEqual(caught.exception.code, "state_unavailable")
+        self.assertEqual(caught.exception.http_status, 503)
+        self.assertNotIn("SYNTHETIC-SNAPSHOT", str(caught.exception))
+        self.assertEqual(adapter.dispatch_count, 0)
+
+    def test_dispatch_uses_fresh_time_after_selected_or_unrelated_telemetry_refresh(self) -> None:
+        for resource_id in ("openai-http", "zai-http"):
+            with self.subTest(resource_id=resource_id):
+                now = T_EVAL
+                registry = ResourceRegistry(clock=lambda: canonical(now))
+                baseline = build_registry().registry_snapshot(now=canonical(now))
+                for entry in baseline.entries:
+                    registry.register(ResourceRegistration(
+                        identity=entry.identity, freshness_ttl_seconds=3600, capabilities=entry.capabilities,
+                    ))
+                    assert entry.observation is not None
+                    registry.apply_snapshot(entry.observation)
+                adapter = ScriptedAdapter()
+                application = make_application(registry=registry, adapters=[adapter], clock=lambda: now)
+                reads = 0
+
+                def refreshed(_client_id: str) -> tuple[ResourceRegistry, AdministratorConstraints, ClientAuthorization, AdapterRegistry]:
+                    nonlocal now, reads
+                    reads += 1
+                    if reads == 2:
+                        now += timedelta(seconds=1)
+                        observation = next(entry.observation for entry in baseline.entries
+                                           if entry.identity.resource_id == resource_id)
+                        assert observation is not None
+                        registry.apply_snapshot(replace(observation, observed_at=canonical(now)))
+                    return registry, application.admin_constraints, ClientAuthorization(), application.adapters
+
+                application.authority_source = refreshed
+                request = parse_chat_request({
+                    "model": "sr-pin:openai-http/openai/gpt-5.6-luna/max", "messages": [_USER_ONLY],
+                })
+                outcome = application.execute(client_id=CLIENT_ID, request=request)
+                self.assertEqual(outcome.finish_reason, "stop")
+                self.assertEqual(adapter.dispatch_count, 1)
+                self.assertEqual(adapter.dispatches[0].resource.resource_id, "openai-http")
+                self.assertEqual(reads, 2)
+
     def test_new_inference_grant_after_admission_refuses_native_dispatch(self) -> None:
         adapter = ScriptedAdapter()
         application = make_application(
@@ -66,12 +132,12 @@ class NonStreamingExecutionTests(unittest.TestCase):
         )
         reads = 0
 
-        def current_grant(_client_id: str) -> ClientAuthorization:
+        def current_grant(_client_id: str) -> tuple[ResourceRegistry, AdministratorConstraints, ClientAuthorization, AdapterRegistry]:
             nonlocal reads
             reads += 1
-            return ClientAuthorization(inference_only=reads > 1)
+            return application.registry, application.admin_constraints, ClientAuthorization(inference_only=reads > 1), application.adapters
 
-        application.client_authorization_source = current_grant
+        application.authority_source = current_grant
         request = parse_chat_request({
             "model": "sr-pin:openai-worker/openai/gpt-5.6-luna/max", "messages": [_USER_ONLY],
         })
@@ -85,10 +151,10 @@ class NonStreamingExecutionTests(unittest.TestCase):
     def test_failed_current_authority_read_cannot_restore_unrestricted_grant(self) -> None:
         application = make_application()
 
-        def unavailable(_client_id: str) -> ClientAuthorization:
+        def unavailable(_client_id: str) -> tuple[ResourceRegistry, AdministratorConstraints, ClientAuthorization, AdapterRegistry]:
             raise RuntimeError("SYNTHETIC-SECRET-MUST-NOT-ESCAPE")
 
-        application.client_authorization_source = unavailable
+        application.authority_source = unavailable
         request = parse_chat_request({"model": "deep-coding", "messages": [_USER_ONLY]})
         with self.assertRaises(GatewayError) as caught:
             _ = application.execute(client_id=CLIENT_ID, request=request)
