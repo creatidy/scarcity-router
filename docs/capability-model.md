@@ -264,9 +264,10 @@ selection.
 
 ## Model catalog entries
 
-### Kernel ordinary-meaning interpretation proposal (#175)
+### Kernel ordinary-meaning local interpretation (#175)
 
-**Status: PROPOSED contract-first reception, not implemented or accepted syntax.**
+**Status: Implemented local reception after contract-first inspection.
+Not current Kernel #51 transmission or live task readiness.**
 Kernel producer `a9a65006cc8cc5b5e4468746a18ff51daf742e6b` receives approved
 ordinary `Declaration` v1: exact original UTF-8 JSON with `version`, `outcome`,
 `criteria`, `quality`, `interface`, `context`, `unknowns`, `paths`, `network`,
@@ -279,7 +280,7 @@ meaning and intact refusal, not successful mapping, privacy or task readiness.
 Kernel #51 adopts agreed mapping after Router #175; it is not a circular
 prerequisite for Router to define this interpretation.
 
-The smallest proposed extension is a versioned interpretation of **explicit
+The bounded extension is a versioned local interpretation of **explicit
 data already accepted by that producer**, not new Kernel fields or a prose
 classifier. A single `quality` string with prefix
 `scarcity-router.requirement.v1:` carries a JSON object containing required
@@ -290,6 +291,14 @@ base for the explicit requirement; its presence never guesses a profile from
 outcome, price, L-level or model name. The complete marker bytes are approved
 as part of the original declaration, not an out-of-band weaker replacement.
 Every supplied dimension retains the existing scale and independent threshold.
+For a profile marker the explicit requirement must already contain its complete
+expanded floor; implicit missing floor values refuse. This keeps the approved
+bytes sufficient even if a later profile lowers its calibration. A cached
+interpretation records profile version **and actual expansion** and refuses
+rebinding when either changes or disappears. Fresh interpretation may retain
+the original explicit floor but can never weaken it. Profile-plus-requirement
+means profile-plus-tightening internally; the existing recommendation source
+XOR is unchanged.
 
 A single optional `interface` string with prefix
 `scarcity-router.request.v1:` carries the existing strict `RequestBinding`
@@ -300,7 +309,9 @@ quality marker; configured client aliases remain the existing trusted routing
 layer rather than an additional interpretation mechanism. No new REST/MCP/
 OpenAI/worker operation or version is proposed by these local marker names.
 Missing interface marker can mean no additional structural demands, never
-proof of compatible current channels.
+proof of compatible current channels. `profile_alias` in a marker is unsupported:
+trusted configured client aliases already exist outside this grammar. Marker
+identity/pins must agree with existing binding rather than replace it.
 
 | Producer field | Proposed coverage and owner | Required refusal/limit |
 | --- | --- | --- |
@@ -320,24 +331,57 @@ admission, privacy enforcement, successful transmission or live readiness.
 Unsupported/missing meaning must give field-specific actionable refusal before
 any selection/transport. Owner approval is checked by Kernel's trusted current
 composition, not by a client-supplied `approved` boolean or issuer string.
+`kernel_requirements.interpret_kernel_declaration` accepts only the exact raw
+declaration, not prompts or a second approval/authority system. Kernel retains
+the full draft/revision/evidence/decision/Program handoff; Router's projection
+reports its original declaration digest, interpretation version, inspected
+schema revision, coverage and actual profile expansion. The evidence pin is not
+the origin of arbitrary input. No original meaning, private scope/account
+contents or credentials are echoed in diagnostics or projection repr.
+Binding requires the current declaration digest supplied after Kernel's trusted
+approval/subject checks; a cached projection for changed meaning refuses.
+Digest equality is correlation, not authentication, fresh evidence or a grant.
+
+The owning types' conventions apply without new meanings: producer arrays are
+not null/false, version is an exact integer; unknown keys/versions and nested
+duplicate keys/nonfinite/malformed JSON refuse. Optional numeric/capability
+null means no supplied minimum, **not** unknown adequacy; bool false means no
+additional positive demand, not permission or a denial. Request booleans reject
+explicit null. A present null profile id refuses. Nonempty `unknowns` refuses
+even though the pinned Kernel already prevents its approval. No optional
+convention permits missing ordinary quality to become generic L0.
 
 For supplied interpreted requirements, recommendation and resource eligibility
 must use the existing core: profile floor, explicit requirement and structural
 requirements tighten monotonically; authorization remains an independent
-intersection. A stronger input never enlarges candidates. Contradictions,
+intersection. At fixed task level, policy, observations and task context,
+stronger capability/hard/channel constraints never enlarge candidates.
+Task-level changes affect shipped reservation eligibility independently and
+are not an alternative quality score or a claimed global monotonicity theorem.
+Contradictions,
 unsupported privacy, missing compatibility and unknown resource facts fail
 through existing validation/refusal rather than being dropped. Generic
 unprofiled callers without ordinary interpreted requirements retain shipped
 L0/structural behavior. No second scale, inventory or ranker.
+An optional internal `RouteRequest.task_requirement` carries the projection
+through **both** competitive routing and exact admission. No synthetic
+per-request profiles or separate selector are constructed. Supplied resolved
+tool/reasoning/context/output demands also gate actual channel compatibility,
+context and output limits; a caller's smaller output ceiling is a contradiction,
+not permission to raise cost silently. Vision has no evidenced generic channel
+binding here and refuses rather than inheriting model-only support.
 
-Implementation/positive producer-shaped fixtures may follow only after this
-contract-first proposal is independently inspected. Fixtures must distinguish
+Contract-first inspection precedes implementation. Positive producer-shaped fixtures distinguish
 the actual producer's accepted string-array shape from this proposed semantic
 grammar; do not claim the pinned Kernel allocator currently performs successful
 mapping. Existing real exact-encoding/private-local fixture remains refused.
 Kernel #51's adoption and #174's executable consumer/real-harness acceptance are
 later receipts, not grounds for fictional current integration or circular
-pre-implementation gating. Exact-current transmission scope must be recorded.
+pre-implementation gating. Root local interpretation and requirement/routing
+pipeline conformance are testable now; the pinned Kernel SPI still unconditionally
+refuses before transport. Exact-current transmission scope must be recorded.
+Kernel #51's controller integration must generate/review these typed markers,
+not require ordinary operators to hand-author nested JSON/pins for each task.
 
 The historical initial catalog was restricted to these real-workflow models:
 

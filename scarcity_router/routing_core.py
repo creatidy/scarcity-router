@@ -2315,9 +2315,14 @@ class RouteRequest:
     #: Internal competitive candidate intersection; gate observations stay whole.
     #: No public recommendation or gateway request field is added.
     candidate_identities: tuple[ModelIdentity, ...] | None = None
+    #: Explicit interpreted requirements narrow this same routing/admission
+    #: pipeline. Omission preserves generic clients; this is not a wire field.
+    task_requirement: TaskRequirement | None = None
 
     def __post_init__(self) -> None:
         _ = _v_instance_of(self.catalog, ModelCatalog, "route_request.catalog")
+        if self.task_requirement is not None:
+            _ = _v_instance_of(self.task_requirement, TaskRequirement, "route_request.task_requirement")
         if self.candidate_identities is not None:
             identities = _v_tuple_of(
                 self.candidate_identities, ModelIdentity, "route_request.candidate_identities"
@@ -2434,6 +2439,26 @@ class RouteRequest:
                 + f"{self.registry_snapshot.generated_at!r}; a decision is "
                 + "never evaluated before its own state snapshot"
             )
+        if self.task_requirement is not None:
+            resolved, _profile = _resolve_requirement(self)
+            hard = resolved.hard_constraints
+            if hard.requires_vision:
+                raise RouteContractValidationError(
+                    "task_requirement.requires_vision: no evidenced channel contract"
+                )
+            binding = self.request.to_dict()
+            binding["requires_tool_calls"] = self.request.requires_tool_calls or hard.requires_tool_use
+            binding["requires_reasoning_controls"] = self.request.requires_reasoning_controls or hard.requires_reasoning_mode
+            context = max(self.request.minimum_input_context_tokens or 0, hard.minimum_input_context_tokens or 0)
+            if context:
+                binding["minimum_input_context_tokens"] = context
+            if hard.minimum_output_tokens is not None:
+                if self.request.maximum_output_tokens is not None and self.request.maximum_output_tokens < hard.minimum_output_tokens:
+                    raise RouteContractValidationError(
+                        "task_requirement.minimum_output_tokens contradicts the requested output ceiling"
+                    )
+                binding["maximum_output_tokens"] = self.request.maximum_output_tokens or hard.minimum_output_tokens
+            object.__setattr__(self, "request", RequestBinding.from_dict(binding))
 
 
 # ── Requirement resolution (precedence layers 3 and 4) ───────────────────────
@@ -2463,6 +2488,11 @@ def _resolve_requirement(
             hard_constraints=HardConstraints(),
         )
         profile_id = None
+    if request.task_requirement is not None:
+        base = (
+            tighten_requirement(base, request.task_requirement)
+            if profile is not None else request.task_requirement
+        )
     structural = TaskRequirement(
         task_level=base.task_level,
         capability_minima=CapabilityMinima(),

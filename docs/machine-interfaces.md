@@ -30,6 +30,19 @@ per-request allowlist or protocol version is introduced by documentary
 alignment (D-068). The local `scarcity-router-server` recommender is not an
 inference server; optional execution uses the composed control server.
 
+#175's local `kernel_requirements` interpreter is not an additional machine
+operation or request envelope: frozen v1 still accepts exactly its existing
+profile-XOR-explicit-requirement inputs. The interpreter consumes producer v1
+declaration bytes and explicit typed markers, accounts for unsupported meaning,
+and projects through the existing requirement/routing core. Its local diagnostic
+version does not version REST, MCP, OpenAI or worker messages. Kernel retains
+the full current draft/decision/evidence/Program handoff and owns its trusted
+approval and result/scope enforcement; metadata never grants Router permission.
+Producer grammar/coverage and source-versus-consumer limits are in
+`capability-model.md#kernel-ordinary-meaning-local-interpretation-175` and D-075.
+Kernel #51 adoption and #174's executable public admission/pin contract remain
+separate reception tasks; neither is established by a library conformance test.
+
 ## Principles
 
 1. **Recommend, do not proxy.** No interface accepts prompts, model traffic,

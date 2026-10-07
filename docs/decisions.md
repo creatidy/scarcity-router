@@ -6095,10 +6095,11 @@ neither is a new live check of the current deployment.
   This is Router-specific development governance, not a product inference route
   or cross-repository propagation authority. Model-policy/catalog remain unchanged.
 
-### D-075 - Kernel ordinary requirement interpretation (contract-first proposal)
+### D-075 - Kernel ordinary requirement local interpretation
 
-- **Status:** Proposed for selected #175, 2026-10-07; no implementation, public
-  transport change, accepted grammar or live task readiness is asserted.
+- **Status:** Contract-first proposal independently inspected (#175 review 1,
+  COMMENT, no findings), followed by bounded local implementation. No public transport change, Kernel #51
+  successful transmission or live task readiness is asserted.
 - **Evidence:** Kernel #49 / PR #73 approved declaration production and intact
   translation/refusal at merge `a9a65006cc8cc5b5e4468746a18ff51daf742e6b`, approved
   HEAD `4ae082d709b680f73e2fd067826dbaf3113a4588`, tree
@@ -6115,7 +6116,7 @@ neither is a new live check of the current deployment.
   not inferred from #49 closure, and #51 success is not invented as a prerequisite
   to the contract it consumes. Public-source research and MI calibration remain
   separate from per-task meaning; no new global ontology or quality scale.
-- **Proposal:** Versioned, explicit markers inside existing approved quality and
+- **Local contract:** Versioned, explicit markers inside existing approved quality and
   interface strings carry the existing `TaskRequirement` and `RequestBinding`
   shapes; see capability-model's coverage table. Quality is always supplied, not
   classified from prose or budget. Optional known profiles remain monotone floors.
@@ -6123,12 +6124,21 @@ neither is a new live check of the current deployment.
   weaker mapping. Unknown textual quality/interface/context remains an explicit
   refusal; local/no-egress privacy cannot be approximated. Kernel result recipes
   and scoped requests are accounted for but never grants or Router-executed tools.
+  Profile choice uses a fully supplied expanded floor and existing monotone
+  resolver, with actual profile version/contents retained and revalidated.
+  Cached mappings cannot silently weaken on changed policy; marker aliases
+  cannot replace trusted client aliases. Exact missing/null/false/unknown/version
+  semantics and fixed-context monotonicity are recorded in the coverage section.
+  Projection binds only model/channel requirements; Kernel retains and validates
+  its complete approval handoff. Source schema pin is evidence, not proof of
+  arbitrary input's origin or authority. Generic clients/quality/ranking unchanged.
 - **Alternatives rejected as unsupported:** Heuristic prose-to-minima/profile,
   new quality scale, ordinary reference/L0 fallback, arbitrary allowlist and
   forged approval/grants. No new Kernel schema fields, transport endpoint or
   protocol version is assumed from future candidate names. This local semantic
-  proposal needs independent contract feedback before implementation or syntax
-  advertising; final acceptance still needs complete conformance and fresh review.
+  contract received independent feedback before implementation; final acceptance
+  still needs complete local conformance and fresh review, without claiming
+  unimplemented external transmission or dropping requirements.
 - **Compatibility/security:** Existing frozen recommendation/worker interfaces
   and generic clients remain unchanged. Exact identity constraints, private data,
   authority and spending stay in their owning layers and fail when unsupported.
