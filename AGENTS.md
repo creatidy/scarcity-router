@@ -112,8 +112,9 @@ the execution-gateway architecture in
   Ollama and local inference as execution resources (D-017 superseded) and
   the approved local Codex adapter. D-047's ZCode cancellation was superseded
   by D-061/D-063; that integrated workspace-editing lane remains a documented
-  ownership conflict (U-014, #180), not target conformance or permission to
-  extend repository access. Preserve it until explicit migration authority.
+  staged ownership migration (D-073, U-014, #180), not target conformance or
+  permission to extend repository access. Preserve it until equivalent accepted
+  Kernel-controlled functionality and its explicit compatibility/migration step.
   Still forbidden everywhere: autonomous
   fallback execution, issue-to-PR orchestration, repository management,
   generic agent workflow frameworks, general task schedulers,
@@ -230,9 +231,16 @@ repeated manual work, understandable state). A material UX regression is
 
 **Security-critical work carries an additional independent
 `gpt-daybreak-blue-latest` review gate** when the work is explicitly
-classified `security_critical`. If that restricted access is unavailable the
-record states `SECURITY_REVIEW_UNAVAILABLE` and the gate stays open at the
-human decision point; no substitute model may close it — see
+classified `security_critical`. Run it through direct Codex execution, not Kilo
+model discovery or reviewer dispatch, after required validation and ordinary
+independent review at a stable exact PR base/HEAD, before completion or merge.
+It is not a pre-implementation eligibility gate. Kilo discovery failure does not
+imply `SECURITY_REVIEW_UNAVAILABLE`; only failure of the authorized direct Codex
+path after bounded technical recovery can establish that limitation. Record the
+exact base/HEAD, reviewer identity, Codex execution path, findings and verdict;
+any HEAD/base change invalidates security approval. The gate stays open at the
+human decision point if required access is genuinely unavailable; no substitute
+model may close it. This reviewer-path rule is Router-specific — see
 [`docs/llm-operating-policy.md`](docs/llm-operating-policy.md).
 
 The detailed operating policy is

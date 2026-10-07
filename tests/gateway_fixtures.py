@@ -221,7 +221,7 @@ def _identity(
     )
 
 
-def _observation(
+def observation(
     identity: ResourceIdentity, *, observed_at: str = T_OBS, status: str = "ok"
 ) -> ResourceStateSnapshot:
     diagnostics: tuple[CapacityDiagnostic, ...] = ()
@@ -258,6 +258,10 @@ def _observation(
     )
 
 
+# Existing effective-limit tests import this historical fixture name.
+_observation = observation
+
+
 def _registration(
     identity: ResourceIdentity, *, context_limit: int | None = 272_000
 ) -> ResourceRegistration:
@@ -284,7 +288,7 @@ def build_registry(*, with_worker: bool = False) -> ResourceRegistry:
     registry = ResourceRegistry(clock=lambda: T_NOW)
     for identity in identities:
         registry.register(_registration(identity))
-        registry.apply_snapshot(_observation(identity))
+        registry.apply_snapshot(observation(identity))
     return registry
 
 
@@ -792,6 +796,7 @@ __all__ = [
     "make_sequential_request_ids",
     "multi_call_behavior",
     "parse_chat_request",
+    "observation",
     "permanent_failure_behavior",
     "timeout_behavior",
     "tool_call_behavior",

@@ -16,21 +16,28 @@ import hashlib
 import http.client
 import json
 import unittest
+from collections.abc import Callable
+from contextlib import AbstractContextManager
+from dataclasses import replace
 from pathlib import Path
 from typing import cast, override
+from unittest.mock import patch
 
 from scarcity_router.control_api import ControlPlane
 from scarcity_router.errors import RemoteBridgeError
+from scarcity_router.gateway_contracts import GatewayError
+from scarcity_router.routing_core import AdministratorConstraints
 from scarcity_router.machine_api import (
     ENVELOPE_SCHEMA_VERSION,
     invalid_request_payload,
 )
 from scarcity_router.remote import RemoteScarcityClient, RemoteServerConfig
 from scarcity_router.selection_app import load_catalog
-from scarcity_router.server_config import ResourceConfig
+from scarcity_router.server_config import ResourceConfig, ServerConfiguration
 from scarcity_router.status import collect_status
 
 from tests.openai_http_fixtures import ScriptedProviderServer
+from tests.gateway_fixtures import observation, canonical, parse_chat_request
 from tests.server_fixtures import (
     FAKE_ADMIN_PASSWORD,
     FAKE_PROVIDER_SECRET,
@@ -305,6 +312,18 @@ class RemoteBridgeParityTests(ServerHarness):
 
 
 class ClientKeyAdministrationTests(ServerHarness):
+    def test_invalid_inference_only_grant_is_actionable_and_creates_no_key(self) -> None:
+        self.onboard()
+        before = len(self.plane.store.list_client_keys())
+        for value in ("true", 1, None):
+            with self.subTest(value=value):
+                status, payload = self.admin_post("/control/clients", {
+                    "label": "inference only", "authorization": {"inference_only": value},
+                })
+                self.assertEqual(status, 400, payload)
+                self.assertIn("inference_only must be a boolean", str(payload))
+        self.assertEqual(len(self.plane.store.list_client_keys()), before)
+
     def test_issued_key_is_hashed_in_the_store_and_shown_once(self) -> None:
         self.onboard(login=False)
         status, payload = self.admin_post("/control/clients", {"label": "openai sdk"})
@@ -762,6 +781,59 @@ class ConnectionAndGenerationTests(ServerHarness):
         assert status == 200
         status, _payload = self.admin_post("/control/resources", _resource_document())
         assert status == 200
+
+    def test_published_authority_withdrawal_after_admission_refuses_old_application(self) -> None:
+        self.onboard()
+        status, _payload = self.admin_post(
+            "/control/providers", _provider_document(base_url=self.provider.origin, secret=FAKE_PROVIDER_SECRET),
+        )
+        self.assertEqual(status, 200)
+        document = _resource_document()
+        registration = cast("dict[str, object]", document["registration"])
+        identity = cast("dict[str, object]", registration["identity"])
+        identity["model"] = "glm-5.3"
+        registration["capabilities"] = {"context_limit_tokens": 272_000}
+        status, _payload = self.admin_post("/control/resources", document)
+        self.assertEqual(status, 200)
+        baseline = self.plane.configuration
+        resource_id = "zai-plan-1"
+        self.plane.apply_resource_observation(observation(
+            baseline.resources[0].registration.identity, observed_at=canonical(T_EVAL),
+        ))
+        save_configuration = cast("Callable[[ServerConfiguration], None]", getattr(self.plane, "_save_config"))
+        for action in ("disable", "remove", "block", "revoke-client"):
+            with self.subTest(action=action):
+                save_configuration(baseline)
+                admitted_application = self.plane.current_application()
+                acquire = cast("Callable[[str], AbstractContextManager[object]]", getattr(admitted_application, "_acquire_reservation"))
+
+                def withdraw_then_acquire(client_id: str) -> AbstractContextManager[object]:
+                    if action == "disable":
+                        self.plane.service_set_resource_enabled(resource_id, False)
+                    elif action == "remove":
+                        self.plane.service_remove_resource(resource_id)
+                    elif action == "block":
+                        save_configuration(replace(baseline, admin_constraints=AdministratorConstraints(
+                            blocked_resource_ids=(resource_id,),
+                        )))
+                    else:
+                        self.plane.service_revoke_client_key(client_id)
+                    return acquire(client_id)
+
+                request = parse_chat_request({
+                    "model": "sr-pin:zai-plan-1/zai/glm-5.3/high",
+                    "messages": [{"role": "user", "content": "original target only"}],
+                })
+                # Interpose only the scheduling boundary; real admission,
+                # reservation, configuration rebuild and dispatch all run.
+                with patch.object(admitted_application, "_acquire_reservation", side_effect=withdraw_then_acquire) as barrier:
+                    with self.assertRaises(GatewayError) as caught:
+                        _ = admitted_application.execute(client_id=self.client_id, request=request)
+                self.assertEqual(barrier.call_count, 1, caught.exception.message)
+                self.assertEqual(caught.exception.code, "unauthorized_target")
+                self.assertEqual(caught.exception.http_status, 403)
+                self.assertIsNot(self.plane.current_application(), admitted_application)
+                self.assertEqual(self.provider.request_count, 0)
 
     def test_connection_test_fails_with_remediation_and_no_quota(self) -> None:
         self.onboard()

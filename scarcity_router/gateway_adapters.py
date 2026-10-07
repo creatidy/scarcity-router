@@ -660,6 +660,18 @@ class ContinuationCapableAdapter(Protocol):
     def suspension_alive(self, handle: SuspensionHandle) -> bool: ...
 
 
+@runtime_checkable
+class ContinuationBindingAdapter(Protocol):
+    """Optional non-secret per-resource authority identity for live rebuilds.
+
+    Equal tuples authorize retaining the original suspended adapter/handle,
+    not rerouting. Unknown bindings cannot resume through a different instance.
+    This internal seam changes no client or worker wire contract.
+    """
+
+    def continuation_binding(self, resource_id: str) -> tuple[str, ...] | None: ...
+
+
 __all__ = [
     "CALL_CANCELLED",
     "CALL_COMPLETED",
@@ -691,6 +703,7 @@ __all__ = [
     "ClientDisconnectedError",
     "CompletionOutcome",
     "ContinuationCapableAdapter",
+    "ContinuationBindingAdapter",
     "ContinuationLostError",
     "ExecutionContext",
     "ExecutionAdapter",

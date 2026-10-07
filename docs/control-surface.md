@@ -38,6 +38,25 @@ not a client-grant-aware executable resource binding. Source/resource state
 views and exact gateway admission are implemented reuse seams, not a public
 Kernel executable-selection contract (#174).
 
+For a Kernel/harness inference client, the administrator issues a client key
+with `"authorization": {"inference_only": true}` via existing
+`POST /control/clients`, or sets that client's grant in `client_authorizations`.
+The Clients UI's existing authorization JSON accepts the same field. The flag
+is a strict boolean and narrows authorization to `server_direct_http`; it does
+not expand the administrator/provider/entitlement/spend restrictions. No OpenAI
+request parameter, client name or metadata selects this policy. Native worker
+routes, including Codex scratch and the legacy ZCode editing lane, remain
+unsupported for this grant. An exact pin cannot bypass it.
+
+Omission/false retains existing grants and serialization. This additive
+administrator shape changes neither frozen recommendation v1 nor worker v4:
+no inference-only request is sent to a downlevel worker. Older server readers
+reject the unknown grant field rather than silently remove the restriction;
+do not downlevel a configuration containing it. Upgrade the server before
+issuing the restricted key. Existing legacy keys/worker flags are unchanged,
+not automatically relabeled or migrated. See D-073 and the authority matrix in
+`architecture.md`; replacement/retirement acceptance remains separately gated.
+
 Console/CLI consume Router-owned authorized state and forward commands to
 Router; they must not read its SQLite state, carry a copied inventory/ranker
 or bypass administrator/inference-client/worker boundaries. Reuse/link this

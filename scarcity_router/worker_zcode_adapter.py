@@ -590,11 +590,15 @@ def _canonical_workspace(path: str | os.PathLike[str]) -> Path:
     return resolved
 
 
-def validate_workspace(workspace: Path) -> str | None:
+def validate_workspace(
+    workspace: Path, expected_identity: tuple[int, int] | None = None,
+) -> str | None:
     """Re-check the authorized workspace; ``None`` when intact.
 
-    Fresh per run: the directory must still exist as a real directory
-    (a deleted or replaced workspace fails closed before any spawn).
+    Fresh per run: the canonical directory must still exist. Adapter calls
+    also compare the construction-time device/inode grant; a new directory
+    at the same pathname is not a renewed authorization. This path check is
+    not an atomic filesystem fence or an external-editor lease.
     Group/other permission bits on the directory itself do not invalidate
     a user-owned project, so they are deliberately not required away
     here — authority comes from the administrator's construction-time
@@ -605,6 +609,10 @@ def validate_workspace(workspace: Path) -> str | None:
     except OSError:
         return "workspace_unavailable"
     if not stat.S_ISDIR(st.st_mode):
+        return "workspace_invalid"
+    if Path(os.path.realpath(workspace)) != workspace:
+        return "workspace_invalid"
+    if expected_identity is not None and (st.st_dev, st.st_ino) != expected_identity:
         return "workspace_invalid"
     return None
 
@@ -802,6 +810,8 @@ class ZCodeLocalAdapter:
         # of serving a lane that cannot do coding work. The canonical
         # directory is re-validated fresh before every run.
         self._workspace: Path = _canonical_workspace(authorized_workspace)
+        workspace_stat = os.lstat(self._workspace)
+        self._workspace_identity: tuple[int, int] = (workspace_stat.st_dev, workspace_stat.st_ino)
         self._pinned_binary: Path | None = pinned_binary
         self._path_lookup: Callable[[str], str | None] = path_lookup
         self._spawner: ChildSpawner = spawner
@@ -833,7 +843,7 @@ class ZCodeLocalAdapter:
         inventory = self.inventory_report()
         if inventory is None or inventory.auth_state == "unavailable":
             return ()
-        if validate_workspace(self._workspace) is not None:
+        if validate_workspace(self._workspace, self._workspace_identity) is not None:
             return ()
         return (self.lane_resource_id,)
 
@@ -861,7 +871,7 @@ class ZCodeLocalAdapter:
         models: tuple[DiscoveredModel, ...] = ()
         try:
             binary = self._discover()
-            workspace_invalid = validate_workspace(self._workspace)
+            workspace_invalid = validate_workspace(self._workspace, self._workspace_identity)
             if workspace_invalid is not None:
                 raise ZCodeIneligible(workspace_invalid)
             version, version_reason = probe_zcode_version(
@@ -1023,7 +1033,7 @@ class ZCodeLocalAdapter:
         # 2. Fresh workspace authority, then fresh eligibility probes
         # (never stale state; probes run INSIDE the authorized workspace
         # so no ambient cwd is ever involved).
-        workspace_invalid = validate_workspace(self._workspace)
+        workspace_invalid = validate_workspace(self._workspace, self._workspace_identity)
         if workspace_invalid is not None:
             raise ZCodeIneligible(workspace_invalid)
         binary = self._discover()
@@ -1043,6 +1053,10 @@ class ZCodeLocalAdapter:
         )
         if doctor_reason is not None:
             raise ZCodeIneligible(doctor_reason)
+
+        workspace_invalid = validate_workspace(self._workspace, self._workspace_identity)
+        if workspace_invalid is not None:
+            raise ZCodeIneligible(workspace_invalid)
 
         # 3. The single bounded headless run (never a second one) in THE
         # AUTHORIZED PROJECT WORKSPACE — both --cwd and process cwd.
@@ -1370,7 +1384,7 @@ class ZCodeLocalAdapter:
             # Defensive: the closed vocabulary gains a state only through
             # an explicit contract change; report it honestly as unknown.
             status, code = "unknown", "telemetry_unknown"
-        if validate_workspace(self._workspace) is not None:
+        if validate_workspace(self._workspace, self._workspace_identity) is not None:
             status, code = "unavailable", "source_unavailable"
         identity = ResourceIdentity(
             resource_id=self.lane_resource_id,

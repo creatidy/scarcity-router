@@ -15,10 +15,12 @@ from __future__ import annotations
 
 import json
 import unittest
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import cast, override
 
 from scarcity_router.gateway_adapters import (
+    AdapterRegistry,
     AdapterAmbiguousError,
     AdapterCall,
     AdapterMessage,
@@ -44,7 +46,7 @@ from scarcity_router.resource_state import (
     ResourceRegistry,
     ResourceStateSnapshot,
 )
-from scarcity_router.routing_core import ClientAuthorization
+from scarcity_router.routing_core import AdministratorConstraints, ClientAuthorization
 from scarcity_router.gateway_audit import ExecutedTarget
 from scarcity_router.gateway_continuation import (
     PendingContinuation,
@@ -124,6 +126,7 @@ class _FakeContinuationAdapter:
 
     def __init__(self) -> None:
         self.delivered: list[tuple[str, str]] = []
+        self.binding: tuple[str, ...] = ("endpoint-test", "worker-test", "adapter-test")
         self.next_result: AdapterResult | ToolSuspension | Exception = AdapterResult(
             status="completed",
             calls=(
@@ -138,9 +141,12 @@ class _FakeContinuationAdapter:
             finish_reason="stop",
         )
 
-    def suspension_handle(self, token: str) -> SuspensionHandle | None:
+    def continuation_binding(self, _resource_id: str) -> tuple[str, ...] | None:
+        return self.binding
+
+    def suspension_handle(self, continuation_token: str) -> SuspensionHandle | None:
         return SuspensionHandle(
-            continuation_token=token,
+            continuation_token=continuation_token,
             attempt_id="wa-1",
             resource_id="openai-worker",
             call_id=self._call_id,
@@ -288,6 +294,8 @@ def _registered_record(
         handle=(
             adapter.suspension_handle(TOOL_TOKEN) if adapter is not None else None
         ),
+        adapter=adapter,
+        adapter_binding=adapter.continuation_binding("openai-worker") if adapter is not None else None,
         selected_target=ExecutedTarget(
             resource_id="openai-worker",
             provider="openai",
@@ -845,6 +853,38 @@ class ReviewRound2Tests(unittest.TestCase):
                 # in RESUMING until the deadline reaper.
                 self.assertEqual(0, registry.pending_count())
 
+    def test_failed_live_authority_read_closes_claim_and_cancels_once_without_leaking(self) -> None:
+        for cleanup_fails, reaper_wins in ((False, False), (True, False), (False, True)):
+            with self.subTest(cleanup_fails=cleanup_fails, reaper_wins=reaper_wins):
+                registry = ContinuationRegistry()
+                adapter = _FakeContinuationAdapter()
+                application = _application_with_continuation(registry, adapter)
+                document = _canonical_request_document()
+                record = _registered_record(document, registry, adapter)
+                cancelled: list[str] = []
+
+                def cancel(pending: PendingContinuation) -> None:
+                    cancelled.append(pending.continuation_token)
+                    if cleanup_fails:
+                        raise RuntimeError("SYNTHETIC-CLEANUP-SECRET")
+
+                def unavailable(_client_id: str) -> tuple[ResourceRegistry, AdministratorConstraints, ClientAuthorization, AdapterRegistry]:
+                    if reaper_wins:
+                        _ = registry.expire_due(record.deadline + timedelta(seconds=1))
+                    raise RuntimeError("SYNTHETIC-AUTHORITY-SECRET")
+
+                record.cancel_callback = cancel
+                application.authority_source = unavailable
+                with self.assertRaises(GatewayError) as caught:
+                    _ = application.execute(client_id=CLIENT_ID, request=parse_chat_request(document))
+                self.assertEqual(caught.exception.http_status, 503)
+                self.assertEqual(caught.exception.code, "state_unavailable")
+                self.assertNotIn("SYNTHETIC", str(caught.exception))
+                self.assertEqual(adapter.delivered, [])
+                self.assertEqual(registry.pending_count(), 0)
+                self.assertEqual(cancelled, [TOOL_TOKEN])
+                self.assertTrue(registry.was_terminal_for(TOOL_TOKEN, CLIENT_ID))
+
     def test_backend_failed_outcome_closes_the_record(self) -> None:
         registry = ContinuationRegistry()
         adapter = _FakeContinuationAdapter()
@@ -896,6 +936,67 @@ class ReviewRound2Tests(unittest.TestCase):
         # The continuation is terminal (cancelled), not resumable.
         self.assertEqual(0, self.registry.pending_count())
         self.assertTrue(self.registry.was_terminal_for(TOOL_TOKEN, CLIENT_ID))
+
+    def test_rebinding_native_resource_to_http_cannot_resume_it_under_inference_grant(self) -> None:
+        document = _canonical_request_document()
+        record = _registered_record(document, self.registry, self.adapter)
+        cancelled: list[str] = []
+        record.cancel_callback = lambda pending: cancelled.append(pending.continuation_token)
+        baseline = self.application.registry.registry_snapshot()
+        current = ResourceRegistry(clock=lambda: baseline.generated_at)
+        for entry in baseline.entries:
+            identity = entry.identity
+            if identity.resource_id == "openai-worker":
+                identity = replace(identity, channel="server_direct_http")
+            current.register(ResourceRegistration(
+                identity=identity, freshness_ttl_seconds=3600, capabilities=entry.capabilities,
+            ))
+            assert entry.observation is not None
+            current.apply_snapshot(replace(entry.observation, identity=identity))
+
+        def rebound(_client_id: str) -> tuple[ResourceRegistry, AdministratorConstraints, ClientAuthorization, AdapterRegistry]:
+            return current, self.application.admin_constraints, ClientAuthorization(inference_only=True), self.application.adapters
+
+        self.application.authority_source = rebound
+        with self.assertRaises(GatewayError) as caught:
+            _ = self.application.execute(client_id=CLIENT_ID, request=parse_chat_request(document))
+        self.assertEqual(caught.exception.code, "unauthorized_target")
+        self.assertEqual(self.adapter.delivered, [])
+        self.assertEqual(self.registry.pending_count(), 0)
+        self.assertEqual(cancelled, [TOOL_TOKEN])
+
+    def test_configuration_rebuild_between_claim_and_delivery_pins_original_adapter_binding(self) -> None:
+        for binding_changed in (False, True):
+            with self.subTest(binding_changed=binding_changed):
+                registry = ContinuationRegistry()
+                original = _FakeContinuationAdapter()
+                application = _application_with_continuation(registry, original)
+                document = _canonical_request_document()
+                record = _registered_record(document, registry, original)
+                cancelled: list[str] = []
+                record.cancel_callback = lambda pending: cancelled.append(pending.continuation_token)
+                replacement = _FakeContinuationAdapter()
+                if binding_changed:
+                    replacement.binding = ("endpoint-test", "worker-test", "replacement-adapter")
+
+                def rebuild_after_claim(_client_id: str) -> tuple[ResourceRegistry, AdministratorConstraints, ClientAuthorization, AdapterRegistry]:
+                    self.assertEqual(record.state, "resuming")
+                    rebuilt = _application_with_continuation(registry, replacement)
+                    return rebuilt.registry, rebuilt.admin_constraints, ClientAuthorization(), rebuilt.adapters
+
+                application.authority_source = rebuild_after_claim
+                if binding_changed:
+                    with self.assertRaises(GatewayError) as caught:
+                        _ = application.execute(client_id=CLIENT_ID, request=parse_chat_request(document))
+                    self.assertEqual(caught.exception.code, "unauthorized_target")
+                    self.assertEqual(original.delivered, [])
+                    self.assertEqual(cancelled, [TOOL_TOKEN])
+                else:
+                    _ = application.execute(client_id=CLIENT_ID, request=parse_chat_request(document))
+                    self.assertEqual(len(original.delivered), 1)
+                    self.assertEqual(cancelled, [])
+                self.assertEqual(replacement.delivered, [])
+                self.assertEqual(registry.pending_count(), 0)
 
     def test_allowed_grant_still_delivers(self) -> None:
         # The recheck must not over-block: the default (unrestricted)

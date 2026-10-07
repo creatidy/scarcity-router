@@ -55,7 +55,7 @@ from datetime import datetime, timezone
 
 from collections.abc import Sequence
 
-from .gateway_adapters import AdapterMessage, AdapterToolCall, SuspensionHandle
+from .gateway_adapters import AdapterMessage, AdapterToolCall, ContinuationCapableAdapter, SuspensionHandle
 from .gateway_audit import ExecutedTarget
 from .gateway_validation import v_safe_id, v_text
 
@@ -241,6 +241,10 @@ class PendingContinuation:
     #: registration; the coordinator passes it back to the adapter's
     #: continuation surface).
     handle: SuspensionHandle | None = None
+    # Retain the actual turn's adapter, as existing cancellation/liveness
+    # callbacks do. Never serialize/log it or transfer the handle to a new turn.
+    adapter: ContinuationCapableAdapter | None = field(default=None, repr=False)
+    adapter_binding: tuple[str, ...] | None = field(default=None, repr=False)
     registry_revision: int | None = None
     registry_generated_at: str | None = None
     #: The ORIGINAL dispatch's audit identity — the continuation is the
@@ -405,7 +409,7 @@ class ContinuationRegistry:
         continued by a corrected request)."""
         record.restore_waiting()
 
-    def close(self, token: str, state: str) -> None:
+    def close(self, token: str, state: str, *, cancel_backend: bool = False) -> None:
         """Remove a continuation on its terminal transition.
 
         ``state`` must be a terminal one (completed/cancelled/expired/
@@ -413,6 +417,8 @@ class ContinuationRegistry:
         indistinguishable ``not_found`` — except that the token joins the
         bounded tombstone ring and a replayed result is answered with the
         explicit already-resolved conflict.
+        Optional best-effort cancellation belongs to the successful removal,
+        outside the lock; a repeated close or concurrent reaper cannot repeat it.
         """
         if state not in (
             CONTINUATION_COMPLETED,
@@ -428,6 +434,11 @@ class ContinuationRegistry:
             )
         if record is not None:
             record.mark_terminal(state)
+            if cancel_backend and record.cancel_callback is not None:
+                try:
+                    record.cancel_callback(record)
+                except Exception:
+                    pass  # Cleanup never replaces a typed lifecycle failure with backend details.
 
     # -- maintenance -------------------------------------------------------
 

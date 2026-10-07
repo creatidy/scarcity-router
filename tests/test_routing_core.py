@@ -719,6 +719,40 @@ class DecisionShapeTests(unittest.TestCase):
 
 
 class AuthorizationTests(unittest.TestCase):
+    def test_inference_only_grant_is_strict_and_preserves_legacy_serialization(self) -> None:
+        self.assertEqual(ClientAuthorization.from_dict({}).to_dict(), {})
+        grant = ClientAuthorization.from_dict({"inference_only": True})
+        self.assertTrue(grant.inference_only)
+        self.assertEqual(grant.to_dict(), {"inference_only": True})
+        bad_values: tuple[object, ...] = (None, 0, 1, "true", [], {})
+        for value in bad_values:
+            with self.subTest(value=value), self.assertRaises(RouteContractValidationError):
+                _ = ClientAuthorization.from_dict({"inference_only": value})
+
+    def test_inference_only_grant_refuses_native_routes_before_ranking_and_pin(self) -> None:
+        grant = ClientAuthorization(inference_only=True)
+        decision = route_request(_request(client=grant))
+        assert decision.target is not None
+        self.assertEqual(decision.target.resource.channel, "server_direct_http")
+        excluded = _exclusion_by_id(decision)
+        self.assertEqual(excluded["openai-sub"].stage, "authorization")
+        self.assertIn("unauthorized_channel", excluded["openai-sub"].reason_codes)
+        pin = _pin("openai-sub", "openai", "gpt-5.6-luna", "max")
+        admission = admit_pinned_target(_request(client=grant), pinned_target=pin)
+        self.assertFalse(admission.approved)
+        self.assertIn("unauthorized_channel", admission.reason_codes)
+
+    def test_inference_only_cannot_expand_administrator_or_client_channels(self) -> None:
+        decision = route_request(_request(
+            admin=AdministratorConstraints(allowed_channels=("worker_bridged",)),
+            client=ClientAuthorization(inference_only=True),
+        ))
+        self.assertIsNone(decision.target)
+        decision = route_request(_request(
+            client=ClientAuthorization(inference_only=True, allowed_channels=("worker_bridged",)),
+        ))
+        self.assertIsNone(decision.target)
+
     def test_client_authorization_cannot_expand_administrator_constraints(self) -> None:
         admin = AdministratorConstraints(allowed_providers=("openai",))
         client = ClientAuthorization(allowed_providers=("openai", "zai"))

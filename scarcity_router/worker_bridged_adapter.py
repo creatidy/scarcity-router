@@ -356,6 +356,15 @@ class WorkerBridgedAdapter:
         with self._suspended_lock:
             _ = self._suspended.pop(token, None)
 
+    def continuation_binding(self, resource_id: str) -> tuple[str, ...] | None:
+        adapter_id = self._resource_adapter_map.get(resource_id)
+        owner = self._endpoint.configured_owner(resource_id)
+        if adapter_id is None or owner is None:
+            return None
+        # Endpoint identity fences process-local handles; IDs carry only
+        # configured authority, never credentials or inferred telemetry.
+        return (self.adapter_name, self.adapter_version, f"endpoint-{id(self._endpoint):x}", owner, adapter_id)
+
     def suspension_handle(self, continuation_token: str) -> SuspensionHandle | None:
         """The handle for a suspension this adapter issued, or ``None``."""
         with self._suspended_lock:

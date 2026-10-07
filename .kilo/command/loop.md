@@ -173,6 +173,23 @@ At review 10, exact valid APPROVE may advance to MERGE; owner decisions terminat
 STOP_AND_ASK, finite tool/infrastructure failure BLOCKED, remaining actionable
 defects STOP_REVISE. No review 11 or unreviewable further patches.
 
+## Security Review
+
+For `security_critical` work, after validation and ordinary independent review
+pass at a stable exact PR base/HEAD with no changes pending, invoke the additional
+independent `gpt-daybreak-blue-latest` review directly through Codex, not Kilo.
+This is a pre-completion / pre-merge gate, not a pre-implementation eligibility
+gate. Kilo model discovery failure does not imply `SECURITY_REVIEW_UNAVAILABLE`.
+Follow `docs/llm-operating-policy.md`: fresh read-only complete frozen-PR inspection,
+no prior findings/desired verdict, record exact base/HEAD, reviewer identity,
+Codex execution path, security findings and verdict. No fallback reviewer is
+permitted. Any HEAD/base change invalidates security approval and requires a fresh
+security review after ordinary review/currentness are restored. Remediate scoped
+findings through the same validation/ordinary-review workflow and retained counters.
+Only direct Codex failure after bounded authorized recovery establishes unavailable
+access; never stop merely to ask the owner to invoke an available path manually.
+This path rule is Scarcity Router-specific, not cross-repository maintenance authority.
+
 ## MERGE
 
 Only this explicit `/loop` authority permits merging. Immediately before merge:
@@ -194,6 +211,7 @@ For nonexcluded issues, changed authority/acceptance/gates/disposition still
 invalidates continuation; stop with evidence rather than merge. Otherwise
 re-fetch canonical PR metadata and current canonical develop through normal Git;
 verify approved HEAD/base exactly match current remote and local frozen objects,
+and required direct-Codex security approval covers those same exact objects,
 empty findings, clean checkout, successful required `make check`, open/unmerged PR
 and target develop. A changed HEAD/base invalidates APPROVE: return to FINISH with
 the SAME counter (or terminate at the bound); never merge stale approval.

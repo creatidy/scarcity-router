@@ -659,12 +659,19 @@ class AdministratorConstraints:
 class ClientAuthorization:
     """One client identity's administrator-issued authorization grant.
 
-    Structurally identical to :class:`AdministratorConstraints` but a
-    strictly weaker layer (D-042): the effective authorization is the
+    A strictly weaker layer than :class:`AdministratorConstraints`
+    (D-042): the effective authorization is the
     intersection of both layers, so a client grant can only narrow what the
     administrator allows and can never expand authorization, provider
     access or spending limits. Issued by the administrator per client
     identity; never sourced from client request content.
+
+    ``inference_only`` narrows to the evidenced server-direct HTTP path:
+    Router transports inference/client-tool semantics, not a native coding
+    agent or workspace. Native worker paths remain unsupported for this grant,
+    including scratch-confined Codex; absence of client tools is not evidence
+    that native tools are disabled. This is not a provider-side effects or
+    physical-model/billing guarantee. Existing grants retain their semantics.
     """
 
     allowed_providers: tuple[str, ...] | None = None
@@ -672,6 +679,7 @@ class ClientAuthorization:
     allowed_entitlements: tuple[str, ...] | None = None
     blocked_resource_ids: tuple[str, ...] = ()
     spend_limit: SpendingLimit | None = None
+    inference_only: bool = False
 
     _REQUIRED: ClassVar[tuple[str, ...]] = ()
     _OPTIONAL: ClassVar[tuple[str, ...]] = (
@@ -680,9 +688,11 @@ class ClientAuthorization:
         "allowed_entitlements",
         "blocked_resource_ids",
         "spend_limit",
+        "inference_only",
     )
 
     def __post_init__(self) -> None:
+        _ = _v_bool(self.inference_only, "client_authorization.inference_only")
         if self.allowed_providers is not None:
             _ = _v_sorted_safe_ids(
                 self.allowed_providers, "client_authorization.allowed_providers"
@@ -749,6 +759,7 @@ class ClientAuthorization:
                 if not _optional_present(dd, "spend_limit")
                 else SpendingLimit.from_dict(dd["spend_limit"])
             ),
+            inference_only=_v_bool(dd.get("inference_only", False), "client_authorization.inference_only"),
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -763,6 +774,8 @@ class ClientAuthorization:
             out["blocked_resource_ids"] = list(self.blocked_resource_ids)
         if self.spend_limit is not None:
             out["spend_limit"] = self.spend_limit.to_dict()
+        if self.inference_only:
+            out["inference_only"] = True
         return out
 
 
@@ -1253,11 +1266,18 @@ def _effective_authorization(
         if limits
         else None
     )
+    allowed_channels = _intersect_optional(admin.allowed_channels, client.allowed_channels)
+    if client.inference_only:
+        # Only this current transport has no Router-owned native agent/workspace.
+        # Unknown/future channels cannot acquire that authority by omission.
+        inference_channels = frozenset({"server_direct_http"})
+        allowed_channels = (
+            inference_channels if allowed_channels is None
+            else allowed_channels & inference_channels
+        )
     return _EffectiveAuthorization(
         allowed_providers=allowed_providers,
-        allowed_channels=_intersect_optional(
-            admin.allowed_channels, client.allowed_channels
-        ),
+        allowed_channels=allowed_channels,
         allowed_entitlements=_intersect_optional(
             admin.allowed_entitlements, client.allowed_entitlements
         ),

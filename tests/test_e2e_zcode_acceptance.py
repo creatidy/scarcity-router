@@ -267,6 +267,42 @@ class ZcodeComposedWorld(SourcesComposedWorld):
 
 
 class PlanLaneRoutingAcceptanceTests(ZcodeComposedWorld):
+    def test_inference_only_client_cannot_use_legacy_lane_by_logical_name_or_pin(self) -> None:
+        workspace = Path(tempfile.mkdtemp(prefix="scarcity-router-zcode-repo-")) / "repo"
+        self.addCleanup(lambda: _rmtree(workspace.parent))
+        _ = _make_git_repo(workspace)
+        worker = self.start_zcode_worker(
+            {"append_line": {"file": "notes.txt", "line": SENTINEL}}, workspace
+        )
+        worker.start()
+        try:
+            self.wait_for_lane()
+            status, issued = self.admin_post("/control/clients", {
+                "label": "Kernel-controlled inference",
+                "authorization": {"inference_only": True},
+            })
+            self.assertEqual(status, 200, issued)
+            key = cast("dict[str, object]", issued)["api_key"]
+            for model in ("plan-managed", f"sr-pin:{LANE}/zai/plan-managed/plan"):
+                with self.subTest(model=model):
+                    status, payload, _headers = self.exchange(
+                        "POST", "/v1/chat/completions", {
+                            "model": model,
+                            "messages": [{"role": "user", "content": "edit notes.txt; ../../outside"}],
+                            "metadata": {"inference_only": "false", "workspace": str(workspace)},
+                        }, headers={"Authorization": f"Bearer {key}"}, timeout=30,
+                    )
+                    self.assertIn(status, (403, 503), payload)
+                    body = cast("dict[str, object]", payload)
+                    error = cast("dict[str, object]", body["error"])
+                    self.assertIn(error["code"], ("unauthorized_channel", "unauthorized_target", "no_eligible_target"))
+            self.assertEqual(worker.spawner.run_specs, [])
+            self.assertEqual((workspace / "notes.txt").read_text(), "original line\n")
+            self.assertEqual(_git_status(workspace), "")
+            self.assertTrue(all(record.get("executed_target") is None for record in self.audit_records()))
+        finally:
+            worker.stop()
+
     def test_plan_lane_routes_and_edits_the_authorized_workspace(self) -> None:
         workspace = Path(
             tempfile.mkdtemp(prefix="scarcity-router-zcode-repo-")

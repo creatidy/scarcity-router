@@ -85,6 +85,7 @@ from .gateway_adapters import (
     ClientDisconnectedError,
     CompletionOutcome,
     ContinuationCapableAdapter,
+    ContinuationBindingAdapter,
     ContinuationLostError,
     ExecutionContext,
     FINISH_TOOL_CALLS,
@@ -651,6 +652,7 @@ class GatewayApplication:
         limits: GatewayLimits | None = None,
         client_key_directory: ClientKeyDirectory | None = None,
         client_authorizations: Mapping[str, ClientAuthorization] | None = None,
+        authority_source: Callable[[str], tuple[ResourceRegistry, AdministratorConstraints, ClientAuthorization, AdapterRegistry]] | None = None,
         clock: Callable[[], datetime] | None = None,
         request_id_factory: RequestFactory | None = None,
         continuations: ContinuationRegistry | None = None,
@@ -714,6 +716,7 @@ class GatewayApplication:
         self.client_authorizations: Mapping[str, ClientAuthorization] | None = (
             client_authorizations
         )
+        self.authority_source: Callable[[str], tuple[ResourceRegistry, AdministratorConstraints, ClientAuthorization, AdapterRegistry]] | None = authority_source
         self.clock: Callable[[], datetime] | None = clock
         self.request_id_factory: RequestFactory | None = request_id_factory
         #: D-062: the shared continuation registry (one instance per
@@ -769,9 +772,29 @@ class GatewayApplication:
         )
 
     def _client_grant(self, client_id: str) -> ClientAuthorization:
-        if self.client_authorizations is None:
-            return ClientAuthorization()
-        return self.client_authorizations.get(client_id, ClientAuthorization())
+        return self._current_authority(client_id)[2]
+
+    def _current_authority(
+        self, client_id: str,
+    ) -> tuple[ResourceRegistry, AdministratorConstraints, ClientAuthorization, AdapterRegistry]:
+        if self.authority_source is not None:
+            try:
+                registry, administrator, grant, adapters = self.authority_source(client_id)
+                _ = v_instance(registry, ResourceRegistry, "current_resource_registry")
+                _ = v_instance(administrator, AdministratorConstraints, "current_administrator_constraints")
+                _ = v_instance(grant, ClientAuthorization, "current_client_authorization")
+                _ = v_instance(adapters, AdapterRegistry, "current_adapter_registry")
+                return registry, administrator, grant, adapters
+            except GatewayError:
+                raise
+            except Exception:  # A failed live authority read never restores a legacy grant.
+                raise GatewayError.api(
+                    "the client's current authorization is unavailable",
+                    code="state_unavailable", http_status=503,
+                ) from None
+        grants = self.client_authorizations
+        grant = ClientAuthorization() if grants is None else grants.get(client_id, ClientAuthorization())
+        return self.registry, self.admin_constraints, grant, self.adapters
 
     # ── The lifecycle ────────────────────────────────────────────────────
 
@@ -1118,7 +1141,7 @@ class GatewayApplication:
         state.adapter_version = record.adapter_version
         state.registry_revision = record.registry_revision
         state.registry_generated_at = record.registry_generated_at
-        adapter = self.adapters.resolve(record.channel)
+        adapter = record.adapter if record.adapter is not None else self.adapters.resolve(record.channel)
         if adapter is None or not isinstance(adapter, ContinuationCapableAdapter):
             self._close_continuation(record, CONTINUATION_LOST)
             raise GatewayError.api(
@@ -1134,6 +1157,7 @@ class GatewayApplication:
             register_continuation=self._continuation_registrar(
                 request=request, state=state, deadline=record.deadline,
                 channel=record.channel, adapter=adapter,
+                adapter_binding=record.adapter_binding,
             ),
         )
         state.context = context
@@ -1152,11 +1176,11 @@ class GatewayApplication:
         # stage admission used — scarcity/policy ranking is never run,
         # and a revoked grant cancels the suspended turn instead of
         # delivering into it.
-        self._recheck_continuation_authority(record)
         # Every post-claim exit reaches a terminal registry state
         # (review round 2, finding 5): nothing may occupy the pending
         # table past this point regardless of outcome.
         try:
+            self._recheck_continuation_authority(record, adapter)
             outcome = adapter.deliver_tool_result(record.handle, content, context)
         except ClientDisconnectedError:
             self._close_continuation(record, CONTINUATION_CANCELLED)
@@ -1179,7 +1203,8 @@ class GatewayApplication:
             self._close_continuation(record, CONTINUATION_LOST)
             raise
         except GatewayError:
-            raise  # already closed by a specific handler above
+            self._close_continuation(record, CONTINUATION_CANCELLED)
+            raise
         except Exception:
             # Unexpected internal error: the record must still reach a
             # terminal state (honest ambiguity about the delivery).
@@ -1260,6 +1285,7 @@ class GatewayApplication:
         deadline: datetime,
         channel: str,
         adapter: ContinuationCapableAdapter,
+        adapter_binding: tuple[str, ...] | None = None,
     ) -> "Callable[[SuspensionHandle, str], bool]":
         """The dispatch's continuation registration closure (D-062).
 
@@ -1276,6 +1302,12 @@ class GatewayApplication:
         def register(handle: SuspensionHandle, arguments: str) -> bool:
             if registry is None:  # pragma: no cover - dispatch gate
                 return False
+            if isinstance(adapter, ContinuationBindingAdapter):
+                try:
+                    if adapter_binding is None or adapter.continuation_binding(handle.resource_id) != adapter_binding:
+                        return False
+                except Exception:
+                    return False
             record = PendingContinuation(
                 continuation_token=handle.continuation_token,
                 attempt_id=handle.attempt_id,
@@ -1307,6 +1339,8 @@ class GatewayApplication:
                 selected_target=state.selected_target,
                 executed_target=state.executed_target,
                 handle=handle,
+                adapter=adapter,
+                adapter_binding=adapter_binding,
                 cancel_callback=lambda _record: adapter.cancel_suspension(handle),
             )
             registered = registry.register(record)
@@ -1325,12 +1359,14 @@ class GatewayApplication:
         backend may still be waiting (expiry/authority revocation)."""
         registry = self.continuations
         assert registry is not None
-        registry.close(record.continuation_token, state)
-        if state in (CONTINUATION_CANCELLED, CONTINUATION_EXPIRED):
-            if record.cancel_callback is not None:
-                record.cancel_callback(record)
+        registry.close(
+            record.continuation_token, state,
+            cancel_backend=state in (CONTINUATION_CANCELLED, CONTINUATION_EXPIRED),
+        )
 
-    def _recheck_continuation_authority(self, record: PendingContinuation) -> None:
+    def _recheck_continuation_authority(
+        self, record: PendingContinuation, adapter: ContinuationCapableAdapter,
+    ) -> None:
         """The CURRENT hard authority of the ORIGINAL client against the
         EXACT original target (review round 2, finding 6).
 
@@ -1345,11 +1381,11 @@ class GatewayApplication:
         registry = self.continuations
         assert registry is not None
         try:
-            snapshot = self.registry.registry_snapshot(
+            current_registry, administrator, client, current_adapters = self._current_authority(record.client_id)
+            snapshot = current_registry.registry_snapshot(
                 now=canonical_instant(self._now())
             )
         except (CapacityValidationError, ValueError):
-            self._close_continuation(record, CONTINUATION_LOST)
             raise GatewayError.api(
                 "the gateway's resource state is unavailable",
                 code="state_unavailable",
@@ -1367,22 +1403,52 @@ class GatewayApplication:
             # The exact target's registration disappeared: hard
             # authority/availability loss — fail closed, cancel, never
             # reroute.
-            self._close_continuation(record, CONTINUATION_LOST)
             raise GatewayError.not_found(
                 "the suspended execution's target no longer exists",
                 code="continuation_not_found",
             )
+        original = record.executed_target
+        if (
+            original is None or entry.identity.channel != record.channel
+            or entry.identity.provider != original.provider
+            or entry.identity.model != original.model
+            or (entry.identity.variant is not None and entry.identity.variant != original.variant)
+        ):
+            raise GatewayError.permission(
+                "the suspended execution's original target binding has changed",
+                code="unauthorized_target",
+            )
         effective = _effective_authorization(
-            self.admin_constraints,
-            self._client_grant(record.client_id),
+            administrator,
+            client,
             None,
         )
         codes = _authorization_failure_codes(entry, effective)
         if codes:
-            self._close_continuation(record, CONTINUATION_CANCELLED)
             raise GatewayError.permission(
                 "the client's current authorization no longer covers the "
                 + "suspended execution's target",
+                code="unauthorized_target",
+            )
+        current_adapter = current_adapters.resolve(record.channel)
+        try:
+            same_binding = (
+                (isinstance(current_adapter, ContinuationCapableAdapter)
+                 and not isinstance(current_adapter, ContinuationBindingAdapter)
+                 and current_adapter is adapter)
+                if record.adapter_binding is None else
+                isinstance(current_adapter, ContinuationCapableAdapter)
+                and isinstance(current_adapter, ContinuationBindingAdapter)
+                and current_adapter.continuation_binding(record.resource_id) == record.adapter_binding
+            )
+        except Exception:
+            raise GatewayError.api(
+                "the suspended execution's current binding is unavailable",
+                code="state_unavailable", http_status=503,
+            ) from None
+        if not same_binding:
+            raise GatewayError.permission(
+                "the suspended execution's adapter/worker binding is no longer authorized",
                 code="unauthorized_target",
             )
 
@@ -1664,13 +1730,48 @@ class GatewayApplication:
         started: datetime,
         resolved: ResolvedModel,
     ) -> CompletionOutcome:
-        adapter = self.adapters.resolve(target.resource.channel)
+        try:
+            current_registry, administrator, client, current_adapters = self._current_authority(state.client_id)
+            snapshot = current_registry.registry_snapshot(now=canonical_instant(self._now()))
+        except (CapacityValidationError, ValueError):
+            raise GatewayError.api(
+                "the gateway's current resource state is unavailable",
+                code="state_unavailable", http_status=503,
+            ) from None
+        current_entry = next((
+            entry for entry in snapshot.entries
+            if entry.identity.resource_id == target.resource.resource_id
+        ), None)
+        effective = _effective_authorization(
+            administrator, client, resolved.profile,
+        )
+        if (
+            current_entry is None or current_entry.identity != target.resource
+            or _authorization_failure_codes(current_entry, effective)
+        ):
+            raise GatewayError.permission(
+                "the client's current authorization or registration no longer covers "
+                + "the selected target; inference-only clients require an authorized "
+                + "server-direct HTTP resource",
+                code="unauthorized_target",
+            )
+        adapter = current_adapters.resolve(target.resource.channel)
         if adapter is None:
             raise GatewayError.api(
                 "no execution adapter is configured for the selected channel",
                 code="adapter_unavailable",
                 http_status=503,
             )
+        try:
+            adapter_binding = (
+                adapter.continuation_binding(target.resource.resource_id)
+                if isinstance(adapter, ContinuationBindingAdapter) else None
+            )
+        except Exception:
+            raise GatewayError.api(
+                "the selected resource's current adapter binding is unavailable",
+                code="state_unavailable", http_status=503,
+            ) from None
         state.adapter_name = adapter.adapter_name
         state.adapter_version = adapter.adapter_version
         deadline = started + timedelta(seconds=self.limits.execution_time_limit_seconds)
@@ -1685,6 +1786,7 @@ class GatewayApplication:
                     deadline=deadline,
                     channel=target.resource.channel,
                     adapter=adapter,
+                    adapter_binding=adapter_binding,
                 )
                 if self.continuations is not None
                 and isinstance(adapter, ContinuationCapableAdapter)
