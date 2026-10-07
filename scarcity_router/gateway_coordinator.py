@@ -85,6 +85,7 @@ from .gateway_adapters import (
     ClientDisconnectedError,
     CompletionOutcome,
     ContinuationCapableAdapter,
+    ContinuationBindingAdapter,
     ContinuationLostError,
     ExecutionContext,
     FINISH_TOOL_CALLS,
@@ -1140,7 +1141,7 @@ class GatewayApplication:
         state.adapter_version = record.adapter_version
         state.registry_revision = record.registry_revision
         state.registry_generated_at = record.registry_generated_at
-        adapter = self.adapters.resolve(record.channel)
+        adapter = record.adapter if record.adapter is not None else self.adapters.resolve(record.channel)
         if adapter is None or not isinstance(adapter, ContinuationCapableAdapter):
             self._close_continuation(record, CONTINUATION_LOST)
             raise GatewayError.api(
@@ -1156,6 +1157,7 @@ class GatewayApplication:
             register_continuation=self._continuation_registrar(
                 request=request, state=state, deadline=record.deadline,
                 channel=record.channel, adapter=adapter,
+                adapter_binding=record.adapter_binding,
             ),
         )
         state.context = context
@@ -1178,7 +1180,7 @@ class GatewayApplication:
         # (review round 2, finding 5): nothing may occupy the pending
         # table past this point regardless of outcome.
         try:
-            self._recheck_continuation_authority(record)
+            self._recheck_continuation_authority(record, adapter)
             outcome = adapter.deliver_tool_result(record.handle, content, context)
         except ClientDisconnectedError:
             self._close_continuation(record, CONTINUATION_CANCELLED)
@@ -1283,6 +1285,7 @@ class GatewayApplication:
         deadline: datetime,
         channel: str,
         adapter: ContinuationCapableAdapter,
+        adapter_binding: tuple[str, ...] | None = None,
     ) -> "Callable[[SuspensionHandle, str], bool]":
         """The dispatch's continuation registration closure (D-062).
 
@@ -1299,6 +1302,12 @@ class GatewayApplication:
         def register(handle: SuspensionHandle, arguments: str) -> bool:
             if registry is None:  # pragma: no cover - dispatch gate
                 return False
+            if isinstance(adapter, ContinuationBindingAdapter):
+                try:
+                    if adapter_binding is None or adapter.continuation_binding(handle.resource_id) != adapter_binding:
+                        return False
+                except Exception:
+                    return False
             record = PendingContinuation(
                 continuation_token=handle.continuation_token,
                 attempt_id=handle.attempt_id,
@@ -1330,6 +1339,8 @@ class GatewayApplication:
                 selected_target=state.selected_target,
                 executed_target=state.executed_target,
                 handle=handle,
+                adapter=adapter,
+                adapter_binding=adapter_binding,
                 cancel_callback=lambda _record: adapter.cancel_suspension(handle),
             )
             registered = registry.register(record)
@@ -1353,7 +1364,9 @@ class GatewayApplication:
             cancel_backend=state in (CONTINUATION_CANCELLED, CONTINUATION_EXPIRED),
         )
 
-    def _recheck_continuation_authority(self, record: PendingContinuation) -> None:
+    def _recheck_continuation_authority(
+        self, record: PendingContinuation, adapter: ContinuationCapableAdapter,
+    ) -> None:
         """The CURRENT hard authority of the ORIGINAL client against the
         EXACT original target (review round 2, finding 6).
 
@@ -1368,7 +1381,7 @@ class GatewayApplication:
         registry = self.continuations
         assert registry is not None
         try:
-            current_registry, administrator, client, _adapters = self._current_authority(record.client_id)
+            current_registry, administrator, client, current_adapters = self._current_authority(record.client_id)
             snapshot = current_registry.registry_snapshot(
                 now=canonical_instant(self._now())
             )
@@ -1415,6 +1428,27 @@ class GatewayApplication:
             raise GatewayError.permission(
                 "the client's current authorization no longer covers the "
                 + "suspended execution's target",
+                code="unauthorized_target",
+            )
+        current_adapter = current_adapters.resolve(record.channel)
+        try:
+            same_binding = (
+                (isinstance(current_adapter, ContinuationCapableAdapter)
+                 and not isinstance(current_adapter, ContinuationBindingAdapter)
+                 and current_adapter is adapter)
+                if record.adapter_binding is None else
+                isinstance(current_adapter, ContinuationCapableAdapter)
+                and isinstance(current_adapter, ContinuationBindingAdapter)
+                and current_adapter.continuation_binding(record.resource_id) == record.adapter_binding
+            )
+        except Exception:
+            raise GatewayError.api(
+                "the suspended execution's current binding is unavailable",
+                code="state_unavailable", http_status=503,
+            ) from None
+        if not same_binding:
+            raise GatewayError.permission(
+                "the suspended execution's adapter/worker binding is no longer authorized",
                 code="unauthorized_target",
             )
 
@@ -1728,6 +1762,16 @@ class GatewayApplication:
                 code="adapter_unavailable",
                 http_status=503,
             )
+        try:
+            adapter_binding = (
+                adapter.continuation_binding(target.resource.resource_id)
+                if isinstance(adapter, ContinuationBindingAdapter) else None
+            )
+        except Exception:
+            raise GatewayError.api(
+                "the selected resource's current adapter binding is unavailable",
+                code="state_unavailable", http_status=503,
+            ) from None
         state.adapter_name = adapter.adapter_name
         state.adapter_version = adapter.adapter_version
         deadline = started + timedelta(seconds=self.limits.execution_time_limit_seconds)
@@ -1742,6 +1786,7 @@ class GatewayApplication:
                     deadline=deadline,
                     channel=target.resource.channel,
                     adapter=adapter,
+                    adapter_binding=adapter_binding,
                 )
                 if self.continuations is not None
                 and isinstance(adapter, ContinuationCapableAdapter)

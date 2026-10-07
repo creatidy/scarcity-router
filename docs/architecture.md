@@ -177,6 +177,14 @@ Valid concurrent telemetry refresh does not rerank or substitute the target;
 unavailable authority/state is a typed refusal. Suspended native continuations
 use the same current authorization and original-binding checks; failed authority
 reads terminally close the claim and best-effort cancel without exposing details.
+Continuations also pin the original adapter's non-secret per-resource binding
+(adapter/version, process-local endpoint, configured worker and local-adapter ID)
+before dispatch. A changed binding cannot resume an old native handle even when
+route identity is unchanged. A benign configuration rebuild with the same binding
+keeps the original turn/adapter rather than transferring it or starting another.
+An adapter without this evidence can continue only through the same instance;
+unknown bindings on a replacement instance fail closed. No worker wire field or
+workspace lease is introduced.
 This is a Router-side authority boundary,
 not a claim that a remote provider never uses hosted tools, hidden helper calls
 or billable work. Physical identity and usage remain evidence-dependent.
@@ -212,6 +220,8 @@ binary/service flags retain their behavior; no scratch substitution, yolo mode,
 new workspace manager or external-editor mutex is introduced. If a project
 directory is deliberately replaced, restarting the configured worker explicitly
 renews its construction-time grant; it must not silently adopt a new inode.
+Device/inode checks are not generation fencing against inode reuse; that and
+check-to-spawn races remain unproved legacy limitations, not Kernel isolation.
 
 ### Knowledge, economics and observability
 

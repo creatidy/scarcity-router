@@ -6037,6 +6037,13 @@ neither is a new live check of the current deployment.
   active client identity and adapter composition again at a fresh clock. Failed
   post-claim continuation authority reads terminally close/cancel, and rebinding
   a native resource to HTTP cannot renew its suspended native authority.
+  Native continuations retain their actual original adapter and pin its resource
+  binding (adapter/version, process-local endpoint, configured worker/local-adapter)
+  before execution; equal route IDs alone are insufficient after configuration
+  rebuild. Unchanged bindings preserve the original handle/turn across benign
+  rebuilds; changed or unknown replacement bindings terminally refuse/cancel.
+  This is internal configured-authority evidence, not a new worker protocol,
+  external-editor lease or vendor permission guarantee.
   No request-supplied workspace, new
   endpoint, wire field/version, inventory, ranker, sandbox or lifecycle is created.
   Administrators explicitly issue Kernel clients this restricted key; arbitrary
@@ -6060,7 +6067,7 @@ neither is a new live check of the current deployment.
   by D-061's single-owner approval; no new credential or access scope.
 - **Legacy authority correction:** Pin construction-time canonical project
   device/inode and recheck after structural probes. A different directory at
-  the same path cannot silently inherit the administrator's grant. Explicit
+  the same path with changed identity cannot silently inherit the grant. Explicit
   worker restart renews a deliberately replaced configured project. This does
   not promise atomic filesystem fencing, external-editor exclusion, helper-model
   control or undo on cancellation/revocation. No second workspace manager.

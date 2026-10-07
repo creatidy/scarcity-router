@@ -242,6 +242,19 @@ class AdapterHappyPathTests(unittest.TestCase):
         self.world = AdapterWorld()
         self.addCleanup(self.world.close)
 
+    def test_continuation_binding_survives_benign_rebuild_but_fences_owner_and_adapter(self) -> None:
+        original = self.world.make_adapter().continuation_binding(RESOURCE_ID)
+        self.assertIsNotNone(original)
+        self.assertEqual(self.world.make_adapter().continuation_binding(RESOURCE_ID), original)
+        changed_adapter = WorkerBridgedAdapter(
+            self.world.endpoint, resource_adapter_map={RESOURCE_ID: "replacement"},
+        )
+        self.assertNotEqual(changed_adapter.continuation_binding(RESOURCE_ID), original)
+        self.world.owners[RESOURCE_ID] = "replacement-owner"
+        self.assertNotEqual(self.world.make_adapter().continuation_binding(RESOURCE_ID), original)
+        self.world.owners[RESOURCE_ID] = None
+        self.assertIsNone(self.world.make_adapter().continuation_binding(RESOURCE_ID))
+
     def test_execute_streams_chunks_and_completes_with_usage(self) -> None:
         adapter = self.world.make_adapter()
         chunks: list[str] = []

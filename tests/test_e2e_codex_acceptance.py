@@ -79,12 +79,14 @@ import tempfile
 import threading
 import unittest
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from typing import cast, override
 
 from scarcity_router.codex_worker_evidence import CODEX_WORKER_CELL_VALUES
 from scarcity_router.routing_core import CompatibilityCell
 from scarcity_router.resource_state import ResourceStateSnapshot
+from scarcity_router.server_config import ServerConfiguration
 from scarcity_router.worker_client import (
     SESSION_IO_TIMEOUT_SECONDS,
     WorkerOrigin,
@@ -1767,6 +1769,35 @@ class CodexStreamingExecutionTests(CodexComposedTlsWorld):
             body["tools"] = self._tool_declaration()
         return body
 
+    def test_resource_adapter_rebind_refuses_original_suspended_turn(self) -> None:
+        worker = self.start_codex_worker(self._tool_turn_scenario())
+        self.configure_codex_resource(worker.worker_id)
+        worker.start()
+        try:
+            _ = self.wait_for_observation(RESOURCE_ID)
+            payload = self._exchange_tool_call_leg(worker)
+            choice = cast("dict[str, object]", cast("list[object]", payload["choices"])[0])
+            message = cast("dict[str, object]", choice["message"])
+            token = cast("str", cast("list[dict[str, object]]", message["tool_calls"])[0]["id"])
+            configuration = self.plane.configuration
+            resources = tuple(
+                replace(resource, local_adapter_id="replacement-codex")
+                if resource.registration.identity.resource_id == RESOURCE_ID else resource
+                for resource in configuration.resources
+            )
+            save = cast("Callable[[ServerConfiguration], None]", getattr(self.plane, "_save_config"))
+            save(replace(configuration, resources=resources))
+            status, result, _headers = self.exchange(
+                "POST", "/v1/chat/completions", self._continuation_body(token),
+                headers={"Authorization": f"Bearer {self.client_key}"}, timeout=60,
+            )
+            self.assertEqual(status, 403, result)
+            self.assertEqual(cast("dict[str, object]", cast("dict[str, object]", result)["error"])["code"], "unauthorized_target")
+            self.assertEqual(trace_events(worker.trace_path, "tool_call_answer"), [])
+            self.assertEqual(trace_methods(worker.trace_path).count("turn/start"), 1)
+        finally:
+            worker.stop()
+
     def test_tool_round_trip_suspends_and_resumes_the_same_turn(self) -> None:
         """The Family-A acceptance under the owner-approved mapping:
         request with tools -> suspension -> OpenAI tool_call response ->
@@ -1794,6 +1825,11 @@ class CodexStreamingExecutionTests(CodexComposedTlsWorld):
             call_function = cast("dict[str, object]", tool_calls[0]["function"])
             self.assertEqual(self._TOOL_NAME, call_function["name"])
             self.assertEqual('{"n": 0}', call_function["arguments"])
+
+            # Benign configuration rebuild must keep the original turn,
+            # not lose it merely because channel adapter objects are new.
+            status, issued = self.admin_post("/control/clients", {"label": "unrelated client"})
+            self.assertEqual(status, 200, issued)
 
             # The harness executes the tool and sends the ordinary
             # Chat Completions continuation — no router-specific field.
