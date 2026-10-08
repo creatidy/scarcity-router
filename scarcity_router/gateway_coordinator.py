@@ -64,7 +64,7 @@ from __future__ import annotations
 
 import threading
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from collections.abc import Callable, Mapping
 from datetime import datetime, timedelta, timezone
 
@@ -1193,7 +1193,6 @@ class GatewayApplication:
         try:
             state.call_fact_entry, state.call_assurance, state.assurance_at = self._recheck_continuation_authority(record, adapter)
             state.requested_ceiling = request.capabilities.requested_output_tokens
-            state.local_reserved = True
             outcome = adapter.deliver_tool_result(record.handle, content, context)
         except ClientDisconnectedError:
             self._close_continuation(record, CONTINUATION_CANCELLED)
@@ -1354,6 +1353,7 @@ class GatewayApplication:
                 handle=handle,
                 adapter=adapter,
                 adapter_binding=adapter_binding,
+                non_paid_control_scope=state.call_assurance.current_scope if state.call_assurance is not None else None,
                 cancel_callback=lambda _record: adapter.cancel_suspension(handle),
             )
             registered = registry.register(record)
@@ -1437,9 +1437,11 @@ class GatewayApplication:
             client,
             None,
         )
-        assurances = _execution_assurances((entry,), current_adapters, client.strict_no_payg)
+        strict = client.strict_no_payg or record.non_paid_control_scope is not None
+        effective = replace(effective, strict_no_payg=strict)
+        assurances = _execution_assurances((entry,), current_adapters, strict)
         codes = _authorization_failure_codes(entry, effective, execution_assurances=assurances, assessed_at=assessed_at)
-        if client.strict_no_payg and not codes:
+        if strict and not codes:
             try:
                 _snapshots, reports = self.capacity_source(canonical_instant(assessed_at))
             except Exception:
@@ -1475,10 +1477,14 @@ class GatewayApplication:
                 code="unauthorized_target",
             )
         original_assurance: ExecutionAssurance | None = None
-        if client.strict_no_payg:
+        if strict:
             if not isinstance(adapter, ExecutionAdapter):
                 raise _strict_non_paid_error("no_payg_evidence_unavailable")
             original_assurance = receive_execution_assurance(entry.identity, adapter)
+            if record.non_paid_control_scope is None:
+                raise _strict_non_paid_error("no_payg_evidence_unavailable")
+            if original_assurance.current_scope != record.non_paid_control_scope:
+                raise _strict_non_paid_error("no_payg_binding_changed")
             original_codes = original_assurance.refusal_codes(entry.identity, assessed_at, max_age_seconds=entry.freshness_ttl_seconds)
             if original_codes:
                 raise _strict_non_paid_error(original_codes[0])
