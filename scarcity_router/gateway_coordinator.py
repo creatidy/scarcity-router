@@ -1583,6 +1583,7 @@ class GatewayApplication:
                 continuation_capable = None
         try:
             client_grant = self._client_grant(state.client_id)
+            state.strict_no_payg = client_grant.strict_no_payg
             request_obj = RouteRequest(
                 catalog=self.catalog,
                 profiles=self.profiles,
@@ -1787,7 +1788,9 @@ class GatewayApplication:
         effective = _effective_authorization(
             administrator, client, resolved.profile,
         )
-        assurances = () if current_entry is None else _execution_assurances((current_entry,), current_adapters, client.strict_no_payg)
+        strict = state.strict_no_payg or client.strict_no_payg
+        effective = replace(effective, strict_no_payg=strict)
+        assurances = () if current_entry is None else _execution_assurances((current_entry,), current_adapters, strict)
         codes = () if current_entry is None else _authorization_failure_codes(
             current_entry, effective,
             execution_assurances=assurances,
@@ -1805,7 +1808,7 @@ class GatewayApplication:
                 + "server-direct HTTP resource",
                 code="unauthorized_target",
             )
-        if client.strict_no_payg:
+        if strict:
             try:
                 _snapshots, reports = self.capacity_source(canonical_instant(assessed_at))
             except Exception:
@@ -1814,7 +1817,7 @@ class GatewayApplication:
                 raise GatewayError.permission("the current source remains blocked by eligibility policy", code="source_policy_blocked")
         state.call_fact_entry = current_entry
         state.assurance_at = assessed_at
-        if client.strict_no_payg:
+        if strict:
             state.call_assurance = next(iter(assurances), None)
         adapter = current_adapters.resolve(target.resource.channel)
         if adapter is None:
@@ -2037,6 +2040,7 @@ class _LifecycleState:
     """Mutable per-execution bookkeeping for the audit record."""
 
     __slots__: tuple[str, ...] = (
+        "strict_no_payg",
         "call_fact_entry", "call_assurance", "assurance_at", "requested_ceiling", "local_reserved",
         "request_id",
         "client_id",
@@ -2074,6 +2078,7 @@ class _LifecycleState:
         self.adapter_version: str | None = None
         self.context: ExecutionContext | None = None
         self.calls: tuple[CallObservation, ...] = ()
+        self.strict_no_payg: bool = False
         self.call_fact_entry: ResourceRegistryEntry | None = None
         self.call_assurance: ExecutionAssurance | None = None
         self.assurance_at: datetime | None = None

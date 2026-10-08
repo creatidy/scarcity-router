@@ -220,6 +220,40 @@ class AssuranceTests(unittest.TestCase):
         self.assertTrue(caught.exception.code.startswith("no_payg_"))
         self.assertEqual(plain.dispatch_count, 0)
 
+    def test_admitted_strict_policy_survives_relaxed_grant_and_removed_or_replaced_proof(self) -> None:
+        for model in ("deep-coding", "sr-pin:zai-http/zai/glm-5.3/high"):
+            for changed in ("proof_removed", "adapter_replaced"):
+                with self.subTest(model=model, changed=changed):
+                    original_proof = self.adapter.proof
+                    replacement = ScriptedAdapter()
+                    application = make_application(adapters=[self.adapter], client_authorizations={CLIENT_ID: ClientAuthorization(strict_no_payg=True)})
+                    reads = 0
+
+                    def current(_client_id: str) -> tuple[ResourceRegistry, AdministratorConstraints, ClientAuthorization, AdapterRegistry]:
+                        nonlocal reads
+                        reads += 1
+                        if reads == 1:
+                            return application.registry, application.admin_constraints, ClientAuthorization(strict_no_payg=True), application.adapters
+                        adapters = application.adapters
+                        if changed == "proof_removed":
+                            self.adapter.proof = None
+                        else:
+                            adapters = AdapterRegistry()
+                            adapters.register(replacement)
+                        return application.registry, application.admin_constraints, ClientAuthorization(), adapters
+
+                    application.authority_source = current
+                    try:
+                        with self.assertRaises(GatewayError) as caught:
+                            _ = application.execute(client_id=CLIENT_ID, request=parse_chat_request({
+                                "model": model, "messages": [{"role": "user", "content": "synthetic"}],
+                            }))
+                        self.assertEqual(caught.exception.code, "no_payg_evidence_unavailable")
+                        self.assertEqual(self.backend.calls, 0)
+                        self.assertEqual(replacement.dispatch_count, 0)
+                    finally:
+                        self.adapter.proof = original_proof
+
     def test_current_production_like_adapter_and_good_quota_never_create_control_proof(self) -> None:
         plain = ScriptedAdapter()
         assurance = receive_execution_assurance(self.adapter.resource, plain)
