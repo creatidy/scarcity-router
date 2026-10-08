@@ -6132,6 +6132,14 @@ neither is a new live check of the current deployment.
   Projection binds only model/channel requirements; Kernel retains and validates
   its complete approval handoff. Source schema pin is evidence, not proof of
   arbitrary input's origin or authority. Generic clients/quality/ranking unchanged.
+  Exact admission must evaluate the same authoritative catalog hard/capability
+  predicates as competitive selection, without ranking or target substitution;
+  resource gates alone cannot establish model sufficiency. Admission's additive
+  refusal vocabulary reuses existing selector/route codes (hard_constraint_failed,
+  capability_failed, pinned_request_failed), with no new serialized fields/version;
+  old consumers reject unknown refusal rather than widening authority. Context
+  amounts combine monotonically before resolution, while explicit weakening of
+  profile/quality constraints and output-ceiling contradictions still refuse.
 - **Alternatives rejected as unsupported:** Heuristic prose-to-minima/profile,
   new quality scale, ordinary reference/L0 fallback, arbitrary allowlist and
   forged approval/grants. No new Kernel schema fields, transport endpoint or

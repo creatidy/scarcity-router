@@ -105,6 +105,63 @@ class KernelRequirementTests(unittest.TestCase):
         admission = admit_pinned_target(bound, pinned_target=pin)
         self.assertFalse(admission.approved)
 
+    def test_exact_admission_checks_quality_unknowns_privacy_and_every_identity_constraint(self) -> None:
+        route = world()
+        pin = PinnedTarget("openai-http", ModelIdentity("openai", "gpt-5.6-luna", "max"))
+        requirements = (
+            TaskRequirement("L2", CapabilityMinima(coding=5), HardConstraints()),
+            TaskRequirement("L2", CapabilityMinima(writing_editorial=3), HardConstraints()),
+            TaskRequirement("L2", CapabilityMinima(), HardConstraints(privacy_constraint="local-only")),
+            TaskRequirement("L2", CapabilityMinima(), HardConstraints(required_provider="zai")),
+            TaskRequirement("L2", CapabilityMinima(), HardConstraints(required_model=ModelRef("zai", "glm-5.3"))),
+            TaskRequirement("L2", CapabilityMinima(), HardConstraints(required_variant="none")),
+        )
+        for supplied in requirements:
+            with self.subTest(requirement=supplied):
+                projection = interpret_kernel_declaration(declaration(requirement=supplied), profiles=route.profiles)
+                bound = projection.bind(route, current_declaration_digest=projection.declaration_digest)
+                admission = admit_pinned_target(bound, pinned_target=pin)
+                self.assertFalse(admission.approved)
+                self.assertTrue(set(admission.reason_codes) & {"hard_constraint_failed", "capability_failed"})
+                self.assertIsNone(admission.target)
+
+    def test_exact_admission_preserves_model_variant_and_resource_request_intersections(self) -> None:
+        route = world()
+        pin = PinnedTarget("openai-http", ModelIdentity("openai", "gpt-5.6-luna", "max"))
+        supplied = TaskRequirement("L2", CapabilityMinima(), HardConstraints())
+        for binding in (
+            {"explicit_model": {"provider": "zai", "model": "glm-5.3"}},
+            {"explicit_variant": "none"},
+            {"pinned_target": PinnedTarget("openai-worker", pin.model).to_dict()},
+            {"pinned_target": PinnedTarget("openai-http", ModelIdentity("openai", "gpt-5.6-luna", "none")).to_dict()},
+        ):
+            with self.subTest(binding=binding):
+                projection = interpret_kernel_declaration(declaration(requirement=supplied, request=binding), profiles=route.profiles)
+                admission = admit_pinned_target(projection.bind(route, current_declaration_digest=projection.declaration_digest), pinned_target=pin)
+                self.assertFalse(admission.approved)
+                self.assertIn("pinned_request_failed", admission.reason_codes)
+
+    def test_context_demands_combine_before_resolution_for_supplied_and_configured_floors(self) -> None:
+        route = world()
+        supplied = replace(route.profiles.resolve("gateway-core"), hard_constraints=HardConstraints(minimum_input_context_tokens=4096))
+        profiles = TaskProfileCatalog((TaskProfileDefinition("gateway-core", supplied),))
+        for configured in (False, True):
+            for current in (128, 4096, 8192):
+                with self.subTest(configured=configured, context=current):
+                    base = replace(route, profiles=profiles, request=RequestBinding(minimum_input_context_tokens=current),
+                                   routing_profile=ClientRoutingProfile("gateway-core") if configured else None)
+                    projection = interpret_kernel_declaration(declaration(requirement=supplied), profiles=profiles)
+                    bound = projection.bind(base, current_declaration_digest=projection.declaration_digest)
+                    decision = route_request(bound)
+                    assert decision.selection is not None
+                    self.assertEqual(decision.selection.requirement.hard_constraints.minimum_input_context_tokens, max(current, 4096))
+                    self.assertIsNotNone(decision.target)
+        weaker = replace(supplied, hard_constraints=HardConstraints(minimum_input_context_tokens=128))
+        projection = interpret_kernel_declaration(declaration(requirement=weaker), profiles=profiles)
+        with self.assertRaises(ApplicationInputError):
+            _ = projection.bind(replace(route, profiles=profiles, routing_profile=ClientRoutingProfile("gateway-core")),
+                                current_declaration_digest=projection.declaration_digest)
+
     def test_supplied_hard_demands_gate_actual_resource_context_and_tool_compatibility(self) -> None:
         route = world()
         low_context = replace(route.registry_snapshot, entries=tuple(replace(

@@ -155,6 +155,8 @@ from .selector import (
     SelectionDecision,
     SelectorPolicy,
     canonical_instant,
+    evaluate_capability_sufficiency,
+    evaluate_hard_constraints,
     select_model,
     tighten_requirement,
 )
@@ -266,6 +268,9 @@ ADMISSION_REASON_CODES: frozenset[str] = frozenset({
     "admission_rejected",
     "pin_target_not_found",
     "pinned_model_not_bound",
+    "pinned_request_failed",
+    "hard_constraint_failed",
+    "capability_failed",
 })
 
 # Entitlement classes with a marginal monetary spend: the only ones a
@@ -2440,6 +2445,20 @@ class RouteRequest:
                 + "never evaluated before its own state snapshot"
             )
         if self.task_requirement is not None:
+            # Structural context is an independent demand, not an explicit
+            # attempt to weaken the supplied/profile requirement floor.
+            context_floor = max(
+                self.request.minimum_input_context_tokens or 0,
+                self.task_requirement.hard_constraints.minimum_input_context_tokens or 0,
+            )
+            if self.routing_profile is not None:
+                context_floor = max(context_floor, self.profiles.resolve(
+                    self.routing_profile.profile_id
+                ).hard_constraints.minimum_input_context_tokens or 0)
+            if context_floor:
+                context_binding = self.request.to_dict()
+                context_binding["minimum_input_context_tokens"] = context_floor
+                object.__setattr__(self, "request", RequestBinding.from_dict(context_binding))
             resolved, _profile = _resolve_requirement(self)
             hard = resolved.hard_constraints
             if hard.requires_vision:
@@ -2930,6 +2949,36 @@ def admit_pinned_target(
             approved=False,
             reason_codes=("admission_rejected", "pinned_model_not_bound"),
             bound_decision_id=decision_id,
+        )
+    requested_pin = request.request.pinned_target
+    requested_model = request.request.explicit_model
+    if (
+        (requested_pin is not None and (
+            requested_pin.resource_id != resource_id or requested_pin.model != pinned_target.model
+        ))
+        or (requested_model is not None and (
+            requested_model.provider != pinned_target.model.provider
+            or requested_model.model != pinned_target.model.model
+        ))
+        or (request.request.explicit_variant is not None
+            and request.request.explicit_variant != pinned_target.model.variant)
+    ):
+        return AdmissionDecision(
+            resource_id=resource_id, approved=False,
+            reason_codes=("admission_rejected", "pinned_request_failed"), bound_decision_id=decision_id,
+        )
+    catalog_entry = next(entry for entry in request.catalog.entries if entry.identity == pinned_target.model)
+    # Reuse the selector's authoritative per-candidate predicates, not ranking
+    # or a substitute identity. A resource gate alone is not model sufficiency.
+    if evaluate_hard_constraints(requirement.hard_constraints, catalog_entry):
+        return AdmissionDecision(
+            resource_id=resource_id, approved=False,
+            reason_codes=("admission_rejected", "hard_constraint_failed"), bound_decision_id=decision_id,
+        )
+    if evaluate_capability_sufficiency(requirement.capability_minima, catalog_entry.capabilities):
+        return AdmissionDecision(
+            resource_id=resource_id, approved=False,
+            reason_codes=("admission_rejected", "capability_failed"), bound_decision_id=decision_id,
         )
     return AdmissionDecision(
         resource_id=resource_id,

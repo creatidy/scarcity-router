@@ -370,6 +370,15 @@ tool/reasoning/context/output demands also gate actual channel compatibility,
 context and output limits; a caller's smaller output ceiling is a contradiction,
 not permission to raise cost silently. Vision has no evidenced generic channel
 binding here and refuses rather than inheriting model-only support.
+Exact admission additionally invokes the selector's same per-candidate hard
+and capability predicates on the exact bound catalog identity, without ranking,
+repairing or substituting a target. Request model/variant/resource pins must
+agree. Additive admission refusal codes reuse `hard_constraint_failed`,
+`capability_failed` and `pinned_request_failed`; existing fields/versions and
+generic source shapes do not change. Consumers must treat unrecognized refusal
+codes as refusal, never permission. Independent structural context demands are
+combined by maximum before resolution; a smaller request context does not
+weaken an explicit/profile floor, while a smaller explicit floor remains invalid.
 
 Contract-first inspection precedes implementation. Positive producer-shaped fixtures distinguish
 the actual producer's accepted string-array shape from this proposed semantic
