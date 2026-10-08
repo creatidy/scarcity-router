@@ -6140,6 +6140,10 @@ neither is a new live check of the current deployment.
   old consumers reject unknown refusal rather than widening authority. Context
   amounts combine monotonically before resolution, while explicit weakening of
   profile/quality constraints and output-ceiling contradictions still refuse.
+  Output capability floors never become execution caps. The existing shared
+  output rule distinguishes allowance-only checking from genuine-cap enforcement;
+  pinned admission supplies its exact variant's fact. No-output-control resources
+  must not be incorrectly excluded or gain eligibility as a floor increases.
 - **Alternatives rejected as unsupported:** Heuristic prose-to-minima/profile,
   new quality scale, ordinary reference/L0 fallback, arbitrary allowlist and
   forged approval/grants. No new Kernel schema fields, transport endpoint or

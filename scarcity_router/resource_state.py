@@ -875,6 +875,7 @@ def route_output_code(
     hard_output_tokens: int | None,
     requested_output_tokens: int | None,
     variant_resolved: bool,
+    enforce_limit: bool = True,
 ) -> str | None:
     """Whether ONE route can satisfy a request's output semantics (D-058).
 
@@ -889,13 +890,19 @@ def route_output_code(
     Inputs: the route's channel facts (``output_limit_tokens``,
     ``output_limit_control``), the EXACT selected/calibrated variant's
     proven hard output maximum (``None`` = unknown — never a sibling
-    variant's calibration), the requested output minimum, and whether the
+    variant's calibration), the requested execution ceiling (or allowance
+    floor when explicitly using ``enforce_limit=False``), and whether the
     executing variant is resolved at this point (true for pinned and
     logical requests, false for profile-alias requests whose variant the
     selector resolves later). The administrator allowance is NOT an input:
     it is uniform across routes, is enforced by the gateway's global
     pre-check before routing, and only narrows — it can never
     discriminate between routes.
+
+    ``enforce_limit=False`` checks only a required output allowance/floor:
+    evidence must accommodate it, but no execution cap is asserted. Defaults
+    preserve the shipped actual-ceiling enforceability rule. This is an internal
+    distinction, not a client-controlled permission or a new wire field.
 
     Rules (D-056: a request routes only to a source whose evidenced
     capability satisfies the full semantic request):
@@ -936,7 +943,7 @@ def route_output_code(
         return OUTPUT_LIMIT_UNKNOWN
     if min(known) < requested_output_tokens:
         return OUTPUT_LIMIT_INSUFFICIENT
-    if capabilities.output_limit_control is False:
+    if enforce_limit and capabilities.output_limit_control is False:
         if (
             not variant_resolved
             or hard_output_tokens is None

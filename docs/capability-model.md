@@ -370,6 +370,13 @@ tool/reasoning/context/output demands also gate actual channel compatibility,
 context and output limits; a caller's smaller output ceiling is a contradiction,
 not permission to raise cost silently. Vision has no evidenced generic channel
 binding here and refuses rather than inheriting model-only support.
+Required output allowance is a **floor**, not an execution ceiling: it does not
+synthesize `maximum_output_tokens`. The shared output rule checks evidenced
+allowance separately; enforceability is checked only for a genuinely requested
+cap. No-output-control routes with sufficient allowance remain eligible for
+floor-only requests, and raising only the floor cannot enlarge the pool. Exact
+admission knows its pinned variant even if the structural request has no pin;
+known hard output facts are never taken from a sibling or treated unresolved.
 Exact admission additionally invokes the selector's same per-candidate hard
 and capability predicates on the exact bound catalog identity, without ranking,
 repairing or substituting a target. Request model/variant/resource pins must

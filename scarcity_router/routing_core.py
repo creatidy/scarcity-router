@@ -1516,13 +1516,18 @@ def _compatibility_failure(
     output_code = route_output_code(
         entry.capabilities,
         hard_output_tokens=hard_output_tokens,
-        requested_output_tokens=(
-            requirement.hard_constraints.minimum_output_tokens
-        ),
+        requested_output_tokens=request.maximum_output_tokens,
         variant_resolved=variant_resolved,
     )
     if output_code is not None:
         codes.append(output_code)
+    floor_code = route_output_code(
+        entry.capabilities, hard_output_tokens=hard_output_tokens,
+        requested_output_tokens=requirement.hard_constraints.minimum_output_tokens,
+        variant_resolved=variant_resolved, enforce_limit=False,
+    )
+    if floor_code is not None:
+        codes.append(floor_code)
     # The docstring promises a sorted, duplicate-free code tuple: two
     # required features can fail with the SAME code (e.g. two missing
     # cells both yield compatibility_unknown), and TargetExclusion's
@@ -2476,7 +2481,6 @@ class RouteRequest:
                     raise RouteContractValidationError(
                         "task_requirement.minimum_output_tokens contradicts the requested output ceiling"
                     )
-                binding["maximum_output_tokens"] = self.request.maximum_output_tokens or hard.minimum_output_tokens
             object.__setattr__(self, "request", RequestBinding.from_dict(binding))
 
 
@@ -2903,6 +2907,29 @@ def admit_pinned_target(
     resource_id = pinned_target.resource_id
     decision_id = pinned_target.decision_id
     requirement, profile_id = _resolve_requirement(request)
+    requested_pin = request.request.pinned_target
+    requested_model = request.request.explicit_model
+    if (
+        (requested_pin is not None and (
+            requested_pin.resource_id != resource_id or requested_pin.model != pinned_target.model
+        ))
+        or (requested_model is not None and (
+            requested_model.provider != pinned_target.model.provider
+            or requested_model.model != pinned_target.model.model
+        ))
+        or (request.request.explicit_variant is not None
+            and request.request.explicit_variant != pinned_target.model.variant)
+    ):
+        return AdmissionDecision(
+            resource_id=resource_id, approved=False,
+            reason_codes=("admission_rejected", "pinned_request_failed"), bound_decision_id=decision_id,
+        )
+    # Exact admission already knows the executing variant, including its hard
+    # output allowance. Preserve all request intersections checked above.
+    admission_request = request.request.to_dict()
+    admission_request["pinned_target"] = pinned_target.to_dict()
+    admission_request["explicit_variant"] = pinned_target.model.variant
+    admission_binding = RequestBinding.from_dict(admission_request)
     effective = _effective_authorization(
         request.admin_constraints,
         request.client_authorization,
@@ -2927,7 +2954,7 @@ def admit_pinned_target(
         entry,
         request.catalog,
         effective,
-        request.request,
+        admission_binding,
         request.compatibility_cells,
         requirement,
         request.eligibility_reports,
@@ -2949,23 +2976,6 @@ def admit_pinned_target(
             approved=False,
             reason_codes=("admission_rejected", "pinned_model_not_bound"),
             bound_decision_id=decision_id,
-        )
-    requested_pin = request.request.pinned_target
-    requested_model = request.request.explicit_model
-    if (
-        (requested_pin is not None and (
-            requested_pin.resource_id != resource_id or requested_pin.model != pinned_target.model
-        ))
-        or (requested_model is not None and (
-            requested_model.provider != pinned_target.model.provider
-            or requested_model.model != pinned_target.model.model
-        ))
-        or (request.request.explicit_variant is not None
-            and request.request.explicit_variant != pinned_target.model.variant)
-    ):
-        return AdmissionDecision(
-            resource_id=resource_id, approved=False,
-            reason_codes=("admission_rejected", "pinned_request_failed"), bound_decision_id=decision_id,
         )
     catalog_entry = next(entry for entry in request.catalog.entries if entry.identity == pinned_target.model)
     # Reuse the selector's authoritative per-candidate predicates, not ranking

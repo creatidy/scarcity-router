@@ -192,6 +192,41 @@ class KernelRequirementTests(unittest.TestCase):
                 _ = projection.bind(replace(route, request=RequestBinding(maximum_output_tokens=current_ceiling)),
                                     current_declaration_digest=projection.declaration_digest)
 
+    def test_floor_only_output_requires_allowance_not_unrequested_cap_enforcement(self) -> None:
+        route = world()
+        pin = PinnedTarget("openai-http", ModelIdentity("openai", "gpt-5.6-luna", "max"))
+        for channel_allowance in (128000, None):
+            snapshot = replace(route.registry_snapshot, entries=tuple(replace(entry,
+                capabilities=replace(entry.capabilities, output_limit_tokens=channel_allowance, output_limit_control=False),
+            ) for entry in route.registry_snapshot.entries))
+            base = replace(route, registry_snapshot=snapshot)
+            eligible: set[tuple[str, str, str]] | None = None
+            for minimum in (1000, 128000, 128001):
+                supplied = TaskRequirement("L2", CapabilityMinima(), HardConstraints(minimum_output_tokens=minimum))
+                projection = interpret_kernel_declaration(declaration(requirement=supplied, request={"pinned_target": pin.to_dict()}), profiles=base.profiles)
+                bound = projection.bind(base, current_declaration_digest=projection.declaration_digest)
+                self.assertIsNone(bound.request.maximum_output_tokens)
+                decision = route_request(bound)
+                evaluations = decision.selection.alternatives
+                if decision.selection.selected is not None:
+                    evaluations += (decision.selection.selected,)
+                candidates = {(entry.identity.provider, entry.identity.model, entry.identity.variant) for entry in evaluations}
+                if eligible is not None:
+                    self.assertTrue(candidates.issubset(eligible))
+                eligible = candidates
+                self.assertEqual(decision.target is not None, minimum <= 128000)
+                # Exact admission also knows its variant from the function's
+                # pin even when the structural request carries no pin.
+                unpinned = interpret_kernel_declaration(declaration(requirement=supplied), profiles=base.profiles)
+                admission = admit_pinned_target(unpinned.bind(base, current_declaration_digest=unpinned.declaration_digest), pinned_target=pin)
+                self.assertEqual(admission.approved, minimum <= 128000)
+            supplied = TaskRequirement("L2", CapabilityMinima(), HardConstraints(minimum_output_tokens=1000))
+            capped = interpret_kernel_declaration(declaration(requirement=supplied,
+                request={"pinned_target": pin.to_dict(), "maximum_output_tokens": 2000}), profiles=base.profiles)
+            bound = capped.bind(base, current_declaration_digest=capped.declaration_digest)
+            self.assertIsNone(route_request(bound).target)
+            self.assertFalse(admit_pinned_target(bound, pinned_target=pin).approved)
+
     def test_stronger_dimension_hard_and_channel_demands_never_enlarge_fixed_context_pool(self) -> None:
         route = world()
 
