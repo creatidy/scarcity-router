@@ -57,6 +57,7 @@ from collections.abc import Sequence
 
 from .gateway_adapters import AdapterMessage, AdapterToolCall, ContinuationCapableAdapter, SuspensionHandle
 from .gateway_audit import ExecutedTarget
+from .execution_assurance import ExecutionControlScope
 from .gateway_validation import v_safe_id, v_text
 
 # ── Closed continuation-state vocabulary ──────────────────────────────────────
@@ -245,6 +246,7 @@ class PendingContinuation:
     # callbacks do. Never serialize/log it or transfer the handle to a new turn.
     adapter: ContinuationCapableAdapter | None = field(default=None, repr=False)
     adapter_binding: tuple[str, ...] | None = field(default=None, repr=False)
+    non_paid_control_scope: ExecutionControlScope | None = field(default=None, repr=False)
     registry_revision: int | None = None
     registry_generated_at: str | None = None
     #: The ORIGINAL dispatch's audit identity — the continuation is the

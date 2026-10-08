@@ -43,6 +43,35 @@ the normalized contract. #177 covers explicit local outcome correlation and
 cautious calibration; traces are not a financial ledger. This documentation
 does not change frozen telemetry, pool or reservation schemas.
 
+## Strict Non-Paid Control Evidence
+
+Capacity/eligibility and D-076's strict `ExecutionAssurance` are separate
+contracts. Included quota, explicit missing purchased credits/start eligibility,
+an entitlement/rate label, available windows/reset or a promotion does not
+establish that a complete source/context/helper path cannot enter paid execution.
+`strict_no_payg: true` only narrows admission. Current production adapters lack
+a complete-path verified-control producer and refuse that mode without changing
+ordinary grants or removing D-039 restrictions.
+
+Evidence is bound to exact resource identity and actual adapter/control
+incarnation, comes from trusted reviewed pure control code (not configuration,
+worker JSON or a client `verified` flag), and has explicit verification time
+and expiry. Existing server resource TTL limits maximum admission age; neither
+quota refresh nor a reported version renews stale proof. Controls must persist
+for the whole admitted immutable context. Invalid/future/expired/incomplete/
+mixed/unknown or mismatched evidence stays a typed refusal, not billing proof.
+
+The local versioned source/call receipt keeps configured rate/channel allowance
+and control distinct from reported/estimated/missing visible tokens, unknown
+helpers/retries and unknown billing/settlement/total task cost. No visible usage
+is fabricated as zero; one reported call plus another missing is incomplete
+coverage. Tokens never deduct quota or attribute concurrent balance deltas.
+Local preservation/concurrency slots are not provider reservations. Confirmed
+pool grouping stays unchanged; opaque source IDs alone do not prove independent
+accounts. Offers remain conditional/unverified execution qualification and
+expire without creating free quota. See D-076 and
+`architecture.md#strict-non-paid-admission-d-076`.
+
 ## Versioning
 
 Every snapshot has the required top-level field `schema_version` with the integer

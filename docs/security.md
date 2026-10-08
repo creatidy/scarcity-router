@@ -16,6 +16,33 @@ every rule in the sections above remains in force for recommendation-only
 mode and for every collector. Nothing in this document is relaxed by the
 gateway — the gateway adds boundaries, it never subtracts them.
 
+## Strict Verified Non-Paid Mode
+
+D-076 / #184's owner decision enables only explicit administrator-issued
+`strict_no_payg: true` grants. Existing grants, D-039, entitlement precedence,
+inference-only/pin/current authority and confirmed pools remain unchanged.
+No configuration-declared entitlement/rate, quota, worker authentication, local
+reservation, usage balance delta, promotion or paid-mode metadata can certify
+the whole execution path. Unknown/mixed/opaque/incomplete paths refuse before
+execution and continuation, with no fallback or downgrade.
+
+Positive internal evidence must come from reviewed source-control code for the
+exact resource, adapter/control version and incarnation, with current verified
+scope and bounded expiry under server TTL. No public/config/worker decoder
+accepts those attestation records; every shipped production adapter currently
+reports unestablished complete-path control. This includes Codex despite its
+partial auth/eligibility safeguards and all generic/local HTTP origins. No
+live provider/billing/model probe is authorized by the implementation.
+
+Verified Router admission is not zero actual charges or provider settlement.
+Billing, total task costs and exhaustive helper accounting remain unknown without
+independent evidence; Kernel owns whole-path budgets and current task approval.
+Fixed-backend positive fixtures only certify their inspected synthetic path.
+No new financial/credit/reset/overflow authority, network scope, credentials,
+workspace manager, provider reservation or paid-source downgrade is implied.
+See the [assurance/fact boundary](architecture.md#strict-non-paid-admission-d-076)
+and mandatory exact-object ordinary plus direct-Codex Daybreak delivery gates.
+
 ## Creatidy Ownership and Staged Native-Agent Boundary
 
 D-068 keeps Kernel/harness/host responsible for workspace and harness

@@ -1418,7 +1418,7 @@ class ControlPlane:
                 grant = ClientAuthorization.from_dict(authorization)
             except RouteContractValidationError:
                 raise ControlHTTPError.invalid_request(
-                    "authorization must be a valid client grant; inference_only must be a boolean"
+                    "authorization must be a valid client grant; inference_only must be a boolean; strict_no_payg must be a boolean"
                 ) from None
             except (ValueError, ServerConfigError) as exc:
                 raise ControlHTTPError.invalid_request(str(exc)) from None

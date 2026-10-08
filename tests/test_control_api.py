@@ -312,6 +312,24 @@ class RemoteBridgeParityTests(ServerHarness):
 
 
 class ClientKeyAdministrationTests(ServerHarness):
+    def test_strict_non_paid_grant_requires_explicit_boolean_and_keeps_old_keys_unchanged(self) -> None:
+        self.onboard()
+        before = self.plane.configuration.client_authorizations
+        for value in ("true", 1, None):
+            with self.subTest(value=value):
+                status, payload = self.admin_post("/control/clients", {
+                    "label": "strict", "authorization": {"strict_no_payg": value},
+                })
+                self.assertEqual(status, 400, payload)
+                self.assertIn("strict_no_payg must be a boolean", str(payload))
+        status, issued = self.admin_post("/control/clients", {
+            "label": "strict", "authorization": {"strict_no_payg": True},
+        })
+        self.assertEqual(status, 200)
+        client_id = cast(str, cast(dict[str, object], issued)["client_id"])
+        self.assertTrue(self.plane.configuration.client_authorizations[client_id].strict_no_payg)
+        self.assertEqual({key: self.plane.configuration.client_authorizations[key] for key in before}, before)
+
     def test_invalid_inference_only_grant_is_actionable_and_creates_no_key(self) -> None:
         self.onboard()
         before = len(self.plane.store.list_client_keys())

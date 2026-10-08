@@ -36,6 +36,7 @@ from scarcity_router.gateway_adapters import (
 )
 from scarcity_router.gateway_adapters import ExecutionAdapter
 from scarcity_router.capacity import CapacityWindow
+from scarcity_router.execution_assurance import NON_PAID_MODES, ExecutionControlScope, NonPaidControlEvidence
 from scarcity_router.gateway_contracts import GatewayError
 from scarcity_router.resource_state import (
     ExecutionCapabilities,
@@ -58,10 +59,13 @@ from scarcity_router.gateway_continuation import (
 )
 from tests.gateway_fixtures import (
     CLIENT_ID,
+    T_EVAL,
     ChatCompletionRequest,
     GatewayApplication,
     audit_records,
     build_registry,
+    build_cells,
+    canonical,
     make_application,
     parse_chat_request,
 )
@@ -937,6 +941,19 @@ class ReviewRound2Tests(unittest.TestCase):
         self.assertEqual(0, self.registry.pending_count())
         self.assertTrue(self.registry.was_terminal_for(TOOL_TOKEN, CLIENT_ID))
 
+    def test_strict_non_paid_grant_refuses_existing_unproved_native_continuation(self) -> None:
+        document = _canonical_request_document()
+        record = _registered_record(document, self.registry, self.adapter)
+        cancelled: list[str] = []
+        record.cancel_callback = lambda pending: cancelled.append(pending.continuation_token)
+        self.application.client_authorizations = {CLIENT_ID: ClientAuthorization(strict_no_payg=True)}
+        with self.assertRaises(GatewayError) as caught:
+            _ = self.application.execute(client_id=CLIENT_ID, request=parse_chat_request(document))
+        self.assertEqual(caught.exception.code, "no_payg_evidence_unavailable")
+        self.assertEqual(self.adapter.delivered, [])
+        self.assertEqual(cancelled, [TOOL_TOKEN])
+        self.assertEqual(self.registry.pending_count(), 0)
+
     def test_rebinding_native_resource_to_http_cannot_resume_it_under_inference_grant(self) -> None:
         document = _canonical_request_document()
         record = _registered_record(document, self.registry, self.adapter)
@@ -1007,6 +1024,115 @@ class ReviewRound2Tests(unittest.TestCase):
             client_id=CLIENT_ID, request=parse_chat_request(document)
         )
         self.assertEqual("stop", outcome.finish_reason)
+
+
+class _ControlContinuationAdapter(_FakeContinuationAdapter):
+    """Synthetic metadata seam for original-context drift, not source attestation."""
+
+    def __init__(self, resource: ResourceIdentity) -> None:
+        super().__init__()
+        self.revision: str = "synthetic-control-a"
+        scope = ExecutionControlScope(resource, self.adapter_name, self.adapter_version,
+                                      f"adapter-{id(self):x}", self.revision)
+        self.proof: NonPaidControlEvidence = NonPaidControlEvidence(
+            scope, "verified_control", canonical(T_EVAL), canonical(T_EVAL + timedelta(minutes=5)),
+            "synthetic-context-comparison", NON_PAID_MODES,
+        )
+
+    def non_paid_control_revision(self, _resource_id: str) -> str:
+        return self.revision
+
+    def non_paid_control_evidence(self, _resource_id: str) -> NonPaidControlEvidence:
+        return self.proof
+
+
+class StrictContinuationEvidenceTests(unittest.TestCase):
+    def _suspend(self, *, strict: bool = True) -> tuple[GatewayApplication, _ControlContinuationAdapter, PendingContinuation, dict[str, object], list[dict[str, object]]]:
+        registry = build_registry(with_worker=True)
+        resource = next(entry.identity for entry in registry.registry_snapshot(now=canonical(T_EVAL)).entries
+                        if entry.identity.resource_id == "openai-worker")
+        adapter = _ControlContinuationAdapter(resource)
+        continuations = ContinuationRegistry()
+        application = make_application(
+            registry=registry, adapters=(adapter,), continuations=continuations,
+            cells=build_cells(include_worker=True),
+            continuation_capability_source=lambda: frozenset({"openai-worker"}),
+            client_authorizations={CLIENT_ID: ClientAuthorization(strict_no_payg=strict)},
+        )
+        receipts: list[dict[str, object]] = []
+        application.source_call_fact_sink = receipts.append
+        model = "sr-pin:openai-worker/openai/gpt-5.6-luna/max"
+        outcome = application.execute(client_id=CLIENT_ID, request=parse_chat_request({
+            "model": model, "messages": PREFIX_MESSAGES, "tools": [dict(_TOOL_DECLARATION)], "tool_choice": "auto",
+        }))
+        call = outcome.message.tool_calls[0]
+        record = continuations.detect(call.id)
+        assert record is not None
+        # Registry claims use real UTC; the metadata fixtures use T_EVAL.
+        record.deadline = _DEADLINE
+        document = _canonical_request_document(token=call.id, model=model, tools=[dict(_TOOL_DECLARATION)])
+        messages = cast(list[dict[str, object]], document["messages"])
+        messages[-2] = {"role": "assistant", "tool_calls": [{"id": call.id, "type": "function",
+                          "function": {"name": call.name, "arguments": call.arguments}}]}
+        self.assertTrue(cast(dict[str, object], receipts[-1]["reservation"])["router_local_held_for_attempt"])
+        return application, adapter, record, document, receipts
+
+    def test_new_matching_revision_evidence_cannot_authorize_original_turn(self) -> None:
+        application, adapter, record, document, _receipts = self._suspend()
+        cancelled: list[str] = []
+        record.cancel_callback = lambda pending: cancelled.append(pending.continuation_token)
+        adapter.revision = "synthetic-control-b"
+        adapter.proof = replace(adapter.proof, scope=replace(adapter.proof.scope, control_revision=adapter.revision))
+        with self.assertRaises(GatewayError) as caught:
+            _ = application.execute(client_id=CLIENT_ID, request=parse_chat_request(document))
+        self.assertEqual(caught.exception.code, "no_payg_binding_changed")
+        self.assertEqual(adapter.delivered, [])
+        self.assertEqual(cancelled, [record.continuation_token])
+        assert application.continuations is not None
+        self.assertEqual(application.continuations.pending_count(), 0)
+
+    def test_benign_same_scope_refresh_resumes_without_invented_reservation(self) -> None:
+        application, adapter, _record, document, receipts = self._suspend()
+        adapter.proof = replace(adapter.proof, observed_at=canonical(T_EVAL - timedelta(seconds=1)))
+        outcome = application.execute(client_id=CLIENT_ID, request=parse_chat_request(document))
+        self.assertEqual(outcome.finish_reason, "stop")
+        self.assertFalse(cast(dict[str, object], receipts[-1]["reservation"])["router_local_held_for_attempt"])
+
+    def test_current_grant_cannot_downgrade_original_strict_turn(self) -> None:
+        application, adapter, _record, document, _receipts = self._suspend()
+        application.client_authorizations = {CLIENT_ID: ClientAuthorization()}
+        adapter.revision = "synthetic-control-b"
+        adapter.proof = replace(adapter.proof, scope=replace(adapter.proof.scope, control_revision=adapter.revision))
+        with self.assertRaises(GatewayError) as caught:
+            _ = application.execute(client_id=CLIENT_ID, request=parse_chat_request(document))
+        self.assertEqual(caught.exception.code, "no_payg_binding_changed")
+        self.assertEqual(adapter.delivered, [])
+
+    def test_late_strict_grant_requires_original_context_proof_not_current_positive(self) -> None:
+        application, adapter, _record, document, _receipts = self._suspend(strict=False)
+        application.client_authorizations = {CLIENT_ID: ClientAuthorization(strict_no_payg=True)}
+        with self.assertRaises(GatewayError) as caught:
+            _ = application.execute(client_id=CLIENT_ID, request=parse_chat_request(document))
+        self.assertEqual(caught.exception.code, "no_payg_evidence_unavailable")
+        self.assertEqual(adapter.delivered, [])
+
+    def test_sequential_suspension_keeps_original_scope_and_honest_reservation(self) -> None:
+        application, adapter, original, document, receipts = self._suspend()
+        token = new_continuation_token()
+        adapter.next_result = ToolSuspension(token, TOOL_NAME, "{}")
+        _ = application.execute(client_id=CLIENT_ID, request=parse_chat_request(document))
+        assert application.continuations is not None
+        next_record = application.continuations.detect(token)
+        assert next_record is not None
+        self.assertEqual(next_record.non_paid_control_scope, original.non_paid_control_scope)
+        self.assertFalse(cast(dict[str, object], receipts[-1]["reservation"])["router_local_held_for_attempt"])
+
+    def test_failed_delivery_does_not_claim_a_continuation_reservation(self) -> None:
+        application, adapter, _record, document, receipts = self._suspend()
+        adapter.next_result = AdapterPermanentError("synthetic failure")
+        with self.assertRaises(GatewayError):
+            _ = application.execute(client_id=CLIENT_ID, request=parse_chat_request(document))
+        self.assertFalse(cast(dict[str, object], receipts[-1]["reservation"])["router_local_held_for_attempt"])
 
 
 _PREFIX_ALONE = PREFIX_MESSAGES[1]

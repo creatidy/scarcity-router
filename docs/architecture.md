@@ -263,6 +263,72 @@ the existing admin UI (#140); consumers neither read Router SQLite directly
 nor bypass command authorization. #185/#186 own cross-product compatibility
 and uncovered public artifact/platform gates, alongside #139/#141.
 
+### Strict Non-Paid Admission (D-076)
+
+An administrator explicitly issues `strict_no_payg: true` in a client grant.
+Omission/false preserves existing grants and ordinary mode. Metadata, ranking,
+zero rates, quota and promotions cannot enable/disable this policy. The same
+authorization stage only narrows competitive and exact admission, independently
+of current admin/client, entitlement, inference-only, quality/channel/identity,
+freshness and D-039 restrictions. Positive evidence cannot override a blocker.
+
+Strict reception uses an internal Router-owned `ExecutionAssurance`: exact
+resource/source identity, actual adapter name/version/incarnation and immutable
+control revision, independently compared with cached `NonPaidControlEvidence`.
+Only reviewed pure adapter-control code can produce positive evidence; no
+client/configuration capability boolean or ordinary worker JSON attests it.
+Controls must cover the whole authorized context, including helper paths, and
+exclude PAYG, purchased credits, paid overflow and unaccounted paid helpers.
+An unspecified resource variant requires proof across its whole bound surface,
+not promotion of one variant's evidence. Production adapters currently do not
+implement a producer proving this full closure property.
+
+Unknown/mixed/configured/reported/incomplete, cross-source or changed binding,
+missing control revision, future/invalid/stale/expired evidence refuses before
+execution with `no_payg_*` codes. Evidence expiry and the existing server-owned
+resource TTL both bound admission freshness; producers cannot enlarge that
+window. These are observation bounds, not task budgets. Verified controls must
+persist for the entire immutable admitted execution context, not disappear when
+observation freshness ends. Current composition/evidence/authority and supplied
+D-039 reports are rechecked before dispatch and native continuation; the actual
+original adapter/turn controls must also match. No fallback or downgrade.
+
+**Verified Router admission enforcement is not provider billing observation.**
+Success/cancellation, included allowance, token reporting, price ceilings, local
+slots and a control receipt do not prove zero actual charges, complete helpers,
+provider settlement or total task cost. Those remain unknown absent independent
+evidence. Kernel retains trusted approval/current subject, task/effect lifecycle,
+whole-path accounting and missing-receipt reconciliation. No numerical budget,
+overflow/credits/reset permission, quota-to-token conversion or reservation is
+invented.
+
+Local version-1 `source_call_facts` reuses existing ResourceCost/capabilities/
+CallObservation and exact pool associations. It reports configured rates and
+allowances/control, reported/estimated/missing visible usage, unknown helper/
+billing totals, conditional/expired promotion facts and held local slots versus
+provider reservation. Notes, meaning, credentials and private account IDs are
+not carried. Optional trusted in-process `source_call_fact_sink` receives actual
+terminal attempt receipts including failure/continuation without changing
+OpenAI/worker/usage/audit serialization. Missing/failing delivery is not zero
+cost or a task-ready receipt; Kernel owns that evidence gap. This is not a new
+public endpoint, collector, economics engine or reservation service.
+
+Source evidence cut at Router `5c48d51` (2026-10-08): Codex's official ChatGPT
+auth/control home and paired D-039 report provide partial/start evidence only;
+ZCode auth/physical-model/billing remains partial; generic HTTP and loopback/
+Ollama origins cannot certify hidden downstream/helper behavior. The composed
+worker stream has resource/inventory observations, not D-039 or full closure
+proof; `authenticated` is not purchased-credit eligibility or verified billing.
+Existing supplied D-039 reports remain enforced, but missing/partial reports
+cannot create a strict positive. These production paths stay unsupported for
+strict admission; ordinary supported behavior retains all existing restrictions.
+
+Positive deterministic reception uses fixed inspected local synthetic code with
+no proxy/helper/egress/callback/payment behavior through real HTTP grammar and
+the real parser. This is fixture-controlled scope, not an actual subscription or
+vendor attestation. Independently accepted source/control/live receipts remain
+required before any production source makes a stronger supported claim.
+
 ## Components
 
 ### Collectors
