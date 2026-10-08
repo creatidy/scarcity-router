@@ -139,6 +139,7 @@ from typing import ClassVar, TypeVar, cast
 from .capacity import CapacitySnapshot
 from .eligibility import ExecutionEligibility
 from .errors import RouteContractValidationError
+from .execution_assurance import ExecutionAssurance, NON_PAID_REFUSAL_CODES
 from .policy import ReplenishmentState
 from .resource_state import (
     ENTITLEMENT_CLASSES,
@@ -220,7 +221,7 @@ TARGET_EXCLUSION_REASON_CODES: frozenset[str] = frozenset({
     "output_limit_unknown",
     "output_limit_insufficient",
     "output_limit_unenforceable",
-})
+}) | NON_PAID_REFUSAL_CODES
 
 _STAGE_REASONS: dict[str, frozenset[str]] = {
     "binding": frozenset({"capability_unassessed"}),
@@ -231,7 +232,7 @@ _STAGE_REASONS: dict[str, frozenset[str]] = {
         "resource_blocked",
         "spend_limit_exceeded",
         "spend_limit_unverifiable",
-    }),
+    }) | NON_PAID_REFUSAL_CODES,
     "availability": frozenset({
         "resource_stale",
         "resource_never_observed",
@@ -685,6 +686,7 @@ class ClientAuthorization:
     blocked_resource_ids: tuple[str, ...] = ()
     spend_limit: SpendingLimit | None = None
     inference_only: bool = False
+    strict_no_payg: bool = False
 
     _REQUIRED: ClassVar[tuple[str, ...]] = ()
     _OPTIONAL: ClassVar[tuple[str, ...]] = (
@@ -694,10 +696,12 @@ class ClientAuthorization:
         "blocked_resource_ids",
         "spend_limit",
         "inference_only",
+        "strict_no_payg",
     )
 
     def __post_init__(self) -> None:
         _ = _v_bool(self.inference_only, "client_authorization.inference_only")
+        _ = _v_bool(self.strict_no_payg, "client_authorization.strict_no_payg")
         if self.allowed_providers is not None:
             _ = _v_sorted_safe_ids(
                 self.allowed_providers, "client_authorization.allowed_providers"
@@ -765,6 +769,7 @@ class ClientAuthorization:
                 else SpendingLimit.from_dict(dd["spend_limit"])
             ),
             inference_only=_v_bool(dd.get("inference_only", False), "client_authorization.inference_only"),
+            strict_no_payg=_v_bool(dd.get("strict_no_payg", False), "client_authorization.strict_no_payg"),
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -781,6 +786,8 @@ class ClientAuthorization:
             out["spend_limit"] = self.spend_limit.to_dict()
         if self.inference_only:
             out["inference_only"] = True
+        if self.strict_no_payg:
+            out["strict_no_payg"] = True
         return out
 
 
@@ -1228,6 +1235,7 @@ class _EffectiveAuthorization:
     allowed_entitlements: frozenset[str] | None
     blocked_resource_ids: frozenset[str]
     spend_limit: SpendingLimit | None
+    strict_no_payg: bool
 
 
 def _intersect_optional(
@@ -1289,6 +1297,7 @@ def _effective_authorization(
         blocked_resource_ids=frozenset(admin.blocked_resource_ids)
         | frozenset(client.blocked_resource_ids),
         spend_limit=spend_limit,
+        strict_no_payg=client.strict_no_payg,
     )
 
 
@@ -1402,7 +1411,8 @@ def _spend_limit_codes(
 
 
 def _authorization_failure_codes(
-    entry: ResourceRegistryEntry, effective: _EffectiveAuthorization
+    entry: ResourceRegistryEntry, effective: _EffectiveAuthorization, *,
+    execution_assurances: tuple[ExecutionAssurance, ...] = (), assessed_at: datetime | None = None,
 ) -> tuple[str, ...]:
     """All authorization-stage reason codes for one resource, in fixed order."""
     identity = entry.identity
@@ -1426,10 +1436,21 @@ def _authorization_failure_codes(
         codes.append("resource_blocked")
     if effective.spend_limit is not None:
         codes.extend(_spend_limit_codes(entry, effective.spend_limit))
+    if effective.strict_no_payg:
+        if identity.entitlement in METERED_ENTITLEMENTS:
+            codes.append("no_payg_access_mode_forbidden")
+        elif identity.entitlement == "unknown":
+            codes.append("no_payg_path_unverified")
+        else:
+            matches = tuple(item for item in execution_assurances if item.current_scope.resource == identity)
+            if len(matches) != 1 or assessed_at is None:
+                codes.append("no_payg_evidence_unavailable")
+            else:
+                codes.extend(matches[0].refusal_codes(identity, assessed_at, max_age_seconds=entry.freshness_ttl_seconds))
     return tuple(codes)
 
 
-def _availability_failure_codes(
+def availability_failure_codes(
     entry: ResourceRegistryEntry,
     eligibility_reports: tuple[ExecutionEligibility, ...],
 ) -> tuple[str, ...]:
@@ -1661,6 +1682,7 @@ def _evaluate_resource(
     evaluated_at: datetime,
     continuation_capable_resource_ids: frozenset[str] | None = None,
     configured_reasoning_required: bool = False,
+    execution_assurances: tuple[ExecutionAssurance, ...] = (),
 ) -> _ResourceGate:
     """Run the frozen gate pipeline for one resource.
 
@@ -1681,7 +1703,8 @@ def _evaluate_resource(
             reason_codes=("capability_unassessed",),
             promotion_sources=promotion_sources,
         )
-    authorization_codes = _authorization_failure_codes(entry, effective)
+    authorization_codes = _authorization_failure_codes(entry, effective, execution_assurances=execution_assurances,
+                                                       assessed_at=evaluated_at)
     if authorization_codes:
         return _ResourceGate(
             entry=entry,
@@ -1691,7 +1714,7 @@ def _evaluate_resource(
             reason_codes=authorization_codes,
             promotion_sources=promotion_sources,
         )
-    availability_codes = list(_availability_failure_codes(entry, eligibility_reports))
+    availability_codes = list(availability_failure_codes(entry, eligibility_reports))
     if request.requires_tool_calls and entry.identity.channel == "worker_bridged":
         # D-062 (review round 2, finding 3): the client-tool round trip
         # needs the owning worker's LIVE protocol-v3 negotiation. This is
@@ -2328,9 +2351,13 @@ class RouteRequest:
     #: Explicit interpreted requirements narrow this same routing/admission
     #: pipeline. Omission preserves generic clients; this is not a wire field.
     task_requirement: TaskRequirement | None = None
+    #: Internal Router-owned control reception; never client/config/worker proof.
+    execution_assurances: tuple[ExecutionAssurance, ...] = ()
 
     def __post_init__(self) -> None:
         _ = _v_instance_of(self.catalog, ModelCatalog, "route_request.catalog")
+        for assurance in self.execution_assurances:
+            _ = _v_instance_of(assurance, ExecutionAssurance, "route_request.execution_assurances")
         if self.task_requirement is not None:
             _ = _v_instance_of(self.task_requirement, TaskRequirement, "route_request.task_requirement")
         if self.candidate_identities is not None:
@@ -2723,6 +2750,7 @@ def route_request(request: RouteRequest) -> RouteDecision:
                     and candidate.reasoning_effort is not None
                     for candidate in request.catalog.entries
                 ),
+                execution_assurances=request.execution_assurances,
             )
             for entry in request.registry_snapshot.entries
         ),
@@ -2960,6 +2988,7 @@ def admit_pinned_target(
         request.eligibility_reports,
         request.evaluated_at,
         request.continuation_capable_resource_ids,
+        execution_assurances=request.execution_assurances,
     )
     if not gate.qualified or not gate.bound_identities:
         return AdmissionDecision(

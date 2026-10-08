@@ -71,6 +71,42 @@ Request audit/trace export is diagnostics, not a settlement ledger. CLI
 status UX (#182) is independent of Console delivery and retains JSON/pipe/
 CI/unknown/no-color behavior.
 
+## Opt-In Strict Non-Paid Client Grants
+
+The administrator explicitly creates a client with
+`"authorization": {"strict_no_payg": true}` through the existing Clients
+authorization JSON / `POST /control/clients`, or its trusted server configuration.
+This does not change any old grant, source class, entitlement enum, alias, price
+or quota. Omission/false preserves old serialization/behavior; request model/
+metadata cannot override the grant or provide `verified` evidence. All existing
+stronger restrictions, including D-039 and `inference_only`, remain independent.
+
+Strict execution requires current source/control evidence for the complete
+authorized path, not a subscription label, rate, available quota or account
+authentication. No shipped production adapter presently proves that whole-path
+property; enabling strict mode is therefore an honest typed refusal for those
+sources, not a promise of usable/free execution. Errors identify missing,
+unknown/mixed/incomplete, mismatched, future/stale/expired proof or a forbidden
+metered mode. Recovery is a supported reviewed control implementation and
+current independently accepted source evidence, not silent disabling/fallback,
+model-call probes, extra credentials or provider billing/overflow actions.
+
+The internal evidence producer/receiver is not a public endpoint or configurable
+verification flag; clients, capability JSON and ordinary worker messages cannot
+attest a positive. The optional local source-call receipt producer reports
+configured rate/allowance, supported controls, reported/estimated/missing visible
+usage, unknown helper/settlement/task totals and local-versus-provider reservation.
+The scope is Router admission/observations, not billing or Kernel task-budget
+acceptance. Positive fixed-backend synthetic receipts are not production proof.
+
+This is an additive administrator grant shape: upgrade the server before issuing
+the strict key. Older readers reject the unknown flag rather than remove its
+restriction; do not downgrade a configuration containing it. Frozen OpenAI,
+worker, usage, audit and recommendation-v1 fields/operations are unchanged.
+New `no_payg_*` typed refusal vocabulary is additive: older consumers must refuse
+unknown rejection, not reinterpret it as permission. D-076's scope and any
+separate live/billing reception remain explicit; #199/D-063 retirement is untouched.
+
 ## One server, four surfaces (D-041)
 
 One server process terminates all public surfaces; there is no separate

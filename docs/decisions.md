@@ -6158,6 +6158,67 @@ neither is a new live check of the current deployment.
   contents. Positive semantic fixtures are new interpretation examples in an
   actual accepted producer shape, not existing Kernel transmission receipts.
 
+### D-076 - Opt-in strict verified non-paid execution admission
+
+- **Status:** Accepted explicit owner decision for #184,
+  2026-10-08T09:49:32Z; deterministic implementation/reception to be verified.
+- **Boundary:** Strict mode is explicitly enabled through administrator-issued
+  authorization, never silently added to existing clients/grants. Preserve all
+  stronger existing restrictions, including D-039, entitlement precedence,
+  confirmed quota-pool semantics and inference-only/client-tool boundaries.
+  It can only narrow; no fallback, downgrade, paid overflow or benefit redemption.
+- **Strict sufficiency:** Admission requires sufficiently current, source-specific
+  evidence covering the complete authorized execution path, its source/binding
+  incarnation and actual implementation/control version. PAYG, purchased-credit,
+  paid-overflow and unaccounted paid-helper execution must be excluded by
+  evidenced controls. Unknown, mixed, opaque or incomplete paths refuse before
+  execution with actionable typed reasons. Recheck current binding, authority
+  and evidence before dispatch and native continuation; no stale snapshot can
+  renew a removed/replaced path. Source labels, rates, quota observations,
+  reservations, authenticated worker statements and a new `verified` boolean
+  cannot manufacture this evidence.
+- **Truthful scope:** Verified Router admission enforcement is not observed
+  provider billing or settlement. Never claim zero actual charges, a total task
+  cost ceiling or zero hidden-call cost without independent evidence. Router
+  owns source/call facts and supported controls; Kernel owns whole-task
+  accounting/authorization, including failed/retried/helper/review/tool work.
+  No numerical task budget, quota-to-token conversion, provider reservation,
+  overflow/credit/reset permission or billing attestation is invented.
+- **Current evidence inventory:** Existing D-039 parses included-allowance and
+  credit/control fields from the same official account result; it is a stronger
+  start-eligibility restriction, not proof of future billing closure. Native
+  Codex's ChatGPT authentication and controlled home/model binding, ZCode's
+  configured subscription/edit path, generic HTTP and loopback/Ollama origins,
+  reported runtime/model inventories, available quota and dated promotions do
+  not presently establish full non-paid-path closure. No current production
+  source may be newly marked verified from those partial facts. Strict refusal
+  is useful/enforceable without fictional positive production evidence.
+- **Evidence reception:** Keep policy separate from an internal Router-owned
+  source/control assessment with immutable scope, provenance and bounded
+  validity. No client/admin configuration or ordinary worker payload can
+  attest a positive path; default producers report supported partial facts and
+  unknown closure. Positive deterministic reception must use an inspected fixed
+  synthetic backend/control implementation through real existing producer
+  grammar, not a mutable callback claiming verification or a future vendor
+  attestation. Its positive scope is fixture-controlled execution only.
+- **Facts and compatibility:** Configured token rate, actual supported output
+  ceiling, token/usage observation class, visible adapter call count and local
+  reservation remain separate from exhaustive helper multiplicity and billing,
+  which remain unknown where unobserved. Missing usage is not zero; one reported
+  call cannot prove total coverage. A balance delta cannot attribute a task
+  amid other clients. Promotions require exact scoped/version/time prerequisites
+  and expire without refresh; no price/promotion fabricates free quota. Reuse
+  existing core, source registry, pools, collectors, accounting and reservations,
+  not a second economics/ranker/finance service.
+- **Review and remaining authority:** This is security-critical. Full normal
+  deterministic validation and fresh whole-PR technical/UX review precede the
+  mandatory independent `gpt-daybreak-blue-latest` direct-Codex exact-base/HEAD
+  gate. Source/control/synthetic receipts are not live financial acceptance.
+  Any remaining separately authorized provider/billing/inference/effect test
+  stays explicitly open; no broad completion, deployment or external mutation
+  authority is granted. D-063/default grants remain supported and #199's
+  replacement/retirement gate is untouched.
+
 ### U-014 - Native coding backend versus Kernel-owned workspace lifecycle
 
 - **Status:** Direction settled by D-073; replacement/retirement evidence remains

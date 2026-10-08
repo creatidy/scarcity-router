@@ -937,6 +937,19 @@ class ReviewRound2Tests(unittest.TestCase):
         self.assertEqual(0, self.registry.pending_count())
         self.assertTrue(self.registry.was_terminal_for(TOOL_TOKEN, CLIENT_ID))
 
+    def test_strict_non_paid_grant_refuses_existing_unproved_native_continuation(self) -> None:
+        document = _canonical_request_document()
+        record = _registered_record(document, self.registry, self.adapter)
+        cancelled: list[str] = []
+        record.cancel_callback = lambda pending: cancelled.append(pending.continuation_token)
+        self.application.client_authorizations = {CLIENT_ID: ClientAuthorization(strict_no_payg=True)}
+        with self.assertRaises(GatewayError) as caught:
+            _ = self.application.execute(client_id=CLIENT_ID, request=parse_chat_request(document))
+        self.assertEqual(caught.exception.code, "no_payg_evidence_unavailable")
+        self.assertEqual(self.adapter.delivered, [])
+        self.assertEqual(cancelled, [TOOL_TOKEN])
+        self.assertEqual(self.registry.pending_count(), 0)
+
     def test_rebinding_native_resource_to_http_cannot_resume_it_under_inference_grant(self) -> None:
         document = _canonical_request_document()
         record = _registered_record(document, self.registry, self.adapter)

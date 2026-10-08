@@ -72,6 +72,7 @@ from .capacity import CapacitySnapshot
 from .eligibility import ExecutionEligibility
 from .errors import CapacityValidationError, SelectionContractError
 from .gateway_adapters import (
+    ExecutionAdapter,
     AdapterCall,
     AdapterMessage,
     AdapterPermanentError,
@@ -147,6 +148,7 @@ from .resource_state import (
     route_output_code,
 )
 from .gateway_validation import v_instance, v_int, v_safe_id
+from .execution_assurance import ExecutionAssurance, receive_execution_assurance, source_call_facts
 from .routing_core import (
     AdministratorConstraints,
     AdmissionDecision,
@@ -162,6 +164,7 @@ from .routing_core import (
     _authorization_failure_codes,  # pyright: ignore[reportPrivateUsage] -- the M02 authorization stage is the single authority; forking it for the continuation recheck would fork D-042 semantics
     _effective_authorization,  # pyright: ignore[reportPrivateUsage] -- same single-authority rationale
     admit_pinned_target,
+    availability_failure_codes,
     route_request,
 )
 from .selector import canonical_instant
@@ -658,6 +661,7 @@ class GatewayApplication:
         continuations: ContinuationRegistry | None = None,
         continuation_capability_source: "Callable[[], frozenset[str]] | None" = None,
         replaced_application: "GatewayApplication | None" = None,
+        source_call_fact_sink: Callable[[dict[str, object]], None] | None = None,
     ) -> None:
         _ = v_instance(catalog, ModelCatalog, "gateway_application.catalog")
         _ = v_instance(profiles, TaskProfileCatalog, "gateway_application.profiles")
@@ -717,6 +721,12 @@ class GatewayApplication:
             client_authorizations
         )
         self.authority_source: Callable[[str], tuple[ResourceRegistry, AdministratorConstraints, ClientAuthorization, AdapterRegistry]] | None = authority_source
+        if source_call_fact_sink is not None and not callable(getattr(source_call_fact_sink, "__call__", None)):
+            raise ValueError("source_call_fact_sink must be callable")
+        self.source_call_fact_sink: Callable[[dict[str, object]], None] | None = (
+            source_call_fact_sink if source_call_fact_sink is not None else
+            replaced_application.source_call_fact_sink if replaced_application is not None else None
+        )
         self.clock: Callable[[], datetime] | None = clock
         self.request_id_factory: RequestFactory | None = request_id_factory
         #: D-062: the shared continuation registry (one instance per
@@ -917,6 +927,7 @@ class GatewayApplication:
             target=target, caps=request.capabilities, state=state
         )
         reservation = self._acquire_reservation(client_id)
+        state.local_reserved = True
         try:
             return self._dispatch(
                 request=request, target=target, state=state,
@@ -1180,7 +1191,9 @@ class GatewayApplication:
         # (review round 2, finding 5): nothing may occupy the pending
         # table past this point regardless of outcome.
         try:
-            self._recheck_continuation_authority(record, adapter)
+            state.call_fact_entry, state.call_assurance, state.assurance_at = self._recheck_continuation_authority(record, adapter)
+            state.requested_ceiling = request.capabilities.requested_output_tokens
+            state.local_reserved = True
             outcome = adapter.deliver_tool_result(record.handle, content, context)
         except ClientDisconnectedError:
             self._close_continuation(record, CONTINUATION_CANCELLED)
@@ -1366,7 +1379,7 @@ class GatewayApplication:
 
     def _recheck_continuation_authority(
         self, record: PendingContinuation, adapter: ContinuationCapableAdapter,
-    ) -> None:
+    ) -> tuple[ResourceRegistryEntry, ExecutionAssurance | None, datetime]:
         """The CURRENT hard authority of the ORIGINAL client against the
         EXACT original target (review round 2, finding 6).
 
@@ -1382,8 +1395,9 @@ class GatewayApplication:
         assert registry is not None
         try:
             current_registry, administrator, client, current_adapters = self._current_authority(record.client_id)
+            assessed_at = self._now()
             snapshot = current_registry.registry_snapshot(
-                now=canonical_instant(self._now())
+                now=canonical_instant(assessed_at)
             )
         except (CapacityValidationError, ValueError):
             raise GatewayError.api(
@@ -1423,8 +1437,17 @@ class GatewayApplication:
             client,
             None,
         )
-        codes = _authorization_failure_codes(entry, effective)
+        assurances = _execution_assurances((entry,), current_adapters, client.strict_no_payg)
+        codes = _authorization_failure_codes(entry, effective, execution_assurances=assurances, assessed_at=assessed_at)
+        if client.strict_no_payg and not codes:
+            try:
+                _snapshots, reports = self.capacity_source(canonical_instant(assessed_at))
+            except Exception:
+                raise GatewayError.api("current source policy evidence is unavailable", code="state_unavailable", http_status=503) from None
+            codes = availability_failure_codes(entry, reports)
         if codes:
+            if any(code.startswith("no_payg_") for code in codes):
+                raise _strict_non_paid_error(next(code for code in codes if code.startswith("no_payg_")))
             raise GatewayError.permission(
                 "the client's current authorization no longer covers the "
                 + "suspended execution's target",
@@ -1451,6 +1474,15 @@ class GatewayApplication:
                 "the suspended execution's adapter/worker binding is no longer authorized",
                 code="unauthorized_target",
             )
+        original_assurance: ExecutionAssurance | None = None
+        if client.strict_no_payg:
+            if not isinstance(adapter, ExecutionAdapter):
+                raise _strict_non_paid_error("no_payg_evidence_unavailable")
+            original_assurance = receive_execution_assurance(entry.identity, adapter)
+            original_codes = original_assurance.refusal_codes(entry.identity, assessed_at, max_age_seconds=entry.freshness_ttl_seconds)
+            if original_codes:
+                raise _strict_non_paid_error(original_codes[0])
+        return entry, original_assurance, assessed_at
 
     def expire_continuations(self) -> tuple[str, ...]:
         """Expire due continuations (the server's reaper loop calls this).
@@ -1544,6 +1576,7 @@ class GatewayApplication:
                 # excludes worker_bridged candidates for tool requests.
                 continuation_capable = None
         try:
+            client_grant = self._client_grant(state.client_id)
             request_obj = RouteRequest(
                 catalog=self.catalog,
                 profiles=self.profiles,
@@ -1554,7 +1587,8 @@ class GatewayApplication:
                 eligibility_reports=eligibility_reports,
                 compatibility_cells=self.compatibility_cells,
                 admin_constraints=self.admin_constraints,
-                client_authorization=self._client_grant(state.client_id),
+                client_authorization=client_grant,
+                execution_assurances=_execution_assurances(registry_snapshot.entries, self.adapters, client_grant.strict_no_payg),
                 routing_profile=routing_profile,
                 request=binding,
                 profile_policy_version=(
@@ -1730,9 +1764,11 @@ class GatewayApplication:
         started: datetime,
         resolved: ResolvedModel,
     ) -> CompletionOutcome:
+        state.requested_ceiling = request.capabilities.requested_output_tokens
         try:
             current_registry, administrator, client, current_adapters = self._current_authority(state.client_id)
-            snapshot = current_registry.registry_snapshot(now=canonical_instant(self._now()))
+            assessed_at = self._now()
+            snapshot = current_registry.registry_snapshot(now=canonical_instant(assessed_at))
         except (CapacityValidationError, ValueError):
             raise GatewayError.api(
                 "the gateway's current resource state is unavailable",
@@ -1745,16 +1781,35 @@ class GatewayApplication:
         effective = _effective_authorization(
             administrator, client, resolved.profile,
         )
+        assurances = () if current_entry is None else _execution_assurances((current_entry,), current_adapters, client.strict_no_payg)
+        codes = () if current_entry is None else _authorization_failure_codes(
+            current_entry, effective,
+            execution_assurances=assurances,
+            assessed_at=assessed_at,
+        )
         if (
             current_entry is None or current_entry.identity != target.resource
-            or _authorization_failure_codes(current_entry, effective)
+            or codes
         ):
+            if any(code.startswith("no_payg_") for code in codes):
+                raise _strict_non_paid_error(next(code for code in codes if code.startswith("no_payg_")))
             raise GatewayError.permission(
                 "the client's current authorization or registration no longer covers "
                 + "the selected target; inference-only clients require an authorized "
                 + "server-direct HTTP resource",
                 code="unauthorized_target",
             )
+        if client.strict_no_payg:
+            try:
+                _snapshots, reports = self.capacity_source(canonical_instant(assessed_at))
+            except Exception:
+                raise GatewayError.api("current source policy evidence is unavailable", code="state_unavailable", http_status=503) from None
+            if availability_failure_codes(current_entry, reports):
+                raise GatewayError.permission("the current source remains blocked by eligibility policy", code="source_policy_blocked")
+        state.call_fact_entry = current_entry
+        state.assurance_at = assessed_at
+        if client.strict_no_payg:
+            state.call_assurance = next(iter(assurances), None)
         adapter = current_adapters.resolve(target.resource.channel)
         if adapter is None:
             raise GatewayError.api(
@@ -1922,6 +1977,18 @@ class GatewayApplication:
         result_status: str,
         reason_codes: tuple[str, ...],
     ) -> None:
+        if self.source_call_fact_sink is not None and state.call_fact_entry is not None:
+            try:
+                facts = source_call_facts(
+                    state.call_fact_entry, state.calls, now=self._now(),
+                    requested_output_ceiling=state.requested_ceiling, local_reservation_active=state.local_reserved,
+                    assurance=state.call_assurance, assurance_checked_at=state.assurance_at,
+                )
+                facts["request_id"] = state.request_id
+                facts["result_status"] = result_status
+                self.source_call_fact_sink(facts)
+            except Exception:
+                state.flow_notes = (*state.flow_notes, "source_call_facts_unavailable")
         reported, estimated = _usage_totals(state.calls)
         record = AuditRecord(
             request_id=state.request_id,
@@ -1964,6 +2031,7 @@ class _LifecycleState:
     """Mutable per-execution bookkeeping for the audit record."""
 
     __slots__: tuple[str, ...] = (
+        "call_fact_entry", "call_assurance", "assurance_at", "requested_ceiling", "local_reserved",
         "request_id",
         "client_id",
         "started_at",
@@ -2000,6 +2068,11 @@ class _LifecycleState:
         self.adapter_version: str | None = None
         self.context: ExecutionContext | None = None
         self.calls: tuple[CallObservation, ...] = ()
+        self.call_fact_entry: ResourceRegistryEntry | None = None
+        self.call_assurance: ExecutionAssurance | None = None
+        self.assurance_at: datetime | None = None
+        self.requested_ceiling: int | None = None
+        self.local_reserved: bool = False
         self.target: RouteTarget | None = None
         self.target_capabilities: ResourceRegistryEntry | None = None
         self.limit_notes: tuple[str, ...] = ()
@@ -2051,6 +2124,24 @@ def _target_capabilities(
     return None
 
 
+def _execution_assurances(
+    entries: tuple[ResourceRegistryEntry, ...], adapters: AdapterRegistry, strict: bool,
+) -> tuple[ExecutionAssurance, ...]:
+    if not strict:
+        return ()
+    return tuple(receive_execution_assurance(entry.identity, adapter) for entry in entries
+                 if (adapter := adapters.resolve(entry.identity.channel)) is not None)
+
+
+def _strict_non_paid_error(code: str) -> GatewayError:
+    return GatewayError.permission(
+        "strict non-paid admission cannot verify this source's complete execution path; "
+        + "an administrator must supply a supported reviewed source/control implementation and current evidence. "
+        + "Entitlement, quota, prices and source authentication do not prove that path; no fallback is permitted",
+        code=code,
+    )
+
+
 def _no_eligible_target_error(decision: RouteDecision) -> GatewayError:
     """The typed failure for an unpinned decision with no selected target.
 
@@ -2070,6 +2161,10 @@ def _no_eligible_target_error(decision: RouteDecision) -> GatewayError:
     request" 400. Priority within the pure case matches
     :func:`_admission_rejection` (insufficient > unenforceable > unknown).
     """
+    strict_codes = sorted({code for exclusion in decision.target_exclusions
+                           for code in exclusion.reason_codes if code.startswith("no_payg_")})
+    if strict_codes:
+        return _strict_non_paid_error(strict_codes[0])
     output_codes: set[str] = {
         "output_limit_unknown",
         "output_limit_insufficient",
@@ -2122,6 +2217,9 @@ def _no_eligible_target_error(decision: RouteDecision) -> GatewayError:
 def _admission_rejection(admission: AdmissionDecision) -> GatewayError:
     """Map an admission rejection to its explicit execution-surface error."""
     codes = set(admission.reason_codes)
+    strict_codes = sorted(code for code in codes if code.startswith("no_payg_"))
+    if strict_codes:
+        return _strict_non_paid_error(strict_codes[0])
     if "pin_target_not_found" in codes:
         return GatewayError.not_found(
             "the pinned execution target does not exist",
