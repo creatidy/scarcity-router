@@ -155,6 +155,8 @@ from .selector import (
     SelectionDecision,
     SelectorPolicy,
     canonical_instant,
+    evaluate_capability_sufficiency,
+    evaluate_hard_constraints,
     select_model,
     tighten_requirement,
 )
@@ -266,6 +268,9 @@ ADMISSION_REASON_CODES: frozenset[str] = frozenset({
     "admission_rejected",
     "pin_target_not_found",
     "pinned_model_not_bound",
+    "pinned_request_failed",
+    "hard_constraint_failed",
+    "capability_failed",
 })
 
 # Entitlement classes with a marginal monetary spend: the only ones a
@@ -1511,13 +1516,18 @@ def _compatibility_failure(
     output_code = route_output_code(
         entry.capabilities,
         hard_output_tokens=hard_output_tokens,
-        requested_output_tokens=(
-            requirement.hard_constraints.minimum_output_tokens
-        ),
+        requested_output_tokens=request.maximum_output_tokens,
         variant_resolved=variant_resolved,
     )
     if output_code is not None:
         codes.append(output_code)
+    floor_code = route_output_code(
+        entry.capabilities, hard_output_tokens=hard_output_tokens,
+        requested_output_tokens=requirement.hard_constraints.minimum_output_tokens,
+        variant_resolved=variant_resolved, enforce_limit=False,
+    )
+    if floor_code is not None:
+        codes.append(floor_code)
     # The docstring promises a sorted, duplicate-free code tuple: two
     # required features can fail with the SAME code (e.g. two missing
     # cells both yield compatibility_unknown), and TargetExclusion's
@@ -2315,9 +2325,14 @@ class RouteRequest:
     #: Internal competitive candidate intersection; gate observations stay whole.
     #: No public recommendation or gateway request field is added.
     candidate_identities: tuple[ModelIdentity, ...] | None = None
+    #: Explicit interpreted requirements narrow this same routing/admission
+    #: pipeline. Omission preserves generic clients; this is not a wire field.
+    task_requirement: TaskRequirement | None = None
 
     def __post_init__(self) -> None:
         _ = _v_instance_of(self.catalog, ModelCatalog, "route_request.catalog")
+        if self.task_requirement is not None:
+            _ = _v_instance_of(self.task_requirement, TaskRequirement, "route_request.task_requirement")
         if self.candidate_identities is not None:
             identities = _v_tuple_of(
                 self.candidate_identities, ModelIdentity, "route_request.candidate_identities"
@@ -2434,6 +2449,39 @@ class RouteRequest:
                 + f"{self.registry_snapshot.generated_at!r}; a decision is "
                 + "never evaluated before its own state snapshot"
             )
+        if self.task_requirement is not None:
+            # Structural context is an independent demand, not an explicit
+            # attempt to weaken the supplied/profile requirement floor.
+            context_floor = max(
+                self.request.minimum_input_context_tokens or 0,
+                self.task_requirement.hard_constraints.minimum_input_context_tokens or 0,
+            )
+            if self.routing_profile is not None:
+                context_floor = max(context_floor, self.profiles.resolve(
+                    self.routing_profile.profile_id
+                ).hard_constraints.minimum_input_context_tokens or 0)
+            if context_floor:
+                context_binding = self.request.to_dict()
+                context_binding["minimum_input_context_tokens"] = context_floor
+                object.__setattr__(self, "request", RequestBinding.from_dict(context_binding))
+            resolved, _profile = _resolve_requirement(self)
+            hard = resolved.hard_constraints
+            if hard.requires_vision:
+                raise RouteContractValidationError(
+                    "task_requirement.requires_vision: no evidenced channel contract"
+                )
+            binding = self.request.to_dict()
+            binding["requires_tool_calls"] = self.request.requires_tool_calls or hard.requires_tool_use
+            binding["requires_reasoning_controls"] = self.request.requires_reasoning_controls or hard.requires_reasoning_mode
+            context = max(self.request.minimum_input_context_tokens or 0, hard.minimum_input_context_tokens or 0)
+            if context:
+                binding["minimum_input_context_tokens"] = context
+            if hard.minimum_output_tokens is not None:
+                if self.request.maximum_output_tokens is not None and self.request.maximum_output_tokens < hard.minimum_output_tokens:
+                    raise RouteContractValidationError(
+                        "task_requirement.minimum_output_tokens contradicts the requested output ceiling"
+                    )
+            object.__setattr__(self, "request", RequestBinding.from_dict(binding))
 
 
 # ── Requirement resolution (precedence layers 3 and 4) ───────────────────────
@@ -2463,6 +2511,11 @@ def _resolve_requirement(
             hard_constraints=HardConstraints(),
         )
         profile_id = None
+    if request.task_requirement is not None:
+        base = (
+            tighten_requirement(base, request.task_requirement)
+            if profile is not None else request.task_requirement
+        )
     structural = TaskRequirement(
         task_level=base.task_level,
         capability_minima=CapabilityMinima(),
@@ -2854,6 +2907,29 @@ def admit_pinned_target(
     resource_id = pinned_target.resource_id
     decision_id = pinned_target.decision_id
     requirement, profile_id = _resolve_requirement(request)
+    requested_pin = request.request.pinned_target
+    requested_model = request.request.explicit_model
+    if (
+        (requested_pin is not None and (
+            requested_pin.resource_id != resource_id or requested_pin.model != pinned_target.model
+        ))
+        or (requested_model is not None and (
+            requested_model.provider != pinned_target.model.provider
+            or requested_model.model != pinned_target.model.model
+        ))
+        or (request.request.explicit_variant is not None
+            and request.request.explicit_variant != pinned_target.model.variant)
+    ):
+        return AdmissionDecision(
+            resource_id=resource_id, approved=False,
+            reason_codes=("admission_rejected", "pinned_request_failed"), bound_decision_id=decision_id,
+        )
+    # Exact admission already knows the executing variant, including its hard
+    # output allowance. Preserve all request intersections checked above.
+    admission_request = request.request.to_dict()
+    admission_request["pinned_target"] = pinned_target.to_dict()
+    admission_request["explicit_variant"] = pinned_target.model.variant
+    admission_binding = RequestBinding.from_dict(admission_request)
     effective = _effective_authorization(
         request.admin_constraints,
         request.client_authorization,
@@ -2878,7 +2954,7 @@ def admit_pinned_target(
         entry,
         request.catalog,
         effective,
-        request.request,
+        admission_binding,
         request.compatibility_cells,
         requirement,
         request.eligibility_reports,
@@ -2900,6 +2976,19 @@ def admit_pinned_target(
             approved=False,
             reason_codes=("admission_rejected", "pinned_model_not_bound"),
             bound_decision_id=decision_id,
+        )
+    catalog_entry = next(entry for entry in request.catalog.entries if entry.identity == pinned_target.model)
+    # Reuse the selector's authoritative per-candidate predicates, not ranking
+    # or a substitute identity. A resource gate alone is not model sufficiency.
+    if evaluate_hard_constraints(requirement.hard_constraints, catalog_entry):
+        return AdmissionDecision(
+            resource_id=resource_id, approved=False,
+            reason_codes=("admission_rejected", "hard_constraint_failed"), bound_decision_id=decision_id,
+        )
+    if evaluate_capability_sufficiency(requirement.capability_minima, catalog_entry.capabilities):
+        return AdmissionDecision(
+            resource_id=resource_id, approved=False,
+            reason_codes=("admission_rejected", "capability_failed"), bound_decision_id=decision_id,
         )
     return AdmissionDecision(
         resource_id=resource_id,
