@@ -137,6 +137,9 @@ including the current entry's health/capability/effective-limit facts, not an ol
 application's cached entry. After task/profile/structural merging, the retained
 known input-context demand must also fit the gateway allowance at selection and
 execution; checking only the small outgoing message estimate is insufficient.
+The genuine task/profile output floor likewise intersects the current gateway
+output allowance even when no generation cap was requested. This is a separate
+requirement check, never a synthesized generation ceiling.
 The composed publisher supplies the complete current application, including
 catalog/calibration, profiles/version, aliases, compatibility, policy and gateway
 limits. An operation takes a transient read-only view sharing that publication's
@@ -163,7 +166,12 @@ including optional `@decision_id` provenance, not a newly invented spelling.
 
 `execution_requirements` is an opt-in closed version-1 context containing the
 complete resolved `requirement`, structural `binding`, `profile_policy_version`
-and `profile_expansion` (the latter two explicitly null when no profile is used).
+and `profile_expansion` (the latter two explicitly null when no profile is used),
+and mandatory `reasoning_effort` including an explicit null expectation. Missing
+effort is not null. The exact current catalog configuration must match this
+retained value; null-to-configured calibration drift refuses before dispatch,
+including variant-qualified HTTP and native worker targets. A retained null keeps
+deliberate omission of the native control, not adoption of a later default.
 It is an additional demand, not an approval, grant, publisher attestation or
 reservation. It must accompany an exact `sr-pin:` model on Chat Completions;
 alias/logical substitution refuses. The pinned identity must agree with retained

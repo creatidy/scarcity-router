@@ -9,7 +9,7 @@ from typing import cast
 from .errors import SelectionContractError
 from .gateway_contracts import GatewayError
 from .routing_core import RequestBinding, RouteRequest
-from .selection_types import TaskRequirement
+from .selection_types import TaskRequirement, REASONING_EFFORTS
 
 
 def executable_error() -> GatewayError:
@@ -58,25 +58,29 @@ class ExecutableRequirements:
     binding: RequestBinding
     profile_policy_version: int | None = None
     profile_expansion: TaskRequirement | None = None
+    reasoning_effort: str | None = None
 
     @classmethod
     def from_dict(cls, value: object) -> ExecutableRequirements:
         try:
             fields = _object(value, {"schema_version", "requirement", "binding",
-                                     "profile_policy_version", "profile_expansion"})
+                                     "profile_policy_version", "profile_expansion", "reasoning_effort"})
             _version(fields["schema_version"])
             _ = _object(fields["requirement"], {"task_level", "capability_minima", "hard_constraints"})
             requirement = TaskRequirement.from_dict(fields["requirement"])
             binding = RequestBinding.from_dict(fields["binding"])
             version = fields["profile_policy_version"]
             expansion = fields["profile_expansion"]
+            effort = fields["reasoning_effort"]
+            if effort is not None and (not isinstance(effort, str) or effort not in REASONING_EFFORTS):
+                raise ValueError
             if binding.profile_alias is None:
                 if version is not None or expansion is not None:
                     raise ValueError
-                return cls(requirement, binding)
+                return cls(requirement, binding, reasoning_effort=effort)
             if type(version) is not int or version < 1 or expansion is None:
                 raise ValueError
-            return cls(requirement, binding, version, TaskRequirement.from_dict(expansion))
+            return cls(requirement, binding, version, TaskRequirement.from_dict(expansion), effort)
         except (ValueError, SelectionContractError, TypeError, RecursionError):
             raise executable_error() from None
 
@@ -86,6 +90,7 @@ class ExecutableRequirements:
             "binding": self.binding.to_dict(),
             "profile_policy_version": self.profile_policy_version,
             "profile_expansion": None if self.profile_expansion is None else self.profile_expansion.to_dict(),
+            "reasoning_effort": self.reasoning_effort,
         }
 
     def fingerprint(self) -> str:
@@ -95,6 +100,9 @@ class ExecutableRequirements:
     def bind(self, route: RouteRequest) -> RouteRequest:
         try:
             if self.binding.pinned_target is None or route.request.pinned_target != self.binding.pinned_target:
+                raise ValueError
+            entry = next((candidate for candidate in route.catalog.entries if candidate.identity == self.binding.pinned_target.model), None)
+            if entry is None or entry.reasoning_effort != self.reasoning_effort:
                 raise ValueError
             if self.binding.profile_alias is not None:
                 profile = route.routing_profile

@@ -430,6 +430,9 @@ def parse_chat_completion_request(document: object) -> ChatCompletionRequest:
         if not model.startswith("sr-pin:"):
             raise _err("executable requirements require an exact pin", code="execution_pin_required", param="model")
         retained = execution_requirements.binding
+        if reasoning_effort != execution_requirements.reasoning_effort:
+            raise _err("execution effort must preserve the retained configuration",
+                       code="execution_requirements_invalid", param="reasoning_effort")
         if (retained.requires_streaming and not stream
             or retained.requires_tool_calls and not (requires_tool_calls or requires_tool_results)
             or retained.requires_structured_output and not requires_structured_output

@@ -44,6 +44,8 @@ def prepare_executable_completion(
         if pin != target:
             raise ValueError
         context = ExecutableRequirements.from_dict(execution["execution_requirements"])
+        if context.reasoning_effort != execution["reasoning_effort"]:
+            raise ValueError
         if context.binding.profile_alias is not None:
             if context.binding.profile_alias != _model:
                 raise ValueError

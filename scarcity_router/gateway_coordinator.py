@@ -1605,7 +1605,7 @@ class GatewayApplication:
                             require_catalog_effort=True)
         except (ValueError, SelectionContractError):
             raise executable_error() from None
-        self._enforce_request_limits(replace(caps, estimated_input_tokens=route.request.minimum_input_context_tokens))
+        self._enforce_executable_limits(route, caps)
         decision = route_request(route)
         execution: dict[str, object] | None = None
         if decision.target is not None:
@@ -1617,17 +1617,25 @@ class GatewayApplication:
                 raise executable_error()
             binding = replace(route.request, pinned_target=pin)
             profile = route.routing_profile
+            selected = decision.selection.selected
+            assert selected is not None
             context = ExecutableRequirements(
                 executable_quality_requirement(route), binding,
                 route.profile_policy_version if profile is not None else None,
                 route.profiles.resolve(profile.profile_id) if profile is not None else None,
+                reasoning_effort=selected.reasoning_effort,
             )
-            selected = decision.selection.selected
-            assert selected is not None
             execution = {"model": model_pin, "reasoning_effort": selected.reasoning_effort,
                          "execution_requirements": context.to_dict()}
         public_route = public_route_document(decision, route)
         return {"schema_version": 1, "route": public_route, "execution": execution}
+
+    def _enforce_executable_limits(self, route: RouteRequest, caps: RequestCapabilities) -> None:
+        self._enforce_request_limits(replace(caps, estimated_input_tokens=route.request.minimum_input_context_tokens))
+        floor = executable_quality_requirement(route).hard_constraints.minimum_output_tokens
+        if floor is not None and floor > self.limits.max_output_tokens:
+            raise GatewayError.invalid_request("the retained output requirement exceeds the gateway allowance",
+                code="output_limit_exceeded", param="execution_requirements")
 
     def _routing_request(
         self,
@@ -1734,7 +1742,7 @@ class GatewayApplication:
             ) from None
         if executable is not None:
             request_obj = executable.bind(request_obj)
-            self._enforce_request_limits(replace(caps, estimated_input_tokens=request_obj.request.minimum_input_context_tokens))
+            self._enforce_executable_limits(request_obj, caps)
         return request_obj
 
     def _admit(

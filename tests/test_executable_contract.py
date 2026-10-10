@@ -497,6 +497,84 @@ class ExecutableContractTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, "context_length_exceeded")
         self.assertEqual(adapter.dispatch_count, 0)
 
+    def test_genuine_output_floor_intersects_allowance_without_synthesizing_cap(self) -> None:
+        for source in ("explicit", "profile"):
+            adapter = ScriptedAdapter()
+            application = make_application(adapters=[adapter])
+            application.limits = replace(application.limits, max_output_tokens=1000)
+            document = route_document()
+            if source == "explicit":
+                as_dict(as_dict(document["requirement"])["hard_constraints"])["minimum_output_tokens"] = 2000
+            else:
+                definition = application.profiles.definitions[0]
+                application.profiles = TaskProfileCatalog(definitions=(replace(definition, requirement=replace(
+                    definition.requirement, hard_constraints=replace(definition.requirement.hard_constraints,
+                                                                     minimum_output_tokens=2000))),))
+            self.assertNotIn("maximum_output_tokens", as_dict(document["binding"]))
+            with self.subTest(source=source), self.assertRaises(GatewayError) as caught:
+                _ = application.select_executable(client_id=CLIENT_ID, document=document)
+            self.assertEqual(caught.exception.code, "output_limit_exceeded")
+            self.assertEqual(adapter.dispatch_count, 0)
+
+    def test_output_floor_refuses_lowered_published_allowance_without_a_cap(self) -> None:
+        adapter = ScriptedAdapter()
+        application = make_application(adapters=[adapter])
+        registry = ResourceRegistry(clock=lambda: canonical(T_EVAL))
+        for entry in application.registry.registry_snapshot().entries:
+            registry.register(ResourceRegistration(identity=entry.identity, freshness_ttl_seconds=TTL,
+                capabilities=replace(entry.capabilities, output_limit_control=False, output_limit_tokens=3000)))
+            assert entry.observation is not None
+            registry.apply_snapshot(entry.observation)
+        application.registry = registry
+        document = route_document()
+        as_dict(as_dict(document["requirement"])["hard_constraints"])["minimum_output_tokens"] = 2000
+        response = application.select_executable(client_id=CLIENT_ID, document=document)
+        prepared = prepare_executable_completion(response, expected_request=document, completion=COMPLETION)
+        self.assertNotIn("max_completion_tokens", prepared)
+        self.assertNotIn("max_tokens", prepared)
+        published = make_application(adapters=[adapter], registry=registry)
+        published.limits = replace(published.limits, max_output_tokens=1000)
+        application.application_source = lambda: published
+        with self.assertRaises(GatewayError) as caught:
+            _ = application.execute(client_id=CLIENT_ID, request=parse_chat_request(prepared))
+        self.assertEqual(caught.exception.code, "output_limit_exceeded")
+        self.assertEqual(adapter.dispatch_count, 0)
+
+    def test_retained_null_effort_rejects_same_identity_configured_drift(self) -> None:
+        from tests.gateway_fixtures import build_registry, build_cells
+        for channel in ("server_direct_http", "worker_bridged"):
+            adapter = ScriptedAdapter(channel=channel)
+            application = make_application(adapters=[adapter], registry=build_registry(with_worker=True),
+                                           cells=build_cells(include_worker=True))
+            original_entry = next(entry for entry in application.registry.registry_snapshot().entries
+                if entry.identity.channel == channel and entry.identity.provider == "openai")
+            identity = replace(original_entry.identity, variant="opaque-config" if channel == "server_direct_http" else None)
+            registry = ResourceRegistry(clock=lambda: canonical(T_EVAL))
+            registry.register(ResourceRegistration(identity=identity, freshness_ttl_seconds=TTL,
+                capabilities=replace(original_entry.capabilities, reasoning_controls=True)))
+            assert original_entry.observation is not None
+            registry.apply_snapshot(replace(original_entry.observation, identity=identity))
+            application.registry = registry
+            application.catalog = replace(application.catalog, entries=tuple(replace(entry,
+                identity=replace(entry.identity, variant="opaque-config"), reasoning_effort=None,
+                hard_properties=replace(entry.hard_properties, supports_reasoning_mode=False))
+                if entry.identity.variant == "max" else entry for entry in application.catalog.entries))
+            document = route_document()
+            document["model"] = f"sr-pin:{identity.resource_id}/openai/gpt-5.6-luna/opaque-config"
+            response = application.select_executable(client_id=CLIENT_ID, document=document)
+            prepared = prepare_executable_completion(response, expected_request=document, completion=COMPLETION)
+            self.assertIsNone(as_dict(prepared["execution_requirements"])["reasoning_effort"])
+            self.assertNotIn("reasoning_effort", prepared)
+            current = make_application(adapters=[adapter], registry=registry, cells=build_cells(include_worker=True))
+            current.catalog = replace(application.catalog, entries=tuple(replace(entry, reasoning_effort="high",
+                hard_properties=replace(entry.hard_properties, supports_reasoning_mode=True))
+                if entry.identity.variant == "opaque-config" else entry for entry in application.catalog.entries))
+            application.application_source = lambda: current
+            with self.subTest(channel=channel), self.assertRaises(GatewayError) as caught:
+                _ = application.execute(client_id=CLIENT_ID, request=parse_chat_request(prepared))
+            self.assertEqual(caught.exception.code, "execution_requirements_invalid")
+            self.assertEqual(adapter.dispatch_count, 0)
+
     def test_published_replacement_artifacts_and_limits_reject_before_dispatch(self) -> None:
         for change in ("limits", "profile_version", "profile_content", "catalog", "compatibility"):
             adapter = ScriptedAdapter()
