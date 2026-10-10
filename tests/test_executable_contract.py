@@ -21,9 +21,12 @@ from scarcity_router.gateway_continuation import (
 from scarcity_router.gateway_coordinator import parse_pinned_reference
 from scarcity_router.kernel_requirements import QUALITY_PREFIX, interpret_kernel_declaration
 from scarcity_router.resource_state import ResourceRegistry, ResourceRegistration, PromotionObservation
-from scarcity_router.routing_core import ClientAuthorization, AdministratorConstraints
+from scarcity_router.routing_core import (
+    ClientAuthorization, AdministratorConstraints, RouteDecision, RouteRequest,
+    public_route_document, route_request,
+)
 from scarcity_router.gateway_adapters import AdapterRegistry
-from scarcity_router.selection_types import CapabilityMinima, TaskProfileCatalog
+from scarcity_router.selection_types import CapabilityMinima, ModelIdentity, TaskProfileCatalog
 from tests.gateway_fixtures import CLIENT_ID, CLIENT_KEY, ScriptedAdapter, T_EVAL, TTL, canonical, make_application, parse_chat_request
 from tests.test_gateway_server import AUTH_HEADERS, ServerHarness, as_dict
 from tests.test_gateway_continuation_coordinator import FakeContinuationAdapter
@@ -49,7 +52,111 @@ def route_document() -> dict[str, object]:
 COMPLETION: dict[str, object] = {"messages": [{"role": "user", "content": "owned synthetic request"}]}
 
 
+def serialized_identities(value: object) -> set[tuple[str, str, str]]:
+    """Inspect every nested public field, including policy/explanation provenance."""
+    found: set[tuple[str, str, str]] = set()
+    if isinstance(value, dict):
+        fields = cast(dict[str, object], value)
+        provider, model, variant = fields.get("provider"), fields.get("model"), fields.get("variant")
+        if isinstance(provider, str) and isinstance(model, str) and isinstance(variant, str):
+            found.add((provider, model, variant))
+        for child in fields.values():
+            found.update(serialized_identities(child))
+    elif isinstance(value, list):
+        for child in cast(list[object], value):
+            found.update(serialized_identities(child))
+    return found
+
+
 class ExecutableContractTests(unittest.TestCase):
+    def test_denied_provider_or_all_resources_have_no_public_identities(self) -> None:
+        for grant in (ClientAuthorization(allowed_providers=()),
+                      ClientAuthorization(blocked_resource_ids=("openai-http", "zai-http"))):
+            application = make_application(client_authorizations={CLIENT_ID: grant})
+            application.policy = replace(application.policy, preference_order=tuple(entry.identity for entry in application.catalog.entries))
+            response = application.select_executable(client_id=CLIENT_ID, document=route_document())
+            self.assertIsNone(response["execution"])
+            self.assertEqual(serialized_identities(response), set())
+            self.assertEqual(as_dict(response["route"])["unroutable_identities"], [])
+            text = json.dumps(response)
+            for entry in application.catalog.entries:
+                self.assertNotIn(entry.identity.model, text)
+
+    def test_mixed_resources_filter_identity_and_preference_explanations_not_selection(self) -> None:
+        from unittest.mock import patch
+        for grant in (ClientAuthorization(allowed_providers=("zai",)),
+                      ClientAuthorization(blocked_resource_ids=("openai-http",))):
+            application = make_application(client_authorizations={CLIENT_ID: grant})
+            application.policy = replace(application.policy, preference_order=tuple(entry.identity for entry in application.catalog.entries))
+            observed: list[tuple[RouteRequest, RouteDecision, dict[str, object]]] = []
+            def evaluate(request: RouteRequest) -> RouteDecision:
+                decision = route_request(request)
+                observed.append((request, decision, decision.to_dict()))
+                return decision
+            with patch("scarcity_router.gateway_coordinator.route_request", side_effect=evaluate):
+                response = application.select_executable(client_id=CLIENT_ID, document=route_document())
+            allowed = {("zai", "glm-5.3", "high")}
+            self.assertEqual(serialized_identities(response), allowed)
+            self.assertNotIn("gpt-5.6-luna", json.dumps(response))
+            request, decision, original = observed[0]
+            self.assertEqual(decision.to_dict(), original)
+            self.assertTrue(decision.unroutable_identities)
+            self.assertEqual(decision.selection.preference_order, application.policy.preference_order)
+            public = as_dict(response["route"])
+            self.assertEqual(public["decision_id"], decision.decision_id)
+            self.assertEqual(public["target"], original["target"])
+            self.assertEqual(as_dict(public["selection"])["selected"], as_dict(original["selection"])["selected"])
+            self.assertEqual(public_route_document(decision, request), public)
+
+    def test_variant_visibility_follows_resource_qualification_not_catalog_presence(self) -> None:
+        application = make_application()
+        entries = application.registry.registry_snapshot().entries
+        registry = ResourceRegistry(clock=lambda: canonical(T_EVAL))
+        for entry in entries:
+            identity = replace(entry.identity, variant="medium") if entry.identity.provider == "openai" else entry.identity
+            registry.register(ResourceRegistration(identity=identity, freshness_ttl_seconds=TTL, capabilities=entry.capabilities))
+            assert entry.observation is not None
+            registry.apply_snapshot(replace(entry.observation, identity=identity))
+        application.registry = registry
+        application.client_authorizations = {CLIENT_ID: ClientAuthorization(allowed_providers=("openai",))}
+        application.policy = replace(application.policy, preference_order=(
+            ModelIdentity(provider="openai", model="gpt-5.6-luna", variant="max"),
+            ModelIdentity(provider="openai", model="gpt-5.6-luna", variant="medium")))
+        response = application.select_executable(client_id=CLIENT_ID, document=route_document())
+        self.assertEqual(serialized_identities(response), {("openai", "gpt-5.6-luna", "medium")})
+        self.assertEqual(as_dict(response["route"])["unroutable_identities"], [])
+        self.assertIsNotNone(response["execution"])
+
+    def test_authorized_unavailable_variant_explanation_is_retained(self) -> None:
+        application = make_application(client_authorizations={CLIENT_ID: ClientAuthorization(allowed_providers=("openai",))})
+        application.clock = lambda: T_EVAL + timedelta(seconds=TTL + 1)
+        response = application.select_executable(client_id=CLIENT_ID, document=route_document())
+        self.assertIsNone(response["execution"])
+        expected = {("openai", "gpt-5.6-luna", "max"), ("openai", "gpt-5.6-luna", "medium")}
+        self.assertEqual(serialized_identities(response), expected)
+        self.assertNotIn("glm-5.3", json.dumps(response))
+        exclusions = cast(list[object], as_dict(response["route"])["target_exclusions"])
+        self.assertTrue(any(as_dict(item)["resource_id"] == "openai-http" for item in exclusions))
+
+    def test_public_identity_view_changes_with_same_published_authority(self) -> None:
+        old = make_application()
+        published = make_application(client_authorizations={CLIENT_ID: ClientAuthorization(allowed_providers=("zai",))})
+        old.application_source = lambda: published
+        response = old.select_executable(client_id=CLIENT_ID, document=route_document())
+        self.assertEqual(serialized_identities(response), {("zai", "glm-5.3", "high")})
+        published.client_authorizations = {CLIENT_ID: ClientAuthorization(allowed_providers=())}
+        response = old.select_executable(client_id=CLIENT_ID, document=route_document())
+        self.assertIsNone(response["execution"])
+        self.assertEqual(serialized_identities(response), set())
+
+    def test_empty_registry_has_no_public_catalog_or_preference_identities(self) -> None:
+        application = make_application(registry=ResourceRegistry(clock=lambda: canonical(T_EVAL)))
+        application.policy = replace(application.policy, preference_order=tuple(entry.identity for entry in application.catalog.entries))
+        response = application.select_executable(client_id=CLIENT_ID, document=route_document())
+        self.assertIsNone(response["execution"])
+        self.assertEqual(serialized_identities(response), set())
+        self.assertEqual(as_dict(response["route"])["unroutable_identities"], [])
+
     def test_retired_adapter_exact_admission_has_typed_refusal_and_no_dispatch(self) -> None:
         adapter = ScriptedAdapter()
         application = make_application(adapters=[adapter])

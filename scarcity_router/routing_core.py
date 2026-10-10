@@ -2746,7 +2746,22 @@ def public_route_document(decision: RouteDecision, request: RouteRequest) -> dic
     visible = tuple(entry for entry in request.registry_snapshot.entries if not _authorization_failure_codes(
         entry, effective, execution_assurances=request.execution_assurances, assessed_at=request.evaluated_at))
     visible_ids = {entry.identity.resource_id for entry in visible}
+    visible_keys = {
+        _identity_key(identity)
+        for entry in visible
+        for identity in _bind_identities(entry, request.catalog)
+    }
     document = decision.to_dict()
+    document["unroutable_identities"] = [
+        identity.to_dict() for identity in decision.unroutable_identities
+        if _identity_key(identity) in visible_keys
+    ]
+    selection = decision.selection.to_dict()
+    selection["preference_order"] = [
+        identity.to_dict() for identity in decision.selection.preference_order
+        if _identity_key(identity) in visible_keys
+    ]
+    document["selection"] = selection
     document["target_exclusions"] = [
         exclusion.to_dict() if exclusion.resource_id in visible_ids else
         {"resource_id": "restricted", "stage": exclusion.stage, "reason_codes": list(exclusion.reason_codes)}
