@@ -29,7 +29,129 @@ def eligibility_transitions() -> dict[str, tuple[str, str, str]]:
     return rows
 
 
+def dependency_assessments() -> dict[str, tuple[str, str, str]]:
+    """Decode normative dependency actions, not synthetic orchestration behavior."""
+    section = (ROOT / ".kilo/command/loop.md").read_text().split(
+        "## Dependency Evidence Before Inactivity", 1
+    )[1].split("## Post-Selection Eligibility Revalidation", 1)[0]
+    rows: dict[str, tuple[str, str, str]] = {}
+    for line in section.splitlines():
+        if not line.startswith("| "):
+            continue
+        cells = tuple(cell.strip() for cell in line.strip("|").split("|"))
+        if cells[0] in ("Evidence Case", "---"):
+            continue
+        if len(cells) != 4 or cells[0] in rows:
+            raise AssertionError("dependency rows must be unique four-column rules")
+        rows[cells[0]] = (cells[1], cells[2], cells[3])
+    return rows
+
+
 class WorkflowContractTests(unittest.TestCase):
+    def test_technical_recovery_progress_is_not_a_terminal_handoff(self) -> None:
+        for path in (".kilo/command/loop.md", ".kilo/rules/35-technical-recovery.md"):
+            with self.subTest(path=path):
+                contract = text(path)
+                self.assertIn("Technical-recovery progress narration is NONTERMINAL", contract)
+                self.assertIn("not an owner handoff", contract)
+        loop = text(".kilo/command/loop.md")
+        self.assertIn("same primary context after recovery", loop)
+        self.assertIn("Only the legitimate terminal contracts below end the invocation", loop)
+        self.assertIn("all review, currentness and acceptance gates still apply", loop)
+        recovery = text(".kilo/rules/35-technical-recovery.md")
+        self.assertIn("recover durable logs/exit status before a diagnosed rerun", recovery)
+        self.assertIn("never launch duplicate validation processes", recovery)
+        self.assertIn("or claim an unobserved PASS", recovery)
+
+    def test_integrated_mi15_reaches_open_router185_before_router176(self) -> None:
+        # MI #15 accepted; #176 requires unfinished #185. Its eligibility, not
+        # its open status, determines whether SELECT can reach the predecessor.
+        self.assertEqual(
+            dependency_assessments()["unfinished_same_repository_predecessor"],
+            ("ASSESS_PREDECESSOR", "SELECT", "eligible_predecessor_uses_existing_order"),
+        )
+        loop = text(".kilo/command/loop.md")
+        self.assertIn("Traverse required dependency edges backward", loop)
+        self.assertIn("earliest currently actionable task or an externally controlled prerequisite", loop)
+        self.assertIn("Evaluate each unfinished same-repository predecessor's own eligibility", loop)
+        self.assertIn("open state alone is not a blocker", loop)
+        self.assertIn("existing priority/required-ordering/age rules", loop)
+
+    def test_router185_external_gate_does_not_terminate_unrelated_work(self) -> None:
+        self.assertEqual(
+            dependency_assessments()["verified_absent_external_producer"],
+            ("GATED", "SELECT", "affected_issues_only"),
+        )
+        loop = text(".kilo/command/loop.md")
+        self.assertIn("gates only affected issues", loop)
+        self.assertIn("continue assessing unrelated verified eligible work", loop)
+        self.assertIn("Issue-local ineligibility is not absence of executable work", loop)
+        self.assertIn("These checks do not permit skipping a started delivery", loop)
+
+    def test_mi19_installed_acceptance_is_not_router176_implementation_gate(self) -> None:
+        self.assertEqual(
+            dependency_assessments()["downstream_acceptance_without_implementation_gate"],
+            ("ACCEPTANCE_OPEN", "CONTINUE_ASSESSMENT", "preserve_final_acceptance"),
+        )
+        loop = text(".kilo/command/loop.md")
+        self.assertIn("remain final acceptance gates", loop)
+        self.assertIn("without explicit canonical evidence assigning that stage", loop)
+        self.assertIn("without moving it earlier or inventing an acceptance waiver", loop)
+
+    def test_changed_producer_contract_invalidates_cached_eligibility_not_history(self) -> None:
+        self.assertEqual(
+            dependency_assessments()["changed_producer_revision_or_contract"],
+            ("REVALIDATE", "VERIFY_EVIDENCE", "retain_history_not_cached_gate"),
+        )
+        loop = text(".kilo/command/loop.md")
+        self.assertIn("Reassess cached gates whenever a producer revision or contract changes", loop)
+        self.assertIn("retain history/counters, not stale eligibility", loop)
+        self.assertIn("not Git commits or closed status alone", loop)
+
+    def test_missing_producer_evidence_is_unverified_not_fabricated_absence(self) -> None:
+        self.assertEqual(
+            dependency_assessments()["missing_canonical_evidence"],
+            ("UNVERIFIED", "VERIFY_EVIDENCE", "continue_other_verified_eligible"),
+        )
+        self.assertEqual(
+            eligibility_transitions()["unverified_eligibility"],
+            ("VERIFY_EVIDENCE", "PRESERVE_DELIVERY", "retain"),
+        )
+        loop = text(".kilo/command/loop.md")
+        self.assertIn("not invented ELIGIBLE_NOW, BLOCKED, WAIT or a fabricated missing contract", loop)
+        self.assertIn("Identify the exact missing check and attempt authorized read-only evidence recovery", loop)
+        self.assertIn("unknown evidence never proves a gate or readiness", loop)
+
+    def test_exhaustive_queue_empty_distinguishes_gates_exclusions_and_unknowns(self) -> None:
+        assessments = dependency_assessments()
+        self.assertEqual(
+            assessments["fresh_exhaustive_queue_without_verified_eligible"],
+            ("NO_VERIFIED_ELIGIBLE", "QUEUE_EMPTY", "report_exclusions_verified_gates_unverified"),
+        )
+        self.assertEqual(sum(rule[1] == "QUEUE_EMPTY" for rule in assessments.values()), 1)
+        loop = text(".kilo/command/loop.md")
+        for invariant in (
+            "Before WAIT, BLOCKED, STOP_AND_ASK or QUEUE_EMPTY",
+            "refresh the FULL canonical open-issue queue, paging to exhaustion",
+            "responsible owner, exact canonical evidence, required check/action and stage",
+            "implementation, integration, acceptance or retirement",
+            "with UNVERIFIED requirements still explicit",
+            "not an exhaustively assessed QUEUE_EMPTY",
+            "it must identify the exact external action or owner decision",
+            "not whole Creatidy program inactivity",
+            "Apply Dependency Evidence Before Inactivity before terminal reporting",
+        ):
+            with self.subTest(invariant=invariant):
+                self.assertIn(invariant, loop)
+        for path in (".kilo/rules/10-task-system.md", ".kilo/rules/35-technical-recovery.md"):
+            with self.subTest(path=path):
+                contract = text(path)
+                self.assertIn("Before WAIT, BLOCKED, STOP_AND_ASK or QUEUE_EMPTY", contract)
+                self.assertIn("UNVERIFIED", contract)
+                self.assertIn("exact", contract)
+                self.assertIn("read-only", contract)
+                self.assertIn("acceptance/retirement stage", contract)
+
     def test_daybreak_uses_direct_codex_after_ordinary_review_not_issue_discovery(self) -> None:
         for path in ("AGENTS.md", "docs/llm-operating-policy.md", ".kilo/command/loop.md",
                      ".kilo/command/finish-pr.md"):

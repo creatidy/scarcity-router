@@ -27,6 +27,11 @@ guess reconciliation of divergence. Classify checkout/access/tool failures and a
 `.kilo/rules/35-technical-recovery.md` before BLOCKED or STOP_AND_ASK. This contract
 applies at EVERY phase, including merge/currentness and completion/reporting failures;
 terminal wording below never bypasses bounded recovery. Do not create speculative issues to sustain the queue.
+Technical-recovery progress narration is NONTERMINAL, not an owner handoff or
+an additional confirmation gate. Continue the already-authorized phase in this
+same primary context after recovery; do not stop merely to announce intent,
+validation progress or READY_TO_MERGE. Only the legitimate terminal contracts
+below end the invocation; all review, currentness and acceptance gates still apply.
 
 Before dispatching work, verify `.task_progress.md` is excluded via the local Git
 exclude mechanism in `.kilo/rules/40-local-search.md`; append an invocation ID and
@@ -66,8 +71,10 @@ records (not PRs). Apply these steps in order:
    Materially conflicting/incomparable priority declarations, cyclic ordering,
    or a canonical issue/repository requirement conflict without a safe deterministic
    interpretation require STOP_AND_ASK, not an invented ordering.
-4. If no eligible issue remains, report QUEUE_EMPTY with the excluded/gated reasons.
-   This is not product completion or permission to create work. Otherwise record
+4. If no eligible issue remains, report QUEUE_EMPTY only after the dependency
+   evidence check below, distinguishing exclusions, verified gates and UNVERIFIED
+   eligibility. This is scoped to this repository and the observed canonical state,
+   not whole Creatidy program inactivity, product completion or permission to create work. Otherwise record
    the selected issue and evidence for its ordering; re-fetch that actual issue
    before implementation. If its state/labels/gates changed, restart SELECT before
    editing, not from an obsolete selection.
@@ -80,6 +87,60 @@ apparently current PRs with no settled disposition require STOP_AND_ASK. If a pr
 merged PR already satisfies this issue's acceptance, verify and complete the issue
 as in COMPLETE without reimplementing; merged status alone does not prove acceptance.
 
+## Dependency Evidence Before Inactivity
+
+Before WAIT, BLOCKED, STOP_AND_ASK or QUEUE_EMPTY, refresh the FULL canonical
+open-issue queue, paging to exhaustion, and relevant issue bodies/comments/explicit
+dependencies. Revalidate applicable upstream producer contracts and accepted
+revisions, including evidence of their integrated artifacts, not Git commits or
+closed status alone. Historical QUEUE_EMPTY/gate interpretations and ledger notes
+cannot substitute for this check. Reassess cached gates whenever a producer
+revision or contract changes; retain history/counters, not stale eligibility.
+
+For every actual unmet condition record its responsible owner, exact canonical
+evidence, required check/action and stage: implementation, integration, acceptance
+or retirement. Traverse required dependency edges backward until reaching the
+earliest currently actionable task or an externally controlled prerequisite.
+Evaluate each unfinished same-repository predecessor's own eligibility; open
+state alone is not a blocker. Feed verified eligible predecessors into SELECT's
+existing priority/required-ordering/age rules, never a special preferred queue.
+Do not terminate merely because a dependent issue cannot execute before them.
+Issue-local ineligibility is not absence of executable work across the repository.
+
+An external producer artifact proven absent gates only affected issues; continue
+assessing unrelated verified eligible work. Missing canonical evidence is UNVERIFIED,
+not invented ELIGIBLE_NOW, BLOCKED, WAIT or a fabricated missing contract. Identify
+the exact missing check and attempt authorized read-only evidence recovery under
+the bounded technical-recovery rule. Other verified eligible tasks may continue.
+If queue inspection/recovery itself fails, report its exhausted execution paths,
+not an exhaustively assessed QUEUE_EMPTY. A complete fresh queue with no verified
+eligible work may yield QUEUE_EMPTY with UNVERIFIED requirements still explicit;
+unknown evidence never proves a gate or readiness.
+
+Downstream installed tests/receipts or consumer integration after implementation
+remain final acceptance gates. Never treat downstream acceptance as an upstream
+implementation gate without explicit canonical evidence assigning that stage.
+If whole-delivery acceptance requires separate authorization/evidence, preserve
+that actual gate without moving it earlier or inventing an acceptance waiver.
+Missing implementation, absent producer evidence and unfinished acceptance are
+not automatically owner decisions. Only a genuinely unresolved owner-controlled
+choice yields STOP_AND_ASK; its existing decision contract and immediate stop remain.
+These checks do not permit skipping a started delivery or an exhausted review bound.
+WAIT is an explanatory recommendation, not an additional loop terminal status;
+it must identify the exact external action or owner decision that unblocks progress.
+
+The following declarative assessment contract is checked offline, not a runtime
+dependency engine or proof that a live orchestrator performed the investigation:
+
+| Evidence Case | Assessment | Next Action | Queue/Stage Rule |
+| --- | --- | --- | --- |
+| unfinished_same_repository_predecessor | ASSESS_PREDECESSOR | SELECT | eligible_predecessor_uses_existing_order |
+| verified_absent_external_producer | GATED | SELECT | affected_issues_only |
+| downstream_acceptance_without_implementation_gate | ACCEPTANCE_OPEN | CONTINUE_ASSESSMENT | preserve_final_acceptance |
+| changed_producer_revision_or_contract | REVALIDATE | VERIFY_EVIDENCE | retain_history_not_cached_gate |
+| missing_canonical_evidence | UNVERIFIED | VERIFY_EVIDENCE | continue_other_verified_eligible |
+| fresh_exhaustive_queue_without_verified_eligible | NO_VERIFIED_ELIGIBLE | QUEUE_EMPTY | report_exclusions_verified_gates_unverified |
+
 ## Post-Selection Eligibility Revalidation
 
 After selection, inspect the issue and required producer/contracts using fresh
@@ -88,6 +149,8 @@ unmet explicit prerequisite, absent required upstream producer/contract/artifact
 or an already-known dependency gate that would have excluded the issue in SELECT
 makes it temporarily ineligible for the current selection cycle. An unavailable
 inspection tool is not evidence of an absent producer: use technical recovery.
+Unverified eligibility uses the dependency evidence check, not a proven gate;
+backward traversal must evaluate any unfinished local predecessor before inactivity.
 
 The automatic return applies only when no substantive delivery exists: no
 implementation commit, no current authorized implementation PR, and no substantive
@@ -122,6 +185,7 @@ is retained on every path; this is a command contract, not a new controller:
 | missing_producer | SELECT | PRESERVE_DELIVERY | retain |
 | missing_contract_artifact | SELECT | PRESERVE_DELIVERY | retain |
 | known_dependency_gate | SELECT | PRESERVE_DELIVERY | retain |
+| unverified_eligibility | VERIFY_EVIDENCE | PRESERVE_DELIVERY | retain |
 | all_ineligible_queue | QUEUE_EMPTY | NOT_APPLICABLE | retain |
 | genuine_owner_decision | STOP_AND_ASK | STOP_AND_ASK | retain |
 | eligible_execution_problem | RECOVER | RECOVER | retain |
@@ -254,6 +318,10 @@ Before STOP_AND_ASK, persist all five decision-contract fields from
 `.kilo/rules/35-technical-recovery.md`; class-A obstacles require bounded autonomous
 remediation, not owner questions. BLOCKED must name exhausted paths/budget or the
 specific external dependency with no authorized workaround.
+Apply Dependency Evidence Before Inactivity before terminal reporting; include
+the fresh repository-scoped queue observation, backward-traced predecessors,
+producer revisions and each remaining condition's owner/evidence/stage/action.
+Distinguish exact-label exclusions, verified gates and UNVERIFIED missing checks.
 
 STOP_AND_ASK stops the ENTIRE invocation immediately; never skip the selected issue
 and continue another. Ask the owner using `question` for genuine undecided architecture/
