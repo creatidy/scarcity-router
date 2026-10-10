@@ -349,6 +349,14 @@ class GatewayRequestHandler(BaseHTTPRequestHandler):
             if method == "POST" and path == "/v1/chat/completions":
                 self._route_chat_completions(client_id)
                 return
+            if method == "POST" and path == "/v1/route":
+                control = self._control_plane()
+                if control is not None:
+                    control.prepare_execution_admission()
+                application = self._application()
+                document = self._read_json_object(application.limits.max_request_body_bytes)
+                self._send_json(HTTPStatus.OK, application.select_executable(client_id=client_id, document=document))
+                return
             if method in ("GET", "POST", "HEAD"):
                 self._send_gateway_error(
                     GatewayError.not_found("unknown request URL")

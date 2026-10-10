@@ -61,6 +61,7 @@ from .gateway_adapters import (
     CompletionOutcome,
 )
 from .gateway_contracts import GatewayError
+from .executable_contract import ExecutableRequirements
 
 # ── Frozen vocabularies ───────────────────────────────────────────────────────
 
@@ -91,6 +92,7 @@ CHAT_COMPLETION_ALLOWED_KEYS: frozenset[str] = frozenset({
     "parallel_tool_calls",
     "user",
     "metadata",
+    "execution_requirements",
 })
 
 MESSAGE_ROLES: frozenset[str] = frozenset({
@@ -257,6 +259,7 @@ class ChatCompletionRequest:
     reasoning_effort: str | None = None
     generation_params: Mapping[str, object] | None = None
     metadata: Mapping[str, str] | None = None
+    execution_requirements: ExecutableRequirements | None = None
 
 
 def parse_chat_completion_request(document: object) -> ChatCompletionRequest:
@@ -421,6 +424,20 @@ def parse_chat_completion_request(document: object) -> ChatCompletionRequest:
         and cast(str, response_format.get("type")) in STRUCTURED_OUTPUT_TYPES
     )
     estimated = estimate_input_tokens(messages, tools)
+    execution_requirements = None
+    if "execution_requirements" in document:
+        execution_requirements = ExecutableRequirements.from_dict(document["execution_requirements"])
+        if not model.startswith("sr-pin:"):
+            raise _err("executable requirements require an exact pin", code="execution_pin_required", param="model")
+        retained = execution_requirements.binding
+        if (retained.requires_streaming and not stream
+            or retained.requires_tool_calls and not (requires_tool_calls or requires_tool_results)
+            or retained.requires_structured_output and not requires_structured_output
+            or retained.requires_reasoning_controls and reasoning_effort is None
+            or retained.maximum_output_tokens is not None
+            and (requested_output is None or requested_output > retained.maximum_output_tokens)):
+            raise _err("execution controls must preserve the retained requirements",
+                       code="execution_requirements_invalid", param="execution_requirements")
     return ChatCompletionRequest(
         model=model,
         messages=messages,
@@ -442,6 +459,7 @@ def parse_chat_completion_request(document: object) -> ChatCompletionRequest:
         reasoning_effort=reasoning_effort,
         generation_params=generation,
         metadata=metadata,
+        execution_requirements=execution_requirements,
     )
 
 

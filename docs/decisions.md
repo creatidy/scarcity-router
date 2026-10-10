@@ -6219,6 +6219,60 @@ neither is a new live check of the current deployment.
   authority is granted. D-063/default grants remain supported and #199's
   replacement/retirement gate is untouched.
 
+### D-077 - Additive executable recommendation and retained requirements
+
+- **Status:** Accepted producer contract within #174's explicit selected scope;
+  exact independent conformance/security reviews required before integration.
+  Installed consumer/harness acceptance remains open, not implied by this decision.
+- **Evidence:** Router `edd31326d4abe5cc282adb419cb54c78d4677ec4` exposes
+  model-only `/v1/select` while its route core already owns executable decisions
+  and exact admission. Kernel source `73e3af45c911aa9ae8c26b97bf0ec9f452063f10`,
+  `adapters/scarcity_router.py:359-364,613,647-782`, implements #51 approved
+  requirement recommendation and immutable evidence, not resource-bound execution.
+  Kernel #52 follows producer conformance; its unfinished receipt is not a producer
+  implementation prerequisite. Existing harness preservation is not attested.
+- **Decision:** Add `POST /v1/route` to the existing optional gateway listener,
+  authenticated with the existing inference-client bearer key. A closed version-1
+  request carries an existing gateway `model`, complete `TaskRequirement` and
+  existing structural `RequestBinding`; no client identity, grant, catalog,
+  endpoint, private telemetry or approval assertion is accepted as authority.
+  Current composed inventory, policy, readiness, grants and route core remain
+  authoritative. This operation selects but never dispatches, reserves quota or
+  introduces another service. Frozen recommendation-only interfaces stay unchanged.
+- **Retention:** The executable response carries the actual route decision and
+  an exact ready-to-use `sr-pin:` reference constructed by the existing pin grammar,
+  plus catalog-sourced effort and a separately versioned executable requirement
+  context. The context retains the complete resolved quality and structural
+  requirements and any used profile's version and actual expansion. Execution
+  carries it in an explicit `execution_requirements` Chat Completions member,
+  never generic metadata. It requires an exact pin and rechecks current profile,
+  grants, registry, capabilities and limits before exact admission, without ranking
+  or substitution. Submitted context is a demand, not trusted approval or authority.
+- **Consumer boundary:** A narrow producer-response preparation helper validates
+  the retained expected requirements, target/pin/decision/effort relationship and
+  outbound request, avoiding manual pin copying. Missing or changed pin/context
+  refuses on this supported consumer path, including final outbound validation
+  without repair (`require_bound=True`). If a harness strips opt-in context
+  (with or without its historically valid pin), a stateless server cannot infer the lost Attempt from a subsequently
+  valid ordinary request. Do not claim universal loss detection or silently relabel
+  that request. Kernel owns immutable Attempt binding and actual harness acceptance.
+- **Alternatives:** Replacing recommendation v1, trusting metadata/decision IDs as
+  grants, a second inventory/ranker, a decision cache/token/receipt authority, new
+  per-request model allowlist and a separately started API are rejected. Reuse the
+  existing server/core/strict parsers; no foreign code/dependency is adopted.
+- **Compatibility/security:** Existing logical/alias/pin clients retain their
+  historical semantics unless they explicitly carry the new context. Decision IDs
+  remain optional audit provenance, not authenticity, reservation or physical-model
+  attestation. No prompts/credentials/raw approved task meaning enter recommendation
+  fixtures, diagnostics or new persistence. Runtime authorization and requirement
+  fidelity make this delivery security_critical; full validation and ordinary exact
+  independent review precede the mandatory direct-Codex Daybreak review.
+- **Acceptance:** Producer/helper/gateway tests are synthetic offline dispatch
+  preservation, not installed Kernel/harness reception, physical observation or
+  live provider billing. Kernel #52 and REAL_HARNESS_IDENTITY_ACCEPTANCE under
+  #174/#181 remain separate integration/acceptance, requiring explicit live/effect
+  authorization; no owner approval, deployment or product GO is fabricated.
+
 ### U-014 - Native coding backend versus Kernel-owned workspace lifecycle
 
 - **Status:** Direction settled by D-073; replacement/retirement evidence remains

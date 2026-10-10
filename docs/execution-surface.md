@@ -108,6 +108,100 @@ live inference, deployment, workspace or credential access.
 
 ## Harness compatibility contract (D-056)
 
+### Executable Recommendation (D-077, #174)
+
+Contract-first producer freeze under #174; installed consumer acceptance remains
+open. The optional gateway
+adds authenticated `POST /v1/route`, not a recommendation v1 mode or another service.
+It uses the same inference-client bearer key and current administrator/client
+grants as execution. Request version, route-decision schema, recommendation schema,
+catalog content and policy versions are independent.
+
+The closed request has exactly `schema_version: 1`, `model` (existing alias/logical
+model/pin spelling), `requirement` (complete existing TaskRequirement) and `binding`
+(existing RequestBinding structural/identity demands). Ordinary task meaning can
+be prepared with #175's local interpreter; Router does not authenticate Kernel
+approval or invent minima from text. Missing quality, unsupported/contradictory
+constraints, booleans as versions and unknown fields refuse without inference.
+The operation reuses current configured artifacts, policy, compatibility and
+quota-free readiness observation. No model-call probe, quota reservation, dispatch,
+client-supplied grant or caller-selected provider origin is permitted.
+
+The version-1 executable envelope contains `route`, the actual existing RouteDecision,
+and `execution`, null on no solution, otherwise a ready-to-use exact `model` pin,
+catalog `reasoning_effort` (including distinct null/none/plan semantics), and complete
+`execution_requirements`. It is not a new ranking DTO. Typed route refusals preserve
+the layer; unsupported physical observation cannot become a verified assertion.
+The route's authorization-excluded resource identities are replaced by
+`restricted` and private detail omitted; the refusal layer/reason codes remain.
+This is the authenticated public projection of the actual core decision, not an
+additional ranking or a way to inventory resources denied to the client.
+The pin is produced/verified through existing serialization/parser semantics,
+including optional `@decision_id` provenance, not a newly invented spelling.
+
+`execution_requirements` is an opt-in closed version-1 context containing the
+complete resolved `requirement`, structural `binding`, `profile_policy_version`
+and `profile_expansion` (the latter two explicitly null when no profile is used).
+It is an additional demand, not an approval, grant, publisher attestation or
+reservation. It must accompany an exact `sr-pin:` model on Chat Completions;
+alias/logical substitution refuses. The pinned identity must agree with retained
+binding. Current profile version AND content, actual message/tool/stream/output
+controls, current grants/resource state/capabilities and hard quality requirements
+are rechecked; no ranking or fallback occurs. A numeric output requirement is a
+capability floor, not a generation cap; submitted output ceilings remain actual
+execution controls and cannot be silently lost. Context is never forwarded as
+prompt, provider metadata or a tool instruction.
+
+A narrow consumer helper consumes the actual serialized envelope and its retained
+expected request, checks identity/effort/decision consistency and prepares an ordinary
+Chat Completions payload with the pin/context. It rejects missing/malformed/lost/
+changed pins or requirements on that path, without requiring manual copying or
+new recurring configuration. Any promised non-null effort is explicitly carried;
+an adapter lacking its evidenced mapping refuses rather than drops it. Existing
+generic clients and frozen recommendation CLI/REST/MCP are unchanged.
+
+**Proof limit:** a stateless server cannot identify the original Attempt if a
+harness strips its context, even if the historically valid pin remains, or strips
+both context and pin and sends an otherwise valid ordinary request.
+That harness path is unsupported/unaccepted for a pinned Attempt; it is not an
+automatic new Attempt or universal gateway loss-detection guarantee. The exact
+inspected Kernel #51 recommendation adapter is not an installed executable consumer.
+Kernel #52 owns that binding; no modifications to Kernel are part of this delivery.
+Synthetic dispatch preservation cannot satisfy REAL_HARNESS_IDENTITY_ACCEPTANCE.
+
+Consumer entry point is
+`scarcity_router.executable_client.prepare_executable_completion(response,
+expected_request=request, completion=chat_body)`. Retain the original request
+and producer response in Kernel's immutable Attempt evidence. It performs
+no semantic approval: retain #175's original approved declaration, its digest,
+interpretation version, inspected producer revision and used profile expansion
+in Kernel's evidence before transmission. The demand/context is not that receipt.
+The helper performs
+no network calls or execution and returns the ordinary outgoing body; it validates
+the complete received frame against the retained request before adding the exact
+pin, effort and context. A non-null output ceiling is copied into the actual
+generation control when absent; conflicting/larger controls refuse. A supported
+consumer checks the resulting body at its dispatch boundary, rather than treating
+generic metadata or a model echo as preservation proof.
+The same helper's `require_bound=True` validates the final serialized outbound
+body against the retained artifacts: lost pin/context/effort or output control
+refuses without insertion, repair, ranking or relabelling as a new Attempt. Default
+preparation accepts an unbound chat body; an already-bound partial body refuses.
+This validation belongs in the supported consumer adapter, not a manual operator
+step. An arbitrary unvalidated harness is not thereby supported or accepted.
+
+Separately authorized end-to-end recipe: record exact Router/Kernel/harness versions
+and scoped authorization; prepare an approved supported requirement; consume the
+serialized executable envelope automatically; persist its pin, complete context,
+decision and original approved meaning before Attempt dispatch; demonstrate the
+actual outbound request retains them and admission rechecks current authority;
+compare exact dispatch evidence with independently observed identity where available.
+Exercise lost pin/context, changed effort/profile, revoked grant, stale resource,
+unavailable model, incompatible tools/protocol, restart and ambiguous dispatch
+without retry/substitution. Record UNKNOWN physical identity/usage honestly.
+Inference, workspace/tool effects, service deployment and financial acceptance
+remain separately authorized; no such receipt is delivered by an offline fixture.
+
 This surface is the first protocol adapter over Scarcity Router's
 harness-independent semantic execution contract. Compatibility is defined
 SEMANTICALLY — what any conforming harness may rely on — never as a list of

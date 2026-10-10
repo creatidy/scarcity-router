@@ -67,6 +67,7 @@ import uuid
 from dataclasses import dataclass, replace
 from collections.abc import Callable, Mapping
 from datetime import datetime, timedelta, timezone
+from typing import cast
 
 from .capacity import CapacitySnapshot
 from .eligibility import ExecutionEligibility
@@ -149,6 +150,7 @@ from .resource_state import (
 )
 from .gateway_validation import v_instance, v_int, v_safe_id
 from .execution_assurance import ExecutionAssurance, receive_execution_assurance, source_call_facts
+from .executable_contract import ExecutableRequirements, executable_error, merge_binding, parse_executable_request
 from .routing_core import (
     AdministratorConstraints,
     AdmissionDecision,
@@ -1051,6 +1053,12 @@ class GatewayApplication:
                 code="continuation_mismatch",
                 param="reasoning_effort",
             )
+        requirements_digest = None if request.execution_requirements is None else request.execution_requirements.fingerprint()
+        if requirements_digest != record.execution_requirements_digest:
+            raise GatewayError.invalid_request(
+                "a continuation must retain its original executable requirements",
+                code="continuation_mismatch", param="execution_requirements",
+            )
         request_tools_fp = tools_fingerprint(request.tools)
         if request_tools_fp != record.tools_fingerprint and request.tools:
             # Normal harnesses resend the identical tools[]; an absent
@@ -1331,6 +1339,7 @@ class GatewayApplication:
                 client_id=state.client_id,
                 model_echo=request.model,
                 reasoning_effort=request.reasoning_effort,
+                execution_requirements_digest=(None if request.execution_requirements is None else request.execution_requirements.fingerprint()),
                 tools_fingerprint=tools_fingerprint(request.tools),
                 tool_choice_json=canonical_json_text(request.tool_choice),
                 prefix_fingerprint=message_fingerprint(request.messages),
@@ -1522,15 +1531,78 @@ class GatewayApplication:
                 param="max_completion_tokens",
             )
 
-    def _admit(
+    def select_executable(self, *, client_id: str, document: object) -> dict[str, object]:
+        """Select without inference, concurrency reservation or Attempt ownership."""
+        model, requirement, demands = parse_executable_request(document)
+        if self.client_key_directory is not None:
+            pending: list[object] = [model, requirement.to_dict(), demands.to_dict()]
+            while pending:
+                value = pending.pop()
+                if isinstance(value, dict):
+                    pending.extend(cast(dict[str, object], value).values())
+                elif isinstance(value, list):
+                    pending.extend(cast(list[object], value))
+                elif isinstance(value, str) and self.client_key_directory.authenticate(value) is not None:
+                    raise executable_error()
+        resolved = resolve_model_string(model, self.aliases, self.catalog)
+        caps = RequestCapabilities(
+            requires_tool_calls=demands.requires_tool_calls, requires_tool_results=False,
+            requires_roles_history=False, requires_structured_output=demands.requires_structured_output,
+            requires_streaming=demands.requires_streaming,
+            requires_reasoning_controls=demands.requires_reasoning_controls,
+            estimated_input_tokens=demands.minimum_input_context_tokens,
+            requested_output_tokens=demands.maximum_output_tokens,
+        )
+        self._enforce_request_limits(caps)
+        started = self._now()
+        state = _LifecycleState(request_id="route", client_id=client_id, started_at=canonical_instant(started))
+        query = ChatCompletionRequest(model, (), caps.requires_streaming, False, caps)
+        route = self._routing_request(started=started, request=query, resolved=resolved, state=state, selecting=True)
+        try:
+            route = replace(route, task_requirement=requirement, request=merge_binding(demands, route.request))
+        except (ValueError, SelectionContractError):
+            raise executable_error() from None
+        decision = route_request(route)
+        execution: dict[str, object] | None = None
+        if decision.target is not None:
+            pin = PinnedTarget.from_route_target(decision.target, decision_id=decision.decision_id)
+            model_pin = f"{PIN_PREFIX}{pin.resource_id}/{pin.model.provider}/{pin.model.model}/{pin.model.variant}"
+            if pin.decision_id is not None:
+                model_pin += f"@{pin.decision_id}"
+            if parse_pinned_reference(model_pin) != pin:
+                raise executable_error()
+            binding = replace(route.request, pinned_target=pin)
+            profile = route.routing_profile
+            context = ExecutableRequirements(
+                decision.selection.requirement, binding,
+                route.profile_policy_version if profile is not None else None,
+                route.profiles.resolve(profile.profile_id) if profile is not None else None,
+            )
+            selected = decision.selection.selected
+            assert selected is not None
+            execution = {"model": model_pin, "reasoning_effort": selected.reasoning_effort,
+                         "execution_requirements": context.to_dict()}
+        public_route = decision.to_dict()
+        # Refusal layers remain visible, but inference clients cannot inventory
+        # private resource names or state through another client's denied targets.
+        public_route["target_exclusions"] = [
+            ({"resource_id": "restricted", "stage": exclusion.stage,
+              "reason_codes": list(exclusion.reason_codes)}
+             if exclusion.stage == "authorization" else exclusion.to_dict())
+            for exclusion in decision.target_exclusions
+        ]
+        return {"schema_version": 1, "route": public_route, "execution": execution}
+
+    def _routing_request(
         self,
         *,
         started: datetime,
         request: ChatCompletionRequest,
         resolved: ResolvedModel,
         state: _LifecycleState,
-    ) -> None:
-        """Admission: exactly one routing-core call, or a typed rejection."""
+        selecting: bool = False,
+    ) -> RouteRequest:
+        """The same current authority/state/structural inputs for selection and admission."""
         now_ts = canonical_instant(started)
         try:
             registry_snapshot = self.registry.registry_snapshot(now=now_ts)
@@ -1543,13 +1615,12 @@ class GatewayApplication:
             ) from None
         state.registry_revision = registry_snapshot.revision
         state.registry_generated_at = registry_snapshot.generated_at
-        explicit_model = None
+        explicit_model = resolved.explicit_model if resolved.kind == LOGICAL_KIND else None
         explicit_variant = None
         admission_catalog = self.catalog
         candidate_identities = None
-        if resolved.kind == LOGICAL_KIND:
+        if resolved.kind == LOGICAL_KIND and not selecting:
             # D-071: narrow by catalog effort before the authoritative core.
-            explicit_model = resolved.explicit_model
             admission_catalog = _resolve_logical_effort(
                 resolved, request.reasoning_effort, self.catalog
             )
@@ -1573,6 +1644,13 @@ class GatewayApplication:
             pinned_target=resolved.pinned_target,
         )
         routing_profile = resolved.profile
+        executable = request.execution_requirements
+        if executable is not None and executable.binding.profile_alias is not None:
+            routing_profile = self.aliases.resolve(executable.binding.profile_alias)
+            if routing_profile is None:
+                raise executable_error()
+            state.routing_profile = routing_profile.profile_id
+            state.routing_policy_version = self.profile_policy_version
         continuation_capable: frozenset[str] | None = None
         if self.continuation_capability_source is not None:
             try:
@@ -1610,12 +1688,23 @@ class GatewayApplication:
                 code="invalid_state",
                 http_status=500,
             ) from None
+        if executable is not None:
+            request_obj = executable.bind(request_obj)
+        return request_obj
+
+    def _admit(
+        self, *, started: datetime, request: ChatCompletionRequest,
+        resolved: ResolvedModel, state: _LifecycleState,
+    ) -> None:
+        """One core admission/selection call, never ranking a preserved pin."""
+        request_obj = self._routing_request(started=started, request=request, resolved=resolved, state=state)
+        registry_snapshot = request_obj.registry_snapshot
         if resolved.pinned_target is not None:
             admission = admit_pinned_target(
                 request_obj, pinned_target=resolved.pinned_target
             )
             if not admission.approved:
-                raise _admission_rejection(admission)
+                raise _admission_rejection(admission, retained_requirements=request.execution_requirements is not None)
             assert admission.target is not None
             state.decision_id = admission.bound_decision_id
             state.target = admission.target
@@ -2225,7 +2314,7 @@ def _no_eligible_target_error(decision: RouteDecision) -> GatewayError:
     )
 
 
-def _admission_rejection(admission: AdmissionDecision) -> GatewayError:
+def _admission_rejection(admission: AdmissionDecision, *, retained_requirements: bool = False) -> GatewayError:
     """Map an admission rejection to its explicit execution-surface error."""
     codes = set(admission.reason_codes)
     strict_codes = sorted(code for code in codes if code.startswith("no_payg_"))
@@ -2314,6 +2403,11 @@ def _admission_rejection(admission: AdmissionDecision) -> GatewayError:
                 if "output_limit_unenforceable" in output_codes
                 else "output_limit_unknown"
             ),
+        )
+    if retained_requirements and ("hard_constraint_failed" in codes or "capability_failed" in codes):
+        return GatewayError.invalid_request(
+            "the pinned target no longer meets the retained task requirements",
+            code="capability_failed" if "capability_failed" in codes else "hard_constraint_failed",
         )
     return GatewayError.api(
         "the pinned target was rejected at admission",
