@@ -497,6 +497,59 @@ class ExecutableContractTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, "context_length_exceeded")
         self.assertEqual(adapter.dispatch_count, 0)
 
+    def test_published_replacement_artifacts_and_limits_reject_before_dispatch(self) -> None:
+        for change in ("limits", "profile_version", "profile_content", "catalog", "compatibility"):
+            adapter = ScriptedAdapter()
+            original = make_application(adapters=[adapter])
+            document = route_document()
+            response = original.select_executable(client_id=CLIENT_ID, document=document)
+            prepared = prepare_executable_completion(response, expected_request=document, completion=COMPLETION)
+            replacement = make_application(adapters=[adapter])
+            if change == "limits":
+                replacement.limits = replace(replacement.limits, max_input_context_tokens=1)
+            elif change == "profile_version":
+                replacement.profile_policy_version = 2
+            elif change == "profile_content":
+                definition = replacement.profiles.definitions[0]
+                replacement.profiles = TaskProfileCatalog(definitions=(replace(definition, requirement=replace(
+                    definition.requirement, capability_minima=CapabilityMinima(reasoning=4, coding=4))),))
+            elif change == "compatibility":
+                replacement.compatibility_cells = tuple(replace(cell, value="UNSUPPORTED")
+                    if cell.feature == "reasoning_controls" else cell for cell in replacement.compatibility_cells)
+            else:
+                pin = parse_pinned_reference(cast(str, prepared["model"]))
+                replacement.catalog = replace(replacement.catalog, entries=tuple(replace(entry, capabilities=replace(
+                    entry.capabilities, reasoning=replace(entry.capabilities.reasoning, rating=1)))
+                    if entry.identity == pin.model else entry for entry in replacement.catalog.entries))
+            original.application_source = lambda: replacement
+            with self.subTest(change=change), self.assertRaises(GatewayError):
+                _ = original.execute(client_id=CLIENT_ID, request=parse_chat_request(prepared))
+            self.assertEqual(adapter.dispatch_count, 0)
+
+    def test_published_selection_uses_new_profile_limits_and_aliases(self) -> None:
+        original = make_application()
+        replacement = make_application()
+        replacement.profile_policy_version = 2
+        original.application_source = lambda: replacement
+        response = original.select_executable(client_id=CLIENT_ID, document=route_document())
+        context = as_dict(as_dict(response["execution"])["execution_requirements"])
+        self.assertEqual(context["profile_policy_version"], 2)
+        replacement.limits = replace(replacement.limits, max_input_context_tokens=1000)
+        document = route_document()
+        as_dict(as_dict(document["requirement"])["hard_constraints"])["minimum_input_context_tokens"] = 2000
+        with self.assertRaises(GatewayError) as caught:
+            _ = original.select_executable(client_id=CLIENT_ID, document=document)
+        self.assertEqual(caught.exception.code, "context_length_exceeded")
+
+    def test_unavailable_published_application_does_not_use_old_artifacts(self) -> None:
+        original = make_application()
+        def unavailable():
+            raise RuntimeError("owned unavailable publisher")
+        original.application_source = unavailable
+        with self.assertRaises(GatewayError) as caught:
+            _ = original.select_executable(client_id=CLIENT_ID, document=route_document())
+        self.assertEqual(caught.exception.code, "state_unavailable")
+
     def test_known_client_credential_cannot_be_reflected_as_a_requirement_tag(self) -> None:
         application = make_application()
         document = route_document()
@@ -581,6 +634,18 @@ class ExecutableContractTests(unittest.TestCase):
 
 
 class ExecutableHTTPTests(ServerHarness):
+    def test_embedded_authenticated_bearer_is_not_retained_or_reflected(self) -> None:
+        port = self.make_server()
+        document = route_document()
+        as_dict(as_dict(document["requirement"])["hard_constraints"])["privacy_constraint"] = CLIENT_KEY + ":tag"
+        connection = self.client(port)
+        connection.request("POST", "/v1/route", body=json.dumps(document), headers=AUTH_HEADERS)
+        response = connection.getresponse()
+        text = response.read().decode()
+        self.assertEqual(response.status, 400)
+        self.assertNotIn(CLIENT_KEY, text)
+        self.assertIn("execution_requirements_invalid", text)
+
     def test_authenticated_route_to_completion_uses_same_listener(self) -> None:
         adapter = ScriptedAdapter()
         port = self.make_server(adapters=[adapter])

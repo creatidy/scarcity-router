@@ -355,6 +355,10 @@ class GatewayRequestHandler(BaseHTTPRequestHandler):
                     control.prepare_execution_admission()
                 application = self._application()
                 document = self._read_json_object(application.limits.max_request_body_bytes)
+                bearer = (self.headers.get("Authorization") or "").removeprefix("Bearer ")
+                if bearer and bearer in json.dumps(document, ensure_ascii=False):
+                    raise GatewayError.invalid_request("credentials cannot be retained as executable demand data",
+                                                       code="execution_requirements_invalid")
                 self._send_json(HTTPStatus.OK, application.select_executable(client_id=client_id, document=document))
                 return
             if method in ("GET", "POST", "HEAD"):

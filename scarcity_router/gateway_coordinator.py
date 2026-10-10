@@ -66,6 +66,7 @@ import threading
 import uuid
 from dataclasses import dataclass, replace
 from collections.abc import Callable, Mapping
+import copy
 from datetime import datetime, timedelta, timezone
 from typing import cast
 
@@ -660,6 +661,7 @@ class GatewayApplication:
         client_key_directory: ClientKeyDirectory | None = None,
         client_authorizations: Mapping[str, ClientAuthorization] | None = None,
         authority_source: Callable[[str], tuple[ResourceRegistry, AdministratorConstraints, ClientAuthorization, AdapterRegistry]] | None = None,
+        application_source: Callable[[], GatewayApplication] | None = None,
         clock: Callable[[], datetime] | None = None,
         request_id_factory: RequestFactory | None = None,
         continuations: ContinuationRegistry | None = None,
@@ -725,6 +727,8 @@ class GatewayApplication:
             client_authorizations
         )
         self.authority_source: Callable[[str], tuple[ResourceRegistry, AdministratorConstraints, ClientAuthorization, AdapterRegistry]] | None = authority_source
+        self.application_source: Callable[[], GatewayApplication] | None = application_source
+        self._admission_authority: tuple[ResourceRegistry, AdministratorConstraints, ClientAuthorization, AdapterRegistry] | None = None
         if source_call_fact_sink is not None and not callable(getattr(source_call_fact_sink, "__call__", None)):
             raise ValueError("source_call_fact_sink must be callable")
         self.source_call_fact_sink: Callable[[dict[str, object]], None] | None = (
@@ -812,6 +816,29 @@ class GatewayApplication:
 
     # ── The lifecycle ────────────────────────────────────────────────────
 
+    def _published_executable_view(self, client_id: str) -> GatewayApplication:
+        if self.application_source is None:
+            return self
+        try:
+            application = self.application_source()
+            _ = v_instance(application, GatewayApplication, "published_gateway_application")
+            directory = application.client_key_directory
+            if directory is not None and client_id not in directory.client_ids:
+                raise GatewayError.permission("the inference client's authority has been revoked", code="unauthorized_target")
+            grants = application.client_authorizations
+            grant = ClientAuthorization() if grants is None else grants.get(client_id, ClientAuthorization())
+            # A transient admission view shares every published artifact/runtime
+            # handle. Final dispatch still invokes the original live authority seam.
+            view = copy.copy(application)
+            view.application_source = None
+            view._admission_authority = (application.registry, application.admin_constraints, grant, application.adapters)
+            return view
+        except GatewayError:
+            raise
+        except Exception:
+            raise GatewayError.api("the published executable admission view is unavailable",
+                                   code="state_unavailable", http_status=503) from None
+
     def execute(
         self,
         *,
@@ -832,6 +859,10 @@ class GatewayApplication:
         already announced on a stream; it must be a safe identifier and is
         otherwise generated here.
         """
+        if request.execution_requirements is not None:
+            view = self._published_executable_view(client_id)
+            if view is not self:
+                return view.execute(client_id=client_id, request=request, emit_chunk=emit_chunk, request_id=request_id)
         started = self._now()
         resolved_request_id = (
             request_id if request_id is not None else _request_id(self.request_id_factory)
@@ -1541,6 +1572,9 @@ class GatewayApplication:
 
     def select_executable(self, *, client_id: str, document: object) -> dict[str, object]:
         """Select without inference, concurrency reservation or Attempt ownership."""
+        view = self._published_executable_view(client_id)
+        if view is not self:
+            return view.select_executable(client_id=client_id, document=document)
         model, requirement, demands = parse_executable_request(document)
         if self.client_key_directory is not None:
             pending: list[object] = [model, requirement.to_dict(), demands.to_dict()]
@@ -1608,7 +1642,8 @@ class GatewayApplication:
         now_ts = canonical_instant(started)
         current = selecting or request.execution_requirements is not None
         if current:
-            registry, administrator, client_grant, adapters = self._current_authority(state.client_id)
+            registry, administrator, client_grant, adapters = (
+                self._admission_authority if self._admission_authority is not None else self._current_authority(state.client_id))
         else:
             registry, administrator, adapters = self.registry, self.admin_constraints, self.adapters
             client_grant = self._client_grant(state.client_id)

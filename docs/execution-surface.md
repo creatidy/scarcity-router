@@ -137,6 +137,15 @@ including the current entry's health/capability/effective-limit facts, not an ol
 application's cached entry. After task/profile/structural merging, the retained
 known input-context demand must also fit the gateway allowance at selection and
 execution; checking only the small outgoing message estimate is insufficient.
+The composed publisher supplies the complete current application, including
+catalog/calibration, profiles/version, aliases, compatibility, policy and gateway
+limits. An operation takes a transient read-only view sharing that publication's
+runtime handles, not a second inventory or service. Admission uses its coherent
+authority inputs; final dispatch still performs the existing live revocation check.
+Failure to obtain the publication refuses without an old-application fallback.
+The authenticated HTTP ingress also rejects its transient bearer appearing inside
+reflected demand strings, including embedded tags. Credentials are not retained,
+logged or placed in refusal messages; no durable plaintext credential store is added.
 
 The version-1 executable envelope contains `route`, the actual existing RouteDecision,
 and `execution`, null on no solution, otherwise a ready-to-use exact `model` pin,
