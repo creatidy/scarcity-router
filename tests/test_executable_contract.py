@@ -638,13 +638,18 @@ class ExecutableHTTPTests(ServerHarness):
         port = self.make_server()
         document = route_document()
         as_dict(as_dict(document["requirement"])["hard_constraints"])["privacy_constraint"] = CLIENT_KEY + ":tag"
-        connection = self.client(port)
-        connection.request("POST", "/v1/route", body=json.dumps(document), headers=AUTH_HEADERS)
-        response = connection.getresponse()
-        text = response.read().decode()
-        self.assertEqual(response.status, 400)
-        self.assertNotIn(CLIENT_KEY, text)
-        self.assertIn("execution_requirements_invalid", text)
+        for authorization in ("Bearer " + CLIENT_KEY, "bearer " + CLIENT_KEY,
+                              "bEaReR " + CLIENT_KEY, "Bearer   " + CLIENT_KEY,
+                              "  bEaReR   " + CLIENT_KEY + "  "):
+            headers = dict(AUTH_HEADERS)
+            headers["Authorization"] = authorization
+            connection = self.client(port)
+            connection.request("POST", "/v1/route", body=json.dumps(document), headers=headers)
+            response = connection.getresponse()
+            text = response.read().decode()
+            self.assertEqual(response.status, 400)
+            self.assertNotIn(CLIENT_KEY, text)
+            self.assertIn("execution_requirements_invalid", text)
 
     def test_authenticated_route_to_completion_uses_same_listener(self) -> None:
         adapter = ScriptedAdapter()

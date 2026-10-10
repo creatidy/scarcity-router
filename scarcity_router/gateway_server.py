@@ -355,7 +355,7 @@ class GatewayRequestHandler(BaseHTTPRequestHandler):
                     control.prepare_execution_admission()
                 application = self._application()
                 document = self._read_json_object(application.limits.max_request_body_bytes)
-                bearer = (self.headers.get("Authorization") or "").removeprefix("Bearer ")
+                bearer = self._bearer_key()
                 if bearer and bearer in json.dumps(document, ensure_ascii=False):
                     raise GatewayError.invalid_request("credentials cannot be retained as executable demand data",
                                                        code="execution_requirements_invalid")
@@ -403,6 +403,14 @@ class GatewayRequestHandler(BaseHTTPRequestHandler):
             # A server built without a directory is a construction error;
             # refuse everything rather than serve unauthenticated.
             raise GatewayError.authentication("authentication is unavailable")
+        key = self._bearer_key()
+        client_id = directory.authenticate(key)
+        if client_id is None:
+            raise GatewayError.authentication("invalid API key")
+        return client_id
+
+    def _bearer_key(self) -> str:
+        """Normalize transient input identically for authentication and reflection checks."""
         values = self.headers.get_all("Authorization")
         if values is None or len(values) != 1:
             raise GatewayError.authentication("missing API key")
@@ -413,10 +421,7 @@ class GatewayRequestHandler(BaseHTTPRequestHandler):
         key = key.strip()
         if not key or len(key) > _MAX_KEY_LENGTH:
             raise GatewayError.authentication("invalid API key")
-        client_id = directory.authenticate(key)
-        if client_id is None:
-            raise GatewayError.authentication("invalid API key")
-        return client_id
+        return key
 
     def _refuse_router_loops(self) -> None:
         """Fail loudly on gateway-originated traffic (D-044)."""
