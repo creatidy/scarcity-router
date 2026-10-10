@@ -162,6 +162,13 @@ An incoming pin's old/absent decision reference is audit provenance, not target
 identity. A newly issued route decision may update that reference while preserving
 all resource/provider/model/variant dimensions; the prepared response/context/final
 outbound pin then agree exactly.
+For a suspended native turn using executable context, the actual initial output
+control is retained separately from its maximum permitted ceiling. Continuation
+must resend that actual control unchanged: the existing result-delivery protocol
+cannot apply a newly narrowed cap to the running turn. Such changes refuse before
+tool-result delivery, including a formerly non-binding cap narrowed to a binding
+one. Legacy context-free continuation behavior is unchanged; no turn is silently
+restarted or relabelled to apply a new control.
 
 A narrow consumer helper consumes the actual serialized envelope and its retained
 expected request, checks identity/effort/decision consistency and prepares an ordinary

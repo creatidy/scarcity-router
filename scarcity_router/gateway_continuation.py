@@ -248,6 +248,7 @@ class PendingContinuation:
     adapter_binding: tuple[str, ...] | None = field(default=None, repr=False)
     non_paid_control_scope: ExecutionControlScope | None = field(default=None, repr=False)
     execution_requirements_digest: str | None = field(default=None, repr=False)
+    execution_output_ceiling: int | None = field(default=None, repr=False)
     registry_revision: int | None = None
     registry_generated_at: str | None = None
     #: The ORIGINAL dispatch's audit identity — the continuation is the

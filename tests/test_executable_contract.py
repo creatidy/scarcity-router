@@ -25,6 +25,8 @@ from scarcity_router.routing_core import ClientAuthorization
 from scarcity_router.selection_types import CapabilityMinima, TaskProfileCatalog
 from tests.gateway_fixtures import CLIENT_ID, CLIENT_KEY, ScriptedAdapter, T_EVAL, TTL, canonical, make_application, parse_chat_request
 from tests.test_gateway_server import AUTH_HEADERS, ServerHarness, as_dict
+from tests.test_gateway_continuation_coordinator import FakeContinuationAdapter
+from scarcity_router.gateway_openai import chat_completion_payload
 
 
 def route_document() -> dict[str, object]:
@@ -434,6 +436,43 @@ class ExecutableContractTests(unittest.TestCase):
                 _ = application.execute(client_id=CLIENT_ID, request=parse_chat_request(prepared))
             self.assertEqual(caught.exception.code, "continuation_mismatch")
             self.assertEqual(adapter.dispatch_count, 0)
+
+    def test_real_suspension_refuses_new_binding_output_ceiling_before_delivery(self) -> None:
+        from tests.gateway_fixtures import build_registry, build_cells
+        adapter = FakeContinuationAdapter()
+        continuations = ContinuationRegistry()
+        registry = build_registry(with_worker=True)
+        original = registry.registry_snapshot().entries
+        registry = ResourceRegistry(clock=lambda: canonical(T_EVAL))
+        for entry in original:
+            registry.register(ResourceRegistration(identity=entry.identity, freshness_ttl_seconds=TTL,
+                capabilities=replace(entry.capabilities, reasoning_controls=True,
+                                     output_limit_control=False, output_limit_tokens=128000)))
+            assert entry.observation is not None
+            registry.apply_snapshot(entry.observation)
+        application = make_application(adapters=[adapter], registry=registry, continuations=continuations, cells=build_cells(include_worker=True),
+            continuation_capability_source=lambda: frozenset({"openai-worker"}))
+        document = route_document()
+        document["model"] = "sr-pin:openai-worker/openai/gpt-5.6-luna/max"
+        as_dict(document["binding"])["requires_tool_calls"] = True
+        as_dict(document["binding"])["maximum_output_tokens"] = 128000
+        response = application.select_executable(client_id=CLIENT_ID, document=document)
+        body: dict[str, object] = {"messages": [{"role": "user", "content": "owned request"}],
+            "tools": [{"type": "function", "function": {"name": "lookup", "parameters": {"type": "object"}}}]}
+        prepared = prepare_executable_completion(response, expected_request=document, completion=body)
+        first = application.execute(client_id=CLIENT_ID, request=parse_chat_request(prepared))
+        choices = cast(list[object], chat_completion_payload(first)["choices"])
+        message = as_dict(as_dict(choices[0])["message"])
+        calls = cast(list[object], message["tool_calls"])
+        token = as_dict(calls[0])["id"]
+        prepared["messages"] = [*cast(list[object], prepared["messages"]), message,
+                                {"role": "tool", "tool_call_id": token, "content": "owned tool result"}]
+        prepared["max_completion_tokens"] = 100
+        prepared = prepare_executable_completion(response, expected_request=document, completion=prepared, require_bound=True)
+        with self.assertRaises(GatewayError) as caught:
+            _ = application.execute(client_id=CLIENT_ID, request=parse_chat_request(prepared))
+        self.assertEqual(caught.exception.code, "continuation_mismatch")
+        self.assertEqual(adapter.delivered, [])
 
 
 class ExecutableHTTPTests(ServerHarness):

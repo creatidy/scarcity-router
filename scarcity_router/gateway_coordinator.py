@@ -1061,6 +1061,11 @@ class GatewayApplication:
                 "a continuation must retain its original executable requirements",
                 code="continuation_mismatch", param="execution_requirements",
             )
+        if request.execution_requirements is not None and request.capabilities.requested_output_tokens != record.execution_output_ceiling:
+            raise GatewayError.invalid_request(
+                "an executable continuation must retain its original output control",
+                code="continuation_mismatch", param="max_completion_tokens",
+            )
         request_tools_fp = tools_fingerprint(request.tools)
         if request_tools_fp != record.tools_fingerprint and request.tools:
             # Normal harnesses resend the identical tools[]; an absent
@@ -1342,6 +1347,7 @@ class GatewayApplication:
                 model_echo=request.model,
                 reasoning_effort=request.reasoning_effort,
                 execution_requirements_digest=(None if request.execution_requirements is None else request.execution_requirements.fingerprint()),
+                execution_output_ceiling=(request.capabilities.requested_output_tokens if request.execution_requirements is not None else None),
                 tools_fingerprint=tools_fingerprint(request.tools),
                 tool_choice_json=canonical_json_text(request.tool_choice),
                 prefix_fingerprint=message_fingerprint(request.messages),
