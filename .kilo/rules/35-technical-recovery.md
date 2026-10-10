@@ -14,6 +14,24 @@ Unavailable inspection is not proof of a gate; recover tools/access first.
 Once substantive delivery exists, preserve it under existing rules. Genuine new
 owner decisions still stop; this exception never bypasses review or security gates.
 
+For an explicit owner `/loop` invocation only: Before WAIT, BLOCKED, STOP_AND_ASK
+or QUEUE_EMPTY, also apply loop.md's dependency
+evidence check against the FULL fresh canonical queue and relevant accepted producer
+revisions. Trace required edges backward and evaluate unfinished same-repository
+predecessors; open state or a historical gate is not execution-failure evidence.
+Record owner, evidence, exact required check/action and implementation/integration/
+acceptance/retirement stage for each actual unmet condition. Reassess changed
+producer/contracts; downstream acceptance cannot gate upstream implementation
+without explicit canonical evidence. Missing evidence is UNVERIFIED: attempt
+authorized read-only evidence recovery, never invent readiness or an absent
+contract. Verified external gates affect only dependent issues, not unrelated
+eligible work. WAIT names the exact external action/owner decision; QUEUE_EMPTY
+distinguishes exclusions, verified gates and unverified checks for this repository,
+not the whole Creatidy program. None of this weakens started-delivery preservation,
+immediate genuine owner-decision stops, review bounds or final acceptance.
+Standalone implementation, finish and review retain selected-issue/PR-local
+evidence recovery with no unrelated full-queue inspection authority.
+
 Before returning control to the owner, classify the obstacle and record evidence:
 
 - **A: Engineering / execution blocker.** Missing tools/runtime, unsafe ambient
@@ -49,6 +67,12 @@ checkout, different authorized reviewer/tool path, smaller reproducer or repaire
 test infrastructure can justify another bounded attempt. Session/model change alone
 is not a diagnosis. Inspect output/artifacts and actual state before repeating any
 effectful operation; never duplicate an uncertain write.
+Technical-recovery progress narration is NONTERMINAL, not an owner handoff or
+new confirmation requirement. Continue already-authorized work in the same
+primary invocation after recovery, retaining all gates and counters. For uncertain
+validation process/results, inspect live state and recover durable logs/exit status
+before a diagnosed rerun; never launch duplicate validation processes or claim an
+unobserved PASS. A lost process record is an evidence gap, not a terminal contract.
 
 Available mechanisms, where applicable:
 

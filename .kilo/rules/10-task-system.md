@@ -19,6 +19,25 @@
   decision arises for selected work, STOP_AND_ASK terminates the entire loop.
   Preserve STOP_REVISE dispositions; an open PR cannot authorize restarting them.
   No issue registration is authorized merely to keep `/loop` running.
+- For an explicit owner `/loop` invocation only: Before WAIT, BLOCKED, STOP_AND_ASK
+  or QUEUE_EMPTY, apply loop.md's dependency
+  evidence check: refresh the FULL canonical open queue/relevant dependencies and
+  accepted upstream producer revisions, trace required edges backward and assess
+  each unfinished same-repository predecessor's own eligibility. Open state is not
+  a blocker; eligible predecessors use existing priority/ordering/age rules.
+  Record each unmet condition's owner, evidence, exact check/action and
+  implementation/integration/acceptance/retirement stage. External producer gates
+  affect only dependent issues; unrelated verified eligible work may continue.
+  Reassess cached gates on producer/contract changes. Downstream acceptance is not
+  an upstream implementation prerequisite without explicit canonical evidence.
+  Missing evidence is UNVERIFIED with authorized read-only recovery, not invented
+  readiness or a gate. QUEUE_EMPTY requires a complete fresh repository-scoped
+  queue with no verified eligible work and separate exclusions/verified gates/
+  unverified checks; it does not establish whole-program inactivity. WAIT must
+  name the exact external action or owner decision. Preserve started deliveries,
+  genuine owner-decision stops, review bounds and final acceptance gates.
+  Standalone implementation, finish and review retain selected-issue/PR-local
+  evidence recovery with no unrelated full-queue inspection authority.
 - Before substantive delivery, apply loop.md's post-selection eligibility revalidation.
   A freshly proven missing prerequisite/producer/contract makes an untouched issue
   temporarily ineligible: retain history/counters, keep it open, safely return to
