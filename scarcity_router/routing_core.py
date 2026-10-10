@@ -241,6 +241,7 @@ _STAGE_REASONS: dict[str, frozenset[str]] = {
         # D-062 (review round 2, finding 3): the owning worker's live
         # session cannot carry the client-tool continuation.
         "worker_continuation_unavailable",
+        "adapter_unavailable",
     }),
     "compatibility": frozenset({
         "compatibility_unsupported",
@@ -1684,6 +1685,7 @@ def _evaluate_resource(
     configured_reasoning_required: bool = False,
     execution_assurances: tuple[ExecutionAssurance, ...] = (),
     require_catalog_effort: bool = False,
+    available_adapter_channels: frozenset[str] | None = None,
 ) -> _ResourceGate:
     """Run the frozen gate pipeline for one resource.
 
@@ -1716,6 +1718,8 @@ def _evaluate_resource(
             promotion_sources=promotion_sources,
         )
     availability_codes = list(availability_failure_codes(entry, eligibility_reports))
+    if available_adapter_channels is not None and entry.identity.channel not in available_adapter_channels:
+        availability_codes.append("adapter_unavailable")
     if request.requires_tool_calls and entry.identity.channel == "worker_bridged":
         # D-062 (review round 2, finding 3): the client-tool round trip
         # needs the owning worker's LIVE protocol-v3 negotiation. This is
@@ -2357,6 +2361,7 @@ class RouteRequest:
     request: RequestBinding = field(default_factory=RequestBinding)
     profile_policy_version: int | None = None
     require_catalog_effort: bool = False
+    available_adapter_channels: frozenset[str] | None = None
     #: D-062 (review round 2, finding 3): the LIVE worker-continuation
     #: capability of ``worker_bridged`` resources — the resource ids whose
     #: owning worker session has negotiated protocol version 3 right now.
@@ -2800,6 +2805,7 @@ def route_request(request: RouteRequest) -> RouteDecision:
                 ),
                 execution_assurances=request.execution_assurances,
                 require_catalog_effort=request.require_catalog_effort,
+                available_adapter_channels=request.available_adapter_channels,
             )
             for entry in request.registry_snapshot.entries
         ),

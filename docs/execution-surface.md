@@ -126,6 +126,12 @@ constraints, booleans as versions and unknown fields refuse without inference.
 The operation reuses current configured artifacts, policy, compatibility and
 quota-free readiness observation. No model-call probe, quota reservation, dispatch,
 client-supplied grant or caller-selected provider origin is permitted.
+Selection captures one current authority tuple (registry, administrator rules,
+client grant and adapters), not a mixture with an older application's authority.
+The same snapshot determines target eligibility and public disclosure. Unavailable
+authority refuses with `state_unavailable`; a removed adapter is an availability
+refusal (`adapter_unavailable`) on this new opt-in surface. Legacy route inputs
+have no adapter-channel intersection and their existing behavior remains unchanged.
 
 The version-1 executable envelope contains `route`, the actual existing RouteDecision,
 and `execution`, null on no solution, otherwise a ready-to-use exact `model` pin,

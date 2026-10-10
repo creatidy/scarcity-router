@@ -21,7 +21,8 @@ from scarcity_router.gateway_continuation import (
 from scarcity_router.gateway_coordinator import parse_pinned_reference
 from scarcity_router.kernel_requirements import QUALITY_PREFIX, interpret_kernel_declaration
 from scarcity_router.resource_state import ResourceRegistry, ResourceRegistration, PromotionObservation
-from scarcity_router.routing_core import ClientAuthorization
+from scarcity_router.routing_core import ClientAuthorization, AdministratorConstraints
+from scarcity_router.gateway_adapters import AdapterRegistry
 from scarcity_router.selection_types import CapabilityMinima, TaskProfileCatalog
 from tests.gateway_fixtures import CLIENT_ID, CLIENT_KEY, ScriptedAdapter, T_EVAL, TTL, canonical, make_application, parse_chat_request
 from tests.test_gateway_server import AUTH_HEADERS, ServerHarness, as_dict
@@ -391,6 +392,47 @@ class ExecutableContractTests(unittest.TestCase):
         for sensitive in (private.resource_id, private.model, promotion.source):
             self.assertNotIn(sensitive, text)
         self.assertEqual(as_dict(response["route"])["expired_promotions"], [])
+
+    def test_older_application_respects_one_current_authority_snapshot(self) -> None:
+        for kind in ("provider_revoked", "resource_blocked", "retired_registry", "retired_adapter"):
+            application = make_application()
+            current_registry = application.registry
+            current_adapters = application.adapters
+            administrator = AdministratorConstraints()
+            if kind == "provider_revoked":
+                administrator = AdministratorConstraints(allowed_providers=())
+            elif kind == "resource_blocked":
+                administrator = AdministratorConstraints(blocked_resource_ids=tuple(
+                    entry.identity.resource_id for entry in current_registry.registry_snapshot().entries))
+            elif kind == "retired_registry":
+                current_registry = ResourceRegistry(clock=lambda: canonical(T_EVAL))
+            else:
+                current_adapters = AdapterRegistry()
+            calls: list[str] = []
+            def authority(client: str):
+                calls.append(client)
+                return current_registry, administrator, ClientAuthorization(), current_adapters
+            application.authority_source = authority
+            response = application.select_executable(client_id=CLIENT_ID, document=route_document())
+            self.assertIsNone(response["execution"], kind)
+            self.assertEqual(calls, [CLIENT_ID])
+            if kind in ("provider_revoked", "resource_blocked"):
+                text = json.dumps(response)
+                for entry in current_registry.registry_snapshot().entries:
+                    self.assertNotIn(entry.identity.resource_id, text)
+            if kind == "retired_adapter":
+                self.assertTrue(any("adapter_unavailable" in cast(list[str], as_dict(item)["reason_codes"])
+                    for item in cast(list[object], as_dict(response["route"])["target_exclusions"])))
+
+    def test_current_authority_read_failure_never_restores_old_ready_target(self) -> None:
+        application = make_application()
+        def unavailable(client: str):
+            _ = client
+            raise RuntimeError("owned unavailable source")
+        application.authority_source = unavailable
+        with self.assertRaises(GatewayError) as caught:
+            _ = application.select_executable(client_id=CLIENT_ID, document=route_document())
+        self.assertEqual(caught.exception.code, "state_unavailable")
 
     def test_known_client_credential_cannot_be_reflected_as_a_requirement_tag(self) -> None:
         application = make_application()

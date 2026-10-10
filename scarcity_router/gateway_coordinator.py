@@ -1605,8 +1605,13 @@ class GatewayApplication:
     ) -> RouteRequest:
         """The same current authority/state/structural inputs for selection and admission."""
         now_ts = canonical_instant(started)
+        if selecting:
+            registry, administrator, client_grant, adapters = self._current_authority(state.client_id)
+        else:
+            registry, administrator, adapters = self.registry, self.admin_constraints, self.adapters
+            client_grant = self._client_grant(state.client_id)
         try:
-            registry_snapshot = self.registry.registry_snapshot(now=now_ts)
+            registry_snapshot = registry.registry_snapshot(now=now_ts)
             capacity_snapshots, eligibility_reports = self.capacity_source(now_ts)
         except (CapacityValidationError, ValueError):
             raise GatewayError.api(
@@ -1661,7 +1666,6 @@ class GatewayApplication:
                 # excludes worker_bridged candidates for tool requests.
                 continuation_capable = None
         try:
-            client_grant = self._client_grant(state.client_id)
             state.strict_no_payg = client_grant.strict_no_payg
             request_obj = RouteRequest(
                 catalog=self.catalog,
@@ -1672,9 +1676,9 @@ class GatewayApplication:
                 capacity_snapshots=capacity_snapshots,
                 eligibility_reports=eligibility_reports,
                 compatibility_cells=self.compatibility_cells,
-                admin_constraints=self.admin_constraints,
+                admin_constraints=administrator,
                 client_authorization=client_grant,
-                execution_assurances=_execution_assurances(registry_snapshot.entries, self.adapters, client_grant.strict_no_payg),
+                execution_assurances=_execution_assurances(registry_snapshot.entries, adapters, client_grant.strict_no_payg),
                 routing_profile=routing_profile,
                 request=binding,
                 profile_policy_version=(
@@ -1682,6 +1686,8 @@ class GatewayApplication:
                 ),
                 continuation_capable_resource_ids=continuation_capable,
                 candidate_identities=candidate_identities,
+                available_adapter_channels=(frozenset(entry.identity.channel for entry in registry_snapshot.entries
+                    if adapters.resolve(entry.identity.channel) is not None) if selecting else None),
             )
         except (CapacityValidationError, SelectionContractError, ValueError):
             raise GatewayError.api(
