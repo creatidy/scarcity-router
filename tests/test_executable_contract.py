@@ -206,6 +206,70 @@ class ExecutableContractTests(unittest.TestCase):
         keys = {key.strip() for key in allowlist.split(",")}
         self.assertEqual(keys, CHAT_COMPLETION_ALLOWED_KEYS)
 
+    def test_combined_availability_refusals_do_not_block_healthy_other_channel(self) -> None:
+        from tests.gateway_fixtures import build_registry, build_cells, observation
+        for failure in ("resource_stale", "resource_never_observed", "resource_unhealthy"):
+            for revoke_continuation in (False, True):
+                with self.subTest(failure=failure, revoke_continuation=revoke_continuation):
+                    direct = ScriptedAdapter()
+                    worker = ScriptedAdapter(channel="worker_bridged")
+                    entries = build_registry(with_worker=True).registry_snapshot().entries
+                    registry = ResourceRegistry(clock=lambda: canonical(T_EVAL))
+                    for entry in entries:
+                        registry.register(ResourceRegistration(identity=entry.identity, freshness_ttl_seconds=TTL,
+                            capabilities=replace(entry.capabilities, reasoning_controls=True)))
+                        assert entry.observation is not None
+                        registry.apply_snapshot(entry.observation)
+                    application = make_application(adapters=[direct, worker], registry=registry,
+                        cells=build_cells(include_worker=True),
+                        continuation_capability_source=lambda: frozenset({"openai-worker"}))
+                    document = route_document()
+                    document["model"] = "sr-pin:openai-worker/openai/gpt-5.6-luna/max"
+                    as_dict(document["binding"])["requires_tool_calls"] = True
+                    response = application.select_executable(client_id=CLIENT_ID, document=document)
+                    completion: dict[str, object] = {**COMPLETION, "tools": [{"type": "function", "function": {"name": "lookup"}}]}
+                    prepared = prepare_executable_completion(response, expected_request=document, completion=completion)
+                    original_pin = parse_pinned_reference(cast(str, prepared["model"]))
+                    current = ResourceRegistry(clock=lambda: canonical(T_EVAL))
+                    for entry in registry.registry_snapshot().entries:
+                        current.register(ResourceRegistration(identity=entry.identity, freshness_ttl_seconds=TTL,
+                            capabilities=entry.capabilities))
+                        assert entry.observation is not None
+                        snapshot = entry.observation
+                        if entry.identity.resource_id == "openai-worker":
+                            if failure == "resource_never_observed":
+                                continue
+                            if failure == "resource_stale":
+                                snapshot = replace(snapshot, observed_at=canonical(T_EVAL - timedelta(seconds=TTL + 1)))
+                            else:
+                                snapshot = observation(entry.identity, status="auth_required")
+                        current.apply_snapshot(snapshot)
+                    application.registry = current
+                    application.adapters = AdapterRegistry()
+                    application.adapters.register(direct)
+                    if revoke_continuation:
+                        application.continuation_capability_source = lambda: frozenset()
+                    mixed = copy.deepcopy(document)
+                    mixed["model"] = "deep-coding"
+                    selected = application.select_executable(client_id=CLIENT_ID, document=mixed)
+                    self.assertIsNotNone(selected["execution"])
+                    route = as_dict(selected["route"])
+                    self.assertEqual(as_dict(as_dict(route["target"])["resource"])["channel"], "server_direct_http")
+                    exclusions = cast(list[object], route["target_exclusions"])
+                    exclusion = next(as_dict(item) for item in exclusions if as_dict(item)["resource_id"] == "openai-worker")
+                    codes = ["adapter_unavailable", failure]
+                    if revoke_continuation:
+                        codes.append("worker_continuation_unavailable")
+                    self.assertEqual(exclusion["stage"], "availability")
+                    self.assertEqual(exclusion["reason_codes"], sorted(codes))
+                    with self.assertRaises(GatewayError) as caught:
+                        _ = application.execute(client_id=CLIENT_ID, request=parse_chat_request(prepared))
+                    self.assertEqual(caught.exception.code, "target_unavailable")
+                    self.assertEqual(caught.exception.http_status, 503)
+                    self.assertEqual(parse_pinned_reference(cast(str, prepared["model"])), original_pin)
+                    self.assertEqual(direct.dispatch_count, 0)
+                    self.assertEqual(worker.dispatch_count, 0)
+
     def output_application(self, adapter: ScriptedAdapter):
         application = make_application(adapters=[adapter])
         entries = application.registry.registry_snapshot().entries

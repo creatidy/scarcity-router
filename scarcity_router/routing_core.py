@@ -1735,7 +1735,7 @@ def _evaluate_resource(
             or entry.identity.resource_id not in continuation_capable_resource_ids
         ):
             availability_codes.append("worker_continuation_unavailable")
-    availability_codes = tuple(availability_codes)
+    availability_codes = tuple(sorted(availability_codes))
     if availability_codes:
         report = next(
             (
