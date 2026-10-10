@@ -1687,7 +1687,7 @@ def _evaluate_resource(
     configured_reasoning_required: bool = False,
     execution_assurances: tuple[ExecutionAssurance, ...] = (),
     require_catalog_effort: bool = False,
-    available_adapter_channels: frozenset[str] | None = None,
+    available_adapter_resource_ids: frozenset[str] | None = None,
 ) -> _ResourceGate:
     """Run the frozen gate pipeline for one resource.
 
@@ -1720,7 +1720,7 @@ def _evaluate_resource(
             promotion_sources=promotion_sources,
         )
     availability_codes = list(availability_failure_codes(entry, eligibility_reports))
-    if available_adapter_channels is not None and entry.identity.channel not in available_adapter_channels:
+    if available_adapter_resource_ids is not None and entry.identity.resource_id not in available_adapter_resource_ids:
         availability_codes.append("adapter_unavailable")
     if request.requires_tool_calls and entry.identity.channel == "worker_bridged":
         # D-062 (review round 2, finding 3): the client-tool round trip
@@ -2363,7 +2363,7 @@ class RouteRequest:
     request: RequestBinding = field(default_factory=RequestBinding)
     profile_policy_version: int | None = None
     require_catalog_effort: bool = False
-    available_adapter_channels: frozenset[str] | None = None
+    available_adapter_resource_ids: frozenset[str] | None = None
     #: D-062 (review round 2, finding 3): the LIVE worker-continuation
     #: capability of ``worker_bridged`` resources — the resource ids whose
     #: owning worker session has negotiated protocol version 3 right now.
@@ -2746,11 +2746,12 @@ def public_route_document(decision: RouteDecision, request: RouteRequest) -> dic
     visible = tuple(entry for entry in request.registry_snapshot.entries if not _authorization_failure_codes(
         entry, effective, execution_assurances=request.execution_assurances, assessed_at=request.evaluated_at))
     visible_ids = {entry.identity.resource_id for entry in visible}
-    visible_keys = {
-        _identity_key(identity)
+    visible_identities = tuple(
+        identity
         for entry in visible
         for identity in _bind_identities(entry, request.catalog)
-    }
+    )
+    visible_keys = {_identity_key(identity) for identity in visible_identities}
     document = decision.to_dict()
     document["unroutable_identities"] = [
         identity.to_dict() for identity in decision.unroutable_identities
@@ -2761,6 +2762,16 @@ def public_route_document(decision: RouteDecision, request: RouteRequest) -> dic
         identity.to_dict() for identity in decision.selection.preference_order
         if _identity_key(identity) in visible_keys
     ]
+    for field, rules, expired_rule_ids in (
+        ("expired_happy_hour_rules", request.policy.resource_policy.happy_hours, decision.selection.expired_happy_hour_rules),
+        ("expired_blackout_rules", request.policy.resource_policy.blackouts, decision.selection.expired_blackout_rules),
+    ):
+        if field in selection:
+            visible_rule_ids = {
+                rule.rule_id for rule in rules
+                if any(rule.target.matches(identity) for identity in visible_identities)
+            }
+            selection[field] = [rule_id for rule_id in expired_rule_ids if rule_id in visible_rule_ids]
     document["selection"] = selection
     document["target_exclusions"] = [
         exclusion.to_dict() if exclusion.resource_id in visible_ids else
@@ -2822,7 +2833,7 @@ def route_request(request: RouteRequest) -> RouteDecision:
                 ),
                 execution_assurances=request.execution_assurances,
                 require_catalog_effort=request.require_catalog_effort,
-                available_adapter_channels=request.available_adapter_channels,
+                available_adapter_resource_ids=request.available_adapter_resource_ids,
             )
             for entry in request.registry_snapshot.entries
         ),
@@ -3061,7 +3072,7 @@ def admit_pinned_target(
         request.evaluated_at,
         request.continuation_capable_resource_ids,
         execution_assurances=request.execution_assurances,
-        available_adapter_channels=request.available_adapter_channels,
+        available_adapter_resource_ids=request.available_adapter_resource_ids,
     )
     if not gate.qualified or not gate.bound_identities:
         return AdmissionDecision(

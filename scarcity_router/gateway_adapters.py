@@ -491,6 +491,14 @@ class ExecutionAdapter(Protocol):
     def execute(self, call: AdapterCall, context: ExecutionContext) -> AdapterResult: ...
 
 
+@runtime_checkable
+class _ResourceBoundAdapter(Protocol):
+    """Optional exact-resource configuration facts, without credentials or endpoints."""
+
+    @property
+    def registered_resource_ids(self) -> tuple[str, ...]: ...
+
+
 class AdapterRegistry:
     """Channel-keyed adapter registry (one adapter per execution channel).
 
@@ -529,6 +537,13 @@ class AdapterRegistry:
 
     def registered_channels(self) -> tuple[str, ...]:
         return tuple(sorted(self._adapters))
+
+    def supports_resource(self, identity: ResourceIdentity) -> bool:
+        adapter = self.resolve(identity.channel)
+        if adapter is None:
+            return False
+        # Generic adapters serve their entire channel; bound adapters own exact IDs.
+        return not isinstance(adapter, _ResourceBoundAdapter) or identity.resource_id in adapter.registered_resource_ids
 
 
 class AdapterPermanentError(Exception):

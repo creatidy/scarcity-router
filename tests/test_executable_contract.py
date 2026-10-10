@@ -11,6 +11,7 @@ import unittest
 from dataclasses import replace
 from datetime import timedelta
 from typing import cast
+from unittest.mock import Mock, patch
 
 from scarcity_router.executable_client import prepare_executable_completion
 from scarcity_router.executable_contract import parse_executable_request
@@ -20,6 +21,7 @@ from scarcity_router.gateway_continuation import (
 )
 from scarcity_router.gateway_coordinator import parse_pinned_reference
 from scarcity_router.kernel_requirements import QUALITY_PREFIX, interpret_kernel_declaration
+from scarcity_router.policy import AvailabilityTarget, WeeklyBlackoutRule, WeeklyHappyHourRule
 from scarcity_router.resource_state import ResourceRegistry, ResourceRegistration, PromotionObservation
 from scarcity_router.routing_core import (
     ClientAuthorization, AdministratorConstraints, RouteDecision, RouteRequest,
@@ -171,6 +173,132 @@ class ExecutableContractTests(unittest.TestCase):
         self.assertEqual(caught.exception.http_status, 503)
         self.assertEqual(parse_pinned_reference(cast(str, prepared["model"])), original_pin)
         self.assertEqual(adapter.dispatch_count, 0)
+
+    def test_expired_rule_explanations_follow_authorized_resource_bound_targets(self) -> None:
+        targets = (
+            AvailabilityTarget("openai"),
+            AvailabilityTarget("openai", "gpt-5.6-luna", "max"),
+            AvailabilityTarget("openai", "gpt-5.6-luna", "medium"),
+            AvailabilityTarget("zai", "glm-5.3"),
+        )
+        for scenario, allowed in (("denied", ()), ("mixed", (3,)), ("variant", (0, 2)), ("empty", ())):
+            with self.subTest(scenario=scenario):
+                application = make_application()
+                if scenario == "denied":
+                    application.client_authorizations = {CLIENT_ID: ClientAuthorization(allowed_providers=())}
+                elif scenario == "mixed":
+                    application.client_authorizations = {CLIENT_ID: ClientAuthorization(allowed_providers=("zai",))}
+                elif scenario == "variant":
+                    application.client_authorizations = {CLIENT_ID: ClientAuthorization(allowed_providers=("openai",))}
+                    entries = application.registry.registry_snapshot().entries
+                    application.registry = ResourceRegistry(clock=lambda: canonical(T_EVAL))
+                    for entry in entries:
+                        identity = replace(entry.identity, variant="medium") if entry.identity.provider == "openai" else entry.identity
+                        application.registry.register(ResourceRegistration(identity=identity, freshness_ttl_seconds=TTL, capabilities=entry.capabilities))
+                        assert entry.observation is not None
+                        application.registry.apply_snapshot(replace(entry.observation, identity=identity))
+                else:
+                    application.registry = ResourceRegistry(clock=lambda: canonical(T_EVAL))
+                happy = tuple(WeeklyHappyHourRule(rule_id=f"private-{target.provider}-{target.model or 'all'}-{target.variant or 'all'}-happy", target=target,
+                    timezone="UTC", weekdays=("tue",), start_local="12:00", end_local="13:00",
+                    reason_code="campaign", end_date="2026-09-14") for target in targets)
+                blackout = tuple(WeeklyBlackoutRule(rule_id=f"private-{target.provider}-{target.model or 'all'}-{target.variant or 'all'}-blackout", target=target,
+                    timezone="UTC", weekdays=("tue",), start_local="12:00", end_local="13:00",
+                    reason_code="campaign", end_date="2026-09-14") for target in targets)
+                application.policy = replace(application.policy, resource_policy=replace(application.policy.resource_policy,
+                    happy_hours=happy, blackouts=blackout))
+                seen: dict[str, RouteDecision] = {}
+                def record(request: RouteRequest) -> RouteDecision:
+                    decision = route_request(request)
+                    seen["decision"] = decision
+                    return decision
+                with patch("scarcity_router.gateway_coordinator.route_request", side_effect=record):
+                    response = application.select_executable(client_id=CLIENT_ID, document=route_document())
+                route = as_dict(response["route"])
+                selection = as_dict(route["selection"])
+                original = seen["decision"]
+                self.assertEqual(original.selection.expired_happy_hour_rules, tuple(sorted(rule.rule_id for rule in happy)))
+                self.assertEqual(original.selection.expired_blackout_rules, tuple(sorted(rule.rule_id for rule in blackout)))
+                self.assertEqual(selection["expired_happy_hour_rules"], sorted(happy[index].rule_id for index in allowed))
+                self.assertEqual(selection["expired_blackout_rules"], sorted(blackout[index].rule_id for index in allowed))
+                serialized = json.dumps(response)
+                if scenario in ("denied", "empty", "mixed"):
+                    self.assertNotIn("gpt-5.6-luna", serialized)
+                if scenario in ("denied", "empty", "variant"):
+                    self.assertNotIn("glm-5.3", serialized)
+                for index in range(len(targets)):
+                    if index not in allowed:
+                        self.assertNotIn(happy[index].rule_id, serialized)
+                        self.assertNotIn(blackout[index].rule_id, serialized)
+                self.assertEqual(route["decision_id"], original.decision_id)
+                self.assertEqual(route["target"], None if original.target is None else original.target.to_dict())
+                self.assertEqual(selection["selected"], None if original.selection.selected is None else original.selection.selected.to_dict())
+
+    def test_composed_exact_resource_bindings_exclude_detached_fresh_target(self) -> None:
+        from scarcity_router.server_composition import build_adapter_registry, build_compatibility_cells
+        from scarcity_router.server_config import ProviderEndpointConfig, ResourceConfig, ServerConfiguration
+        from scarcity_router.worker_endpoint import WorkerEndpoint
+        from tests.gateway_fixtures import build_registry
+        source = next(entry for entry in build_registry().registry_snapshot().entries if entry.identity.provider == "openai")
+        resources = tuple(ResourceConfig(registration=ResourceRegistration(
+            identity=replace(source.identity, resource_id=resource_id), freshness_ttl_seconds=TTL,
+            capabilities=replace(source.capabilities, reasoning_controls=True)), endpoint_id="fixture-openai")
+            for resource_id in ("a-http", "b-http"))
+        configuration = ServerConfiguration(providers=(ProviderEndpointConfig(provider_id="fixture-openai",
+            adapter_id="openai-api", base_url="https://api.openai.com"),), resources=resources)
+        registry = ResourceRegistry(clock=lambda: canonical(T_EVAL))
+        for resource in resources:
+            registry.register(resource.registration)
+            assert source.observation is not None
+            registry.apply_snapshot(replace(source.observation, identity=resource.registration.identity))
+        endpoint = cast(WorkerEndpoint, Mock(spec=WorkerEndpoint))
+        adapters = build_adapter_registry(configuration, provider_secret_reader=lambda _provider_id: "synthetic-fixture-key",
+            worker_endpoint=endpoint)
+        cells = build_compatibility_cells(configuration, provider_secret_reader=lambda _provider_id: "synthetic-fixture-key")
+        application = make_application(registry=registry, cells=cells)
+        application.adapters = adapters
+        document = route_document()
+        document["model"] = "sr-pin:a-http/openai/gpt-5.6-luna/max"
+        response = application.select_executable(client_id=CLIENT_ID, document=document)
+        prepared = prepare_executable_completion(response, expected_request=document, completion=COMPLETION)
+        original_pin = parse_pinned_reference(cast(str, prepared["model"]))
+        configuration = replace(configuration, resources=(replace(resources[0], endpoint_id=None), resources[1]))
+        application.adapters = build_adapter_registry(configuration, provider_secret_reader=lambda _provider_id: "synthetic-fixture-key",
+            worker_endpoint=endpoint)
+        application.compatibility_cells = build_compatibility_cells(configuration, provider_secret_reader=lambda _provider_id: "synthetic-fixture-key")
+        current = application.adapters.resolve("server_direct_http")
+        assert current is not None
+        with patch.object(current, "execute", side_effect=AssertionError("unbound target must not dispatch")) as execute:
+            mixed = copy.deepcopy(document)
+            mixed["model"] = "deep-coding"
+            selected = application.select_executable(client_id=CLIENT_ID, document=mixed)
+            self.assertIsNotNone(selected["execution"])
+            route = as_dict(selected["route"])
+            self.assertEqual(as_dict(as_dict(route["target"])["resource"])["resource_id"], "b-http")
+            exclusion = next(as_dict(item) for item in cast(list[object], route["target_exclusions"])
+                if as_dict(item)["resource_id"] == "a-http")
+            self.assertEqual(exclusion["reason_codes"], ["adapter_unavailable"])
+            with self.assertRaises(GatewayError) as caught:
+                _ = application.execute(client_id=CLIENT_ID, request=parse_chat_request(prepared))
+            self.assertEqual(caught.exception.code, "adapter_unavailable")
+            self.assertEqual(caught.exception.http_status, 503)
+            self.assertEqual(parse_pinned_reference(cast(str, prepared["model"])), original_pin)
+            execute.assert_not_called()
+
+    def test_worker_and_generic_adapter_resource_configuration_facts(self) -> None:
+        from scarcity_router.worker_bridged_adapter import WorkerBridgedAdapter
+        from scarcity_router.worker_endpoint import WorkerEndpoint
+        from tests.gateway_fixtures import build_registry
+        identity = next(entry.identity for entry in build_registry(with_worker=True).registry_snapshot().entries
+            if entry.identity.channel == "worker_bridged")
+        worker = WorkerBridgedAdapter(cast(WorkerEndpoint, Mock(spec=WorkerEndpoint)),
+            resource_adapter_map={identity.resource_id: "codex"})
+        registry = AdapterRegistry()
+        registry.register(worker)
+        self.assertTrue(registry.supports_resource(identity))
+        self.assertFalse(registry.supports_resource(replace(identity, resource_id="unbound-worker")))
+        registry.register(ScriptedAdapter())
+        self.assertTrue(registry.supports_resource(replace(identity, channel="server_direct_http", resource_id="generic-resource")))
 
     def test_revoked_worker_continuation_exact_admission_is_typed_without_dispatch(self) -> None:
         from tests.gateway_fixtures import build_registry, build_cells

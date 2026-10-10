@@ -1731,8 +1731,8 @@ class GatewayApplication:
                 ),
                 continuation_capable_resource_ids=continuation_capable,
                 candidate_identities=candidate_identities,
-                available_adapter_channels=(frozenset(entry.identity.channel for entry in registry_snapshot.entries
-                    if adapters.resolve(entry.identity.channel) is not None) if current else None),
+                available_adapter_resource_ids=(frozenset(entry.identity.resource_id for entry in registry_snapshot.entries
+                    if adapters.supports_resource(entry.identity)) if current else None),
             )
         except (CapacityValidationError, SelectionContractError, ValueError):
             raise GatewayError.api(
