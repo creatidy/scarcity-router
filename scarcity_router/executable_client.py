@@ -1,6 +1,7 @@
 """Inert producer-response preparation, not a Kernel/harness implementation."""
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import cast
 
 from .errors import SelectionContractError
@@ -9,6 +10,7 @@ from .gateway_coordinator import parse_pinned_reference
 from .gateway_openai import parse_chat_completion_request
 from .routing_core import PinnedTarget, RequestBinding
 from .selector import tighten_requirement
+from .selection_types import CapabilityMinima, HardConstraints, TaskRequirement
 
 
 def prepare_executable_completion(
@@ -53,13 +55,21 @@ def prepare_executable_completion(
             raise ValueError
         if context.binding.pinned_target != pin or tighten_requirement(expected, context.requirement) != context.requirement:
             raise ValueError
+        if expected_binding.pinned_target is not None:
+            original = expected_binding.pinned_target
+            if original.resource_id != pin.resource_id or original.model != pin.model:
+                raise ValueError
+            expected_binding = replace(expected_binding, pinned_target=pin)
         if merge_binding(expected_binding, context.binding) != context.binding:
             raise ValueError
         selection = cast(dict[str, object], route["selection"])
         selected = cast(dict[str, object], selection["selected"])
+        selected_requirement = tighten_requirement(context.requirement, TaskRequirement(
+            task_level=context.requirement.task_level, capability_minima=CapabilityMinima(),
+            hard_constraints=HardConstraints(minimum_output_tokens=context.binding.maximum_output_tokens)))
         if (selected["identity"] != cast(dict[str, object], route["target"])["model"]
             or selected["reasoning_effort"] != execution["reasoning_effort"]
-            or selection["requirement"] != context.requirement.to_dict()):
+            or selection["requirement"] != selected_requirement.to_dict()):
             raise ValueError
         out = dict(completion)
         already_bound = any(key in out for key in ("model", "reasoning_effort", "execution_requirements"))

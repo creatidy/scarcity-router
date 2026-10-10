@@ -132,7 +132,7 @@ import json
 import re
 import unicodedata
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import ClassVar, TypeVar, cast
 
@@ -1683,6 +1683,7 @@ def _evaluate_resource(
     continuation_capable_resource_ids: frozenset[str] | None = None,
     configured_reasoning_required: bool = False,
     execution_assurances: tuple[ExecutionAssurance, ...] = (),
+    require_catalog_effort: bool = False,
 ) -> _ResourceGate:
     """Run the frozen gate pipeline for one resource.
 
@@ -1769,6 +1770,26 @@ def _evaluate_resource(
             compatibility_value=first_value,
             promotion_sources=promotion_sources,
         )
+    if require_catalog_effort:
+        usable: list[ModelIdentity] = []
+        effort_failure: tuple[tuple[str, ...], str | None, str | None] | None = None
+        for identity in bound:
+            candidate = next(item for item in catalog.entries if item.identity == identity)
+            failure = _compatibility_failure(
+                entry, request, cells, requirement, *_request_output_context(request, entry, catalog),
+                configured_reasoning_required=candidate.reasoning_effort is not None,
+            )
+            if not failure[0]:
+                usable.append(identity)
+            elif effort_failure is None:
+                effort_failure = failure
+        if not usable:
+            assert effort_failure is not None
+            return _ResourceGate(entry=entry, bound_identities=bound, qualified=False,
+                stage="compatibility", reason_codes=effort_failure[0],
+                compatibility_feature=effort_failure[1], compatibility_value=effort_failure[2],
+                promotion_sources=promotion_sources)
+        bound = tuple(usable)
     return _ResourceGate(
         entry=entry,
         bound_identities=bound,
@@ -2335,6 +2356,7 @@ class RouteRequest:
     routing_profile: ClientRoutingProfile | None = None
     request: RequestBinding = field(default_factory=RequestBinding)
     profile_policy_version: int | None = None
+    require_catalog_effort: bool = False
     #: D-062 (review round 2, finding 3): the LIVE worker-continuation
     #: capability of ``worker_bridged`` resources — the resource ids whose
     #: owning worker session has negotiated protocol version 3 right now.
@@ -2356,6 +2378,7 @@ class RouteRequest:
 
     def __post_init__(self) -> None:
         _ = _v_instance_of(self.catalog, ModelCatalog, "route_request.catalog")
+        _ = _v_bool(self.require_catalog_effort, "route_request.require_catalog_effort")
         for assurance in self.execution_assurances:
             _ = _v_instance_of(assurance, ExecutionAssurance, "route_request.execution_assurances")
         if self.task_requirement is not None:
@@ -2704,6 +2727,31 @@ def _no_solution_decision(
     )
 
 
+def executable_quality_requirement(request: RouteRequest) -> TaskRequirement:
+    """Retain genuine quality floors, not the demand derived from a generation cap."""
+    quality = replace(request, request=replace(request.request, maximum_output_tokens=None))
+    return _resolve_requirement(quality)[0]
+
+
+def public_route_document(decision: RouteDecision, request: RouteRequest) -> dict[str, object]:
+    """Project through effective authorization independently of first failing gate."""
+    effective = _effective_authorization(request.admin_constraints, request.client_authorization, request.routing_profile)
+    visible = tuple(entry for entry in request.registry_snapshot.entries if not _authorization_failure_codes(
+        entry, effective, execution_assurances=request.execution_assurances, assessed_at=request.evaluated_at))
+    visible_ids = {entry.identity.resource_id for entry in visible}
+    document = decision.to_dict()
+    document["target_exclusions"] = [
+        exclusion.to_dict() if exclusion.resource_id in visible_ids else
+        {"resource_id": "restricted", "stage": exclusion.stage, "reason_codes": list(exclusion.reason_codes)}
+        for exclusion in decision.target_exclusions
+    ]
+    expired: set[str] = set()
+    for entry in visible:
+        expired.update(_promotion_preference(entry, request.evaluated_at)[1])
+    document["expired_promotions"] = sorted(expired)
+    return document
+
+
 def route_request(request: RouteRequest) -> RouteDecision:
     """The authoritative deterministic route decision for executable targets.
 
@@ -2751,6 +2799,7 @@ def route_request(request: RouteRequest) -> RouteDecision:
                     for candidate in request.catalog.entries
                 ),
                 execution_assurances=request.execution_assurances,
+                require_catalog_effort=request.require_catalog_effort,
             )
             for entry in request.registry_snapshot.entries
         ),

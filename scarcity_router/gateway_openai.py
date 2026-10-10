@@ -435,7 +435,9 @@ def parse_chat_completion_request(document: object) -> ChatCompletionRequest:
             or retained.requires_structured_output and not requires_structured_output
             or retained.requires_reasoning_controls and reasoning_effort is None
             or retained.maximum_output_tokens is not None
-            and (requested_output is None or requested_output > retained.maximum_output_tokens)):
+            and (requested_output is None or requested_output > retained.maximum_output_tokens)
+            or requested_output is not None and execution_requirements.requirement.hard_constraints.minimum_output_tokens is not None
+            and requested_output < execution_requirements.requirement.hard_constraints.minimum_output_tokens):
             raise _err("execution controls must preserve the retained requirements",
                        code="execution_requirements_invalid", param="execution_requirements")
     return ChatCompletionRequest(

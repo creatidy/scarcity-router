@@ -20,7 +20,7 @@ from scarcity_router.gateway_continuation import (
 )
 from scarcity_router.gateway_coordinator import parse_pinned_reference
 from scarcity_router.kernel_requirements import QUALITY_PREFIX, interpret_kernel_declaration
-from scarcity_router.resource_state import ResourceRegistry, ResourceRegistration
+from scarcity_router.resource_state import ResourceRegistry, ResourceRegistration, PromotionObservation
 from scarcity_router.routing_core import ClientAuthorization
 from scarcity_router.selection_types import CapabilityMinima, TaskProfileCatalog
 from tests.gateway_fixtures import CLIENT_ID, CLIENT_KEY, ScriptedAdapter, T_EVAL, TTL, canonical, make_application, parse_chat_request
@@ -46,6 +46,19 @@ COMPLETION: dict[str, object] = {"messages": [{"role": "user", "content": "owned
 
 
 class ExecutableContractTests(unittest.TestCase):
+    def output_application(self, adapter: ScriptedAdapter):
+        application = make_application(adapters=[adapter])
+        entries = application.registry.registry_snapshot().entries
+        application.registry = ResourceRegistry(clock=lambda: canonical(T_EVAL))
+        for entry in entries:
+            application.registry.register(ResourceRegistration(
+                identity=entry.identity, freshness_ttl_seconds=TTL,
+                capabilities=replace(entry.capabilities, output_limit_control=True, output_limit_tokens=1000),
+            ))
+            assert entry.observation is not None
+            application.registry.apply_snapshot(entry.observation)
+        return application
+
     def test_real_serialization_helper_admission_and_exact_dispatch(self) -> None:
         adapter = ScriptedAdapter()
         application = make_application(adapters=[adapter])
@@ -161,24 +174,82 @@ class ExecutableContractTests(unittest.TestCase):
         self.assertIsNone(application.select_executable(client_id=CLIENT_ID, document=document)["execution"])
 
     def test_output_ceiling_is_preserved_and_not_a_quality_floor(self) -> None:
-        application = make_application()
-        entries = application.registry.registry_snapshot().entries
-        application.registry = ResourceRegistry(clock=lambda: canonical(T_EVAL))
-        for entry in entries:
-            application.registry.register(ResourceRegistration(
-                identity=entry.identity, freshness_ttl_seconds=TTL,
-                capabilities=replace(entry.capabilities, output_limit_control=True, output_limit_tokens=1000),
-            ))
-            assert entry.observation is not None
-            application.registry.apply_snapshot(entry.observation)
+        adapter = ScriptedAdapter()
+        application = self.output_application(adapter)
         document = route_document()
         as_dict(document["binding"])["maximum_output_tokens"] = 200
         response = application.select_executable(client_id=CLIENT_ID, document=document)
         prepared = prepare_executable_completion(response, expected_request=document, completion=COMPLETION)
         self.assertEqual(prepared["max_completion_tokens"], 200)
+        context = as_dict(prepared["execution_requirements"])
+        self.assertNotIn("minimum_output_tokens", as_dict(as_dict(context["requirement"])["hard_constraints"]))
+        prepared["max_completion_tokens"] = 100
+        prepared = prepare_executable_completion(response, expected_request=document, completion=prepared, require_bound=True)
+        _ = application.execute(client_id=CLIENT_ID, request=parse_chat_request(prepared))
+        self.assertEqual(adapter.dispatches[0].max_output_tokens, 100)
         prepared["max_completion_tokens"] = 201
         with self.assertRaises(GatewayError):
             _ = parse_chat_request(prepared)
+
+    def test_genuine_output_floor_still_refuses_contradictory_narrowing(self) -> None:
+        adapter = ScriptedAdapter()
+        application = self.output_application(adapter)
+        document = route_document()
+        as_dict(as_dict(document["requirement"])["hard_constraints"])["minimum_output_tokens"] = 150
+        as_dict(document["binding"])["maximum_output_tokens"] = 200
+        response = application.select_executable(client_id=CLIENT_ID, document=document)
+        prepared = prepare_executable_completion(response, expected_request=document, completion=COMPLETION)
+        prepared["max_completion_tokens"] = 100
+        with self.assertRaises(GatewayError):
+            _ = prepare_executable_completion(response, expected_request=document, completion=prepared, require_bound=True)
+        self.assertEqual(adapter.dispatch_count, 0)
+
+    def test_effort_control_unknown_missing_or_unsupported_selects_capable_alternative(self) -> None:
+        from tests.gateway_fixtures import build_cells
+        for value in ("UNKNOWN", "UNSUPPORTED", "missing"):
+            adapter = ScriptedAdapter()
+            cells = build_cells(overrides={
+                ("server_direct_http", "openai", "gpt-5.6-luna", "reasoning_controls"): "UNKNOWN" if value == "missing" else value,
+            })
+            if value == "missing":
+                cells = tuple(cell for cell in cells if not (cell.provider == "openai" and cell.feature == "reasoning_controls"))
+            application = make_application(cells=cells, adapters=[adapter])
+            document = route_document()
+            response = application.select_executable(client_id=CLIENT_ID, document=document)
+            prepared = prepare_executable_completion(response, expected_request=document, completion=COMPLETION)
+            self.assertEqual(parse_pinned_reference(cast(str, prepared["model"])).model.provider, "zai")
+            _ = application.execute(client_id=CLIENT_ID, request=parse_chat_request(prepared))
+            self.assertEqual(adapter.dispatch_count, 1)
+
+    def test_null_effort_lane_survives_unknown_control_mapping(self) -> None:
+        from tests.gateway_fixtures import build_cells
+        cells = tuple(replace(cell, value="UNKNOWN") if cell.feature == "reasoning_controls" else cell for cell in build_cells())
+        application = make_application(cells=cells)
+        application.catalog = replace(application.catalog, entries=tuple(
+            replace(entry, reasoning_effort=None, hard_properties=replace(entry.hard_properties, supports_reasoning_mode=False))
+            if entry.identity.variant == "max" else entry for entry in application.catalog.entries))
+        document = route_document()
+        response = application.select_executable(client_id=CLIENT_ID, document=document)
+        prepared = prepare_executable_completion(response, expected_request=document, completion=COMPLETION)
+        self.assertNotIn("reasoning_effort", prepared)
+        _ = application.execute(client_id=CLIENT_ID, request=parse_chat_request(prepared))
+
+    def test_explicit_pin_binding_accepts_new_audit_reference_without_substitution(self) -> None:
+        for suffix in ("", "@rd-prior-audit"):
+            adapter = ScriptedAdapter()
+            application = make_application(adapters=[adapter])
+            document = route_document()
+            initial = application.select_executable(client_id=CLIENT_ID, document=document)
+            model = cast(str, as_dict(initial["execution"])["model"]).split("@", 1)[0] + suffix
+            expected_pin = parse_pinned_reference(model)
+            document["model"] = model
+            as_dict(document["binding"])["pinned_target"] = expected_pin.to_dict()
+            response = application.select_executable(client_id=CLIENT_ID, document=document)
+            prepared = prepare_executable_completion(response, expected_request=document, completion=COMPLETION)
+            actual_pin = parse_pinned_reference(cast(str, prepared["model"]))
+            self.assertEqual((actual_pin.resource_id, actual_pin.model), (expected_pin.resource_id, expected_pin.model))
+            _ = application.execute(client_id=CLIENT_ID, request=parse_chat_request(prepared))
+            self.assertEqual(adapter.dispatch_count, 1)
 
     def test_changed_pin_or_effort_refuses_before_adapter_dispatch(self) -> None:
         for field, value in (("model", "sr-pin:absent/openai/gpt-5.6-luna/max"), ("reasoning_effort", "low")):
@@ -302,6 +373,22 @@ class ExecutableContractTests(unittest.TestCase):
         self.assertTrue(exclusions)
         for exclusion in exclusions:
             self.assertEqual(as_dict(exclusion)["resource_id"], "restricted")
+
+    def test_binding_failure_and_expired_private_promotion_cannot_bypass_projection(self) -> None:
+        application = make_application(client_authorizations={CLIENT_ID: ClientAuthorization(allowed_providers=())})
+        entry = application.registry.registry_snapshot().entries[0]
+        private = replace(entry.identity, resource_id="private-uncalibrated", model="private-unassessed-model")
+        application.registry.register(ResourceRegistration(identity=private, freshness_ttl_seconds=TTL))
+        assert entry.observation is not None
+        promotion = PromotionObservation(source="private-expired-promotion", observed_at=entry.observation.observed_at,
+            channel=entry.identity.channel, provider=entry.identity.provider, model=entry.identity.model,
+            valid_until=canonical(T_EVAL - timedelta(seconds=1)))
+        application.registry.apply_snapshot(replace(entry.observation, promotions=(promotion,)))
+        response = application.select_executable(client_id=CLIENT_ID, document=route_document())
+        text = json.dumps(response)
+        for sensitive in (private.resource_id, private.model, promotion.source):
+            self.assertNotIn(sensitive, text)
+        self.assertEqual(as_dict(response["route"])["expired_promotions"], [])
 
     def test_known_client_credential_cannot_be_reflected_as_a_requirement_tag(self) -> None:
         application = make_application()

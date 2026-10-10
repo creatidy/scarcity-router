@@ -161,6 +161,8 @@ from .routing_core import (
     RequestBinding,
     RouteDecision,
     RouteRequest,
+    executable_quality_requirement,
+    public_route_document,
     RouteTarget,
     _lookup_cell,  # pyright: ignore[reportPrivateUsage] -- the M02 matrix lookup is the single authority; reimplementing it here would fork D-043 compatibility semantics
     _authorization_failure_codes,  # pyright: ignore[reportPrivateUsage] -- the M02 authorization stage is the single authority; forking it for the continuation recheck would fork D-042 semantics
@@ -1559,7 +1561,8 @@ class GatewayApplication:
         query = ChatCompletionRequest(model, (), caps.requires_streaming, False, caps)
         route = self._routing_request(started=started, request=query, resolved=resolved, state=state, selecting=True)
         try:
-            route = replace(route, task_requirement=requirement, request=merge_binding(demands, route.request))
+            route = replace(route, task_requirement=requirement, request=merge_binding(demands, route.request),
+                            require_catalog_effort=True)
         except (ValueError, SelectionContractError):
             raise executable_error() from None
         decision = route_request(route)
@@ -1574,7 +1577,7 @@ class GatewayApplication:
             binding = replace(route.request, pinned_target=pin)
             profile = route.routing_profile
             context = ExecutableRequirements(
-                decision.selection.requirement, binding,
+                executable_quality_requirement(route), binding,
                 route.profile_policy_version if profile is not None else None,
                 route.profiles.resolve(profile.profile_id) if profile is not None else None,
             )
@@ -1582,15 +1585,7 @@ class GatewayApplication:
             assert selected is not None
             execution = {"model": model_pin, "reasoning_effort": selected.reasoning_effort,
                          "execution_requirements": context.to_dict()}
-        public_route = decision.to_dict()
-        # Refusal layers remain visible, but inference clients cannot inventory
-        # private resource names or state through another client's denied targets.
-        public_route["target_exclusions"] = [
-            ({"resource_id": "restricted", "stage": exclusion.stage,
-              "reason_codes": list(exclusion.reason_codes)}
-             if exclusion.stage == "authorization" else exclusion.to_dict())
-            for exclusion in decision.target_exclusions
-        ]
+        public_route = public_route_document(decision, route)
         return {"schema_version": 1, "route": public_route, "execution": execution}
 
     def _routing_request(

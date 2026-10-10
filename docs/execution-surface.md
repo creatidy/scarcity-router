@@ -132,8 +132,10 @@ and `execution`, null on no solution, otherwise a ready-to-use exact `model` pin
 catalog `reasoning_effort` (including distinct null/none/plan semantics), and complete
 `execution_requirements`. It is not a new ranking DTO. Typed route refusals preserve
 the layer; unsupported physical observation cannot become a verified assertion.
-The route's authorization-excluded resource identities are replaced by
-`restricted` and private detail omitted; the refusal layer/reason codes remain.
+Resource disclosure is checked independently against the same effective core
+authorization, even when binding failed before the authorization gate. Denied
+identities become `restricted`, private detail and denied promotion provenance
+are omitted, and the actual refusal layer/reason codes remain.
 This is the authenticated public projection of the actual core decision, not an
 additional ranking or a way to inventory resources denied to the client.
 The pin is produced/verified through existing serialization/parser semantics,
@@ -151,6 +153,15 @@ are rechecked; no ranking or fallback occurs. A numeric output requirement is a
 capability floor, not a generation cap; submitted output ceilings remain actual
 execution controls and cannot be silently lost. Context is never forwarded as
 prompt, provider metadata or a tool instruction.
+The retained quality includes genuine task/profile output floors, not the extra
+capacity demand derived from a generation ceiling. A smaller execution ceiling is
+permitted only when it does not contradict a genuine floor. Selection checks the
+controls needed for each candidate's promised catalog effort before competition;
+an effort-less configuration is not forced to acquire reasoning controls.
+An incoming pin's old/absent decision reference is audit provenance, not target
+identity. A newly issued route decision may update that reference while preserving
+all resource/provider/model/variant dimensions; the prepared response/context/final
+outbound pin then agree exactly.
 
 A narrow consumer helper consumes the actual serialized envelope and its retained
 expected request, checks identity/effort/decision consistency and prepares an ordinary
