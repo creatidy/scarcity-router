@@ -2465,6 +2465,9 @@ def _admission_rejection(admission: AdmissionDecision, *, retained_requirements:
     if "adapter_unavailable" in codes:
         return GatewayError.api("the exact target's current adapter is unavailable",
                                 code="adapter_unavailable", http_status=503)
+    if "worker_continuation_unavailable" in codes:
+        return GatewayError.api("the exact worker cannot currently preserve client-tool continuation",
+                                code="worker_continuation_unavailable", http_status=503)
     return GatewayError.api(
         "the pinned target was rejected at admission",
         code="admission_rejected",

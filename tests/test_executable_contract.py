@@ -27,7 +27,8 @@ from scarcity_router.selection_types import CapabilityMinima, TaskProfileCatalog
 from tests.gateway_fixtures import CLIENT_ID, CLIENT_KEY, ScriptedAdapter, T_EVAL, TTL, canonical, make_application, parse_chat_request
 from tests.test_gateway_server import AUTH_HEADERS, ServerHarness, as_dict
 from tests.test_gateway_continuation_coordinator import FakeContinuationAdapter
-from scarcity_router.gateway_openai import chat_completion_payload
+from scarcity_router.gateway_openai import chat_completion_payload, CHAT_COMPLETION_ALLOWED_KEYS
+from pathlib import Path
 
 
 def route_document() -> dict[str, object]:
@@ -49,6 +50,55 @@ COMPLETION: dict[str, object] = {"messages": [{"role": "user", "content": "owned
 
 
 class ExecutableContractTests(unittest.TestCase):
+    def test_retired_adapter_exact_admission_has_typed_refusal_and_no_dispatch(self) -> None:
+        adapter = ScriptedAdapter()
+        application = make_application(adapters=[adapter])
+        document = route_document()
+        response = application.select_executable(client_id=CLIENT_ID, document=document)
+        prepared = prepare_executable_completion(response, expected_request=document, completion=COMPLETION)
+        original_pin = parse_pinned_reference(cast(str, prepared["model"]))
+        application.adapters = AdapterRegistry()
+        with self.assertRaises(GatewayError) as caught:
+            _ = application.execute(client_id=CLIENT_ID, request=parse_chat_request(prepared))
+        self.assertEqual(caught.exception.code, "adapter_unavailable")
+        self.assertEqual(caught.exception.http_status, 503)
+        self.assertEqual(parse_pinned_reference(cast(str, prepared["model"])), original_pin)
+        self.assertEqual(adapter.dispatch_count, 0)
+
+    def test_revoked_worker_continuation_exact_admission_is_typed_without_dispatch(self) -> None:
+        from tests.gateway_fixtures import build_registry, build_cells
+        adapter = ScriptedAdapter(channel="worker_bridged")
+        original = build_registry(with_worker=True).registry_snapshot().entries
+        registry = ResourceRegistry(clock=lambda: canonical(T_EVAL))
+        for entry in original:
+            registry.register(ResourceRegistration(identity=entry.identity, freshness_ttl_seconds=TTL,
+                capabilities=replace(entry.capabilities, reasoning_controls=True)))
+            assert entry.observation is not None
+            registry.apply_snapshot(entry.observation)
+        application = make_application(adapters=[adapter], registry=registry, cells=build_cells(include_worker=True),
+            continuation_capability_source=lambda: frozenset({"openai-worker"}))
+        document = route_document()
+        document["model"] = "sr-pin:openai-worker/openai/gpt-5.6-luna/max"
+        as_dict(document["binding"])["requires_tool_calls"] = True
+        response = application.select_executable(client_id=CLIENT_ID, document=document)
+        completion: dict[str, object] = {**COMPLETION, "tools": [{"type": "function", "function": {"name": "lookup"}}]}
+        prepared = prepare_executable_completion(response, expected_request=document, completion=completion)
+        original_pin = parse_pinned_reference(cast(str, prepared["model"]))
+        application.continuation_capability_source = lambda: frozenset()
+        with self.assertRaises(GatewayError) as caught:
+            _ = application.execute(client_id=CLIENT_ID, request=parse_chat_request(prepared))
+        self.assertEqual(caught.exception.code, "worker_continuation_unavailable")
+        self.assertEqual(caught.exception.http_status, 503)
+        self.assertEqual(parse_pinned_reference(cast(str, prepared["model"])), original_pin)
+        self.assertEqual(adapter.dispatch_count, 0)
+
+    def test_authoritative_request_allowlist_matches_actual_parser(self) -> None:
+        document = (Path(__file__).resolve().parents[1] / "docs/execution-surface.md").read_text()
+        requests = document.split("## Requests", 1)[1]
+        allowlist = requests.split("```text", 1)[1].split("```", 1)[0]
+        keys = {key.strip() for key in allowlist.split(",")}
+        self.assertEqual(keys, CHAT_COMPLETION_ALLOWED_KEYS)
+
     def output_application(self, adapter: ScriptedAdapter):
         application = make_application(adapters=[adapter])
         entries = application.registry.registry_snapshot().entries

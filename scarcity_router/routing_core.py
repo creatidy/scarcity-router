@@ -213,6 +213,8 @@ TARGET_EXCLUSION_REASON_CODES: frozenset[str] = frozenset({
     "resource_never_observed",
     "resource_unhealthy",
     "execution_ineligible",
+    "worker_continuation_unavailable",
+    "adapter_unavailable",
     # compatibility
     "compatibility_unsupported",
     "compatibility_unknown",
@@ -3050,7 +3052,7 @@ def admit_pinned_target(
         return AdmissionDecision(
             resource_id=resource_id,
             approved=False,
-            reason_codes=("admission_rejected", *gate.reason_codes),
+            reason_codes=tuple(sorted(("admission_rejected", *gate.reason_codes))),
             exclusion=_target_exclusion(gate),
             bound_decision_id=decision_id,
         )

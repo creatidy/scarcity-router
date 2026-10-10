@@ -591,7 +591,8 @@ allowlist of the fields execution surface v1 defines:
 model, messages, stream, stream_options, tools, tool_choice,
 response_format, reasoning_effort, reasoning, thinking, enable_thinking,
 max_completion_tokens, max_tokens, temperature, top_p, stop, seed,
-frequency_penalty, presence_penalty, parallel_tool_calls, user, metadata
+frequency_penalty, presence_penalty, parallel_tool_calls, user, metadata,
+execution_requirements
 ```
 
 Anything else is rejected as `unknown_parameter` — the surface never
@@ -615,6 +616,10 @@ strictness:
 - `reasoning_effort` accepts `none`, `minimal`, `low`, `medium`, `high`,
   `xhigh`, `max`, `ultra` (the runtime-reported GPT-6-generation efforts
   entered additively with D-053).
+- `execution_requirements` is the opt-in closed versioned context defined by
+  D-077 above. It requires an exact pin and preserves quality, structural demands,
+  profile expansion/version and expected nullable effort. It is never a grant,
+  approval assertion, prompt or provider metadata; ordinary clients may omit it.
 
 ### Reasoning-dialect normalization (#135)
 
