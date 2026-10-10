@@ -48,6 +48,18 @@ def dependency_assessments() -> dict[str, tuple[str, str, str]]:
 
 
 class WorkflowContractTests(unittest.TestCase):
+    def test_full_queue_dependency_recovery_is_loop_only_not_standalone_authority(self) -> None:
+        for path in (".kilo/rules/10-task-system.md", ".kilo/rules/35-technical-recovery.md"):
+            with self.subTest(path=path):
+                contract = text(path)
+                self.assertIn("For an explicit owner `/loop` invocation only: Before WAIT", contract)
+                self.assertIn("Standalone implementation, finish and review retain", contract)
+                self.assertIn("selected-issue/PR-local evidence recovery", contract)
+                self.assertIn("no unrelated full-queue inspection authority", contract)
+        authority = text(".kilo/rules/20-forgejo-mcp.md")
+        self.assertIn("Do not list all repositories, issues, PRs", authority)
+        self.assertIn("explicit owner `/loop` exception", authority)
+
     def test_technical_recovery_progress_is_not_a_terminal_handoff(self) -> None:
         for path in (".kilo/command/loop.md", ".kilo/rules/35-technical-recovery.md"):
             with self.subTest(path=path):

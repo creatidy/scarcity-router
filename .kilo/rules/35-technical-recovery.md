@@ -14,7 +14,8 @@ Unavailable inspection is not proof of a gate; recover tools/access first.
 Once substantive delivery exists, preserve it under existing rules. Genuine new
 owner decisions still stop; this exception never bypasses review or security gates.
 
-Before WAIT, BLOCKED, STOP_AND_ASK or QUEUE_EMPTY, also apply loop.md's dependency
+For an explicit owner `/loop` invocation only: Before WAIT, BLOCKED, STOP_AND_ASK
+or QUEUE_EMPTY, also apply loop.md's dependency
 evidence check against the FULL fresh canonical queue and relevant accepted producer
 revisions. Trace required edges backward and evaluate unfinished same-repository
 predecessors; open state or a historical gate is not execution-failure evidence.
@@ -28,6 +29,8 @@ eligible work. WAIT names the exact external action/owner decision; QUEUE_EMPTY
 distinguishes exclusions, verified gates and unverified checks for this repository,
 not the whole Creatidy program. None of this weakens started-delivery preservation,
 immediate genuine owner-decision stops, review bounds or final acceptance.
+Standalone implementation, finish and review retain selected-issue/PR-local
+evidence recovery with no unrelated full-queue inspection authority.
 
 Before returning control to the owner, classify the obstacle and record evidence:
 
