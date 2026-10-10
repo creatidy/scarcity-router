@@ -434,6 +434,69 @@ class ExecutableContractTests(unittest.TestCase):
             _ = application.select_executable(client_id=CLIENT_ID, document=route_document())
         self.assertEqual(caught.exception.code, "state_unavailable")
 
+    def test_old_application_exact_admission_uses_lower_current_capability_and_state(self) -> None:
+        for change in ("lower_context", "stale"):
+            adapter = ScriptedAdapter()
+            application = make_application(adapters=[adapter])
+            entries = application.registry.registry_snapshot().entries
+            def view(context: int, stale: bool):
+                registry = ResourceRegistry(clock=lambda: canonical(T_EVAL))
+                for entry in entries:
+                    registry.register(ResourceRegistration(identity=entry.identity, freshness_ttl_seconds=TTL,
+                        capabilities=replace(entry.capabilities, context_limit_tokens=context)))
+                    assert entry.observation is not None
+                    registry.apply_snapshot(replace(entry.observation,
+                        observed_at=canonical(T_EVAL - timedelta(seconds=TTL + 1))) if stale else entry.observation)
+                return registry
+            application.registry = view(3000, False)
+            document = route_document()
+            as_dict(document["binding"])["minimum_input_context_tokens"] = 1000
+            response = application.select_executable(client_id=CLIENT_ID, document=document)
+            prepared = prepare_executable_completion(response, expected_request=document, completion=COMPLETION)
+            current_registry = view(500 if change == "lower_context" else 3000, change == "stale")
+            application.authority_source = lambda client: (
+                current_registry, application.admin_constraints, ClientAuthorization(), application.adapters)
+            with self.subTest(change=change), self.assertRaises(GatewayError):
+                _ = application.execute(client_id=CLIENT_ID, request=parse_chat_request(prepared))
+            self.assertEqual(adapter.dispatch_count, 0)
+
+    def test_explicit_and_profile_context_floors_intersect_gateway_allowance(self) -> None:
+        for source in ("explicit", "profile"):
+            application = make_application()
+            application.limits = replace(application.limits, max_input_context_tokens=1000)
+            document = route_document()
+            if source == "explicit":
+                as_dict(as_dict(document["requirement"])["hard_constraints"])["minimum_input_context_tokens"] = 2000
+            else:
+                definition = application.profiles.definitions[0]
+                application.profiles = TaskProfileCatalog(definitions=(replace(definition, requirement=replace(
+                    definition.requirement, hard_constraints=replace(definition.requirement.hard_constraints,
+                                                                     minimum_input_context_tokens=2000))),))
+            with self.subTest(source=source), self.assertRaises(GatewayError) as caught:
+                _ = application.select_executable(client_id=CLIENT_ID, document=document)
+            self.assertEqual(caught.exception.code, "context_length_exceeded")
+
+    def test_retained_known_context_cannot_bypass_allowance_at_exact_admission(self) -> None:
+        adapter = ScriptedAdapter()
+        application = self.output_application(adapter)
+        entries = application.registry.registry_snapshot().entries
+        registry = ResourceRegistry(clock=lambda: canonical(T_EVAL))
+        for entry in entries:
+            registry.register(ResourceRegistration(identity=entry.identity, freshness_ttl_seconds=TTL,
+                capabilities=replace(entry.capabilities, context_limit_tokens=3000)))
+            assert entry.observation is not None
+            registry.apply_snapshot(entry.observation)
+        application.registry = registry
+        document = route_document()
+        as_dict(as_dict(document["requirement"])["hard_constraints"])["minimum_input_context_tokens"] = 2000
+        response = application.select_executable(client_id=CLIENT_ID, document=document)
+        prepared = prepare_executable_completion(response, expected_request=document, completion=COMPLETION)
+        application.limits = replace(application.limits, max_input_context_tokens=1000)
+        with self.assertRaises(GatewayError) as caught:
+            _ = application.execute(client_id=CLIENT_ID, request=parse_chat_request(prepared))
+        self.assertEqual(caught.exception.code, "context_length_exceeded")
+        self.assertEqual(adapter.dispatch_count, 0)
+
     def test_known_client_credential_cannot_be_reflected_as_a_requirement_tag(self) -> None:
         application = make_application()
         document = route_document()

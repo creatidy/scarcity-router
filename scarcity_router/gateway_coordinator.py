@@ -1571,6 +1571,7 @@ class GatewayApplication:
                             require_catalog_effort=True)
         except (ValueError, SelectionContractError):
             raise executable_error() from None
+        self._enforce_request_limits(replace(caps, estimated_input_tokens=route.request.minimum_input_context_tokens))
         decision = route_request(route)
         execution: dict[str, object] | None = None
         if decision.target is not None:
@@ -1605,7 +1606,8 @@ class GatewayApplication:
     ) -> RouteRequest:
         """The same current authority/state/structural inputs for selection and admission."""
         now_ts = canonical_instant(started)
-        if selecting:
+        current = selecting or request.execution_requirements is not None
+        if current:
             registry, administrator, client_grant, adapters = self._current_authority(state.client_id)
         else:
             registry, administrator, adapters = self.registry, self.admin_constraints, self.adapters
@@ -1687,7 +1689,7 @@ class GatewayApplication:
                 continuation_capable_resource_ids=continuation_capable,
                 candidate_identities=candidate_identities,
                 available_adapter_channels=(frozenset(entry.identity.channel for entry in registry_snapshot.entries
-                    if adapters.resolve(entry.identity.channel) is not None) if selecting else None),
+                    if adapters.resolve(entry.identity.channel) is not None) if current else None),
             )
         except (CapacityValidationError, SelectionContractError, ValueError):
             raise GatewayError.api(
@@ -1697,6 +1699,7 @@ class GatewayApplication:
             ) from None
         if executable is not None:
             request_obj = executable.bind(request_obj)
+            self._enforce_request_limits(replace(caps, estimated_input_tokens=request_obj.request.minimum_input_context_tokens))
         return request_obj
 
     def _admit(
@@ -2416,6 +2419,9 @@ def _admission_rejection(admission: AdmissionDecision, *, retained_requirements:
             "the pinned target no longer meets the retained task requirements",
             code="capability_failed" if "capability_failed" in codes else "hard_constraint_failed",
         )
+    if "adapter_unavailable" in codes:
+        return GatewayError.api("the exact target's current adapter is unavailable",
+                                code="adapter_unavailable", http_status=503)
     return GatewayError.api(
         "the pinned target was rejected at admission",
         code="admission_rejected",

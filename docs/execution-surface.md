@@ -132,6 +132,11 @@ The same snapshot determines target eligibility and public disclosure. Unavailab
 authority refuses with `state_unavailable`; a removed adapter is an availability
 refusal (`adapter_unavailable`) on this new opt-in surface. Legacy route inputs
 have no adapter-channel intersection and their existing behavior remains unchanged.
+Exact admission of retained context uses that same current-authority mechanism,
+including the current entry's health/capability/effective-limit facts, not an older
+application's cached entry. After task/profile/structural merging, the retained
+known input-context demand must also fit the gateway allowance at selection and
+execution; checking only the small outgoing message estimate is insufficient.
 
 The version-1 executable envelope contains `route`, the actual existing RouteDecision,
 and `execution`, null on no solution, otherwise a ready-to-use exact `model` pin,

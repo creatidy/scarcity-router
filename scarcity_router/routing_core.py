@@ -3044,6 +3044,7 @@ def admit_pinned_target(
         request.evaluated_at,
         request.continuation_capable_resource_ids,
         execution_assurances=request.execution_assurances,
+        available_adapter_channels=request.available_adapter_channels,
     )
     if not gate.qualified or not gate.bound_identities:
         return AdmissionDecision(
