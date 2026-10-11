@@ -348,6 +348,8 @@ class PrivateStore:
     """Pinned dirfd below the parent-designated private directory; no chmod repair."""
 
     def __init__(self, path: Path, expected_parent: Path) -> None:
+        if ".." in path.parts or ".." in expected_parent.parts:
+            raise Rejected(Stage.FILE, Code.FILE)
         path, expected_parent = path.absolute(), expected_parent.absolute()
         if path.parent != expected_parent or os.name != "posix":
             raise Rejected(Stage.FILE, Code.FILE)
@@ -552,7 +554,26 @@ def recover(store: PrivateStore, native: PrivateStore, context: Context, policy:
                 raise
             value = prior.get("diagnostic")
             if isinstance(value, dict):
-                return _diagnostic(value)
+                cached = _diagnostic(value)
+                retained_turn = _object(store, "turn.json")
+                changed = False
+                for envelope, key in ((prior, "result"), (retained_turn, "last")):
+                    payload = envelope.get(key)
+                    if payload is None:
+                        continue
+                    try:
+                        policy.check(payload, context)
+                    except Rejected as rejection:
+                        envelope[key] = None
+                        cached.stage, cached.code = rejection.stage, rejection.code
+                        cached.lifecycle, cached.complete, cached.actual_verdict = "rejected", False, None
+                        changed = True
+                if changed:
+                    retained_turn["diagnostic"] = cached.json()
+                    store.atomic("turn.json", retained_turn)
+                    prior["diagnostic"] = cached.json()
+                    store.atomic("receipt.json", prior)
+                return cached
     diagnostic = Diagnostic()
     obj: Json = None
     raw_info: os.stat_result | None = None
@@ -688,6 +709,9 @@ def run_prepared(store: PrivateStore, native: PrivateStore, context: Context,
     if (not argv or not os.path.isabs(argv[0]) or not 0 < timeout <= 3600
             or len(prompt) > INPUT_LIMIT or not re.fullmatch(r"[A-Za-z0-9 ._+-]{1,80}", executable_version)
             or native.path == store.path or threading.current_thread() is not threading.main_thread()):
+        raise ValueError("isolated_explicit_prepared_launch_required")
+    store_info, native_info = os.fstat(store.fd), os.fstat(native.fd)
+    if (store_info.st_dev, store_info.st_ino) == (native_info.st_dev, native_info.st_ino):
         raise ValueError("isolated_explicit_prepared_launch_required")
     policy.check(context.json(), context)
     for name in ("launch.claim", "spawn.json", "exit.json", "turn.json", "receipt.json", "capture.json"):

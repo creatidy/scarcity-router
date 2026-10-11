@@ -36,7 +36,9 @@ def main() -> int:
         result["verdict"] = "REQUEST_CHANGES"
         result["findings"] = [{"severity": "P1", "file": "tools/example.py", "line_start": 2,
                                "line_end": 3, "evidence": "offline source", "consequence": "failure",
-                               "required_remediation": "fix source"}]
+                                "required_remediation": "fix source"}]
+    elif mode == "policy-update":
+        result["limitations"] = ["fixture-only"]
     text = json.dumps(result)
     if mode == "malformed":
         text = "not JSON"

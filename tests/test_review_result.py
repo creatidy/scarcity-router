@@ -354,6 +354,30 @@ class ReviewResultTests(unittest.TestCase):
                 _ = recover(self.store, self.native, context, policy)
             self.assertEqual(error.exception.code, Code.CLAIM)
 
+    def test_recovery_rescreens_new_forbidden_literals_and_scrubs_retained_payloads(self) -> None:
+        self.assertTrue(self.launch("policy-update").complete)
+        policy = TextPolicy(forbidden=("fixture-only",))
+        captured = recover(self.store, self.native, CONTEXT, policy)
+        self.assertFalse(captured.complete)
+        self.assertEqual(captured.code, Code.UNSAFE)
+        self.assertIsNone(captured.actual_verdict)
+        for name in ("receipt.json", "turn.json"):
+            self.assertNotIn(b"fixture-only", self.store.read(name)[0])
+        self.assertEqual(recover(self.store, self.native, CONTEXT, policy).code, Code.UNSAFE)
+
+    def test_parent_traversal_and_same_directory_handles_are_rejected_before_claim(self) -> None:
+        parent = self.store.path.parent
+        with self.assertRaises(Rejected):
+            _ = PrivateStore(self.native.path / ".." / self.store.path.name, self.native.path / "..")
+        self.native.close()
+        self.native = PrivateStore(self.store.path, parent)
+        # Lexical metadata is not evidence of a different opened directory.
+        self.native.path = parent / "declared-other-output"
+        with self.assertRaises(ValueError):
+            _ = run_prepared(self.store, self.native, CONTEXT, [sys.executable], b"", {},
+                             TextPolicy(), executable_version="synthetic")
+        self.assertFalse((self.store.path / "launch.claim").exists())
+
     def test_parse_does_not_include_raw_error_text(self) -> None:
         with self.assertRaises(Rejected) as error:
             _ = parse(b"private invalid input")
