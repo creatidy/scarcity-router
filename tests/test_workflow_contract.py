@@ -373,6 +373,20 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertNotIn('"git remote -v": allow', shell)
         self.assertNotIn('https://forgejo.creatidy.com', shell)
         self.assertIn('"git ls-remote * -*": deny', shell)
+        manifest = text(".kilo/rules/35-technical-recovery.md").split(
+            "## Independent Review Metadata", 1
+        )[1].split("## Public Evidence and Reviewer Failover", 1)[0]
+        for getter in (
+            "`forgejo-mcp_get_repo`", "`forgejo-mcp_get_pull_request_by_index`",
+            "`forgejo-mcp_get_issue_by_index`", "`forgejo-mcp_get_issue_comment`",
+        ):
+            self.assertIn(getter, manifest)
+        for boundary in (
+            "Do not grant wildcard getters", "list/search access or any Forgejo write",
+            "primary-prepared clean local Git objects", "exact merge base/full diff",
+            "must not inspect credential-bearing Git configuration or invoke credential helpers",
+        ):
+            self.assertIn(boundary, manifest)
 
     def test_delivery_counter_survives_reentry(self) -> None:
         finish = text(".kilo/command/finish-pr.md")
