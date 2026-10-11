@@ -46,6 +46,8 @@ SECRET = re.compile(
 FORBIDDEN_FIELD = re.compile(r"(?i)password|passwd|api[_-]?key|token|credential|secret|authorization|cookie|private[_-]?key")
 OPAQUE = re.compile(r"[A-Za-z0-9_+/=-]{32,}")
 BOUNDARY = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_+/=-.\\")
+SESSION = r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}"
+HOST = r"[A-Za-z0-9_.-]{1,100}"
 
 
 class Stage(StrEnum):
@@ -199,7 +201,21 @@ class TextPolicy:
 
     def binding(self) -> str:
         # No credential values or hashes of credentials in durable metadata.
+        for source in self.sources:
+            for value in (source.revision, source.manifest_sha256, *source.tracked_paths, *source.pins):
+                self.check_identity(value)
         return sha256(encode(cast(Json, [asdict(source) for source in self.sources])))
+
+    def check_identity(self, value: str, pattern: str | None = None) -> None:
+        # Shape-validated metadata is not reviewer prose; length is not a secret
+        # exemption, and known literals/patterns always take precedence.
+        if len(value) > 8192:
+            raise Rejected(Stage.SAFETY, Code.OVERSIZE)
+        if (SECRET.search(value) or any(secret and secret in value for secret in self.forbidden)
+                or any(unicodedata.category(char).startswith("C") and char not in "\n\t" for char in value)):
+            raise Rejected(Stage.SAFETY, Code.UNSAFE)
+        if pattern is not None and not re.fullmatch(pattern, value):
+            raise Rejected(Stage.SAFETY, Code.TYPE)
 
     def check(self, obj: Json, context: Context) -> None:
         literals = tuple(value for source in self.sources
@@ -219,11 +235,7 @@ class TextPolicy:
             elif isinstance(value, list):
                 pending.extend((item, depth + 1, None) for item in value)
             elif isinstance(value, str):
-                if len(value) > 8192:
-                    raise Rejected(Stage.SAFETY, Code.OVERSIZE)
-                if (SECRET.search(value) or any(secret and secret in value for secret in self.forbidden)
-                        or any(unicodedata.category(char).startswith("C") and char not in "\n\t" for char in value)):
-                    raise Rejected(Stage.SAFETY, Code.UNSAFE)
+                self.check_identity(value)
                 if key in ("reviewed_head", "reviewed_base") and SHA.fullmatch(value):
                     if value not in (context.head, context.base):
                         # An unrecognized opaque value in a revision field is
@@ -493,7 +505,8 @@ class EventCapture:
             kind = event["type"]
             if kind == "thread.started":
                 session = event.get("thread_id")
-                if isinstance(session, str) and re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", session):
+                if isinstance(session, str):
+                    self.policy.check_identity(session, SESSION)
                     self.session = session
             elif kind == "turn.started":
                 if self.active or self.failed:
@@ -518,9 +531,11 @@ class EventCapture:
             elif kind not in ("item.started", "item.updated"):
                 raise Rejected(Stage.EXTRACTION, Code.EVENT)
         except (Rejected, UnicodeError) as error:
-            self.diagnostic = Diagnostic(stage=Stage.EXTRACTION,
+            unsafe = isinstance(error, Rejected) and error.stage == Stage.SAFETY
+            self.diagnostic = Diagnostic(stage=Stage.SAFETY if unsafe else Stage.EXTRACTION,
                                          code=error.code if isinstance(error, Rejected) else Code.UTF8,
-                                         size=len(data), sha256=sha256(data), lifecycle="rejected")
+                                         size=len(data), sha256=None if unsafe else sha256(data), lifecycle="rejected")
+            self.session = None
             self.failed, self.completed, self.last, self.protocol_failed = True, False, None, True
 
     def persist(self, store: PrivateStore) -> None:
@@ -585,16 +600,59 @@ def _finish_cleanup(store: PrivateStore, native: PrivateStore, envelope: dict[st
 
 def recover(store: PrivateStore, native: PrivateStore, context: Context, policy: TextPolicy) -> Diagnostic:
     """Retrieve the existing job, including after handle loss. Never launch a child."""
-    binding: dict[str, Json] = {"context": context.json(), "public_policy_sha256": policy.binding()}
     claim = _object(store, "launch.claim")
-    if claim != binding:
-        raise Rejected(Stage.RECOVERY, Code.CLAIM)
     # The typed receipt is parent-owned, never exposed to reviewer tools.
     prior = _object(store, "receipt.json")
+    turn = _object(store, "turn.json")
+    spawned, exited = _object(store, "spawn.json"), _object(store, "exit.json")
+    capture_state = _object(store, "capture.json")
+    rescreened: Rejected | None = None
+    unsafe_public_binding = False
+    try:
+        binding: dict[str, Json] = {"context": context.json(), "public_policy_sha256": policy.binding()}
+    except Rejected as rejection:
+        binding = {"context": context.json(), "public_policy_sha256": None}
+        rescreened = rejection
+        unsafe_public_binding = True
+    matches_claim = claim == binding
+    # Screen all retained metadata before any return, including caller context.
+    # Payloads retain the stricter reviewer-text policy and public provenance.
+    for name, envelope in (("launch.claim", claim), ("spawn.json", spawned), ("exit.json", exited),
+                           ("capture.json", capture_state), ("turn.json", turn), ("receipt.json", prior),
+                           (None, binding)):
+        metadata_stack: list[Json] = [envelope]
+        changed = False
+        while metadata_stack:
+            value = metadata_stack.pop()
+            if isinstance(value, dict):
+                for key, item in list(value.items()):
+                    if key in ("result", "last"):
+                        continue
+                    if key == "public_policy_sha256" and unsafe_public_binding and item is not None:
+                        value[key], changed = None, True
+                        continue
+                    if isinstance(item, str):
+                        try:
+                            policy.check_identity(item, SESSION if key == "session" else HOST if key == "host" else None)
+                        except Rejected as rejection:
+                            value[key] = None
+                            rescreened, changed = rejection, True
+                    elif isinstance(item, (dict, list)):
+                        metadata_stack.append(item)
+            elif isinstance(value, list):
+                for index, item in enumerate(value):
+                    if isinstance(item, str):
+                        try:
+                            policy.check_identity(item)
+                        except Rejected as rejection:
+                            value[index] = None
+                            rescreened, changed = rejection, True
+                    elif isinstance(item, (dict, list)):
+                        metadata_stack.append(item)
+        if changed and name is not None:
+            store.atomic(name, envelope)
     prior_value = prior.get("diagnostic")
     cached = _diagnostic(prior_value) if isinstance(prior_value, dict) else Diagnostic()
-    turn = _object(store, "turn.json")
-    rescreened: Rejected | None = None
     for envelope, key in ((prior, "result"), (turn, "last")):
         payload = envelope.get(key)
         if payload is None:
@@ -603,16 +661,20 @@ def recover(store: PrivateStore, native: PrivateStore, context: Context, policy:
             policy.check(payload, context)
         except Rejected as rejection:
             envelope[key] = None
-            cached.stage, cached.code = rejection.stage, rejection.code
-            cached.lifecycle, cached.complete, cached.actual_verdict = "rejected", False, None
             rescreened = rejection
     if rescreened is not None:
+        cached.stage, cached.code = rescreened.stage, rescreened.code
+        cached.lifecycle, cached.complete, cached.actual_verdict = "rejected", False, None
+        cached.revisions_valid = False
         turn["diagnostic"] = cached.json()
         store.atomic("turn.json", turn)
         prior["diagnostic"] = cached.json()
-        _ = prior.setdefault("source_rejection", cached.json())
+        prior["source_rejection"] = cached.json()
+        if "source_diagnostic" in prior:
+            prior["source_diagnostic"] = cached.json()
         store.atomic("receipt.json", prior)
-    spawned, exited = _object(store, "spawn.json"), _object(store, "exit.json")
+    if not matches_claim:
+        raise rescreened if rescreened is not None else Rejected(Stage.RECOVERY, Code.CLAIM)
     exit_code = exited.get("exit_code")
     try:
         observed = native.info("last-message.json")
@@ -625,6 +687,10 @@ def recover(store: PrivateStore, native: PrivateStore, context: Context, policy:
                                  or any(type(value) is not int or value < 0 for value in identity)):
         raise Rejected(Stage.RECOVERY, Code.TYPE)
     rejection = prior.get("source_rejection")
+    turn_diagnostic = turn.get("diagnostic")
+    if (rejection is None and turn.get("failed") is True and isinstance(turn_diagnostic, dict)
+            and turn_diagnostic.get("stage") == Stage.SAFETY):
+        rejection = _diagnostic(turn_diagnostic).json()
     if (rejection is None and prior.get("binding") == binding
             and cached.source == "native_last_message"
             and cached.code not in (Code.OK, Code.NO_EXIT, Code.MESSAGE, Code.MISSING)):
@@ -730,7 +796,7 @@ def recover(store: PrivateStore, native: PrivateStore, context: Context, policy:
         failures.append(Code.FAILED if turn.get("failed") is True else Code.INCOMPLETE)
     interruption = exited.get("capture_code")
     if interruption is None:
-        interruption = _object(store, "capture.json").get("code")
+        interruption = capture_state.get("code")
     if interruption in (Code.TIMEOUT, Code.INTERRUPTED, Code.IO, Code.INPUT):
         failures.append(cast(str, interruption))
     diagnostic.execution_failures = failures
@@ -825,6 +891,11 @@ def run_prepared(store: PrivateStore, native: PrivateStore, context: Context,
         raise ValueError("isolated_explicit_prepared_launch_required")
     policy.check(context.json(), context)
     policy.check(executable_version, context)
+    public_binding = policy.binding()
+    executable = Path(argv[0]).resolve()
+    policy.check(str(executable), context)
+    host = socket.gethostname()
+    policy.check_identity(host, HOST)
     for name in ("launch.claim", "spawn.json", "exit.json", "turn.json", "receipt.json", "capture.json"):
         try:
             _ = store.info(name)
@@ -840,7 +911,7 @@ def run_prepared(store: PrivateStore, native: PrivateStore, context: Context,
             raise
     else:
         raise Rejected(Stage.FILE, Code.CHANGED)
-    store.atomic("launch.claim", {"context": context.json(), "public_policy_sha256": policy.binding()}, exclusive=True)
+    store.atomic("launch.claim", {"context": context.json(), "public_policy_sha256": public_binding}, exclusive=True)
     capture = EventCapture(context, policy)
     child: subprocess.Popen[bytes] | None = None
     selector = selectors.DefaultSelector()
@@ -848,11 +919,6 @@ def run_prepared(store: PrivateStore, native: PrivateStore, context: Context,
     stderr_size = 0
     stderr_digest = hashlib.sha256()
     deadline = time.monotonic() + timeout
-    executable = Path(argv[0]).resolve()
-    policy.check(str(executable), context)
-    host = socket.gethostname()
-    if not re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", host):
-        host = "UNVERIFIED"
     old_term = signal.getsignal(signal.SIGTERM)
 
     def interrupted(_signum: int, _frame: FrameType | None) -> None:

@@ -82,13 +82,15 @@ class ReviewResultTests(unittest.TestCase):
         self.temporary.cleanup()
 
     def launch(self, mode: str, *, timeout: float = 5,
-               progress: list[dict[str, Json]] | None = None) -> Diagnostic:
+               progress: list[dict[str, Json]] | None = None,
+               policy: TextPolicy | None = None) -> Diagnostic:
         # No owner's ambient environment or home reaches the child.
         env = {"HOME": str(self.native.path), "TMPDIR": str(self.native.path),
                "PYTHONPATH": str(ROOT), "SYNTHETIC_VALUE": "fixture-only"}
         return run_prepared(self.store, self.native, CONTEXT,
                             [sys.executable, str(ROOT / "tests/review_result_fixture.py"), mode,
-                             CONTEXT.head, CONTEXT.base], b"synthetic prompt", env, TextPolicy(),
+                              CONTEXT.head, CONTEXT.base], b"synthetic prompt", env,
+                             policy if policy is not None else TextPolicy(),
                             executable_version="synthetic Python fixture", timeout=timeout,
                             progress=progress.append if progress is not None else None)
 
@@ -191,6 +193,151 @@ class ReviewResultTests(unittest.TestCase):
                 self.assertEqual(caught.exception.code, Code.UNSAFE)
                 for name in ("launch.claim", "spawn.json", "exit.json", "receipt.json"):
                     self.assertFalse((self.store.path / name).exists())
+
+    def test_forbidden_session_is_rejected_without_retaining_literal_or_hash(self) -> None:
+        session = "12345678-1234-1234-1234-123456789abc"
+        capture = EventCapture(CONTEXT, TextPolicy(forbidden=(session,)))
+        capture.feed(encode({"type": "thread.started", "thread_id": session}))
+        capture.persist(self.store)
+        self.assertNotIn(session.encode(), self.store.read("turn.json")[0])
+        self.assertIsNone(capture.session)
+        self.assertEqual(capture.diagnostic.code, Code.UNSAFE)
+        self.assertIsNone(capture.diagnostic.sha256)
+        self.assertTrue(capture.failed)
+
+    def test_forbidden_hostname_is_rejected_before_any_durable_launch_effect(self) -> None:
+        for host, policy in (("fixture-host", TextPolicy(forbidden=("fixture-host",))),
+                             ("sk-SYNTHETIC_ONLY_VALUE", TextPolicy())):
+            self.reset_stores()
+            with self.subTest(host_kind="explicit" if policy.forbidden else "pattern"):
+                with patch("tools.review_result.socket.gethostname", return_value=host):
+                    with self.assertRaises(Rejected) as caught:
+                        _ = self.launch("COMMENT", policy=policy)
+                self.assertEqual(caught.exception.stage, Stage.SAFETY)
+                self.assertEqual(caught.exception.code, Code.UNSAFE)
+                self.assertEqual(list(self.store.path.iterdir()), [])
+                self.assertEqual(list(self.native.path.iterdir()), [])
+
+    def test_invalid_hostname_is_typed_and_rejected_before_claim(self) -> None:
+        with patch("tools.review_result.socket.gethostname", return_value="invalid host"):
+            with self.assertRaises(Rejected) as caught:
+                _ = self.launch("COMMENT")
+        self.assertEqual(caught.exception.code, Code.TYPE)
+        self.assertEqual(list(self.store.path.iterdir()), [])
+
+    def test_forbidden_executable_context_and_public_source_cannot_leave_claim_or_hash(self) -> None:
+        public_path = "src/fixture.py"
+        source = PublicSource("d" * 40, "e" * 64, (public_path,), parent_verified=True)
+        for policy in (TextPolicy(forbidden=(str(Path(sys.executable).resolve()),)),
+                       TextPolicy(forbidden=(CONTEXT.job_id,)),
+                       TextPolicy(forbidden=(CONTEXT.head,)),
+                       TextPolicy(forbidden=(public_path,), sources=(source,))):
+            with self.assertRaises(Rejected) as caught:
+                _ = self.launch("COMMENT", policy=policy)
+            self.assertEqual(caught.exception.code, Code.UNSAFE)
+            self.assertEqual(list(self.store.path.iterdir()), [])
+            self.assertEqual(list(self.native.path.iterdir()), [])
+
+    def test_forbidden_session_rejects_actual_capture_despite_safe_native_result(self) -> None:
+        captured = self.launch("APPROVE", policy=TextPolicy(forbidden=(
+            "12345678-1234-1234-1234-123456789abc",)))
+        self.assertEqual(captured.code, Code.UNSAFE)
+        self.assertFalse(captured.complete)
+        self.assertIsNone(captured.actual_verdict)
+        for path in self.store.path.iterdir():
+            self.assertNotIn(b"12345678-1234-1234-1234-123456789abc", self.store.read(path.name)[0])
+
+    def test_newly_forbidden_public_source_scrubs_old_fingerprint_without_new_authority(self) -> None:
+        source = PublicSource("d" * 40, "e" * 64, ("src/fixture.py",), parent_verified=True)
+        policy = TextPolicy(sources=(source,))
+        self.assertTrue(self.launch("APPROVE", policy=policy).complete)
+        fingerprint = policy.binding()
+        with self.assertRaises(Rejected) as caught:
+            _ = recover(self.store, self.native, CONTEXT, TextPolicy(
+                forbidden=("src/fixture.py",), sources=(source,)))
+        self.assertEqual(caught.exception.code, Code.UNSAFE)
+        for path in self.store.path.iterdir():
+            self.assertNotIn(fingerprint.encode(), self.store.read(path.name)[0])
+        claim = parse(self.store.read("launch.claim")[0])
+        assert isinstance(claim, dict) and isinstance(claim["context"], dict)
+        self.assertEqual(claim["context"]["ordinal"], CONTEXT.ordinal)
+        receipt = parse(self.store.read("receipt.json")[0])
+        assert isinstance(receipt, dict) and isinstance(receipt["diagnostic"], dict)
+        self.assertIsNone(receipt["diagnostic"]["actual_verdict"])
+        self.assertFalse(receipt["diagnostic"]["complete"])
+        with self.assertRaises(Rejected) as duplicate:
+            _ = self.launch("APPROVE", policy=policy)
+        self.assertEqual(duplicate.exception.code, Code.LAUNCH)
+
+    def test_valid_long_identity_metadata_does_not_relax_reviewer_text_policy(self) -> None:
+        host = "fixture-host-" * 5
+        with patch("tools.review_result.socket.gethostname", return_value=host):
+            self.assertTrue(self.launch("COMMENT").complete)
+        self.assertIn(host.encode(), self.store.read("spawn.json")[0])
+        self.assertIn(b"12345678-1234-1234-1234-123456789abc", self.store.read("turn.json")[0])
+        self.assertTrue(recover(self.store, self.native, CONTEXT, TextPolicy()).complete)
+        payload = result()
+        payload["limitations"] = [host]
+        self.assertEqual(inspect(encode(payload), CONTEXT, TextPolicy())[0].code, Code.UNSAFE)
+
+    def test_current_policy_scrubs_all_retained_identity_metadata(self) -> None:
+        session = "12345678-1234-1234-1234-123456789abc"
+        for forbidden in (session, "fixture-host", "synthetic Python fixture",
+                          str(Path(sys.executable).resolve()), CONTEXT.job_id,
+                          CONTEXT.requested_model, CONTEXT.head):
+            self.reset_stores()
+            with self.subTest(metadata_kind="context" if forbidden in (
+                    CONTEXT.job_id, CONTEXT.requested_model, CONTEXT.head) else "external"):
+                with patch("tools.review_result.socket.gethostname", return_value="fixture-host"):
+                    self.assertTrue(self.launch("APPROVE").complete)
+                policy = TextPolicy(forbidden=(forbidden,))
+                captured = recover(self.store, self.native, CONTEXT, policy)
+                self.assertEqual(captured.code, Code.UNSAFE)
+                self.assertFalse(captured.complete)
+                self.assertIsNone(captured.actual_verdict)
+                self.assertEqual(captured.model_identity, "UNVERIFIED")
+                for path in self.store.path.iterdir():
+                    self.assertNotIn(forbidden.encode(), self.store.read(path.name)[0])
+                claim = parse(self.store.read("launch.claim")[0])
+                assert isinstance(claim, dict) and isinstance(claim["context"], dict)
+                self.assertEqual(claim["context"]["ordinal"], CONTEXT.ordinal)
+                try:
+                    repeated = recover(self.store, self.native, CONTEXT, TextPolicy())
+                except Rejected as caught:
+                    self.assertEqual(caught.code, Code.CLAIM)
+                else:
+                    self.assertEqual(repeated.code, Code.UNSAFE)
+                    self.assertFalse(repeated.complete)
+                    self.assertIsNone(repeated.actual_verdict)
+
+    def test_pending_cleanup_metadata_rescreen_cannot_restore_original_verdict(self) -> None:
+        for forbidden in ("fixture-host", "12345678-1234-1234-1234-123456789abc", CONTEXT.job_id):
+            self.reset_stores()
+            original_unlink = os.unlink
+
+            def crash(name: str, *, dir_fd: int | None = None) -> None:
+                if name == "last-message.json" and dir_fd == self.native.fd:
+                    raise RuntimeError("synthetic crash before unlink")
+                original_unlink(name, dir_fd=dir_fd)
+
+            with patch("tools.review_result.socket.gethostname", return_value="fixture-host"):
+                with patch("tools.review_result.os.unlink", crash):
+                    with self.assertRaises(RuntimeError):
+                        _ = self.launch("APPROVE")
+            captured = recover(self.store, self.native, CONTEXT, TextPolicy(forbidden=(forbidden,)))
+            self.assertEqual(captured.code, Code.UNSAFE)
+            self.assertFalse(captured.complete)
+            self.assertIsNone(captured.actual_verdict)
+            self.assertFalse((self.native.path / "last-message.json").exists())
+            for path in self.store.path.iterdir():
+                self.assertNotIn(forbidden.encode(), self.store.read(path.name)[0])
+            receipt = parse(self.store.read("receipt.json")[0])
+            assert isinstance(receipt, dict)
+            for key in ("diagnostic", "source_diagnostic", "source_rejection"):
+                diagnostic = receipt[key]
+                assert isinstance(diagnostic, dict)
+                self.assertIsNone(diagnostic["actual_verdict"])
+                self.assertFalse(diagnostic["complete"])
 
     def test_input_bound_is_separate_from_result_bound_and_checked_before_claim(self) -> None:
         captured = run_prepared(self.store, self.native, CONTEXT,
