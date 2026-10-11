@@ -16,23 +16,24 @@ permission:
   write: deny
   apply_patch: deny
   task: deny
+  "forgejo-mcp_get_repo": allow
   "forgejo-mcp_get_pull_request_by_index": allow
   "forgejo-mcp_get_issue_by_index": allow
   "forgejo-mcp_get_issue_comment": allow
   bash:
+    "git remote -v": deny
+    "git ls-remote *": deny
     "*": deny
     "git status --short": allow
-    "git remote -v": allow
     "git rev-parse *": allow
     "git merge-base *": allow
     "git log *": allow
     "git show *": allow
     "git diff *": allow
     "git ls-tree *": allow
-    "git ls-remote https://forgejo.creatidy.com/BioMedical-IT/scarcity-router refs/heads/develop refs/heads/*": allow
-    "git ls-remote https://forgejo.creatidy.com/BioMedical-IT/scarcity-router.git refs/heads/develop refs/heads/*": allow
     "kilo debug agent pr-reviewer": allow
     "uv run --no-sync python tools/test_runner.py": allow
+    "PYTHONPATH=. UV_OFFLINE=1 UV_NO_SYNC=1 uv run --no-sync python -m unittest tests.test_workflow_contract.WorkflowContractTests.test_private_repository_review_uses_exact_mcp_and_local_evidence -v": allow
     "uv run --no-sync basedpyright": allow
     "uv run --no-sync python -m unittest discover -s tests -v": allow
     "UV_OFFLINE=1 make check": allow
@@ -103,16 +104,26 @@ authorized by the owner.
 The reviewer itself must never change its provider, model, reasoning level,
 permissions or execution path, and must never delegate review.
 
-First fetch current PR metadata via Forgejo MCP, then query the canonical HTTPS
-repository with `git ls-remote`, using `refs/heads/develop` and the exact head ref
-from metadata. Do not guess branch names, use alternate transports or add options.
-Require open/unmerged develop target and exact expected HEAD/base. Mismatch means
-COMMENT with actual SHAs; do not review a different range. Require the supplied
-designated delivery or parent-prepared evidence checkout to be clean at expected HEAD.
-Inspect exact frozen Git objects/current branch read-only; do not create another
-checkout. The primary owns temporary worktrees, isolation, Git fetch and
-safe branch switching. You must not fetch, switch/create branches, use git worktree,
-commit, push or mutate Git/Forgejo state.
+First fetch the canonical repository metadata with `forgejo-mcp_get_repo` and
+current PR metadata with `forgejo-mcp_get_pull_request_by_index`. Require repository
+identity `BioMedical-IT/scarcity-router` at `https://forgejo.creatidy.com`, and
+require the PR's base repository to have that same identity. Require an open,
+unmerged PR targeting `develop`, and exact expected head/base refs and commit SHAs
+from the MCP metadata. Compare the MCP identities and SHAs against the supplied
+frozen values and the primary-prepared clean checkout's local Git objects; verify
+the exact merge base and complete diff from those objects. A missing, stale or
+mismatched identity/ref/SHA/object is COMMENT with the observed mismatch; never
+approve or review a different range. The primary supplies the designated delivery
+or parent-prepared evidence checkout after fetching its objects from the canonical
+remote. The checkout must be clean at expected HEAD. Inspect exact frozen Git
+objects/current branch read-only; do not create another checkout. Anonymous
+`git ls-remote` is optional corroboration only and is not in the reviewer shell
+allowlist; it is never a required access gate or a replacement for exact
+MCP/local-object agreement. The primary owns temporary worktrees, isolation, Git
+fetch and safe branch switching. Reviewer credentials remain unavailable to the
+model and shell. You must not inspect credential-bearing Git configuration, invoke
+credential helpers, fetch, switch/create branches, use git worktree, commit, push
+or mutate Git/Forgejo state.
 
 Read the linked issue and the parent-prepared acceptance-only object manifest,
 following `.kilo/rules/35-technical-recovery.md#reviewer-context-and-result-capture`.
@@ -144,6 +155,12 @@ cache and temp paths, never real ambient credentials. If the allowlist cannot sa
 invoke that environment, return COMMENT with the exact infrastructure gap so the
 parent can prepare another authorized path; do not run unsafe tests or self-authorize
 Docker/network/permission changes. No permission grant is implied by this contract.
+
+The exact `PYTHONPATH=. UV_OFFLINE=1 UV_NO_SYNC=1 uv run --no-sync python -m
+unittest tests.test_workflow_contract.WorkflowContractTests.test_private_repository_review_uses_exact_mcp_and_local_evidence -v`
+command is an allowlisted source-only contract test. It reads repository text,
+does not inspect inherited environment or invoke external boundaries, and should
+be run when this reviewer contract changes.
 
 For public research claims, independently inspect the cited pinned source material
 via available authorized reads or parent-staged exact-revision source bytes with

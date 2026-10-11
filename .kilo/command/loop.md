@@ -223,8 +223,10 @@ Prepare and audit the acceptance-only object manifest and result capture under
 recover existing output before retry and continue this same primary invocation.
 
 Maximum 10 whole-PR review invocations per issue delivery, INCLUDING the initial
-review, COMMENT, invalidated reviews and corrected retries. Reserve/persist each
-ordinal BEFORE dispatch in the shared delivery ledger; `/finish-pr` reentry,
+review, COMMENT, invalidated reviews and corrected retries. This is the default
+ceiling; only independently attested issue-local authority changes it, never
+resetting consumed ordinals. Reserve/persist each ordinal BEFORE dispatch in the
+shared delivery ledger; `/finish-pr` reentry,
 internal phases, new tasks and model/session changes cannot reset it. This is a
 safety ceiling, not a target; stop immediately for a genuine material decision.
 Fresh reviews inspect the COMPLETE PR, exact HEAD/base/merge base, read-only in a
@@ -350,3 +352,12 @@ do not settle it, the smallest materially distinct choices, consequences/tradeof
 and a recommended option. Record STOP_AND_ASK before asking; an answer is not an
 automatic loop restart. Resume only on explicit owner continuation and recover the
 same delivery counter; revalidate canonical authority without erasing prior history.
+
+For #205/PR206 only, original owner comment16611 explicitly permits parking at
+STOP_REVISE if final gates cannot close within15, then a distinctly NEW `/loop`
+invocation under that separate owner authority. Apply the shared recovery rule's
+parking contract first: leave issue/PR open and unmerged, preserve the old
+invocation's terminal/history and every consumed ordinal. Rebuild the full fresh
+canonical queue in the new invocation, never silently skip this started delivery
+inside its terminated invocation or silently restart parked #174 or #205. This
+does not generalize parking/restart authority or waive any final/security gate.

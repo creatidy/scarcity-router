@@ -15,6 +15,8 @@ every failed/COMMENT/failover whole-PR attempt consumes its reserved ordinal.
 
 Delivery budget: at most 10 whole-PR review invocations per issue delivery,
 INCLUDING the initial review, COMMENT, invalidated reviews and corrected retries.
+This is the default ceiling; an independently attested issue-local exception is
+subject to the shared prospective capacity procedure, never a counter reset.
 Before the first review verify `.task_progress.md` is Git-locally excluded, then
 append a delivery ledger keyed by issue/PR (and `/loop` invocation ID if applicable).
 Before EVERY task dispatch reserve/persist the next review ordinal, frozen SHAs
@@ -119,3 +121,6 @@ external orchestration, release, deployment or main promotion.
 When reused by `/loop`, READY_TO_MERGE is internal; map OWNER_DECISION_NEEDED to
 STOP_AND_ASK and stop the entire invocation. Other blockers/bounds terminate the
 loop too, never skip to another issue. Merge/completion remain loop.md's procedure.
+For #205/PR206 only, comment16611's explicit parking and distinctly NEW `/loop`
+authority follows the shared recovery rule: preserve this invocation's STOP_REVISE
+and open/unmerged delivery first, never silently continue its selection loop.

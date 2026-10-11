@@ -76,13 +76,29 @@ The effective ceiling is the default 10 unless independently attested explicit
 canonical owner authority changes it for this exact issue/PR. Ledger claims alone
 never authorize an exception. Require an exact positive integer ceiling and
 `used <= ceiling`; reject any proposed next ordinal above it. This does not change
-the global ten-review policy: #205/PR206 alone has the one-time ceiling12 in full
-original owner decision comment16179. Superseding owner correction comment16250
+the global ten-review policy. Historical #205/PR206 authority had the one-time
+ceiling12 in full original owner decision comment16179. Superseding owner correction comment16250
 preserves all consumed ordinals1-10 and ceiling12: fresh ordinary11, then restricted12
 only after valid ordinary APPROVE with empty findings and verified context/tool audit
-at the SAME exact HEAD/base. No review13 or automatic extension. Ordinals are
-chronological counters, not immutable roles; derive roles from current approval
+at the SAME exact HEAD/base. No review13 or automatic extension applied under that
+historical authority; its future limit is superseded only as stated below.
+Ordinals are chronological counters, not immutable roles; derive roles from current approval
 dependencies, never freeze a future security slot while ordinary approval is missing.
+
+Current #205/PR206-only authority is the full original owner decision
+[comment16611](https://forgejo.creatidy.com/BioMedical-IT/scarcity-router/issues/205#issuecomment-16611)
+(workspace2026-10-11T19:48:05Z). It supersedes the historical future ceiling12 with
+ceiling15, preserving ALL consumed ordinals1-12, their outcomes and prior terminal
+records unchanged. After reconciliation and successful required validation, next13
+is fresh ordinary review; next14 is direct-Codex `gpt-daybreak-blue-latest` restricted
+review only after valid current ordinary APPROVE, empty findings and actual context/tool
+audit at the SAME exact HEAD/base. Role15 is bounded contingency only when remaining
+capacity and approval-dependent ordering can still close ALL mandatory final gates.
+No review16, counter reset, replacement PR, security substitution/waiver or automatic
+further exception. This issue-local authority does not change default10 or authorize
+another issue's restart. Security12's `UNSAFE_TEXT` rejection is not approval; its
+discarded exact trigger/verdict is unknown, not evidence of an actual secret. Never
+invent it or weaken safety policy to accept rejected output.
 
 For the proposed round compute `remaining = ceiling - used` and the missing
 mandatory roles using exact current HEAD/base approvals with empty findings and
@@ -103,12 +119,22 @@ alone is NOT approval/currentness and cannot waive any acceptance gate.
 
 Require `remaining >= required_count` AND an authorized ordinal/role sequence that
 can close every missing gate, including ordinary-before-restricted order. Numeric
-space alone cannot authorize security before ordinary approval. For #205, ten consumed
-slots plus two missing fresh roles is PASS with attested ceiling12: next11 ordinary,
+space alone cannot authorize security before ordinary approval. Historical #205 fixture:
+ten consumed slots plus two missing fresh roles is PASS with attested ceiling12: next11 ordinary,
 then12 restricted only after current audited ordinary approval. If11 requests changes,
 a further patch needs two fresh roles but only one slot remains: STOP_REVISE before
-edits. If12 does not approve, STOP_REVISE, never13. Genuine findings remain valid
-regardless of inconvenient capacity. Persist the prospective PASS/refusal, recovered count,
+edits. If12 does not approve, STOP_REVISE, never13 under that historical ceiling12.
+Preserve this regression and decisions16179/16250 as history, not current future limits.
+Under comment16611, twelve consumed slots plus changed HEAD/base or stale approvals
+needs ordinary and restricted fresh roles: remaining3 is PASS, next13 ordinary then14
+restricted only after current audited ordinary approval. If13 requests an in-scope
+patch, remaining2 may cover fresh ordinary14 then restricted15; it never licenses
+restricted14 without ordinary approval. At used14, a patch needing both roles is
+STOP_REVISE before edits; one missing role on stable objects may use15 only with all
+other final gates closable and ordinary-before-restricted dependency satisfied.
+At used15, both exact current approvals can advance without a new dispatch; otherwise
+STOP_REVISE, never16. Genuine findings remain valid regardless of inconvenient capacity.
+Persist the prospective PASS/refusal, recovered count,
 effective ceiling with canonical provenance, exact HEAD/base, proposed object
 change, required roles/count and dependency-derived sequential role check in the SAME excluded ledger
 BEFORE mutating or reserving. A finding with insufficient closable capacity yields
@@ -116,6 +142,15 @@ STOP_REVISE before edits; uncertain count/authority yields BLOCKED. At the ceili
 both exact current approvals may advance through existing merge gates without an
 extra dispatch. This declarative procedure and its offline consistency fixtures
 are not a second controller or proof of runtime enforcement.
+
+Comment16611 separately authorizes #205 parking if all final review gates cannot
+close within15: preserve issue/PR open and unmerged at STOP_REVISE with the old
+invocation's terminal state, every ordinal and recovery history. Only THEN may the
+primary start the distinctly NEW owner-authorized `/loop` invocation with a fresh
+full canonical queue. This is not a silent skip inside the terminated invocation,
+not a global parking exception and not restart authority for parked #174 or #205.
+If #205 succeeds, normal `/loop` selection may continue after integrated acceptance
+and closure. No source fixture or ledger claim supplies this owner authority.
 
 No blind retries means never repeat a failed operation with the same relevant
 inputs and environment. It does not mean stop after one failed approach. A corrected
@@ -164,6 +199,20 @@ Keep authenticated platform operations outside test sandboxes. If unauthorized r
 credentials are genuinely necessary, record the specific evidence gap; do not ask for
 them unless required for the selected acceptance and subject to an owner decision.
 
+## Independent Review Metadata
+
+An acceptance-only whole-PR review manifest may authorize these exact Forgejo
+read operations: `forgejo-mcp_get_repo` for the canonical owner/repository,
+`forgejo-mcp_get_pull_request_by_index` for the selected PR, and
+`forgejo-mcp_get_issue_by_index` for its linked issue. Include
+`forgejo-mcp_get_issue_comment` only for a specifically attested owner decision.
+The manifest records each exact object ID/arguments, canonical URL, author,
+timestamp, retrieval path and content digest. Do not grant wildcard getters,
+list/search access or any Forgejo write. Repository metadata establishes
+canonical identity; current PR refs/SHAs must still agree with the primary-prepared
+clean local Git objects and exact merge base/full diff. Reviewer shell access must
+not inspect credential-bearing Git configuration or invoke credential helpers.
+
 ## Public Evidence and Reviewer Failover
 
 A public-research reviewer must inspect cited material independently. If a pinned
@@ -202,6 +251,7 @@ private conversations, local progress or favorable excerpts enter the packet.
 Missing decision provenance is an evidence gap, not permission to paraphrase it.
 
 The packet's object manifest names only exact read operations and IDs:
+`forgejo-mcp_get_repo` for the canonical owner/repository,
 `forgejo-mcp_get_pull_request_by_index`, `forgejo-mcp_get_issue_by_index`, and, only
 for an attested owner decision, `forgejo-mcp_get_issue_comment`. Read frozen source
 locally. Do not grant wildcard get/list/search or review/history getters. These

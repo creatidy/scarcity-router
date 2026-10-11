@@ -66,6 +66,7 @@ class WorkflowContractTests(unittest.TestCase):
             "previous reviews/findings, implementer summaries", "Missing decision provenance is an evidence gap",
             "post-Task tool routes/arguments against the manifest", "self-report alone does not close it",
             "supported no-tools execution needs a complete source packet",
+            "`forgejo-mcp_get_repo` for the canonical owner/repository",
         ):
             self.assertIn(requirement, contract)
         # A synthetic parent packet checks exact text and route auditing. This is
@@ -80,8 +81,11 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertEqual(packet["owner_decision"]["body"], owner_text)
         self.assertEqual(packet["owner_decision"]["sha256"], hashlib.sha256(owner_text.encode()).hexdigest())
         self.assertNotIn("verdict", packet["first_metadata"])
-        manifest = (("forgejo-mcp_get_issue_by_index", 7), ("forgejo-mcp_get_pull_request_by_index", 8),
+        manifest = (("forgejo-mcp_get_repo", ("synthetic-owner", "synthetic-repo")),
+                    ("forgejo-mcp_get_issue_by_index", 7), ("forgejo-mcp_get_pull_request_by_index", 8),
                     ("forgejo-mcp_get_issue_comment", 9))
+        self.assertIn(("forgejo-mcp_get_repo", ("synthetic-owner", "synthetic-repo")), manifest)
+        self.assertNotIn(("forgejo-mcp_get_repo", ("synthetic-owner", "other-repo")), manifest)
         self.assertIn(("forgejo-mcp_get_issue_comment", 9), manifest)
         self.assertNotIn(("forgejo-mcp_get_issue_comment", 10), manifest)
         self.assertNotIn(("forgejo-mcp_list_issue_comments", 7), manifest)
@@ -93,7 +97,7 @@ class WorkflowContractTests(unittest.TestCase):
         frontmatter = cast(dict[str, object], yaml.safe_load(raw))
         permissions = cast(dict[str, object], frontmatter["permission"])
         getters = {name for name in permissions if name.startswith("forgejo-mcp_")}
-        self.assertEqual(getters, {"forgejo-mcp_get_pull_request_by_index", "forgejo-mcp_get_issue_by_index",
+        self.assertEqual(getters, {"forgejo-mcp_get_repo", "forgejo-mcp_get_pull_request_by_index", "forgejo-mcp_get_issue_by_index",
                                   "forgejo-mcp_get_issue_comment"})
         for key in getters:
             self.assertEqual(permissions[key], "allow")
@@ -108,13 +112,19 @@ class WorkflowContractTests(unittest.TestCase):
                 if fnmatch.fnmatchcase(command, pattern):
                     decision = value
             return decision == "allow"
-        for command in ("git status --short", "git rev-parse HEAD", "git rev-parse --abbrev-ref HEAD", "git diff BASE HEAD"):
+        for command in ("git status --short", "git rev-parse HEAD", "git rev-parse --abbrev-ref HEAD", "git diff BASE HEAD",
+                        "PYTHONPATH=. UV_OFFLINE=1 UV_NO_SYNC=1 uv run --no-sync python -m unittest "
+                        + "tests.test_workflow_contract.WorkflowContractTests.test_private_repository_review_uses_exact_mcp_and_local_evidence -v"):
             self.assertTrue(allowed(command))
         for command in ("git status --short && git show HEAD", "git diff BASE HEAD; python -c 'pass'",
                         "git show HEAD | python", "git show HEAD > output", "git show $(python)",
                         "git status --short\ngit show HEAD", "python -c 'pass'",
                         "git status --short --branch", "git status --porcelain=v1", "git branch --show-current",
-                        "git rev-parse HEAD < input", "git show `python`", "git rev-parse HEAD & git show HEAD"):
+                        "git rev-parse HEAD < input", "git show `python`", "git rev-parse HEAD & git show HEAD",
+                        "git remote -v", "git ls-remote https://forgejo.creatidy.com/BioMedical-IT/scarcity-router",
+                        "git config user.name", "git credential fill",
+                        "PYTHONPATH=. UV_OFFLINE=1 UV_NO_SYNC=1 uv run --no-sync python -m unittest "
+                        + "tests.test_workflow_contract.WorkflowContractTests.test_persisted_prospective_capacity_counts_all_exact_object_gates -v"):
             self.assertFalse(allowed(command))
         guidance = text(".kilo/agents/pr-reviewer.md")
         self.assertIn("one allowlisted command", guidance)
@@ -147,17 +157,20 @@ class WorkflowContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             ledger = Path(directory) / ".task_progress.md"
 
-            def assess(used: object, ceiling: object = 10, *, canonical_exception: bool = False,
+            def assess(used: object, ceiling: object = 10, *, canonical_exception: object = False,
                        patch_objects: bool = True, security: bool = True,
                        ordinary_current: bool = False, restricted_current: bool = False,
-                       ordinary_stale: bool = False, base_stale: bool = False,
+                       ordinary_stale: bool = False, restricted_stale: bool = False, base_stale: bool = False,
                        ordinary_audited: bool = True, ordinary_empty: bool = True,
+                       restricted_audited: bool = True, restricted_empty: bool = True,
                        recovery: str = "intact") -> str:
                 reservations: list[dict[str, object]] = ([{"ordinal": ordinal, "outcome": ("COMMENT", "FAILED", "POLICY_VIOLATION")[ordinal % 3]}
                                  for ordinal in range(1, used + 1)] if type(used) is int and used >= 0 else [])
                 if len(reservations) >= 10:
                     reservations[9]["outcome"] = "REQUEST_CHANGES"
-                if reservations and ordinary_current:
+                if len(reservations) >= 12 and isinstance(canonical_exception, dict):
+                    reservations[11]["outcome"] = "UNSAFE_TEXT"
+                if reservations and ordinary_current and (not isinstance(canonical_exception, dict) or len(reservations) > 12):
                     reservations[-1]["outcome"] = "APPROVE"
                 if reservations and recovery in ("gap", "duplicate", "bool_ordinal", "float_ordinal"):
                     reservations[-1]["ordinal"] = {
@@ -173,9 +186,13 @@ class WorkflowContractTests(unittest.TestCase):
                                                   "ordinary_verdict": "APPROVE" if ordinary_current else "REQUEST_CHANGES",
                                                   "ordinary_findings": [] if ordinary_empty else ["synthetic finding"],
                                                   "ordinary_audited": ordinary_audited,
-                                                  "restricted_head": "a" * 40 if restricted_current else None,
+                                                  "restricted_head": ("c" if restricted_stale else "a") * 40
+                                                  if restricted_current else None,
                                                   "restricted_base": ("c" if base_stale else "b") * 40
-                                                  if restricted_current else None}))
+                                                  if restricted_current else None,
+                                                  "restricted_verdict": "APPROVE" if restricted_current else "UNSAFE_TEXT",
+                                                  "restricted_findings": [] if restricted_empty else ["synthetic finding"],
+                                                  "restricted_audited": restricted_audited}))
                 if recovery == "missing":
                     ledger.unlink()
                 try:
@@ -183,9 +200,25 @@ class WorkflowContractTests(unittest.TestCase):
                 except FileNotFoundError:
                     return "BLOCKED"
                 count = persisted["used"]
-                bound = persisted["claimed_ceiling"] if canonical_exception else 10
+                # Authority here is a synthetic independently attested input,
+                # never obtained from this ledger or a live platform operation.
+                if canonical_exception is True:
+                    bound = 12  # Preserved historical 16179/16250 fixture.
+                elif canonical_exception is False:
+                    bound = 10
+                elif isinstance(canonical_exception, dict):
+                    expected = {"issue": 205, "pr": 206, "comment": 16611, "ceiling": 15}
+                    attested = cast(dict[str, object], canonical_exception)
+                    if (set(attested) != set(expected)
+                            or any(type(attested[key]) is not int
+                                   or attested[key] != value for key, value in expected.items())):
+                        return "BLOCKED"
+                    bound = 15
+                else:
+                    return "BLOCKED"
                 if (recovery == "ambiguous" or type(count) is not int or count < 0
-                        or type(bound) is not int or bound < 1):
+                        or type(persisted["claimed_ceiling"]) is not int or persisted["claimed_ceiling"] < 1
+                        or canonical_exception is not False and persisted["claimed_ceiling"] != bound):
                     return "BLOCKED"
                 records = cast(list[dict[str, object]], persisted["reservations"])
                 if (any(type(record["ordinal"]) is not int for record in records)
@@ -196,7 +229,9 @@ class WorkflowContractTests(unittest.TestCase):
                             and persisted["ordinary_verdict"] == "APPROVE"
                             and persisted["ordinary_audited"] is True and persisted["ordinary_findings"] == [])
                 restricted = (persisted["restricted_head"] == persisted["head"]
-                              and persisted["restricted_base"] == persisted["base"] and not patch_objects)
+                              and persisted["restricted_base"] == persisted["base"] and not patch_objects
+                              and persisted["restricted_verdict"] == "APPROVE"
+                              and persisted["restricted_audited"] is True and persisted["restricted_findings"] == [])
                 state = ("stable_all_approved" if ordinary and (restricted or not security)
                          else "ordinary_patch_or_missing" if not security
                          else "stable_ordinary_approved" if ordinary
@@ -252,6 +287,71 @@ class WorkflowContractTests(unittest.TestCase):
                 self.assertEqual(assess(9, invalid, canonical_exception=True), "BLOCKED")
             for recovery in ("ambiguous", "missing", "gap", "duplicate", "bool_ordinal", "float_ordinal"):
                 self.assertEqual(assess(9, recovery=recovery), "BLOCKED")
+
+            # Comment16611 changes future capacity, not historical results. A
+            # stale base and a source patch both require two newly current gates.
+            authority = {"issue": 205, "pr": 206, "comment": 16611, "ceiling": 15}
+            for patch in (False, True):
+                self.assertEqual(assess(12, 15, canonical_exception=authority, patch_objects=patch,
+                                        ordinary_current=True, restricted_current=True, base_stale=True), "PASS")
+                reconciled = cast(dict[str, object], json.loads(ledger.read_text()))
+                self.assertEqual(reconciled["prospective_roles"], ["ordinary", "restricted"])
+                self.assertEqual(reconciled["prospective_ordinals"], [13, 14])
+                history = cast(list[dict[str, object]], reconciled["reservations"])
+                self.assertEqual(len(history), 12)
+                self.assertEqual(history[9]["outcome"], "REQUEST_CHANGES")
+                self.assertEqual(history[11]["outcome"], "UNSAFE_TEXT")
+            self.assertEqual(assess(12, 15), "BLOCKED")  # A claimed15 is not authority.
+            self.assertEqual(assess(12, 15, canonical_exception=True), "BLOCKED")  # Old authority cannot extend.
+            self.assertEqual(assess(13, 15, canonical_exception=authority), "PASS")
+            contingency = cast(dict[str, object], json.loads(ledger.read_text()))
+            self.assertEqual(contingency["prospective_roles"], ["ordinary", "restricted"])
+            self.assertEqual(contingency["prospective_ordinals"], [14, 15])
+            self.assertEqual(cast(list[dict[str, object]], contingency["reservations"])[:12], history)
+            self.assertEqual(assess(13, 15, canonical_exception=authority, patch_objects=False,
+                                    ordinary_current=True), "PASS")
+            next_security = cast(dict[str, object], json.loads(ledger.read_text()))
+            self.assertEqual(next_security["prospective_roles"], ["restricted"])
+            self.assertEqual(next_security["prospective_ordinals"], [14])
+            self.assertEqual(cast(list[dict[str, object]], next_security["reservations"])[:12], history)
+            self.assertEqual(assess(14, 15, canonical_exception=authority), "STOP_REVISE")
+            self.assertEqual(assess(14, 15, canonical_exception=authority, patch_objects=False,
+                                    ordinary_current=True), "PASS")
+            final_security = cast(dict[str, object], json.loads(ledger.read_text()))
+            self.assertEqual(final_security["prospective_roles"], ["restricted"])
+            self.assertEqual(final_security["prospective_ordinals"], [15])
+            self.assertEqual(cast(list[dict[str, object]], final_security["reservations"])[:12], history)
+            for stale, stale_base, audited, empty in ((True, False, True, True), (False, True, True, True),
+                                                      (False, False, False, True), (False, False, True, False)):
+                self.assertEqual(assess(14, 15, canonical_exception=authority, patch_objects=False,
+                                        ordinary_current=True, ordinary_stale=stale, base_stale=stale_base,
+                                        ordinary_audited=audited, ordinary_empty=empty), "STOP_REVISE")
+            self.assertEqual(assess(15, 15, canonical_exception=authority, patch_objects=False,
+                                    ordinary_current=True, restricted_current=True), "PASS")
+            closed = cast(dict[str, object], json.loads(ledger.read_text()))
+            self.assertEqual(closed["prospective_roles"], [])
+            self.assertEqual(closed["prospective_ordinals"], [])
+            self.assertEqual(cast(list[dict[str, object]], closed["reservations"])[:12], history)
+            self.assertEqual(assess(15, 15, canonical_exception=authority, patch_objects=False,
+                                    ordinary_current=True), "STOP_REVISE")
+            for stale, stale_base, audited, empty in ((True, False, True, True), (False, True, True, True),
+                                                      (False, False, False, True), (False, False, True, False)):
+                self.assertEqual(assess(15, 15, canonical_exception=authority, patch_objects=False,
+                                        ordinary_current=True, restricted_current=True,
+                                        restricted_stale=stale, base_stale=stale_base,
+                                        restricted_audited=audited, restricted_empty=empty), "STOP_REVISE")
+            self.assertEqual(assess(16, 15, canonical_exception=authority), "BLOCKED")
+            self.assertEqual(assess(15, 16, canonical_exception=authority, patch_objects=False,
+                                    ordinary_current=True, restricted_current=True), "BLOCKED")
+            for field, invalid in (("issue", 174), ("pr", 204), ("comment", 16250),
+                                   ("ceiling", 16), ("ceiling", True), ("ceiling", 15.0)):
+                self.assertEqual(assess(12, 15, canonical_exception={**authority, field: invalid}), "BLOCKED")
+            for malformed in (None, 1, {}, {"ceiling": 15}, {**authority, "unattested": True}):
+                self.assertEqual(assess(12, 15, canonical_exception=malformed), "BLOCKED")
+            for invalid in (None, True, 12.0, -1):
+                self.assertEqual(assess(invalid, 15, canonical_exception=authority), "BLOCKED")
+            for recovery in ("ambiguous", "missing", "gap", "duplicate", "bool_ordinal", "float_ordinal"):
+                self.assertEqual(assess(12, 15, canonical_exception=authority, recovery=recovery), "BLOCKED")
         contract = " ".join(section.split())
         for requirement in ("persisted, Git-locally excluded `.task_progress.md`", "BEFORE mutating or reserving",
                             "Missing/ambiguous ledger recovery is BLOCKED, never zero", "failed, COMMENT",
@@ -260,10 +360,39 @@ class WorkflowContractTests(unittest.TestCase):
                             "Superseding owner correction comment16250", "all consumed ordinals1-10 and ceiling12",
                             "If11 requests changes", "If12 does not approve, STOP_REVISE, never13",
                             "ordinary-before-restricted order", "contiguous unique ordinals",
+                            "Historical #205/PR206 authority", "decisions16179/16250 as history",
+                            "comment16611", "workspace2026-10-11T19:48:05Z", "ceiling15",
+                            "preserving ALL consumed ordinals1-12", "next13 is fresh ordinary review",
+                            "next14 is direct-Codex `gpt-daybreak-blue-latest` restricted review",
+                            "Role15 is bounded contingency", "At used14, a patch needing both roles is STOP_REVISE",
+                            "At used15, both exact current approvals can advance without a new dispatch",
+                            "STOP_REVISE, never16", "This issue-local authority does not change default10",
+                            "Security12's `UNSAFE_TEXT` rejection is not approval",
+                            "discarded exact trigger/verdict is unknown, not evidence of an actual secret",
                             "not a second controller or proof of runtime enforcement"):
             self.assertIn(requirement, contract)
         for command in ("loop", "finish-pr"):
             self.assertIn("#prospective-review-capacity", text(f".kilo/command/{command}.md"))
+
+    def test_issue205_parking_requires_terminal_history_and_distinct_owner_authorized_loop(self) -> None:
+        capacity = text(".kilo/rules/35-technical-recovery.md").split(
+            "## Prospective Review Capacity", 1)[1].split("No blind retries", 1)[0]
+        for requirement in (
+            "Comment16611 separately authorizes #205 parking",
+            "preserve issue/PR open and unmerged at STOP_REVISE",
+            "old invocation's terminal state, every ordinal and recovery history",
+            "Only THEN", "distinctly NEW owner-authorized `/loop` invocation",
+            "fresh full canonical queue", "not a silent skip inside the terminated invocation",
+            "not a global parking exception and not restart authority for parked #174 or #205",
+            "after integrated acceptance and closure", "No source fixture or ledger claim supplies this owner authority",
+        ):
+            self.assertIn(requirement, capacity)
+        for command in ("loop", "finish-pr"):
+            guidance = text(f".kilo/command/{command}.md")
+            self.assertIn("comment16611", guidance)
+            self.assertIn("distinctly NEW `/loop`", guidance)
+            self.assertIn("STOP_REVISE", guidance)
+            self.assertIn("open/unmerged" if command == "finish-pr" else "open and unmerged", guidance)
 
     def test_result_capture_recovery_never_closes_approval_or_identity_gate(self) -> None:
         contract = text(".kilo/rules/35-technical-recovery.md")
@@ -574,6 +703,62 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("never self-approve or resume a reviewer", loop)
         self.assertIn("Parent makes no edits/branch switches while it runs", loop)
         self.assertIn("Any HEAD/base change invalidates approval", loop)
+
+    def test_private_repository_review_uses_exact_mcp_and_local_evidence(self) -> None:
+        reviewer = text(".kilo/agents/pr-reviewer.md")
+        for requirement in (
+            "`forgejo-mcp_get_repo`", "`forgejo-mcp_get_pull_request_by_index`",
+            "`BioMedical-IT/scarcity-router`", "`https://forgejo.creatidy.com`",
+            "exact expected head/base refs and commit SHAs", "primary-prepared clean checkout's local Git objects",
+            "verify the exact merge base and complete diff",
+            "Anonymous `git ls-remote` is optional corroboration only and is not in the reviewer shell allowlist",
+            "never a required access gate", "A missing, stale or mismatched identity/ref/SHA/object is COMMENT",
+            "Reviewer credentials remain unavailable to the model and shell",
+        ):
+            with self.subTest(requirement=requirement):
+                self.assertIn(requirement, reviewer)
+        raw = (ROOT / ".kilo/agents/pr-reviewer.md").read_text().split("---", 2)[1]
+        getters = {
+            key.strip('"'): value.strip()
+            for line in raw.splitlines()
+            if line.startswith('  "forgejo-mcp_')
+            for key, value in [line.strip().split(":", 1)]
+        }
+        self.assertEqual(getters, {
+            "forgejo-mcp_get_repo": "allow",
+            "forgejo-mcp_get_pull_request_by_index": "allow",
+            "forgejo-mcp_get_issue_by_index": "allow",
+            "forgejo-mcp_get_issue_comment": "allow",
+        })
+        for permission in ("edit: deny", "write: deny", "apply_patch: deny", "task: deny"):
+            self.assertIn(permission, raw)
+        test_command = (
+            "PYTHONPATH=. UV_OFFLINE=1 UV_NO_SYNC=1 uv run --no-sync python -m unittest "
+            + "tests.test_workflow_contract.WorkflowContractTests.test_private_repository_review_"
+            + "uses_exact_mcp_and_local_evidence -v\": allow"
+        )
+        self.assertIn(test_command, raw)
+        shell = raw.split("bash:", 1)[1]
+        self.assertIn('"git remote -v": deny', shell)
+        self.assertIn('"git ls-remote *": deny', shell)
+        self.assertIn('"*": deny', shell)
+        self.assertNotIn('"git remote -v": allow', shell)
+        self.assertNotIn('https://forgejo.creatidy.com', shell)
+        self.assertIn('"git ls-remote * -*": deny', shell)
+        manifest = text(".kilo/rules/35-technical-recovery.md").split(
+            "## Independent Review Metadata", 1
+        )[1].split("## Public Evidence and Reviewer Failover", 1)[0]
+        for getter in (
+            "`forgejo-mcp_get_repo`", "`forgejo-mcp_get_pull_request_by_index`",
+            "`forgejo-mcp_get_issue_by_index`", "`forgejo-mcp_get_issue_comment`",
+        ):
+            self.assertIn(getter, manifest)
+        for boundary in (
+            "Do not grant wildcard getters", "list/search access or any Forgejo write",
+            "primary-prepared clean local Git objects", "exact merge base/full diff",
+            "must not inspect credential-bearing Git configuration or invoke credential helpers",
+        ):
+            self.assertIn(boundary, manifest)
 
     def test_delivery_counter_survives_reentry(self) -> None:
         finish = text(".kilo/command/finish-pr.md")
