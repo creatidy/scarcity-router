@@ -1,7 +1,7 @@
 """Offline stdlib subprocess capture tests; no inference or live identity claims."""
 
 from pathlib import Path
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
 import os
 import signal
@@ -662,6 +662,101 @@ class ReviewResultTests(unittest.TestCase):
             with self.assertRaises(Rejected) as error:
                 _ = recover(self.store, self.native, context, policy)
             self.assertEqual(error.exception.code, Code.CLAIM)
+
+    def snapshot_stores(self) -> dict[str, tuple[bytes | None, tuple[int, ...]]]:
+        # Include directory entries and file identity, but not read-induced atime.
+        snapshot: dict[str, tuple[bytes | None, tuple[int, ...]]] = {}
+        for store in (self.store, self.native):
+            snapshot[store.path.name] = (None, PrivateStore.identity(store.path.stat()))
+            for path in store.path.iterdir():
+                snapshot[store.path.name + "/" + path.name] = (
+                    path.read_bytes(), PrivateStore.identity(path.stat()))
+        return snapshot
+
+    def assert_invalid_context_preserves_stores(self) -> None:
+        before = self.snapshot_stores()
+        for field in ("head", "base"):
+            for policy in (TextPolicy(), TextPolicy(forbidden=(CONTEXT.head, CONTEXT.job_id, "fixture-only"))):
+                with self.subTest(field=field, tightened=bool(policy.forbidden)):
+                    wrong = replace(CONTEXT, **{field: "c" * 40})
+                    with patch("tools.review_result._finish_cleanup", side_effect=AssertionError("no cleanup")):
+                        with patch.object(PrivateStore, "atomic", side_effect=AssertionError("no writes")):
+                            with self.assertRaises(Rejected) as caught:
+                                _ = recover(self.store, self.native, wrong, policy)
+                    self.assertEqual(caught.exception.stage, Stage.RECOVERY)
+                    self.assertEqual(caught.exception.code, Code.CLAIM)
+                    self.assertEqual(self.snapshot_stores(), before)
+
+    def test_wrong_revisions_preserve_completed_and_rejected_terminal_evidence(self) -> None:
+        for mode in ("APPROVE", "REQUEST_CHANGES", "COMMENT", "policy-update",
+                     "file-malformed", "file-unsafe", "wrong-type"):
+            self.reset_stores()
+            with self.subTest(mode=mode):
+                original = self.launch(mode)
+                self.assert_invalid_context_preserves_stores()
+                before = self.snapshot_stores()
+                self.assertEqual(recover(self.store, self.native, CONTEXT, TextPolicy()).json(), original.json())
+                self.assertEqual(self.snapshot_stores(), before)
+                if mode == "policy-update":
+                    tightened = recover(self.store, self.native, CONTEXT, TextPolicy(forbidden=("fixture-only",)))
+                    self.assertEqual(tightened.code, Code.UNSAFE)
+                    self.assertFalse(tightened.complete)
+                    for name in ("receipt.json", "turn.json"):
+                        self.assertNotIn(b"fixture-only", self.store.read(name)[0])
+
+    def test_wrong_revisions_preserve_pending_and_blocked_native_cleanup(self) -> None:
+        for raw, blocked in ((encode(result("APPROVE")), False), (b"not JSON", False),
+                             (encode(result("APPROVE")), True)):
+            self.reset_stores()
+            path = self.prepare_recovery(raw, exited=True)
+            with self.subTest(blocked=blocked, malformed=raw == b"not JSON"):
+                with patch.object(self.native, "remove", side_effect=RuntimeError("synthetic crash")):
+                    with self.assertRaises(RuntimeError):
+                        _ = recover(self.store, self.native, CONTEXT, TextPolicy())
+                if blocked:
+                    path.chmod(0o644)
+                    original = recover(self.store, self.native, CONTEXT, TextPolicy())
+                else:
+                    receipt = parse(self.store.read("receipt.json")[0])
+                    assert isinstance(receipt, dict)
+                    original = receipt["source_diagnostic"]
+                self.assert_invalid_context_preserves_stores()
+                recovered = recover(self.store, self.native, CONTEXT, TextPolicy())
+                self.assertEqual(recovered.json(), original.json() if isinstance(original, Diagnostic) else original)
+                self.assertEqual(path.exists(), blocked)
+
+    def test_invalid_launch_claim_and_stored_binding_never_trigger_rescreening(self) -> None:
+        for corruption in ("missing", "empty", "extra", "bool", "float", "binding", "matching_bool_binding"):
+            self.reset_stores()
+            with self.subTest(corruption=corruption):
+                _ = self.launch("policy-update")
+                claim = parse(self.store.read("launch.claim")[0])
+                assert isinstance(claim, dict) and isinstance(claim["context"], dict)
+                if corruption == "missing":
+                    (self.store.path / "launch.claim").unlink()
+                elif corruption == "binding":
+                    receipt = parse(self.store.read("receipt.json")[0])
+                    assert isinstance(receipt, dict)
+                    receipt["binding"] = {"context": CONTEXT.json(), "public_policy_sha256": "e" * 64}
+                    self.store.atomic("receipt.json", receipt)
+                else:
+                    if corruption == "empty":
+                        claim = {}
+                    elif corruption == "extra":
+                        claim["untrusted"] = True
+                    else:
+                        claim["context"]["ordinal"] = 1.0 if corruption == "float" else True
+                    self.store.atomic("launch.claim", claim)
+                    if corruption == "matching_bool_binding":
+                        receipt = parse(self.store.read("receipt.json")[0])
+                        assert isinstance(receipt, dict)
+                        receipt["binding"] = claim
+                        self.store.atomic("receipt.json", receipt)
+                before = self.snapshot_stores()
+                with self.assertRaises(Rejected) as caught:
+                    _ = recover(self.store, self.native, CONTEXT, TextPolicy(forbidden=("fixture-only",)))
+                self.assertEqual(caught.exception.code, Code.CLAIM)
+                self.assertEqual(self.snapshot_stores(), before)
 
     def test_recovery_rescreens_new_forbidden_literals_and_scrubs_retained_payloads(self) -> None:
         self.assertTrue(self.launch("policy-update").complete)

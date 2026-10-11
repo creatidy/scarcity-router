@@ -230,15 +230,23 @@ safety ceiling, not a target; stop immediately for a genuine material decision.
 Fresh reviews inspect the COMPLETE PR, exact HEAD/base/merge base, read-only in a
 fresh isolated context, and return the existing structured JSON verdict/result.
 Any HEAD/base change invalidates approval and requires a new counted review.
+Before ANY HEAD/base-changing remediation or new review reservation, apply and
+persist `.kilo/rules/35-technical-recovery.md#prospective-review-capacity` on the
+same recovered excluded ledger. Count BOTH mandatory fresh roles after a
+security-critical patch; require numeric capacity and canonical ordinal/role
+allocation to close all final gates BEFORE editing/reserving. Default ceiling10
+remains unchanged; ledger assertions cannot authorize an issue-local exception.
 
 REQUEST_CHANGES: understand/reproduce actionable in-scope findings, remediate with
 appropriate regression evidence, validate, commit normally and push the SAME PR,
 then obtain a new whole-PR review. Never amend, squash, force-push or rewrite history
 to clean the loop. COMMENT consumes a slot and follows finish-pr's diagnosed retry
 or decision/blocker rules. READY_TO_MERGE is internal, not loop termination.
-At review 10, exact valid APPROVE may advance to MERGE; owner decisions terminate
+At the effective ceiling (default10), all exact current mandatory approvals may
+advance to MERGE without extra dispatch; owner decisions terminate
 STOP_AND_ASK, finite tool/infrastructure failure BLOCKED, remaining actionable
-defects STOP_REVISE. No review 11 or unreviewable further patches.
+defects STOP_REVISE. No review 11 under the default ceiling or unreviewable further
+patches; an attested issue-local exception remains subject to the shared procedure.
 
 ## Security Review
 

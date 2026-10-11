@@ -606,7 +606,16 @@ def _finish_cleanup(store: PrivateStore, native: PrivateStore, envelope: dict[st
 
 def recover(store: PrivateStore, native: PrivateStore, context: Context, policy: TextPolicy) -> Diagnostic:
     """Retrieve the existing job, including after handle loss. Never launch a child."""
-    claim = _object(store, "launch.claim") or {}
+    claim = _object(store, "launch.claim")
+    # Compare canonical JSON before policy rescreening can alter retained evidence.
+    # The public manifest fingerprint is computed without safety-induced scrubbing;
+    # a valid same-context caller may still tighten forbidden literals below.
+    expected_binding: dict[str, Json] = {
+        "context": context.json(),
+        "public_policy_sha256": sha256(encode(cast(Json, [asdict(source) for source in policy.sources]))),
+    }
+    if claim is None or encode(claim) != encode(expected_binding):
+        raise Rejected(Stage.RECOVERY, Code.CLAIM)
     # The typed receipt is parent-owned, never exposed to reviewer tools.
     prior = _object(store, "receipt.json")
     if prior is not None:
@@ -651,7 +660,6 @@ def recover(store: PrivateStore, native: PrivateStore, context: Context, policy:
         binding = {"context": context.json(), "public_policy_sha256": None}
         rescreened = rejection
         unsafe_public_binding = True
-    matches_claim = claim == binding
     # Screen all retained metadata before any return, including caller context.
     # Payloads retain the stricter reviewer-text policy and public provenance.
     for name, envelope in (("launch.claim", claim), ("spawn.json", spawned), ("exit.json", exited),
@@ -710,8 +718,9 @@ def recover(store: PrivateStore, native: PrivateStore, context: Context, policy:
         if "source_diagnostic" in prior:
             prior["source_diagnostic"] = cached.json()
         store.atomic("receipt.json", prior)
-    if not matches_claim:
-        raise rescreened if rescreened is not None else Rejected(Stage.RECOVERY, Code.CLAIM)
+    if unsafe_public_binding:
+        assert rescreened is not None
+        raise rescreened
     exit_code = exited.get("exit_code")
     try:
         observed = native.info("last-message.json")

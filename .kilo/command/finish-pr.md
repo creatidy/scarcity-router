@@ -24,6 +24,14 @@ the same delivery counter, not initialize zero. If prior dispatch/count recovery
 is ambiguous or unavailable, BLOCKED. Do not erase history or reset a stopped
 delivery; STOP_REVISE still requires an explicit owner decision, not a new PR/name.
 
+Before ANY HEAD/base-changing remediation or new review reservation, apply and
+persist `.kilo/rules/35-technical-recovery.md#prospective-review-capacity` on this
+same persisted ledger. Count all missing mandatory final roles, including both
+ordinary and restricted after a security-critical patch; require closable capacity
+and any explicit canonical owner ordinal/role allocation BEFORE edits or dispatch.
+Default ceiling10 is unchanged; only an independently attested issue-local owner
+exception changes the effective ceiling. Capacity is not approval/currentness.
+
 1. Fetch actual PR metadata and linked issue via `forgejo-mcp`. Require an open,
    unmerged canonical BioMedical-IT/scarcity-router PR targeting `develop`. Verify
    canonical remote, fetch current base/head and inspect status/branches. Use ONE
@@ -61,8 +69,9 @@ delivery; STOP_REVISE still requires an explicit owner decision, not a new PR/na
 5. REQUEST_CHANGES: first check findings against accepted scope and authority.
    Genuine incompatible acceptance, architecture or material scope decisions
    yield OWNER_DECISION_NEEDED with concrete alternatives. Otherwise reproduce
-   each actionable finding. Before patching check the remaining delivery budget;
-   at 10 return STOP_REVISE without patches that cannot receive a fresh review.
+   each actionable finding. Before patching apply the persisted prospective
+   capacity procedure for ALL invalidated final approvals, not just the next review;
+   at the effective ceiling return STOP_REVISE without patches that cannot receive a fresh review.
    Remediate all in scope and add regression tests.
    Classify each as direct incomplete remediation or genuinely new semantic/
    architectural defect; record that distinction and the reviewed HEAD/verdict.
@@ -72,7 +81,9 @@ delivery; STOP_REVISE still requires an explicit owner decision, not a new PR/na
    Stage only intended files, commit normally and push the SAME PR branch through
    canonical Git. Never amend, squash, force-push or rewrite published history.
    Recheck remote/MCP head and return to step 2 with a NEW reviewer task.
-7. Never dispatch review 11. At the 10-review bound an exact valid APPROVE may
+7. Never dispatch review 11 under the default ceiling; an attested issue-local
+   exception follows the shared prospective procedure, never automatic extension.
+   At the effective bound an exact valid APPROVE with ALL mandatory gates current may
    yield READY_TO_MERGE; genuine decisions yield OWNER_DECISION_NEEDED and finite
    infrastructure failures BLOCKED. Remaining actionable findings yield STOP_REVISE;
    summarize recurring patterns,

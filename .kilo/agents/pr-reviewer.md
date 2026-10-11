@@ -121,6 +121,11 @@ never list/search comments or read prior reviews/findings. Tool-name permissions
 are not an argument-ID firewall. Each Bash invocation is one allowlisted command:
 no `&&`, `;`, `|`, redirection or command substitution. Parent audits actual routes
 and shell calls after Task; a forbidden history read/shell call invalidates approval.
+For clean-status inspection use exactly `git status --short`, never
+`git status --short --branch` or `git status --porcelain=v1`. For branch inspection
+use `git rev-parse --abbrev-ref HEAD`, never `git branch --show-current`; inspect
+the frozen revision separately with `git rev-parse HEAD`. Each replacement is a
+separate single command already allowed by the unchanged permission boundary.
 Read AGENTS.md and
 all applicable rules, and the COMPLETE merge-base-to-HEAD diff/current implementation.
 Review correctness,

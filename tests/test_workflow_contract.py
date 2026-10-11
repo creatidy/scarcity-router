@@ -3,6 +3,8 @@
 import re
 import fnmatch
 import hashlib
+import json
+import tempfile
 import unittest
 from pathlib import Path
 from typing import cast
@@ -106,13 +108,135 @@ class WorkflowContractTests(unittest.TestCase):
                 if fnmatch.fnmatchcase(command, pattern):
                     decision = value
             return decision == "allow"
-        for command in ("git status --short", "git rev-parse HEAD", "git diff BASE HEAD"):
+        for command in ("git status --short", "git rev-parse HEAD", "git rev-parse --abbrev-ref HEAD", "git diff BASE HEAD"):
             self.assertTrue(allowed(command))
         for command in ("git status --short && git show HEAD", "git diff BASE HEAD; python -c 'pass'",
                         "git show HEAD | python", "git show HEAD > output", "git show $(python)",
-                        "git status --short\ngit show HEAD", "python -c 'pass'"):
+                        "git status --short\ngit show HEAD", "python -c 'pass'",
+                        "git status --short --branch", "git status --porcelain=v1", "git branch --show-current",
+                        "git rev-parse HEAD < input", "git show `python`", "git rev-parse HEAD & git show HEAD"):
             self.assertFalse(allowed(command))
-        self.assertIn("one allowlisted command", text(".kilo/agents/pr-reviewer.md"))
+        guidance = text(".kilo/agents/pr-reviewer.md")
+        self.assertIn("one allowlisted command", guidance)
+        self.assertIn("use exactly `git status --short`", guidance)
+        self.assertIn("use `git rev-parse --abbrev-ref HEAD`", guidance)
+        self.assertIn("unchanged permission boundary", guidance)
+
+    def test_persisted_prospective_capacity_counts_all_exact_object_gates(self) -> None:
+        section = (ROOT / ".kilo/rules/35-technical-recovery.md").read_text().split(
+            "## Prospective Review Capacity", 1)[1].split("No blind retries", 1)[0]
+        rows: dict[str, tuple[tuple[str, ...], int]] = {}
+        for line in section.splitlines():
+            if not line.startswith("| "):
+                continue
+            cells = [cell.strip() for cell in line.strip("|").split("|")]
+            if cells[0] in ("Round State", "---"):
+                continue
+            self.assertEqual(len(cells), 3)
+            self.assertNotIn(cells[0], rows)
+            rows[cells[0]] = (() if cells[1] == "none" else tuple(cells[1].split(",")), int(cells[2]))
+        self.assertEqual(rows, {
+            "security_patch_or_both_missing": (("ordinary", "restricted"), 2),
+            "ordinary_patch_or_missing": (("ordinary",), 1),
+            "stable_ordinary_approved": (("restricted",), 1),
+            "stable_restricted_approved": (("ordinary",), 1),
+            "stable_all_approved": ((), 0),
+        })
+        # Read a persisted synthetic ledger for each case, applying the published
+        # math/table only. No live reservation, authority or runtime enforcement.
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = Path(directory) / ".task_progress.md"
+
+            def assess(used: object, ceiling: object = 10, *, canonical_exception: bool = False,
+                       patch_objects: bool = True, security: bool = True,
+                       ordinary_current: bool = False, restricted_current: bool = False,
+                       ordinary_stale: bool = False, base_stale: bool = False,
+                       allocation: dict[int, str] | None = None,
+                       recovery: str = "intact") -> str:
+                reservations: list[dict[str, object]] = ([{"ordinal": ordinal, "outcome": ("COMMENT", "FAILED", "POLICY_VIOLATION")[ordinal % 3]}
+                                 for ordinal in range(1, used + 1)] if type(used) is int and used >= 0 else [])
+                if reservations and recovery in ("gap", "duplicate", "bool_ordinal", "float_ordinal"):
+                    reservations[-1]["ordinal"] = {
+                        "gap": 100, "duplicate": 1, "bool_ordinal": True, "float_ordinal": 9.0,
+                    }[recovery]
+                _ = ledger.write_text(json.dumps({"used": used, "reservations": reservations,
+                                                  "claimed_ceiling": ceiling,
+                                                  "head": "a" * 40, "base": "b" * 40,
+                                                  "ordinary_head": ("c" if ordinary_stale else "a") * 40
+                                                  if ordinary_current else None,
+                                                  "ordinary_base": ("c" if base_stale else "b") * 40
+                                                  if ordinary_current else None,
+                                                  "restricted_head": "a" * 40 if restricted_current else None,
+                                                  "restricted_base": ("c" if base_stale else "b") * 40
+                                                  if restricted_current else None}))
+                if recovery == "missing":
+                    ledger.unlink()
+                try:
+                    persisted = cast(dict[str, object], json.loads(ledger.read_text()))
+                except FileNotFoundError:
+                    return "BLOCKED"
+                count = persisted["used"]
+                bound = persisted["claimed_ceiling"] if canonical_exception else 10
+                if (recovery == "ambiguous" or type(count) is not int or count < 0
+                        or type(bound) is not int or bound < 1):
+                    return "BLOCKED"
+                records = cast(list[dict[str, object]], persisted["reservations"])
+                if (any(type(record["ordinal"]) is not int for record in records)
+                        or [record["ordinal"] for record in records] != list(range(1, count + 1)) or count > bound):
+                    return "BLOCKED"
+                ordinary = (persisted["ordinary_head"] == persisted["head"]
+                            and persisted["ordinary_base"] == persisted["base"] and not patch_objects)
+                restricted = (persisted["restricted_head"] == persisted["head"]
+                              and persisted["restricted_base"] == persisted["base"] and not patch_objects)
+                state = ("stable_all_approved" if ordinary and (restricted or not security)
+                         else "ordinary_patch_or_missing" if not security
+                         else "stable_ordinary_approved" if ordinary
+                         else "stable_restricted_approved" if restricted
+                         else "security_patch_or_both_missing")
+                roles, needed = rows[state]
+                self.assertEqual(len(roles), needed)
+                if bound - count < needed or needed and count + 1 > bound:
+                    return "STOP_REVISE"
+                if allocation is not None and any(allocation.get(count + index + 1) not in (role, "contingency")
+                                                  for index, role in enumerate(roles)):
+                    return "STOP_REVISE"
+                return "PASS"
+
+            self.assertEqual(assess(9), "STOP_REVISE")
+            self.assertEqual(assess(9, 12, canonical_exception=True), "PASS")
+            self.assertEqual(assess(9, 12), "STOP_REVISE")  # Ledger is not authority.
+            self.assertEqual(assess(10, 12, canonical_exception=True), "PASS")
+            owner_roles = {10: "ordinary", 11: "restricted", 12: "contingency"}
+            self.assertEqual(assess(9, 12, canonical_exception=True, allocation=owner_roles), "PASS")
+            self.assertEqual(assess(10, 12, canonical_exception=True, allocation=owner_roles), "STOP_REVISE")
+            self.assertEqual(assess(11, 12, canonical_exception=True), "STOP_REVISE")
+            self.assertEqual(assess(11, 12, canonical_exception=True, patch_objects=False,
+                                    ordinary_current=True, allocation=owner_roles), "PASS")
+            self.assertEqual(assess(9, patch_objects=False, restricted_current=True), "PASS")
+            self.assertEqual(assess(11, 12, canonical_exception=True, patch_objects=False,
+                                    ordinary_current=True, ordinary_stale=True), "STOP_REVISE")
+            self.assertEqual(assess(10, patch_objects=False, ordinary_current=True, restricted_current=True), "PASS")
+            self.assertEqual(assess(10, patch_objects=False, ordinary_current=True,
+                                    restricted_current=True, base_stale=True), "STOP_REVISE")
+            self.assertEqual(assess(9, security=False), "PASS")
+            self.assertEqual(assess(10, security=False), "STOP_REVISE")
+            self.assertEqual(assess(11), "BLOCKED")
+            for invalid in (None, True, 9.0, -1):
+                self.assertEqual(assess(invalid), "BLOCKED")
+            for invalid in (True, 12.0, 0, -1):
+                self.assertEqual(assess(9, invalid, canonical_exception=True), "BLOCKED")
+            for recovery in ("ambiguous", "missing", "gap", "duplicate", "bool_ordinal", "float_ordinal"):
+                self.assertEqual(assess(9, recovery=recovery), "BLOCKED")
+        contract = " ".join(section.split())
+        for requirement in ("persisted, Git-locally excluded `.task_progress.md`", "BEFORE mutating or reserving",
+                            "Missing/ambiguous ledger recovery is BLOCKED, never zero", "failed, COMMENT",
+                            "tool-policy-violating reviews", "Ledger claims alone never authorize an exception",
+                            "Capacity alone is NOT approval/currentness", "explicit owner role allocation",
+                            "ordinary-before-restricted order", "contiguous unique ordinals",
+                            "not a second controller or proof of runtime enforcement"):
+            self.assertIn(requirement, contract)
+        for command in ("loop", "finish-pr"):
+            self.assertIn("#prospective-review-capacity", text(f".kilo/command/{command}.md"))
 
     def test_result_capture_recovery_never_closes_approval_or_identity_gate(self) -> None:
         contract = text(".kilo/rules/35-technical-recovery.md")

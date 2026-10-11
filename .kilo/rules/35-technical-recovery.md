@@ -56,9 +56,60 @@ of technical recovery per issue delivery (or the existing smaller execution budg
 Persist attempts/time across reentry, phases and sessions in the excluded delivery
 ledger; renaming an obstacle or reviewer does not reset its budget. Every whole-PR
 review dispatch, including failed/COMMENT attempts and failover, also consumes the
-next reserved ordinal within the existing ten-review ceiling. Never dispatch review
-11 or patch without capacity for fresh review. Budget exhaustion is a finite stop,
+next reserved ordinal within the default ten-review ceiling. Never dispatch review
+11 under that default or patch without capacity for all mandatory fresh reviews.
+Only an attested issue-local exception follows the prospective procedure below.
+Budget exhaustion is a finite stop,
 not permission to weaken a gate or invent an owner decision.
+
+## Prospective Review Capacity
+
+Before ANY remediation that changes HEAD/base or any new review reservation,
+the primary reads the persisted, Git-locally excluded `.task_progress.md` delivery
+ledger. Recover every reserved ordinal and outcome, including failed, COMMENT,
+invalidated and tool-policy-violating reviews; reentry never resets or discards them.
+Missing/ambiguous ledger recovery is BLOCKED, never zero. Require exact nonnegative
+integer counts (not booleans/floats), contiguous unique ordinals 1 through `used`,
+and agreement between the recovered count and reservations.
+
+The effective ceiling is the default 10 unless independently attested explicit
+canonical owner authority changes it for this exact issue/PR. Ledger claims alone
+never authorize an exception. Require an exact positive integer ceiling and
+`used <= ceiling`; reject any proposed next ordinal above it. This does not change
+the global ten-review policy: #205/PR206 alone has the one-time ceiling12 in full
+original owner decision comment16179, with ordinals1-9 preserved, ordinary10,
+restricted11 after ordinary approval, and contingency12 only while all final gates
+remain obtainable. No review13 or automatic extension; explicit owner role allocation
+still binds even when numeric capacity remains.
+
+For the proposed round compute `remaining = ceiling - used` and the missing
+mandatory roles using exact current HEAD/base approvals with empty findings and
+verified context/tool audit, validation and currentness. Stale/invalid approval is
+missing. Any HEAD/base-changing patch invalidates BOTH security-critical approvals;
+count ordinary plus restricted fresh whole-PR reviews, not merely the next review.
+Non-security work needs only ordinary review. A stable HEAD with one exact current
+approval needs only the other gate; both current approvals need zero. Capacity
+alone is NOT approval/currentness and cannot waive any acceptance gate.
+
+| Round State | Required Fresh Roles | Required Count |
+| --- | --- | --- |
+| security_patch_or_both_missing | ordinary,restricted | 2 |
+| ordinary_patch_or_missing | ordinary | 1 |
+| stable_ordinary_approved | restricted | 1 |
+| stable_restricted_approved | ordinary | 1 |
+| stable_all_approved | none | 0 |
+
+Require `remaining >= required_count` AND an authorized ordinal/role sequence that
+can close every missing gate, including ordinary-before-restricted order. Numeric
+space cannot authorize a patch needing both fresh approvals after restricted11
+under #205's allocation. Persist the prospective PASS/refusal, recovered count,
+effective ceiling with canonical provenance, exact HEAD/base, proposed object
+change, required roles/count and role-allocation check in the SAME excluded ledger
+BEFORE mutating or reserving. A finding with insufficient closable capacity yields
+STOP_REVISE before edits; uncertain count/authority yields BLOCKED. At the ceiling,
+both exact current approvals may advance through existing merge gates without an
+extra dispatch. This declarative procedure and its offline consistency fixtures
+are not a second controller or proof of runtime enforcement.
 
 No blind retries means never repeat a failed operation with the same relevant
 inputs and environment. It does not mean stop after one failed approach. A corrected
@@ -205,6 +256,14 @@ On handle loss, reopen the same private stores and call `recover`; inspect durab
 claim/spawn/turn/exit/receipt before any retry. A claim without exit remains uncertain,
 not launch permission. Recovering/revalidating existing output consumes no new model
 call or review ordinal. Never infer the subtype/verdict of historically discarded output.
+Validate caller context, durable launch claim shape/types and original stored binding
+before ANY recovery mutation: metadata scrubbing, receipt rewriting, verdict
+invalidation and native cleanup included. Compare exact canonical JSON types, not
+permissive boolean/integer equality; incoming metadata never replaces the claim.
+Missing/corrupt claim or binding fails typed without writes. Wrong HEAD/base leaves
+all completed/rejected evidence and cleanup state unchanged; correct original
+context remains recoverable. Only valid same-context policy rescreening may scrub
+newly unsafe retained data; receipt integrity and sticky source rejection remain.
 After retrieval, parent continues already-authorized execution in the same invocation:
 check context/tool audit, validation and fresh canonical state, apply the substantive
 verdict and all model-bound gates, or perform bounded changed-condition recovery.
