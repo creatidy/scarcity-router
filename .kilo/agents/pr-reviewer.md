@@ -33,6 +33,7 @@ permission:
     "git ls-tree *": allow
     "kilo debug agent pr-reviewer": allow
     "uv run --no-sync python tools/test_runner.py": allow
+    "PYTHONPATH=. UV_OFFLINE=1 UV_NO_SYNC=1 uv run --no-sync python -m unittest tests.test_workflow_contract.WorkflowContractTests.test_private_repository_review_uses_exact_mcp_and_local_evidence -v": allow
     "uv run --no-sync basedpyright": allow
     "uv run --no-sync python -m unittest discover -s tests -v": allow
     "UV_OFFLINE=1 make check": allow
@@ -142,6 +143,12 @@ cache and temp paths, never real ambient credentials. If the allowlist cannot sa
 invoke that environment, return COMMENT with the exact infrastructure gap so the
 parent can prepare another authorized path; do not run unsafe tests or self-authorize
 Docker/network/permission changes. No permission grant is implied by this contract.
+
+The exact `PYTHONPATH=. UV_OFFLINE=1 UV_NO_SYNC=1 uv run --no-sync python -m
+unittest tests.test_workflow_contract.WorkflowContractTests.test_private_repository_review_uses_exact_mcp_and_local_evidence -v`
+command is an allowlisted source-only contract test. It reads repository text,
+does not inspect inherited environment or invoke external boundaries, and should
+be run when this reviewer contract changes.
 
 For public research claims, independently inspect the cited pinned source material
 via available authorized reads or parent-staged exact-revision source bytes with

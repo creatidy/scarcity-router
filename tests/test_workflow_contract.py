@@ -368,6 +368,12 @@ class WorkflowContractTests(unittest.TestCase):
         })
         for permission in ("edit: deny", "write: deny", "apply_patch: deny", "task: deny"):
             self.assertIn(permission, raw)
+        test_command = (
+            "PYTHONPATH=. UV_OFFLINE=1 UV_NO_SYNC=1 uv run --no-sync python -m unittest "
+            + "tests.test_workflow_contract.WorkflowContractTests.test_private_repository_review_"
+            + "uses_exact_mcp_and_local_evidence -v\": allow"
+        )
+        self.assertIn(test_command, raw)
         shell = raw.split("bash:", 1)[1]
         self.assertIn('"git remote -v": deny', shell)
         self.assertIn('"git ls-remote *": deny', shell)
