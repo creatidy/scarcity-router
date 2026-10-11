@@ -406,6 +406,135 @@ class ReviewResultTests(unittest.TestCase):
                 self.assertFalse(second.complete)
                 self.assertFalse(recover(self.store, self.native, CONTEXT, TextPolicy()).complete)
 
+    def prepare_recovery(self, raw: bytes, *, exited: bool = False) -> Path:
+        self.store.atomic("launch.claim", {"context": CONTEXT.json(), "public_policy_sha256": TextPolicy().binding()})
+        self.store.atomic("spawn.json", {"pid": 123})
+        capture = EventCapture(CONTEXT, TextPolicy())
+        capture.feed(encode({"type": "turn.started"}))
+        capture.feed(encode({"type": "item.completed", "item": {"type": "agent_message", "text": json.dumps(result("APPROVE"))}}))
+        capture.feed(encode({"type": "turn.completed"}))
+        capture.persist(self.store)
+        path = self.native.path / "last-message.json"
+        with path.open("xb") as output:
+            _ = output.write(raw)
+        path.chmod(0o600)
+        if exited:
+            self.store.atomic("exit.json", {"exit_code": 0})
+        return path
+
+    def test_terminal_native_rejection_cannot_adopt_matching_replacement(self) -> None:
+        unsafe = result("APPROVE")
+        unsafe["limitations"] = ["Bearer synthetic-credential-value"]
+        path = self.prepare_recovery(encode(unsafe), exited=True)
+        first = recover(self.store, self.native, CONTEXT, TextPolicy())
+        self.assertEqual(first.code, Code.UNSAFE)
+        self.assertFalse(path.exists())
+        original = first.json()
+        self.native.atomic("last-message.json", result("APPROVE"))
+        self.store.close()
+        self.store = PrivateStore(self.store.path, self.store.path.parent)
+        second = recover(self.store, self.native, CONTEXT, TextPolicy())
+        self.assertEqual(second.json(), original)
+        self.assertFalse(second.complete)
+        receipt = parse(self.store.read("receipt.json")[0])
+        assert isinstance(receipt, dict)
+        self.assertEqual(receipt["diagnostic"], original)
+        self.assertNotIn(b"synthetic-credential-value", self.store.read("receipt.json")[0])
+
+    def test_terminal_capture_rejects_even_identical_late_native_artifact(self) -> None:
+        self.assertTrue(self.launch("APPROVE").complete)
+        self.native.atomic("last-message.json", result("APPROVE"))
+        captured = recover(self.store, self.native, CONTEXT, TextPolicy())
+        self.assertEqual(captured.code, Code.CONFLICT)
+        self.assertFalse(captured.complete)
+        self.assertIsNone(captured.actual_verdict)
+        receipt = parse(self.store.read("receipt.json")[0])
+        assert isinstance(receipt, dict)
+        original = receipt["source_diagnostic"]
+        assert isinstance(original, dict)
+        self.assertEqual(original["code"], Code.OK)
+        self.assertEqual(original["actual_verdict"], "APPROVE")
+        self.assertEqual(recover(self.store, self.native, CONTEXT, TextPolicy()), captured)
+
+    def test_observed_preexit_native_disappearance_cannot_authorize_fallback(self) -> None:
+        unsafe = result("APPROVE")
+        unsafe["limitations"] = ["Bearer synthetic-credential-value"]
+        for raw in (b"not JSON", encode(unsafe), encode(result("COMMENT"))):
+            self.reset_stores()
+            with self.subTest(raw_kind="malformed" if raw == b"not JSON" else "structured"):
+                path = self.prepare_recovery(raw)
+                first = recover(self.store, self.native, CONTEXT, TextPolicy())
+                self.assertFalse(first.complete)
+                self.assertEqual(first.code, Code.NO_EXIT)
+                self.assertIsNone(first.sha256)
+                self.assertTrue(path.exists())
+                path.unlink()
+                self.store.atomic("exit.json", {"exit_code": 0})
+                second = recover(self.store, self.native, CONTEXT, TextPolicy())
+                self.assertEqual(second.code, Code.CHANGED)
+                self.assertEqual(second.source, "native_last_message")
+                self.assertFalse(second.complete)
+                self.assertIsNone(second.actual_verdict)
+
+    def test_preexit_partial_native_finalizes_only_after_exit_in_same_inode(self) -> None:
+        path = self.prepare_recovery(b'{"reviewed_head":')
+        identity = path.stat().st_ino
+        claim = self.store.read("launch.claim")[0]
+        spawn = self.store.read("spawn.json")[0]
+        first = recover(self.store, self.native, CONTEXT, TextPolicy())
+        self.assertEqual(first.code, Code.NO_EXIT)
+        self.assertIsNone(first.sha256)
+        self.assertEqual(path.read_bytes(), b'{"reviewed_head":')
+        with path.open("wb") as output:
+            _ = output.write(encode(result("APPROVE")))
+        self.assertEqual(path.stat().st_ino, identity)
+        self.assertEqual(recover(self.store, self.native, CONTEXT, TextPolicy()).code, Code.NO_EXIT)
+        self.store.atomic("exit.json", {"exit_code": 0})
+        final = recover(self.store, self.native, CONTEXT, TextPolicy())
+        self.assertTrue(final.complete)
+        self.assertEqual(final.actual_verdict, "APPROVE")
+        self.assertFalse(final.parent_approval)
+        self.assertEqual(final.model_identity, "UNVERIFIED")
+        self.assertEqual(self.store.read("launch.claim")[0], claim)
+        self.assertEqual(self.store.read("spawn.json")[0], spawn)
+
+    def test_preexit_native_replacement_cannot_reset_source_identity(self) -> None:
+        path = self.prepare_recovery(b"partial")
+        first_inode = path.stat().st_ino
+        self.assertEqual(recover(self.store, self.native, CONTEXT, TextPolicy()).code, Code.NO_EXIT)
+        self.native.atomic("last-message.json", result("APPROVE"))
+        self.assertNotEqual(path.stat().st_ino, first_inode)
+        self.assertEqual(recover(self.store, self.native, CONTEXT, TextPolicy()).code, Code.CHANGED)
+        self.store.atomic("exit.json", {"exit_code": 0})
+        captured = recover(self.store, self.native, CONTEXT, TextPolicy())
+        self.assertEqual(captured.code, Code.CHANGED)
+        self.assertFalse(captured.complete)
+        receipt = parse(self.store.read("receipt.json")[0])
+        assert isinstance(receipt, dict)
+        identity = receipt["native_identity"]
+        assert isinstance(identity, list)
+        self.assertEqual(identity[1], first_inode)
+
+    def test_rescreened_nonterminal_rejection_survives_policy_relaxation_and_exit(self) -> None:
+        _ = self.prepare_recovery(b"partial")
+        capture = EventCapture(CONTEXT, TextPolicy())
+        payload = result("APPROVE")
+        payload["limitations"] = ["fixture-only"]
+        capture.feed(encode({"type": "turn.started"}))
+        capture.feed(encode({"type": "item.completed", "item": {"type": "agent_message", "text": json.dumps(payload)}}))
+        capture.feed(encode({"type": "turn.completed"}))
+        capture.persist(self.store)
+        captured = recover(self.store, self.native, CONTEXT, TextPolicy(forbidden=("fixture-only",)))
+        self.assertEqual(captured.code, Code.UNSAFE)
+        self.assertFalse(captured.complete)
+        self.assertNotIn(b"fixture-only", self.store.read("turn.json")[0])
+        self.assertNotIn(b"fixture-only", self.store.read("receipt.json")[0])
+        self.store.atomic("exit.json", {"exit_code": 0})
+        captured = recover(self.store, self.native, CONTEXT, TextPolicy())
+        self.assertEqual(captured.code, Code.UNSAFE)
+        self.assertIsNone(captured.actual_verdict)
+        self.assertFalse(captured.complete)
+
     def test_current_policy_scrubs_native_present_and_nonterminal_recovery(self) -> None:
         for terminal in (True, False):
             self.reset_stores()

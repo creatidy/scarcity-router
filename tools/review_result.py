@@ -565,26 +565,60 @@ def recover(store: PrivateStore, native: PrivateStore, context: Context, policy:
         turn["diagnostic"] = cached.json()
         store.atomic("turn.json", turn)
         prior["diagnostic"] = cached.json()
+        _ = prior.setdefault("source_rejection", cached.json())
         store.atomic("receipt.json", prior)
+    spawned, exited = _object(store, "spawn.json"), _object(store, "exit.json")
+    exit_code = exited.get("exit_code")
+    try:
+        observed = native.info("last-message.json")
+    except Rejected as error:
+        if error.code != Code.MISSING:
+            raise
+        observed = None
+    identity = prior.get("native_identity")
+    if identity is not None and (not isinstance(identity, list) or len(identity) != 2
+                                 or any(type(value) is not int or value < 0 for value in identity)):
+        raise Rejected(Stage.RECOVERY, Code.TYPE)
+    rejection = prior.get("source_rejection")
+    if (rejection is None and prior.get("binding") == binding
+            and cached.source == "native_last_message"
+            and cached.code not in (Code.OK, Code.NO_EXIT, Code.MESSAGE, Code.MISSING)):
+        rejection = cached.json()
+    # Terminal capture is immutable except for rejection under today's policy or
+    # a late artifact. Never extract a replacement as a new result for this job.
     if prior.get("binding") == binding and prior.get("terminal") is True:
-        try:
-            _ = native.info("last-message.json")
-        except Rejected as error:
-            if error.code != Code.MISSING:
-                raise
-            value = prior.get("diagnostic")
-            if isinstance(value, dict):
-                return cached
+        if observed is not None and cached.code == Code.OK:
+            _ = prior.setdefault("source_diagnostic", cached.json())
+            cached.stage, cached.code = Stage.EXTRACTION, Code.CONFLICT
+            cached.lifecycle, cached.complete, cached.actual_verdict = "rejected", False, None
+            cached.revisions_valid = False
+            prior["diagnostic"] = cached.json()
+            _ = prior.setdefault("source_rejection", cached.json())
+            store.atomic("receipt.json", prior)
+        return cached
     diagnostic = Diagnostic()
     obj: Json = None
     raw_info: os.stat_result | None = None
     try:
+        if isinstance(rejection, dict):
+            diagnostic = _diagnostic(rejection)
+            raise Rejected(diagnostic.stage, diagnostic.code)
+        if identity is not None and (observed is None or identity != [observed.st_dev, observed.st_ino]):
+            raise Rejected(Stage.FILE, Code.CHANGED)
+        if observed is not None:
+            identity = cast(list[Json], [observed.st_dev, observed.st_ino])
+        # A live writer may have only partially written its file. Bind the inode,
+        # but neither extract nor delete its bytes until exit is durable.
+        if type(exit_code) is not int:
+            raise Rejected(Stage.PROCESS, Code.NO_EXIT)
         data, raw_info = native.read("last-message.json")
+        if identity != [raw_info.st_dev, raw_info.st_ino]:
+            raise Rejected(Stage.FILE, Code.CHANGED)
         diagnostic, obj = inspect(data, context, policy)
         diagnostic.observed_mode = "0600"
     except Rejected as error:
         diagnostic.stage, diagnostic.code, diagnostic.lifecycle = error.stage, error.code, "rejected"
-        if error.code == Code.MISSING:
+        if error.code == Code.MISSING and identity is None:
             diagnostic.source = "jsonl_last_completed_agent_message"
             last = turn.get("last")
             if last is not None and turn.get("completed") is True and turn.get("failed") is False:
@@ -598,8 +632,8 @@ def recover(store: PrivateStore, native: PrivateStore, context: Context, policy:
                     diagnostic.source = "jsonl_last_completed_agent_message"
                     if diagnostic.code == Code.OK:
                         diagnostic.code = Code.MESSAGE
-        else:
-            info = native.info("last-message.json")
+        elif observed is not None and error.code != Code.NO_EXIT and not isinstance(rejection, dict):
+            info = observed
             diagnostic.observed_mode = format(stat.S_IMODE(info.st_mode), "04o")
             diagnostic.size = info.st_size
             # Do not read a refused-mode file. Only the exact owned regular raw
@@ -618,11 +652,9 @@ def recover(store: PrivateStore, native: PrivateStore, context: Context, policy:
         if isinstance(metadata, dict) and metadata.get("code") != Code.OK:
             diagnostic.stage, diagnostic.code = Stage.EXTRACTION, Code.CONFLICT
             diagnostic.actual_verdict, diagnostic.revisions_valid = None, False
-    spawned, exited = _object(store, "spawn.json"), _object(store, "exit.json")
     failures: list[str] = []
     if type(spawned.get("pid")) is not int or cast(int, spawned.get("pid", 0)) <= 0:
         failures.append(Code.NO_SPAWN)
-    exit_code = exited.get("exit_code")
     if type(exit_code) is not int:
         failures.append(Code.NO_EXIT)
     elif exit_code != 0:
@@ -639,7 +671,13 @@ def recover(store: PrivateStore, native: PrivateStore, context: Context, policy:
     if not diagnostic.complete:
         diagnostic.lifecycle = "rejected"
     envelope: dict[str, Json] = {"binding": binding, "diagnostic": diagnostic.json(), "NOT_APPROVAL": True,
-                                "terminal": type(exit_code) is int}
+                                 "terminal": type(exit_code) is int}
+    if identity is not None:
+        envelope["native_identity"] = identity
+    if isinstance(rejection, dict):
+        envelope["source_rejection"] = _diagnostic(rejection).json()
+    elif diagnostic.code not in (Code.OK, Code.NO_EXIT, Code.MESSAGE):
+        envelope["source_rejection"] = diagnostic.json()
     if obj is not None:
         envelope["result"] = obj
     store.atomic("receipt.json", envelope)
@@ -647,9 +685,11 @@ def recover(store: PrivateStore, native: PrivateStore, context: Context, policy:
         try:
             native.remove("last-message.json", raw_info)
         except Rejected as error:
+            _ = envelope.setdefault("source_diagnostic", diagnostic.json())
             diagnostic.stage, diagnostic.code = error.stage, error.code
             diagnostic.lifecycle, diagnostic.complete = "rejected", False
             diagnostic.actual_verdict, diagnostic.revisions_valid = None, False
+            _ = envelope.setdefault("source_rejection", diagnostic.json())
             envelope["diagnostic"] = diagnostic.json()
             store.atomic("receipt.json", envelope)
     return diagnostic
