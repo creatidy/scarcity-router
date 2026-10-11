@@ -1,8 +1,13 @@
 """Offline consistency guards for command text, not proof of runtime execution."""
 
 import re
+import fnmatch
+import hashlib
 import unittest
 from pathlib import Path
+from typing import cast
+
+import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -48,6 +53,85 @@ def dependency_assessments() -> dict[str, tuple[str, str, str]]:
 
 
 class WorkflowContractTests(unittest.TestCase):
+    def test_acceptance_only_context_preserves_exact_provenance_and_excludes_history(self) -> None:
+        contract = text(".kilo/rules/35-technical-recovery.md").split(
+            "## Reviewer Context and Result Capture", 1)[1].split("## Terminal Contracts", 1)[0]
+        for requirement in (
+            "Start with neutral canonical issue/PR links and exact frozen base/HEAD/merge-base",
+            "complete canonical issue body", "full original text/context of applicable owner decisions",
+            "canonical URL, object/comment ID, author, timestamp, retrieval path and content digest",
+            "local sources also carry exact Git revision/path", "No blanket comment history",
+            "previous reviews/findings, implementer summaries", "Missing decision provenance is an evidence gap",
+            "post-Task tool routes/arguments against the manifest", "self-report alone does not close it",
+            "supported no-tools execution needs a complete source packet",
+        ):
+            self.assertIn(requirement, contract)
+        # A synthetic parent packet checks exact text and route auditing. This is
+        # not proof that Kilo dispatch/runtime permission enforcement performed it.
+        owner_text = "Original owner decision.\nFull constraints, not an implementer summary."
+        packet = {
+            "first_metadata": {"issue": "https://forgejo.example/issues/7", "pr": "https://forgejo.example/pulls/8",
+                               "base": "a" * 40, "head": "b" * 40, "merge_base": "a" * 40},
+            "owner_decision": {"id": 9, "author": "synthetic-owner", "timestamp": "2026-10-10T00:00:00Z",
+                               "body": owner_text, "sha256": hashlib.sha256(owner_text.encode()).hexdigest()},
+        }
+        self.assertEqual(packet["owner_decision"]["body"], owner_text)
+        self.assertEqual(packet["owner_decision"]["sha256"], hashlib.sha256(owner_text.encode()).hexdigest())
+        self.assertNotIn("verdict", packet["first_metadata"])
+        manifest = (("forgejo-mcp_get_issue_by_index", 7), ("forgejo-mcp_get_pull_request_by_index", 8),
+                    ("forgejo-mcp_get_issue_comment", 9))
+        self.assertIn(("forgejo-mcp_get_issue_comment", 9), manifest)
+        self.assertNotIn(("forgejo-mcp_get_issue_comment", 10), manifest)
+        self.assertNotIn(("forgejo-mcp_list_issue_comments", 7), manifest)
+        for path in ("review-pr", "finish-pr", "loop"):
+            self.assertIn("reviewer-context-and-result-capture", text(f".kilo/command/{path}.md"))
+
+    def test_reviewer_exact_getters_and_single_command_shell_fixture_policy(self) -> None:
+        raw = (ROOT / ".kilo/agents/pr-reviewer.md").read_text().split("---", 2)[1]
+        frontmatter = cast(dict[str, object], yaml.safe_load(raw))
+        permissions = cast(dict[str, object], frontmatter["permission"])
+        getters = {name for name in permissions if name.startswith("forgejo-mcp_")}
+        self.assertEqual(getters, {"forgejo-mcp_get_pull_request_by_index", "forgejo-mcp_get_issue_by_index",
+                                  "forgejo-mcp_get_issue_comment"})
+        for key in getters:
+            self.assertEqual(permissions[key], "allow")
+        shell = cast(dict[str, str], permissions["bash"])
+        self.assertEqual(shell["*"], "deny")
+        for pattern in ("*>*", "*<*", "*|*", "*;*", "*&*", "*$(*", "*`*", "*\n*"):
+            self.assertEqual(shell[pattern], "deny")
+        # Offline glob-fixture check, explicitly not actual Kilo enforcement.
+        def allowed(command: str) -> bool:
+            decision = "deny"
+            for pattern, value in shell.items():
+                if fnmatch.fnmatchcase(command, pattern):
+                    decision = value
+            return decision == "allow"
+        for command in ("git status --short", "git rev-parse HEAD", "git diff BASE HEAD"):
+            self.assertTrue(allowed(command))
+        for command in ("git status --short && git show HEAD", "git diff BASE HEAD; python -c 'pass'",
+                        "git show HEAD | python", "git show HEAD > output", "git show $(python)",
+                        "git status --short\ngit show HEAD", "python -c 'pass'"):
+            self.assertFalse(allowed(command))
+        self.assertIn("one allowlisted command", text(".kilo/agents/pr-reviewer.md"))
+
+    def test_result_capture_recovery_never_closes_approval_or_identity_gate(self) -> None:
+        contract = text(".kilo/rules/35-technical-recovery.md")
+        for requirement in (
+            "Status0 means complete capture of ANY verdict, not APPROVE",
+            "schema0/process0/model self-report never close a review gate",
+            "Native `--output-schema` requests generation format, not local validation",
+            "If and only if the native file is missing", "final successfully completed turn",
+            "Native file safety/schema rejection cannot be bypassed by JSONL fallback",
+            "Preserve typed reason, size/hash, known-field types/missing fields and observed mode",
+            "Public long-token exceptions require exact parent-attested Git tracked paths/pins",
+            "Never infer the subtype/verdict of historically discarded output",
+            "A claim without exit remains uncertain, not launch permission",
+            "parent continues already-authorized execution in the same invocation",
+            "It never normalizes permissions", "No prompt/argv/environment values or credential material enter receipts",
+            "Synthetic backend capture cases do not prove paid/live model identity",
+        ):
+            self.assertIn(requirement, contract)
+
     def test_full_queue_dependency_recovery_is_loop_only_not_standalone_authority(self) -> None:
         for path in (".kilo/rules/10-task-system.md", ".kilo/rules/35-technical-recovery.md"):
             with self.subTest(path=path):

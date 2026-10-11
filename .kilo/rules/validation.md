@@ -45,6 +45,12 @@
 
 ## Test Quality
 
+- Reviewer-capture fixtures exercise actual safe Python subprocesses with explicit
+  synthetic environments; they do not prove live model identity or Kilo permission
+  enforcement. Apply the acceptance packet/tool audit and separate native integration
+  evidence in `35-technical-recovery.md#reviewer-context-and-result-capture`.
+  Maintain `tools/review_result.py` and its tests in the recommended basedpyright gate.
+
 - Start with focused tests while iterating, then finish with the full
   repo-level validation.
 - Keep tests deterministic and behavior-focused. Mock external boundaries

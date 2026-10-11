@@ -218,6 +218,9 @@ shared `.kilo/agents/pr-reviewer.md` contract used by `/review-pr`. Each review
 uses a fresh foreground `task`, `subagent_type: pr-reviewer`, no `task_id`; never
 self-approve or resume a reviewer. Parent makes no edits/branch switches while it
 runs. Do not feed past findings, reasoning or desired verdict to the reviewer.
+Prepare and audit the acceptance-only object manifest and result capture under
+`.kilo/rules/35-technical-recovery.md#reviewer-context-and-result-capture`;
+recover existing output before retry and continue this same primary invocation.
 
 Maximum 10 whole-PR review invocations per issue delivery, INCLUDING the initial
 review, COMMENT, invalidated reviews and corrected retries. Reserve/persist each

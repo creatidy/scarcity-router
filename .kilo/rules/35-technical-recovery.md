@@ -126,6 +126,100 @@ calls for bounded independent evidence/adjudication; escalate only a genuine cla
 decision. Never accept incomplete review as APPROVE. Retain all failed/COMMENT ordinals
 and obtain a fresh whole-PR review at exact HEAD/base after implementation changes.
 
+## Reviewer Context and Result Capture
+
+This is repository-development preparation/capture, not a product gateway or
+second orchestrator. Preserve the fresh native `pr-reviewer` binding, complete-PR
+JSON schema, read-only tools and additional direct-Codex restricted security gate.
+
+Before each review, parent prepares an acceptance-only packet. Start with neutral
+canonical issue/PR links and exact frozen base/HEAD/merge-base, not a verdict or
+remediation narrative. Include the complete canonical issue body, full original
+text/context of applicable owner decisions and accepted ADRs/producer contracts.
+For each object record canonical URL, object/comment ID, author, timestamp,
+retrieval path and content digest; local sources also carry exact Git revision/path.
+The parent identifies applicable authoritative decisions before dispatch. Do not
+ask the reviewer to browse comment history to distinguish authority from old findings.
+No blanket comment history, previous reviews/findings, implementer summaries,
+private conversations, local progress or favorable excerpts enter the packet.
+Missing decision provenance is an evidence gap, not permission to paraphrase it.
+
+The packet's object manifest names only exact read operations and IDs:
+`forgejo-mcp_get_pull_request_by_index`, `forgejo-mcp_get_issue_by_index`, and, only
+for an attested owner decision, `forgejo-mcp_get_issue_comment`. Read frozen source
+locally. Do not grant wildcard get/list/search or review/history getters. These
+tool-name restrictions are NOT an argument-ID firewall: parent must audit actual
+post-Task tool routes/arguments against the manifest. A forbidden history read
+invalidates approval even if the verdict says APPROVE. If trace access is absent,
+record the unverified context/access gap; self-report alone does not close it.
+
+Every reviewer Bash call is one allowlisted command, with no `&&`, `;`, `|`,
+redirection, command substitution or interpreter escape. Audit actual shell calls,
+not just claimed checks_run. Tests of guidance/fixtures do not establish actual
+Kilo permission enforcement. Parent prepares safe validation before dispatch;
+reviewers cannot widen tool access or repair infrastructure themselves.
+
+For external CLI capture, use existing Kilo `background_process` tracking or a
+foreground POSIX blocked wait. `tools/review_result.py` is an optional stdlib
+adapter around one explicit parent-prepared argv/environment, never model
+selection, authorization, budget reservation, shell wrapping or retry dispatch.
+It must not be imported by product code or distributed as a product command.
+Parent reserves the existing ordinal and checks ordinary approval/currentness
+before a restricted launch. No literal issue/budget/model defaults live in the helper.
+Parent verifies actual installed executable/version and records that observation,
+then supplies `Context`, `TextPolicy`, `executable_version` and the prepared argv.
+No prompt/argv/environment values or credential material enter receipts.
+
+Allocate fresh 0700 directories below the expected parent-private directory;
+keep the receipt store outside the reviewer's filesystem view, and expose only
+the separate native output directory. Verify runtime output is Git-locally excluded
+before launch. Pass explicit child environment, never ambient inheritance; native
+file creation uses umask077. The POSIX helper requires no-follow dirfds and owned
+single-link 0600 files, rejecting aliases, foreign owners and permissive modes.
+It never normalizes permissions. Unsupported operator capabilities are a recovery
+limitation, not a Linux-only Router product requirement.
+
+An exclusive durable launch claim prevents redispatch. Observe actual executable,
+host/PID, native session when available, frozen objects and bounded sanitized
+progress. Distinguish prepared, started/running, exited, retrieved, validated and
+rejected. Requested model is not observed identity: receipts stay UNVERIFIED
+unless a separate independent attestation establishes runtime identity. CLI exit,
+completed turn, extraction, schema, revision, content safety, substantive verdict
+and parent approval are separate. Status0 means complete capture of ANY verdict,
+not APPROVE; schema0/process0/model self-report never close a review gate.
+
+Native `--output-schema` requests generation format, not local validation.
+`--output-last-message` failure/non-JSON can coexist with CLI exit0. If and only if
+the native file is missing, use the LAST `item.completed` agent_message from the
+final successfully completed turn, never initial commentary/reasoning/tool text.
+Native file safety/schema rejection cannot be bypassed by JSONL fallback; conflicting
+sources reject. Preserve typed reason, size/hash, known-field types/missing fields
+and observed mode before exact owned-raw cleanup. Retain only safety-screened
+bounded known structured envelopes, explicitly NOT_APPROVAL; unsafe data is not
+persisted. Screening is conservative, not proof arbitrary prose has no unknown secret.
+Public long-token exceptions require exact parent-attested Git tracked paths/pins
+and manifest provenance, never generic hex/token exemptions; explicit secrets and
+forbidden fields have precedence. Parent owns provenance verification independently.
+
+On handle loss, reopen the same private stores and call `recover`; inspect durable
+claim/spawn/turn/exit/receipt before any retry. A claim without exit remains uncertain,
+not launch permission. Recovering/revalidating existing output consumes no new model
+call or review ordinal. Never infer the subtype/verdict of historically discarded output.
+After retrieval, parent continues already-authorized execution in the same invocation:
+check context/tool audit, validation and fresh canonical state, apply the substantive
+verdict and all model-bound gates, or perform bounded changed-condition recovery.
+
+Integration evidence is separate from synthetic helper tests. Dated native contract
+inspection used official Codex0.159.3 source pin
+`01fc69f4026735edfdf6789820549727a4867b11` at
+`https://github.com/openai/codex`; private synthetic actual-binary evidence belongs
+in excluded delivery artifacts, not this rule. This pin is provenance, not a durable
+version requirement. Synthetic backend capture cases do not prove paid/live model
+identity, tool activation, source access or permission enforcement. Independently
+verify the complete frozen source/read-only inspection path before accepting a
+restricted review; supported no-tools execution needs a complete source packet,
+not an assumed live tool path. Preserve any unevidenced integration gate explicitly.
+
 ## Terminal Contracts
 
 Before STOP_AND_ASK / OWNER_DECISION_NEEDED, record internally and durably:

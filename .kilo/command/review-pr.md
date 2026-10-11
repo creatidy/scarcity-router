@@ -30,9 +30,11 @@ self-review, weaken model-bound gates or broaden permissions instead.
 Invoke `task` with `subagent_type: pr-reviewer`, `background: false`, no `task_id`.
 Pass only the PR number/URL, expected HEAD/base and fresh whole-PR review
 instructions including exact checkout, prepared environment/source paths and provenance.
+Prepare and audit the acceptance-only object manifest and result capture under
+`.kilo/rules/35-technical-recovery.md#reviewer-context-and-result-capture`.
 Do not pass implementation
 reasoning, previous findings or desired verdict. The agent definition owns the
-JSON result contract and GPT-6.1 Sol High selection. Never resume a past reviewer.
+JSON result contract and reviewer binding. Never resume a past reviewer.
 
 Require JSON fields reviewed_head, reviewed_base, verdict, findings, limitations,
 checks_run as defined in `.kilo/agents/pr-reviewer.md`. Validate their types and

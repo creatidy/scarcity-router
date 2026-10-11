@@ -16,9 +16,9 @@ permission:
   write: deny
   apply_patch: deny
   task: deny
-  "forgejo-mcp_get_*": allow
-  "forgejo-mcp_list_*": allow
-  "forgejo-mcp_search_*": allow
+  "forgejo-mcp_get_pull_request_by_index": allow
+  "forgejo-mcp_get_issue_by_index": allow
+  "forgejo-mcp_get_issue_comment": allow
   bash:
     "*": deny
     "git status --short": allow
@@ -114,7 +114,14 @@ checkout. The primary owns temporary worktrees, isolation, Git fetch and
 safe branch switching. You must not fetch, switch/create branches, use git worktree,
 commit, push or mutate Git/Forgejo state.
 
-Read the linked issue and relevant referenced acceptance context, AGENTS.md and
+Read the linked issue and the parent-prepared acceptance-only object manifest,
+following `.kilo/rules/35-technical-recovery.md#reviewer-context-and-result-capture`.
+Use only exact manifested canonical getters/IDs and original owner-decision text;
+never list/search comments or read prior reviews/findings. Tool-name permissions
+are not an argument-ID firewall. Each Bash invocation is one allowlisted command:
+no `&&`, `;`, `|`, redirection or command substitution. Parent audits actual routes
+and shell calls after Task; a forbidden history read/shell call invalidates approval.
+Read AGENTS.md and
 all applicable rules, and the COMPLETE merge-base-to-HEAD diff/current implementation.
 Review correctness,
 regressions, architecture, tests, temporal/provenance behavior under adversarial

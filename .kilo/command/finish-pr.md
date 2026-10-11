@@ -45,6 +45,8 @@ delivery; STOP_REVISE still requires an explicit owner decision, not a new PR/na
    `background: false`, no `task_id`. Supply only PR URL/number, exact expected
    HEAD/base and whole-PR review instructions with the exact checkout and prepared
    environment/source paths plus provenance (not implementation conclusions).
+   Prepare and audit the acceptance-only object manifest and result capture under
+   `.kilo/rules/35-technical-recovery.md#reviewer-context-and-result-capture`.
    Do not supply past findings, implementation reasoning or a requested outcome.
    The agent owns the result contract/model. Parse its JSON and require the exact
    frozen SHAs and valid field types/verdict. Consume returned findings directly.

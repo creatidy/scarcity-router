@@ -97,4 +97,5 @@ typeCheckingMode = "recommended"
 # Scope: maintained product and test code. Reconnaissance scripts in tools/
 # are outside this issue's cleanup scope but are not permanently excluded;
 # the gate definition stays future-compatible with including them.
-include = ["scarcity_router", "tests"]
+# The maintained development-only reviewer capture helper is explicitly gated.
+include = ["scarcity_router", "tests", "tools/review_result.py"]
