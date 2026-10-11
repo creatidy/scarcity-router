@@ -233,8 +233,10 @@ Any HEAD/base change invalidates approval and requires a new counted review.
 Before ANY HEAD/base-changing remediation or new review reservation, apply and
 persist `.kilo/rules/35-technical-recovery.md#prospective-review-capacity` on the
 same recovered excluded ledger. Count BOTH mandatory fresh roles after a
-security-critical patch; require numeric capacity and canonical ordinal/role
-allocation to close all final gates BEFORE editing/reserving. Default ceiling10
+security-critical patch; require numeric capacity and current approval-dependent
+ordinary-before-restricted roles to close all final gates BEFORE editing/reserving.
+Ordinals are chronological counters, never fixed future security slots while ordinary
+approval is missing. Genuine findings are not invalidated by capacity. Default ceiling10
 remains unchanged; ledger assertions cannot authorize an issue-local exception.
 
 REQUEST_CHANGES: understand/reproduce actionable in-scope findings, remediate with

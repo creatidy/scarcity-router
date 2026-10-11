@@ -604,6 +604,49 @@ def _finish_cleanup(store: PrivateStore, native: PrivateStore, envelope: dict[st
     return diagnostic
 
 
+def _discard_only(original: Json, redacted: Json) -> bool:
+    """A journal may discard strings, never supply identity or change JSON types."""
+    if isinstance(original, dict):
+        return (isinstance(redacted, dict) and original.keys() == redacted.keys()
+                and all(_discard_only(value, redacted[key]) for key, value in original.items()))
+    return (isinstance(original, str) and redacted is None
+            or type(original) is type(redacted) and encode(original) == encode(redacted))
+
+
+def _finalize_rescreen(store: PrivateStore, native: PrivateStore, envelope: dict[str, Json],
+                       diagnostic: Diagnostic, target: dict[str, Json], exit_code: Json,
+                       failure: Rejected | None = None) -> Diagnostic:
+    """Tombstone identity only after disposal; the original claim authorizes retries."""
+    if envelope.get("rescreen_pending") is not True:
+        return diagnostic
+    cleanup = envelope.get("cleanup")
+    if (type(exit_code) is not int
+            or isinstance(cleanup, dict) and cleanup.get("state") in ("pending", "blocked")):
+        if failure is not None:
+            raise failure
+        return diagnostic
+    try:
+        _ = native.info("last-message.json")
+    except Rejected as error:
+        if error.code != Code.MISSING:
+            raise
+    else:
+        # A late/changed artifact cannot be adopted as the original disposal target.
+        if failure is not None:
+            raise failure
+        return diagnostic
+    envelope["binding"] = target
+    del envelope["rescreen_pending"]
+    del envelope["rescreen_metadata"]
+    store.atomic("receipt.json", envelope)
+    # A crash here is recoverable from the discard-only receipt binding while
+    # the still-original claim independently verifies caller identity.
+    store.atomic("launch.claim", target)
+    if failure is not None:
+        raise failure
+    return diagnostic
+
+
 def recover(store: PrivateStore, native: PrivateStore, context: Context, policy: TextPolicy) -> Diagnostic:
     """Retrieve the existing job, including after handle loss. Never launch a child."""
     claim = _object(store, "launch.claim")
@@ -616,6 +659,7 @@ def recover(store: PrivateStore, native: PrivateStore, context: Context, policy:
     }
     if claim is None or encode(claim) != encode(expected_binding):
         raise Rejected(Stage.RECOVERY, Code.CLAIM)
+    original_binding = parse(encode(claim))
     # The typed receipt is parent-owned, never exposed to reviewer tools.
     prior = _object(store, "receipt.json")
     if prior is not None:
@@ -625,7 +669,23 @@ def recover(store: PrivateStore, native: PrivateStore, context: Context, policy:
                 or set(receipt_binding) != {"context", "public_policy_sha256"}
                 or not isinstance(receipt_binding.get("context"), dict)):
             raise Rejected(Stage.RECOVERY, Code.TYPE)
-        if encode(receipt_binding) != encode(claim):
+        transitioning = encode(receipt_binding) != encode(claim)
+        if transitioning and not _discard_only(claim, receipt_binding):
+            raise Rejected(Stage.RECOVERY, Code.CLAIM)
+        if "rescreen_pending" in prior and prior["rescreen_pending"] is not True:
+            raise Rejected(Stage.RECOVERY, Code.TYPE)
+        if prior.get("rescreen_pending") is True and not isinstance(prior.get("source_rejection"), dict):
+            raise Rejected(Stage.RECOVERY, Code.TYPE)
+        queued = prior.get("rescreen_metadata", {})
+        if (not isinstance(queued, dict) or set(queued) - {"launch.claim", "spawn.json", "exit.json", "capture.json", "turn.json"}
+                or any(not isinstance(value, dict) for value in queued.values())
+                or queued and prior.get("rescreen_pending") is not True):
+            raise Rejected(Stage.RECOVERY, Code.TYPE)
+        queued_turn = queued.get("turn.json")
+        if isinstance(queued_turn, dict) and queued_turn.get("last") is not None:
+            raise Rejected(Stage.RECOVERY, Code.TYPE)
+        queued_claim = queued.get("launch.claim")
+        if queued_claim is not None and not _discard_only(claim, queued_claim):
             raise Rejected(Stage.RECOVERY, Code.CLAIM)
         # Missing/invalid diagnostic fields must not reconstruct as defaults and
         # erase the source history after terminal raw cleanup.
@@ -647,11 +707,33 @@ def recover(store: PrivateStore, native: PrivateStore, context: Context, policy:
         if "native_identity" in prior and (not isinstance(identity, list) or len(identity) != 2
                                           or any(type(value) is not int or value < 0 for value in identity)):
             raise Rejected(Stage.RECOVERY, Code.TYPE)
+        if transitioning:
+            rejection = prior.get("source_rejection")
+            prior_diagnostic = prior.get("diagnostic")
+            if (not isinstance(rejection, dict) or rejection.get("stage") != Stage.SAFETY
+                    or prior.get("result") is not None or not isinstance(prior_diagnostic, dict)
+                    or prior_diagnostic.get("complete") is not False):
+                raise Rejected(Stage.RECOVERY, Code.CLAIM)
+            # This is a validated transformation of the verified original claim,
+            # not authority supplied by the caller or arbitrary queued metadata.
+            queued["launch.claim"] = receipt_binding
+            prior["rescreen_metadata"] = queued
+            prior["rescreen_pending"] = True
     else:
         prior = {}
     turn = _object(store, "turn.json") or {}
     spawned, exited = _object(store, "spawn.json") or {}, _object(store, "exit.json") or {}
     capture_state = _object(store, "capture.json") or {}
+    # Replay already sanitized metadata, never the caller's binding, after an
+    # interrupted scrub. Relaxing policy cannot restore its discarded strings.
+    queued = cast(dict[str, Json], prior.get("rescreen_metadata", {}))
+    claim = cast(dict[str, Json], queued.get("launch.claim", claim))
+    turn = cast(dict[str, Json], queued.get("turn.json", turn))
+    spawned = cast(dict[str, Json], queued.get("spawn.json", spawned))
+    exited = cast(dict[str, Json], queued.get("exit.json", exited))
+    capture_state = cast(dict[str, Json], queued.get("capture.json", capture_state))
+    prior_value = prior.get("diagnostic")
+    cached = _diagnostic(prior_value) if isinstance(prior_value, dict) else Diagnostic()
     rescreened: Rejected | None = None
     unsafe_public_binding = False
     try:
@@ -660,8 +742,9 @@ def recover(store: PrivateStore, native: PrivateStore, context: Context, policy:
         binding = {"context": context.json(), "public_policy_sha256": None}
         rescreened = rejection
         unsafe_public_binding = True
-    # Screen all retained metadata before any return, including caller context.
-    # Payloads retain the stricter reviewer-text policy and public provenance.
+    # Prepare every scrub before writing. Typed internal state is not reviewer
+    # text; the same literals in result/last still receive the full text policy.
+    changes = {name: cast(dict[str, Json], value) for name, value in queued.items()}
     for name, envelope in (("launch.claim", claim), ("spawn.json", spawned), ("exit.json", exited),
                            ("capture.json", capture_state), ("turn.json", turn), ("receipt.json", prior),
                            (None, binding)):
@@ -672,6 +755,32 @@ def recover(store: PrivateStore, native: PrivateStore, context: Context, policy:
             if isinstance(value, dict):
                 for key, item in list(value.items()):
                     if key in ("result", "last"):
+                        continue
+                    if key in ("diagnostic", "source_diagnostic", "source_rejection"):
+                        if not isinstance(item, dict):
+                            raise Rejected(Stage.RECOVERY, Code.TYPE)
+                        typed = _diagnostic(item)
+                        if encode(typed.json()) != encode(item):
+                            raise Rejected(Stage.RECOVERY, Code.TYPE)
+                        # Only the digest is externally derived string data.
+                        # Counts, field types, enums and flags are finite internal
+                        # observations reconstructed from the validated original.
+                        if typed.sha256 is not None:
+                            try:
+                                policy.check_identity(typed.sha256)
+                            except Rejected as rejection:
+                                typed.sha256 = None
+                                rescreened, changed = rejection, True
+                        value[key] = typed.json()
+                        continue
+                    if ((value is capture_state or value is prior.get("cleanup_failure"))
+                            and (key == "stage" and item in tuple(Stage) or key == "code" and item in tuple(Code))
+                            or value is exited and key == "capture_code" and item in tuple(Code)
+                            or value is spawned and key == "model_identity" and item == "UNVERIFIED"
+                            or value is spawned and key == "version_source" and item == "parent_observed"
+                            or value is spawned and key == "lifecycle" and item == "started"
+                            or value is exited and key == "lifecycle" and item == "exited"
+                            or value is prior.get("cleanup") and key == "state" and item in ("pending", "done", "blocked")):
                         continue
                     if key == "public_policy_sha256" and unsafe_public_binding and item is not None:
                         value[key], changed = None, True
@@ -695,9 +804,18 @@ def recover(store: PrivateStore, native: PrivateStore, context: Context, policy:
                     elif isinstance(item, (dict, list)):
                         metadata_stack.append(item)
         if changed and name is not None:
-            store.atomic(name, envelope)
+            changes[name] = envelope
     prior_value = prior.get("diagnostic")
-    cached = _diagnostic(prior_value) if isinstance(prior_value, dict) else Diagnostic()
+    cached = _diagnostic(prior_value) if isinstance(prior_value, dict) else cached
+    # A previous safety rejection is durable even if policy is later relaxed.
+    # Finish payload disposal after a crash between receipt and turn writes.
+    sticky = prior.get("source_rejection")
+    sticky_safety = (prior.get("rescreen_pending") is True and isinstance(sticky, dict)
+                     and sticky.get("stage") == Stage.SAFETY)
+    if sticky_safety:
+        assert isinstance(sticky, dict)
+        original_rejection = _diagnostic(sticky)
+        rescreened = Rejected(original_rejection.stage, original_rejection.code)
     for envelope, key in ((prior, "result"), (turn, "last")):
         payload = envelope.get(key)
         if payload is None:
@@ -707,20 +825,48 @@ def recover(store: PrivateStore, native: PrivateStore, context: Context, policy:
         except Rejected as rejection:
             envelope[key] = None
             rescreened = rejection
+        else:
+            if sticky_safety:
+                envelope[key] = None
     if rescreened is not None:
+        # A safety failure invalidates the capture, not just one source. Dispose
+        # retained reviewer text together; journal only the typed observations.
+        if "result" in prior:
+            prior["result"] = None
+        if "last" in turn:
+            turn["last"] = None
         cached.stage, cached.code = rescreened.stage, rescreened.code
         cached.lifecycle, cached.complete, cached.actual_verdict = "rejected", False, None
         cached.revisions_valid = False
         turn["diagnostic"] = cached.json()
-        store.atomic("turn.json", turn)
         prior["diagnostic"] = cached.json()
         prior["source_rejection"] = cached.json()
         if "source_diagnostic" in prior:
             prior["source_diagnostic"] = cached.json()
-        store.atomic("receipt.json", prior)
-    if unsafe_public_binding:
-        assert rescreened is not None
-        raise rescreened
+        # The receipt is the existing durable rejection/cleanup journal. Keep
+        # its original binding until payload removal, never a caller replacement.
+        _ = prior.setdefault("binding", claim)
+        _ = prior.setdefault("terminal", False)
+        prior["NOT_APPROVAL"] = True
+        prior["rescreen_pending"] = True
+        changes["turn.json"] = turn
+        prior["rescreen_metadata"] = {name: value for name, value in changes.items()
+                                      if name in ("launch.claim", "spawn.json", "exit.json", "capture.json", "turn.json")}
+        changes["receipt.json"] = prior
+    # Persist rejection first, payload scrub second, identity scrub last. Every
+    # prefix is typed and recoverable; no policy collision can poison an enum.
+    for name in ("receipt.json", "turn.json", "spawn.json", "exit.json", "capture.json", "launch.claim"):
+        if name in changes:
+            if name == "receipt.json":
+                # Binding scrubs must not prevent recovery of an interrupted
+                # payload scrub. Preserve the attested original until disposal.
+                pending_receipt = dict(changes[name])
+                pending_receipt["binding"] = original_binding
+                store.atomic(name, pending_receipt)
+            elif name != "launch.claim":
+                store.atomic(name, changes[name])
+    if rescreened is not None:
+        prior["binding"] = original_binding
     exit_code = exited.get("exit_code")
     try:
         observed = native.info("last-message.json")
@@ -740,15 +886,19 @@ def recover(store: PrivateStore, native: PrivateStore, context: Context, policy:
         rejection = cached.json()
     # Terminal capture is immutable except for rejection under today's policy or
     # a late artifact. Never extract a replacement as a new result for this job.
-    if prior.get("binding") == binding and prior.get("terminal") is True:
+    if (prior.get("binding") == binding or rescreened is not None) and prior.get("terminal") is True:
         cleanup = prior.get("cleanup")
-        if isinstance(cleanup, dict) and cleanup.get("state") == "pending":
+        if isinstance(cleanup, dict) and (cleanup.get("state") == "pending"
+                or rescreened is not None and cleanup.get("state") == "blocked"):
             if type(exit_code) is not int:
                 raise Rejected(Stage.PROCESS, Code.NO_EXIT)
             original = prior.get("source_diagnostic")
             if rejection is None and isinstance(original, dict):
                 cached = _diagnostic(original)
-            return _finish_cleanup(store, native, prior, cached)
+            cleanup["state"] = "pending"
+            recovered = _finish_cleanup(store, native, prior, cached)
+            return _finalize_rescreen(store, native, prior, recovered, claim, exit_code,
+                                      rescreened if unsafe_public_binding else None)
         if observed is not None and not (isinstance(cleanup, dict) and cleanup.get("state") == "blocked"):
             prior["cleanup_failure"] = {"stage": Stage.FILE, "code": Code.CHANGED}
         if observed is not None and cached.code == Code.OK:
@@ -760,7 +910,8 @@ def recover(store: PrivateStore, native: PrivateStore, context: Context, policy:
             _ = prior.setdefault("source_rejection", cached.json())
         if observed is not None:
             store.atomic("receipt.json", prior)
-        return cached
+        return _finalize_rescreen(store, native, prior, cached, claim, exit_code,
+                                  rescreened if unsafe_public_binding else None)
     diagnostic = Diagnostic()
     obj: Json = None
     raw_info: os.stat_result | None = None
@@ -848,6 +999,10 @@ def recover(store: PrivateStore, native: PrivateStore, context: Context, policy:
         diagnostic.lifecycle = "rejected"
     envelope: dict[str, Json] = {"binding": binding, "diagnostic": diagnostic.json(), "NOT_APPROVAL": True,
                                  "terminal": type(exit_code) is int}
+    if rescreened is not None:
+        envelope["binding"] = original_binding
+        envelope["rescreen_pending"] = True
+        envelope["rescreen_metadata"] = prior["rescreen_metadata"]
     if identity is not None:
         envelope["native_identity"] = identity
     if isinstance(rejection, dict):
@@ -866,9 +1021,12 @@ def recover(store: PrivateStore, native: PrivateStore, context: Context, policy:
         pending["complete"] = False
         envelope["diagnostic"] = pending
         store.atomic("receipt.json", envelope)
-        return _finish_cleanup(store, native, envelope, diagnostic)
+        recovered = _finish_cleanup(store, native, envelope, diagnostic)
+        return _finalize_rescreen(store, native, envelope, recovered, claim, exit_code,
+                                  rescreened if unsafe_public_binding else None)
     store.atomic("receipt.json", envelope)
-    return diagnostic
+    return _finalize_rescreen(store, native, envelope, diagnostic, claim, exit_code,
+                              rescreened if unsafe_public_binding else None)
 
 
 def _diagnostic(obj: dict[str, Json]) -> Diagnostic:

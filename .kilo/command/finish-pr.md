@@ -28,7 +28,9 @@ Before ANY HEAD/base-changing remediation or new review reservation, apply and
 persist `.kilo/rules/35-technical-recovery.md#prospective-review-capacity` on this
 same persisted ledger. Count all missing mandatory final roles, including both
 ordinary and restricted after a security-critical patch; require closable capacity
-and any explicit canonical owner ordinal/role allocation BEFORE edits or dispatch.
+and current approval-dependent ordinary-before-restricted roles BEFORE edits or dispatch.
+Ordinals are chronological counters, not fixed future roles; never reserve security
+while ordinary approval is missing. Genuine findings are not invalidated by capacity.
 Default ceiling10 is unchanged; only an independently attested issue-local owner
 exception changes the effective ceiling. Capacity is not approval/currentness.
 

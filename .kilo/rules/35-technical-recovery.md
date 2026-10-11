@@ -77,10 +77,12 @@ canonical owner authority changes it for this exact issue/PR. Ledger claims alon
 never authorize an exception. Require an exact positive integer ceiling and
 `used <= ceiling`; reject any proposed next ordinal above it. This does not change
 the global ten-review policy: #205/PR206 alone has the one-time ceiling12 in full
-original owner decision comment16179, with ordinals1-9 preserved, ordinary10,
-restricted11 after ordinary approval, and contingency12 only while all final gates
-remain obtainable. No review13 or automatic extension; explicit owner role allocation
-still binds even when numeric capacity remains.
+original owner decision comment16179. Superseding owner correction comment16250
+preserves all consumed ordinals1-10 and ceiling12: fresh ordinary11, then restricted12
+only after valid ordinary APPROVE with empty findings and verified context/tool audit
+at the SAME exact HEAD/base. No review13 or automatic extension. Ordinals are
+chronological counters, not immutable roles; derive roles from current approval
+dependencies, never freeze a future security slot while ordinary approval is missing.
 
 For the proposed round compute `remaining = ceiling - used` and the missing
 mandatory roles using exact current HEAD/base approvals with empty findings and
@@ -101,10 +103,14 @@ alone is NOT approval/currentness and cannot waive any acceptance gate.
 
 Require `remaining >= required_count` AND an authorized ordinal/role sequence that
 can close every missing gate, including ordinary-before-restricted order. Numeric
-space cannot authorize a patch needing both fresh approvals after restricted11
-under #205's allocation. Persist the prospective PASS/refusal, recovered count,
+space alone cannot authorize security before ordinary approval. For #205, ten consumed
+slots plus two missing fresh roles is PASS with attested ceiling12: next11 ordinary,
+then12 restricted only after current audited ordinary approval. If11 requests changes,
+a further patch needs two fresh roles but only one slot remains: STOP_REVISE before
+edits. If12 does not approve, STOP_REVISE, never13. Genuine findings remain valid
+regardless of inconvenient capacity. Persist the prospective PASS/refusal, recovered count,
 effective ceiling with canonical provenance, exact HEAD/base, proposed object
-change, required roles/count and role-allocation check in the SAME excluded ledger
+change, required roles/count and dependency-derived sequential role check in the SAME excluded ledger
 BEFORE mutating or reserving. A finding with insufficient closable capacity yields
 STOP_REVISE before edits; uncertain count/authority yields BLOCKED. At the ceiling,
 both exact current approvals may advance through existing merge gates without an
@@ -264,6 +270,17 @@ Missing/corrupt claim or binding fails typed without writes. Wrong HEAD/base lea
 all completed/rejected evidence and cleanup state unchanged; correct original
 context remains recoverable. Only valid same-context policy rescreening may scrub
 newly unsafe retained data; receipt integrity and sticky source rejection remain.
+Distinguish validated finite internal diagnostic/status fields from untrusted
+reviewer payloads and freeform identity/provenance strings. A forbidden literal
+must still reject reviewer content, never null an internal required enum. Prepare
+typed sanitized records before writes; the existing receipt rejection journal
+keeps pending payload/metadata disposal recoverable across interrupted writes and
+policy relaxation without upgrading rejection or authorizing a new launch.
+A queued claim must preserve the verified original's fields and exact JSON types,
+except string-to-null disposal. Recovery of an interrupted final receipt/claim
+transition requires that proven discard-only transformation and a still-matching
+original claim, never caller replacement identity. Finish native disposal before
+irreversibly tombstoning the claim; blocked cleanup retains original retry authority.
 After retrieval, parent continues already-authorized execution in the same invocation:
 check context/tool audit, validation and fresh canonical state, apply the substantive
 verdict and all model-bound gates, or perform bounded changed-condition recovery.

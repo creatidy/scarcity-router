@@ -758,6 +758,145 @@ class ReviewResultTests(unittest.TestCase):
                 self.assertEqual(caught.exception.code, Code.CLAIM)
                 self.assertEqual(self.snapshot_stores(), before)
 
+    def test_queued_claim_is_only_a_discard_transform_of_verified_original(self) -> None:
+        for corruption in ("job", "head", "base", "bool", "float", "null_ordinal", "missing", "extra",
+                           "fingerprint", "signature", "unknown_queue", "nonobject", "receipt_binding"):
+            self.reset_stores()
+            with self.subTest(corruption=corruption):
+                _ = self.launch("COMMENT")
+                receipt = parse(self.store.read("receipt.json")[0])
+                claim = parse(self.store.read("launch.claim")[0])
+                assert isinstance(receipt, dict) and isinstance(claim, dict) and isinstance(claim["context"], dict)
+                diagnostic = receipt["diagnostic"]
+                assert isinstance(diagnostic, dict)
+                diagnostic.update(stage=Stage.SAFETY, code=Code.UNSAFE, complete=False,
+                                  actual_verdict=None, revisions_valid=False, lifecycle="rejected")
+                receipt["source_rejection"] = dict(diagnostic)
+                receipt["rescreen_pending"] = True
+                if corruption in ("job", "head", "base", "bool", "float", "null_ordinal"):
+                    field = {"job": "job_id", "head": "head", "base": "base"}.get(corruption, "ordinal")
+                    claim["context"][field] = {"job": "substituted-job", "head": "c" * 40, "base": "c" * 40,
+                                               "bool": True, "float": 1.0, "null_ordinal": None}[corruption]
+                elif corruption == "missing":
+                    del claim["context"]["job_id"]
+                elif corruption in ("extra", "signature"):
+                    claim[corruption] = "synthetic-assertion"
+                elif corruption == "fingerprint":
+                    claim["public_policy_sha256"] = "e" * 64
+                queue: dict[str, Json] = {"launch.claim": claim}
+                if corruption == "unknown_queue":
+                    queue["receipt.json"] = {}
+                elif corruption == "nonobject":
+                    queue["launch.claim"] = []
+                elif corruption == "receipt_binding":
+                    claim["context"]["job_id"] = "substituted-job"
+                    receipt["binding"] = claim
+                receipt["rescreen_metadata"] = queue
+                self.store.atomic("receipt.json", receipt)
+                before = self.snapshot_stores()
+                with patch.object(PrivateStore, "atomic", side_effect=AssertionError("no writes")):
+                    with patch.object(self.native, "remove", side_effect=AssertionError("no disposal")):
+                        with self.assertRaises(Rejected) as caught:
+                            _ = recover(self.store, self.native, CONTEXT, TextPolicy())
+                self.assertIn(caught.exception.code, (Code.CLAIM, Code.TYPE))
+                self.assertEqual(self.snapshot_stores(), before)
+
+    def test_binding_scrub_write_prefixes_finish_disposal_before_claim_tombstone(self) -> None:
+        source = PublicSource("d" * 40, "e" * 64, ("src/fixture.py",), parent_verified=True)
+        for public in (False, True):
+            original = TextPolicy(sources=(source,) if public else ())
+            forbidden = "src/fixture.py" if public else CONTEXT.job_id
+            tightened = TextPolicy(forbidden=(forbidden,), sources=original.sources)
+            for state in ("completed", "pending", "blocked"):
+                for boundary in range(1, 9):
+                    for after in (False, True):
+                        self.reset_stores()
+                        with self.subTest(public=public, state=state, boundary=boundary, after=after):
+                            path = self.prepare_recovery(encode(result("APPROVE")), exited=True)
+                            self.store.atomic("launch.claim", {"context": CONTEXT.json(),
+                                                               "public_policy_sha256": original.binding()})
+                            if state == "pending":
+                                with patch.object(self.native, "remove", side_effect=RuntimeError("synthetic unlink crash")):
+                                    with self.assertRaises(RuntimeError):
+                                        _ = recover(self.store, self.native, CONTEXT, original)
+                            elif state == "blocked":
+                                with patch.object(self.native, "remove", side_effect=PermissionError("synthetic refusal")):
+                                    _ = recover(self.store, self.native, CONTEXT, original)
+                            else:
+                                _ = recover(self.store, self.native, CONTEXT, original)
+                            atomic = PrivateStore.atomic
+                            writes = 0
+
+                            def crash(store: PrivateStore, name: str, value: Json, *, exclusive: bool = False) -> None:
+                                nonlocal writes
+                                writes += 1
+                                if writes == boundary and not after:
+                                    raise RuntimeError("synthetic before write")
+                                atomic(store, name, value, exclusive=exclusive)
+                                if writes == boundary and after:
+                                    raise RuntimeError("synthetic after write")
+
+                            with patch.object(PrivateStore, "atomic", crash):
+                                try:
+                                    _ = recover(self.store, self.native, CONTEXT, tightened)
+                                except (RuntimeError, Rejected):
+                                    pass
+                            self.store.close()
+                            self.native.close()
+                            self.store = PrivateStore(self.store.path, self.store.path.parent)
+                            self.native = PrivateStore(self.native.path, self.native.path.parent)
+                            before = self.snapshot_stores()
+                            for field in ("head", "base"):
+                                for policy in (original, tightened):
+                                    with patch.object(PrivateStore, "atomic", side_effect=AssertionError("no writes")):
+                                        with self.assertRaises(Rejected) as caught:
+                                            _ = recover(self.store, self.native, replace(CONTEXT, **{field: "c" * 40}), policy)
+                                    self.assertEqual(caught.exception.code, Code.CLAIM)
+                                    self.assertEqual(self.snapshot_stores(), before)
+                            receipt = parse(self.store.read("receipt.json")[0])
+                            assert isinstance(receipt, dict)
+                            rejection = receipt.get("source_rejection")
+                            retry = original if isinstance(rejection, dict) and rejection.get("stage") == Stage.SAFETY else tightened
+                            try:
+                                recovered = recover(self.store, self.native, CONTEXT, retry)
+                            except Rejected as caught:
+                                self.assertIn(caught.code, (Code.UNSAFE, Code.CLAIM))
+                            else:
+                                self.assertEqual(recovered.code, Code.UNSAFE)
+                                self.assertFalse(recovered.complete)
+                            self.assertFalse(path.exists())
+                            for file in self.store.path.iterdir():
+                                self.assertNotIn((original.binding() if public else forbidden).encode(), self.store.read(file.name)[0])
+                            receipt = parse(self.store.read("receipt.json")[0])
+                            assert isinstance(receipt, dict)
+                            self.assertNotIn("rescreen_pending", receipt)
+                            self.assertNotIn("rescreen_metadata", receipt)
+                            with self.assertRaises(Rejected) as duplicate:
+                                _ = self.launch("APPROVE", policy=original)
+                            self.assertEqual(duplicate.exception.code, Code.LAUNCH)
+
+    def test_binding_scrub_keeps_original_authority_during_blocked_owned_cleanup(self) -> None:
+        path = self.prepare_recovery(encode(result("APPROVE")), exited=True)
+        with patch.object(self.native, "remove", side_effect=RuntimeError("synthetic interruption")):
+            with self.assertRaises(RuntimeError):
+                _ = recover(self.store, self.native, CONTEXT, TextPolicy())
+        original_claim = self.store.read("launch.claim")[0]
+        with patch.object(self.native, "remove", side_effect=PermissionError("synthetic refusal")):
+            rejected = recover(self.store, self.native, CONTEXT, TextPolicy(forbidden=(CONTEXT.job_id,)))
+        self.assertEqual(rejected.code, Code.UNSAFE)
+        self.assertFalse(rejected.complete)
+        self.assertTrue(path.exists())
+        self.assertEqual(self.store.read("launch.claim")[0], original_claim)
+        self.assert_invalid_context_preserves_stores()
+        self.store.close()
+        self.native.close()
+        self.store = PrivateStore(self.store.path, self.store.path.parent)
+        self.native = PrivateStore(self.native.path, self.native.path.parent)
+        self.assertEqual(recover(self.store, self.native, CONTEXT, TextPolicy()).code, Code.UNSAFE)
+        self.assertFalse(path.exists())
+        for file in self.store.path.iterdir():
+            self.assertNotIn(CONTEXT.job_id.encode(), self.store.read(file.name)[0])
+
     def test_recovery_rescreens_new_forbidden_literals_and_scrubs_retained_payloads(self) -> None:
         self.assertTrue(self.launch("policy-update").complete)
         policy = TextPolicy(forbidden=("fixture-only",))
@@ -768,6 +907,205 @@ class ReviewResultTests(unittest.TestCase):
         for name in ("receipt.json", "turn.json"):
             self.assertNotIn(b"fixture-only", self.store.read(name)[0])
         self.assertEqual(recover(self.store, self.native, CONTEXT, policy).code, Code.UNSAFE)
+
+    def test_policy_collisions_preserve_internal_types_but_reject_reviewer_literals(self) -> None:
+        # Exact OK/COMMENT reproducer plus codes, stages, lifecycle, type names,
+        # provenance and verdicts. No blanket status-looking prose exemption.
+        literals = (*tuple(Code), *tuple(Stage), "validated", "rejected", "dict", "list", "str",
+                    "native_last_message", "UNVERIFIED", "pending", "done", "blocked",
+                    "APPROVE", "REQUEST_CHANGES", "COMMENT")
+        for verdict in ("APPROVE", "REQUEST_CHANGES", "COMMENT"):
+            for literal in literals:
+                self.reset_stores()
+                with self.subTest(verdict=verdict, literal=literal):
+                    payload = result(verdict)
+                    payload["limitations"] = [literal]
+                    _ = self.prepare_recovery(encode(payload), exited=True)
+                    capture = EventCapture(CONTEXT, TextPolicy())
+                    capture.feed(encode({"type": "turn.started"}))
+                    capture.feed(encode({"type": "item.completed", "item": {
+                        "type": "agent_message", "text": json.dumps(payload)}}))
+                    capture.feed(encode({"type": "turn.completed"}))
+                    capture.persist(self.store)
+                    original = recover(self.store, self.native, CONTEXT, TextPolicy())
+                    self.assertTrue(original.complete)
+                    self.assert_invalid_context_preserves_stores()
+                    for policy in (TextPolicy(forbidden=(literal,)), TextPolicy()):
+                        captured = recover(self.store, self.native, CONTEXT, policy)
+                        self.assertEqual(captured.code, Code.UNSAFE)
+                        self.assertFalse(captured.complete)
+                        self.assertIsNone(captured.actual_verdict)
+                        self.assertEqual(captured.field_types, original.field_types)
+                        self.assertEqual(captured.source, original.source)
+                        for name, key in (("receipt.json", "result"), ("turn.json", "last")):
+                            retained = parse(self.store.read(name)[0])
+                            assert isinstance(retained, dict)
+                            self.assertIsNone(retained.get(key))
+                    with self.assertRaises(Rejected) as caught:
+                        _ = self.launch("APPROVE")
+                    self.assertEqual(caught.exception.code, Code.LAUNCH)
+
+    def test_internal_only_collisions_never_change_completed_or_rejected_capture(self) -> None:
+        for raw in (encode(result("APPROVE")), b"not JSON", encode({"verdict": 1}),
+                    encode({**result("COMMENT"), "limitations": 1}),
+                    encode({"limitations": ["Bearer SYNTHETIC_ONLY_VALUE"]})):
+            for literal in ("OK", "validated", "rejected", "list", "str",
+                            "MISSING_FILE", "FIELD_TYPE", "MALFORMED_JSON", "content_safety",
+                            "native_last_message", "UNVERIFIED", "done"):
+                self.reset_stores()
+                with self.subTest(raw_kind="valid" if raw == encode(result("APPROVE")) else "rejected",
+                                  literal=literal):
+                    _ = self.prepare_recovery(raw, exited=True)
+                    original = recover(self.store, self.native, CONTEXT, TextPolicy())
+                    self.assert_invalid_context_preserves_stores()
+                    self.assertEqual(recover(self.store, self.native, CONTEXT,
+                                             TextPolicy(forbidden=(literal,))).json(), original.json())
+
+    def test_metadata_scrub_journal_survives_every_write_prefix_and_policy_relaxation(self) -> None:
+        session = "12345678-1234-1234-1234-123456789abc"
+        policy = TextPolicy(forbidden=("fixture-host", "fixture-version", session, "fixture-only", "OK",
+                                       "CAPTURE_INTERRUPTED", "process", "started", "exited"))
+        for pending in (False, True):
+            for boundary in range(1, 7):
+                for after in (False, True):
+                    self.reset_stores()
+                    with self.subTest(pending=pending, boundary=boundary, after=after):
+                        payload = result("COMMENT")
+                        payload["limitations"] = ["fixture-only", "OK"]
+                        _ = self.prepare_recovery(encode(payload), exited=True)
+                        self.store.atomic("spawn.json", {"pid": 123, "host": "fixture-host", "version": "fixture-version",
+                            "lifecycle": "started", "model_identity": "UNVERIFIED", "version_source": "parent_observed"})
+                        self.store.atomic("exit.json", {"exit_code": 0, "capture_code": Code.INTERRUPTED, "lifecycle": "exited"})
+                        self.store.atomic("capture.json", {"stage": Stage.PROCESS, "code": Code.INTERRUPTED})
+                        capture = EventCapture(CONTEXT, TextPolicy())
+                        capture.feed(encode({"type": "thread.started", "thread_id": session}))
+                        capture.feed(encode({"type": "turn.started"}))
+                        capture.feed(encode({"type": "item.completed", "item": {
+                            "type": "agent_message", "text": json.dumps(payload)}}))
+                        capture.feed(encode({"type": "turn.completed"}))
+                        capture.persist(self.store)
+                        if pending:
+                            with patch.object(self.native, "remove", side_effect=RuntimeError("synthetic crash")):
+                                with self.assertRaises(RuntimeError):
+                                    _ = recover(self.store, self.native, CONTEXT, TextPolicy())
+                        else:
+                            _ = recover(self.store, self.native, CONTEXT, TextPolicy())
+                        self.assert_invalid_context_preserves_stores()
+                        original_atomic = PrivateStore.atomic
+                        writes = 0
+
+                        def crash(store: PrivateStore, name: str, value: Json, *, exclusive: bool = False) -> None:
+                            nonlocal writes
+                            writes += 1
+                            if writes == boundary and not after:
+                                raise RuntimeError("synthetic before replacement")
+                            original_atomic(store, name, value, exclusive=exclusive)
+                            if writes == boundary and after:
+                                raise RuntimeError("synthetic after replacement")
+
+                        with patch.object(PrivateStore, "atomic", crash):
+                            try:
+                                _ = recover(self.store, self.native, CONTEXT, policy)
+                            except RuntimeError:
+                                pass
+                        self.store.close()
+                        self.native.close()
+                        self.store = PrivateStore(self.store.path, self.store.path.parent)
+                        self.native = PrivateStore(self.native.path, self.native.path.parent)
+                        self.assert_invalid_context_preserves_stores()
+                        receipt = parse(self.store.read("receipt.json")[0])
+                        assert isinstance(receipt, dict)
+                        retry = TextPolicy() if receipt.get("rescreen_pending") is True else policy
+                        captured = recover(self.store, self.native, CONTEXT, retry)
+                        self.assertEqual(captured.code, Code.UNSAFE)
+                        self.assertFalse(captured.complete)
+                        self.assertIsNone(captured.actual_verdict)
+                        for path in self.store.path.iterdir():
+                            data = self.store.read(path.name)[0]
+                            for literal in ("fixture-host", "fixture-version", session, "fixture-only"):
+                                self.assertNotIn(literal.encode(), data)
+                        capture_record = parse(self.store.read("capture.json")[0])
+                        self.assertEqual(capture_record, {"stage": Stage.PROCESS, "code": Code.INTERRUPTED})
+                        self.assertEqual(recover(self.store, self.native, CONTEXT, TextPolicy()), captured)
+
+    def test_collision_rescreen_write_prefixes_are_typed_sticky_and_recoverable(self) -> None:
+        # Exercise every actual rescreen/cleanup atomic boundary, before and
+        # after replacement, with interrupted, rejected and pending/blocked jobs.
+        for state in ("completed", "malformed", "type", "unsafe", "incomplete", "interrupted", "pending", "blocked"):
+            for boundary in range(1, 5):
+                for after in (False, True):
+                    self.reset_stores()
+                    with self.subTest(state=state, boundary=boundary, after=after):
+                        payload = result("COMMENT")
+                        payload["limitations"] = ["OK"]
+                        raw = (b"not JSON" if state == "malformed" else encode({**result("COMMENT"), "limitations": 1}) if state == "type"
+                               else encode({"limitations": ["Bearer SYNTHETIC_ONLY_VALUE"]}) if state == "unsafe"
+                               else encode(payload))
+                        path = self.prepare_recovery(raw, exited=state != "incomplete")
+                        capture = EventCapture(CONTEXT, TextPolicy())
+                        capture.feed(encode({"type": "turn.started"}))
+                        capture.feed(encode({"type": "item.completed", "item": {
+                            "type": "agent_message", "text": json.dumps(payload)}}))
+                        if state != "incomplete":
+                            capture.feed(encode({"type": "turn.completed"}))
+                        capture.persist(self.store)
+                        if state == "interrupted":
+                            self.store.atomic("exit.json", {"exit_code": 0, "capture_code": Code.INTERRUPTED})
+                        if state in ("pending", "blocked"):
+                            with patch.object(self.native, "remove", side_effect=RuntimeError("synthetic crash")):
+                                with self.assertRaises(RuntimeError):
+                                    _ = recover(self.store, self.native, CONTEXT, TextPolicy())
+                            if state == "blocked":
+                                with patch.object(self.native, "remove", side_effect=PermissionError("synthetic refusal")):
+                                    _ = recover(self.store, self.native, CONTEXT, TextPolicy())
+                        else:
+                            _ = recover(self.store, self.native, CONTEXT, TextPolicy())
+                        self.assert_invalid_context_preserves_stores()
+                        original_atomic = PrivateStore.atomic
+                        writes = 0
+
+                        def crash(store: PrivateStore, name: str, value: Json, *, exclusive: bool = False) -> None:
+                            nonlocal writes
+                            writes += 1
+                            if writes == boundary and not after:
+                                raise RuntimeError("synthetic before atomic replacement")
+                            original_atomic(store, name, value, exclusive=exclusive)
+                            if writes == boundary and after:
+                                raise RuntimeError("synthetic after atomic replacement")
+
+                        policy = TextPolicy(forbidden=("OK",))
+                        with patch.object(PrivateStore, "atomic", crash):
+                            try:
+                                _ = recover(self.store, self.native, CONTEXT, policy)
+                            except RuntimeError:
+                                pass
+                        self.store.close()
+                        self.native.close()
+                        self.store = PrivateStore(self.store.path, self.store.path.parent)
+                        self.native = PrivateStore(self.native.path, self.native.path.parent)
+                        self.assert_invalid_context_preserves_stores()
+                        # A durable first rejection must survive relaxation even
+                        # if the turn write did not happen. No new launch occurs.
+                        receipt = parse(self.store.read("receipt.json")[0])
+                        assert isinstance(receipt, dict)
+                        diagnostic = receipt["diagnostic"]
+                        assert isinstance(diagnostic, dict)
+                        retry_policy = TextPolicy() if receipt.get("rescreen_pending") is True else policy
+                        with patch("tools.review_result.subprocess.Popen", side_effect=AssertionError("no relaunch")):
+                            captured = recover(self.store, self.native, CONTEXT, retry_policy)
+                            self.assertEqual(captured.code, Code.UNSAFE)
+                            self.assertFalse(captured.complete)
+                            self.assertIsNone(captured.actual_verdict)
+                            self.assertEqual(recover(self.store, self.native, CONTEXT, TextPolicy()).code, Code.UNSAFE)
+                        for name, key in (("receipt.json", "result"), ("turn.json", "last")):
+                            retained = parse(self.store.read(name)[0])
+                            assert isinstance(retained, dict)
+                            self.assertNotIn(b'"OK"', encode(retained.get(key)))
+                        if state == "incomplete":
+                            self.assertTrue(path.exists())
+                            self.store.atomic("exit.json", {"exit_code": 0})
+                            self.assertEqual(recover(self.store, self.native, CONTEXT, policy).code, Code.UNSAFE)
+                            self.assertFalse(path.exists())
 
     def test_parent_traversal_and_same_directory_handles_are_rejected_before_claim(self) -> None:
         parent = self.store.path.parent

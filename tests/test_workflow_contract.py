@@ -151,10 +151,14 @@ class WorkflowContractTests(unittest.TestCase):
                        patch_objects: bool = True, security: bool = True,
                        ordinary_current: bool = False, restricted_current: bool = False,
                        ordinary_stale: bool = False, base_stale: bool = False,
-                       allocation: dict[int, str] | None = None,
+                       ordinary_audited: bool = True, ordinary_empty: bool = True,
                        recovery: str = "intact") -> str:
                 reservations: list[dict[str, object]] = ([{"ordinal": ordinal, "outcome": ("COMMENT", "FAILED", "POLICY_VIOLATION")[ordinal % 3]}
                                  for ordinal in range(1, used + 1)] if type(used) is int and used >= 0 else [])
+                if len(reservations) >= 10:
+                    reservations[9]["outcome"] = "REQUEST_CHANGES"
+                if reservations and ordinary_current:
+                    reservations[-1]["outcome"] = "APPROVE"
                 if reservations and recovery in ("gap", "duplicate", "bool_ordinal", "float_ordinal"):
                     reservations[-1]["ordinal"] = {
                         "gap": 100, "duplicate": 1, "bool_ordinal": True, "float_ordinal": 9.0,
@@ -166,6 +170,9 @@ class WorkflowContractTests(unittest.TestCase):
                                                   if ordinary_current else None,
                                                   "ordinary_base": ("c" if base_stale else "b") * 40
                                                   if ordinary_current else None,
+                                                  "ordinary_verdict": "APPROVE" if ordinary_current else "REQUEST_CHANGES",
+                                                  "ordinary_findings": [] if ordinary_empty else ["synthetic finding"],
+                                                  "ordinary_audited": ordinary_audited,
                                                   "restricted_head": "a" * 40 if restricted_current else None,
                                                   "restricted_base": ("c" if base_stale else "b") * 40
                                                   if restricted_current else None}))
@@ -185,7 +192,9 @@ class WorkflowContractTests(unittest.TestCase):
                         or [record["ordinal"] for record in records] != list(range(1, count + 1)) or count > bound):
                     return "BLOCKED"
                 ordinary = (persisted["ordinary_head"] == persisted["head"]
-                            and persisted["ordinary_base"] == persisted["base"] and not patch_objects)
+                            and persisted["ordinary_base"] == persisted["base"] and not patch_objects
+                            and persisted["ordinary_verdict"] == "APPROVE"
+                            and persisted["ordinary_audited"] is True and persisted["ordinary_findings"] == [])
                 restricted = (persisted["restricted_head"] == persisted["head"]
                               and persisted["restricted_base"] == persisted["base"] and not patch_objects)
                 state = ("stable_all_approved" if ordinary and (restricted or not security)
@@ -197,21 +206,37 @@ class WorkflowContractTests(unittest.TestCase):
                 self.assertEqual(len(roles), needed)
                 if bound - count < needed or needed and count + 1 > bound:
                     return "STOP_REVISE"
-                if allocation is not None and any(allocation.get(count + index + 1) not in (role, "contingency")
-                                                  for index, role in enumerate(roles)):
-                    return "STOP_REVISE"
+                # Prospective roles are dependency-ordered, not fixed ordinal
+                # allocations. Restricted dispatch still awaits ordinary approval.
+                self.assertTrue(not security or ordinary or roles[0:1] == ("ordinary",))
+                persisted["prospective_roles"] = list(roles)
+                persisted["prospective_ordinals"] = list(range(count + 1, count + needed + 1))
+                _ = ledger.write_text(json.dumps(persisted))
                 return "PASS"
 
             self.assertEqual(assess(9), "STOP_REVISE")
             self.assertEqual(assess(9, 12, canonical_exception=True), "PASS")
             self.assertEqual(assess(9, 12), "STOP_REVISE")  # Ledger is not authority.
             self.assertEqual(assess(10, 12, canonical_exception=True), "PASS")
-            owner_roles = {10: "ordinary", 11: "restricted", 12: "contingency"}
-            self.assertEqual(assess(9, 12, canonical_exception=True, allocation=owner_roles), "PASS")
-            self.assertEqual(assess(10, 12, canonical_exception=True, allocation=owner_roles), "STOP_REVISE")
+            regression = cast(dict[str, object], json.loads(ledger.read_text()))
+            self.assertEqual(cast(list[dict[str, object]], regression["reservations"])[9]["outcome"], "REQUEST_CHANGES")
+            self.assertEqual(regression["prospective_roles"], ["ordinary", "restricted"])
+            self.assertEqual(regression["prospective_ordinals"], [11, 12])
             self.assertEqual(assess(11, 12, canonical_exception=True), "STOP_REVISE")
             self.assertEqual(assess(11, 12, canonical_exception=True, patch_objects=False,
-                                    ordinary_current=True, allocation=owner_roles), "PASS")
+                                    ordinary_current=True), "PASS")
+            regression = cast(dict[str, object], json.loads(ledger.read_text()))
+            self.assertEqual(regression["prospective_roles"], ["restricted"])
+            self.assertEqual(regression["prospective_ordinals"], [12])
+            self.assertEqual(cast(list[dict[str, object]], regression["reservations"])[10]["outcome"], "APPROVE")
+            for audited, empty in ((False, True), (True, False)):
+                self.assertEqual(assess(11, 12, canonical_exception=True, patch_objects=False,
+                                        ordinary_current=True, ordinary_audited=audited,
+                                        ordinary_empty=empty), "STOP_REVISE")
+            self.assertEqual(assess(12, 12, canonical_exception=True, patch_objects=False,
+                                    ordinary_current=True), "STOP_REVISE")
+            self.assertEqual(assess(12, 12, canonical_exception=True, patch_objects=False,
+                                    ordinary_current=True, restricted_current=True), "PASS")
             self.assertEqual(assess(9, patch_objects=False, restricted_current=True), "PASS")
             self.assertEqual(assess(11, 12, canonical_exception=True, patch_objects=False,
                                     ordinary_current=True, ordinary_stale=True), "STOP_REVISE")
@@ -231,7 +256,9 @@ class WorkflowContractTests(unittest.TestCase):
         for requirement in ("persisted, Git-locally excluded `.task_progress.md`", "BEFORE mutating or reserving",
                             "Missing/ambiguous ledger recovery is BLOCKED, never zero", "failed, COMMENT",
                             "tool-policy-violating reviews", "Ledger claims alone never authorize an exception",
-                            "Capacity alone is NOT approval/currentness", "explicit owner role allocation",
+                            "Capacity alone is NOT approval/currentness", "chronological counters, not immutable roles",
+                            "Superseding owner correction comment16250", "all consumed ordinals1-10 and ceiling12",
+                            "If11 requests changes", "If12 does not approve, STOP_REVISE, never13",
                             "ordinary-before-restricted order", "contiguous unique ordinals",
                             "not a second controller or proof of runtime enforcement"):
             self.assertIn(requirement, contract)
