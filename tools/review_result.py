@@ -624,7 +624,15 @@ def recover(store: PrivateStore, native: PrivateStore, context: Context, policy:
             if key != "diagnostic" and key not in prior:
                 continue
             value = prior.get(key)
-            if not isinstance(value, dict) or encode(_diagnostic(value).json()) != encode(value):
+            if not isinstance(value, dict):
+                raise Rejected(Stage.RECOVERY, Code.TYPE)
+            diagnostic = _diagnostic(value)
+            if (encode(diagnostic.json()) != encode(value)
+                    or diagnostic.complete and (diagnostic.code != Code.OK
+                        or not diagnostic.schema_valid or not diagnostic.revisions_valid
+                        or diagnostic.actual_verdict is None or diagnostic.lifecycle != "validated"
+                        or diagnostic.execution_failures)
+                    or key == "source_rejection" and diagnostic.code == Code.OK):
                 raise Rejected(Stage.RECOVERY, Code.TYPE)
         identity = prior.get("native_identity")
         if "native_identity" in prior and (not isinstance(identity, list) or len(identity) != 2

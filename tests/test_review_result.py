@@ -253,6 +253,29 @@ class ReviewResultTests(unittest.TestCase):
         self.assertEqual(path.read_bytes(), raw)
         self.assertEqual(self.native.read("last-message.json")[0], native)
 
+    def test_receipt_completion_requires_successful_capture_invariants(self) -> None:
+        mutations: list[tuple[str, str, Json]] = [
+            ("file-unsafe", "complete", True), ("COMMENT", "schema_valid", False),
+            ("COMMENT", "revisions_valid", False), ("COMMENT", "actual_verdict", None),
+            ("COMMENT", "lifecycle", "rejected"), ("COMMENT", "execution_failures", [Code.IO]),
+        ]
+        for mode, field, value in mutations:
+            self.reset_stores()
+            with self.subTest(mode=mode, field=field):
+                _ = self.launch(mode)
+                receipt = parse(self.store.read("receipt.json")[0])
+                assert isinstance(receipt, dict)
+                diagnostic = receipt["diagnostic"]
+                assert isinstance(diagnostic, dict)
+                diagnostic[field] = value
+                self.store.atomic("receipt.json", receipt)
+                raw = self.store.read("receipt.json")[0]
+                for _ in range(2):
+                    with self.assertRaises(Rejected) as caught:
+                        _ = recover(self.store, self.native, CONTEXT, TextPolicy())
+                    self.assertEqual(caught.exception.code, Code.TYPE)
+                    self.assertEqual(self.store.read("receipt.json")[0], raw)
+
     def test_receipt_binding_requires_exact_json_types(self) -> None:
         _ = self.launch("file-unsafe")
         receipt = parse(self.store.read("receipt.json")[0])
