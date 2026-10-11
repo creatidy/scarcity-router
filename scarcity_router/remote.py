@@ -416,10 +416,12 @@ def _validate_envelope(
         raise RemoteBridgeError(
             f"remote server returned a non-object response for {endpoint}"
         )
-    if mapping.get("schema_version") != ENVELOPE_SCHEMA_VERSION:
+    version = mapping.get("schema_version")
+    if type(version) is not int or version != ENVELOPE_SCHEMA_VERSION:
         raise RemoteBridgeError(
             f"remote server returned an unsupported machine-interface "
-            + f"envelope schema_version for {endpoint}"
+            + f"envelope schema_version for {endpoint}; expected integer 1; "
+            + "use compatible client/server releases before retrying"
         )
     payload = mapping.get(result_key)
     valid = (

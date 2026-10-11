@@ -8,6 +8,7 @@ and the permissioned-store posture (0o700 directory, 0o600 file).
 from __future__ import annotations
 
 import os
+import sqlite3
 import tempfile
 import threading
 import unittest
@@ -66,6 +67,19 @@ class PairingLifecycleTests(unittest.TestCase):
             f"{self._tmp.name}/identity/identities.db", clock=self.clock
         )
         self.addCleanup(self.store.close)
+
+    def test_future_store_marker_refuses_without_erasing_identity_history(self) -> None:
+        path = f"{self._tmp.name}/future/identities.db"
+        store = WorkerIdentityStore(path, clock=self.clock)
+        store.close()
+        with sqlite3.connect(path) as connection:
+            _ = connection.execute("UPDATE store_meta SET value='2' WHERE key='schema_version'")
+            before = connection.iterdump()
+            expected = tuple(before)
+        with self.assertRaisesRegex(WorkerIdentityError, "explicit migration"):
+            _ = WorkerIdentityStore(path, clock=self.clock)
+        with sqlite3.connect(path) as connection:
+            self.assertEqual(expected, tuple(connection.iterdump()))
 
     def test_initial_pairing_issues_working_identity(self) -> None:
         code = self.store.begin_pairing(label="laptop")

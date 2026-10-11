@@ -10,15 +10,19 @@ from __future__ import annotations
 
 import http.client
 import json
+import io
+import sqlite3
 import tempfile
 import threading
 import unittest
+from contextlib import redirect_stderr
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import cast
+from unittest import mock
 
 from scarcity_router.control_server import build_parser, main
-from scarcity_router.server_store import ServerStore
+from scarcity_router.server_store import STORE_SCHEMA_VERSION, ServerStore
 from scarcity_router.server_ui import dispatch_ui
 
 from tests.server_fixtures import FAKE_ADMIN_PASSWORD
@@ -61,6 +65,28 @@ class ParserTests(unittest.TestCase):
 
 
 class CompositionStartupTests(unittest.TestCase):
+    def test_future_store_refuses_before_composition_or_listener(self) -> None:
+        with tempfile.TemporaryDirectory() as parent:
+            data_dir = Path(parent) / "server"
+            store = ServerStore.open(data_dir)
+            path = store.path
+            store.close()
+            with sqlite3.connect(path) as connection:
+                _ = connection.execute(
+                    "INSERT INTO schema_migrations VALUES (?, 'synthetic')",
+                    (STORE_SCHEMA_VERSION + 1,),
+                )
+            before = path.read_bytes()
+            error = io.StringIO()
+            with mock.patch("scarcity_router.control_server.ControlPlane") as plane, \
+                    mock.patch("scarcity_router.control_server.make_gateway_server") as listener, \
+                    redirect_stderr(error):
+                self.assertEqual(2, main(["--data-dir", str(data_dir), "--port", "0"]))
+            plane.assert_not_called()
+            listener.assert_not_called()
+            self.assertIn("future store", error.getvalue())
+            self.assertEqual(before, path.read_bytes())
+
     def test_startup_with_unreadable_key_import_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as parent:
             code = main(

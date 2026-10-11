@@ -534,12 +534,8 @@ class RestartPersistenceTests(unittest.TestCase):
                 connection.commit()
             finally:
                 connection.close()
-            reopened = ServerStore.open(data_dir, migrate=False)
-            try:
-                with self.assertRaises(ServerStoreError):
-                    _ = reopened.require_current_schema()
-            finally:
-                reopened.close()
+            with self.assertRaises(ServerStoreError):
+                _ = ServerStore.open(data_dir, migrate=False)
 
     def test_schema_migration_v2_is_idempotent_on_reopen(self) -> None:
         with tempfile.TemporaryDirectory() as parent:

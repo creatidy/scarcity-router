@@ -792,7 +792,8 @@ safely), per-device authentication and heartbeat; message classes cover
 state reports, execute, stream chunks, cancellation and usage; reconnect is
 bounded with backoff and network loss never automatically duplicates an
 already-started request. No generic shell/ssh/arbitrary-command message
-exists in the protocol vocabulary. Implemented as worker protocol v1 —
+exists in the protocol vocabulary. Implemented originally as v1, current v4
+(server accepts v4/v3/v2/v1; downlevel semantic refusal applies) —
 transport, framing, message vocabulary, pairing and reconnect semantics are
 specified in [`docs/worker-protocol.md`](worker-protocol.md).
 

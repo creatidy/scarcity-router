@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -23,6 +24,19 @@ from scarcity_router.worker_local_store import (
 
 
 class PathSeparationTests(unittest.TestCase):
+    def test_future_local_store_refuses_without_erasing_device_state(self) -> None:
+        with tempfile.TemporaryDirectory() as parent:
+            path = str(Path(parent) / "worker" / "state.db")
+            store = WorkerLocalStore(path)
+            store.close()
+            with sqlite3.connect(path) as connection:
+                _ = connection.execute("UPDATE worker_state SET value='2' WHERE key='schema_version'")
+                expected = tuple(connection.iterdump())
+            with self.assertRaisesRegex(ValueError, "explicit migration"):
+                _ = WorkerLocalStore(path)
+            with sqlite3.connect(path) as connection:
+                self.assertEqual(expected, tuple(connection.iterdump()))
+
     def test_windows_and_linux_paths_differ(self) -> None:
         windows = worker_state_dir(
             platform="win32", env={"LOCALAPPDATA": "C:\\Users\\u\\AppData\\Local"}

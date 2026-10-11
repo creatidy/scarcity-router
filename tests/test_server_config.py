@@ -81,6 +81,14 @@ class NeutralDefaultTests(unittest.TestCase):
 
 
 class RoundTripTests(unittest.TestCase):
+    def test_old_configuration_projects_to_current_without_dropping_grants(self) -> None:
+        document = full_document()
+        expected = ServerConfiguration.from_document(document).to_document()
+        document["schema_version"] = 1
+        projected = ServerConfiguration.from_document(document).to_document()
+        self.assertEqual(expected, projected)
+        self.assertEqual(projected, ServerConfiguration.from_document(projected).to_document())
+
     def test_full_document_round_trips(self) -> None:
         document = full_document()
         config = ServerConfiguration.from_document(document)
@@ -124,11 +132,12 @@ class FailClosedTests(unittest.TestCase):
             _ = _config
 
     def test_wrong_schema_version_is_rejected(self) -> None:
-        document = full_document()
-        document["schema_version"] = CONFIG_SCHEMA_VERSION + 1
-        with self.assertRaises(ValueError):
-            _config = ServerConfiguration.from_document(document)
-            _ = _config
+        for version in (CONFIG_SCHEMA_VERSION + 1, True, 1.0, "2", None):
+            with self.subTest(version=version):
+                document = full_document()
+                document["schema_version"] = version
+                with self.assertRaises(ValueError):
+                    _ = ServerConfiguration.from_document(document)
 
     def test_duplicate_provider_ids_are_rejected(self) -> None:
         document = full_document()

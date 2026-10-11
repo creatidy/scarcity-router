@@ -92,6 +92,7 @@ def resolve_default_artifact(name: str, *, source_root: Path = REPO_ROOT) -> Pat
 
 DEFAULT_CATALOG_PATH = resolve_default_artifact("model-catalog.json")
 DEFAULT_MODEL_POLICY_PATH = resolve_default_artifact("model-policy.json")
+MODEL_POLICY_SCHEMA_VERSION = 1
 
 
 # ── Strict JSON loading ───────────────────────────────────────────────────────
@@ -175,10 +176,19 @@ def load_model_policy(path: Path) -> tuple[TaskProfileCatalog, int]:
         raise SelectionContractValidationError(
             "model policy: expected a JSON object at the top level"
         )
+    # Shipped minimal user artifacts omit the declaration; their existing
+    # calibrated-profile projection is schema 1, not a future-schema fallback.
+    if "schema_version" in mapping:
+        schema = mapping["schema_version"]
+        if type(schema) is not int or schema != MODEL_POLICY_SCHEMA_VERSION:
+            raise SelectionContractValidationError(
+                "model policy: unsupported schema_version; expected integer 1; "
+                + "upgrade the program before loading a newer policy shape"
+            )
     raw_version = mapping.get("policy_version")
     if isinstance(raw_version, bool) or not isinstance(raw_version, int) or raw_version < 1:
         raise SelectionContractValidationError(
-            f"model policy: policy_version must be an integer >= 1, got {raw_version!r}"
+            "model policy: policy_version must be an integer >= 1"
         )
     raw_profiles = mapping.get("task_profiles")
     if not isinstance(raw_profiles, list):

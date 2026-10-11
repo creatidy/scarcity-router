@@ -1113,6 +1113,14 @@ class _ControlStubHandler(BaseHTTPRequestHandler):
         if server.behavior == "wrong_envelope":
             self._json(200, {"schema_version": 2, "snapshots": []})
             return
+        if server.behavior in ("boolean_envelope", "float_envelope", "string_envelope"):
+            version: object = {
+                "boolean_envelope": True,
+                "float_envelope": 1.0,
+                "string_envelope": "SYNTHETIC-SECRET",
+            }[server.behavior]
+            self._json(200, {"schema_version": version, "snapshots": []})
+            return
         if server.behavior == "missing_document":
             self._json(200, {"schema_version": 1})
             return
@@ -1123,10 +1131,10 @@ class _ControlStubHandler(BaseHTTPRequestHandler):
         observation = collect_status(
             collectors=application.collectors, clock=application.clock
         )
-        self._json(
-            200,
-            status_envelope(observation.snapshots, observation.eligibility),
-        )
+        envelope = status_envelope(observation.snapshots, observation.eligibility)
+        if server.behavior == "additive_envelope":
+            envelope["compatible_metadata"] = {"revision": "synthetic"}
+        self._json(200, envelope)
 
     def _select(self, server: _ControlStubHTTPServer, body: bytes) -> None:
         application = server.application
@@ -1433,14 +1441,27 @@ class RemoteBridgeTests(GuardrailTestCase):
             "corrupt",
             "duplicate_keys",
             "wrong_envelope",
+            "boolean_envelope",
+            "float_envelope",
+            "string_envelope",
             "missing_document",
         ):
             with self.subTest(behavior=behavior):
                 server = self._serve()
                 server.behavior = behavior
                 client = self._client(server)
-                with self.assertRaises(RemoteBridgeError):
+                with self.assertRaises(RemoteBridgeError) as caught:
                     _ = client.status()
+                self.assertNotIn("SYNTHETIC-SECRET", str(caught.exception))
+
+    def test_compatible_response_addition_is_retained_not_dropped(self) -> None:
+        server = self._serve()
+        client = self._client(server)
+        original = client.status()
+        server.behavior = "additive_envelope"
+        extended = client.status()
+        self.assertEqual({"revision": "synthetic"}, extended.pop("compatible_metadata"))
+        self.assertEqual(original, extended)
 
     def test_invalid_request_documents_fail_before_any_network_exchange(
         self,

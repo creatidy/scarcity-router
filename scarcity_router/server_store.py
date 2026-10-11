@@ -61,8 +61,8 @@ DATA_DIR_NAME = "scarcity-router"
 SERVER_DATA_DIR_NAME = "server"
 
 # Each migration is (version, statements). Versions are applied in order
-# inside one transaction each; the recorded version advances only when the
-# whole migration succeeded (crash-safe by construction).
+# inside one transaction for the pending set; the recorded versions advance
+# only when the whole upgrade succeeded (crash-safe by construction).
 #
 # Version 2 (M04/M05/M09 integration): the superseded M09-side
 # ``worker_pairings`` table is DROPPED. M09 built an administration-facing
@@ -222,7 +222,23 @@ class ServerStore:
         self._lock = threading.RLock()
         parent = path.parent
         parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        _ = os.chmod(parent, 0o700)
+        if path.exists():
+            # Closing the last writable WAL reader can checkpoint even on a
+            # refusal. Inspect existing stores read-only first, including WAL.
+            try:
+                self._connection = sqlite3.connect(
+                    path.resolve().as_uri() + "?mode=ro", uri=True,
+                    check_same_thread=False, isolation_level=None,
+                )
+            except sqlite3.Error:
+                raise ServerStoreError(
+                    "server store migration metadata is invalid or unreadable; refusing repair"
+                ) from None
+            self._connection.row_factory = sqlite3.Row
+            try:
+                _ = self.applied_migration_versions()
+            finally:
+                self._connection.close()
         try:
             self._connection = sqlite3.connect(
                 str(path), check_same_thread=False, isolation_level=None
@@ -230,11 +246,19 @@ class ServerStore:
         except sqlite3.Error as exc:
             raise ServerStoreError(f"server store is not usable: {exc}") from None
         try:
+            self._connection.row_factory = sqlite3.Row
+            # Inspect before changing permissions or persistent journal mode.
+            # Supported old stores still migrate; invalid history and future
+            # stores refuse even through the raw test seam.
+            _ = self.applied_migration_versions()
+            _ = os.chmod(parent, 0o700)
             os.chmod(path, 0o600)
             _ = self._connection.execute("PRAGMA journal_mode=DELETE")
             _ = self._connection.execute("PRAGMA synchronous=FULL")
             _ = self._connection.execute("PRAGMA foreign_keys=ON")
-            self._connection.row_factory = sqlite3.Row
+        except ServerStoreError:
+            self._connection.close()
+            raise
         except (sqlite3.Error, OSError) as exc:
             self._connection.close()
             raise ServerStoreError(f"server store is not usable: {exc}") from None
@@ -253,8 +277,13 @@ class ServerStore:
         use of an un-migrated store raises on first statement.
         """
         store = cls(canonical_store_path(data_dir))
-        if migrate:
-            _ = store.migrate()
+        try:
+            if migrate:
+                _ = store.migrate()
+                _ = store.require_current_schema()
+        except ServerStoreError:
+            store.close()
+            raise
         return store
 
     def close(self) -> None:
@@ -267,54 +296,80 @@ class ServerStore:
 
     def schema_version(self) -> int:
         """The applied schema version (0 for an un-migrated store)."""
-        with self._lock:
-            try:
-                row = _fetch_row(self._connection,
-                    "SELECT MAX(version) AS version FROM schema_migrations"
-                )
-            except sqlite3.Error:
-                return 0
-            if row is None:
-                return 0
-            raw = cast("int | None", row["version"])
-            return int(raw) if raw is not None else 0
+        versions = self.applied_migration_versions()
+        return versions[-1] if versions else 0
 
     def applied_migration_versions(self) -> tuple[int, ...]:
-        """The ordered migration versions recorded in the store."""
+        """Read and validate history; only an empty new database has version 0."""
         with self._lock:
             try:
+                objects = _fetch_rows(self._connection,
+                    "SELECT name, type FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*'"
+                )
+                metadata = tuple(row["type"] for row in objects if row["name"] == "schema_migrations")
+                if not metadata and not objects:
+                    return ()
+                if metadata != ("table",):
+                    raise ServerStoreError(
+                        "server store migration metadata is invalid; refusing repair"
+                    )
+                columns = _fetch_rows(self._connection, "PRAGMA table_info(schema_migrations)")
+                if tuple((row["name"], row["type"], row["notnull"], row["pk"]) for row in columns) != (
+                    ("version", "INTEGER", 0, 1), ("applied_at", "TEXT", 1, 0),
+                ):
+                    raise ServerStoreError(
+                        "server store migration metadata is invalid; refusing repair"
+                    )
                 rows = _fetch_rows(self._connection,
                     "SELECT version FROM schema_migrations ORDER BY version"
                 )
             except sqlite3.Error:
-                return ()
-        return tuple(int(cast(int, row["version"])) for row in rows)
+                raise ServerStoreError(
+                    "server store migration metadata is invalid or unreadable; refusing repair"
+                ) from None
+        versions: list[int] = []
+        for row in rows:
+            raw = cast(object, row["version"])
+            if type(raw) is not int or raw < 1:
+                raise ServerStoreError(
+                    "server store migration metadata is invalid; refusing repair"
+                )
+            versions.append(raw)
+        if versions and versions[-1] > STORE_SCHEMA_VERSION:
+            raise ServerStoreError(
+                "server store schema is newer than this program understands; refusing to read a future store"
+            )
+        applied = tuple(versions)
+        expected = tuple(version for version, _ in MIGRATIONS)
+        if not applied or applied != expected[:len(applied)]:
+            raise ServerStoreError(
+                "server store migration history is invalid; refusing repair"
+            )
+        return applied
 
     def migrate(self) -> int:
-        """Apply pending migrations; returns the resulting schema version."""
+        """Apply a bounded, ordered migration set atomically and idempotently."""
         with self._lock:
-            applied = self.schema_version()
-            for version, statements in MIGRATIONS:
-                if version <= applied:
-                    continue
-                self._apply_migration(version, statements)
+            try:
+                _ = self._connection.execute("BEGIN IMMEDIATE")
+                applied = self.applied_migration_versions()
+                for version, statements in MIGRATIONS[len(applied):]:
+                    for statement in statements:
+                        _ = self._connection.execute(statement)
+                    _ = self._connection.execute(
+                        "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
+                        (version, self._now_for_migrations()),
+                    )
+                _ = self._connection.execute("COMMIT")
+            except (sqlite3.Error, ServerStoreError) as exc:
+                if self._connection.in_transaction:
+                    _ = self._connection.execute("ROLLBACK")
+                if isinstance(exc, ServerStoreError):
+                    raise
+                raise ServerStoreError(
+                    "server store migration failed; original state retained"
+                ) from None
             return self.schema_version()
-
-    def _apply_migration(self, version: int, statements: tuple[str, ...]) -> None:
-        try:
-            _ = self._connection.execute("BEGIN IMMEDIATE")
-            for statement in statements:
-                _ = self._connection.execute(statement)
-            _ = self._connection.execute(
-                "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
-                (version, self._now_for_migrations()),
-            )
-            _ = self._connection.execute("COMMIT")
-        except sqlite3.Error as exc:
-            _ = self._connection.execute("ROLLBACK")
-            raise ServerStoreError(
-                f"server store migration to version {version} failed: {exc}"
-            ) from None
 
     @staticmethod
     def _now_for_migrations() -> str:
