@@ -171,6 +171,134 @@ class ReviewResultTests(unittest.TestCase):
             _ = self.launch("APPROVE")
         self.assertEqual(error.exception.code, Code.LAUNCH)
 
+    def test_corrupted_receipt_cannot_erase_terminal_native_rejection(self) -> None:
+        for mode, raw, expected in (("file-unsafe", b"{", Code.JSON), ("file-unsafe", b"[]", Code.TYPE),
+                                    ("file-unsafe", b"{}", Code.TYPE),
+                                    ("COMMENT", b"{", Code.JSON), ("COMMENT", b"[]", Code.TYPE)):
+            self.reset_stores()
+            with self.subTest(mode=mode, raw=raw):
+                self.assertEqual(self.launch(mode).code, Code.UNSAFE if mode == "file-unsafe" else Code.OK)
+                self.assertFalse((self.native.path / "last-message.json").exists())
+                turn = parse(self.store.read("turn.json")[0])
+                assert isinstance(turn, dict)
+                self.assertEqual(turn["last"], result("COMMENT"))
+                path = self.store.path / "receipt.json"
+                _ = path.write_bytes(raw)
+                for _ in range(2):
+                    with self.assertRaises(Rejected) as caught:
+                        _ = recover(self.store, self.native, CONTEXT, TextPolicy())
+                    self.assertEqual(caught.exception.code, expected)
+                    self.assertEqual(path.read_bytes(), raw)
+
+    def test_invalid_required_receipt_cannot_be_rebuilt_as_success(self) -> None:
+        mutations: list[tuple[str, Json]] = [
+            ("NOT_APPROVAL", None), ("NOT_APPROVAL", False), ("terminal", None), ("terminal", 1),
+            ("binding", None), ("binding", {}), ("diagnostic", None), ("diagnostic", {}),
+            ("diagnostic.complete", None), ("diagnostic.complete", 1), ("diagnostic.complete", 0),
+            ("source_rejection", []), ("native_identity", []),
+        ]
+        for mode in ("file-unsafe", "COMMENT"):
+            for field, value in mutations:
+                self.reset_stores()
+                with self.subTest(mode=mode, field=field, value=value):
+                    _ = self.launch(mode)
+                    receipt = parse(self.store.read("receipt.json")[0])
+                    assert isinstance(receipt, dict)
+                    target = receipt
+                    if field.startswith("diagnostic."):
+                        diagnostic = receipt["diagnostic"]
+                        assert isinstance(diagnostic, dict)
+                        target = diagnostic
+                        field = field.split(".")[1]
+                    if value is None:
+                        del target[field]
+                    else:
+                        target[field] = value
+                    self.store.atomic("receipt.json", receipt)
+                    raw = self.store.read("receipt.json")[0]
+                    for _ in range(2):
+                        with patch("tools.review_result.subprocess.Popen", side_effect=AssertionError("no redispatch")):
+                            with self.assertRaises(Rejected) as caught:
+                                _ = recover(self.store, self.native, CONTEXT, TextPolicy())
+                        self.assertEqual(caught.exception.code, Code.TYPE)
+                        self.assertEqual(self.store.read("receipt.json")[0], raw)
+
+    def test_receipt_read_rejection_is_typed_and_preserves_artifacts(self) -> None:
+        _ = self.launch("file-unsafe")
+        path = self.store.path / "receipt.json"
+        raw = path.read_bytes()
+        self.native.atomic("last-message.json", result("APPROVE"))
+        native = self.native.read("last-message.json")[0]
+        path.chmod(0o644)
+        for _ in range(2):
+            with self.assertRaises(Rejected) as caught:
+                _ = recover(self.store, self.native, CONTEXT, TextPolicy())
+            self.assertEqual(caught.exception.code, Code.MODE)
+            self.assertEqual(path.stat().st_mode & 0o777, 0o644)
+            self.assertEqual(path.read_bytes(), raw)
+            self.assertEqual(self.native.read("last-message.json")[0], native)
+        path.chmod(0o600)
+        original_read = self.store.read
+
+        def refuse(name: str) -> tuple[bytes, os.stat_result]:
+            if name == "receipt.json":
+                raise PermissionError("Bearer synthetic-credential-value")
+            return original_read(name)
+
+        with patch.object(self.store, "read", refuse):
+            with self.assertRaises(Rejected) as caught:
+                _ = recover(self.store, self.native, CONTEXT, TextPolicy())
+        self.assertEqual(caught.exception.code, Code.IO)
+        self.assertEqual(str(caught.exception), Code.IO)
+        self.assertEqual(path.read_bytes(), raw)
+        self.assertEqual(self.native.read("last-message.json")[0], native)
+
+    def test_receipt_binding_requires_exact_json_types(self) -> None:
+        _ = self.launch("file-unsafe")
+        receipt = parse(self.store.read("receipt.json")[0])
+        assert isinstance(receipt, dict)
+        binding = receipt["binding"]
+        assert isinstance(binding, dict)
+        context = binding["context"]
+        assert isinstance(context, dict)
+        context["ordinal"] = True
+        self.store.atomic("receipt.json", receipt)
+        raw = self.store.read("receipt.json")[0]
+        for _ in range(2):
+            with self.assertRaises(Rejected) as caught:
+                _ = recover(self.store, self.native, CONTEXT, TextPolicy())
+            self.assertEqual(caught.exception.code, Code.CLAIM)
+            self.assertEqual(self.store.read("receipt.json")[0], raw)
+
+    def test_corrupt_lifecycle_objects_are_not_missing_partial_artifacts(self) -> None:
+        for name in ("launch.claim", "turn.json", "spawn.json", "exit.json", "capture.json"):
+            for raw, expected in ((b"{", Code.JSON), (b"[]", Code.TYPE)):
+                self.reset_stores()
+                with self.subTest(name=name, raw=raw):
+                    _ = self.launch("missing-file")
+                    if name == "capture.json":
+                        self.store.atomic(name, {})
+                    _ = (self.store.path / name).write_bytes(raw)
+                    receipt = self.store.read("receipt.json")[0]
+                    with self.assertRaises(Rejected) as caught:
+                        _ = recover(self.store, self.native, CONTEXT, TextPolicy())
+                    self.assertEqual(caught.exception.code, expected)
+                    self.assertEqual(self.store.read("receipt.json")[0], receipt)
+
+    def test_truly_missing_receipt_rebuilds_only_from_intact_durable_sources(self) -> None:
+        for native_present in (False, True):
+            self.reset_stores()
+            with self.subTest(native_present=native_present):
+                if native_present:
+                    _ = self.prepare_recovery(encode(result("APPROVE")), exited=True)
+                else:
+                    _ = self.launch("missing-file")
+                    (self.store.path / "receipt.json").unlink()
+                captured = recover(self.store, self.native, CONTEXT, TextPolicy())
+                self.assertTrue(captured.complete)
+                self.assertEqual(captured.actual_verdict, "APPROVE" if native_present else "COMMENT")
+                self.assertEqual(recover(self.store, self.native, CONTEXT, TextPolicy()), captured)
+
     def test_claim_without_spawn_or_exit_is_not_retry_authority(self) -> None:
         self.store.atomic("launch.claim", {"context": CONTEXT.json(), "public_policy_sha256": TextPolicy().binding()})
         captured = recover(self.store, self.native, CONTEXT, TextPolicy())

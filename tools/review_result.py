@@ -545,12 +545,18 @@ class EventCapture:
                                   "diagnostic": self.diagnostic.json(), "NOT_APPROVAL": True})
 
 
-def _object(store: PrivateStore, name: str) -> dict[str, Json]:
+def _object(store: PrivateStore, name: str) -> dict[str, Json] | None:
     try:
         value = parse(store.read(name)[0])
-        return value if isinstance(value, dict) else {}
-    except (Rejected, OSError):
-        return {}
+    except Rejected as error:
+        if error.code == Code.MISSING:
+            return None
+        raise
+    except OSError:
+        raise Rejected(Stage.FILE, Code.IO) from None
+    if not isinstance(value, dict):
+        raise Rejected(Stage.RECOVERY, Code.TYPE)
+    return value
 
 
 def _finish_cleanup(store: PrivateStore, native: PrivateStore, envelope: dict[str, Json],
@@ -600,12 +606,35 @@ def _finish_cleanup(store: PrivateStore, native: PrivateStore, envelope: dict[st
 
 def recover(store: PrivateStore, native: PrivateStore, context: Context, policy: TextPolicy) -> Diagnostic:
     """Retrieve the existing job, including after handle loss. Never launch a child."""
-    claim = _object(store, "launch.claim")
+    claim = _object(store, "launch.claim") or {}
     # The typed receipt is parent-owned, never exposed to reviewer tools.
     prior = _object(store, "receipt.json")
-    turn = _object(store, "turn.json")
-    spawned, exited = _object(store, "spawn.json"), _object(store, "exit.json")
-    capture_state = _object(store, "capture.json")
+    if prior is not None:
+        receipt_binding = prior.get("binding")
+        if (prior.get("NOT_APPROVAL") is not True or type(prior.get("terminal")) is not bool
+                or not isinstance(receipt_binding, dict)
+                or set(receipt_binding) != {"context", "public_policy_sha256"}
+                or not isinstance(receipt_binding.get("context"), dict)):
+            raise Rejected(Stage.RECOVERY, Code.TYPE)
+        if encode(receipt_binding) != encode(claim):
+            raise Rejected(Stage.RECOVERY, Code.CLAIM)
+        # Missing/invalid diagnostic fields must not reconstruct as defaults and
+        # erase the source history after terminal raw cleanup.
+        for key in ("diagnostic", "source_diagnostic", "source_rejection"):
+            if key != "diagnostic" and key not in prior:
+                continue
+            value = prior.get(key)
+            if not isinstance(value, dict) or encode(_diagnostic(value).json()) != encode(value):
+                raise Rejected(Stage.RECOVERY, Code.TYPE)
+        identity = prior.get("native_identity")
+        if "native_identity" in prior and (not isinstance(identity, list) or len(identity) != 2
+                                          or any(type(value) is not int or value < 0 for value in identity)):
+            raise Rejected(Stage.RECOVERY, Code.TYPE)
+    else:
+        prior = {}
+    turn = _object(store, "turn.json") or {}
+    spawned, exited = _object(store, "spawn.json") or {}, _object(store, "exit.json") or {}
+    capture_state = _object(store, "capture.json") or {}
     rescreened: Rejected | None = None
     unsafe_public_binding = False
     try:
@@ -683,9 +712,6 @@ def recover(store: PrivateStore, native: PrivateStore, context: Context, policy:
             raise
         observed = None
     identity = prior.get("native_identity")
-    if identity is not None and (not isinstance(identity, list) or len(identity) != 2
-                                 or any(type(value) is not int or value < 0 for value in identity)):
-        raise Rejected(Stage.RECOVERY, Code.TYPE)
     rejection = prior.get("source_rejection")
     turn_diagnostic = turn.get("diagnostic")
     if (rejection is None and turn.get("failed") is True and isinstance(turn_diagnostic, dict)
