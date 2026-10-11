@@ -340,6 +340,62 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("Parent makes no edits/branch switches while it runs", loop)
         self.assertIn("Any HEAD/base change invalidates approval", loop)
 
+    def test_private_repository_review_uses_exact_mcp_and_local_evidence(self) -> None:
+        reviewer = text(".kilo/agents/pr-reviewer.md")
+        for requirement in (
+            "`forgejo-mcp_get_repo`", "`forgejo-mcp_get_pull_request_by_index`",
+            "`BioMedical-IT/scarcity-router`", "`https://forgejo.creatidy.com`",
+            "exact expected head/base refs and commit SHAs", "primary-prepared clean checkout's local Git objects",
+            "verify the exact merge base and complete diff",
+            "Anonymous `git ls-remote` is optional corroboration only and is not in the reviewer shell allowlist",
+            "never a required access gate", "A missing, stale or mismatched identity/ref/SHA/object is COMMENT",
+            "Reviewer credentials remain unavailable to the model and shell",
+        ):
+            with self.subTest(requirement=requirement):
+                self.assertIn(requirement, reviewer)
+        raw = (ROOT / ".kilo/agents/pr-reviewer.md").read_text().split("---", 2)[1]
+        getters = {
+            key.strip('"'): value.strip()
+            for line in raw.splitlines()
+            if line.startswith('  "forgejo-mcp_')
+            for key, value in [line.strip().split(":", 1)]
+        }
+        self.assertEqual(getters, {
+            "forgejo-mcp_get_repo": "allow",
+            "forgejo-mcp_get_pull_request_by_index": "allow",
+            "forgejo-mcp_get_issue_by_index": "allow",
+            "forgejo-mcp_get_issue_comment": "allow",
+        })
+        for permission in ("edit: deny", "write: deny", "apply_patch: deny", "task: deny"):
+            self.assertIn(permission, raw)
+        test_command = (
+            "PYTHONPATH=. UV_OFFLINE=1 UV_NO_SYNC=1 uv run --no-sync python -m unittest "
+            + "tests.test_workflow_contract.WorkflowContractTests.test_private_repository_review_"
+            + "uses_exact_mcp_and_local_evidence -v\": allow"
+        )
+        self.assertIn(test_command, raw)
+        shell = raw.split("bash:", 1)[1]
+        self.assertIn('"git remote -v": deny', shell)
+        self.assertIn('"git ls-remote *": deny', shell)
+        self.assertIn('"*": deny', shell)
+        self.assertNotIn('"git remote -v": allow', shell)
+        self.assertNotIn('https://forgejo.creatidy.com', shell)
+        self.assertIn('"git ls-remote * -*": deny', shell)
+        manifest = text(".kilo/rules/35-technical-recovery.md").split(
+            "## Independent Review Metadata", 1
+        )[1].split("## Public Evidence and Reviewer Failover", 1)[0]
+        for getter in (
+            "`forgejo-mcp_get_repo`", "`forgejo-mcp_get_pull_request_by_index`",
+            "`forgejo-mcp_get_issue_by_index`", "`forgejo-mcp_get_issue_comment`",
+        ):
+            self.assertIn(getter, manifest)
+        for boundary in (
+            "Do not grant wildcard getters", "list/search access or any Forgejo write",
+            "primary-prepared clean local Git objects", "exact merge base/full diff",
+            "must not inspect credential-bearing Git configuration or invoke credential helpers",
+        ):
+            self.assertIn(boundary, manifest)
+
     def test_delivery_counter_survives_reentry(self) -> None:
         finish = text(".kilo/command/finish-pr.md")
         for requirement in (

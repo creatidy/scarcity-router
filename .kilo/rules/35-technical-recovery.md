@@ -107,6 +107,20 @@ Keep authenticated platform operations outside test sandboxes. If unauthorized r
 credentials are genuinely necessary, record the specific evidence gap; do not ask for
 them unless required for the selected acceptance and subject to an owner decision.
 
+## Independent Review Metadata
+
+An acceptance-only whole-PR review manifest may authorize these exact Forgejo
+read operations: `forgejo-mcp_get_repo` for the canonical owner/repository,
+`forgejo-mcp_get_pull_request_by_index` for the selected PR, and
+`forgejo-mcp_get_issue_by_index` for its linked issue. Include
+`forgejo-mcp_get_issue_comment` only for a specifically attested owner decision.
+The manifest records each exact object ID/arguments, canonical URL, author,
+timestamp, retrieval path and content digest. Do not grant wildcard getters,
+list/search access or any Forgejo write. Repository metadata establishes
+canonical identity; current PR refs/SHAs must still agree with the primary-prepared
+clean local Git objects and exact merge base/full diff. Reviewer shell access must
+not inspect credential-bearing Git configuration or invoke credential helpers.
+
 ## Public Evidence and Reviewer Failover
 
 A public-research reviewer must inspect cited material independently. If a pinned
