@@ -439,6 +439,8 @@ class ReviewResultTests(unittest.TestCase):
         receipt = parse(self.store.read("receipt.json")[0])
         assert isinstance(receipt, dict)
         self.assertEqual(receipt["diagnostic"], original)
+        self.assertEqual(receipt["cleanup_failure"], {"stage": Stage.FILE, "code": Code.CHANGED})
+        self.assertTrue((self.native.path / "last-message.json").exists())
         self.assertNotIn(b"synthetic-credential-value", self.store.read("receipt.json")[0])
 
     def test_terminal_capture_rejects_even_identical_late_native_artifact(self) -> None:
@@ -534,6 +536,274 @@ class ReviewResultTests(unittest.TestCase):
         self.assertEqual(captured.code, Code.UNSAFE)
         self.assertIsNone(captured.actual_verdict)
         self.assertFalse(captured.complete)
+
+    def test_rescreened_preexit_original_is_removed_after_exit_without_reading(self) -> None:
+        payload = result("APPROVE")
+        payload["limitations"] = ["fixture-only"]
+        path = self.prepare_recovery(encode(payload))
+        capture = EventCapture(CONTEXT, TextPolicy())
+        capture.feed(encode({"type": "turn.started"}))
+        capture.feed(encode({"type": "item.completed", "item": {
+            "type": "agent_message", "text": json.dumps(payload)}}))
+        capture.feed(encode({"type": "turn.completed"}))
+        capture.persist(self.store)
+        policy = TextPolicy(forbidden=("fixture-only",))
+        with patch.object(self.native, "read", side_effect=AssertionError("raw must remain unread")):
+            first = recover(self.store, self.native, CONTEXT, policy)
+            self.assertEqual(first.code, Code.UNSAFE)
+            self.assertTrue(path.exists())
+            self.store.atomic("exit.json", {"exit_code": 0})
+            second = recover(self.store, self.native, CONTEXT, policy)
+        self.assertEqual(second.code, Code.UNSAFE)
+        self.assertFalse(second.complete)
+        self.assertFalse(path.exists())
+        for name in ("receipt.json", "turn.json"):
+            self.assertNotIn(b"fixture-only", self.store.read(name)[0])
+        self.assertEqual(recover(self.store, self.native, CONTEXT, TextPolicy()).code, Code.UNSAFE)
+        with self.assertRaises(Rejected) as error:
+            _ = self.launch("APPROVE")
+        self.assertEqual(error.exception.code, Code.LAUNCH)
+
+    def test_cleanup_crash_at_unlink_recovers_same_completed_result(self) -> None:
+        path = self.prepare_recovery(encode(result("APPROVE")), exited=True)
+        claim, spawn = (self.store.read(name)[0] for name in ("launch.claim", "spawn.json"))
+        original_unlink = os.unlink
+
+        def crash(name: str, *, dir_fd: int | None = None) -> None:
+            if name == "last-message.json" and dir_fd == self.native.fd:
+                self.assertTrue((self.store.path / "receipt.json").exists())
+                raise RuntimeError("synthetic capture crash")
+            original_unlink(name, dir_fd=dir_fd)
+
+        with patch("tools.review_result.os.unlink", crash):
+            with self.assertRaises(RuntimeError):
+                _ = recover(self.store, self.native, CONTEXT, TextPolicy())
+        self.assertTrue(path.exists())
+        pending = parse(self.store.read("receipt.json")[0])
+        assert isinstance(pending, dict)
+        diagnostic, cleanup = pending["diagnostic"], pending["cleanup"]
+        assert isinstance(diagnostic, dict) and isinstance(cleanup, dict)
+        self.assertFalse(diagnostic["complete"])
+        self.assertEqual(cleanup["state"], "pending")
+        self.assertEqual(cleanup["identity"], list(PrivateStore.identity(path.stat())))
+        self.assertEqual(cleanup["sha256"], diagnostic["sha256"])
+        self.store.close()
+        self.native.close()
+        self.store = PrivateStore(self.store.path, self.store.path.parent)
+        self.native = PrivateStore(self.native.path, self.native.path.parent)
+        with patch("tools.review_result.subprocess.Popen", side_effect=AssertionError("no new child")):
+            captured = recover(self.store, self.native, CONTEXT, TextPolicy())
+        self.assertTrue(captured.complete)
+        self.assertEqual(captured.actual_verdict, "APPROVE")
+        self.assertEqual(status_code(captured), 0)
+        self.assertFalse(captured.parent_approval)
+        self.assertEqual(captured.model_identity, "UNVERIFIED")
+        self.assertTrue(captured.schema_valid)
+        self.assertEqual(captured.root_type, "dict")
+        self.assertFalse(path.exists())
+        self.assertEqual(self.store.read("launch.claim")[0], claim)
+        self.assertEqual(self.store.read("spawn.json")[0], spawn)
+        self.assertEqual(recover(self.store, self.native, CONTEXT, TextPolicy()), captured)
+        receipt = parse(self.store.read("receipt.json")[0])
+        assert isinstance(receipt, dict) and isinstance(receipt["cleanup"], dict)
+        self.assertEqual(receipt["cleanup"]["state"], "done")
+
+    def test_cleanup_crash_after_unlink_finalizes_missing_original_not_rejection(self) -> None:
+        for unsafe in (False, True):
+            self.reset_stores()
+            with self.subTest(unsafe=unsafe):
+                payload = result("APPROVE")
+                if unsafe:
+                    payload["limitations"] = ["Bearer synthetic-credential-value"]
+                path = self.prepare_recovery(encode(payload), exited=True)
+                original_unlink = os.unlink
+
+                def crash(name: str, *, dir_fd: int | None = None) -> None:
+                    original_unlink(name, dir_fd=dir_fd)
+                    if name == "last-message.json" and dir_fd == self.native.fd:
+                        raise RuntimeError("synthetic crash after unlink")
+
+                with patch("tools.review_result.os.unlink", crash):
+                    with self.assertRaises(RuntimeError):
+                        _ = recover(self.store, self.native, CONTEXT, TextPolicy())
+                self.assertFalse(path.exists())
+                self.store.close()
+                self.native.close()
+                self.store = PrivateStore(self.store.path, self.store.path.parent)
+                self.native = PrivateStore(self.native.path, self.native.path.parent)
+                captured = recover(self.store, self.native, CONTEXT, TextPolicy())
+                self.assertEqual(captured.code, Code.UNSAFE if unsafe else Code.OK)
+                self.assertEqual(captured.complete, not unsafe)
+                self.assertEqual(status_code(captured), 2 if unsafe else 0)
+                self.assertEqual(recover(self.store, self.native, CONTEXT, TextPolicy()), captured)
+                receipt = parse(self.store.read("receipt.json")[0])
+                assert isinstance(receipt, dict) and isinstance(receipt["cleanup"], dict)
+                self.assertEqual(receipt["cleanup"]["state"], "done")
+                self.assertNotIn(b"synthetic-credential-value", self.store.read("receipt.json")[0])
+
+    def test_pending_cleanup_rejects_changed_replacement_and_aliased_original(self) -> None:
+        for change in ("content", "mtime", "mode", "replacement", "hardlink", "symlink", "owner"):
+            self.reset_stores()
+            with self.subTest(change=change):
+                path = self.prepare_recovery(encode(result("APPROVE")), exited=True)
+                original_unlink = os.unlink
+
+                def crash(name: str, *, dir_fd: int | None = None) -> None:
+                    if name == "last-message.json" and dir_fd == self.native.fd:
+                        raise RuntimeError("synthetic crash before unlink")
+                    original_unlink(name, dir_fd=dir_fd)
+
+                with patch("tools.review_result.os.unlink", crash):
+                    with self.assertRaises(RuntimeError):
+                        _ = recover(self.store, self.native, CONTEXT, TextPolicy())
+                pending = parse(self.store.read("receipt.json")[0])
+                assert isinstance(pending, dict)
+                original = pending["source_diagnostic"]
+                if change == "content":
+                    _ = path.write_bytes(encode(result("COMMENT")))
+                elif change == "mtime":
+                    info = path.stat()
+                    os.utime(path, ns=(info.st_atime_ns, info.st_mtime_ns + 1))
+                elif change == "mode":
+                    path.chmod(0o644)
+                elif change == "replacement":
+                    self.native.atomic("last-message.json", result("APPROVE"))
+                elif change == "hardlink":
+                    os.link(path, self.native.path / "alias.json")
+                elif change == "symlink":
+                    path.unlink()
+                    self.native.atomic("alias.json", result("APPROVE"))
+                    path.symlink_to(self.native.path / "alias.json")
+                expected = Code.FILE if change in ("hardlink", "symlink") else Code.CHANGED
+                if change == "owner":
+                    expected = Code.OWNER
+                    fields = list(path.stat())
+                    fields[4] = os.getuid() + 1
+                    with patch.object(self.native, "info", return_value=os.stat_result(fields)):
+                        captured = recover(self.store, self.native, CONTEXT, TextPolicy())
+                else:
+                    captured = recover(self.store, self.native, CONTEXT, TextPolicy())
+                self.assertEqual(captured.code, expected)
+                self.assertFalse(captured.complete)
+                self.assertTrue(path.exists())
+                receipt = parse(self.store.read("receipt.json")[0])
+                assert isinstance(receipt, dict) and isinstance(receipt["cleanup"], dict)
+                self.assertEqual(receipt["source_diagnostic"], original)
+                self.assertEqual(receipt["cleanup_failure"], {"stage": Stage.FILE, "code": expected})
+                self.assertEqual(receipt["cleanup"]["state"], "blocked")
+                path.unlink()
+                self.assertEqual(recover(self.store, self.native, CONTEXT, TextPolicy()), captured)
+
+    def test_pending_cleanup_rescreens_current_policy_before_finishing_original(self) -> None:
+        payload = result("APPROVE")
+        payload["limitations"] = ["fixture-only"]
+        path = self.prepare_recovery(encode(payload), exited=True)
+        capture = EventCapture(CONTEXT, TextPolicy())
+        capture.feed(encode({"type": "turn.started"}))
+        capture.feed(encode({"type": "item.completed", "item": {
+            "type": "agent_message", "text": json.dumps(payload)}}))
+        capture.feed(encode({"type": "turn.completed"}))
+        capture.persist(self.store)
+        original_unlink = os.unlink
+
+        def crash(name: str, *, dir_fd: int | None = None) -> None:
+            if name == "last-message.json" and dir_fd == self.native.fd:
+                raise RuntimeError("synthetic crash before unlink")
+            original_unlink(name, dir_fd=dir_fd)
+
+        with patch("tools.review_result.os.unlink", crash):
+            with self.assertRaises(RuntimeError):
+                _ = recover(self.store, self.native, CONTEXT, TextPolicy())
+        with patch.object(self.native, "read", side_effect=AssertionError("no payload adoption")):
+            captured = recover(self.store, self.native, CONTEXT, TextPolicy(forbidden=("fixture-only",)))
+        self.assertEqual(captured.code, Code.UNSAFE)
+        self.assertFalse(captured.complete)
+        self.assertFalse(path.exists())
+        for name in ("receipt.json", "turn.json"):
+            self.assertNotIn(b"fixture-only", self.store.read(name)[0])
+        self.assertEqual(recover(self.store, self.native, CONTEXT, TextPolicy()), captured)
+
+    def test_cleanup_io_failure_is_typed_sticky_and_never_returns_complete(self) -> None:
+        path = self.prepare_recovery(encode(result("APPROVE")), exited=True)
+        original_unlink = os.unlink
+
+        def refuse(name: str, *, dir_fd: int | None = None) -> None:
+            if name == "last-message.json" and dir_fd == self.native.fd:
+                raise PermissionError("Bearer synthetic-credential-value")
+            original_unlink(name, dir_fd=dir_fd)
+
+        with patch("tools.review_result.os.unlink", refuse):
+            captured = recover(self.store, self.native, CONTEXT, TextPolicy())
+        self.assertEqual(captured.code, Code.IO)
+        self.assertFalse(captured.complete)
+        self.assertEqual(status_code(captured), 2)
+        self.assertTrue(path.exists())
+        receipt = parse(self.store.read("receipt.json")[0])
+        assert isinstance(receipt, dict) and isinstance(receipt["source_diagnostic"], dict)
+        self.assertEqual(receipt["source_diagnostic"]["code"], Code.OK)
+        self.assertEqual(receipt["cleanup_failure"], {"stage": Stage.FILE, "code": Code.IO})
+        self.assertNotIn(b"synthetic-credential-value", self.store.read("receipt.json")[0])
+        path.unlink()
+        self.assertEqual(recover(self.store, self.native, CONTEXT, TextPolicy()), captured)
+
+    def test_rescreened_original_cleanup_keeps_rejection_and_typed_identity_limitation(self) -> None:
+        payload = result("APPROVE")
+        payload["limitations"] = ["fixture-only"]
+        for change in ("replacement", "hardlink", "owner"):
+            self.reset_stores()
+            with self.subTest(change=change):
+                path = self.prepare_recovery(encode(payload))
+                capture = EventCapture(CONTEXT, TextPolicy())
+                capture.feed(encode({"type": "turn.started"}))
+                capture.feed(encode({"type": "item.completed", "item": {
+                    "type": "agent_message", "text": json.dumps(payload)}}))
+                capture.feed(encode({"type": "turn.completed"}))
+                capture.persist(self.store)
+                policy = TextPolicy(forbidden=("fixture-only",))
+                self.assertEqual(recover(self.store, self.native, CONTEXT, policy).code, Code.UNSAFE)
+                if change == "replacement":
+                    self.native.atomic("last-message.json", payload)
+                elif change == "hardlink":
+                    os.link(path, self.native.path / "alias.json")
+                self.store.atomic("exit.json", {"exit_code": 0})
+                expected = Code.CHANGED if change == "replacement" else Code.FILE
+                with patch.object(self.native, "read", side_effect=AssertionError("no rejected payload read")):
+                    if change == "owner":
+                        expected = Code.OWNER
+                        fields = list(path.stat())
+                        fields[4] = os.getuid() + 1
+                        with patch.object(self.native, "info", return_value=os.stat_result(fields)):
+                            captured = recover(self.store, self.native, CONTEXT, policy)
+                    else:
+                        captured = recover(self.store, self.native, CONTEXT, policy)
+                self.assertEqual(captured.code, Code.UNSAFE)
+                self.assertFalse(captured.complete)
+                self.assertTrue(path.exists())
+                receipt = parse(self.store.read("receipt.json")[0])
+                assert isinstance(receipt, dict)
+                self.assertEqual(receipt["cleanup_failure"], {"stage": Stage.FILE, "code": expected})
+                self.assertNotIn(b"fixture-only", self.store.read("receipt.json")[0])
+                path.unlink()
+                self.assertEqual(recover(self.store, self.native, CONTEXT, TextPolicy()), captured)
+
+    def test_refused_mode_original_is_removed_without_content_read_or_normalization(self) -> None:
+        path = self.prepare_recovery(encode(result("APPROVE")), exited=True)
+        path.chmod(0o644)
+        original_read = PrivateStore.read
+
+        def guarded(store: PrivateStore, name: str) -> tuple[bytes, os.stat_result]:
+            if store is self.native:
+                with patch("tools.review_result.os.open", side_effect=AssertionError("refused file must not open")):
+                    return original_read(store, name)
+            return original_read(store, name)
+
+        with patch.object(PrivateStore, "read", guarded):
+            captured = recover(self.store, self.native, CONTEXT, TextPolicy())
+        self.assertEqual(captured.code, Code.MODE)
+        self.assertEqual(captured.observed_mode, "0644")
+        self.assertIsNone(captured.sha256)
+        self.assertFalse(path.exists())
+        self.assertEqual(recover(self.store, self.native, CONTEXT, TextPolicy()), captured)
 
     def test_current_policy_scrubs_native_present_and_nonterminal_recovery(self) -> None:
         for terminal in (True, False):

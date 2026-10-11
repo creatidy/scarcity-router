@@ -538,6 +538,51 @@ def _object(store: PrivateStore, name: str) -> dict[str, Json]:
         return {}
 
 
+def _finish_cleanup(store: PrivateStore, native: PrivateStore, envelope: dict[str, Json],
+                    diagnostic: Diagnostic) -> Diagnostic:
+    """Finish only the durably bound original; missing may mean unlink already ran."""
+    cleanup = envelope.get("cleanup")
+    if not isinstance(cleanup, dict) or cleanup.get("state") != "pending":
+        raise Rejected(Stage.RECOVERY, Code.TYPE)
+    identity = cleanup.get("identity")
+    digest = cleanup.get("sha256")
+    if (not isinstance(identity, list) or len(identity) != 8
+            or any(type(value) is not int for value in identity)
+            or (digest is not None and (not isinstance(digest, str)
+                                       or not re.fullmatch(r"[0-9a-f]{64}", digest)))):
+        raise Rejected(Stage.RECOVERY, Code.TYPE)
+    try:
+        try:
+            info = native.info("last-message.json")
+        except Rejected as error:
+            if error.code != Code.MISSING:
+                raise
+        else:
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise Rejected(Stage.FILE, Code.FILE)
+            if info.st_uid != os.getuid():
+                raise Rejected(Stage.FILE, Code.OWNER)
+            if list(native.identity(info)) != identity:
+                raise Rejected(Stage.FILE, Code.CHANGED)
+            # Metadata includes ctime/mtime/size/mode as well as dev/inode. No
+            # refused or rejected raw bytes are read to complete disposal.
+            native.remove("last-message.json", info)
+        os.fsync(native.fd)
+        cleanup["state"] = "done"
+    except (Rejected, OSError) as error:
+        stage, code = (error.stage, error.code) if isinstance(error, Rejected) else (Stage.FILE, Code.IO)
+        cleanup["state"] = "blocked"
+        envelope["cleanup_failure"] = {"stage": stage, "code": code}
+        if envelope.get("source_rejection") is None:
+            diagnostic.stage, diagnostic.code = stage, code
+        diagnostic.lifecycle, diagnostic.complete = "rejected", False
+        diagnostic.actual_verdict, diagnostic.revisions_valid = None, False
+        _ = envelope.setdefault("source_rejection", diagnostic.json())
+    envelope["diagnostic"] = diagnostic.json()
+    store.atomic("receipt.json", envelope)
+    return diagnostic
+
+
 def recover(store: PrivateStore, native: PrivateStore, context: Context, policy: TextPolicy) -> Diagnostic:
     """Retrieve the existing job, including after handle loss. Never launch a child."""
     binding: dict[str, Json] = {"context": context.json(), "public_policy_sha256": policy.binding()}
@@ -587,6 +632,16 @@ def recover(store: PrivateStore, native: PrivateStore, context: Context, policy:
     # Terminal capture is immutable except for rejection under today's policy or
     # a late artifact. Never extract a replacement as a new result for this job.
     if prior.get("binding") == binding and prior.get("terminal") is True:
+        cleanup = prior.get("cleanup")
+        if isinstance(cleanup, dict) and cleanup.get("state") == "pending":
+            if type(exit_code) is not int:
+                raise Rejected(Stage.PROCESS, Code.NO_EXIT)
+            original = prior.get("source_diagnostic")
+            if rejection is None and isinstance(original, dict):
+                cached = _diagnostic(original)
+            return _finish_cleanup(store, native, prior, cached)
+        if observed is not None and not (isinstance(cleanup, dict) and cleanup.get("state") == "blocked"):
+            prior["cleanup_failure"] = {"stage": Stage.FILE, "code": Code.CHANGED}
         if observed is not None and cached.code == Code.OK:
             _ = prior.setdefault("source_diagnostic", cached.json())
             cached.stage, cached.code = Stage.EXTRACTION, Code.CONFLICT
@@ -594,12 +649,16 @@ def recover(store: PrivateStore, native: PrivateStore, context: Context, policy:
             cached.revisions_valid = False
             prior["diagnostic"] = cached.json()
             _ = prior.setdefault("source_rejection", cached.json())
+        if observed is not None:
             store.atomic("receipt.json", prior)
         return cached
     diagnostic = Diagnostic()
     obj: Json = None
     raw_info: os.stat_result | None = None
+    cleanup_failure: dict[str, Json] | None = None
     try:
+        if observed is not None and identity is None:
+            identity = cast(list[Json], [observed.st_dev, observed.st_ino])
         if isinstance(rejection, dict):
             diagnostic = _diagnostic(rejection)
             raise Rejected(diagnostic.stage, diagnostic.code)
@@ -632,14 +691,22 @@ def recover(store: PrivateStore, native: PrivateStore, context: Context, policy:
                     diagnostic.source = "jsonl_last_completed_agent_message"
                     if diagnostic.code == Code.OK:
                         diagnostic.code = Code.MESSAGE
-        elif observed is not None and error.code != Code.NO_EXIT and not isinstance(rejection, dict):
+        elif observed is not None and type(exit_code) is int:
             info = observed
             diagnostic.observed_mode = format(stat.S_IMODE(info.st_mode), "04o")
             diagnostic.size = info.st_size
             # Do not read a refused-mode file. Only the exact owned regular raw
             # inode may be removed, after its safe diagnostic is durable.
-            if stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid() and info.st_nlink == 1:
+            if identity != [info.st_dev, info.st_ino]:
+                cleanup_failure = {"stage": Stage.FILE, "code": Code.CHANGED}
+            elif not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                cleanup_failure = {"stage": Stage.FILE, "code": Code.FILE}
+            elif info.st_uid != os.getuid():
+                cleanup_failure = {"stage": Stage.FILE, "code": Code.OWNER}
+            else:
                 raw_info = info
+        elif isinstance(rejection, dict) and identity is not None and type(exit_code) is int:
+            cleanup_failure = {"stage": Stage.FILE, "code": Code.CHANGED}
     if rescreened is not None:
         diagnostic.stage, diagnostic.code = rescreened.stage, rescreened.code
         diagnostic.actual_verdict, diagnostic.revisions_valid, obj = None, False, None
@@ -680,18 +747,18 @@ def recover(store: PrivateStore, native: PrivateStore, context: Context, policy:
         envelope["source_rejection"] = diagnostic.json()
     if obj is not None:
         envelope["result"] = obj
-    store.atomic("receipt.json", envelope)
+    if cleanup_failure is not None:
+        envelope["cleanup_failure"] = cleanup_failure
     if raw_info is not None and type(exit_code) is int:
-        try:
-            native.remove("last-message.json", raw_info)
-        except Rejected as error:
-            _ = envelope.setdefault("source_diagnostic", diagnostic.json())
-            diagnostic.stage, diagnostic.code = error.stage, error.code
-            diagnostic.lifecycle, diagnostic.complete = "rejected", False
-            diagnostic.actual_verdict, diagnostic.revisions_valid = None, False
-            _ = envelope.setdefault("source_rejection", diagnostic.json())
-            envelope["diagnostic"] = diagnostic.json()
-            store.atomic("receipt.json", envelope)
+        envelope["source_diagnostic"] = diagnostic.json()
+        envelope["cleanup"] = {"state": "pending", "identity": cast(Json, list(native.identity(raw_info))),
+                               "sha256": diagnostic.sha256}
+        pending = cast(dict[str, Json], diagnostic.json())
+        pending["complete"] = False
+        envelope["diagnostic"] = pending
+        store.atomic("receipt.json", envelope)
+        return _finish_cleanup(store, native, envelope, diagnostic)
+    store.atomic("receipt.json", envelope)
     return diagnostic
 
 

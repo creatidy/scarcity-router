@@ -154,6 +154,9 @@ class _FakeAppServer:
                 return
             try:
                 written = os.write(self._write_fd, remaining)
+            except BrokenPipeError:
+                self._close_write()
+                return
             except BlockingIOError:
                 time.sleep(0.002)
                 continue
@@ -193,6 +196,10 @@ class _FakeAppServer:
             except OSError:
                 pass
             self._retained_write_fd = None
+
+    def feeder_stopped(self) -> bool:
+        self._feeder.join(timeout=5.0)
+        return not self._feeder.is_alive()
 
     def written_messages(self) -> "list[dict[str, object]]":
         decoded: list[dict[str, object]] = []
@@ -1329,6 +1336,17 @@ class MalformedAndBoundedOutput(_AcquisitionCase):
 
 
 class SafeTermination(_AcquisitionCase):
+    def test_cancelled_reader_does_not_emit_feeder_exception(self) -> None:
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            fake = _FakeAppServer([b"x" * (acq.MAX_LINE_BYTES + 64)], block=True)
+            try:
+                fake.stdout.close()
+                self.assertTrue(fake.feeder_stopped())
+            finally:
+                fake.finalize()
+        self.assertEqual(stderr.getvalue(), "")
+
     def test_success_path_terminates_without_kill(self) -> None:
         fake = self._install_fake(
             [
