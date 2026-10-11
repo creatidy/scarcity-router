@@ -16,21 +16,19 @@ permission:
   write: deny
   apply_patch: deny
   task: deny
-  "forgejo-mcp_get_*": allow
-  "forgejo-mcp_list_*": allow
-  "forgejo-mcp_search_*": allow
+  "forgejo-mcp_get_repo": allow
+  "forgejo-mcp_get_pull_request_by_index": allow
+  "forgejo-mcp_get_issue_by_index": allow
+  "forgejo-mcp_get_issue_comment": allow
   bash:
     "*": deny
     "git status --short": allow
-    "git remote -v": allow
     "git rev-parse *": allow
     "git merge-base *": allow
     "git log *": allow
     "git show *": allow
     "git diff *": allow
     "git ls-tree *": allow
-    "git ls-remote https://forgejo.creatidy.com/BioMedical-IT/scarcity-router refs/heads/develop refs/heads/*": allow
-    "git ls-remote https://forgejo.creatidy.com/BioMedical-IT/scarcity-router.git refs/heads/develop refs/heads/*": allow
     "kilo debug agent pr-reviewer": allow
     "uv run --no-sync python tools/test_runner.py": allow
     "uv run --no-sync basedpyright": allow
@@ -103,16 +101,26 @@ authorized by the owner.
 The reviewer itself must never change its provider, model, reasoning level,
 permissions or execution path, and must never delegate review.
 
-First fetch current PR metadata via Forgejo MCP, then query the canonical HTTPS
-repository with `git ls-remote`, using `refs/heads/develop` and the exact head ref
-from metadata. Do not guess branch names, use alternate transports or add options.
-Require open/unmerged develop target and exact expected HEAD/base. Mismatch means
-COMMENT with actual SHAs; do not review a different range. Require the supplied
-designated delivery or parent-prepared evidence checkout to be clean at expected HEAD.
-Inspect exact frozen Git objects/current branch read-only; do not create another
-checkout. The primary owns temporary worktrees, isolation, Git fetch and
-safe branch switching. You must not fetch, switch/create branches, use git worktree,
-commit, push or mutate Git/Forgejo state.
+First fetch the canonical repository metadata with `forgejo-mcp_get_repo` and
+current PR metadata with `forgejo-mcp_get_pull_request_by_index`. Require repository
+identity `BioMedical-IT/scarcity-router` at `https://forgejo.creatidy.com`, and
+require the PR's base repository to have that same identity. Require an open,
+unmerged PR targeting `develop`, and exact expected head/base refs and commit SHAs
+from the MCP metadata. Compare the MCP identities and SHAs against the supplied
+frozen values and the primary-prepared clean checkout's local Git objects; verify
+the exact merge base and complete diff from those objects. A missing, stale or
+mismatched identity/ref/SHA/object is COMMENT with the observed mismatch; never
+approve or review a different range. The primary supplies the designated delivery
+or parent-prepared evidence checkout after fetching its objects from the canonical
+remote. The checkout must be clean at expected HEAD. Inspect exact frozen Git
+objects/current branch read-only; do not create another checkout. Anonymous
+`git ls-remote` is optional corroboration only and is not in the reviewer shell
+allowlist; it is never a required access gate or a replacement for exact
+MCP/local-object agreement. The primary owns temporary worktrees, isolation, Git
+fetch and safe branch switching. Reviewer credentials remain unavailable to the
+model and shell. You must not inspect credential-bearing Git configuration, invoke
+credential helpers, fetch, switch/create branches, use git worktree, commit, push
+or mutate Git/Forgejo state.
 
 Read the linked issue and relevant referenced acceptance context, AGENTS.md and
 all applicable rules, and the COMPLETE merge-base-to-HEAD diff/current implementation.
