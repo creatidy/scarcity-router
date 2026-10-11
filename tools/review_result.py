@@ -546,6 +546,26 @@ def recover(store: PrivateStore, native: PrivateStore, context: Context, policy:
         raise Rejected(Stage.RECOVERY, Code.CLAIM)
     # The typed receipt is parent-owned, never exposed to reviewer tools.
     prior = _object(store, "receipt.json")
+    prior_value = prior.get("diagnostic")
+    cached = _diagnostic(prior_value) if isinstance(prior_value, dict) else Diagnostic()
+    turn = _object(store, "turn.json")
+    rescreened: Rejected | None = None
+    for envelope, key in ((prior, "result"), (turn, "last")):
+        payload = envelope.get(key)
+        if payload is None:
+            continue
+        try:
+            policy.check(payload, context)
+        except Rejected as rejection:
+            envelope[key] = None
+            cached.stage, cached.code = rejection.stage, rejection.code
+            cached.lifecycle, cached.complete, cached.actual_verdict = "rejected", False, None
+            rescreened = rejection
+    if rescreened is not None:
+        turn["diagnostic"] = cached.json()
+        store.atomic("turn.json", turn)
+        prior["diagnostic"] = cached.json()
+        store.atomic("receipt.json", prior)
     if prior.get("binding") == binding and prior.get("terminal") is True:
         try:
             _ = native.info("last-message.json")
@@ -554,30 +574,10 @@ def recover(store: PrivateStore, native: PrivateStore, context: Context, policy:
                 raise
             value = prior.get("diagnostic")
             if isinstance(value, dict):
-                cached = _diagnostic(value)
-                retained_turn = _object(store, "turn.json")
-                changed = False
-                for envelope, key in ((prior, "result"), (retained_turn, "last")):
-                    payload = envelope.get(key)
-                    if payload is None:
-                        continue
-                    try:
-                        policy.check(payload, context)
-                    except Rejected as rejection:
-                        envelope[key] = None
-                        cached.stage, cached.code = rejection.stage, rejection.code
-                        cached.lifecycle, cached.complete, cached.actual_verdict = "rejected", False, None
-                        changed = True
-                if changed:
-                    retained_turn["diagnostic"] = cached.json()
-                    store.atomic("turn.json", retained_turn)
-                    prior["diagnostic"] = cached.json()
-                    store.atomic("receipt.json", prior)
                 return cached
     diagnostic = Diagnostic()
     obj: Json = None
     raw_info: os.stat_result | None = None
-    turn = _object(store, "turn.json")
     try:
         data, raw_info = native.read("last-message.json")
         diagnostic, obj = inspect(data, context, policy)
@@ -606,7 +606,10 @@ def recover(store: PrivateStore, native: PrivateStore, context: Context, policy:
             # inode may be removed, after its safe diagnostic is durable.
             if stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid() and info.st_nlink == 1:
                 raw_info = info
-    if obj is not None and turn.get("last") is not None and encode(obj) != encode(turn["last"]):
+    if rescreened is not None:
+        diagnostic.stage, diagnostic.code = rescreened.stage, rescreened.code
+        diagnostic.actual_verdict, diagnostic.revisions_valid, obj = None, False, None
+    elif obj is not None and turn.get("last") is not None and encode(obj) != encode(turn["last"]):
         diagnostic.stage, diagnostic.code = Stage.EXTRACTION, Code.CONFLICT
         diagnostic.actual_verdict, diagnostic.revisions_valid = None, False
     elif (obj is not None and diagnostic.code == Code.OK
@@ -640,7 +643,7 @@ def recover(store: PrivateStore, native: PrivateStore, context: Context, policy:
     if obj is not None:
         envelope["result"] = obj
     store.atomic("receipt.json", envelope)
-    if raw_info is not None:
+    if raw_info is not None and type(exit_code) is int:
         try:
             native.remove("last-message.json", raw_info)
         except Rejected as error:

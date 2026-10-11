@@ -378,6 +378,52 @@ class ReviewResultTests(unittest.TestCase):
                              TextPolicy(), executable_version="synthetic")
         self.assertFalse((self.store.path / "launch.claim").exists())
 
+    def test_native_rejection_before_exit_cannot_become_jsonl_approval(self) -> None:
+        for mode, expected in (("malformed", Code.JSON), ("unsafe", Code.UNSAFE), ("conflict", Code.CONFLICT)):
+            self.reset_stores()
+            with self.subTest(mode=mode):
+                self.store.atomic("launch.claim", {"context": CONTEXT.json(), "public_policy_sha256": TextPolicy().binding()})
+                self.store.atomic("spawn.json", {"pid": 123})
+                capture = EventCapture(CONTEXT, TextPolicy())
+                capture.feed(encode({"type": "turn.started"}))
+                capture.feed(encode({"type": "item.completed", "item": {"type": "agent_message", "text": json.dumps(result("APPROVE"))}}))
+                capture.feed(encode({"type": "turn.completed"}))
+                capture.persist(self.store)
+                raw = b"not JSON" if mode == "malformed" else encode(result("COMMENT"))
+                if mode == "unsafe":
+                    unsafe = result("COMMENT")
+                    unsafe["limitations"] = ["Bearer synthetic-credential-value"]
+                    raw = encode(unsafe)
+                with (self.native.path / "last-message.json").open("xb") as output:
+                    _ = output.write(raw)
+                (self.native.path / "last-message.json").chmod(0o600)
+                first = recover(self.store, self.native, CONTEXT, TextPolicy())
+                self.assertFalse(first.complete)
+                self.assertTrue((self.native.path / "last-message.json").exists())
+                self.store.atomic("exit.json", {"exit_code": 0})
+                second = recover(self.store, self.native, CONTEXT, TextPolicy())
+                self.assertEqual(second.code, expected)
+                self.assertFalse(second.complete)
+                self.assertFalse(recover(self.store, self.native, CONTEXT, TextPolicy()).complete)
+
+    def test_current_policy_scrubs_native_present_and_nonterminal_recovery(self) -> None:
+        for terminal in (True, False):
+            self.reset_stores()
+            with self.subTest(terminal=terminal):
+                self.assertTrue(self.launch("policy-update").complete)
+                payload = result()
+                payload["limitations"] = ["fixture-only"]
+                self.native.atomic("last-message.json", payload)
+                receipt = parse(self.store.read("receipt.json")[0])
+                assert isinstance(receipt, dict)
+                receipt["terminal"] = terminal
+                self.store.atomic("receipt.json", receipt)
+                captured = recover(self.store, self.native, CONTEXT, TextPolicy(forbidden=("fixture-only",)))
+                self.assertEqual(captured.code, Code.UNSAFE)
+                self.assertFalse(captured.complete)
+                for name in ("receipt.json", "turn.json"):
+                    self.assertNotIn(b"fixture-only", self.store.read(name)[0])
+
     def test_parse_does_not_include_raw_error_text(self) -> None:
         with self.assertRaises(Rejected) as error:
             _ = parse(b"private invalid input")
