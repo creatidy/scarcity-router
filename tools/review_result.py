@@ -824,6 +824,7 @@ def run_prepared(store: PrivateStore, native: PrivateStore, context: Context,
     if (store_info.st_dev, store_info.st_ino) == (native_info.st_dev, native_info.st_ino):
         raise ValueError("isolated_explicit_prepared_launch_required")
     policy.check(context.json(), context)
+    policy.check(executable_version, context)
     for name in ("launch.claim", "spawn.json", "exit.json", "turn.json", "receipt.json", "capture.json"):
         try:
             _ = store.info(name)

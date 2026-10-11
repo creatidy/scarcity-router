@@ -181,6 +181,17 @@ class ReviewResultTests(unittest.TestCase):
     def test_explicit_synthetic_environment(self) -> None:
         self.assertTrue(self.launch("environment").complete)
 
+    def test_unsafe_version_metadata_is_rejected_before_claim_or_spawn(self) -> None:
+        for version, policy in (("Bearer SYNTHETIC_ONLY_VALUE", TextPolicy()),
+                                ("fixture-only version", TextPolicy(forbidden=("fixture-only",)))):
+            with self.subTest(version=version):
+                with self.assertRaises(Rejected) as caught:
+                    _ = run_prepared(self.store, self.native, CONTEXT, [sys.executable], b"", {},
+                                     policy, executable_version=version)
+                self.assertEqual(caught.exception.code, Code.UNSAFE)
+                for name in ("launch.claim", "spawn.json", "exit.json", "receipt.json"):
+                    self.assertFalse((self.store.path / name).exists())
+
     def test_input_bound_is_separate_from_result_bound_and_checked_before_claim(self) -> None:
         captured = run_prepared(self.store, self.native, CONTEXT,
                                [sys.executable, str(ROOT / "tests/review_result_fixture.py"), "COMMENT",
