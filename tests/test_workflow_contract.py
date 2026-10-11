@@ -369,6 +369,8 @@ class WorkflowContractTests(unittest.TestCase):
         for permission in ("edit: deny", "write: deny", "apply_patch: deny", "task: deny"):
             self.assertIn(permission, raw)
         shell = raw.split("bash:", 1)[1]
+        self.assertIn('"git remote -v": deny', shell)
+        self.assertIn('"git ls-remote *": deny', shell)
         self.assertIn('"*": deny', shell)
         self.assertNotIn('"git remote -v": allow', shell)
         self.assertNotIn('https://forgejo.creatidy.com', shell)

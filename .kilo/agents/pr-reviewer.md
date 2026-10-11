@@ -21,6 +21,8 @@ permission:
   "forgejo-mcp_get_issue_by_index": allow
   "forgejo-mcp_get_issue_comment": allow
   bash:
+    "git remote -v": deny
+    "git ls-remote *": deny
     "*": deny
     "git status --short": allow
     "git rev-parse *": allow
