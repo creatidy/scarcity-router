@@ -34,6 +34,86 @@ T1 = "2026-09-16T12:01:00.000Z"
 
 
 class DatabaseEntryTests(unittest.TestCase):
+    def test_linked_cold_sidecars_refuse_before_sqlite_or_recovery_access(self) -> None:
+        for journal in ("DELETE", "WAL"):
+            for production in (False, True):
+                for suffix in ("-journal", "-wal", "-shm"):
+                    for link in ("symlink", "hardlink"):
+                        for content in (b"", b"synthetic sidecar fixture"):
+                            with self.subTest(journal=journal, production=production, suffix=suffix,
+                                              link=link, empty=not content), tempfile.TemporaryDirectory() as root:
+                                directory = Path(root) / "server"
+                                store = ServerStore.open(directory)
+                                path = store.path
+                                store.save_configuration_document({"fixture": "retained"}, T0)
+                                store.close()
+                                connection = sqlite3.connect(path)
+                                try:
+                                    mode = cast("tuple[str]", connection.execute("PRAGMA journal_mode=" + journal).fetchone())
+                                    self.assertEqual((journal.lower(),), mode)
+                                    if journal == "WAL":
+                                        self.assertEqual((0, 0, 0), connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone())
+                                finally:
+                                    connection.close()
+                                sidecars = tuple(Path(str(path) + s) for s in ("-journal", "-wal", "-shm"))
+                                self.assertTrue(all(not p.exists() for p in sidecars))
+                                target = Path(root) / "fixture-target"
+                                _ = target.write_bytes(content)
+                                os.chmod(target, 0o640)
+                                entry = Path(str(path) + suffix)
+                                if link == "symlink":
+                                    entry.symlink_to(target)
+                                else:
+                                    os.link(target, entry)
+                                os.chmod(directory, 0o750)
+                                os.chmod(path, 0o640)
+                                before = path.read_bytes(), target.read_bytes(), target.stat(), entry.lstat()
+                                connect = sqlite3.connect
+                                with mock.patch("scarcity_router.server_store.sqlite3.connect", wraps=connect) as opened, \
+                                        mock.patch.object(ServerStore, "_reclaim_recovery_slot") as reclaimed:
+                                    with self.assertRaisesRegex(ServerStoreError, "unsafe"):
+                                        if production:
+                                            _ = ServerStore.open(directory)
+                                        else:
+                                            _ = ServerStore(path)
+                                opened.assert_not_called()
+                                reclaimed.assert_not_called()
+                                self.assertEqual(before, (path.read_bytes(), target.read_bytes(), target.stat(), entry.lstat()))
+                                self.assertEqual((0o750, 0o640, 0o640), (
+                                    stat.S_IMODE(directory.stat().st_mode), stat.S_IMODE(path.stat().st_mode),
+                                    stat.S_IMODE(target.stat().st_mode),
+                                ))
+
+    def test_nonregular_or_foreign_owned_sidecars_refuse_before_access(self) -> None:
+        for suffix in ("-journal", "-wal", "-shm"):
+            for kind in ("directory", "foreign"):
+                with self.subTest(suffix=suffix, kind=kind), tempfile.TemporaryDirectory() as root:
+                    store = ServerStore.open(Path(root) / "server")
+                    path = store.path
+                    store.close()
+                    entry = Path(str(path) + suffix)
+                    if kind == "directory":
+                        entry.mkdir()
+                    else:
+                        _ = entry.write_bytes(b"synthetic sidecar fixture")
+                    original = Path.lstat
+                    def observed(entry_path: Path) -> os.stat_result:
+                        info = original(entry_path)
+                        if kind == "foreign" and entry_path == entry:
+                            fields = list(info)
+                            fields[4] = info.st_uid + 1
+                            return os.stat_result(fields)
+                        return info
+                    before = path.read_bytes()
+                    with mock.patch.object(Path, "lstat", autospec=True, side_effect=observed), \
+                            mock.patch("scarcity_router.server_store.sqlite3.connect") as opened, \
+                            mock.patch.object(ServerStore, "_reclaim_recovery_slot") as reclaimed:
+                        with self.assertRaisesRegex(ServerStoreError, "unsafe"):
+                            _ = ServerStore.open(path.parent)
+                    opened.assert_not_called()
+                    reclaimed.assert_not_called()
+                    self.assertEqual(before, path.read_bytes())
+
     def test_linked_database_refuses_before_sqlite_or_recovery_access(self) -> None:
         for version in (0, 1, 2):
             for migrate in (False, True):

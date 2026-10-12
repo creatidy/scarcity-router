@@ -268,6 +268,7 @@ class ServerStore:
             assert parent_info is not None
             self._parent_info = parent_info
             expected = self._store_info(path)
+            _ = self._check_store_entry(path, expected)
             with self._recovery_guard(path, expected) as expected:
                 _ = self._check_store_entry(path, expected)
                 flags = getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
@@ -309,6 +310,9 @@ class ServerStore:
             current is not None and expected is not None and not os.path.samestat(current, expected)
         ):
             raise ServerStoreError("server store entry identity changed; refusing access")
+        # SQLite can modify existing sidecars even during a read-only open.
+        for suffix in ("-journal", "-wal", "-shm"):
+            _ = self._store_info(path.with_name(path.name + suffix))
         return current
 
     def _open_store(self, path: Path, expected: os.stat_result, fd: int) -> sqlite3.Connection:
