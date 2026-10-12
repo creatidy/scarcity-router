@@ -240,6 +240,105 @@ class OwnedSchemaRecoveryTests(unittest.TestCase):
     def crash(self, path: Path) -> Path:
         return self._crash(path)
 
+    def test_native_quoted_constraint_keywords_refuse_cold_and_hot_before_effects(self) -> None:
+        for version in (1, 2):
+            for kind in ("primary", "notnull"):
+                for hot in (True, False):
+                    for migrate in (True, False):
+                        with self.subTest(version=version, kind=kind, hot=hot, migrate=migrate), tempfile.TemporaryDirectory() as parent:
+                            path = self._seed(parent, version)
+                            c = sqlite3.connect(path)
+                            try:
+                                original = cast("list[tuple[object, ...]]", c.execute("SELECT * FROM client_keys").fetchall())
+                                _ = c.execute("DROP TABLE client_keys")
+                                key = 'client_id TEXT "PRIMARY" "KEY"' if kind == "primary" else "client_id TEXT PRIMARY KEY"
+                                verifier = 'key_hash TEXT "NOT" "NULL"' if kind == "notnull" else "key_hash TEXT NOT NULL"
+                                _ = c.execute(f"CREATE TABLE client_keys({key}, {verifier}, label TEXT NOT NULL, created_at TEXT NOT NULL, revoked_at TEXT)")
+                                _ = c.executemany("INSERT INTO client_keys VALUES (?, ?, ?, ?, ?)", original)
+                                if version == 1:
+                                    _ = c.execute("INSERT INTO worker_pairings(worker_id,label,status,code_hash,created_at) VALUES ('synthetic','synthetic','pending','synthetic-hash',?)", (T0,))
+                                columns = cast("list[tuple[object, ...]]", c.execute("PRAGMA table_info(client_keys)").fetchall())
+                                self.assertEqual(0, columns[0][5] if kind == "primary" else columns[1][3])
+                                c.commit()
+                            finally:
+                                c.close()
+                            if hot:
+                                _ = self._crash(path)
+                            os.chmod(path.parent, 0o750)
+                            os.chmod(path, 0o640)
+                            files = (path, Path(str(path) + "-wal"), Path(str(path) + "-journal"))
+                            before = tuple(p.read_bytes() if p.exists() else None for p in files)
+                            with self.assertRaisesRegex(ServerStoreError, "owned schema is invalid"):
+                                _ = ServerStore.open(path.parent, migrate=migrate)
+                            for label, original_bytes, file_path in zip(("database", "WAL", "journal"), before, files, strict=True):
+                                self.assertTrue(original_bytes == (file_path.read_bytes() if file_path.exists() else None), f"unsupported constraint changed {label}")
+                            self.assertEqual((0o750, 0o640), (stat.S_IMODE(path.parent.stat().st_mode), stat.S_IMODE(path.stat().st_mode)))
+                            self.assertEqual([], list(path.parent.glob(".store-recovery-*")))
+                            if not hot and version == 1:
+                                c = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)
+                                try:
+                                    self.assertEqual((1,), c.execute("SELECT COUNT(*) FROM worker_pairings").fetchone())
+                                finally:
+                                    c.close()
+
+    def test_compiled_structure_accepts_quoted_identifiers_and_types(self) -> None:
+        for version in (1, 2):
+            with self.subTest(version=version), tempfile.TemporaryDirectory() as parent:
+                directory = Path(parent) / "server"
+                raw = ServerStore.open(directory, migrate=False)
+                path = raw.path
+                raw.close()
+                c = sqlite3.connect(path)
+                try:
+                    for number, statements in MIGRATIONS[:version]:
+                        for statement in statements:
+                            ddl = re.sub(r"CREATE TABLE (\w+)", r'CREATE TABLE "\1"', statement)
+                            ddl = re.sub(r"\b(client_id|key_hash|label|created_at|revoked_at|id|version|applied_at)\b", r'"\1"', ddl)
+                            _ = c.execute(ddl.replace("TEXT", '"TEXT"'))
+                        _ = c.execute("INSERT INTO schema_migrations VALUES (?, ?)", (number, T0))
+                    c.commit()
+                finally:
+                    c.close()
+                store = ServerStore.open(directory)
+                try:
+                    self.assertEqual(2, store.schema_version())
+                finally:
+                    store.close()
+
+    def test_quoted_primary_key_refusal_preserves_committed_wal(self) -> None:
+        writer = """
+import os, sqlite3, sys
+c = sqlite3.connect(sys.argv[1])
+assert c.execute('PRAGMA journal_mode=WAL').fetchone() == ('wal',)
+c.execute("UPDATE client_keys SET label='committed'")
+c.commit()
+os._exit(0)
+"""
+        for version in (1, 2):
+            for migrate in (True, False):
+                with self.subTest(version=version, migrate=migrate), tempfile.TemporaryDirectory() as parent:
+                    path = self._seed(parent, version)
+                    c = sqlite3.connect(path)
+                    try:
+                        _ = c.execute("DROP TABLE client_keys")
+                        _ = c.execute('CREATE TABLE client_keys(client_id TEXT "PRIMARY" "KEY", key_hash TEXT NOT NULL, label TEXT NOT NULL, created_at TEXT NOT NULL, revoked_at TEXT)')
+                        _ = c.execute("INSERT INTO client_keys VALUES ('synthetic','synthetic-hash','synthetic',?,NULL)", (T0,))
+                        c.commit()
+                    finally:
+                        c.close()
+                    _ = subprocess.run([sys.executable, "-c", writer, str(path)],
+                                       env={"PATH": os.defpath, "HOME": parent, "TMPDIR": parent},
+                                       check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+                    wal = Path(str(path) + "-wal")
+                    self.assertGreater(wal.stat().st_size, 0)
+                    os.chmod(path.parent, 0o750)
+                    os.chmod(path, 0o640)
+                    before = path.read_bytes(), wal.read_bytes()
+                    with self.assertRaisesRegex(ServerStoreError, "owned schema is invalid"):
+                        _ = ServerStore.open(path.parent, migrate=migrate)
+                    self.assertTrue(before == (path.read_bytes(), wal.read_bytes()), "refusal changed committed WAL")
+                    self.assertEqual((0o750, 0o640), (stat.S_IMODE(path.parent.stat().st_mode), stat.S_IMODE(path.stat().st_mode)))
+
     _WRITER: str = """
 import os, sqlite3, sys
 c = sqlite3.connect(sys.argv[1])

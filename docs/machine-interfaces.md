@@ -672,6 +672,10 @@ constraints and migration targets, against its actual migration producers;
 unexpected triggers/views or missing/incompatible tables cannot authorize a
 migration. Formatting, exact identifier quoting and ASCII keyword/name case are
 not new versions; delimiter-bearing and Unicode-confusable names are not aliases.
+SQLite-compiled column names/types, nullability, defaults, primary keys, indexes
+(including uniqueness and collation), and foreign keys must also match the same
+trusted migration reference. Quoted constraint keywords used as declared type
+words do not constitute an equivalent owned schema.
 The preflight reads a consistent schema/history snapshot. Ordinary read-only
 errors never authorize recovery. For SQLite's exact `SQLITE_READONLY_ROLLBACK`
 condition, a protected short-lived candidate is recovered and validated first;

@@ -431,6 +431,41 @@ class ServerStore:
                       _schema_tokens(cast(str, row["sql"])) for row in objects}
             if actual != wanted:
                 raise ServerStoreError("server store owned schema is invalid; refusing repair")
+
+            def compiled_rows(connection: sqlite3.Connection, pragma: str, name: str,
+                              fields: tuple[str, ...], folded: frozenset[str]) -> tuple[tuple[object, ...], ...]:
+                quoted = '"' + name.replace('"', '""') + '"'
+                rows = _fetch_rows(connection, f"PRAGMA {pragma}({quoted})")
+                return tuple(tuple(
+                    _ascii_lower(cast(str, row[field]))
+                    if field in folded and isinstance(cast(object, row[field]), str)
+                    else cast(object, row[field]) for field in fields
+                ) for row in rows)
+
+            def compiled_table(connection: sqlite3.Connection, name: str) -> tuple[object, ...]:
+                columns = compiled_rows(connection, "table_xinfo", name,
+                                        ("cid", "name", "type", "notnull", "dflt_value", "pk", "hidden"),
+                                        frozenset({"name", "type"}))
+                foreign_keys = compiled_rows(connection, "foreign_key_list", name,
+                                             ("id", "seq", "table", "from", "to", "on_update", "on_delete", "match"),
+                                             frozenset({"table", "from", "to", "on_update", "on_delete", "match"}))
+                quoted = '"' + name.replace('"', '""') + '"'
+                indexes: list[tuple[object, ...]] = []
+                for row in _fetch_rows(connection, f"PRAGMA index_list({quoted})"):
+                    parts = compiled_rows(connection, "index_xinfo", cast(str, row["name"]),
+                                          ("seqno", "cid", "name", "desc", "coll", "key"),
+                                          frozenset({"name", "coll"}))
+                    indexes.append((cast(object, row["unique"]), cast(object, row["origin"]),
+                                    cast(object, row["partial"]), parts))
+                return columns, foreign_keys, tuple(sorted(indexes, key=repr))
+
+            # Quoted keywords can be type words rather than constraints. Use
+            # SQLite's compiled structure, not lexical equivalence, for these.
+            for row in expected:
+                if row["type"] == "table":
+                    name = cast(str, row["name"])
+                    if compiled_table(self._connection, name) != compiled_table(reference, name):
+                        raise ServerStoreError("server store owned schema is invalid; refusing repair")
         finally:
             reference.close()
 
