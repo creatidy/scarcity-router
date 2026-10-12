@@ -1563,7 +1563,8 @@ class NoExecutionAndNoIdeMutationTests(GuardrailTestCase):
           written atomically into the invoking user's own
           ``~/.config/systemd/user/`` (``0o644``; no secret material by
            construction — negative-scanned by ``tests/test_worker_service.py``).
-        - Only ``ServerStore._inspect_interrupted_store`` in
+        - Only ``ServerStore._inspect_interrupted_store`` and its
+          ``_recovery_guard``/``_write_recovery_claim`` lifecycle in
           ``server_store.py`` — #185's D-044-private, short-lived SQLite
           recovery candidate. Owned-source validation, modes, refusal and
           cleanup are behavior-tested in ``tests/test_server_store.py``;
@@ -1589,7 +1590,7 @@ class NoExecutionAndNoIdeMutationTests(GuardrailTestCase):
                 for definition in tree.body:
                     if isinstance(definition, ast.ClassDef) and definition.name == "ServerStore":
                         for member in definition.body:
-                            if isinstance(member, ast.FunctionDef) and member.name == "_inspect_interrupted_store":
+                            if isinstance(member, ast.FunctionDef) and member.name in {"_inspect_interrupted_store", "_recovery_guard", "_write_recovery_claim"}:
                                 recovery_calls.update(id(call) for call in ast.walk(member) if isinstance(call, ast.Call))
             for node in ast.walk(tree):
                 if not isinstance(node, ast.Call):

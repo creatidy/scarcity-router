@@ -45,16 +45,18 @@ from __future__ import annotations
 
 import json
 import os
+import errno
 import re
 import shutil
 import sqlite3
 import stat
-import tempfile
+import time
 import threading
-from collections.abc import Mapping
+from contextlib import contextmanager
+from collections.abc import Generator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
+from typing import Callable, cast
 
 from .gateway_validation import v_safe_id, v_str
 
@@ -164,6 +166,11 @@ MIGRATIONS: tuple[tuple[int, tuple[str, ...]], ...] = (
 )
 
 _AUDIT_HARD_CAP = 100_000
+_RECOVERY_SLOT = ".store-recovery-candidate"
+_RECOVERY_CLAIM = ".store-recovery.claim"
+_RECOVERY_NEXT = ".store-recovery.claim-next"
+_RECOVERY_GUARD = ".store-recovery.lock"
+_RECOVERY_MAGIC = b"scarcity-router recovery claim\n"
 
 
 class ServerStoreError(ValueError):
@@ -174,13 +181,27 @@ class _HotRollbackRequired(ServerStoreError):
     """Private signal for SQLite's precise read-only rollback condition."""
 
 
+def _ascii_lower(text: str) -> str:
+    return text.translate(str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"))
+
+
 def _schema_tokens(sql: str) -> tuple[str, ...]:
     """Compare the owned DDL, ignoring formatting but preserving literals."""
     tokens = cast("list[str]", re.findall(r"'(?:''|[^'])*'|\"(?:\"\"|[^\"])*\"|`(?:``|[^`])*`|\[[^\]]*\]|--[^\n]*|/\*.*?\*/|\w+|[^\s]", sql, re.DOTALL))
-    return tuple(
-        token if token.startswith("'") else token.strip('"`[]').casefold()
-        for token in tokens if not token.startswith(("--", "/*"))
-    )
+    normalized: list[str] = []
+    for token in tokens:
+        if token.startswith(("--", "/*")):
+            continue
+        if token.startswith("'"):
+            normalized.append(token)
+            continue
+        if len(token) >= 2 and token[0] in ('"', "`") and token[-1] == token[0]:
+            delimiter = token[0]
+            token = token[1:-1].replace(delimiter * 2, delimiter)
+        elif token.startswith("[") and token.endswith("]"):
+            token = token[1:-1]
+        normalized.append(_ascii_lower(token))
+    return tuple(normalized)
 
 
 @dataclass(frozen=True)
@@ -239,6 +260,11 @@ class ServerStore:
         self._lock = threading.RLock()
         parent = path.parent
         parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        with self._recovery_guard(path):
+            self._connection = self._open_store(path)
+
+    def _open_store(self, path: Path) -> sqlite3.Connection:
+        parent = path.parent
         if path.exists():
             # Closing the last writable WAL reader can checkpoint even on a
             # refusal. Inspect existing stores read-only first, including WAL.
@@ -283,6 +309,7 @@ class ServerStore:
         except (sqlite3.Error, OSError) as exc:
             self._connection.close()
             raise ServerStoreError(f"server store is not usable: {exc}") from None
+        return self._connection
 
     # ── Lifecycle and schema ──────────────────────────────────────────────
 
@@ -331,7 +358,7 @@ class ServerStore:
                 objects = _fetch_rows(self._connection,
                     "SELECT name, type, sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*'"
                 )
-                metadata = tuple(row for row in objects if cast(str, row["name"]).casefold() == "schema_migrations")
+                metadata = tuple(row for row in objects if _ascii_lower(cast(str, row["name"])) == "schema_migrations")
                 if not metadata and not objects:
                     return ()
                 if len(metadata) != 1 or metadata[0]["type"] != "table" or type(cast(object, metadata[0]["sql"])) is not str:
@@ -341,8 +368,8 @@ class ServerStore:
                 if _schema_tokens(cast(str, metadata[0]["sql"])) != _schema_tokens(MIGRATIONS[0][1][0]):
                     raise ServerStoreError("server store migration metadata is invalid; refusing repair")
                 columns = _fetch_rows(self._connection, "PRAGMA table_info(schema_migrations)")
-                if tuple((cast(str, row["name"]).casefold(), cast(str, row["type"]).upper(), row["notnull"], row["pk"]) for row in columns) != (
-                    ("version", "INTEGER", 0, 1), ("applied_at", "TEXT", 1, 0),
+                if tuple((_ascii_lower(cast(str, row["name"])), _ascii_lower(cast(str, row["type"])), row["notnull"], row["pk"]) for row in columns) != (
+                    ("version", "integer", 0, 1), ("applied_at", "text", 1, 0),
                 ):
                     raise ServerStoreError(
                         "server store migration metadata is invalid; refusing repair"
@@ -396,11 +423,11 @@ class ServerStore:
             expected = _fetch_rows(reference,
                 "SELECT name, type, sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*'"
             )
-            wanted = {(cast(str, row["name"]).casefold(), cast(str, row["type"])):
+            wanted = {(_ascii_lower(cast(str, row["name"])), cast(str, row["type"])):
                       _schema_tokens(cast(str, row["sql"])) for row in expected}
             if any(type(cast(object, row["sql"])) is not str for row in objects):
                 raise ServerStoreError("server store owned schema is invalid; refusing repair")
-            actual = {(cast(str, row["name"]).casefold(), cast(str, row["type"])):
+            actual = {(_ascii_lower(cast(str, row["name"])), cast(str, row["type"])):
                       _schema_tokens(cast(str, row["sql"])) for row in objects}
             if actual != wanted:
                 raise ServerStoreError("server store owned schema is invalid; refusing repair")
@@ -413,8 +440,7 @@ class ServerStore:
             parent_info = path.parent.lstat()
             if not stat.S_ISDIR(parent_info.st_mode):
                 raise ServerStoreError("server store recovery requires an owned directory")
-            with tempfile.TemporaryDirectory(prefix=".store-recovery-", dir=path.parent) as scratch:
-                directory = Path(scratch)
+            with self._recovery_slot(path) as directory:
                 if directory.stat().st_uid != parent_info.st_uid:
                     raise ServerStoreError("server store recovery ownership is invalid")
 
@@ -468,6 +494,170 @@ class ServerStore:
                     raise ServerStoreError("server store changed during recovery inspection; retry")
         except (sqlite3.Error, OSError):
             raise ServerStoreError("server store interrupted-transaction inspection failed safely") from None
+
+    def _recovery_info(self, path: Path, *, directory: bool = False) -> os.stat_result:
+        info = path.lstat()
+        reparse = cast(int, getattr(info, "st_file_attributes", 0)) & cast(int, getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0))
+        valid_type = stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode)
+        mode = 0o700 if directory else 0o600
+        if reparse or not valid_type or info.st_uid != path.parent.stat().st_uid or (not directory and info.st_nlink != 1):
+            raise ServerStoreError("unsafe recovery artifact; administrator inspection required")
+        if os.name != "nt" and stat.S_IMODE(info.st_mode) != mode:
+            raise ServerStoreError("unsafe recovery artifact permissions; administrator inspection required")
+        return info
+
+    @staticmethod
+    def _sync_recovery_directory(directory: Path) -> None:
+        if os.name != "nt":
+            fd = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+
+    @contextmanager
+    def _recovery_guard(self, path: Path) -> Generator[None, None, None]:
+        guard = path.parent / _RECOVERY_GUARD
+        fd: int | None = None
+        locked = False
+        try:
+            parent = path.parent.lstat()
+            if not stat.S_ISDIR(parent.st_mode) or cast(int, getattr(parent, "st_file_attributes", 0)) & cast(int, getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)):
+                raise ServerStoreError("unsafe recovery directory; administrator inspection required")
+            flags = os.O_RDWR | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+            try:
+                fd = os.open(guard, flags | os.O_CREAT | os.O_EXCL, 0o600)
+            except FileExistsError:
+                _ = self._recovery_info(guard)
+                fd = os.open(guard, flags)
+            expected = self._recovery_info(guard)
+            opened = os.fstat(fd)
+            if (opened.st_dev, opened.st_ino, opened.st_uid, opened.st_mode, opened.st_nlink) != (expected.st_dev, expected.st_ino, expected.st_uid, expected.st_mode, expected.st_nlink):
+                raise ServerStoreError("recovery lock identity changed; retry")
+            deadline = time.monotonic() + 5
+            while True:
+                try:
+                    if os.name == "nt":
+                        import msvcrt
+                        _ = os.lseek(fd, 0, os.SEEK_SET)
+                        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                    else:
+                        import fcntl
+                        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    locked = True
+                    break
+                except OSError as exc:
+                    if exc.errno not in (errno.EACCES, errno.EAGAIN):
+                        raise
+                    if time.monotonic() >= deadline:
+                        raise ServerStoreError("recovery inspection is active; retry after it finishes") from None
+                    time.sleep(0.01)
+            _ = os.lseek(fd, 0, os.SEEK_SET)
+            marker = os.read(fd, 2)
+            if marker not in (b"", b"\0"):
+                raise ServerStoreError("unknown recovery lock; administrator inspection required")
+            if not marker:
+                _ = os.lseek(fd, 0, os.SEEK_SET)
+                _ = os.write(fd, b"\0")
+                os.fsync(fd)
+                self._sync_recovery_directory(path.parent)
+            self._reclaim_recovery_slot(path)
+            if any(entry.name != _RECOVERY_SLOT for entry in path.parent.glob(".store-recovery-*")):
+                raise ServerStoreError("unattested recovery artifact; administrator inspection required")
+            yield
+        except OSError:
+            raise ServerStoreError("recovery lifecycle unavailable; source retained") from None
+        finally:
+            if fd is not None:
+                try:
+                    if locked:
+                        if os.name == "nt":
+                            import msvcrt
+                            _ = os.lseek(fd, 0, os.SEEK_SET)
+                            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+                        else:
+                            import fcntl
+                            fcntl.flock(fd, fcntl.LOCK_UN)
+                finally:
+                    os.close(fd)
+
+    def _write_recovery_claim(self, path: Path, payload: bytes) -> None:
+        stage = path.parent / _RECOVERY_NEXT
+        claim = path.parent / _RECOVERY_CLAIM
+        fd = os.open(stage, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        with os.fdopen(fd, "wb") as writer:
+            _ = writer.write(payload)
+            writer.flush()
+            os.fsync(writer.fileno())
+        if os.name == "nt":
+            import ctypes
+            library = cast(object, ctypes.WinDLL("kernel32", use_last_error=True))
+            move = cast(object, getattr(library, "MoveFileExW"))
+            setattr(move, "argtypes", [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_ulong])
+            setattr(move, "restype", ctypes.c_int)
+            if not cast(Callable[[str, str, int], int], move)(str(stage), str(claim), 1 | 8):
+                raise ServerStoreError("recovery claim publication failed; source retained")
+        else:
+            os.replace(stage, claim)
+        self._sync_recovery_directory(path.parent)
+
+    def _reclaim_recovery_slot(self, path: Path) -> None:
+        slot = path.parent / _RECOVERY_SLOT
+        claim = path.parent / _RECOVERY_CLAIM
+        stage = path.parent / _RECOVERY_NEXT
+        planned = _RECOVERY_MAGIC + b"P\n"
+        owned = _RECOVERY_MAGIC + b"O\n"
+        if stage.exists() or stage.is_symlink():
+            stage_info = self._recovery_info(stage)
+            if stage_info.st_size > len(owned) + 32:
+                raise ServerStoreError("unknown recovery claim; administrator inspection required")
+            partial = stage.read_bytes()
+            if not (planned.startswith(partial) or owned.startswith(partial) or (partial.startswith(owned) and len(partial) <= len(owned) + 32)):
+                raise ServerStoreError("unknown recovery claim; administrator inspection required")
+            stage.unlink()
+        if not claim.exists() and not claim.is_symlink():
+            if slot.exists() or slot.is_symlink():
+                raise ServerStoreError("unattested recovery slot; administrator inspection required")
+            return
+        claim_info = self._recovery_info(claim)
+        if claim_info.st_size > len(owned) + 32:
+            raise ServerStoreError("unknown recovery claim; administrator inspection required")
+        payload = claim.read_bytes()
+        if payload != planned and not (payload.startswith(owned) and len(payload) == len(owned) + 32):
+            raise ServerStoreError("unknown recovery claim; administrator inspection required")
+        if slot.exists() or slot.is_symlink():
+            info = self._recovery_info(slot, directory=True)
+            if payload != planned and payload[len(owned):] != info.st_dev.to_bytes(16, "big") + info.st_ino.to_bytes(16, "big"):
+                raise ServerStoreError("recovery slot identity changed; administrator inspection required")
+            entries: list[Path] = []
+            for entry in slot.iterdir():
+                entries.append(entry)
+                if len(entries) > 4:
+                    raise ServerStoreError("unattested recovery contents; administrator inspection required")
+            allowed = {path.name + suffix for suffix in ("", "-journal", "-wal", "-shm")}
+            if (payload == planned and entries) or any(entry.name not in allowed for entry in entries):
+                raise ServerStoreError("unattested recovery contents; administrator inspection required")
+            for entry in entries:
+                _ = self._recovery_info(entry)
+            for entry in entries:
+                entry.unlink()
+            slot.rmdir()
+            self._sync_recovery_directory(path.parent)
+        claim.unlink()
+        self._sync_recovery_directory(path.parent)
+
+    @contextmanager
+    def _recovery_slot(self, path: Path) -> Generator[Path, None, None]:
+        slot = path.parent / _RECOVERY_SLOT
+        self._write_recovery_claim(path, _RECOVERY_MAGIC + b"P\n")
+        slot.mkdir(mode=0o700)
+        info = self._recovery_info(slot, directory=True)
+        self._sync_recovery_directory(path.parent)
+        self._write_recovery_claim(path, _RECOVERY_MAGIC + b"O\n" + info.st_dev.to_bytes(16, "big") + info.st_ino.to_bytes(16, "big"))
+        try:
+            yield slot
+        finally:
+            self._reclaim_recovery_slot(path)
 
     def migrate(self) -> int:
         """Apply a bounded, ordered migration set atomically and idempotently."""

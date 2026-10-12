@@ -33,7 +33,213 @@ T0 = "2026-09-16T12:00:00.000Z"
 T1 = "2026-09-16T12:01:00.000Z"
 
 
+class RecoveryLifecycleTests(unittest.TestCase):
+    _CHILD: str = """
+import os, sys
+from pathlib import Path
+from scarcity_router import server_store as s
+copier = s.shutil.copyfileobj
+def interrupted(reader, writer):
+    copier(reader, writer)
+    writer.flush()
+    os.fsync(writer.fileno())
+    if sys.argv[2] == 'hold':
+        print('READY', flush=True)
+        sys.stdin.readline()
+    os._exit(0)
+s.shutil.copyfileobj = interrupted
+s.ServerStore.open(Path(sys.argv[1]))
+"""
+
+    def _child(self, path: Path, mode: str = "exit") -> subprocess.Popen[str]:
+        return subprocess.Popen([sys.executable, "-c", self._CHILD, str(path.parent), mode],
+                                env={"PATH": os.defpath, "HOME": str(path.parent), "TMPDIR": str(path.parent), "PYTHONPATH": str(Path.cwd())},
+                                text=True, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+
+    def test_delimiter_and_unicode_names_refuse_before_original_effects(self) -> None:
+        for damage in ("bracket", "quote", "kelvin", "control"):
+            for migrate in (True, False):
+                with self.subTest(damage=damage, migrate=migrate), tempfile.TemporaryDirectory() as parent:
+                    path = OwnedSchemaRecoveryTests().seed(parent, 2)
+                    c = sqlite3.connect(path)
+                    try:
+                        if damage in ("bracket", "quote"):
+                            _ = c.execute("DROP TABLE server_configuration")
+                            name = '"[id]"' if damage == "bracket" else '"i""d"'
+                            _ = c.execute(f"CREATE TABLE server_configuration({name} INTEGER PRIMARY KEY CHECK ({name}=1), document TEXT NOT NULL, updated_at TEXT NOT NULL)")
+                        elif damage == "kelvin":
+                            _ = c.execute('ALTER TABLE client_keys RENAME TO "client_\u212aeys"')
+                        else:
+                            _ = c.execute('ALTER TABLE schema_migrations RENAME TO "\u017fchema_migrations"')
+                        c.commit()
+                        self.assertEqual(("wal",), c.execute("PRAGMA journal_mode=WAL").fetchone())
+                    finally:
+                        c.close()
+                    os.chmod(path.parent, 0o750)
+                    os.chmod(path, 0o640)
+                    before = path.read_bytes()
+                    with self.assertRaises(ServerStoreError):
+                        _ = ServerStore.open(path.parent, migrate=migrate)
+                    self.assertTrue(before == path.read_bytes(), "semantic alias changed original")
+                    self.assertEqual((0o750, 0o640), (stat.S_IMODE(path.parent.stat().st_mode), stat.S_IMODE(path.stat().st_mode)))
+                    c = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)
+                    try:
+                        self.assertEqual(("wal",), c.execute("PRAGMA journal_mode").fetchone())
+                    finally:
+                        c.close()
+
+    def test_repeated_killed_copies_are_bounded_and_reclaimed_on_cold_future_refusal(self) -> None:
+        with tempfile.TemporaryDirectory() as parent:
+            fixture = OwnedSchemaRecoveryTests()
+            path = fixture.seed(parent, 2)
+            _ = fixture.crash(path)
+            for _attempt in range(3):
+                child = self._child(path)
+                try:
+                    self.assertEqual(0, child.wait(timeout=10))
+                finally:
+                    _ = child.communicate(timeout=10)
+                self.assertEqual(1, len(list(path.parent.glob(".store-recovery-*"))))
+            c = sqlite3.connect(path)
+            try:
+                _ = c.execute("INSERT INTO schema_migrations VALUES (3, ?)", (T0,))
+                c.commit()
+            finally:
+                c.close()
+            os.chmod(path.parent, 0o750)
+            os.chmod(path, 0o640)
+            before = path.read_bytes()
+            with self.assertRaises(ServerStoreError):
+                _ = ServerStore.open(path.parent)
+            self.assertTrue(before == path.read_bytes(), "future original changed")
+            self.assertEqual([], list(path.parent.glob(".store-recovery-*")))
+            self.assertFalse((path.parent / ".store-recovery.claim").exists())
+            self.assertEqual((0o750, 0o640), (stat.S_IMODE(path.parent.stat().st_mode), stat.S_IMODE(path.stat().st_mode)))
+
+    def test_active_inspector_not_deleted_and_kill_releases_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as parent:
+            fixture = OwnedSchemaRecoveryTests()
+            path = fixture.seed(parent, 2)
+            _ = fixture.crash(path)
+            child = self._child(path, "hold")
+            try:
+                assert child.stdout is not None
+                self.assertEqual("READY", cast(str, child.stdout.readline()).strip())
+                slot = path.parent / ".store-recovery-candidate"
+                inode = slot.stat().st_ino
+                with self.assertRaisesRegex(ServerStoreError, "active"):
+                    _ = ServerStore.open(path.parent)
+                self.assertEqual(inode, slot.stat().st_ino)
+            finally:
+                child.kill()
+                _ = child.communicate(timeout=10)
+            store = ServerStore.open(path.parent)
+            store.close()
+            self.assertFalse(slot.exists())
+
+    def test_interrupted_claim_directory_and_cleanup_states_recover_without_copy(self) -> None:
+        magic = b"scarcity-router recovery claim\n"
+        for state in ("stage", "planned", "directory", "owned", "cleaned"):
+            with self.subTest(state=state), tempfile.TemporaryDirectory() as parent:
+                path = OwnedSchemaRecoveryTests().seed(parent, 2)
+                claim = path.parent / ".store-recovery.claim"
+                slot = path.parent / ".store-recovery-candidate"
+                if state == "stage":
+                    stage = path.parent / ".store-recovery.claim-next"
+                    _ = stage.write_bytes(magic[:5])
+                    os.chmod(stage, 0o600)
+                else:
+                    payload = magic + b"P\n"
+                    if state in ("directory", "owned", "cleaned"):
+                        slot.mkdir(mode=0o700)
+                    if state in ("owned", "cleaned"):
+                        info = slot.stat()
+                        payload = magic + b"O\n" + info.st_dev.to_bytes(16, "big") + info.st_ino.to_bytes(16, "big")
+                    _ = claim.write_bytes(payload)
+                    os.chmod(claim, 0o600)
+                    if state == "owned":
+                        candidate = slot / path.name
+                        _ = candidate.write_bytes(b"SYNTHETIC-SECRET")
+                        os.chmod(candidate, 0o600)
+                    if state == "cleaned":
+                        slot.rmdir()
+                with mock.patch.object(ServerStore, "_inspect_interrupted_store") as inspection:
+                    store = ServerStore.open(path.parent)
+                store.close()
+                inspection.assert_not_called()
+                self.assertFalse(slot.exists())
+                self.assertFalse(claim.exists())
+
+    def test_unknown_symlink_type_mode_and_unattested_artifacts_are_not_adopted(self) -> None:
+        for damage in ("guard_symlink", "guard_mode", "claim_symlink", "slot", "foreign", "claim", "lock_type"):
+            with self.subTest(damage=damage), tempfile.TemporaryDirectory() as parent:
+                path = OwnedSchemaRecoveryTests().seed(parent, 2)
+                guard = path.parent / ".store-recovery.lock"
+                claim = path.parent / ".store-recovery.claim"
+                target = Path(parent) / "foreign"
+                _ = target.write_bytes(b"SYNTHETIC-SECRET")
+                if damage == "guard_symlink":
+                    guard.unlink()
+                    guard.symlink_to(target)
+                elif damage == "guard_mode":
+                    if os.name == "nt":
+                        continue
+                    os.chmod(guard, 0o644)
+                elif damage == "claim_symlink":
+                    claim.symlink_to(target)
+                elif damage in ("slot", "foreign"):
+                    (path.parent / (".store-recovery-candidate" if damage == "slot" else ".store-recovery-foreign")).mkdir(mode=0o700)
+                elif damage == "claim":
+                    _ = claim.write_bytes(b"unattested")
+                    os.chmod(claim, 0o600)
+                else:
+                    guard.unlink()
+                    guard.mkdir(mode=0o700)
+                before = path.read_bytes(), target.read_bytes()
+                with self.assertRaises(ServerStoreError):
+                    _ = ServerStore.open(path.parent)
+                self.assertTrue(before == (path.read_bytes(), target.read_bytes()), "foreign source changed")
+
+    @unittest.skipUnless(os.name == "nt", "native Windows lock/publication requires Windows")
+    def test_windows_native_killed_copy_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as parent:
+            fixture = OwnedSchemaRecoveryTests()
+            path = fixture.seed(parent, 2)
+            _ = fixture.crash(path)
+            child = self._child(path)
+            try:
+                self.assertEqual(0, child.wait(timeout=10))
+            finally:
+                _ = child.communicate(timeout=10)
+            store = ServerStore.open(path.parent)
+            store.close()
+            self.assertEqual([], list(path.parent.glob(".store-recovery-*")))
+
+    def test_foreign_lock_owner_refuses_before_use(self) -> None:
+        with tempfile.TemporaryDirectory() as parent:
+            path = OwnedSchemaRecoveryTests().seed(parent, 2)
+            original = Path.lstat
+            def foreign_owner(entry: Path) -> os.stat_result:
+                info = original(entry)
+                if entry.name == ".store-recovery.lock":
+                    fields = list(info)
+                    fields[4] = info.st_uid + 1
+                    return os.stat_result(fields)
+                return info
+            before = path.read_bytes()
+            with mock.patch.object(Path, "lstat", autospec=True, side_effect=foreign_owner):
+                with self.assertRaisesRegex(ServerStoreError, "unsafe"):
+                    _ = ServerStore.open(path.parent)
+            self.assertTrue(before == path.read_bytes(), "foreign lock changed source")
+
+
 class OwnedSchemaRecoveryTests(unittest.TestCase):
+    def seed(self, parent: str, version: int) -> Path:
+        return self._seed(parent, version)
+
+    def crash(self, path: Path) -> Path:
+        return self._crash(path)
+
     _WRITER: str = """
 import os, sqlite3, sys
 c = sqlite3.connect(sys.argv[1])
@@ -202,7 +408,7 @@ os._exit(0)
                 connection.commit()
             finally:
                 connection.close()
-            with mock.patch("scarcity_router.server_store.tempfile.TemporaryDirectory") as temporary:
+            with mock.patch.object(ServerStore, "_recovery_slot") as temporary:
                 store = ServerStore.open(directory)
             temporary.assert_not_called()
             self.addCleanup(store.close)

@@ -670,13 +670,19 @@ Worker stores retain their independent version refusal, not server migrations.
 The server validates version-specific owned table definitions, including keys,
 constraints and migration targets, against its actual migration producers;
 unexpected triggers/views or missing/incompatible tables cannot authorize a
-migration. Formatting, identifier quoting and keyword case are not new versions.
+migration. Formatting, exact identifier quoting and ASCII keyword/name case are
+not new versions; delimiter-bearing and Unicode-confusable names are not aliases.
 The preflight reads a consistent schema/history snapshot. Ordinary read-only
 errors never authorize recovery. For SQLite's exact `SQLITE_READONLY_ROLLBACK`
 condition, a protected short-lived candidate is recovered and validated first;
 only supported candidates authorize SQLite's normal rollback on the original.
 Unknown/invalid hot stores retain their original DB/journal bytes. This is bounded
 single-store crash recovery, not a repair/downgrade engine or a new operator step.
+The one candidate slot is durably claimed before copying and serialized by a
+portable private advisory lock. Startup reclaims only attested stale state, even
+when the original is now cold or refuses a future schema; it never deletes an
+active inspector or guesses ownership of unknown artifacts. The persistent lock
+is non-secret metadata, not another credential store.
 
 No downgrade/reverse migration exists. v2 retires only superseded `worker_pairings`;
 those hashes cannot become M05 salted identities (D-049). Unrelated configuration,
