@@ -356,7 +356,7 @@ class ServerStore:
                     _ = self._connection.execute("BEGIN")
                     began_read = True
                 objects = _fetch_rows(self._connection,
-                    "SELECT name, type, sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*'"
+                    "SELECT name, type, tbl_name, sql FROM sqlite_schema"
                 )
                 metadata = tuple(row for row in objects if _ascii_lower(cast(str, row["name"])) == "schema_migrations")
                 if not metadata and not objects:
@@ -421,14 +421,22 @@ class ServerStore:
                 for statement in statements:
                     _ = reference.execute(statement)
             expected = _fetch_rows(reference,
-                "SELECT name, type, sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*'"
+                "SELECT name, type, tbl_name, sql FROM sqlite_schema"
             )
+
+            def definition(row: sqlite3.Row) -> tuple[object, ...]:
+                sql = cast(object, row["sql"])
+                if sql is not None and not isinstance(sql, str):
+                    raise ServerStoreError("server store owned schema is invalid; refusing repair")
+                return (_ascii_lower(cast(str, row["tbl_name"])),
+                        _schema_tokens(sql) if isinstance(sql, str) else None)
+
+            # Generated names are admitted only when this reference creates
+            # that exact object; a reserved-looking prefix grants no exemption.
             wanted = {(_ascii_lower(cast(str, row["name"])), cast(str, row["type"])):
-                      _schema_tokens(cast(str, row["sql"])) for row in expected}
-            if any(type(cast(object, row["sql"])) is not str for row in objects):
-                raise ServerStoreError("server store owned schema is invalid; refusing repair")
+                      definition(row) for row in expected}
             actual = {(_ascii_lower(cast(str, row["name"])), cast(str, row["type"])):
-                      _schema_tokens(cast(str, row["sql"])) for row in objects}
+                      definition(row) for row in objects}
             if actual != wanted:
                 raise ServerStoreError("server store owned schema is invalid; refusing repair")
 

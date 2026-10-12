@@ -240,6 +240,74 @@ class OwnedSchemaRecoveryTests(unittest.TestCase):
     def crash(self, path: Path) -> Path:
         return self._crash(path)
 
+    def test_prepared_reserved_prefix_objects_refuse_cold_and_hot_without_source_effects(self) -> None:
+        fixtures = {
+            "trigger": "CREATE TRIGGER fixture_extra AFTER INSERT ON schema_migrations BEGIN DELETE FROM audit_records; END",
+            "index": "CREATE INDEX fixture_extra ON audit_records(recorded_at)",
+            "view": "CREATE VIEW fixture_extra AS SELECT recorded_at FROM audit_records",
+            "table": "CREATE TABLE fixture_extra(value TEXT)",
+        }
+        for kind, ddl in fixtures.items():
+            for version in (1, 2):
+                for hot in (True, False):
+                    for migrate in (True, False):
+                        with self.subTest(kind=kind, version=version, hot=hot, migrate=migrate), tempfile.TemporaryDirectory() as parent:
+                            path = self._seed(parent, version)
+                            c = sqlite3.connect(path)
+                            try:
+                                _ = c.execute(ddl)
+                                _ = c.execute("PRAGMA writable_schema=ON")
+                                _ = c.execute("UPDATE sqlite_schema SET name='sqlite_fixture_extra', tbl_name=replace(tbl_name,'fixture_extra','sqlite_fixture_extra'), sql=replace(sql,'fixture_extra','sqlite_fixture_extra') WHERE name='fixture_extra'")
+                                _ = c.execute("PRAGMA writable_schema=OFF")
+                                c.commit()
+                            finally:
+                                c.close()
+                            c = sqlite3.connect(path)
+                            try:
+                                self.assertEqual((kind,), c.execute("SELECT type FROM sqlite_schema WHERE name='sqlite_fixture_extra'").fetchone())
+                                self.assertEqual((30,), c.execute("SELECT COUNT(*) FROM audit_records").fetchone())
+                            finally:
+                                c.close()
+                            before_records = self._records(path)
+                            if hot:
+                                _ = self._crash(path)
+                            os.chmod(path.parent, 0o750)
+                            os.chmod(path, 0o640)
+                            files = (path, Path(str(path) + "-wal"), Path(str(path) + "-journal"))
+                            before = tuple(p.read_bytes() if p.exists() else None for p in files)
+                            with self.assertRaisesRegex(ServerStoreError, "owned schema is invalid"):
+                                _ = ServerStore.open(path.parent, migrate=migrate)
+                            self.assertTrue(before == tuple(p.read_bytes() if p.exists() else None for p in files), "reserved object changed source")
+                            self.assertEqual((0o750, 0o640), (stat.S_IMODE(path.parent.stat().st_mode), stat.S_IMODE(path.stat().st_mode)))
+                            self.assertEqual([], list(path.parent.glob(".store-recovery-*")))
+                            if not hot:
+                                self.assertTrue(before_records == self._records(path), "reserved object lost retained records")
+
+    def test_reference_generated_internal_objects_accept_known_quoted_case(self) -> None:
+        for version in (1, 2):
+            with self.subTest(version=version), tempfile.TemporaryDirectory() as parent:
+                directory = Path(parent) / "server"
+                raw = ServerStore.open(directory, migrate=False)
+                path = raw.path
+                raw.close()
+                c = sqlite3.connect(path)
+                try:
+                    for number, statements in MIGRATIONS[:version]:
+                        for statement in statements:
+                            ddl = re.sub(r"CREATE TABLE (\w+)", lambda match: 'CREATE TABLE "' + match[1].upper() + '"', statement)
+                            _ = c.execute(ddl)
+                        _ = c.execute("INSERT INTO schema_migrations VALUES (?, ?)", (number, T0))
+                    self.assertEqual((1,), c.execute("SELECT COUNT(*) FROM sqlite_schema WHERE name='sqlite_sequence' AND type='table'").fetchone())
+                    self.assertGreater(cast("tuple[int]", c.execute("SELECT COUNT(*) FROM sqlite_schema WHERE type='index' AND sql IS NULL").fetchone())[0], 0)
+                    c.commit()
+                finally:
+                    c.close()
+                store = ServerStore.open(directory)
+                try:
+                    self.assertEqual(2, store.schema_version())
+                finally:
+                    store.close()
+
     def test_native_quoted_constraint_keywords_refuse_cold_and_hot_before_effects(self) -> None:
         for version in (1, 2):
             for kind in ("primary", "notnull"):

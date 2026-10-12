@@ -676,6 +676,10 @@ SQLite-compiled column names/types, nullability, defaults, primary keys, indexes
 (including uniqueness and collation), and foreign keys must also match the same
 trusted migration reference. Quoted constraint keywords used as declared type
 words do not constitute an equivalent owned schema.
+The comparison enumerates the complete `sqlite_schema`: reserved-looking names
+are not exempt. Only exact generated objects present in the trusted migration
+reference (including owning table, NULL SQL and compiled structure) are admitted;
+unknown `sqlite_*` triggers, views, tables, indexes or statistics are refused.
 The preflight reads a consistent schema/history snapshot. Ordinary read-only
 errors never authorize recovery. For SQLite's exact `SQLITE_READONLY_ROLLBACK`
 condition, a protected short-lived candidate is recovered and validated first;
