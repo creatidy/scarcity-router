@@ -33,6 +33,206 @@ T0 = "2026-09-16T12:00:00.000Z"
 T1 = "2026-09-16T12:01:00.000Z"
 
 
+class DatabaseEntryTests(unittest.TestCase):
+    def test_linked_database_refuses_before_sqlite_or_recovery_access(self) -> None:
+        for version in (0, 1, 2):
+            for migrate in (False, True):
+                for link in ("symlink", "hardlink"):
+                    with self.subTest(version=version, migrate=migrate, link=link), tempfile.TemporaryDirectory() as root:
+                        target_dir = Path(root) / "target"
+                        if version:
+                            target = OwnedSchemaRecoveryTests().seed(str(target_dir), version)
+                        else:
+                            store = ServerStore.open(target_dir, migrate=False)
+                            target = store.path
+                            store.close()
+                        directory = Path(root) / "entry"
+                        directory.mkdir(mode=0o750)
+                        os.chmod(directory, 0o750)
+                        entry = canonical_store_path(directory)
+                        if link == "symlink":
+                            entry.symlink_to(target)
+                        else:
+                            os.link(target, entry)
+                        os.chmod(target, 0o640)
+                        files = (target, Path(str(target) + "-journal"), Path(str(target) + "-wal"))
+                        before = tuple(p.read_bytes() if p.exists() else None for p in files)
+                        reader = sqlite3.connect(target.as_uri() + "?mode=ro", uri=True)
+                        try:
+                            records = tuple(reader.iterdump())
+                            journal_mode = cast("tuple[str]", reader.execute("PRAGMA journal_mode").fetchone())
+                        finally:
+                            reader.close()
+                        connect = sqlite3.connect
+                        with mock.patch("scarcity_router.server_store.sqlite3.connect", wraps=connect) as opened, \
+                                mock.patch("scarcity_router.server_store._fetch_rows") as metadata, \
+                                mock.patch.object(ServerStore, "_reclaim_recovery_slot") as reclaimed:
+                            refused = False
+                            try:
+                                store = ServerStore.open(directory, migrate=migrate)
+                            except ServerStoreError:
+                                refused = True
+                            else:
+                                store.close()
+                        with self.subTest(property="refusal"):
+                            self.assertTrue(refused, "unsafe database entry was accepted")
+                        with self.subTest(property="no_read"):
+                            self.assertEqual(0, opened.call_count, "unsafe database entry reached SQLite")
+                            metadata.assert_not_called()
+                            reclaimed.assert_not_called()
+                        with self.subTest(property="unchanged"):
+                            self.assertTrue(before == tuple(p.read_bytes() if p.exists() else None for p in files), "synthetic target changed")
+                            self.assertEqual(0o640, stat.S_IMODE(target.stat().st_mode))
+                            self.assertEqual(0o750, stat.S_IMODE(directory.stat().st_mode))
+                            reader = connect(target.as_uri() + "?mode=ro", uri=True)
+                            try:
+                                self.assertTrue(records == tuple(reader.iterdump()), "synthetic records changed")
+                                self.assertTrue(journal_mode == reader.execute("PRAGMA journal_mode").fetchone(), "journal mode changed")
+                            finally:
+                                reader.close()
+
+    def test_linked_hot_and_wal_database_refuses_without_target_access(self) -> None:
+        for version in (1, 2):
+            for migrate in (False, True):
+                for link in ("symlink", "hardlink"):
+                    for journal in ("hot", "wal"):
+                        with self.subTest(version=version, migrate=migrate, link=link, journal=journal), tempfile.TemporaryDirectory() as root:
+                            fixture = OwnedSchemaRecoveryTests()
+                            target = fixture.seed(str(Path(root) / "target"), version)
+                            if journal == "hot":
+                                _ = fixture.crash(target)
+                            else:
+                                writer = "import os, sqlite3, sys; c=sqlite3.connect(sys.argv[1]); c.execute('PRAGMA journal_mode=WAL'); c.execute(\"UPDATE client_keys SET label='synthetic-committed'\"); c.commit(); os._exit(0)"
+                                _ = subprocess.run([sys.executable, "-c", writer, str(target)],
+                                                   env={"PATH": os.defpath, "HOME": root, "TMPDIR": root},
+                                                   check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+                            directory = Path(root) / "entry"
+                            directory.mkdir(mode=0o750)
+                            os.chmod(directory, 0o750)
+                            entry = canonical_store_path(directory)
+                            if link == "symlink":
+                                entry.symlink_to(target)
+                            else:
+                                os.link(target, entry)
+                            os.chmod(target, 0o640)
+                            files = (target, Path(str(target) + "-journal"), Path(str(target) + "-wal"), Path(str(target) + "-shm"))
+                            before = tuple(p.read_bytes() if p.exists() else None for p in files)
+                            with mock.patch("scarcity_router.server_store.sqlite3.connect") as opened, \
+                                    mock.patch("scarcity_router.server_store._fetch_rows") as metadata, \
+                                    mock.patch.object(ServerStore, "_reclaim_recovery_slot") as reclaimed:
+                                with self.assertRaises(ServerStoreError):
+                                    _ = ServerStore.open(directory, migrate=migrate)
+                            opened.assert_not_called()
+                            metadata.assert_not_called()
+                            reclaimed.assert_not_called()
+                            self.assertTrue(before == tuple(p.read_bytes() if p.exists() else None for p in files), "synthetic journal target changed")
+                            self.assertEqual((0o750, 0o640), (stat.S_IMODE(directory.stat().st_mode), stat.S_IMODE(target.stat().st_mode)))
+
+    def test_replaced_database_refuses_before_sqlite_access(self) -> None:
+        for replacement in ("regular", "symlink", "hardlink"):
+            for migrate in (False, True):
+                with self.subTest(replacement=replacement, migrate=migrate), tempfile.TemporaryDirectory() as root:
+                    fixture = OwnedSchemaRecoveryTests()
+                    path = fixture.seed(str(Path(root) / "source"), 2)
+                    target = fixture.seed(str(Path(root) / "target"), 2)
+                    os.chmod(path.parent, 0o750)
+                    os.chmod(target, 0o640)
+                    before = path.read_bytes(), target.read_bytes()
+                    retained = path.with_name("previous.sqlite3")
+                    original_open = os.open
+                    def replacing_open(entry: str | bytes | os.PathLike[str] | os.PathLike[bytes], flags: int, mode: int = 0o777) -> int:
+                        fd = original_open(entry, flags, mode)
+                        if os.fspath(entry) == str(path):
+                            _ = path.rename(retained)
+                            if replacement == "regular":
+                                _ = shutil.copyfile(target, path)
+                            elif replacement == "symlink":
+                                path.symlink_to(target)
+                            else:
+                                os.link(target, path)
+                        return fd
+                    with mock.patch("scarcity_router.server_store.os.open", side_effect=replacing_open), \
+                            mock.patch("scarcity_router.server_store.sqlite3.connect") as opened, \
+                            mock.patch("scarcity_router.server_store._fetch_rows") as metadata:
+                        with self.assertRaises(ServerStoreError):
+                            _ = ServerStore.open(path.parent, migrate=migrate)
+                    opened.assert_not_called()
+                    metadata.assert_not_called()
+                    self.assertTrue(before == (retained.read_bytes(), target.read_bytes()), "replacement changed synthetic files")
+                    self.assertEqual((0o750, 0o640), (stat.S_IMODE(path.parent.stat().st_mode), stat.S_IMODE(target.stat().st_mode)))
+
+    def test_nonowned_directory_or_database_refuses_before_sqlite_or_cleanup(self) -> None:
+        for foreign in ("directory", "database"):
+            with self.subTest(foreign=foreign), tempfile.TemporaryDirectory() as root:
+                path = OwnedSchemaRecoveryTests().seed(root, 2)
+                original = Path.lstat
+                def foreign_owner(entry: Path) -> os.stat_result:
+                    info = original(entry)
+                    if entry == (path.parent if foreign == "directory" else path):
+                        fields = list(info)
+                        fields[4] = info.st_uid + 1
+                        return os.stat_result(fields)
+                    return info
+                before = path.read_bytes()
+                with mock.patch.object(Path, "lstat", autospec=True, side_effect=foreign_owner), \
+                        mock.patch("scarcity_router.server_store.sqlite3.connect") as opened, \
+                        mock.patch.object(ServerStore, "_reclaim_recovery_slot") as reclaimed:
+                    with self.assertRaisesRegex(ServerStoreError, "unsafe"):
+                        _ = ServerStore(path)
+                opened.assert_not_called()
+                reclaimed.assert_not_called()
+                self.assertTrue(before == path.read_bytes(), "foreign-owned synthetic file changed")
+
+    def test_nonregular_and_reparse_database_refuse_before_access(self) -> None:
+        for kind in ("directory", "reparse", "fifo"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as root:
+                directory = Path(root) / "server"
+                directory.mkdir(mode=0o700)
+                path = canonical_store_path(directory)
+                if kind == "directory":
+                    path.mkdir()
+                elif kind == "fifo":
+                    if os.name == "nt":
+                        continue
+                    os.mkfifo(path)
+                else:
+                    store = ServerStore.open(directory)
+                    store.close()
+                original = Path.lstat
+                def reparse_info(entry: Path) -> os.stat_result:
+                    info = original(entry)
+                    if kind == "reparse" and entry == path:
+                        return cast(os.stat_result, mock.Mock(st_mode=info.st_mode, st_uid=info.st_uid,
+                                                            st_nlink=info.st_nlink, st_file_attributes=0x400))
+                    return info
+                with mock.patch.object(Path, "lstat", autospec=True, side_effect=reparse_info), \
+                        mock.patch("scarcity_router.server_store.sqlite3.connect") as opened, \
+                        mock.patch.object(ServerStore, "_reclaim_recovery_slot") as reclaimed:
+                    with self.assertRaises(ServerStoreError):
+                        _ = ServerStore.open(directory)
+                opened.assert_not_called()
+                reclaimed.assert_not_called()
+
+    def test_parent_alias_and_explicit_relative_unicode_file_remain_supported(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            directory = Path(root) / "named user data"
+            directory.mkdir(mode=0o750)
+            alias = Path(root) / "alias"
+            alias.symlink_to(directory, target_is_directory=True)
+            store = ServerStore.open(alias)
+            store.close()
+            filename = directory / "explicit-\u00e9 #%?.sqlite3"
+            _ = canonical_store_path(directory).rename(filename)
+            relative = Path(os.path.relpath(alias / filename.name))
+            direct = ServerStore(relative)
+            try:
+                self.assertEqual(relative, direct.path)
+                self.assertEqual(2, direct.schema_version())
+            finally:
+                direct.close()
+            self.assertEqual((0o700, 0o600), (stat.S_IMODE(directory.stat().st_mode), stat.S_IMODE(filename.stat().st_mode)))
+
+
 class RecoveryLifecycleTests(unittest.TestCase):
     _CHILD: str = """
 import os, sys

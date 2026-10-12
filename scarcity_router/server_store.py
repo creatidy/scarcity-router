@@ -254,38 +254,90 @@ class ServerStore:
     _path: Path
     _lock: threading.RLock
     _connection: sqlite3.Connection
+    _parent_info: os.stat_result
 
     def __init__(self, path: Path) -> None:
         self._path = path
         self._lock = threading.RLock()
-        parent = path.parent
-        parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        with self._recovery_guard(path):
-            self._connection = self._open_store(path)
-
-    def _open_store(self, path: Path) -> sqlite3.Connection:
-        parent = path.parent
-        if path.exists():
-            # Closing the last writable WAL reader can checkpoint even on a
-            # refusal. Inspect existing stores read-only first, including WAL.
-            try:
-                self._connection = sqlite3.connect(
-                    path.resolve().as_uri() + "?mode=ro", uri=True,
-                    check_same_thread=False, isolation_level=None,
-                )
-            except sqlite3.Error:
-                raise ServerStoreError(
-                    "server store migration metadata is invalid or unreadable; refusing repair"
-                ) from None
-            self._connection.row_factory = sqlite3.Row
-            try:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            # Directory aliases are supported; the final database entry is not
+            # resolved, so a file link cannot redirect inspection or chmod.
+            path = path.parent.resolve() / path.name
+            parent_info = self._store_info(path.parent, directory=True)
+            assert parent_info is not None
+            self._parent_info = parent_info
+            expected = self._store_info(path)
+            with self._recovery_guard(path, expected) as expected:
+                _ = self._check_store_entry(path, expected)
+                flags = getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+                flags |= os.O_RDONLY if expected is not None else os.O_RDWR | os.O_CREAT | os.O_EXCL
+                fd = os.open(path, flags, 0o600)
                 try:
-                    _ = self.applied_migration_versions()
-                except _HotRollbackRequired:
-                    self._connection.close()
-                    self._inspect_interrupted_store(path)
-            finally:
+                    opened = os.fstat(fd)
+                    if expected is None:
+                        expected = opened
+                    if not os.path.samestat(opened, expected) or not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1:
+                        raise ServerStoreError("server store entry identity changed; refusing access")
+                    _ = self._check_store_entry(path, expected)
+                    self._connection = self._open_store(path, expected, fd)
+                finally:
+                    os.close(fd)
+        except OSError:
+            raise ServerStoreError("server store filesystem access is unavailable; refusing access") from None
+
+    def _store_info(self, path: Path, *, directory: bool = False) -> os.stat_result | None:
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            if directory:
+                raise
+            return None
+        reparse = cast(int, getattr(info, "st_file_attributes", 0)) & cast(int, getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0))
+        valid_type = stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode)
+        owner = os.geteuid() if os.name != "nt" else path.parent.stat().st_uid
+        if reparse or not valid_type or info.st_uid != owner or (not directory and info.st_nlink != 1):
+            raise ServerStoreError("unsafe server store entry; administrator inspection required")
+        return info
+
+    def _check_store_entry(self, path: Path, expected: os.stat_result | None) -> os.stat_result | None:
+        parent = self._store_info(path.parent, directory=True)
+        if parent is None or not os.path.samestat(parent, self._parent_info):
+            raise ServerStoreError("server store directory identity changed; refusing access")
+        current = self._store_info(path)
+        if (current is None) != (expected is None) or (
+            current is not None and expected is not None and not os.path.samestat(current, expected)
+        ):
+            raise ServerStoreError("server store entry identity changed; refusing access")
+        return current
+
+    def _open_store(self, path: Path, expected: os.stat_result, fd: int) -> sqlite3.Connection:
+        parent = path.parent
+        # sqlite3 opens filenames, not validated descriptors. Keep the bound
+        # descriptor and recheck around opens; this is not an atomic VFS fence.
+        _ = self._check_store_entry(path, expected)
+        # Closing the last writable WAL reader can checkpoint even on a
+        # refusal. Inspect stores read-only first, including WAL.
+        try:
+            self._connection = sqlite3.connect(
+                path.as_uri() + "?mode=ro", uri=True,
+                check_same_thread=False, isolation_level=None,
+            )
+        except sqlite3.Error:
+            raise ServerStoreError(
+                "server store migration metadata is invalid or unreadable; refusing repair"
+            ) from None
+        self._connection.row_factory = sqlite3.Row
+        try:
+            _ = self._check_store_entry(path, expected)
+            try:
+                _ = self.applied_migration_versions()
+            except _HotRollbackRequired:
                 self._connection.close()
+                self._inspect_interrupted_store(path)
+        finally:
+            self._connection.close()
+        _ = self._check_store_entry(path, expected)
         try:
             self._connection = sqlite3.connect(
                 str(path), check_same_thread=False, isolation_level=None
@@ -293,13 +345,19 @@ class ServerStore:
         except sqlite3.Error as exc:
             raise ServerStoreError(f"server store is not usable: {exc}") from None
         try:
+            _ = self._check_store_entry(path, expected)
             self._connection.row_factory = sqlite3.Row
             # Inspect before changing permissions or persistent journal mode.
             # Supported old stores still migrate; invalid history and future
             # stores refuse even through the raw test seam.
             _ = self.applied_migration_versions()
+            _ = self._check_store_entry(path, expected)
             _ = os.chmod(parent, 0o700)
-            os.chmod(path, 0o600)
+            if os.name != "nt":
+                os.fchmod(fd, 0o600)
+            else:
+                os.chmod(path, 0o600)
+            _ = self._check_store_entry(path, expected)
             _ = self._connection.execute("PRAGMA journal_mode=DELETE")
             _ = self._connection.execute("PRAGMA synchronous=FULL")
             _ = self._connection.execute("PRAGMA foreign_keys=ON")
@@ -559,7 +617,7 @@ class ServerStore:
                 os.close(fd)
 
     @contextmanager
-    def _recovery_guard(self, path: Path) -> Generator[None, None, None]:
+    def _recovery_guard(self, path: Path, expected: os.stat_result | None) -> Generator[os.stat_result | None, None, None]:
         guard = path.parent / _RECOVERY_GUARD
         fd: int | None = None
         locked = False
@@ -573,9 +631,9 @@ class ServerStore:
             except FileExistsError:
                 _ = self._recovery_info(guard)
                 fd = os.open(guard, flags)
-            expected = self._recovery_info(guard)
+            guard_info = self._recovery_info(guard)
             opened = os.fstat(fd)
-            if (opened.st_dev, opened.st_ino, opened.st_uid, opened.st_mode, opened.st_nlink) != (expected.st_dev, expected.st_ino, expected.st_uid, expected.st_mode, expected.st_nlink):
+            if (opened.st_dev, opened.st_ino, opened.st_uid, opened.st_mode, opened.st_nlink) != (guard_info.st_dev, guard_info.st_ino, guard_info.st_uid, guard_info.st_mode, guard_info.st_nlink):
                 raise ServerStoreError("recovery lock identity changed; retry")
             deadline = time.monotonic() + 5
             while True:
@@ -595,6 +653,10 @@ class ServerStore:
                     if time.monotonic() >= deadline:
                         raise ServerStoreError("recovery inspection is active; retry after it finishes") from None
                     time.sleep(0.01)
+            # Another guarded opener may have created a previously absent file.
+            if expected is None:
+                expected = self._store_info(path)
+            _ = self._check_store_entry(path, expected)
             _ = os.lseek(fd, 0, os.SEEK_SET)
             marker = os.read(fd, 2)
             if marker not in (b"", b"\0"):
@@ -604,10 +666,11 @@ class ServerStore:
                 _ = os.write(fd, b"\0")
                 os.fsync(fd)
                 self._sync_recovery_directory(path.parent)
+            _ = self._check_store_entry(path, expected)
             self._reclaim_recovery_slot(path)
             if any(entry.name != _RECOVERY_SLOT for entry in path.parent.glob(".store-recovery-*")):
                 raise ServerStoreError("unattested recovery artifact; administrator inspection required")
-            yield
+            yield expected
         except OSError:
             raise ServerStoreError("recovery lifecycle unavailable; source retained") from None
         finally:
