@@ -45,7 +45,11 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import shutil
 import sqlite3
+import stat
+import tempfile
 import threading
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -166,6 +170,19 @@ class ServerStoreError(ValueError):
     """Raised for store-level failures (unreadable file, bad migration state)."""
 
 
+class _HotRollbackRequired(ServerStoreError):
+    """Private signal for SQLite's precise read-only rollback condition."""
+
+
+def _schema_tokens(sql: str) -> tuple[str, ...]:
+    """Compare the owned DDL, ignoring formatting but preserving literals."""
+    tokens = cast("list[str]", re.findall(r"'(?:''|[^'])*'|\"(?:\"\"|[^\"])*\"|`(?:``|[^`])*`|\[[^\]]*\]|--[^\n]*|/\*.*?\*/|\w+|[^\s]", sql, re.DOTALL))
+    return tuple(
+        token if token.startswith("'") else token.strip('"`[]').casefold()
+        for token in tokens if not token.startswith(("--", "/*"))
+    )
+
+
 @dataclass(frozen=True)
 class AdminIdentityRecord:
     """The stored administrator password verifier (never a password)."""
@@ -236,7 +253,11 @@ class ServerStore:
                 ) from None
             self._connection.row_factory = sqlite3.Row
             try:
-                _ = self.applied_migration_versions()
+                try:
+                    _ = self.applied_migration_versions()
+                except _HotRollbackRequired:
+                    self._connection.close()
+                    self._inspect_interrupted_store(path)
             finally:
                 self._connection.close()
         try:
@@ -302,50 +323,151 @@ class ServerStore:
     def applied_migration_versions(self) -> tuple[int, ...]:
         """Read and validate history; only an empty new database has version 0."""
         with self._lock:
+            began_read = False
             try:
+                if not self._connection.in_transaction:
+                    _ = self._connection.execute("BEGIN")
+                    began_read = True
                 objects = _fetch_rows(self._connection,
-                    "SELECT name, type FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*'"
+                    "SELECT name, type, sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*'"
                 )
-                metadata = tuple(row["type"] for row in objects if row["name"] == "schema_migrations")
+                metadata = tuple(row for row in objects if cast(str, row["name"]).casefold() == "schema_migrations")
                 if not metadata and not objects:
                     return ()
-                if metadata != ("table",):
+                if len(metadata) != 1 or metadata[0]["type"] != "table" or type(cast(object, metadata[0]["sql"])) is not str:
                     raise ServerStoreError(
                         "server store migration metadata is invalid; refusing repair"
                     )
+                if _schema_tokens(cast(str, metadata[0]["sql"])) != _schema_tokens(MIGRATIONS[0][1][0]):
+                    raise ServerStoreError("server store migration metadata is invalid; refusing repair")
                 columns = _fetch_rows(self._connection, "PRAGMA table_info(schema_migrations)")
-                if tuple((row["name"], row["type"], row["notnull"], row["pk"]) for row in columns) != (
+                if tuple((cast(str, row["name"]).casefold(), cast(str, row["type"]).upper(), row["notnull"], row["pk"]) for row in columns) != (
                     ("version", "INTEGER", 0, 1), ("applied_at", "TEXT", 1, 0),
                 ):
                     raise ServerStoreError(
                         "server store migration metadata is invalid; refusing repair"
                     )
                 rows = _fetch_rows(self._connection,
-                    "SELECT version FROM schema_migrations ORDER BY version"
+                    "SELECT version, applied_at FROM schema_migrations ORDER BY version"
                 )
-            except sqlite3.Error:
+                versions: list[int] = []
+                for row in rows:
+                    raw = cast(object, row["version"])
+                    if type(raw) is not int or raw < 1 or type(cast(object, row["applied_at"])) is not str:
+                        raise ServerStoreError(
+                            "server store migration metadata is invalid; refusing repair"
+                        )
+                    versions.append(raw)
+                if versions and versions[-1] > STORE_SCHEMA_VERSION:
+                    raise ServerStoreError(
+                        "server store schema is newer than this program understands; refusing to read a future store"
+                    )
+                applied = tuple(versions)
+                expected = tuple(version for version, _ in MIGRATIONS)
+                if not applied or applied != expected[:len(applied)]:
+                    raise ServerStoreError(
+                        "server store migration history is invalid; refusing repair"
+                    )
+                self._validate_owned_schema(applied[-1], objects)
+                return applied
+            except sqlite3.Error as exc:
+                if getattr(exc, "sqlite_errorcode", None) == sqlite3.SQLITE_READONLY_ROLLBACK:
+                    raise _HotRollbackRequired(
+                        "server store requires validated interrupted-transaction recovery"
+                    ) from None
                 raise ServerStoreError(
                     "server store migration metadata is invalid or unreadable; refusing repair"
                 ) from None
-        versions: list[int] = []
-        for row in rows:
-            raw = cast(object, row["version"])
-            if type(raw) is not int or raw < 1:
-                raise ServerStoreError(
-                    "server store migration metadata is invalid; refusing repair"
-                )
-            versions.append(raw)
-        if versions and versions[-1] > STORE_SCHEMA_VERSION:
-            raise ServerStoreError(
-                "server store schema is newer than this program understands; refusing to read a future store"
+            finally:
+                if began_read:
+                    _ = self._connection.execute("ROLLBACK")
+
+    def _validate_owned_schema(self, version: int, objects: list[sqlite3.Row]) -> None:
+        # Only trusted migration SQL runs here, in memory. Actual definitions
+        # are compared, never executed; triggers/views cannot authorize writes.
+        reference = sqlite3.connect(":memory:")
+        reference.row_factory = sqlite3.Row
+        try:
+            for number, statements in MIGRATIONS:
+                if number > version:
+                    break
+                for statement in statements:
+                    _ = reference.execute(statement)
+            expected = _fetch_rows(reference,
+                "SELECT name, type, sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*'"
             )
-        applied = tuple(versions)
-        expected = tuple(version for version, _ in MIGRATIONS)
-        if not applied or applied != expected[:len(applied)]:
-            raise ServerStoreError(
-                "server store migration history is invalid; refusing repair"
-            )
-        return applied
+            wanted = {(cast(str, row["name"]).casefold(), cast(str, row["type"])):
+                      _schema_tokens(cast(str, row["sql"])) for row in expected}
+            if any(type(cast(object, row["sql"])) is not str for row in objects):
+                raise ServerStoreError("server store owned schema is invalid; refusing repair")
+            actual = {(cast(str, row["name"]).casefold(), cast(str, row["type"])):
+                      _schema_tokens(cast(str, row["sql"])) for row in objects}
+            if actual != wanted:
+                raise ServerStoreError("server store owned schema is invalid; refusing repair")
+        finally:
+            reference.close()
+
+    def _inspect_interrupted_store(self, path: Path) -> None:
+        """Authorize normal SQLite rollback only from a validated private copy."""
+        try:
+            parent_info = path.parent.lstat()
+            if not stat.S_ISDIR(parent_info.st_mode):
+                raise ServerStoreError("server store recovery requires an owned directory")
+            with tempfile.TemporaryDirectory(prefix=".store-recovery-", dir=path.parent) as scratch:
+                directory = Path(scratch)
+                if directory.stat().st_uid != parent_info.st_uid:
+                    raise ServerStoreError("server store recovery ownership is invalid")
+
+                def identity(source: Path) -> tuple[int, ...] | None:
+                    try:
+                        info = source.lstat()
+                    except FileNotFoundError:
+                        return None
+                    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != parent_info.st_uid:
+                        raise ServerStoreError("server store recovery file ownership is invalid")
+                    return (info.st_dev, info.st_ino, info.st_mode, info.st_uid,
+                            info.st_nlink, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+                sources = (path, Path(str(path) + "-journal"), Path(str(path) + "-wal"))
+                before = {source: identity(source) for source in sources}
+                if before[path] is None or before[sources[1]] is None:
+                    raise ServerStoreError("server store changed during recovery inspection; retry")
+                for source, stamp in before.items():
+                    if stamp is None:
+                        continue
+                    fd = os.open(source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+                    with os.fdopen(fd, "rb") as reader:
+                        info = os.fstat(reader.fileno())
+                        opened = (info.st_dev, info.st_ino, info.st_mode, info.st_uid,
+                                  info.st_nlink, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+                        if opened != stamp:
+                            raise ServerStoreError("server store changed during recovery inspection; retry")
+                        if source == sources[1]:
+                            # Owned single-database writes never use a super-journal.
+                            magic = bytes.fromhex("d9d505f920a163d7")
+                            if reader.read(8) != magic or info.st_size <= 512:
+                                raise ServerStoreError("server store recovery journal is invalid")
+                            _ = reader.seek(-8, os.SEEK_END)
+                            if reader.read(8) == magic:
+                                raise ServerStoreError("server store recovery journal is unsupported")
+                            _ = reader.seek(0)
+                        target = directory / source.name
+                        output = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                        with os.fdopen(output, "wb") as writer:
+                            shutil.copyfileobj(reader, writer)
+                if before != {source: identity(source) for source in sources}:
+                    raise ServerStoreError("server store changed during recovery inspection; retry")
+                candidate = directory / path.name
+                self._connection = sqlite3.connect(str(candidate), isolation_level=None)
+                self._connection.row_factory = sqlite3.Row
+                try:
+                    _ = self.applied_migration_versions()
+                finally:
+                    self._connection.close()
+                if before != {source: identity(source) for source in sources}:
+                    raise ServerStoreError("server store changed during recovery inspection; retry")
+        except (sqlite3.Error, OSError):
+            raise ServerStoreError("server store interrupted-transaction inspection failed safely") from None
 
     def migrate(self) -> int:
         """Apply a bounded, ordered migration set atomically and idempotently."""

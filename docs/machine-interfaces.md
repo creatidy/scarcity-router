@@ -667,6 +667,17 @@ composition, configuration writes or listener startup. Invalid/gapped history
 refuses, never repairs. D-044 private permissions/credential boundaries remain.
 Worker stores retain their independent version refusal, not server migrations.
 
+The server validates version-specific owned table definitions, including keys,
+constraints and migration targets, against its actual migration producers;
+unexpected triggers/views or missing/incompatible tables cannot authorize a
+migration. Formatting, identifier quoting and keyword case are not new versions.
+The preflight reads a consistent schema/history snapshot. Ordinary read-only
+errors never authorize recovery. For SQLite's exact `SQLITE_READONLY_ROLLBACK`
+condition, a protected short-lived candidate is recovered and validated first;
+only supported candidates authorize SQLite's normal rollback on the original.
+Unknown/invalid hot stores retain their original DB/journal bytes. This is bounded
+single-store crash recovery, not a repair/downgrade engine or a new operator step.
+
 No downgrade/reverse migration exists. v2 retires only superseded `worker_pairings`;
 those hashes cannot become M05 salted identities (D-049). Unrelated configuration,
 admin/client/provider state and audit survive. Retained audit/pins are historical

@@ -8,6 +8,9 @@ from __future__ import annotations
 
 import sqlite3
 import os
+import json
+import re
+import shutil
 import subprocess
 import sys
 import stat
@@ -15,6 +18,7 @@ import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import BinaryIO, cast
 from unittest import mock
 
 from scarcity_router.server_store import (
@@ -27,6 +31,241 @@ from scarcity_router.server_store import (
 
 T0 = "2026-09-16T12:00:00.000Z"
 T1 = "2026-09-16T12:01:00.000Z"
+
+
+class OwnedSchemaRecoveryTests(unittest.TestCase):
+    _WRITER: str = """
+import os, sqlite3, sys
+c = sqlite3.connect(sys.argv[1])
+c.execute('PRAGMA synchronous=FULL')
+c.execute('PRAGMA cache_size=1')
+c.execute('BEGIN IMMEDIATE')
+c.execute('UPDATE audit_records SET payload=?', ('unfinished' * 1024,))
+c.execute("UPDATE server_configuration SET document='unfinished'")
+c.execute("UPDATE provider_secrets SET secret='unfinished'")
+os._exit(0)
+"""
+
+    def _seed(self, parent: str, version: int) -> Path:
+        directory = Path(parent) / "server"
+        raw = ServerStore.open(directory, migrate=False)
+        path = raw.path
+        raw.close()
+        connection = sqlite3.connect(path)
+        try:
+            for number, statements in MIGRATIONS[:version]:
+                for statement in statements:
+                    _ = connection.execute(statement)
+                _ = connection.execute("INSERT INTO schema_migrations VALUES (?, ?)", (number, T0))
+            _ = connection.execute("INSERT INTO server_configuration VALUES (1, '{}', ?)", (T0,))
+            _ = connection.execute("INSERT INTO provider_secrets VALUES ('synthetic', 'SYNTHETIC-SECRET', ?)", (T0,))
+            _ = connection.execute("INSERT INTO client_keys VALUES ('synthetic', 'synthetic-hash', 'synthetic', ?, NULL)", (T0,))
+            payload = json.dumps({"pin": "synthetic-pin", "padding": "x" * 8192})
+            _ = connection.executemany("INSERT INTO audit_records(recorded_at,payload) VALUES (?, ?)", [(T0, payload)] * 30)
+            connection.commit()
+        finally:
+            connection.close()
+        return path
+
+    def _crash(self, path: Path) -> Path:
+        _ = subprocess.run([sys.executable, "-c", self._WRITER, str(path)],
+                           env={"PATH": os.defpath, "HOME": str(path.parent), "TMPDIR": str(path.parent)},
+                           check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+        journal = Path(str(path) + "-journal")
+        self.assertTrue(journal.read_bytes()[:8] == bytes.fromhex("d9d505f920a163d7"), "journal is not genuinely hot")
+        before = path.read_bytes(), journal.read_bytes()
+        reader = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)
+        try:
+            with self.assertRaises(sqlite3.OperationalError) as caught:
+                _ = reader.execute("SELECT version FROM schema_migrations")
+            self.assertEqual(sqlite3.SQLITE_READONLY_ROLLBACK, caught.exception.sqlite_errorcode)
+        finally:
+            reader.close()
+        self.assertTrue(before == (path.read_bytes(), journal.read_bytes()), "inspection recovered source")
+        return journal
+
+    def _records(self, path: Path) -> tuple[list[tuple[object, ...]], ...]:
+        reader = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)
+        try:
+            return tuple(cast("list[tuple[object, ...]]", reader.execute(sql).fetchall()) for sql in (
+                "SELECT * FROM server_configuration", "SELECT * FROM provider_secrets",
+                "SELECT * FROM client_keys", "SELECT * FROM audit_records ORDER BY seq",
+            ))
+        finally:
+            reader.close()
+
+    def test_supported_hot_rollback_recovers_unrelated_state_without_operator_step(self) -> None:
+        for version in (1, 2):
+            for migrate in (True, False):
+                with self.subTest(version=version, migrate=migrate), tempfile.TemporaryDirectory() as parent:
+                    path = self._seed(parent, version)
+                    before = self._records(path)
+                    _ = self._crash(path)
+                    store = ServerStore.open(path.parent, migrate=migrate)
+                    try:
+                        self.assertEqual(2 if migrate else version, store.schema_version())
+                        self.assertEqual("SYNTHETIC-SECRET", store.get_provider_secret("synthetic"))
+                        self.assertEqual(30, store.audit_record_count())
+                    finally:
+                        store.close()
+                    self.assertTrue(before == self._records(path), "rollback lost unrelated records")
+                    self.assertEqual([], list(path.parent.glob(".store-recovery-*")))
+                    self.assertEqual((0o700, 0o600), (
+                        stat.S_IMODE(path.parent.stat().st_mode), stat.S_IMODE(path.stat().st_mode),
+                    ))
+
+    def test_unknown_or_invalid_hot_store_is_never_recovered_in_place(self) -> None:
+        for damage in ("future", "gap", "trigger", "missing", "incompatible"):
+            for migrate in (True, False):
+                with self.subTest(damage=damage, migrate=migrate), tempfile.TemporaryDirectory() as parent:
+                    path = self._seed(parent, 1 if damage == "trigger" else 2)
+                    connection = sqlite3.connect(path)
+                    try:
+                        if damage == "future":
+                            _ = connection.execute("INSERT INTO schema_migrations VALUES (3, ?)", (T0,))
+                        elif damage == "gap":
+                            _ = connection.execute("DELETE FROM schema_migrations WHERE version=1")
+                        elif damage == "trigger":
+                            _ = connection.execute("CREATE TRIGGER erase_audit AFTER INSERT ON schema_migrations BEGIN DELETE FROM audit_records; END")
+                        elif damage == "missing":
+                            _ = connection.execute("DROP TABLE client_keys")
+                        else:
+                            _ = connection.execute("ALTER TABLE client_keys ADD COLUMN unauthorized TEXT")
+                        connection.commit()
+                    finally:
+                        connection.close()
+                    journal = self._crash(path)
+                    os.chmod(path.parent, 0o750)
+                    os.chmod(path, 0o640)
+                    before = path.read_bytes(), journal.read_bytes()
+                    with self.assertRaises(ServerStoreError) as caught:
+                        _ = ServerStore.open(path.parent, migrate=migrate)
+                    self.assertNotIn("SYNTHETIC-SECRET", str(caught.exception))
+                    self.assertTrue(before == (path.read_bytes(), journal.read_bytes()), "invalid source recovered or changed")
+                    self.assertEqual((0o750, 0o640), (
+                        stat.S_IMODE(path.parent.stat().st_mode), stat.S_IMODE(path.stat().st_mode),
+                    ))
+                    self.assertEqual([], list(path.parent.glob(".store-recovery-*")))
+
+    def test_owned_schema_trigger_missing_columns_constraints_and_timestamp_refuse_before_effects(self) -> None:
+        for damage in ("trigger", "missing", "column", "constraint", "timestamp"):
+            for migrate in (True, False):
+                with self.subTest(damage=damage, migrate=migrate), tempfile.TemporaryDirectory() as parent:
+                    path = self._seed(parent, 1)
+                    connection = sqlite3.connect(path)
+                    try:
+                        if damage == "trigger":
+                            _ = connection.execute("CREATE TRIGGER erase_audit AFTER INSERT ON schema_migrations BEGIN DELETE FROM audit_records; END")
+                        elif damage == "missing":
+                            _ = connection.execute("DROP TABLE worker_pairings")
+                        elif damage == "column":
+                            _ = connection.execute("ALTER TABLE provider_secrets ADD COLUMN unauthorized TEXT")
+                        elif damage == "constraint":
+                            _ = connection.execute("DROP TABLE server_configuration")
+                            _ = connection.execute("CREATE TABLE server_configuration(id INTEGER PRIMARY KEY, document TEXT NOT NULL, updated_at TEXT NOT NULL)")
+                        else:
+                            _ = connection.execute("UPDATE schema_migrations SET applied_at=?", (b"SYNTHETIC-SECRET",))
+                        connection.commit()
+                        self.assertEqual(("wal",), connection.execute("PRAGMA journal_mode=WAL").fetchone())
+                    finally:
+                        connection.close()
+                    before_records = self._records(path)
+                    os.chmod(path.parent, 0o750)
+                    os.chmod(path, 0o640)
+                    before = path.read_bytes()
+                    with self.assertRaises(ServerStoreError) as caught:
+                        _ = ServerStore.open(path.parent, migrate=migrate)
+                    self.assertNotIn("SYNTHETIC-SECRET", str(caught.exception))
+                    self.assertTrue(before == path.read_bytes(), "invalid owned schema changed")
+                    self.assertTrue(before_records == self._records(path), "invalid schema lost unrelated records")
+                    self.assertEqual((0o750, 0o640), (
+                        stat.S_IMODE(path.parent.stat().st_mode), stat.S_IMODE(path.stat().st_mode),
+                    ))
+                    reader = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)
+                    try:
+                        self.assertEqual(("wal",), reader.execute("PRAGMA journal_mode").fetchone())
+                    finally:
+                        reader.close()
+
+    def test_schema_format_case_and_quoted_identifiers_are_not_new_versions(self) -> None:
+        with tempfile.TemporaryDirectory() as parent:
+            directory = Path(parent) / "server"
+            raw = ServerStore.open(directory, migrate=False)
+            path = raw.path
+            raw.close()
+            connection = sqlite3.connect(path)
+            try:
+                for statement in MIGRATIONS[0][1]:
+                    ddl = re.sub(r"CREATE TABLE (\w+)", r'create table "\1"', statement)
+                    _ = connection.execute(ddl.replace("INTEGER", "integer").replace("TEXT", "text"))
+                _ = connection.execute("INSERT INTO schema_migrations VALUES (1, ?)", (T0,))
+                connection.commit()
+            finally:
+                connection.close()
+            with mock.patch("scarcity_router.server_store.tempfile.TemporaryDirectory") as temporary:
+                store = ServerStore.open(directory)
+            temporary.assert_not_called()
+            self.addCleanup(store.close)
+            self.assertEqual(2, store.schema_version())
+
+    def test_plain_readonly_failure_does_not_authorize_candidate_or_original_recovery(self) -> None:
+        with tempfile.TemporaryDirectory() as parent:
+            path = self._seed(parent, 2)
+            error = sqlite3.OperationalError("synthetic readonly failure")
+            error.sqlite_errorcode = sqlite3.SQLITE_READONLY
+            with mock.patch("scarcity_router.server_store._fetch_rows", side_effect=error), \
+                    mock.patch.object(ServerStore, "_inspect_interrupted_store") as recovery:
+                with self.assertRaises(ServerStoreError):
+                    _ = ServerStore.open(path.parent)
+            recovery.assert_not_called()
+
+    def test_private_recovery_copies_are_permissioned_and_cleaned(self) -> None:
+        with tempfile.TemporaryDirectory() as parent:
+            path = self._seed(parent, 2)
+            _ = self._crash(path)
+            copier = shutil.copyfileobj
+            def checked_copy(reader: BinaryIO, writer: BinaryIO) -> None:
+                self.assertEqual(0o700, stat.S_IMODE(next(path.parent.glob(".store-recovery-*")).stat().st_mode))
+                self.assertEqual(0o600, stat.S_IMODE(os.fstat(writer.fileno()).st_mode))
+                copier(reader, writer)
+            with mock.patch("scarcity_router.server_store.shutil.copyfileobj", side_effect=checked_copy):
+                store = ServerStore.open(path.parent)
+            store.close()
+            self.assertEqual([], list(path.parent.glob(".store-recovery-*")))
+
+    def test_hot_recovery_rejects_symlink_sidecar(self) -> None:
+        with tempfile.TemporaryDirectory() as parent:
+            path = self._seed(parent, 2)
+            journal = self._crash(path)
+            target = Path(parent) / "owned-other-journal"
+            _ = journal.rename(target)
+            journal.symlink_to(target)
+            before = path.read_bytes(), target.read_bytes()
+            with self.assertRaises(ServerStoreError):
+                _ = ServerStore.open(path.parent)
+            self.assertTrue(before == (path.read_bytes(), target.read_bytes()), "symlink target changed")
+            self.assertTrue(journal.is_symlink())
+            self.assertEqual([], list(path.parent.glob(".store-recovery-*")))
+
+    def test_changed_source_refuses_before_original_recovery_and_cleans_candidate(self) -> None:
+        with tempfile.TemporaryDirectory() as parent:
+            path = self._seed(parent, 2)
+            journal = self._crash(path)
+            before = path.read_bytes(), journal.read_bytes()
+            copier = shutil.copyfileobj
+            changed = False
+            def changing_copy(reader: BinaryIO, writer: BinaryIO) -> None:
+                nonlocal changed
+                copier(reader, writer)
+                if not changed:
+                    info = path.stat()
+                    os.utime(path, ns=(info.st_atime_ns, info.st_mtime_ns + 2_000_000_000))
+                    changed = True
+            with mock.patch("scarcity_router.server_store.shutil.copyfileobj", side_effect=changing_copy):
+                with self.assertRaisesRegex(ServerStoreError, "changed"):
+                    _ = ServerStore.open(path.parent)
+            self.assertTrue(before == (path.read_bytes(), journal.read_bytes()), "original recovered after source changed")
+            self.assertEqual([], list(path.parent.glob(".store-recovery-*")))
 
 
 class StoreLifecycleTests(unittest.TestCase):

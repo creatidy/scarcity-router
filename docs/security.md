@@ -292,6 +292,20 @@ only inside the server's store. Worker-side application credentials stay on
 the worker host whenever possible; Codex authentication remains entirely
 provider-managed (D-018 unchanged).
 
+Necessary SQLite hot-rollback inspection remains inside that same bounded
+server-store purpose: only the database and necessary owned journal/WAL sidecars
+may be copied to a short-lived `0o700` directory with `0o600` files. It is used
+only for the exact read-only rollback condition, never on the normal happy path.
+Source files must be regular, owned and single-linked; symlinks and super-journals
+are not recovery inputs. The source identities/stamps are rechecked before and
+after candidate recovery. The recovered candidate must have supported history
+and the exact owned schema before normal original recovery is permitted.
+Candidate values are never diagnostics or exports; candidates are removed on
+success or refusal. This adds no permanent backup, extra credential owner,
+network/storage service or authority to repair an unknown store. Concurrent source
+changes produce a safe retry refusal, not an assumed coherent snapshot or a claim
+to control arbitrary cooperating external processes.
+
 ### Admission limits
 
 Enforced before any dispatch: request-body size, context/output size,

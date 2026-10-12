@@ -1562,7 +1562,12 @@ class NoExecutionAndNoIdeMutationTests(GuardrailTestCase):
         - ``worker_service.py`` — the #138 generated systemd user unit,
           written atomically into the invoking user's own
           ``~/.config/systemd/user/`` (``0o644``; no secret material by
-          construction — negative-scanned by ``tests/test_worker_service.py``).
+           construction — negative-scanned by ``tests/test_worker_service.py``).
+        - Only ``ServerStore._inspect_interrupted_store`` in
+          ``server_store.py`` — #185's D-044-private, short-lived SQLite
+          recovery candidate. Owned-source validation, modes, refusal and
+          cleanup are behavior-tested in ``tests/test_server_store.py``;
+          every other explicit write in that module remains prohibited.
 
         This is the structural guarantee behind "Scarcity Router does not
         automatically modify a user's global IDE configuration".
@@ -1579,6 +1584,13 @@ class NoExecutionAndNoIdeMutationTests(GuardrailTestCase):
         write_flag_markers = ("WRONLY", "RDWR", "CREAT", "TRUNC", "APPEND")
         for path in sorted(package_dir.rglob("*.py")):
             tree = ast.parse(path.read_text(encoding="utf-8"))
+            recovery_calls: set[int] = set()
+            if path.name == "server_store.py":
+                for definition in tree.body:
+                    if isinstance(definition, ast.ClassDef) and definition.name == "ServerStore":
+                        for member in definition.body:
+                            if isinstance(member, ast.FunctionDef) and member.name == "_inspect_interrupted_store":
+                                recovery_calls.update(id(call) for call in ast.walk(member) if isinstance(call, ast.Call))
             for node in ast.walk(tree):
                 if not isinstance(node, ast.Call):
                     continue
@@ -1588,12 +1600,13 @@ class NoExecutionAndNoIdeMutationTests(GuardrailTestCase):
                     if isinstance(func, ast.Attribute)
                     else (func.id if isinstance(func, ast.Name) else "")
                 )
+                bounded_write = path.name in provisioning_modules or id(node) in recovery_calls
                 if (
                     name in write_call_names
-                    and path.name not in provisioning_modules
+                    and not bounded_write
                 ):
                     offenders.append(f"{path.name}: {name} call")
-                if name == "open" and path.name not in provisioning_modules:
+                if name == "open" and not bounded_write:
                     mode = _mode_argument(node)
                     if mode is not None and any(marker in mode for marker in "wax+"):
                         offenders.append(f"{path.name}: write-mode open")
