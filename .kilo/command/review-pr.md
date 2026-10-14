@@ -48,6 +48,9 @@ Do not remediate, commit, push, publish a formal review, merge or modify Forgejo
 state. The returned task result is the handoff, not an owner copy or PR comment.
 An ordinary APPROVE does not satisfy a security gate. For security-critical Router
 work, the implementation agent must never invoke Codex/Daybreak automatically; after
-ordinary approval and validation, the primary hands off
-the `gpt-daybreak-blue-latest` owner-manual process in D-069A via
-`READY_FOR_OWNER_SECURITY_REVIEW`, leaving the PR open/unmerged.
+ordinary approval and validation, the primary freezes exact refs and reserves/persists
+the next owner-manual security review ordinal in the same delivery ledger before handing off
+the `gpt-daybreak-blue-latest` process in D-069A via
+`READY_FOR_OWNER_SECURITY_REVIEW`. Name the reserved ordinal and refs; leave the PR
+open/unmerged. A pending reservation blocks further work and cannot be reused; once
+launched, that ordinal is consumed regardless of outcome.

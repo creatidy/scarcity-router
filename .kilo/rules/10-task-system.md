@@ -77,9 +77,12 @@
   reentry, internal phases, new tasks, models and sessions cannot reset the counter.
   Role is derived from the currently outstanding required gates, not a permanent
   ordinal-to-role map. Current APPROVE with empty findings satisfies only ordinary
-  review; a security-critical Router delivery returns READY_FOR_OWNER_SECURITY_REVIEW
-  after all non-security work and validation, not security approval or a standalone
-  merge. Only `/loop` may merge after every required gate passes and may continue
+  review; a security-critical Router delivery first reserves/persists the next
+  owner-manual security ordinal against exact frozen refs, then returns
+  READY_FOR_OWNER_SECURITY_REVIEW with that reserved ordinal. That handoff is not
+  security approval or standalone merge; the pending slot cannot be reused and any
+  launched attempt stays consumed.
+  Only `/loop` may merge after every required gate passes and may continue
   through its separate completion gates.
   At the effective authorized bound return STOP_REVISE with new defects versus
   incomplete fixes and recurring architectural/semantic patterns; never dispatch

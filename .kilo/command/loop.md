@@ -247,8 +247,12 @@ Never dispatch beyond the canonical verified maximum or make an unreviewable pat
 
 For `security_critical` Scarcity Router work, after implementation, validation and
 fresh ordinary independent APPROVE with no changes pending, freeze exact PR base/HEAD/
-merge-base and return `READY_FOR_OWNER_SECURITY_REVIEW`. Adrian personally invokes
-the independent official Codex `gpt-daybreak-blue-latest` audit using a separate prompt.
+merge-base, reserve and persist the next owner-manual security review ordinal against
+those objects in the same delivery ledger, then return `READY_FOR_OWNER_SECURITY_REVIEW`
+with that reserved ordinal. A pending reservation blocks further review, patch or merge;
+it cannot be reused. Once Adrian launches only that reserved independent official
+Codex `gpt-daybreak-blue-latest` audit using a separate prompt, mark it consumed for
+every outcome.
 The implementation agent must never invoke Daybreak/Codex automatically or substitute
 a reviewer. This remains a mandatory pre-completion/pre-merge gate, not a pre-implementation
 eligibility gate. The owner supplies a structured execution/result record; verify exact

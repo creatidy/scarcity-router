@@ -5909,12 +5909,20 @@ neither is a new live check of the current deployment.
   within remaining capacity, do not patch or silently skip the gate.
 - **Manual Scarcity Router security gate:** For Scarcity Router, the implementation
   agent never invokes Daybreak/Codex automatically. After all implementation,
-  validation and ordinary independent review work completes, hand off
-  `READY_FOR_OWNER_SECURITY_REVIEW`; Adrian runs the mandatory independent official
-  Codex `gpt-daybreak-blue-latest` audit manually using a separately prepared prompt.
-  This changes invocation authority/timing only, not the security acceptance gate or
-  merge authority. Do not merge/close before the owner-supplied security result is
-  independently verified against the exact current objects.
+  validation and ordinary independent review work completes, the root reserves and
+  persists the next authorization-verified ordinal in the same delivery ledger for role
+  `owner-manual-security`, bound to the exact current Repo/Issue/PR/HEAD/base/merge-base
+  and requested `gpt-daybreak-blue-latest` reviewer. Only then return
+  `READY_FOR_OWNER_SECURITY_REVIEW`, naming that reserved ordinal. The pending
+  reservation blocks every further patch, review dispatch or merge until resolved; it
+  cannot be reused. Adrian manually runs only that reserved mandatory independent
+  official-Codex review using a separate prompt. Count the reserved slot against the
+  exact ceiling; once invocation begins,
+  every successful, failed, cancelled, invalidated or unobservable attempt remains
+  consumed with its result/limitation recorded. This changes invocation
+  authority/timing only, not the security acceptance gate or merge authority. Do not
+  merge/close before the owner-supplied security result is independently verified
+  against the exact current objects.
 - **Manual result evidence:** The root accepts no owner assertion alone, pasted
   model self-identification, CLI exit-zero, unverified task/turn completion or
   synthetic transport result as security approval. Require a canonical owner result
@@ -5943,6 +5951,7 @@ neither is a new live check of the current deployment.
   | Currentness change | A previously reviewed HEAD/base differs from the exact current PR | Approval becomes stale; exception does not make it current. Obtain a fresh counted review only if the exact cap permits. |
   | Role change | Ordinary approval is complete but the mandatory security evidence is not | Assign the currently required security role; an ordinal number alone never chooses the role. |
   | Incomplete manual security evidence | Owner says approve or Codex exits 0, but actual reviewer identity/execution/output capture is unverifiable | Keep security gate open; do not merge. |
+  | Owner-manual reservation | The ordinary gate passed but the next security ordinal is not reserved against the exact current objects | Do not return the owner handoff or launch Codex; reserve/persist first. A pending reserved slot cannot be reused. |
   | Parent-only generated receipt | The parent validates a focused test runner's stdout-referenced receipt outside the immutable pre-dispatch source catalog | Use the receipt as parent validation evidence; do not authorize the reviewer to Read generated output. |
 - **Security/merge boundary:** Classify changes to review authority, audit evidence or
   restricted reviewer admission as `security_critical` when they alter that trust

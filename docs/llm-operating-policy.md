@@ -191,11 +191,15 @@ Discipline:
   pre-implementation eligibility gate. Kilo model discovery failure does not imply
   `SECURITY_REVIEW_UNAVAILABLE`.
 - After required validation and ordinary whole-PR approval pass with no changes
-  pending, freeze exact PR base/HEAD/merge-base and return
-  `READY_FOR_OWNER_SECURITY_REVIEW`. The fresh independent Codex reviewer inspects
+  pending, freeze exact PR base/HEAD/merge-base and reserve/persist the next
+  owner-manual security review ordinal in the delivery ledger before returning
+  `READY_FOR_OWNER_SECURITY_REVIEW`. Name that reserved ordinal in the handoff. The
+  fresh independent Codex reviewer inspects
   the complete frozen PR and relevant security/authority context without prior
   findings or desired verdict. Use read-only execution and preserve credential
   boundaries. Adrian supplies the manual result and execution evidence for verification.
+  The pending reservation blocks any patch/review/merge until resolution; once launched,
+  the ordinal remains consumed for every outcome and cannot be reused.
 - The evidence must bind exact repository/issue/PR identities and URL, reviewed
   HEAD/base/merge-base, requested reviewer/provider/model, official Codex executable
   path/version/binary digest, actual invocation/session/turn and timestamps, observed

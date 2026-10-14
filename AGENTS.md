@@ -239,8 +239,12 @@ repeated manual work, understandable state). A material UX regression is
 `security_critical`. For Scarcity Router, Adrian personally invokes the official
 Codex CLI after implementation, validation and ordinary independent review are
 complete. The implementation agent must never invoke Daybreak automatically,
-substitute a model or claim security acceptance. At the handoff, return
-`READY_FOR_OWNER_SECURITY_REVIEW` and stop before merge. The root accepts the
+substitute a model or claim security acceptance. Before the handoff, the root reserves
+and persists the next owner-manual security ordinal with the exact frozen refs in the
+same delivery ledger. At handoff, name the reserved ordinal, return
+`READY_FOR_OWNER_SECURITY_REVIEW` and stop before merge. A pending slot cannot be
+reused; once the owner starts an invocation, record it consumed regardless of result.
+The root accepts the
 owner-supplied result only after verifying the evidence/provenance contract in
 D-069A and the exact current PR/reviewed HEAD/base/merge-base. Owner assertion,
 CLI exit zero or unverifiable model identity is insufficient. Any HEAD/base change

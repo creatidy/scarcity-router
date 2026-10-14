@@ -78,7 +78,11 @@ delivery; STOP_REVISE still requires an explicit owner decision, not a new PR/na
 7. Never dispatch beyond the exact effective canonical ceiling. A valid explicit
    exception is D-069A-only and applies solely to its verified issue/PR/scope. An
    exact ordinary APPROVE may satisfy only ordinary review; if security-critical
-   owner review remains, return READY_FOR_OWNER_SECURITY_REVIEW and stop. Genuine
+   owner review remains, reserve and persist the next owner-manual security review
+   ordinal against the exact frozen refs before returning
+   READY_FOR_OWNER_SECURITY_REVIEW and stop. Name that reserved ordinal in the handoff;
+   its pending slot blocks further work, cannot be reused, and any launched attempt stays consumed
+   regardless of outcome. Genuine
    decisions yield OWNER_DECISION_NEEDED and finite infrastructure failures BLOCKED.
    Remaining actionable findings yield STOP_REVISE; summarize recurring patterns,
    especially substantial new semantic/architectural defects across product boundaries.
@@ -93,11 +97,15 @@ delivery; STOP_REVISE still requires an explicit owner decision, not a new PR/na
 
 For `security_critical` work, ordinary APPROVE alone does not yield completion
 or READY_TO_MERGE. For Scarcity Router, after required validation and a fresh ordinary
-APPROVE at frozen base/HEAD with no changes pending, Adrian personally performs the
-mandatory independent `gpt-daybreak-blue-latest` review through official Codex. The
-implementation agent must never invoke Daybreak/Codex automatically or substitute
-another model. Return `READY_FOR_OWNER_SECURITY_REVIEW` with exact refs and evidence;
-leave the PR open/unmerged. Verify the owner-supplied manual result per D-069A, including
+APPROVE at frozen base/HEAD with no changes pending, reserve and persist the next
+owner-manual security review ordinal and exact refs in the same delivery ledger before
+returning `READY_FOR_OWNER_SECURITY_REVIEW`. Adrian personally performs only that
+reserved mandatory independent `gpt-daybreak-blue-latest` review through official Codex.
+The implementation agent must never invoke Daybreak/Codex automatically or substitute
+another model. Name the reserved ordinal in the open/unmerged PR handoff. A pending
+reservation blocks further work and cannot be reused; once launched it remains consumed
+regardless of success/failure/invalidated output. Verify the owner-supplied manual result
+per D-069A, including
 runtime identity/execution provenance, source/input and result digests, verdict/findings
 and independent tool/context audit. Owner assertion, CLI exit0 and model self-report
 are insufficient; any HEAD/base change invalidates approval. No fallback reviewer.

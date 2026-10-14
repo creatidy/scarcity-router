@@ -26,8 +26,10 @@ Follow the full policy in [`docs/llm-operating-policy.md`](../../docs/llm-operat
   a counter. Reviewer roles are based on current required gates, not ordinal numbers.
 - For Scarcity Router `security_critical` work, Adrian invokes the mandatory official
   Codex `gpt-daybreak-blue-latest` review manually after ordinary approval/validation.
-  At handoff, stop at `READY_FOR_OWNER_SECURITY_REVIEW`; this is not security approval
-  or merge authority. Any HEAD/base change invalidates approval. The implementation
+  Before handoff, reserve/persist the next owner-manual ordinal against exact frozen refs;
+  name it in `READY_FOR_OWNER_SECURITY_REVIEW`. The reservation is not security approval
+  or merge authority and cannot be reused; a launched attempt is consumed for any result.
+  Any HEAD/base change invalidates approval. The implementation
   agent must never invoke Daybreak automatically; require the evidence/provenance
   validation in `docs/llm-operating-policy.md` and D-069A before closing the gate.
 - Completed PASS gates, adjudication, remediation, translation and validation

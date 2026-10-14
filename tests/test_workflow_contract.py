@@ -1,5 +1,6 @@
 """Offline consistency guards for command text, not proof of runtime execution."""
 
+import fnmatch
 import re
 import unittest
 from pathlib import Path
@@ -226,6 +227,10 @@ class WorkflowContractTests(unittest.TestCase):
                 "canonical #185 comment #16956 plus direct owner source sha-256",
                 "#185/pr #209 only, maximum12; #11 ordinary, #12 owner-manual security, no #13",
             ),
+            "owner-manual reservation": (
+                "the ordinary gate passed but the next security ordinal is not reserved against the exact current objects",
+                "do not return the owner handoff or launch codex; reserve/persist first",
+            ),
             "currentness change": ("differs from the exact current pr", "approval becomes stale"),
             "role change": ("mandatory security evidence is not", "currently required security role"),
             "incomplete manual security evidence": ("identity/execution/output capture is unverifiable", "keep security gate open"),
@@ -276,6 +281,41 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("owner-manual security approval covers those same exact objects", loop)
         self.assertIn("READY_FOR_OWNER_SECURITY_REVIEW", loop)
         self.assertIn("implementation agent must never invoke Daybreak/Codex automatically", loop)
+
+    def test_owner_manual_review_ordinal_is_reserved_before_handoff(self) -> None:
+        sections = {
+            "docs/decisions.md": ("Manual Scarcity Router security gate:", "Manual result evidence:"),
+            "AGENTS.md": ("Security-critical work carries an additional", "The detailed operating policy is"),
+            "docs/llm-operating-policy.md": (
+                "After required validation and ordinary whole-PR approval",
+                "Classify `SECURITY_REVIEW_UNAVAILABLE`",
+            ),
+            ".kilo/command/finish-pr.md": ("For `security_critical` work", "Return one final report"),
+            ".kilo/command/loop.md": ("## Security Review", "## MERGE"),
+            ".kilo/command/review-pr.md": ("An ordinary APPROVE", None),
+            ".kilo/rules/10-task-system.md": (
+                "Current APPROVE with empty findings satisfies only ordinary",
+                "At the effective authorized bound",
+            ),
+            ".kilo/rules/40-llm-operating-policy.md": (
+                "For Scarcity Router `security_critical` work",
+                "Completed PASS gates",
+            ),
+        }
+        for path, (start_marker, end_marker) in sections.items():
+            contract = text(path)
+            section = contract.split(start_marker, 1)[1]
+            if end_marker is not None:
+                section = section.split(end_marker, 1)[0]
+            with self.subTest(path=path):
+                lowered = section.lower()
+                ready = lowered.index("ready_for_owner_security_review")
+                self.assertIn("reserve", lowered[:ready])
+                self.assertTrue("reserved ordinal" in lowered or "owner-manual ordinal" in lowered)
+                self.assertTrue(any(phrase in lowered for phrase in (
+                    "cannot be reused", "cannot be silently reused", "never silently reuse",
+                )))
+                self.assertIn("consumed", lowered)
 
     def test_pre_delivery_gates_refresh_queue_without_terminating_or_resetting_history(self) -> None:
         transitions = eligibility_transitions()
@@ -520,6 +560,18 @@ class WorkflowContractTests(unittest.TestCase):
         for tool in ("glob", "grep", "list", "semantic_search"):
             with self.subTest(tool=tool):
                 self.assertEqual(permissions.get(tool), "deny")
+        bash_value = permissions.get("bash")
+        if not isinstance(bash_value, dict):
+            self.fail("reviewer Bash permissions must be pattern-scoped")
+        bash_permissions = cast(dict[str, object], bash_value)
+        self.assertEqual(bash_permissions.get("git diff *"), "allow")
+        self.assertEqual(bash_permissions.get("* --ext-diff*"), "deny")
+        self.assertEqual(bash_permissions.get("* --textconv*"), "deny")
+        safe_diff = "git diff --no-ext-diff --no-textconv --no-renames --unified=0 BASE HEAD -- file.py"
+        self.assertFalse(fnmatch.fnmatchcase(safe_diff, "* --ext-diff*"))
+        self.assertFalse(fnmatch.fnmatchcase(safe_diff, "* --textconv*"))
+        self.assertTrue(fnmatch.fnmatchcase("git diff --ext-diff BASE HEAD", "* --ext-diff*"))
+        self.assertTrue(fnmatch.fnmatchcase("git diff --textconv BASE HEAD", "* --textconv*"))
         read_value = permissions.get("read")
         if not isinstance(read_value, dict):
             self.fail("reviewer Read permission must have scoped patterns")

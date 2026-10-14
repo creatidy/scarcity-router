@@ -63,8 +63,8 @@ permission:
     "uv run --no-sync python -m unittest discover -s tests -v": allow
     "UV_OFFLINE=1 make check": allow
     "*--output*": deny
-    "*--ext-diff*": deny
-    "*--textconv*": deny
+    "* --ext-diff*": deny
+    "* --textconv*": deny
     "git ls-remote * -*": deny
     "git ls-remote *\"-*": deny
     "git ls-remote *'-*": deny
