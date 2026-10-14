@@ -20,6 +20,16 @@ Follow the full policy in [`docs/llm-operating-policy.md`](../../docs/llm-operat
 - Command delivery follows `.kilo/rules/35-technical-recovery.md`: infrastructure
   failure is not an implementation finding or owner decision. Use bounded authorized
   environment/reviewer failover automatically; preserve ordinals and restricted gates.
+- D-069's whole-PR review ceiling is ten by default. A finite per-issue exception
+  exists only through D-069A and only after canonical owner/repository/issue/PR/source
+  authority, scope and maximum are independently verified; the local ledger is only
+  a counter. Reviewer roles are based on current required gates, not ordinal numbers.
+- For Scarcity Router `security_critical` work, Adrian invokes the mandatory official
+  Codex `gpt-daybreak-blue-latest` review manually after ordinary approval/validation.
+  At handoff, stop at `READY_FOR_OWNER_SECURITY_REVIEW`; this is not security approval
+  or merge authority. Any HEAD/base change invalidates approval. The implementation
+  agent must never invoke Daybreak automatically; require the evidence/provenance
+  validation in `docs/llm-operating-policy.md` and D-069A before closing the gate.
 - Completed PASS gates, adjudication, remediation, translation and validation
   remain completed unless source changes materially or a concrete regression is
   identified.

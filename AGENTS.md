@@ -196,13 +196,18 @@ durable product or deployment contract.
 
 Multi-model work is bounded by default. Before workers or reviewers start, freeze
 scope/threat model, expected complexity boundary and execution budget. D-069
-supersedes D-015/D-029's development-delivery review/merge defaults only: repository
-issue delivery uses at most 10 whole-PR review invocations, including initial,
-COMMENT, invalidated reviews and corrected retries. `/finish-pr` and `/loop`
-reserve each ordinal BEFORE dispatch in Git-locally excluded `.task_progress.md`.
-Reentry, phase, task, model or session changes never reset the delivery counter;
-missing/ambiguous recovery is BLOCKED. Never dispatch review 11 or make patches
-that cannot receive a fresh review within the bound.
+supersedes D-015/D-029's development-delivery review/merge defaults only. Its
+default is at most 10 whole-PR review invocations per issue delivery, including
+initial, COMMENT, invalidated reviews and corrected retries. The sole exception
+is the narrowly scoped owner-authorized mechanism in D-069A; it is inactive unless
+the primary independently verifies the exact current canonical owner/repository/
+issue/PR/source authority, finite maximum and scope before reserving an ordinal.
+The excluded `.task_progress.md` ledger records authority and chronological counts;
+it never creates or extends an exception. `/finish-pr` and `/loop` reserve every
+ordinal BEFORE dispatch. Reentry, phase, task, model or session changes never reset
+the delivery counter. Missing/ambiguous recovery is BLOCKED. Never dispatch beyond
+the exact freshly verified maximum or make patches that cannot receive a fresh
+review within the remaining authorized bound.
 
 Each review is fresh, foreground, read-only and covers the complete PR at exact
 frozen HEAD/base. Serialize dependent phases; no pushes/edits during review.
@@ -230,17 +235,18 @@ repeated manual work, understandable state). A material UX regression is
 [`docs/llm-operating-policy.md`](docs/llm-operating-policy.md).
 
 **Security-critical work carries an additional independent
-`gpt-daybreak-blue-latest` review gate** when the work is explicitly
-classified `security_critical`. Run it through direct Codex execution, not Kilo
-model discovery or reviewer dispatch, after required validation and ordinary
-independent review at a stable exact PR base/HEAD, before completion or merge.
-It is not a pre-implementation eligibility gate. Kilo discovery failure does not
-imply `SECURITY_REVIEW_UNAVAILABLE`; only failure of the authorized direct Codex
-path after bounded technical recovery can establish that limitation. Record the
-exact base/HEAD, reviewer identity, Codex execution path, findings and verdict;
-any HEAD/base change invalidates security approval. The gate stays open at the
-human decision point if required access is genuinely unavailable; no substitute
-model may close it. This reviewer-path rule is Router-specific — see
+`gpt-daybreak-blue-latest` review gate** when explicitly classified
+`security_critical`. For Scarcity Router, Adrian personally invokes the official
+Codex CLI after implementation, validation and ordinary independent review are
+complete. The implementation agent must never invoke Daybreak automatically,
+substitute a model or claim security acceptance. At the handoff, return
+`READY_FOR_OWNER_SECURITY_REVIEW` and stop before merge. The root accepts the
+owner-supplied result only after verifying the evidence/provenance contract in
+D-069A and the exact current PR/reviewed HEAD/base/merge-base. Owner assertion,
+CLI exit zero or unverifiable model identity is insufficient. Any HEAD/base change
+invalidates security approval. The gate remains mandatory and open until validated;
+only after all required gates does the explicit `/loop` retain canonical merge
+authority. This owner-manual invocation path is Scarcity Router-specific — see
 [`docs/llm-operating-policy.md`](docs/llm-operating-policy.md).
 
 The detailed operating policy is

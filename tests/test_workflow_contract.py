@@ -3,6 +3,9 @@
 import re
 import unittest
 from pathlib import Path
+from typing import cast
+
+import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -48,6 +51,22 @@ def dependency_assessments() -> dict[str, tuple[str, str, str]]:
 
 
 class WorkflowContractTests(unittest.TestCase):
+    def test_changed_kilo_frontmatter_remains_valid_yaml(self) -> None:
+        for path in (
+            ".kilo/agents/pr-reviewer.md",
+            ".kilo/command/finish-pr.md",
+            ".kilo/command/loop.md",
+            ".kilo/command/review-pr.md",
+        ):
+            with self.subTest(path=path):
+                source = (ROOT / path).read_text()
+                self.assertTrue(source.startswith("---\n"))
+                parsed: object = cast(object, yaml.safe_load(source.split("---", 2)[1]))
+                if not isinstance(parsed, dict):
+                    self.fail(f"{path} frontmatter must be a YAML mapping")
+                metadata = cast(dict[str, object], parsed)
+                self.assertIsInstance(metadata.get("description"), str)
+
     def test_full_queue_dependency_recovery_is_loop_only_not_standalone_authority(self) -> None:
         for path in (".kilo/rules/10-task-system.md", ".kilo/rules/35-technical-recovery.md"):
             with self.subTest(path=path):
@@ -164,25 +183,95 @@ class WorkflowContractTests(unittest.TestCase):
                 self.assertIn("read-only", contract)
                 self.assertIn("acceptance/retirement stage", contract)
 
-    def test_daybreak_uses_direct_codex_after_ordinary_review_not_issue_discovery(self) -> None:
+    def test_d069_exception_contract_is_finite_canonical_and_default_ten(self) -> None:
+        raw_decision = (ROOT / "docs/decisions.md").read_text().split("### D-069A", 1)[1].split(
+            "### D-070", 1
+        )[0]
+        decision = " ".join(raw_decision.split()).lower()
+        for requirement in (
+            "default remains ten whole-pr reviews",
+            "explicit direct owner decision plus a canonical issue/pr record",
+            "positive finite integer maximum",
+            "local delivery ledger records evidence/counters, not authority",
+            "not from permanent ordinal-to-role rules",
+            "direct owner message is present in the primary root context",
+            "ea6f2d1236827075a1dd853ae1275ad178e62b63761eaa557e943176594a2049",
+            "runtime_verified",
+            "cli exit-zero",
+            "mandatory independent official",
+            "manual router security gate",
+        ):
+            with self.subTest(requirement=requirement):
+                self.assertIn(requirement, decision)
+        cases: dict[str, tuple[str, str]] = {}
+        for line in raw_decision.splitlines():
+            if not line.strip().startswith("|"):
+                continue
+            cells = tuple(cell.strip() for cell in line.strip().strip("|").split("|"))
+            if cells[0] in ("Case", "---"):
+                continue
+            self.assertEqual(len(cells), 3, msg=f"malformed D-069A case row: {line}")
+            cases[cells[0].lower()] = (cells[1].lower(), cells[2].lower())
+        expected_cases = {
+            "normal delivery": ("no exception record", "default maximum remains 10"),
+            "ledger-only extension": (
+                "`.task_progress.md` says `max=12`; no canonical owner/source record",
+                "deny the exception",
+            ),
+            "unverified transcript": ("no matching direct owner source/message digest", "deny the exception"),
+            "scope mismatch": ("different repository, issue, linked pr or bounded task", "deny the exception"),
+            "malformed or superseded authority": ("missing/noninteger/zero maximum", "deny/stop"),
+            "verified finite exception": ("exact canonical linked repo/issue/pr record", "use only that maximum"),
+            "currentness change": ("differs from the exact current pr", "approval becomes stale"),
+            "role change": ("mandatory security evidence is not", "currently required security role"),
+            "incomplete manual security evidence": ("identity/execution/output capture is unverifiable", "keep security gate open"),
+            "parent-only generated receipt": ("outside the immutable pre-dispatch source catalog", "do not authorize the reviewer to read generated output"),
+        }
+        self.assertEqual(set(cases), set(expected_cases))
+        for case, (evidence, result) in expected_cases.items():
+            with self.subTest(case=case):
+                actual_evidence, actual_result = cases[case]
+                self.assertIn(evidence, actual_evidence)
+                self.assertIn(result, actual_result)
+        for path in (
+            "AGENTS.md", "docs/llm-operating-policy.md", ".kilo/command/loop.md",
+            ".kilo/command/finish-pr.md", ".kilo/command/review-pr.md",
+            ".kilo/rules/10-task-system.md", ".kilo/rules/35-technical-recovery.md",
+            ".kilo/rules/40-llm-operating-policy.md",
+        ):
+            with self.subTest(path=path):
+                contract = text(path)
+                self.assertIn("D-069A", contract)
+                self.assertIn("default", contract.lower())
+                self.assertRegex(contract, r"(?i)\b(?:10|ten)\b")
+                self.assertNotRegex(contract, r"(?i)never dispatch review\s*11")
+
+    def test_router_daybreak_is_owner_manual_and_independently_verified(self) -> None:
         for path in ("AGENTS.md", "docs/llm-operating-policy.md", ".kilo/command/loop.md",
-                     ".kilo/command/finish-pr.md"):
+                     ".kilo/command/finish-pr.md", ".kilo/command/review-pr.md",
+                     ".kilo/rules/40-llm-operating-policy.md"):
             with self.subTest(path=path):
                 contract = text(path)
                 self.assertIn("gpt-daybreak-blue-latest", contract)
                 self.assertIn("Codex", contract)
-                self.assertIn("not a pre-implementation eligibility gate", contract)
-                self.assertIn("does not imply `SECURITY_REVIEW_UNAVAILABLE`", contract)
-                self.assertIn("HEAD/base change", contract)
+                self.assertTrue(
+                    any(phrase in contract.lower() for phrase in ("never invoke", "must not invoke")),
+                    msg=f"{path} must prohibit automatic Daybreak invocation",
+                )
+                self.assertIn("READY_FOR_OWNER_SECURITY_REVIEW", contract)
+                self.assertIn("HEAD/base", contract)
         policy = text("docs/llm-operating-policy.md")
-        self.assertIn("directly through Codex", policy)
-        self.assertIn("never through Kilo discovery or reviewer dispatch", policy)
-        self.assertIn("no fallback reviewer is permitted", policy)
-        self.assertIn("after authorized bounded technical recovery", policy)
+        self.assertIn("the owner personally invokes", policy)
+        self.assertIn("requested reviewer/provider", policy)
+        self.assertIn("official Codex executable", policy)
+        self.assertIn("CLI exit zero", policy)
+        self.assertIn("RUNTIME_VERIFIED", policy)
         loop = text(".kilo/command/loop.md")
         self.assertLess(loop.index("## FINISH"), loop.index("## Security Review"))
         self.assertLess(loop.index("## Security Review"), loop.index("## MERGE"))
-        self.assertIn("security approval covers those same exact objects", loop)
+        self.assertIn("owner-manual security approval covers those same exact objects", loop)
+        self.assertIn("READY_FOR_OWNER_SECURITY_REVIEW", loop)
+        self.assertIn("implementation agent must never invoke Daybreak/Codex automatically", loop)
 
     def test_pre_delivery_gates_refresh_queue_without_terminating_or_resetting_history(self) -> None:
         transitions = eligibility_transitions()
@@ -396,20 +485,41 @@ class WorkflowContractTests(unittest.TestCase):
         ):
             self.assertIn(boundary, manifest)
 
+    def test_reviewer_preparation_catalog_and_generated_receipts_are_bounded(self) -> None:
+        reviewer = text(".kilo/agents/pr-reviewer.md")
+        for invariant in (
+            "root-attested exact source/file catalog",
+            "complete per-file patch/index",
+            "supplied per-file bounded Read ranges without gaps",
+            "Access only listed workspaces/files and directly cited Forgejo objects",
+            "do not guess files, list evidence directories or read dynamic generated",
+            "Report a missing/indexed byte or output as COMMENT",
+            "parent must provision the locked offline environment at that exact checkout",
+            "A valid receipt is parent-checked from actual runner stdout",
+            "do not read a generated run receipt or directory",
+        ):
+            with self.subTest(invariant=invariant):
+                self.assertIn(invariant, reviewer)
+
     def test_delivery_counter_survives_reentry(self) -> None:
-        finish = text(".kilo/command/finish-pr.md")
+        finish = " ".join(text(".kilo/command/finish-pr.md").split())
         for requirement in (
-            "at most 10 whole-PR review invocations per issue delivery",
+            "default at most 10 whole-PR review invocations per issue delivery",
             "INCLUDING the initial review, COMMENT, invalidated reviews and corrected retries",
+            "Only an exact, canonical owner-authorized D-069A exception",
             "Before EVERY task dispatch reserve/persist the next review ordinal",
             "Reinvoking `/finish-pr`, changing phase, reviewer task, model or session "
             + "MUST reuse the same delivery counter",
             "prior dispatch/count recovery is ambiguous or unavailable, BLOCKED",
-            "Never dispatch review 11",
-            "without patches that cannot receive a fresh review",
+            "at the exact effective maximum return STOP_REVISE",
+            "without patches that cannot receive a fresh review in the remaining capacity",
+            "READY_FOR_OWNER_SECURITY_REVIEW",
             "not a target: stop as soon as an owner decision is clearly required",
         ):
             self.assertIn(requirement, finish)
+        self.assertNotIn("Never dispatch review 11", finish)
+        self.assertIn("default is at most 10", text("AGENTS.md"))
+        self.assertIn("D-069A", text("docs/decisions.md"))
         for path in ("AGENTS.md", ".kilo/rules/10-task-system.md", ".kilo/command/finish-pr.md"):
             self.assertNotRegex(text(path), r"(?i)(?:at most|maximum) three|THREE remediation")
         progress = text(".kilo/rules/40-local-search.md")
@@ -484,8 +594,11 @@ class WorkflowContractTests(unittest.TestCase):
             self.assertIn(requirement, complete)
 
     def test_stop_boundary_and_repository_safety(self) -> None:
-        loop = text(".kilo/command/loop.md")
-        self.assertIn("Return exactly one terminal status: QUEUE_EMPTY, STOP_AND_ASK, STOP_REVISE or BLOCKED", loop)
+        loop = " ".join(text(".kilo/command/loop.md").split())
+        self.assertIn(
+            "Return exactly one terminal status: QUEUE_EMPTY, STOP_AND_ASK, STOP_REVISE, BLOCKED or `READY_FOR_OWNER_SECURITY_REVIEW`",
+            loop,
+        )
         self.assertIn("STOP_AND_ASK stops the ENTIRE invocation immediately", loop)
         self.assertIn("never skip the selected issue and continue another", loop)
         for boundary in (
@@ -542,7 +655,7 @@ class WorkflowContractTests(unittest.TestCase):
             "minimum sufficient authorized technical remediation automatically",
             "Owner attention is scarce",
             "No persistent service, privileged container, Docker socket mount or security weakening",
-            "No blind retries", "Never dispatch review 11",
+            "No blind retries", "exact verified maximum",
         ):
             self.assertIn(requirement, recovery)
 

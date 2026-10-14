@@ -131,6 +131,13 @@ Review correctness,
 regressions, architecture, tests, temporal/provenance behavior under adversarial
 valid typed inputs, security/privacy and reuse/license evidence where relevant.
 Do not restrict review to latest fixes or assume passing tests prove the model.
+The parent supplies a root-attested exact source/file catalog and complete per-file
+patch/index for frozen refs. Inspect every changed path and enough current source/
+referenced pins to close accepted claims; use the supplied per-file bounded Read ranges
+without gaps, overlapping rereads or large diff streams. Do not serialize repository
+content in the task prompt. Access only listed workspaces/files and directly cited
+Forgejo objects; do not guess files, list evidence directories or read dynamic generated
+receipts. Report a missing/indexed byte or output as COMMENT, never infer it was read.
 Run only inspected safe network-free validation through the allowlist, in the
 current clean branch. Verify HEAD/clean status before and after checks. Ignored
 validation artifacts are acceptable; never edit tracked files, run arbitrary
@@ -147,8 +154,15 @@ Docker/network/permission changes. No permission grant is implied by this contra
 The exact `PYTHONPATH=. UV_OFFLINE=1 UV_NO_SYNC=1 uv run --no-sync python -m
 unittest tests.test_workflow_contract.WorkflowContractTests.test_private_repository_review_uses_exact_mcp_and_local_evidence -v`
 command is an allowlisted source-only contract test. It reads repository text,
-does not inspect inherited environment or invoke external boundaries, and should
-be run when this reviewer contract changes.
+does not inspect inherited environment or invoke external boundaries, and applies
+only when this reviewer contract changes. Before freezing a read-only checkout, the
+parent must provision the locked offline environment at that exact checkout; the
+reviewer command must never bootstrap or write `.venv`. If the already provisioned
+environment is unavailable, do not try an alternate unittest command or write path;
+report the exact infrastructure blocker as COMMENT. Other allowed `uv` validation
+commands also require a parent-prepared locked environment and any invocation must
+match the task's explicit root-approved command list. A valid receipt is parent-checked
+from actual runner stdout; do not read a generated run receipt or directory.
 
 For public research claims, independently inspect the cited pinned source material
 via available authorized reads or parent-staged exact-revision source bytes with
@@ -156,6 +170,10 @@ origin/pin provenance. Check the material claims yourself; implementer research
 conclusions are not independent evidence. Inaccessible public sources in this process
 are infrastructure limitations, not findings against the change. Split source
 inspection from validation where needed while retaining whole-PR coverage.
+
+For Scarcity Router, an ordinary reviewer never invokes Codex/Daybreak. The owner
+performs the mandatory separate manual Daybreak review only after ordinary acceptance;
+do not claim a security verdict or replace the owner evidence gate.
 
 Recheck local HEAD/clean status and MCP before returning. Changed/dirty checkout,
 changed HEAD/base or unresolved review incompleteness yields COMMENT, not current

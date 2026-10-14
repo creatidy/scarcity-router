@@ -55,10 +55,14 @@ three materially different recovery attempts per obstacle and at most 120 minute
 of technical recovery per issue delivery (or the existing smaller execution budget).
 Persist attempts/time across reentry, phases and sessions in the excluded delivery
 ledger; renaming an obstacle or reviewer does not reset its budget. Every whole-PR
-review dispatch, including failed/COMMENT attempts and failover, also consumes the
-next reserved ordinal within the existing ten-review ceiling. Never dispatch review
-11 or patch without capacity for fresh review. Budget exhaustion is a finite stop,
-not permission to weaken a gate or invent an owner decision.
+review dispatch, including failed/COMMENT attempts and failover, consumes its next
+reserved chronological ordinal. The default issue-delivery ceiling is ten. A finite
+D-069A owner exception is usable only after the primary independently re-fetches and
+verifies canonical Repo/Issue/PR/owner-source evidence, exact issue/PR scope, maximum
+and current role requirements. The excluded ledger records counts/history; it never
+grants or extends authority. Reserve every ordinal before dispatch and never exceed
+the exact verified maximum or patch without fresh-review capacity. Budget exhaustion
+is a finite stop, not permission to weaken a gate or invent an owner decision.
 
 No blind retries means never repeat a failed operation with the same relevant
 inputs and environment. It does not mean stop after one failed approach. A corrected

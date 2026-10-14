@@ -140,17 +140,21 @@ consequence is unusually high or independent confirmation materially increases
 confidence.
 
 Freeze immutable reviewed HEAD/base and serialize worker/reviewer/remediation
-phases. D-069 supersedes the development-delivery defaults: `/finish-pr` and
-`/loop` use fresh isolated foreground read-only whole-PR `pr-reviewer` tasks,
-with at most 10 invocations per issue delivery including initial, COMMENT,
-invalidated reviews and corrected retries. Reserve ordinals BEFORE dispatch in
-Git-locally excluded `.task_progress.md`; reentry/phase/task/model/session changes
-never reset them. Every HEAD/base change requires a new counted review. Missing
-or ambiguous recovery is BLOCKED. Implementation never self-approves or resumes
-a reviewer. Standalone review is read-only; standalone finish stops at exact
-READY_TO_MERGE, never merging. Only an explicit owner `/loop` may proceed through
-canonical Forgejo PR merge into develop, verified integrated acceptance and issue
-closure, then fresh selection. Review independence does not expand scope.
+phases. D-069 sets the default delivery ceiling to 10 whole-PR invocations per
+issue delivery, including initial, COMMENT, invalidated reviews and corrected
+retries. A narrowly scoped finite exception is permitted only by D-069A after the
+primary independently verifies canonical owner/source/repository/issue/PR
+authority, exact scope and maximum before reservation; the local excluded
+`.task_progress.md` ledger records counts but can never grant, extend or reset
+that exception. Reviewer roles are derived from current approval requirements;
+ordinals are chronological, not permanent role assignments. Reserve every ordinal
+BEFORE dispatch. Reentry/phase/task/model/session changes never reset a count, and
+no invocation may exceed the exact effective cap. Missing/ambiguous authority is
+BLOCKED. Implementation never self-approves or resumes a reviewer. Standalone
+review is read-only; standalone finish stops at exact READY_TO_MERGE, never merging.
+Only an explicit owner `/loop` may proceed through canonical Forgejo PR merge into
+develop, verified integrated acceptance and issue closure, then fresh selection.
+Review independence does not expand scope.
 
 ## UX is a mandatory review dimension (D-053, #121)
 
@@ -167,7 +171,7 @@ understand current system state. A material UX regression is
 is deliberately not a bureaucracy: no separate UX review phase, no UX
 checklist artifacts — one verdict line in the review.
 
-## Security-critical review gate (D-053 point 9, #122)
+## Security-critical review gate (D-053 point 9, #122; Router manual path D-069A)
 
 Work explicitly classified `security_critical` requires an INDEPENDENT
 `gpt-daybreak-blue-latest` review before the platform claims completion of
@@ -179,24 +183,32 @@ security_critical -> independent Daybreak Blue review required
 
 Discipline:
 
-- For Scarcity Router repository delivery, invoke `gpt-daybreak-blue-latest`
-  **directly through Codex**, never through Kilo discovery or reviewer dispatch.
-  This is a mandatory **pre-completion / pre-merge gate**, not a pre-implementation
-  eligibility gate. Kilo model discovery
-  failure does not imply `SECURITY_REVIEW_UNAVAILABLE`.
-- After required validation and ordinary independent whole-PR review pass with
-  no further implementation changes pending, freeze exact PR base and HEAD.
-  The fresh independent Codex reviewer inspects the complete frozen PR and
-  relevant security/authority context, without prior findings or desired verdict.
-  Use read-only execution and preserve credential boundaries. Persist exact
-  reviewed base/HEAD, identity `gpt-daybreak-blue-latest`, Codex execution path,
-  security findings and final verdict. Any HEAD/base change invalidates approval
-  and requires a fresh security review; ordinary approval alone cannot close it.
-- Classify `SECURITY_REVIEW_UNAVAILABLE` only when the required direct Codex path
-  cannot be exercised after authorized bounded technical recovery. Diagnose
-  routine environment/tool problems automatically under the shared recovery rule,
-  never ask the owner to operate an available authorized path. New restricted
-  access/authority remains owner-controlled; no fallback reviewer is permitted.
+- For Scarcity Router repository delivery, the owner personally invokes
+  `gpt-daybreak-blue-latest` through official Codex after implementation, validation
+  and fresh ordinary independent review are complete. The implementation agent must
+  never invoke Codex/Daybreak automatically, substitute a reviewer or claim security
+  acceptance. This remains a mandatory **pre-completion / pre-merge gate**, not a
+  pre-implementation eligibility gate. Kilo model discovery failure does not imply
+  `SECURITY_REVIEW_UNAVAILABLE`.
+- After required validation and ordinary whole-PR approval pass with no changes
+  pending, freeze exact PR base/HEAD/merge-base and return
+  `READY_FOR_OWNER_SECURITY_REVIEW`. The fresh independent Codex reviewer inspects
+  the complete frozen PR and relevant security/authority context without prior
+  findings or desired verdict. Use read-only execution and preserve credential
+  boundaries. Adrian supplies the manual result and execution evidence for verification.
+- The evidence must bind exact repository/issue/PR identities and URL, reviewed
+  HEAD/base/merge-base, requested reviewer/provider/model, official Codex executable
+  path/version/binary digest, actual invocation/session/turn and timestamps, observed
+  runtime-identity state, prompt/input-manifest and output digests, terminal result
+  schema, structured verdict/findings and a separate captured context/tool audit.
+  Owner assertion, CLI exit zero, transcript text or model self-report alone is not
+  independent approval. Require `RUNTIME_VERIFIED`; unobservable/mismatched identity,
+  stale refs or findings keep the gate open. Ordinary approval alone cannot close it.
+- Classify `SECURITY_REVIEW_UNAVAILABLE` only when the owner's required direct Codex
+  path cannot be independently evidenced after authorized bounded technical recovery.
+  Diagnose routine Kilo preparation/environment problems automatically; do not replace
+  the manual owner review with an automatic Kilo call. New restricted access/authority
+  remains owner-controlled; no fallback reviewer is permitted.
   Do not propagate this repository-specific path rule to other repositories.
 - Daybreak Blue (`gpt-daybreak-blue-latest`) is a RESTRICTED security-review
   capability: discovery in some runtime's inventory never proves execution
@@ -308,8 +320,10 @@ Do not repeat identical failures.
 
 General non-delivery defaults remain one initial review, one remediation and
 narrow verification, as described by `model-policy.json`. Repository command
-delivery uses D-069's scoped override, not those generic round counts: at most
-10 whole-PR reviews, no review 11 or patches without remaining review capacity.
+delivery uses D-069's default ten-review ceiling plus only the exact, canonical,
+finite D-069A owner exception. No dispatch may exceed the independently verified
+maximum or begin a patch that cannot receive a fresh whole-PR review within the
+remaining count.
 Command delivery follows [the shared technical-recovery contract](../.kilo/rules/35-technical-recovery.md)
 under D-070: distinguish engineering blockers from genuine owner decisions and
 review findings from infrastructure failure or unresolved judgment. Diagnose and
@@ -440,7 +454,8 @@ module issues with evidence.
 
 The portable `model-policy.json` artifact remains descriptive and unchanged.
 D-069 is the explicit repository-command override to its generic review/merge
-defaults; it does not redesign the model or change selectors/profiles/ratings.
+defaults; D-069A adds only its verified per-delivery finite-cap exception. Neither
+decision changes model classes, selectors, profiles, ratings or product contracts.
 Immutable review objects and serialized phases remain mandatory. Only the sole
 primary context of an explicit owner `/loop` has the narrowly checked PR merge
 and completed-issue closure authority. Never direct-push develop, touch main,

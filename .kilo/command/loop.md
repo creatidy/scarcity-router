@@ -219,40 +219,47 @@ uses a fresh foreground `task`, `subagent_type: pr-reviewer`, no `task_id`; neve
 self-approve or resume a reviewer. Parent makes no edits/branch switches while it
 runs. Do not feed past findings, reasoning or desired verdict to the reviewer.
 
-Maximum 10 whole-PR review invocations per issue delivery, INCLUDING the initial
-review, COMMENT, invalidated reviews and corrected retries. Reserve/persist each
-ordinal BEFORE dispatch in the shared delivery ledger; `/finish-pr` reentry,
-internal phases, new tasks and model/session changes cannot reset it. This is a
-safety ceiling, not a target; stop immediately for a genuine material decision.
-Fresh reviews inspect the COMPLETE PR, exact HEAD/base/merge base, read-only in a
-fresh isolated context, and return the existing structured JSON verdict/result.
-Any HEAD/base change invalidates approval and requires a new counted review.
+The default ceiling is 10 whole-PR review invocations per issue delivery, INCLUDING
+the initial review, COMMENT, invalidated reviews and corrected retries. A finite
+D-069A exception may be used only after this primary independently re-fetches and
+verifies the exact canonical owner/source/repository/issue/PR authority, scope and
+maximum. The excluded ledger records counts/history but never grants an exception.
+Reserve/persist each ordinal BEFORE dispatch in the shared delivery ledger;
+`/finish-pr` reentry, phases, tasks and model/session changes cannot reset it. No
+invocation may exceed the exact effective maximum, which is a safety ceiling, not a
+target. Stop for a genuine material decision. Assign ordinary/security/reverification
+roles from current outstanding gates, not a permanent ordinal-to-role mapping. Fresh
+reviews inspect the COMPLETE PR, exact HEAD/base/merge-base, read-only in a fresh
+isolated context, and return the existing structured result. Every HEAD/base change
+invalidates approval and requires a new counted review.
 
 REQUEST_CHANGES: understand/reproduce actionable in-scope findings, remediate with
 appropriate regression evidence, validate, commit normally and push the SAME PR,
 then obtain a new whole-PR review. Never amend, squash, force-push or rewrite history
 to clean the loop. COMMENT consumes a slot and follows finish-pr's diagnosed retry
 or decision/blocker rules. READY_TO_MERGE is internal, not loop termination.
-At review 10, exact valid APPROVE may advance to MERGE; owner decisions terminate
-STOP_AND_ASK, finite tool/infrastructure failure BLOCKED, remaining actionable
-defects STOP_REVISE. No review 11 or unreviewable further patches.
+At the effective maximum, exact valid APPROVE may advance only after every required
+review role and acceptance gate passes; owner decisions terminate STOP_AND_ASK, finite
+tool/infrastructure failure BLOCKED, and remaining actionable defects STOP_REVISE.
+Never dispatch beyond the canonical verified maximum or make an unreviewable patch.
 
 ## Security Review
 
-For `security_critical` work, after validation and ordinary independent review
-pass at a stable exact PR base/HEAD with no changes pending, invoke the additional
-independent `gpt-daybreak-blue-latest` review directly through Codex, not Kilo.
-This is a pre-completion / pre-merge gate, not a pre-implementation eligibility
-gate. Kilo model discovery failure does not imply `SECURITY_REVIEW_UNAVAILABLE`.
-Follow `docs/llm-operating-policy.md`: fresh read-only complete frozen-PR inspection,
-no prior findings/desired verdict, record exact base/HEAD, reviewer identity,
-Codex execution path, security findings and verdict. No fallback reviewer is
-permitted. Any HEAD/base change invalidates security approval and requires a fresh
-security review after ordinary review/currentness are restored. Remediate scoped
-findings through the same validation/ordinary-review workflow and retained counters.
-Only direct Codex failure after bounded authorized recovery establishes unavailable
-access; never stop merely to ask the owner to invoke an available path manually.
-This path rule is Scarcity Router-specific, not cross-repository maintenance authority.
+For `security_critical` Scarcity Router work, after implementation, validation and
+fresh ordinary independent APPROVE with no changes pending, freeze exact PR base/HEAD/
+merge-base and return `READY_FOR_OWNER_SECURITY_REVIEW`. Adrian personally invokes
+the independent official Codex `gpt-daybreak-blue-latest` audit using a separate prompt.
+The implementation agent must never invoke Daybreak/Codex automatically or substitute
+a reviewer. This remains a mandatory pre-completion/pre-merge gate, not a pre-implementation
+eligibility gate. The owner supplies a structured execution/result record; verify exact
+repo/issue/PR/ref identities, requested reviewer/provider, official binary/version/hash,
+dispatch/runtime identity evidence, invocation/turn provenance, prompt/input/result
+digests, findings and a separate context/tool audit. Owner assertion, CLI exit zero or
+model self-report are insufficient; require current `RUNTIME_VERIFIED` identity. Any
+HEAD/base change invalidates approval. A valid owner result may be consumed only in a
+fresh explicit continuation after canonical currentness is re-fetched. If unavailable or
+unverifiable, leave the security gate open; no fallback reviewer. This is Scarcity
+Router-specific and grants no cross-repository authority.
 
 ## MERGE
 
@@ -275,7 +282,7 @@ For nonexcluded issues, changed authority/acceptance/gates/disposition still
 invalidates continuation; stop with evidence rather than merge. Otherwise
 re-fetch canonical PR metadata and current canonical develop through normal Git;
 verify approved HEAD/base exactly match current remote and local frozen objects,
-and required direct-Codex security approval covers those same exact objects,
+and required owner-manual security approval covers those same exact objects,
 empty findings, clean checkout, successful required `make check`, open/unmerged PR
 and target develop. A changed HEAD/base invalidates APPROVE: return to FINISH with
 the SAME counter (or terminate at the bound); never merge stale approval.
@@ -309,7 +316,14 @@ again with a fresh canonical queue, not a PR-derived backlog.
 
 ## Terminal Reporting
 
-Return exactly one terminal status: QUEUE_EMPTY, STOP_AND_ASK, STOP_REVISE or BLOCKED.
+Return exactly one terminal status: QUEUE_EMPTY, STOP_AND_ASK, STOP_REVISE, BLOCKED or
+`READY_FOR_OWNER_SECURITY_REVIEW`.
+Return `READY_FOR_OWNER_SECURITY_REVIEW` only for security-critical work after all
+implementation, validation and ordinary independent approval/audit gates pass at
+frozen exact refs. It leaves the selected issue/PR open and unmerged, is not security
+approval and halts this loop; do not select another issue while the owner gate remains.
+Resume only after the owner supplies a validated canonical manual result and explicitly
+re-invokes the authorized workflow.
 Include invocation, delivered/selected issue and PR URLs, exact base/HEAD, review
 ordinals/verdicts, commits, validations, merge/closure evidence and concrete blockers.
 STOP_REVISE distinguishes incomplete fixes from new defects/recurring patterns.

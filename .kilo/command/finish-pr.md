@@ -10,12 +10,15 @@ remediation commits/pushes; no additional issue, replacement PR or merge.
 An explicit owner `/loop` may reuse this procedure in its sole primary context;
 selection/merge/closure authority lives only in loop.md, never in `/finish-pr`.
 Apply `.kilo/rules/35-technical-recovery.md` before any terminal escalation. Its
-persistent technical recovery budget coexists with the ten-review ceiling below;
-every failed/COMMENT/failover whole-PR attempt consumes its reserved ordinal.
+persistent technical recovery budget coexists with D-069's default-ten review
+ceiling; a D-069A exception is available only after exact canonical owner authority,
+issue/PR scope and finite maximum are independently verified, not from the local
+ledger. Every failed/COMMENT/failover whole-PR attempt consumes its reserved ordinal.
 
-Delivery budget: at most 10 whole-PR review invocations per issue delivery,
+Delivery budget: default at most 10 whole-PR review invocations per issue delivery,
 INCLUDING the initial review, COMMENT, invalidated reviews and corrected retries.
-Before the first review verify `.task_progress.md` is Git-locally excluded, then
+Only an exact, canonical owner-authorized D-069A exception can raise the ceiling for
+the selected issue/PR. Before the first review verify `.task_progress.md` is Git-locally excluded, then
 append a delivery ledger keyed by issue/PR (and `/loop` invocation ID if applicable).
 Before EVERY task dispatch reserve/persist the next review ordinal, frozen SHAs
 and pending result. Record returned verdict, remediation commits and checks.
@@ -60,7 +63,9 @@ delivery; STOP_REVISE still requires an explicit owner decision, not a new PR/na
    Genuine incompatible acceptance, architecture or material scope decisions
    yield OWNER_DECISION_NEEDED with concrete alternatives. Otherwise reproduce
    each actionable finding. Before patching check the remaining delivery budget;
-   at 10 return STOP_REVISE without patches that cannot receive a fresh review.
+   at the exact effective maximum return STOP_REVISE without patches that cannot
+   receive a fresh review in the remaining capacity. No owner exception transfers
+   to another issue/PR.
    Remediate all in scope and add regression tests.
    Classify each as direct incomplete remediation or genuinely new semantic/
    architectural defect; record that distinction and the reviewed HEAD/verdict.
@@ -70,12 +75,14 @@ delivery; STOP_REVISE still requires an explicit owner decision, not a new PR/na
    Stage only intended files, commit normally and push the SAME PR branch through
    canonical Git. Never amend, squash, force-push or rewrite published history.
    Recheck remote/MCP head and return to step 2 with a NEW reviewer task.
-7. Never dispatch review 11. At the 10-review bound an exact valid APPROVE may
-   yield READY_TO_MERGE; genuine decisions yield OWNER_DECISION_NEEDED and finite
-   infrastructure failures BLOCKED. Remaining actionable findings yield STOP_REVISE;
-   summarize recurring patterns,
-   especially substantial new semantic/architectural defects across repository product boundaries. Never
-   reset the issue delivery's review count or patch indefinitely. The ceiling is
+7. Never dispatch beyond the exact effective canonical ceiling. A valid explicit
+   exception is D-069A-only and applies solely to its verified issue/PR/scope. An
+   exact ordinary APPROVE may satisfy only ordinary review; if security-critical
+   owner review remains, return READY_FOR_OWNER_SECURITY_REVIEW and stop. Genuine
+   decisions yield OWNER_DECISION_NEEDED and finite infrastructure failures BLOCKED.
+   Remaining actionable findings yield STOP_REVISE; summarize recurring patterns,
+   especially substantial new semantic/architectural defects across product boundaries.
+   Never reset the issue delivery's review count or patch indefinitely. The ceiling is
    not a target: stop as soon as an owner decision is clearly required.
 8. COMMENT: distinguish review findings, infrastructure failure and unresolved
    judgment. Diagnose and automatically change the environment or authorized
@@ -85,19 +92,21 @@ delivery; STOP_REVISE still requires an explicit owner decision, not a new PR/na
    decision remains. Preserve all consumed ordinals, including malformed/failed attempts.
 
 For `security_critical` work, ordinary APPROVE alone does not yield completion
-or READY_TO_MERGE. After required validation and ordinary review pass at a stable
-exact base/HEAD with no changes pending, run the additional independent
-`gpt-daybreak-blue-latest` review directly through Codex, not Kilo, under
-`docs/llm-operating-policy.md`. This is a pre-completion / pre-merge gate, not a
-pre-implementation eligibility gate. Kilo discovery failure does not imply
-`SECURITY_REVIEW_UNAVAILABLE`. Record exact reviewed base/HEAD, reviewer identity,
-Codex execution path, findings and verdict; any HEAD/base change requires fresh
-security review. No fallback reviewer is permitted. Apply bounded technical
-recovery to direct Codex problems before declaring required access unavailable.
+or READY_TO_MERGE. For Scarcity Router, after required validation and a fresh ordinary
+APPROVE at frozen base/HEAD with no changes pending, Adrian personally performs the
+mandatory independent `gpt-daybreak-blue-latest` review through official Codex. The
+implementation agent must never invoke Daybreak/Codex automatically or substitute
+another model. Return `READY_FOR_OWNER_SECURITY_REVIEW` with exact refs and evidence;
+leave the PR open/unmerged. Verify the owner-supplied manual result per D-069A, including
+runtime identity/execution provenance, source/input and result digests, verdict/findings
+and independent tool/context audit. Owner assertion, CLI exit0 and model self-report
+are insufficient; any HEAD/base change invalidates approval. No fallback reviewer.
 
 Return one final report: issue/PR URLs, every reviewed HEAD/base/verdict,
 review ordinals, remediation commits, final exact HEAD, validation/limitations and exactly one
-terminal status READY_TO_MERGE, STOP_REVISE, OWNER_DECISION_NEEDED or BLOCKED.
+terminal status READY_TO_MERGE, READY_FOR_OWNER_SECURITY_REVIEW, STOP_REVISE,
+OWNER_DECISION_NEEDED or BLOCKED. READY_FOR_OWNER_SECURITY_REVIEW is a non-merged
+manual owner gate, not security acceptance.
 Optional concise final issue/PR comments are reporting only; reviewer task results
 are the handoff. Do not require owner relaying, Forgejo review publication,
 external orchestration, release, deployment or main promotion.

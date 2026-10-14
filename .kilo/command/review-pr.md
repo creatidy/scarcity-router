@@ -12,8 +12,11 @@ freeze exact HEAD/base/merge-base and inspect status/branches. Do not edit the P
 Apply `.kilo/rules/35-technical-recovery.md`: repair review infrastructure, not the
 implementation, using bounded secret-safe preparation and changed reviewer strategy.
 Before dispatch, reserve ordinals in the existing delivery ledger when present;
-otherwise create an excluded standalone ledger with the same ten-review ceiling
-and technical recovery budget. Standalone review cannot reset a delivery counter.
+otherwise create an excluded standalone ledger with D-069's default ten-review
+ceiling and technical recovery budget. A higher exact cap is permitted only by
+D-069A after independent canonical owner/repo/issue/PR/source verification; the
+ledger records counts but cannot grant or extend that cap. Every prior failed,
+COMMENT or invalidated attempt remains consumed; standalone review never resets it.
 
 Use ONE designated delivery checkout: safely switch to the fetched PR branch if needed, creating
 its local tracking branch at fetched HEAD only if absent. Require clean status and
@@ -32,14 +35,19 @@ Pass only the PR number/URL, expected HEAD/base and fresh whole-PR review
 instructions including exact checkout, prepared environment/source paths and provenance.
 Do not pass implementation
 reasoning, previous findings or desired verdict. The agent definition owns the
-JSON result contract and GPT-6.1 Sol High selection. Never resume a past reviewer.
+JSON result contract and inherited reviewer binding. Never resume a past reviewer.
 
 Require JSON fields reviewed_head, reviewed_base, verdict, findings, limitations,
 checks_run as defined in `.kilo/agents/pr-reviewer.md`. Validate their types and
 exact frozen SHAs. Recheck local HEAD/clean status and MCP before reporting. A
-changed HEAD/base, dirty checkout, malformed result or mismatch cannot support
-approval; classify the limitation and attempt bounded changed-condition recovery
-before the final COMMENT if possible. Preserve every ordinal. Present findings in severity
-order and exactly one verdict.
+changed HEAD/base invalidates prior approval; a dirty checkout, malformed result or
+mismatch cannot support approval. Classify the limitation and attempt bounded
+changed-condition recovery before the final COMMENT if possible. Preserve every
+ordinal. Present findings in severity order and exactly one verdict.
 Do not remediate, commit, push, publish a formal review, merge or modify Forgejo
 state. The returned task result is the handoff, not an owner copy or PR comment.
+An ordinary APPROVE does not satisfy a security gate. For security-critical Router
+work, the implementation agent must never invoke Codex/Daybreak automatically; after
+ordinary approval and validation, the primary hands off
+the `gpt-daybreak-blue-latest` owner-manual process in D-069A via
+`READY_FOR_OWNER_SECURITY_REVIEW`, leaving the PR open/unmerged.

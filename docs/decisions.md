@@ -5833,18 +5833,22 @@ neither is a new live check of the current deployment.
   migration start. This decision authorizes the contract, not its own merge.
 - **Conflict resolved:** D-015/D-029, AGENTS and the operating policy previously
   limited delivery to one initial review/one remediation/narrow verification and
-  a human-only merge gate. For repository command delivery only, the owner mandate
-  supersedes those defaults: at most 10 persistent whole-PR review invocations,
-  exact HEAD/base approval, and explicit `/loop`-only canonical Forgejo PR merge
-  into develop followed by verified integrated acceptance/issue closure/SELECT.
-  Standalone implement remains owner-selected; review is read-only; finish never
-  merges. The migration itself uses pre-migration review limits and remains open
-  for human integration; it cannot bootstrap merge authority from its new files.
+  a human-only merge gate. D-069 set the repository-command default to at most 10
+  persistent whole-PR review invocations per issue delivery (initial, COMMENT,
+  invalidated and corrected attempts all count). The owner-authorized D-069A
+  addendum below permits only an independently verified, canonical, finite
+  issue/PR-specific exception; it does not change the default or the descriptive
+  `model-policy.json`. Exact HEAD/base approval and explicit `/loop`-only canonical
+  Forgejo merge into develop followed by integrated acceptance/closure/SELECT
+  remain unchanged. Standalone review is read-only; finish never merges. The
+  migration itself uses pre-migration limits and remains open for human integration;
+  it cannot bootstrap merge authority from its new files.
 - **Preserved model:** The primary invocation context is the sole orchestrator,
   using one normal checkout/one mutator, no worktrees/alternate checkouts or
   stash/reset of owner work. The excluded `.task_progress.md` ledger persists
-  pre-dispatch ordinals across phase/finish/task/model/session changes; no review
-  11. Fresh isolated read-only reviewers inspect the complete frozen PR. Selection
+  pre-dispatch chronological ordinals across phase/finish/task/model/session changes.
+  No ordinal has a permanent role; reviewer roles derive from current required gates.
+  Fresh isolated read-only reviewers inspect the complete frozen PR. Selection
   pages all current open canonical issues, filters only exact case-insensitive
   invalid/wontfix/duplicate, verifies explicit gates and orders by explicit
   priority/required ordering/created_at/issue number. Issues, not PRs, select work.
@@ -5866,6 +5870,89 @@ neither is a new live check of the current deployment.
   The restricted independent security-critical gate remains additional, not
   replaceable by ordinary review. Offline text contract tests are consistency
   evidence, not proof of live loop execution or dynamic native-agent discovery.
+
+### D-069A - Canonical owner-authorized finite review exception and manual Router security gate
+
+- **Status:** Owner-authorized amendment for implementation in issue #210; effective
+  only after its reviewed PR is integrated. The default remains ten whole-PR reviews.
+- **Authority:** Adrian's direct instruction is retained in the primary delivery's
+  owner-source evidence and transcribed in issue #210 comment17027; its source bytes
+  are pinned by SHA-256
+  `ea6f2d1236827075a1dd853ae1275ad178e62b63761eaa557e943176594a2049`.
+  The direct authorization scope is the one D-069 governance maintenance delivery
+  and its separately stated #185 resumption. The local delivery ledger records
+  evidence/counters, not authority.
+- **Exception admission:** A ceiling above ten is usable only for the one named
+  canonical `BioMedical-IT/scarcity-router` issue/PR when the root invocation has
+  an explicit direct owner decision plus a canonical issue/PR record of that same
+  decision. Before reserving any exceptional ordinal, fetch `get_repo`, the exact
+  selected issue and PR, and each exact owner-decision comment by MCP. Verify the
+  repository ID/name, issue database ID/index/URL, linked PR/repository ID/index/URL,
+  current branch/head/base/merge-base, decision author/provenance, exact source
+  digest, selected scope and a positive finite integer maximum. A Kilo-authored
+  transcription is not a directly owner-authored comment: it is acceptable only
+  when the original direct owner message is present in the primary root context and
+  the canonical comment preserves the exact source (or an exact attested excerpt)
+  and matching digest. A missing/ambiguous/stale mismatch, unrelated owner statement,
+  local-ledger-only entry, or unlinked issue/PR is not authorization; fail closed at
+  the default ceiling and stop for an owner decision if necessary.
+- **Persistence and role allocation:** Count all whole-PR invocations chronologically
+  and reserve each ordinal before dispatch. No reentry, phase/model/task/session change,
+  new branch or exception can reset/reuse a reservation or erase a result. The local
+  excluded ledger must independently show all prior consumed reservations and may
+  confirm they fit under the freshly revalidated canonical maximum; it cannot create,
+  increase, extend, transfer or reinterpret that maximum. A new exception requires a
+  new direct owner decision and canonical record, never an automatic extension.
+  Assign ordinary/security/reverification roles from currently unmet approval gates,
+  not from permanent ordinal-to-role rules. Every required final role must fit under
+  the exact verified maximum before dispatch; if a patch cannot receive fresh review
+  within remaining capacity, do not patch or silently skip the gate.
+- **Manual Scarcity Router security gate:** For Scarcity Router, the implementation
+  agent never invokes Daybreak/Codex automatically. After all implementation,
+  validation and ordinary independent review work completes, hand off
+  `READY_FOR_OWNER_SECURITY_REVIEW`; Adrian runs the mandatory independent official
+  Codex `gpt-daybreak-blue-latest` audit manually using a separately prepared prompt.
+  This changes invocation authority/timing only, not the security acceptance gate or
+  merge authority. Do not merge/close before the owner-supplied security result is
+  independently verified against the exact current objects.
+- **Manual result evidence:** The root accepts no owner assertion alone, pasted
+  model self-identification, CLI exit-zero, unverified task/turn completion or
+  synthetic transport result as security approval. Require a canonical owner result
+  referencing exact repo/issue/PR IDs and current HEAD/base/merge-base; requested
+  reviewer ID/provider; official Codex binary path/version/digest; an independently
+  captured actual dispatch and observed runtime-identity state; request/turn/session
+  or invocation IDs and timestamps; prompt and source/input-manifest digests; terminal
+  result-schema and output digest; structured verdict/findings; and a separate safe
+  context/tool/capture audit result. Credentials and unsafe raw payloads remain
+  transient or parent-held; never expose them in the issue, ledger, fixtures or model
+  context. Only `RUNTIME_VERIFIED` exact reviewer evidence with empty findings and
+  valid exact refs can close the security gate. Any mismatch/unobservable identity or
+  changed HEAD/base leaves the gate open and invalidates approval.
+- **Synthetic exception conformance cases:** These illustrate the decision contract;
+  they are not a runtime authorization service.
+
+  | Case | Evidence | Result |
+  | --- | --- | --- |
+  | Normal delivery | No exception record | The default maximum remains 10. |
+  | Ledger-only extension | `.task_progress.md` says `max=12`; no canonical owner/source record | Deny the exception; never reserve ordinal 11. |
+  | Unverified transcript | Kilo-authored Forgejo summary but no matching direct owner source/message digest | Deny the exception. |
+  | Scope mismatch | Canonical owner record names a different repository, issue, linked PR or bounded task | Deny the exception for this delivery. |
+  | Malformed or superseded authority | Missing/noninteger/zero maximum, changed source/hash, conflicting later owner record, or source not current | Deny/stop; the ledger cannot resolve the conflict. |
+  | Verified finite exception | Root verifies the direct owner instruction and exact canonical linked Repo/Issue/PR record with finite maximum and scope | Use only that maximum for that delivery; preserve every prior ordinal/result. |
+  | Currentness change | A previously reviewed HEAD/base differs from the exact current PR | Approval becomes stale; exception does not make it current. Obtain a fresh counted review only if the exact cap permits. |
+  | Role change | Ordinary approval is complete but the mandatory security evidence is not | Assign the currently required security role; an ordinal number alone never chooses the role. |
+  | Incomplete manual security evidence | Owner says approve or Codex exits 0, but actual reviewer identity/execution/output capture is unverifiable | Keep security gate open; do not merge. |
+  | Parent-only generated receipt | The parent validates a focused test runner's stdout-referenced receipt outside the immutable pre-dispatch source catalog | Use the receipt as parent validation evidence; do not authorize the reviewer to Read generated output. |
+- **Security/merge boundary:** Classify changes to review authority, audit evidence or
+  restricted reviewer admission as `security_critical` when they alter that trust
+  boundary. Ordinary APPROVE alone cannot close that gate. The owner-manual result
+  does not grant standalone merge authority: only a fresh explicit `/loop` with all
+  gates/currentness valid can perform the supported canonical merge.
+- **Preserved:** This addendum does not alter the product architecture, model selector,
+  public contract, reviewers' actual read-only permissions, provider/tool allowlists,
+  model-bound security gate, base review ceiling, previous review results, merge
+  authority, or other repositories. It creates no service, database, second controller,
+  launcher, auto-merge or exception for any other issue/PR. All limits remain finite.
 
 ### D-070 - Autonomous technical recovery before owner escalation
 

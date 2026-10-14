@@ -68,13 +68,22 @@
 - `/finish-pr` selects an existing PR and authorizes only its linked issue's
   accepted-scope remediation. Use a fresh foreground `pr-reviewer` native `task`
   for each frozen whole-PR review; consume its result without owner relaying.
-  At most 10 whole-PR review invocations per issue delivery, including initial,
-  COMMENT and retries. Persist ordinals before dispatch in excluded progress;
-  finish reentry, internal phase, new task/model/session cannot reset the counter.
-  Current APPROVE yields READY_TO_MERGE, never a standalone merge; only `/loop`
-  may continue through its separate merge/completion gates.
-  At the bound return STOP_REVISE with new defects versus incomplete fixes and
-  recurring architectural/semantic patterns. Material scope/architecture decisions
+  Ten whole-PR review invocations per issue delivery is the default, including
+  initial, COMMENT, invalidated and corrected retries. D-069A permits only a finite
+  issue/PR-specific owner exception after the sole primary independently verifies
+  canonical owner/source/repository/issue/PR authority, exact scope and maximum
+  before reservation. The excluded progress ledger records counts/history; it never
+  grants or extends an exception. Persist every ordinal before dispatch. Finish
+  reentry, internal phases, new tasks, models and sessions cannot reset the counter.
+  Role is derived from the currently outstanding required gates, not a permanent
+  ordinal-to-role map. Current APPROVE with empty findings satisfies only ordinary
+  review; a security-critical Router delivery returns READY_FOR_OWNER_SECURITY_REVIEW
+  after all non-security work and validation, not security approval or a standalone
+  merge. Only `/loop` may merge after every required gate passes and may continue
+  through its separate completion gates.
+  At the effective authorized bound return STOP_REVISE with new defects versus
+  incomplete fixes and recurring architectural/semantic patterns; never dispatch
+  past the verified maximum. Material scope/architecture decisions
   yield OWNER_DECISION_NEEDED only after recording the recovery rule's decision
   contract. Unavailable tools require bounded autonomous technical recovery before
   a precise finite BLOCKED; keep every failed/COMMENT ordinal.
