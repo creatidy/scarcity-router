@@ -529,6 +529,13 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertEqual(read_permissions.get("**/.review-evidence-*/**/source-index.md"), "allow")
         self.assertEqual(read_permissions.get("**/.review-evidence-*/**/audit.py"), "allow")
         self.assertEqual(read_permissions.get("**/.review-evidence-*/**/owner-decision-*.txt"), "allow")
+        for pattern in (
+            "AGENTS.md", "README.md", "**/*.md", "**/*.py", "**/*.json",
+            "**/*.yaml", "**/*.yml", "**/*.toml", "**/*.sh", "**/*.sql",
+            "**/*.ts", "**/*.tsx", "**/*.js", "**/*.css",
+        ):
+            self.assertEqual(read_permissions.get(pattern), "allow")
+        self.assertEqual(read_permissions.get("**/*.jsonl"), "deny")
         read_rules = list(read_permissions)
         evidence_deny = read_rules.index("**/.review-evidence-*/**")
         for pattern in (
@@ -541,6 +548,8 @@ class WorkflowContractTests(unittest.TestCase):
         ):
             self.assertEqual(read_permissions.get(pattern), "allow")
             self.assertLess(read_rules.index(pattern), evidence_deny)
+        self.assertLess(evidence_deny, read_rules.index("**/*.md"))
+        self.assertLess(evidence_deny, read_rules.index("**/*.py"))
         self.assertNotIn("*", read_rules)
 
     def test_delivery_counter_survives_reentry(self) -> None:

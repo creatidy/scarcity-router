@@ -13,6 +13,25 @@ permission:
     "**/.review-evidence-*/**": deny
     "*.env*": deny
     "*.task_progress.md": deny
+    "AGENTS.md": allow
+    "README.md": allow
+    "pyproject.toml": allow
+    "uv.lock": allow
+    "LICENSE": allow
+    "NOTICE": allow
+    "**/*.md": allow
+    "**/*.py": allow
+    "**/*.json": allow
+    "**/*.jsonl": deny
+    "**/*.yaml": allow
+    "**/*.yml": allow
+    "**/*.toml": allow
+    "**/*.sh": allow
+    "**/*.sql": allow
+    "**/*.ts": allow
+    "**/*.tsx": allow
+    "**/*.js": allow
+    "**/*.css": allow
   glob: deny
   grep: deny
   list: deny
