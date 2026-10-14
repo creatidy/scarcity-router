@@ -4,13 +4,19 @@ mode: subagent
 permission:
   "*": deny
   read:
-    "*": allow
+    "**/.review-evidence-*/**/source-index.md": allow
+    "**/.review-evidence-*/**/owner-decision-*.txt": allow
+    "**/.review-evidence-*/**/audit.py": allow
+    "**/.review-evidence-*/**/audit.legacy.py": allow
+    "**/.review-evidence-*/**/test_audit.py": allow
+    "**/.review-evidence-*/**/test_native_metadata.py": allow
+    "**/.review-evidence-*/**": deny
     "*.env*": deny
     "*.task_progress.md": deny
-  glob: allow
-  grep: allow
-  list: allow
-  semantic_search: allow
+  glob: deny
+  grep: deny
+  list: deny
+  semantic_search: deny
   external_directory: deny
   edit: deny
   write: deny
@@ -150,6 +156,14 @@ cache and temp paths, never real ambient credentials. If the allowlist cannot sa
 invoke that environment, return COMMENT with the exact infrastructure gap so the
 parent can prepare another authorized path; do not run unsafe tests or self-authorize
 Docker/network/permission changes. No permission grant is implied by this contract.
+
+Native Kilo Read permissions are static patterns, not a per-task line ACL. A Read
+capability alone is not source authorization. The root-attested file/range catalog
+and post-call audit of the actual native task export are the per-task admission gate:
+every Read output and per-file Git patch must match the frozen bytes, exact ranges,
+path and refs. Any unlisted file/directory/search/receipt, truncation, mismatch or
+incomplete coverage makes the audit nonpass and invalidates the reviewer verdict.
+Never inspect the parent's audit manifest, snapshot files or generated receipts.
 
 The exact `PYTHONPATH=. UV_OFFLINE=1 UV_NO_SYNC=1 uv run --no-sync python -m
 unittest tests.test_workflow_contract.WorkflowContractTests.test_private_repository_review_uses_exact_mcp_and_local_evidence -v`

@@ -5939,6 +5939,7 @@ neither is a new live check of the current deployment.
   | Scope mismatch | Canonical owner record names a different repository, issue, linked PR or bounded task | Deny the exception for this delivery. |
   | Malformed or superseded authority | Missing/noninteger/zero maximum, changed source/hash, conflicting later owner record, or source not current | Deny/stop; the ledger cannot resolve the conflict. |
   | Verified finite exception | Root verifies the direct owner instruction and exact canonical linked Repo/Issue/PR record with finite maximum and scope | Use only that maximum for that delivery; preserve every prior ordinal/result. |
+  | Existing PR209 exception | Canonical #185 comment #16956 plus direct owner source SHA-256 `875ffc0d33c9637c120140316e8818fb4ef22ad4112ac031fb4218e8816ff4bb` | #185/PR #209 only, maximum12; #11 ordinary, #12 owner-manual security, no #13. |
   | Currentness change | A previously reviewed HEAD/base differs from the exact current PR | Approval becomes stale; exception does not make it current. Obtain a fresh counted review only if the exact cap permits. |
   | Role change | Ordinary approval is complete but the mandatory security evidence is not | Assign the currently required security role; an ordinal number alone never chooses the role. |
   | Incomplete manual security evidence | Owner says approve or Codex exits 0, but actual reviewer identity/execution/output capture is unverifiable | Keep security gate open; do not merge. |

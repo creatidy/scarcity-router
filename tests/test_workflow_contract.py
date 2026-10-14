@@ -222,6 +222,10 @@ class WorkflowContractTests(unittest.TestCase):
             "scope mismatch": ("different repository, issue, linked pr or bounded task", "deny the exception"),
             "malformed or superseded authority": ("missing/noninteger/zero maximum", "deny/stop"),
             "verified finite exception": ("exact canonical linked repo/issue/pr record", "use only that maximum"),
+            "existing pr209 exception": (
+                "canonical #185 comment #16956 plus direct owner source sha-256",
+                "#185/pr #209 only, maximum12; #11 ordinary, #12 owner-manual security, no #13",
+            ),
             "currentness change": ("differs from the exact current pr", "approval becomes stale"),
             "role change": ("mandatory security evidence is not", "currently required security role"),
             "incomplete manual security evidence": ("identity/execution/output capture is unverifiable", "keep security gate open"),
@@ -497,9 +501,45 @@ class WorkflowContractTests(unittest.TestCase):
             "parent must provision the locked offline environment at that exact checkout",
             "A valid receipt is parent-checked from actual runner stdout",
             "do not read a generated run receipt or directory",
+            "Native Kilo Read permissions are static patterns",
+            "Any unlisted file/directory/search/receipt",
         ):
             with self.subTest(invariant=invariant):
                 self.assertIn(invariant, reviewer)
+        reviewer_source = (ROOT / ".kilo/agents/pr-reviewer.md").read_text()
+        metadata: object = cast(object, yaml.safe_load(reviewer_source.split("---", 2)[1]))
+        if not isinstance(metadata, dict):
+            self.fail("reviewer frontmatter must be a YAML mapping")
+        metadata_map = cast(dict[str, object], metadata)
+        permissions_value = metadata_map.get("permission")
+        if not isinstance(permissions_value, dict):
+            self.fail("reviewer permission frontmatter must be a mapping")
+        permissions = cast(dict[str, object], permissions_value)
+        for tool in ("glob", "grep", "list", "semantic_search"):
+            with self.subTest(tool=tool):
+                self.assertEqual(permissions.get(tool), "deny")
+        read_value = permissions.get("read")
+        if not isinstance(read_value, dict):
+            self.fail("reviewer Read permission must have scoped patterns")
+        read_permissions = cast(dict[str, object], read_value)
+        self.assertEqual(read_permissions.get("**/.review-evidence-*/**"), "deny")
+        self.assertNotIn("*", read_permissions)
+        self.assertEqual(read_permissions.get("**/.review-evidence-*/**/source-index.md"), "allow")
+        self.assertEqual(read_permissions.get("**/.review-evidence-*/**/audit.py"), "allow")
+        self.assertEqual(read_permissions.get("**/.review-evidence-*/**/owner-decision-*.txt"), "allow")
+        read_rules = list(read_permissions)
+        evidence_deny = read_rules.index("**/.review-evidence-*/**")
+        for pattern in (
+            "**/.review-evidence-*/**/source-index.md",
+            "**/.review-evidence-*/**/owner-decision-*.txt",
+            "**/.review-evidence-*/**/audit.py",
+            "**/.review-evidence-*/**/audit.legacy.py",
+            "**/.review-evidence-*/**/test_audit.py",
+            "**/.review-evidence-*/**/test_native_metadata.py",
+        ):
+            self.assertEqual(read_permissions.get(pattern), "allow")
+            self.assertLess(read_rules.index(pattern), evidence_deny)
+        self.assertNotIn("*", read_rules)
 
     def test_delivery_counter_survives_reentry(self) -> None:
         finish = " ".join(text(".kilo/command/finish-pr.md").split())
