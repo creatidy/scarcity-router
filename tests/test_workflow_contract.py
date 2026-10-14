@@ -503,6 +503,8 @@ class WorkflowContractTests(unittest.TestCase):
             "do not read a generated run receipt or directory",
             "Native Kilo Read permissions are static patterns",
             "Any unlisted file/directory/search/receipt",
+            "Run each Git/status/test command as its own Bash invocation",
+            "never chain commands with `&&`, `;`, pipes or",
         ):
             with self.subTest(invariant=invariant):
                 self.assertIn(invariant, reviewer)

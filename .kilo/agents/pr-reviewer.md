@@ -147,7 +147,9 @@ receipts. Report a missing/indexed byte or output as COMMENT, never infer it was
 Run only inspected safe network-free validation through the allowlist, in the
 current clean branch. Verify HEAD/clean status before and after checks. Ignored
 validation artifacts are acceptable; never edit tracked files, run arbitrary
-shell/interpreter code or access private credentials. If
+shell/interpreter code or access private credentials. Run each Git/status/test
+command as its own Bash invocation; never chain commands with `&&`, `;`, pipes or
+substitutions. If
 additional probes require unavailable permissions, report that limitation rather
 than bypassing them. Permission checks do not make untrusted tests safe.
 Apply `.kilo/rules/35-technical-recovery.md`: tests observing inherited state need a
