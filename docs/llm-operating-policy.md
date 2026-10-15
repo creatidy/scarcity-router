@@ -475,9 +475,12 @@ module issues with evidence.
 
 The portable `model-policy.json` artifact remains descriptive and unchanged.
 D-069 is the explicit repository-command override to its generic review/merge
-defaults; D-069A adds only its verified per-delivery finite-cap exception. Neither
-decision changes model classes, selectors, profiles, ratings or product contracts.
-Immutable review objects and serialized phases remain mandatory. Only the sole
+defaults; D-069A defines verified per-delivery finite-cap exceptions. The separate
+owner-approved D-069A Read-scope exception applies only to the independent ordinary
+reviewer for #210/PR #211's sealed packet directory; it does not change a review cap
+or grant an ordinal. Neither decision changes model classes, selectors, profiles,
+ratings or product contracts. Immutable review objects and serialized phases remain
+mandatory. Only the sole
 primary context of an explicit owner `/loop` has the narrowly checked PR merge
 and completed-issue closure authority. Never direct-push develop, touch main,
 release/deploy, mutate other repositories or use Scarcity Router for model

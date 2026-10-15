@@ -5873,9 +5873,11 @@ neither is a new live check of the current deployment.
 
 ### D-069A - Canonical owner-authorized finite review exception and manual Router security gate
 
-- **Status:** Owner-authorized implementation/use for issue #210's remaining reviews
-  #9/#10; general workflow effect follows integration of reviewed PR #211. The default
-  remains ten whole-PR reviews.
+- **Status:** Owner-authorized implementation for issue #210, including the narrowly
+  scoped reviewer packet Read grant below. The default remains ten whole-PR reviews.
+  Ordinals 1-9 are consumed, with #9 `COMMENT`; Adrian's 2026-10-15 instruction prohibits
+  #10 and Daybreak. The stated future maximum11 is not active until the governing policy
+  change is integrated and the required canonical authorization is verified.
 - **Authority:** Adrian's direct instruction is retained in the primary delivery's
   owner-source evidence and transcribed in issue #210 comment17027; its source bytes
   are pinned by SHA-256
@@ -5885,9 +5887,21 @@ neither is a new live check of the current deployment.
   `991c4c550557411334fde1dfdb3a89328fa4e165811cad7eff8946914a01bd57`; it is an exact
   excerpt from the parent-held complete direct owner instruction. No backend-served
   Codex model identity is inferred.
-  The current authorization applies to this one D-069 maintenance delivery.
-  The separate #185 resumption/max12 source and scope remain unchanged. The local
-  delivery ledger records evidence/counters, not authority.
+  The current authorization applies to this one D-069 maintenance delivery. The
+  separate #185 resumption/max12 source and scope remain unchanged. The local delivery
+  ledger records evidence/counters, not authority.
+- **Owner-approved reviewer Read scope (2026-10-15):** Adrian's direct instruction is
+  retained at `.review-evidence-210/owner-directory-grant-decision-2026-10-15.txt`,
+  SHA-256 `013e313e1a009ef4b51168df4a49f2f4582e8880d98728df64ee87bcab2ae7b3`, and
+  transcribed by Kilo in issue #210 comment #17258. It authorizes exactly one
+  `Read` permission rule, `.review-evidence-210/pr-reviewer-input/**`, only for the
+  independent ordinary reviewer of #210/PR #211. Preconditions are the native 48-file
+  PASS, an exact-revision packet with no credential/extra/link entries, complete
+  per-path SHA-256 inventory checked before and after, and no concurrent writer. The
+  reviewer retains no shell, Git, MCP, search, directory listing, write, delegation or
+  external capability; full trace audit and PR coverage remain mandatory. The grant is
+  Kilo tool permission only and does not establish OS-level isolation or authorize any
+  review ordinal.
 - **Exception admission:** A ceiling above ten is usable only for the one named
   canonical `BioMedical-IT/scarcity-router` issue/PR when the root invocation has
   an explicit direct owner decision plus a canonical issue/PR record of that same
@@ -5902,6 +5916,20 @@ neither is a new live check of the current deployment.
   and matching digest. A missing/ambiguous/stale mismatch, unrelated owner statement,
   local-ledger-only entry, or unlinked issue/PR is not authorization; fail closed at
   the default ceiling and stop for an owner decision if necessary.
+- **Pending #210 future ceiling:** The direct owner source and issue #210 comment #17258
+  state an intended maximum11 for #210/PR #211 (#10 ordinary, #11 owner-manual). That
+  allocation remains inactive until a separate governing-policy bootstrap is integrated
+  and the primary verifies that the exact canonical authorization is valid under the
+  integrated policy. It does not transfer #185's maximum12 or alter the current default10.
+  Adrian's 2026-10-15 instruction separately prohibits dispatching #10 or Daybreak;
+  revalidate any later authority rather than assuming this pending ceiling.
+- **Narrow #210 pre-bootstrap patch:** Adrian explicitly authorized implementation of
+  the one packet-directory Read remediation in #210/PR #211 even though no further
+  review ordinal is currently authorized. This permits only that preparation patch; it
+  does not reserve a review, make the patch reviewable/mergeable under the current cap,
+  waive validation, or authorize unrelated work. Preserve it open until the separate
+  bootstrap makes a fresh review possible. This one-time permission does not weaken the
+  normal rule against patches that cannot receive review within an effective ceiling.
 - **Persistence and role allocation:** Count all whole-PR invocations chronologically
   and reserve each ordinal before dispatch. No reentry, phase/model/task/session change,
   new branch or exception can reset/reuse a reservation or erase a result. The local
@@ -5962,6 +5990,7 @@ neither is a new live check of the current deployment.
   | Case | Evidence | Result |
   | --- | --- | --- |
   | Normal delivery | No exception record | The default maximum remains 10. |
+  | Pending #210 ceiling | Owner source/comment states future maximum11, but bootstrap policy is not integrated | Keep the default10 effective; do not reserve or dispatch #10/Daybreak. |
   | Ledger-only extension | `.task_progress.md` says `max=12`; no canonical owner/source record | Deny the exception; never reserve ordinal 11. |
   | Unverified transcript | Kilo-authored Forgejo summary but no matching direct owner source/message digest | Deny the exception. |
   | Scope mismatch | Canonical owner record names a different repository, issue, linked PR or bounded task | Deny the exception for this delivery. |
@@ -5982,7 +6011,9 @@ neither is a new live check of the current deployment.
 - **Preserved:** This addendum does not alter the product architecture, model selector,
   public contract, default-ten ceiling, previous review results, merge authority or
   other repositories. The ordinary reviewer remains read-only and has no unrestricted
-  shell or Forgejo access; it reads only the immutable parent-prepared evidence packet.
+  shell or Forgejo access. The sole #210 permission exception is the single Kilo Read
+  rule documented above for its verified immutable evidence packet; no OS-level
+  isolation is claimed.
   Generic runtime-identity meanings and model-bound security gates remain unchanged
   outside the single Router owner-manual path stated above. It creates no service,
   database, second controller,

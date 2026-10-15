@@ -223,6 +223,10 @@ class WorkflowContractTests(unittest.TestCase):
             cases[cells[0].lower()] = (cells[1].lower(), cells[2].lower())
         expected_cases = {
             "normal delivery": ("no exception record", "default maximum remains 10"),
+            "pending #210 ceiling": (
+                "future maximum11, but bootstrap policy is not integrated",
+                "keep the default10 effective",
+            ),
             "ledger-only extension": (
                 "`.task_progress.md` says `max=12`; no canonical owner/source record",
                 "deny the exception",
@@ -536,7 +540,7 @@ class WorkflowContractTests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, read_permissions)
 
-    def test_kilo_runtime_resolves_default_deny_and_exact_packet_overlay(self) -> None:
+    def test_kilo_runtime_resolves_default_deny_and_scoped_packet_directory_overlay(self) -> None:
         binary = os.environ.get("KILO_PERMISSION_RUNTIME_TEST_BIN")
         if not binary:
             self.skipTest("set KILO_PERMISSION_RUNTIME_TEST_BIN to exercise Kilo's effective policy")
@@ -593,18 +597,36 @@ class WorkflowContractTests(unittest.TestCase):
                                  and str(rule.get("pattern", "")).startswith(".review-evidence")
                                  for rule in default_read_rules))
 
+            packet_directory = ".review-evidence-synthetic/pr-reviewer-input"
+            directory_rule = f"{packet_directory}/**"
             paths = (
-                ".review-evidence-synthetic/pr-reviewer-input/index.md",
-                ".review-evidence-synthetic/pr-reviewer-input/source-000.txt",
+                f"{packet_directory}/index.md",
+                f"{packet_directory}/source-000.txt",
             )
             overlay = json.dumps({
                 "agent": {
                     "code": {"permission": {"*": "deny", "task": "allow"}},
                     "pr-reviewer": {"permission": {"read": {
-                        "*": "deny", **{path: "allow" for path in paths},
+                        "*": "deny", directory_rule: "allow",
                     }}},
                 },
             })
+            overlay_value: object = cast(object, json.loads(overlay))
+            if not isinstance(overlay_value, dict):
+                self.fail("Kilo overlay must be a JSON object")
+            agent_value = cast(dict[str, object], overlay_value).get("agent")
+            if not isinstance(agent_value, dict):
+                self.fail("Kilo overlay must include an agent mapping")
+            permissions_value = cast(dict[str, object], agent_value).get("pr-reviewer")
+            if not isinstance(permissions_value, dict):
+                self.fail("Kilo overlay must include pr-reviewer permissions")
+            read_value = cast(dict[str, object], permissions_value).get("permission")
+            if not isinstance(read_value, dict):
+                self.fail("Kilo overlay must include a permission mapping")
+            overlay_read = cast(dict[str, object], read_value).get("read")
+            if not isinstance(overlay_read, dict):
+                self.fail("Kilo overlay must include Read rules")
+            self.assertEqual({"*": "deny", directory_rule: "allow"}, cast(dict[str, str], overlay_read))
             reviewer_tools, reviewer_rules = resolved_agent("pr-reviewer", overlay)
             self.assertTrue(reviewer_tools.get("read", False))
             self.assertFalse(reviewer_tools.get("bash", False))
@@ -613,7 +635,7 @@ class WorkflowContractTests(unittest.TestCase):
             for path in paths:
                 with self.subTest(packet_path=path):
                     matching = [index for index, rule in enumerate(read_rules)
-                                if rule.get("pattern") == path]
+                                if rule.get("pattern") == directory_rule]
                     self.assertTrue(matching)
                     self.assertEqual("allow", read_rules[matching[-1]].get("action"))
                     self.assertGreater(matching[-1], max(
@@ -653,10 +675,41 @@ class WorkflowContractTests(unittest.TestCase):
             contract = " ".join(text(path).split())
             for requirement in (
                 "KILO_CONFIG_CONTENT", "exact relative regular-file path",
-                "--pure --agent code", "synthetic allowed/denied Read preflight",
+                "--pure --agent code", ".review-evidence-210/pr-reviewer-input/**",
             ):
                 with self.subTest(path=path, requirement=requirement):
                     self.assertIn(requirement, contract)
+
+        recovery = " ".join(text(".kilo/rules/35-technical-recovery.md").split())
+        for requirement in (
+            ".review-evidence-210/pr-reviewer-input/**",
+            "48 indexed files",
+            "no credentials or extra entries",
+            "no symlinks or hardlinks",
+            "every relative path and SHA-256",
+            "before and after the Task",
+            "another writer can mutate the packet",
+            "does not establish OS-level isolation",
+        ):
+            with self.subTest(recovery_requirement=requirement):
+                self.assertIn(requirement, recovery)
+
+        reviewer_policy = " ".join(text(".kilo/agents/pr-reviewer.md").split())
+        self.assertIn("Only for the owner-authorized ordinary review of issue #210 / PR #211", reviewer_policy)
+        self.assertIn("Read only the regular files and bounded ranges listed in `index.md`", reviewer_policy)
+        self.assertIn("fails the audit on unlisted reads or any inventory change", reviewer_policy)
+
+        decision = " ".join(text("docs/decisions.md").split())
+        for requirement in (
+            "Owner-approved reviewer Read scope (2026-10-15)",
+            ".review-evidence-210/owner-directory-grant-decision-2026-10-15.txt",
+            "issue #210 comment #17258",
+            "The stated future maximum11 is not active",
+            "Adrian's 2026-10-15 instruction separately prohibits dispatching #10 or Daybreak",
+            "This one-time permission does not weaken the normal rule",
+        ):
+            with self.subTest(decision_requirement=requirement):
+                self.assertIn(requirement, decision)
         for path in (".kilo/command/review-pr.md", ".kilo/command/finish-pr.md", ".kilo/command/loop.md"):
             contract = " ".join(text(path).split())
             self.assertIn("immutable", contract)

@@ -117,6 +117,14 @@ credential-bearing config. If frozen identities, refs, merge-base, blob/hash bin
 or currentness evidence are missing or inconsistent in the packet, return COMMENT;
 never infer a different range.
 
+Static Read policy remains deny-by-default. Only for the owner-authorized ordinary
+review of issue #210 / PR #211 may the parent overlay one Kilo Read rule for
+`.review-evidence-210/pr-reviewer-input/**`. This is not directory-list permission or
+OS-level isolation. Read only the regular files and bounded ranges listed in `index.md`;
+the parent verifies the complete 48-file path/SHA-256 inventory before and after the
+Task and fails the audit on unlisted reads or any inventory change. This grant does not
+apply to another reviewer role, issue, PR or delivery.
+
 Independently assess the complete PR changes against the canonical issue acceptance
 evidence, original owner decisions and exact base/head Git-object bindings supplied in
 the packet. Inspect all changed-file source copies, per-file patches and cited pinned

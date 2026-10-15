@@ -28,17 +28,26 @@ stash/reset unrelated changes; if they prevent safe switching, prepare a tempora
 exact-revision parent evidence checkout under the recovery rule. Prepare the offline
 locked sanitized environment, verify effective `pr-reviewer` Kilo permissions, and
 freeze the immutable packet. The reviewer never accesses the checkout. The
-`pr-reviewer` profile has no static Read grants. Build a per-invocation
-`KILO_CONFIG_CONTENT` overlay with Read default deny and `allow` entries for every
-exact relative regular-file path in the flat packet; do not allow directories or use
-path/filename globs. In the same overlay restrict `agent.code` to `* -> deny`,
+`pr-reviewer` profile has no static Read grants. Default to a per-invocation
+`KILO_CONFIG_CONTENT` overlay with Read deny and `allow` entries for every exact
+relative regular-file path in the flat packet; do not use directories or path/filename
+globs. For an ordinary review of issue #210 / PR #211 only, the owner-authorized
+exception replaces those file entries with the single exact rule
+`.review-evidence-210/pr-reviewer-input/**`; it does not apply to another issue, PR,
+reviewer role or delivery. In either case restrict `agent.code` to `* -> deny`,
 `task -> allow`. Launch a fresh Kilo CLI parent with `--pure --agent code` and preserve
 the current provider/model/variant exactly. That fresh context is a one-call Task
 transport only; this primary retains canonical, ledger, packet and audit authority.
-Run the synthetic allowed/denied Read preflight under the same
-deny-by-default policy with a separate overlay containing only the exact synthetic
-paths before reserving the review ordinal; it consumes no review ordinal. After PASS,
-use the actual packet's exact path overlay for the whole-PR Task.
+For #210, before use validate a 48-file flat packet at the exact frozen refs, reject
+credentials, extras and every symlink/hardlink/non-regular/multi-link entry, record
+each relative path and SHA-256, and make the packet read-only (directory `0555`, files
+`0444`). No writer may run concurrently. Verify that full inventory before and after
+the Task; any difference fails the audit. Run a fresh native 48-file synthetic Task
+preflight with the same directory-rule shape and prove complete reads and denial before
+content for sibling, absolute, traversal and symlink escapes. The preflight consumes no
+ordinal and demonstrates Kilo permissions only, not OS-level isolation. This owner
+instruction authorizes no #10 or Daybreak dispatch. In every case the reviewer remains
+Read-only and the independent post-execution audit/full-PR coverage stay unchanged.
 If native task/agent or required access is unavailable, diagnose and try another
 authorized independent native reviewer/tool path before a finite blocker; never
 self-review, weaken model-bound gates or broaden permissions instead.

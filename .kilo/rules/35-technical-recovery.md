@@ -127,29 +127,48 @@ search/list/history, external paths, writes and delegation before any call can e
 Its Read rules are deny-by-default and contain no static packet grants. The primary
 builds a documented `KILO_CONFIG_CONTENT` overlay for each frozen packet with
 `agent.pr-reviewer.permission.read` default deny plus `allow` entries for only the
-exact worktree-relative regular-file paths in the flat packet. Never use directory,
-basename-class or root-wildcard Read grants. Verify the installed Kilo version's
-documented Read path normalization and permission-rule precedence before dispatch;
-record the version and source/runtime evidence. These semantics are version-specific
-and must be reconfirmed after a Kilo update. Order broad denials before exact packet
-allows.
+exact worktree-relative regular-file paths in the flat packet. The sole owner-authorized
+exception is the independent ordinary reviewer for issue #210 / PR #211: it may replace
+the 48 exact file entries with the single rule
+`.review-evidence-210/pr-reviewer-input/**`. Do not generalize this exception to any
+other issue, PR, reviewer role or delivery; never use basename-class or root-wildcard
+grants. Verify the installed Kilo version's documented Read path normalization and
+permission-rule precedence before dispatch; record the version and source/runtime
+evidence. These semantics are version-specific and must be reconfirmed after a Kilo
+update. Order broad denials before the packet allow.
+
+Before this #210 grant, verify a flat, exact-revision packet of exactly 48 indexed files:
+no credentials or extra entries; each entry a regular file with one link; no symlinks or
+hardlinks; a real packet directory at mode `0555` and files at mode `0444`. Record every
+relative path and SHA-256 together with the exact Git bindings. Do not dispatch while
+another writer can mutate the packet; the parent must serialize writers and make no
+packet changes during the Task. Verify the complete path/hash inventory both before
+and after the Task and fail the audit on any difference. The Kilo permission grant
+controls Read calls, not directory listing; the reviewer still reads only index-listed
+paths/ranges, and the independent trace audit and full-PR coverage are unchanged. The
+native 48-file Task preflight proves Kilo tool-permission behavior only; it does not
+establish OS-level isolation.
 
 Dispatch from a fresh Kilo CLI parent with `--pure --agent code` and the exact inherited
 provider/model/variant. Its `KILO_CONFIG_CONTENT` sets `agent.code` to `* -> deny` and
-`task -> allow`, alongside the exact `pr-reviewer` file allowlist. It may issue exactly
-one native `pr-reviewer` Task and may not read files, run shell/Git, call MCP or
-interpret the result. This is a transient Task transport only: the selected
+`task -> allow`, alongside either the default exact-file allowlist or the one
+owner-authorized #210 packet-directory rule. It may issue exactly one native
+`pr-reviewer` Task and may not read files, run shell/Git, call MCP or interpret the
+result. This is a transient Task transport only: the selected
 primary remains the sole authority for canonical selection/currentness, packet
 preparation, review ordinals, parent audit and terminal status. A newly created child
 under a long-lived parent is not proof its cached agent configuration was refreshed.
 
 Before reserving a whole-PR review ordinal, run a fresh native Task access preflight
-under an equivalent deny-by-default overlay whose only grants are exact harmless
-synthetic paths. Prove both a complete allowed packet read and denied sibling/absolute/
-traversal/symlink reads before content return. These probes consume no review ordinal.
-After PASS, create a distinct exact-path overlay for only the actual frozen packet files.
-The parent verifies the packet is owner-prepared, regular/non-symlink and exact to the
-selected refs before dispatch.
+under an equivalent deny-by-default overlay for harmless synthetic files. For #210,
+use a 48-file directory-shaped fixture with the same single-directory rule; prove all
+files can be read completely and sibling/absolute/traversal/symlink escapes are denied
+before content. Verify the parent is Task-only and child Read-only. These probes consume
+no review ordinal and demonstrate Kilo tool permissions only, not OS-level isolation.
+After PASS, create a distinct overlay for the actual frozen packet: exact-file allows by
+default, or the single exact #210 directory rule above. The parent verifies the packet
+is owner-prepared, regular/non-symlink, inventory/hash-identical and exact to selected
+refs before dispatch.
 Post-execution trace audit checks that only permitted Read calls occurred and that
 their bytes/ranges match the frozen packet, but this is a second gate, not a substitute
 for effective pre-execution Kilo denial. Canonical currentness is fetched and rechecked

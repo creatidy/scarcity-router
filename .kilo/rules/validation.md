@@ -31,13 +31,19 @@
   Reviewer never accesses the checkout or executes Bash/Git/Forgejo. The primary
   prepares an immutable flat source/patch bundle bound to exact Git objects and
   complete canonical acceptance/owner evidence. The profile has no static Read grants;
-  for each task, the primary adds exact packet-relative file paths using the documented
-  Kilo `KILO_CONFIG_CONTENT` permission override. Spawn from a fresh Kilo CLI parent
+  default to exact packet-relative file paths using the documented Kilo
+  `KILO_CONFIG_CONTENT` permission override. The sole owner-authorized exception is
+  issue #210 / PR #211's independent ordinary reviewer, which may receive one Read
+  grant for `.review-evidence-210/pr-reviewer-input/**` after the full 48-file packet
+  inventory/hash, no-links/no-extras, read-only mode and no-concurrent-writer checks
+  pass. Verify every path/hash before and after the Task. Spawn from a fresh Kilo CLI parent
   with `--pure --agent code`, constraining that parent to Task only and preserving the
   exact inherited model binding. Kilo native Read is the reviewer's only capability.
   The parent audits actual task reads/bytes/
-  ranges and completeness, then re-fetches currentness before/after. Runtime permission
-  denial is pre-call enforcement; post-call audit is independent defense-in-depth.
+  ranges and completeness, verifies unchanged packet inventory/hashes and then
+  re-fetches currentness before/after. Runtime permission denial is pre-call
+  enforcement; post-call audit is independent defense-in-depth. Native Task checks
+  prove Kilo tool permissions only, not OS-level isolation.
 - Unavailable safe validation/tool state requires bounded technical recovery under
   `.kilo/rules/35-technical-recovery.md`, not immediate owner escalation or skipped
   checks. Independent source verification may use a separately prepared exact public
