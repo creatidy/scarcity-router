@@ -396,16 +396,58 @@ class WorkflowContractTests(unittest.TestCase):
         ):
             self.assertIn(boundary, manifest)
 
+    def test_d069a_exception_contract_is_integrated_finite_and_issue_specific(self) -> None:
+        raw = (ROOT / "docs/decisions.md").read_text()
+        section = raw.split("### D-069A - Canonical owner-authorized finite review exceptions", 1)[1].split(
+            "### D-070", 1
+        )[0]
+        normalized = " ".join(section.split())
+        for requirement in (
+            "has no operational effect until the change is integrated into `develop`",
+            "does not authorize an exception for issue #212",
+            "D-069's ten-review maximum remains the default",
+            "positive finite integer maximum and exact task scope",
+            "original source bytes and digest",
+            "Kilo-authored transcription is not owner-authored",
+            "the local excluded ledger records usage only",
+            "do not reserve or dispatch #10 or #11",
+            "issue #210 comment #17258",
+            "intended maximum 11",
+            "maximum 10; the bootstrap cannot use its own proposed rule",
+            "an exception cannot transfer to another issue/pr",
+            "assign reviewer roles from the currently unmet approval gates",
+        ):
+            with self.subTest(requirement=requirement):
+                self.assertIn(requirement.lower(), normalized.lower())
+        self.assertNotIn(".review-evidence-210/pr-reviewer-input", section)
+        for path in (
+            "AGENTS.md",
+            ".kilo/rules/10-task-system.md",
+            ".kilo/rules/35-technical-recovery.md",
+            ".kilo/command/finish-pr.md",
+            ".kilo/command/review-pr.md",
+            ".kilo/command/loop.md",
+            "docs/llm-operating-policy.md",
+        ):
+            policy = " ".join(text(path).split())
+            with self.subTest(policy_path=path):
+                self.assertIn("D-069A", policy)
+                self.assertIn("default", policy.lower())
+                self.assertIn("integrated", policy.lower())
+
     def test_delivery_counter_survives_reentry(self) -> None:
         finish = text(".kilo/command/finish-pr.md")
         for requirement in (
-            "at most 10 whole-PR review invocations per issue delivery",
+            "default at most 10 whole-PR review invocations per issue delivery",
+            "Only a D-069A finite exception can authorize a greater ceiling",
+            "D-069A is integrated in freshly fetched `develop`",
+            "default 10 effective",
             "INCLUDING the initial review, COMMENT, invalidated reviews and corrected retries",
             "Before EVERY task dispatch reserve/persist the next review ordinal",
             "Reinvoking `/finish-pr`, changing phase, reviewer task, model or session "
             + "MUST reuse the same delivery counter",
             "prior dispatch/count recovery is ambiguous or unavailable, BLOCKED",
-            "Never dispatch review 11",
+            "never exceed it without the freshly verified D-069A authority",
             "without patches that cannot receive a fresh review",
             "not a target: stop as soon as an owner decision is clearly required",
         ):
@@ -542,7 +584,8 @@ class WorkflowContractTests(unittest.TestCase):
             "minimum sufficient authorized technical remediation automatically",
             "Owner attention is scarce",
             "No persistent service, privileged container, Docker socket mount or security weakening",
-            "No blind retries", "Never dispatch review 11",
+            "No blind retries", "The default effective ceiling is 10",
+            "Never dispatch beyond the effective ceiling",
         ):
             self.assertIn(requirement, recovery)
 

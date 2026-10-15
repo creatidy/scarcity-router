@@ -219,11 +219,16 @@ uses a fresh foreground `task`, `subagent_type: pr-reviewer`, no `task_id`; neve
 self-approve or resume a reviewer. Parent makes no edits/branch switches while it
 runs. Do not feed past findings, reasoning or desired verdict to the reviewer.
 
-Maximum 10 whole-PR review invocations per issue delivery, INCLUDING the initial
-review, COMMENT, invalidated reviews and corrected retries. Reserve/persist each
-ordinal BEFORE dispatch in the shared delivery ledger; `/finish-pr` reentry,
-internal phases, new tasks and model/session changes cannot reset it. This is a
-safety ceiling, not a target; stop immediately for a genuine material decision.
+Default maximum 10 whole-PR review invocations per issue delivery, INCLUDING the
+initial review, COMMENT, invalidated reviews and corrected retries. A larger finite
+ceiling is available only through D-069A after the primary verifies the direct owner
+source and exact canonical Repo/Issue/linked-PR identity, scope and maximum, and
+confirms D-069A is integrated in freshly fetched `develop`. A branch cannot use its
+own unintegrated rule, and issue-specific exceptions do not transfer or renew. Missing,
+stale or mismatched authority leaves the default 10 active. Reserve/persist each
+ordinal BEFORE dispatch in the shared delivery ledger; `/finish-pr` reentry, internal
+phases, new tasks and model/session changes cannot reset it. This is a safety ceiling,
+not a target; stop immediately for a genuine material decision.
 Fresh reviews inspect the COMPLETE PR, exact HEAD/base/merge base, read-only in a
 fresh isolated context, and return the existing structured JSON verdict/result.
 Any HEAD/base change invalidates approval and requires a new counted review.
@@ -233,9 +238,10 @@ appropriate regression evidence, validate, commit normally and push the SAME PR,
 then obtain a new whole-PR review. Never amend, squash, force-push or rewrite history
 to clean the loop. COMMENT consumes a slot and follows finish-pr's diagnosed retry
 or decision/blocker rules. READY_TO_MERGE is internal, not loop termination.
-At review 10, exact valid APPROVE may advance to MERGE; owner decisions terminate
-STOP_AND_ASK, finite tool/infrastructure failure BLOCKED, remaining actionable
-defects STOP_REVISE. No review 11 or unreviewable further patches.
+At the verified effective ceiling, exact valid APPROVE may advance to MERGE; owner
+decisions terminate STOP_AND_ASK, finite tool/infrastructure failure BLOCKED,
+remaining actionable defects STOP_REVISE. Never dispatch beyond the effective
+maximum or make unreviewable further patches.
 
 ## Security Review
 

@@ -68,9 +68,14 @@
 - `/finish-pr` selects an existing PR and authorizes only its linked issue's
   accepted-scope remediation. Use a fresh foreground `pr-reviewer` native `task`
   for each frozen whole-PR review; consume its result without owner relaying.
-  At most 10 whole-PR review invocations per issue delivery, including initial,
-  COMMENT and retries. Persist ordinals before dispatch in excluded progress;
-  finish reentry, internal phase, new task/model/session cannot reset the counter.
+  Default to at most 10 whole-PR review invocations per issue delivery, including
+  initial, COMMENT and retries. A larger finite maximum requires D-069A authority:
+  the primary verifies the direct owner source, exact canonical repository/issue/
+  linked-PR identity, maximum and scope before reservation, and confirms D-069A is
+  already integrated in freshly fetched `develop`. A branch cannot use its own
+  unintegrated rule; issue-specific exceptions do not transfer or renew. Otherwise
+  the effective ceiling remains 10. Persist ordinals before dispatch in excluded
+  progress; finish reentry, internal phase, new task/model/session cannot reset the counter.
   Current APPROVE yields READY_TO_MERGE, never a standalone merge; only `/loop`
   may continue through its separate merge/completion gates.
   At the bound return STOP_REVISE with new defects versus incomplete fixes and

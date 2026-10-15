@@ -142,12 +142,16 @@ confidence.
 Freeze immutable reviewed HEAD/base and serialize worker/reviewer/remediation
 phases. D-069 supersedes the development-delivery defaults: `/finish-pr` and
 `/loop` use fresh isolated foreground read-only whole-PR `pr-reviewer` tasks,
-with at most 10 invocations per issue delivery including initial, COMMENT,
-invalidated reviews and corrected retries. Reserve ordinals BEFORE dispatch in
-Git-locally excluded `.task_progress.md`; reentry/phase/task/model/session changes
-never reset them. Every HEAD/base change requires a new counted review. Missing
-or ambiguous recovery is BLOCKED. Implementation never self-approves or resumes
-a reviewer. Standalone review is read-only; standalone finish stops at exact
+with a default maximum of 10 invocations per issue delivery including initial,
+COMMENT, invalidated reviews and corrected retries. D-069A permits a greater finite
+maximum only after the primary verifies the direct owner source, exact canonical
+repository/issue/linked-PR identity, scope and cap, and confirms the policy is already
+integrated in freshly fetched `develop`. An unmerged branch cannot authorize its own
+exception; stale, missing or mismatched evidence leaves the default 10 active. Reserve
+ordinals BEFORE dispatch in Git-locally excluded `.task_progress.md`; reentry/phase/
+task/model/session changes never reset them. Every HEAD/base change requires a new
+counted review. Missing or ambiguous recovery is BLOCKED. Implementation never
+self-approves or resumes a reviewer. Standalone review is read-only; standalone finish stops at exact
 READY_TO_MERGE, never merging. Only an explicit owner `/loop` may proceed through
 canonical Forgejo PR merge into develop, verified integrated acceptance and issue
 closure, then fresh selection. Review independence does not expand scope.
@@ -308,8 +312,11 @@ Do not repeat identical failures.
 
 General non-delivery defaults remain one initial review, one remediation and
 narrow verification, as described by `model-policy.json`. Repository command
-delivery uses D-069's scoped override, not those generic round counts: at most
-10 whole-PR reviews, no review 11 or patches without remaining review capacity.
+delivery uses D-069's scoped override, not those generic round counts: the default
+ceiling is 10 whole-PR reviews; D-069A's exact canonical owner exception can set a
+greater finite ceiling for one named issue/linked PR after integration and fresh
+verification. Never exceed the effective maximum or patch without capacity for a
+fresh review.
 Command delivery follows [the shared technical-recovery contract](../.kilo/rules/35-technical-recovery.md)
 under D-070: distinguish engineering blockers from genuine owner decisions and
 review findings from infrastructure failure or unresolved judgment. Diagnose and

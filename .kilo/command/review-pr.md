@@ -12,8 +12,13 @@ freeze exact HEAD/base/merge-base and inspect status/branches. Do not edit the P
 Apply `.kilo/rules/35-technical-recovery.md`: repair review infrastructure, not the
 implementation, using bounded secret-safe preparation and changed reviewer strategy.
 Before dispatch, reserve ordinals in the existing delivery ledger when present;
-otherwise create an excluded standalone ledger with the same ten-review ceiling
-and technical recovery budget. Standalone review cannot reset a delivery counter.
+otherwise create an excluded standalone ledger with the default ten-review ceiling
+and technical recovery budget. A greater ceiling is available only through D-069A:
+before reserving above 10, verify the exact direct owner source and canonical Repo,
+Issue, linked PR, scope and finite maximum, and confirm D-069A is integrated in
+freshly fetched `develop`. An exception on an unmerged branch is ineffective;
+missing, stale or mismatched authority leaves the default 10 active. Standalone review
+cannot reset a delivery counter or borrow another issue's exception.
 
 Use ONE designated delivery checkout: safely switch to the fetched PR branch if needed, creating
 its local tracking branch at fetched HEAD only if absent. Require clean status and

@@ -197,12 +197,18 @@ durable product or deployment contract.
 Multi-model work is bounded by default. Before workers or reviewers start, freeze
 scope/threat model, expected complexity boundary and execution budget. D-069
 supersedes D-015/D-029's development-delivery review/merge defaults only: repository
-issue delivery uses at most 10 whole-PR review invocations, including initial,
-COMMENT, invalidated reviews and corrected retries. `/finish-pr` and `/loop`
-reserve each ordinal BEFORE dispatch in Git-locally excluded `.task_progress.md`.
-Reentry, phase, task, model or session changes never reset the delivery counter;
-missing/ambiguous recovery is BLOCKED. Never dispatch review 11 or make patches
-that cannot receive a fresh review within the bound.
+issue delivery defaults to 10 whole-PR review invocations, including initial,
+COMMENT, invalidated reviews and corrected retries. D-069A permits a greater finite
+maximum only for one exact canonical issue/linked PR after the primary verifies the
+direct owner source, canonical repository/issue/PR identities, maximum and scope,
+and verifies D-069A is already integrated in the freshly fetched `develop`. No
+delivery can use an exception present only in its own branch/PR; the bootstrap itself
+stays at the effective default 10. Absent, stale, ambiguous or mismatched authority
+uses the default 10 and fails closed. `/finish-pr` and `/loop` reserve each ordinal
+BEFORE dispatch in Git-locally excluded `.task_progress.md`. Reentry, phase, task,
+model or session changes never reset the delivery counter; missing/ambiguous recovery
+is BLOCKED. Never dispatch above the effective authorized maximum or make patches
+that cannot receive a fresh review within that bound.
 
 Each review is fresh, foreground, read-only and covers the complete PR at exact
 frozen HEAD/base. Serialize dependent phases; no pushes/edits during review.

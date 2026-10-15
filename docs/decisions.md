@@ -5867,6 +5867,74 @@ neither is a new live check of the current deployment.
   replaceable by ordinary review. Offline text contract tests are consistency
   evidence, not proof of live loop execution or dynamic native-agent discovery.
 
+### D-069A - Canonical owner-authorized finite review exceptions
+
+- **Status:** Owner-authorized bootstrap under issue #212. This policy text is
+  proposed on the bootstrap branch and has no operational effect until the change
+  is integrated into `develop`. It does not authorize an exception for issue #212.
+- **Authority:** Adrian's direct bootstrap instruction is retained in
+  `.review-evidence-212/owner-authorization-2026-10-15.txt`, SHA-256
+  `c8a2fa23c72c122bc4ef52b7c73ff76662142af045fbad796280c5c25ab64476`, and
+  transcribed in Kilo-authored issue #212 comment #17305. The comment is not
+  owner-authored; this source authorizes only the bootstrap scope. The separate
+  direct owner source for #210/PR #211 is recorded in issue #210 comment #17258
+  and authorizes its intended maximum 11 only after this policy is integrated and
+  freshly verified.
+- **Conflict resolved:** D-069's ten-review maximum remains the default. D-069A
+  supersedes D-069's unconditional "no review 11" only for the exact single issue
+  and linked PR with a valid finite owner exception admitted below. It does not
+  alter the default, product contracts, security gates or `/loop`-only merge
+  authority. A delivery cannot use this rule merely because its branch or PR
+  contains it: the primary must verify that D-069A is already present in the
+  freshly fetched canonical `develop`.
+- **Exception admission:** A maximum above ten is usable only for one specifically
+  named canonical `BioMedical-IT/scarcity-router` issue and its linked PR, with a
+  positive finite integer maximum and exact task scope. Before reserving each
+  exceptional ordinal, the primary fetches the canonical repository, selected
+  issue, linked PR and directly linked owner-decision object(s) through Forgejo
+  MCP. Verify repository identity/database ID, issue and PR IDs/URLs/ownership,
+  the issue-to-PR link, owner source author/provenance/time, original source bytes
+  and digest, canonical source record, maximum and scope against current frozen
+  refs. A Kilo-authored transcription is not owner-authored; it is acceptable only
+  when the original direct owner instruction is present in the primary context and
+  the canonical comment preserves the exact source (or an exact attested excerpt)
+  with a matching digest. Missing, stale, conflicting, mismatched, ambiguous or
+  unlinked evidence fails closed at the default 10.
+- **Scope and persistence:** An exception cannot transfer to another issue/PR,
+  renew itself, expand its stated scope or raise the cap automatically. Reserve and
+  persist every invocation ordinal before dispatch, including failed, COMMENT and
+  invalidated attempts. Preserve every prior verdict/reservation across reentry,
+  phases, reviewers, models, sessions and source changes. The local excluded
+  ledger records usage only; it cannot create, increase, renew, transfer or
+  reinterpret authority. Assign reviewer roles from the currently unmet approval
+  gates, not an ordinal-to-role map. All required final roles must fit under the
+  verified maximum; otherwise stop without dispatch or bypassing a gate.
+- **Pending #210 allocation:** Issue #210 comment #17258 records Adrian's intended
+  maximum 11 for #210/PR #211 (#10 ordinary, #11 owner-manual). Until this D-069A
+  change is integrated and the primary revalidates the exact current owner source,
+  canonical issue/PR link, scope and refs, #210 remains at the default 10. Do not
+  reserve or dispatch #10 or #11 from this bootstrap branch. All nine consumed
+  #210 ordinals and verdicts remain immutable. The #185/PR #209 and #205/PR #206
+  histories and any separately recorded owner scopes remain exclusive and require
+  their own fresh verification; none transfers authority to #210 or #212.
+- **Security and merge boundary:** Review-authority changes are `security_critical`.
+  Fresh independent whole-PR ordinary approval, the existing mandatory owner-manual
+  security gate when applicable, exact currentness and full repository validation
+  remain unchanged. This addendum does not authorize automatic Daybreak, substituted
+  approval, standalone merge or issue closure; only an explicit owner `/loop` may
+  merge after every accepted gate passes.
+
+  | Case | Evidence | Result |
+  | --- | --- | --- |
+  | Normal delivery | No valid canonical owner exception | Default maximum 10. |
+  | Bootstrap #212 | D-069A text is on the unmerged bootstrap branch | Default maximum 10; the bootstrap cannot use its own proposed rule. |
+  | Pending #210 allocation | Owner source/comment #17258 states future maximum 11, but D-069A is not integrated | Keep maximum 10 effective; do not reserve/dispatch #10 or #11. |
+  | Ledger-only extension | Local progress says `max=12`; no matching canonical owner source | Deny exception; keep default 10. |
+  | Scope mismatch | Owner record names another issue/PR, repository or task scope | Deny transfer; use this delivery's default/verified maximum only. |
+  | Stale or ambiguous evidence | Changed refs/source hash, missing canonical link, malformed maximum or conflicting owner record | Fail closed at default 10 and recover evidence; never infer authority. |
+  | Verified finite exception | D-069A is integrated and direct source plus exact canonical Repo/Issue/PR record match | Use only that finite maximum for that issue/PR; preserve all prior ordinals/results. |
+  | Gate requires another reviewer role | The verified maximum cannot fit every currently required gate | Do not dispatch/patch around the gate; stop at the effective bound. |
+
 ### D-070 - Autonomous technical recovery before owner escalation
 
 - **Status:** Accepted owner-directed workflow/UX correction, 2026-10-05 (#190).
