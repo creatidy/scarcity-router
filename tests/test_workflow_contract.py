@@ -521,17 +521,21 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("Do not call Forgejo, Git, Bash", reviewer)
         self.assertIn("prior findings", reviewer)
         self.assertIn("parent audits the actual native task export", reviewer)
+        self.assertIn("SR210_SYNTHETIC_READ_PREFLIGHT", reviewer)
+        self.assertIn("does not grant or override any Read permission", reviewer)
 
         read_permissions = cast(dict[str, str], permissions["read"])
-        self.assertEqual(read_permissions.get("**/scarcity-router/**"), "deny")
-        self.assertEqual(read_permissions.get("/home/**"), "deny")
-        self.assertEqual(read_permissions.get("/tmp/**"), "deny")
+        self.assertEqual(read_permissions.get("*"), "deny")
         allowed = {pattern for pattern, action in read_permissions.items() if action == "allow"}
         self.assertTrue(allowed)
-        self.assertTrue(all(".review-evidence-*/pr-reviewer-input/" in pattern for pattern in allowed))
+        self.assertTrue(all(pattern.startswith(".review-evidence-*/pr-reviewer-input/") for pattern in allowed))
         self.assertTrue(all("/../" not in pattern for pattern in allowed))
-        self.assertIn("**/.review-evidence-*/pr-reviewer-input/**", read_permissions)
-        self.assertEqual(read_permissions["**/.review-evidence-*/pr-reviewer-input/**"], "deny")
+        self.assertEqual(read_permissions.get(".review-evidence-*/pr-reviewer-input/**"), "deny")
+        self.assertEqual(read_permissions.get(".review-evidence-*/**"), "deny")
+        rules = list(read_permissions.items())
+        last_deny = max(index for index, (_, action) in enumerate(rules) if action == "deny")
+        first_allow = min(index for index, (_, action) in enumerate(rules) if action == "allow")
+        self.assertLess(last_deny, first_allow)
         for forbidden in (
             "**/*.py", "**/*.md", "**/*.json", "AGENTS.md", "README.md",
             "**/.review-evidence-*/**/source-index.md", "**/.review-evidence-*/**/audit.py",
@@ -587,9 +591,15 @@ class WorkflowContractTests(unittest.TestCase):
                             for rule in rules))
         self.assertTrue(any(rule.get("permission") == "forgejo-mcp_*" and rule.get("action") == "deny"
                             for rule in rules))
-        self.assertTrue(any(rule.get("permission") == "read"
-                            and rule.get("pattern") == "**/scarcity-router/**"
-                            and rule.get("action") == "deny" for rule in rules))
+        read_rules = [rule for rule in rules if rule.get("permission") == "read"]
+        deny_indexes = [index for index, rule in enumerate(read_rules)
+                        if rule.get("pattern") == "*" and rule.get("action") == "deny"]
+        source_indexes = [index for index, rule in enumerate(read_rules)
+                          if rule.get("pattern") == ".review-evidence-*/pr-reviewer-input/source-*.txt"
+                          and rule.get("action") == "allow"]
+        self.assertTrue(deny_indexes)
+        self.assertTrue(source_indexes)
+        self.assertLess(deny_indexes[-1], source_indexes[-1])
 
     def test_reviewer_packet_and_parent_audit_contract_prevent_checkout_or_receipt_access(self) -> None:
         reviewer = " ".join(text(".kilo/agents/pr-reviewer.md").split())
