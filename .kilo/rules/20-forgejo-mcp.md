@@ -42,6 +42,13 @@
 
 - Use `forgejo-mcp` narrowly for the exact issue, PR, comment, review or
   label operation the task requires.
+- The `pr-reviewer` subagent receives no direct Forgejo MCP getter or writer. The
+  primary fetches the exact selected Repo/Issue/PR and directly linked owner-decision
+  objects, validates their IDs/URLs/authors/timestamps/content, and places complete
+  raw acceptance/owner evidence plus exact Git-object bindings in the immutable
+  reviewer packet. Reviewer packet copies cannot authorize broader Forgejo access;
+  the reviewer independently reads the supplied bytes through native Read only.
+  Post-execution audit supplements this pre-call Kilo denial and never replaces it.
 - Do not list all repositories, issues, PRs, branches, organization
   resources, Projects, or milestones unless Adrian explicitly asks.
   The explicit owner `/loop` exception permits paging all open canonical

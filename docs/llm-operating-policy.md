@@ -201,15 +201,32 @@ Discipline:
   The pending reservation blocks any patch/review/merge until resolution; once launched,
   the ordinal remains consumed for every outcome and cannot be reused.
 - The evidence must bind exact repository/issue/PR identities and URL, reviewed
-  HEAD/base/merge-base, requested reviewer/provider/model, official Codex executable
-  path/version/binary digest, actual invocation/session/turn and timestamps, observed
-  runtime-identity state, prompt/input-manifest and output digests, terminal result
-  schema, structured verdict/findings and a separate captured context/tool audit.
-  Owner assertion, CLI exit zero, transcript text or model self-report alone is not
-  independent approval. Require `RUNTIME_VERIFIED`; unobservable/mismatched identity,
-  stale refs or findings keep the gate open. Ordinary approval alone cannot close it.
+  HEAD/base/merge-base, requested `gpt-daybreak-blue-latest`, official Codex executable
+  path/version and verified binary provenance, actual invocation/dispatch configuration,
+  independently captured process/session/turn and timestamps, prompt/input-manifest and
+  output digests, terminal result schema, structured verdict/findings, and a separate
+  captured context/tool audit. Owner assertion, CLI exit zero, transcript text or model
+  self-report alone is not independent approval.
+- D-069A's explicit owner amendment accepts `RUNTIME_UNOBSERVABLE` **only** for the
+  Scarcity Router owner-manual Codex path when the supported official runtime does not
+  independently expose its backend-served model identity. In that case, verify every
+  other binary/provenance, actual-invocation/dispatch, process/session/turn, immutable
+  input/output, exact-ref, structured-verdict and context/tool-audit requirement; record
+  `RUNTIME_UNOBSERVABLE`; and record Adrian's explicit acceptance of that limitation.
+  This is not `RUNTIME_VERIFIED`, proof of backend execution identity or cryptographic
+  certainty. `DISPATCH_VERIFIED` means only that actual captured dispatch configuration
+  matches the requested model. Never infer runtime identity from requested configuration,
+  UI labels, CLI text or model self-report. Any actually observed mismatch or unauthorized
+  substitution is `FAIL`; missing other evidence, findings or stale refs keep the gate
+  open. Generic runtime-identity meanings and every other model-bound gate remain
+  unchanged.
+- Ordinary approval alone cannot close the gate. The implementation agent never
+  invokes Daybreak automatically and cannot substitute another reviewer.
 - Classify `SECURITY_REVIEW_UNAVAILABLE` only when the owner's required direct Codex
-  path cannot be independently evidenced after authorized bounded technical recovery.
+  invocation/provenance path cannot be independently evidenced after authorized bounded
+  technical recovery. The owner-accepted Router-only `RUNTIME_UNOBSERVABLE` backend
+  identity state is not by itself `SECURITY_REVIEW_UNAVAILABLE` when all other required
+  manual evidence is complete.
   Diagnose routine Kilo preparation/environment problems automatically; do not replace
   the manual owner review with an automatic Kilo call. New restricted access/authority
   remains owner-controlled; no fallback reviewer is permitted.

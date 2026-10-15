@@ -77,8 +77,10 @@ ordinary agent integration branch.
 
 Use one designated delivery checkout and one mutator. Temporary worktrees/isolated
 evidence checkouts are allowed under the technical-recovery rule, never parallel
-implementation controllers. Review frozen Git objects/current clean PR branch
-read-only; the parent must not edit or switch reviewed checkouts while the reviewer runs.
+implementation controllers. The primary verifies frozen Git objects/current clean PR
+state and prepares an immutable exact-revision source/patch bundle. The reviewer has
+native Read-only packet access and no Bash/Git/Forgejo/search capability; the parent
+does not edit the packet or switch reviewed checkouts while it runs.
 Never stash/reset unrelated owner work or bypass unmet dependencies. Do not
 force-push, rewrite published history, merge
 `develop` or `main` into a feature branch, create synchronization merge
@@ -247,7 +249,14 @@ reused; once the owner starts an invocation, record it consumed regardless of re
 The root accepts the
 owner-supplied result only after verifying the evidence/provenance contract in
 D-069A and the exact current PR/reviewed HEAD/base/merge-base. Owner assertion,
-CLI exit zero or unverifiable model identity is insufficient. Any HEAD/base change
+CLI exit zero or model self-report alone is insufficient. For this Router owner-manual
+path only, D-069A permits explicit `RUNTIME_UNOBSERVABLE` when the supported official
+Codex runtime does not independently expose backend identity, provided the official
+binary/provenance, requested-model dispatch, invocation/session/turn, immutable
+input/output, exact refs, structured verdict and independent context/tool audit all
+verify and Adrian explicitly accepts that limitation. Never call this
+`RUNTIME_VERIFIED` or claim backend identity. An observed mismatch or unauthorized
+substitution is `FAIL`; generic runtime-identity policy is unchanged. Any HEAD/base change
 invalidates security approval. The gate remains mandatory and open until validated;
 only after all required gates does the explicit `/loop` retain canonical merge
 authority. This owner-manual invocation path is Scarcity Router-specific — see

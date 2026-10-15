@@ -28,10 +28,12 @@
   mount credential directories unnecessarily or print environment values. Prefer
   read-only required mounts with separate writable synthetic scratch paths.
   No edits or branch switches to reviewed checkouts during review.
-  Reviewer inspects frozen Git objects/full base delta and verifies HEAD
-  and clean status before/after checks. Ignored validation artifacts are allowed;
-  tracked edits and Git/Forgejo mutations are not. Inspect checks before running;
-  an allowlist does not make arbitrary repository code safe.
+  Reviewer never accesses the checkout or executes Bash/Git/Forgejo. The primary
+  prepares an immutable flat source/patch bundle bound to exact Git objects and
+  complete canonical acceptance/owner evidence. Kilo native Read is the only reviewer
+  capability, restricted to the packet. The parent audits actual task reads/bytes/
+  ranges and completeness, then re-fetches currentness before/after. Runtime permission
+  denial is pre-call enforcement; post-call audit is independent defense-in-depth.
 - Unavailable safe validation/tool state requires bounded technical recovery under
   `.kilo/rules/35-technical-recovery.md`, not immediate owner escalation or skipped
   checks. Independent source verification may use a separately prepared exact public

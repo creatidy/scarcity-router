@@ -113,17 +113,24 @@ them unless required for the selected acceptance and subject to an owner decisio
 
 ## Independent Review Metadata
 
-An acceptance-only whole-PR review manifest may authorize these exact Forgejo
-read operations: `forgejo-mcp_get_repo` for the canonical owner/repository,
-`forgejo-mcp_get_pull_request_by_index` for the selected PR, and
-`forgejo-mcp_get_issue_by_index` for its linked issue. Include
-`forgejo-mcp_get_issue_comment` only for a specifically attested owner decision.
-The manifest records each exact object ID/arguments, canonical URL, author,
-timestamp, retrieval path and content digest. Do not grant wildcard getters,
-list/search access or any Forgejo write. Repository metadata establishes
-canonical identity; current PR refs/SHAs must still agree with the primary-prepared
-clean local Git objects and exact merge base/full diff. Reviewer shell access must
-not inspect credential-bearing Git configuration or invoke credential helpers.
+The primary alone reads canonical Repo/Issue/PR and directly linked owner-decision
+objects via the exact Forgejo MCP getters, then verifies IDs, URLs, authors, times,
+raw bodies and digests. The reviewer receives no direct Forgejo getter/writer: the
+parent-prepared immutable packet supplies complete acceptance evidence, original
+owner decisions and exact Git commit/blob/patch bytes, bound to source IDs, retrieval
+provenance, timestamps and hashes. PR-body text containing prior findings is not
+reviewer context; bind its digest and supply the full canonical issue acceptance and
+nonhistorical owner evidence needed to evaluate scope.
+
+The `pr-reviewer` Kilo profile denies Bash/Git, all direct Forgejo MCP tools,
+search/list/history, external paths, writes and delegation before any call can execute.
+Native Read is limited to flat packet files; the parent verifies the packet is frozen,
+owner-prepared, regular/non-symlink and exact to the selected refs before dispatch.
+Post-execution trace audit checks that only permitted Read calls occurred and that
+their bytes/ranges match the frozen packet, but this is a second gate, not a substitute
+for effective pre-execution Kilo denial. Canonical currentness is fetched and rechecked
+by the primary before/after the task. Reviewer permission or source-provenance gaps are
+COMMENT; never broaden access to repair them.
 
 ## Public Evidence and Reviewer Failover
 

@@ -1,7 +1,10 @@
-"""Offline consistency guards for command text, not proof of runtime execution."""
+"""Workflow policy checks, including an opt-in real Kilo permission-resolver probe."""
 
-import fnmatch
+import json
+import os
 import re
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 from typing import cast
@@ -197,7 +200,12 @@ class WorkflowContractTests(unittest.TestCase):
             "not from permanent ordinal-to-role rules",
             "direct owner message is present in the primary root context",
             "ea6f2d1236827075a1dd853ae1275ad178e62b63761eaa557e943176594a2049",
+            "991c4c550557411334fde1dfdb3a89328fa4e165811cad7eff8946914a01bd57",
             "runtime_verified",
+            "runtime_unobservable",
+            "dispatch_verified",
+            "not cryptographic certainty",
+            "adrian explicitly accepts that limitation",
             "cli exit-zero",
             "mandatory independent official",
             "manual router security gate",
@@ -233,7 +241,14 @@ class WorkflowContractTests(unittest.TestCase):
             ),
             "currentness change": ("differs from the exact current pr", "approval becomes stale"),
             "role change": ("mandatory security evidence is not", "currently required security role"),
-            "incomplete manual security evidence": ("identity/execution/output capture is unverifiable", "keep security gate open"),
+            "incomplete manual security evidence": (
+                "official binary provenance, requested dispatch, invocation/turn/output provenance",
+                "keep security gate open",
+            ),
+            "owner-accepted unobservable backend": (
+                "supported path exposes no independent backend identity",
+                "record `runtime_unobservable`; the manual gate may pass",
+            ),
             "parent-only generated receipt": ("outside the immutable pre-dispatch source catalog", "do not authorize the reviewer to read generated output"),
         }
         self.assertEqual(set(cases), set(expected_cases))
@@ -271,10 +286,14 @@ class WorkflowContractTests(unittest.TestCase):
                 self.assertIn("HEAD/base", contract)
         policy = text("docs/llm-operating-policy.md")
         self.assertIn("the owner personally invokes", policy)
-        self.assertIn("requested reviewer/provider", policy)
+        self.assertIn("requested `gpt-daybreak-blue-latest`", policy)
         self.assertIn("official Codex executable", policy)
         self.assertIn("CLI exit zero", policy)
         self.assertIn("RUNTIME_VERIFIED", policy)
+        self.assertIn("RUNTIME_UNOBSERVABLE", policy)
+        self.assertIn("DISPATCH_VERIFIED", policy)
+        self.assertIn("explicit acceptance of that limitation", policy)
+        self.assertNotIn("Require `RUNTIME_VERIFIED`", policy)
         loop = text(".kilo/command/loop.md")
         self.assertLess(loop.index("## FINISH"), loop.index("## Security Review"))
         self.assertLess(loop.index("## Security Review"), loop.index("## MERGE"))
@@ -450,8 +469,8 @@ class WorkflowContractTests(unittest.TestCase):
         reviewer = text(".kilo/agents/pr-reviewer.md")
         for requirement in (
             "never the implementation agent",
-            "Do not read parent conversations, local recall, progress notes or the shared board",
-            "Return ONLY one JSON object",
+            "Do not read prior findings, parent conversations, local ledgers, manifests or generated receipts",
+            "Return only one JSON object",
             '"verdict": "APPROVE | REQUEST_CHANGES | COMMENT"',
             "APPROVE requires sufficient acceptance evidence and no findings",
             "Never publish reviews/comments or other Forgejo mutations",
@@ -473,136 +492,133 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("Parent makes no edits/branch switches while it runs", loop)
         self.assertIn("Any HEAD/base change invalidates approval", loop)
 
-    def test_private_repository_review_uses_exact_mcp_and_local_evidence(self) -> None:
-        reviewer = text(".kilo/agents/pr-reviewer.md")
-        for requirement in (
-            "`forgejo-mcp_get_repo`", "`forgejo-mcp_get_pull_request_by_index`",
-            "`BioMedical-IT/scarcity-router`", "`https://forgejo.creatidy.com`",
-            "exact expected head/base refs and commit SHAs", "primary-prepared clean checkout's local Git objects",
-            "verify the exact merge base and complete diff",
-            "Anonymous `git ls-remote` is optional corroboration only and is not in the reviewer shell allowlist",
-            "never a required access gate", "A missing, stale or mismatched identity/ref/SHA/object is COMMENT",
-            "Reviewer credentials remain unavailable to the model and shell",
-        ):
-            with self.subTest(requirement=requirement):
-                self.assertIn(requirement, reviewer)
-        raw = (ROOT / ".kilo/agents/pr-reviewer.md").read_text().split("---", 2)[1]
-        getters = {
-            key.strip('"'): value.strip()
-            for line in raw.splitlines()
-            if line.startswith('  "forgejo-mcp_')
-            for key, value in [line.strip().split(":", 1)]
-        }
-        self.assertEqual(getters, {
-            "forgejo-mcp_get_repo": "allow",
-            "forgejo-mcp_get_pull_request_by_index": "allow",
-            "forgejo-mcp_get_issue_by_index": "allow",
-            "forgejo-mcp_get_issue_comment": "allow",
-        })
-        for permission in ("edit: deny", "write: deny", "apply_patch: deny", "task: deny"):
-            self.assertIn(permission, raw)
-        test_command = (
-            "PYTHONPATH=. UV_OFFLINE=1 UV_NO_SYNC=1 uv run --no-sync python -m unittest "
-            + "tests.test_workflow_contract.WorkflowContractTests.test_private_repository_review_"
-            + "uses_exact_mcp_and_local_evidence -v\": allow"
-        )
-        self.assertIn(test_command, raw)
-        shell = raw.split("bash:", 1)[1]
-        self.assertIn('"git remote -v": deny', shell)
-        self.assertIn('"git ls-remote *": deny', shell)
-        self.assertIn('"*": deny', shell)
-        self.assertNotIn('"git remote -v": allow', shell)
-        self.assertNotIn('https://forgejo.creatidy.com', shell)
-        self.assertIn('"git ls-remote * -*": deny', shell)
-        manifest = text(".kilo/rules/35-technical-recovery.md").split(
-            "## Independent Review Metadata", 1
-        )[1].split("## Public Evidence and Reviewer Failover", 1)[0]
-        for getter in (
-            "`forgejo-mcp_get_repo`", "`forgejo-mcp_get_pull_request_by_index`",
-            "`forgejo-mcp_get_issue_by_index`", "`forgejo-mcp_get_issue_comment`",
-        ):
-            self.assertIn(getter, manifest)
-        for boundary in (
-            "Do not grant wildcard getters", "list/search access or any Forgejo write",
-            "primary-prepared clean local Git objects", "exact merge base/full diff",
-            "must not inspect credential-bearing Git configuration or invoke credential helpers",
-        ):
-            self.assertIn(boundary, manifest)
-
-    def test_reviewer_preparation_catalog_and_generated_receipts_are_bounded(self) -> None:
-        reviewer = text(".kilo/agents/pr-reviewer.md")
-        for invariant in (
-            "root-attested exact source/file catalog",
-            "complete per-file patch/index",
-            "supplied per-file bounded Read ranges without gaps",
-            "Access only listed workspaces/files and directly cited Forgejo objects",
-            "do not guess files, list evidence directories or read dynamic generated",
-            "Report a missing/indexed byte or output as COMMENT",
-            "parent must provision the locked offline environment at that exact checkout",
-            "A valid receipt is parent-checked from actual runner stdout",
-            "do not read a generated run receipt or directory",
-            "Native Kilo Read permissions are static patterns",
-            "Any unlisted file/directory/search/receipt",
-            "Run each Git/status/test command as its own Bash invocation",
-            "never chain commands with `&&`, `;`, pipes or",
-        ):
-            with self.subTest(invariant=invariant):
-                self.assertIn(invariant, reviewer)
+    def test_private_reviewer_is_packet_read_only_and_has_no_remote_or_shell_tools(self) -> None:
         reviewer_source = (ROOT / ".kilo/agents/pr-reviewer.md").read_text()
+        reviewer = " ".join(reviewer_source.split())
         metadata: object = cast(object, yaml.safe_load(reviewer_source.split("---", 2)[1]))
         if not isinstance(metadata, dict):
             self.fail("reviewer frontmatter must be a YAML mapping")
-        metadata_map = cast(dict[str, object], metadata)
-        permissions_value = metadata_map.get("permission")
+        permissions_value = cast(dict[str, object], metadata).get("permission")
         if not isinstance(permissions_value, dict):
             self.fail("reviewer permission frontmatter must be a mapping")
         permissions = cast(dict[str, object], permissions_value)
-        for tool in ("glob", "grep", "list", "semantic_search"):
+        self.assertEqual(permissions.get("*"), "deny")
+        for tool in (
+            "bash", "glob", "grep", "list", "semantic_search", "external_directory",
+            "edit", "write", "apply_patch", "task", "board_read", "board_post",
+            "kilo_local_recall", "kilo_memory_recall", "agent_manager", "webfetch", "websearch",
+        ):
             with self.subTest(tool=tool):
                 self.assertEqual(permissions.get(tool), "deny")
-        bash_value = permissions.get("bash")
-        if not isinstance(bash_value, dict):
-            self.fail("reviewer Bash permissions must be pattern-scoped")
-        bash_permissions = cast(dict[str, object], bash_value)
-        self.assertEqual(bash_permissions.get("git diff *"), "allow")
-        self.assertEqual(bash_permissions.get("* --ext-diff*"), "deny")
-        self.assertEqual(bash_permissions.get("* --textconv*"), "deny")
-        safe_diff = "git diff --no-ext-diff --no-textconv --no-renames --unified=0 BASE HEAD -- file.py"
-        self.assertFalse(fnmatch.fnmatchcase(safe_diff, "* --ext-diff*"))
-        self.assertFalse(fnmatch.fnmatchcase(safe_diff, "* --textconv*"))
-        self.assertTrue(fnmatch.fnmatchcase("git diff --ext-diff BASE HEAD", "* --ext-diff*"))
-        self.assertTrue(fnmatch.fnmatchcase("git diff --textconv BASE HEAD", "* --textconv*"))
-        read_value = permissions.get("read")
-        if not isinstance(read_value, dict):
-            self.fail("reviewer Read permission must have scoped patterns")
-        read_permissions = cast(dict[str, object], read_value)
-        self.assertEqual(read_permissions.get("**/.review-evidence-*/**"), "deny")
-        self.assertNotIn("*", read_permissions)
-        self.assertEqual(read_permissions.get("**/.review-evidence-*/**/source-index.md"), "allow")
-        self.assertEqual(read_permissions.get("**/.review-evidence-*/**/audit.py"), "allow")
-        self.assertEqual(read_permissions.get("**/.review-evidence-*/**/owner-decision-*.txt"), "allow")
-        for pattern in (
-            "AGENTS.md", "README.md", "**/*.md", "**/*.py", "**/*.json",
-            "**/*.yaml", "**/*.yml", "**/*.toml", "**/*.sh", "**/*.sql",
-            "**/*.ts", "**/*.tsx", "**/*.js", "**/*.css",
+        self.assertEqual(permissions.get("forgejo-mcp_*"), "deny")
+        for tool in (
+            "forgejo-mcp_get_repo", "forgejo-mcp_get_pull_request_by_index",
+            "forgejo-mcp_get_issue_by_index", "forgejo-mcp_get_issue_comment",
         ):
-            self.assertEqual(read_permissions.get(pattern), "allow")
-        self.assertEqual(read_permissions.get("**/*.jsonl"), "deny")
-        read_rules = list(read_permissions)
-        evidence_deny = read_rules.index("**/.review-evidence-*/**")
-        for pattern in (
-            "**/.review-evidence-*/**/source-index.md",
-            "**/.review-evidence-*/**/owner-decision-*.txt",
-            "**/.review-evidence-*/**/audit.py",
-            "**/.review-evidence-*/**/audit.legacy.py",
-            "**/.review-evidence-*/**/test_audit.py",
-            "**/.review-evidence-*/**/test_native_metadata.py",
+            self.assertEqual(permissions.get(tool), "deny")
+        self.assertTrue(permissions.get("read"))
+        self.assertIn("immutable parent-prepared packet", reviewer)
+        self.assertIn("Do not call Forgejo, Git, Bash", reviewer)
+        self.assertIn("prior findings", reviewer)
+        self.assertIn("parent audits the actual native task export", reviewer)
+
+        read_permissions = cast(dict[str, str], permissions["read"])
+        self.assertEqual(read_permissions.get("**/scarcity-router/**"), "deny")
+        self.assertEqual(read_permissions.get("/home/**"), "deny")
+        self.assertEqual(read_permissions.get("/tmp/**"), "deny")
+        allowed = {pattern for pattern, action in read_permissions.items() if action == "allow"}
+        self.assertTrue(allowed)
+        self.assertTrue(all(".review-evidence-*/pr-reviewer-input/" in pattern for pattern in allowed))
+        self.assertTrue(all("/../" not in pattern for pattern in allowed))
+        self.assertIn("**/.review-evidence-*/pr-reviewer-input/**", read_permissions)
+        self.assertEqual(read_permissions["**/.review-evidence-*/pr-reviewer-input/**"], "deny")
+        for forbidden in (
+            "**/*.py", "**/*.md", "**/*.json", "AGENTS.md", "README.md",
+            "**/.review-evidence-*/**/source-index.md", "**/.review-evidence-*/**/audit.py",
         ):
-            self.assertEqual(read_permissions.get(pattern), "allow")
-            self.assertLess(read_rules.index(pattern), evidence_deny)
-        self.assertLess(evidence_deny, read_rules.index("**/*.md"))
-        self.assertLess(evidence_deny, read_rules.index("**/*.py"))
-        self.assertNotIn("*", read_rules)
+            self.assertNotIn(forbidden, read_permissions)
+
+    def test_kilo_runtime_resolves_reviewer_tool_denies_with_synthetic_home(self) -> None:
+        binary = os.environ.get("KILO_PERMISSION_RUNTIME_TEST_BIN")
+        if not binary:
+            self.skipTest("set KILO_PERMISSION_RUNTIME_TEST_BIN to exercise Kilo's effective policy")
+        with tempfile.TemporaryDirectory(prefix="kilo-reviewer-runtime-home-") as home:
+            completed = subprocess.run(
+                [binary, "debug", "agent", "pr-reviewer"],
+                cwd=ROOT,
+                env={
+                    "PATH": "/usr/bin:/bin",
+                    "HOME": home,
+                    "LANG": "C",
+                    "LC_ALL": "C",
+                    "PYTHONDONTWRITEBYTECODE": "1",
+                },
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=True,
+            )
+        decoded = cast(object, json.loads(completed.stdout))
+        if not isinstance(decoded, dict):
+            self.fail("Kilo resolver output must be a JSON object")
+        resolved = cast(dict[str, object], decoded)
+        tools_value = resolved.get("tools")
+        if not isinstance(tools_value, dict):
+            self.fail("Kilo resolver output must include a tool mapping")
+        tools = cast(dict[str, object], tools_value)
+        for tool in (
+            "bash", "glob", "grep", "list", "semantic_search", "external_directory",
+            "task", "board_read", "board_post", "kilo_local_recall", "kilo_memory_recall",
+        ):
+            with self.subTest(tool=tool):
+                self.assertFalse(tools.get(tool, False))
+        self.assertTrue(tools.get("read", False))
+        self.assertFalse(any(name.startswith("forgejo-mcp_") for name in tools))
+        rules_value = resolved.get("permission")
+        if not isinstance(rules_value, list):
+            self.fail("Kilo resolver output must include a permission list")
+        rules = [
+            cast(dict[str, object], item)
+            for item in cast(list[object], rules_value)
+            if isinstance(item, dict)
+        ]
+        self.assertTrue(any(rule.get("permission") == "bash" and rule.get("action") == "deny"
+                            for rule in rules))
+        self.assertTrue(any(rule.get("permission") == "forgejo-mcp_*" and rule.get("action") == "deny"
+                            for rule in rules))
+        self.assertTrue(any(rule.get("permission") == "read"
+                            and rule.get("pattern") == "**/scarcity-router/**"
+                            and rule.get("action") == "deny" for rule in rules))
+
+    def test_reviewer_packet_and_parent_audit_contract_prevent_checkout_or_receipt_access(self) -> None:
+        reviewer = " ".join(text(".kilo/agents/pr-reviewer.md").split())
+        for requirement in (
+            "complete canonical issue acceptance evidence",
+            "exact base-to-HEAD patch/source bundle",
+            "no workspace checkout access",
+            "source bytes or provenance are missing",
+            "Previous review findings are intentionally absent",
+            "`checks_run` remains an empty array",
+            "parent audits the actual native task export",
+        ):
+            with self.subTest(requirement=requirement):
+                self.assertIn(requirement, reviewer)
+        manifest = " ".join(text(".kilo/rules/35-technical-recovery.md").split())
+        for requirement in (
+            "reviewer receives no direct Forgejo getter/writer",
+            "immutable packet supplies complete acceptance evidence",
+            "exact Git commit/blob/patch bytes",
+            "denies Bash/Git, all direct Forgejo MCP tools",
+            "before any call can execute",
+            "Post-execution trace audit checks that only permitted Read calls occurred",
+        ):
+            self.assertIn(requirement, manifest)
+        for path in (".kilo/command/review-pr.md", ".kilo/command/finish-pr.md", ".kilo/command/loop.md"):
+            contract = " ".join(text(path).split())
+            self.assertIn("immutable", contract)
+            self.assertIn("native Read", contract)
+            self.assertIn("parent", contract)
 
     def test_delivery_counter_survives_reentry(self) -> None:
         finish = " ".join(text(".kilo/command/finish-pr.md").split())
@@ -634,7 +650,7 @@ class WorkflowContractTests(unittest.TestCase):
     def test_exact_approval_and_loop_only_pr_merge(self) -> None:
         finish = text(".kilo/command/finish-pr.md")
         self.assertIn("selection/merge/closure authority lives only in loop.md", finish)
-        self.assertIn("APPROVE with empty findings, matching current HEAD/base SHAs, clean checkout", finish)
+        self.assertIn("APPROVE with empty findings, matching current refs, parent-audit PASS", finish)
         self.assertIn("successful required validation", finish)
         self.assertIn("READY_TO_MERGE / APPROVE. Never merge", finish)
         loop = text(".kilo/command/loop.md")

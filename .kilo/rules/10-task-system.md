@@ -66,8 +66,11 @@
   not automatic closing keywords. Report issue/PR, base/head SHAs, validation and
   genuine blockers; READY_FOR_REVIEW means implemented and verified, not approved.
 - `/finish-pr` selects an existing PR and authorizes only its linked issue's
-  accepted-scope remediation. Use a fresh foreground `pr-reviewer` native `task`
-  for each frozen whole-PR review; consume its result without owner relaying.
+  accepted-scope remediation. Before each fresh foreground `pr-reviewer` native task,
+  the primary freezes canonical objects/Git refs and prepares an immutable raw evidence
+  bundle. The reviewer has Read-only packet access, no Bash/Git/Forgejo/search/history
+  tools; the parent audits its exact native task trace and re-fetches currentness.
+  Consume the native result without owner relaying.
   Ten whole-PR review invocations per issue delivery is the default, including
   initial, COMMENT, invalidated and corrected retries. D-069A permits only a finite
   issue/PR-specific owner exception after the sole primary independently verifies

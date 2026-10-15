@@ -37,28 +37,29 @@ delivery; STOP_REVISE still requires an explicit owner decision, not a new PR/na
    divergence or conflicting work require diagnosis and safe isolated recovery;
    never classify ordinary checkout inconvenience as an owner decision.
 2. Require the current PR branch to be clean and match MCP HEAD. Freeze exact
-   HEAD, base and merge base; run required `make check`, prepare its offline locked
-   environment and inspect
-   reviewer permissions and secret-safe execution strategy. Review frozen objects/current
-   clean branch in the designated checkout or prepared exact-revision evidence checkout.
-   The parent must not edit/switch branches while the reviewer is active.
-   Missing native task/agent requires diagnosed authorized native reviewer failover
-   before BLOCKED, never permission to self-review, widen permissions or use an external service.
-3. Spawn a fresh foreground native `task` with `subagent_type: pr-reviewer`,
-   `background: false`, no `task_id`. Supply only PR URL/number, exact expected
-   HEAD/base and whole-PR review instructions with the exact checkout and prepared
-   environment/source paths plus provenance (not implementation conclusions).
-   Do not supply past findings, implementation reasoning or a requested outcome.
-   The agent owns the result contract/model. Parse its JSON and require the exact
-   frozen SHAs and valid field types/verdict. Consume returned findings directly.
-   Recheck local HEAD/clean status; a changed or dirty checkout invalidates review.
-4. Re-fetch PR metadata and canonical develop. APPROVE with empty findings,
-   matching current HEAD/base SHAs, clean checkout, successful required validation
-   and still open/unmerged develop target yields READY_TO_MERGE / APPROVE. Never merge.
-   Changed HEAD/base invalidates approval. Diagnose external changes, malformed results
-   and infrastructure failures; recover safe currentness and use a materially changed
-   execution strategy within the persistent recovery/review budgets. Never race a
-   concurrent writer, approve stale state or retry on a new session/model alone.
+    HEAD/base/merge-base; run all required validation in a parent-prepared sanitized
+    environment. Parent-preflight the effective Kilo permissions, then prepare a
+    flat, owner-read-only immutable packet containing the complete issue acceptance
+    excerpt, canonical Repo/PR identity metadata, original owner sources, exact Git
+    object IDs, full changed-file patches and source copies, provenance and digests.
+    The parent owns MCP/Git currentness and bundle generation. It must not change the
+    packet or refs while the reviewer is active. Missing native task/agent requires
+    diagnosed authorized native failover before BLOCKED; never widen the reviewer tools.
+3. Spawn one fresh foreground native `task` with `subagent_type: pr-reviewer`,
+    `background: false`, no `task_id`. Supply only the prepared packet path, packet
+    digest, expected HEAD/base/merge-base, and independent whole-PR review instructions.
+    Do not pass past findings, implementation reasoning, PR-body history or a desired
+    verdict. The reviewer has native Read only; Bash/Git/Forgejo/search/list/task/history
+    access is denied at runtime. It independently inspects raw packet evidence and
+    returns the stable JSON contract. The reviewer does not execute commands.
+4. Parent audits the actual native task export: only permitted Read calls, exact bundle
+    paths/ranges/bytes, complete source/patch coverage, no symlinks, and no Bash/Git/
+    Forgejo/other tool calls. Re-fetch canonical PR/issue/develop and recheck the local
+    clean HEAD/base/merge-base after the task. APPROVE with empty findings, matching
+    current refs, parent-audit PASS and successful required validation yields
+    READY_TO_MERGE / APPROVE. Never merge here. Any changed HEAD/base invalidates
+    approval. Diagnose malformed packets/results and currentness failures with bounded
+    changed-condition recovery; never race a concurrent writer or widen permissions.
 5. REQUEST_CHANGES: first check findings against accepted scope and authority.
    Genuine incompatible acceptance, architecture or material scope decisions
    yield OWNER_DECISION_NEEDED with concrete alternatives. Otherwise reproduce
@@ -105,10 +106,15 @@ The implementation agent must never invoke Daybreak/Codex automatically or subst
 another model. Name the reserved ordinal in the open/unmerged PR handoff. A pending
 reservation blocks further work and cannot be reused; once launched it remains consumed
 regardless of success/failure/invalidated output. Verify the owner-supplied manual result
-per D-069A, including
-runtime identity/execution provenance, source/input and result digests, verdict/findings
-and independent tool/context audit. Owner assertion, CLI exit0 and model self-report
-are insufficient; any HEAD/base change invalidates approval. No fallback reviewer.
+per D-069A: official Codex executable/version/provenance, actual requested-model
+invocation/dispatch, captured process/session/turn, immutable input/output, exact refs,
+structured verdict and independent context/tool audit. For this Router manual path only,
+`RUNTIME_UNOBSERVABLE` may satisfy the identity-observation part when the supported
+runtime does not expose backend identity and Adrian explicitly accepts that limit after
+all other evidence passes. Never claim `RUNTIME_VERIFIED` or infer identity from config,
+CLI text or self-report; `DISPATCH_VERIFIED` is configuration only. An observed mismatch
+or unauthorized substitution is `FAIL`. Generic identity policy remains unchanged.
+Any HEAD/base change invalidates approval. No fallback reviewer.
 
 Return one final report: issue/PR URLs, every reviewed HEAD/base/verdict,
 review ordinals, remediation commits, final exact HEAD, validation/limitations and exactly one

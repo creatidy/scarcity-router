@@ -217,7 +217,11 @@ orchestrator. Reuse its complete frozen-PR review/remediation procedure and the
 shared `.kilo/agents/pr-reviewer.md` contract used by `/review-pr`. Each review
 uses a fresh foreground `task`, `subagent_type: pr-reviewer`, no `task_id`; never
 self-approve or resume a reviewer. Parent makes no edits/branch switches while it
-runs. Do not feed past findings, reasoning or desired verdict to the reviewer.
+runs. Before dispatch, the parent fetches/validates canonical objects and exact Git
+refs, then prepares an immutable flat source/patch packet. The reviewer has only
+native Read access to packet files and no Bash/Git/Forgejo/search/history tools.
+The parent audits exact task reads/bytes/paths and re-fetches currentness after return.
+Do not feed past findings, reasoning, PR-body history or a desired verdict to the reviewer.
 
 The default ceiling is 10 whole-PR review invocations per issue delivery, INCLUDING
 the initial review, COMMENT, invalidated reviews and corrected retries. A finite
@@ -255,15 +259,17 @@ Codex `gpt-daybreak-blue-latest` audit using a separate prompt, mark it consumed
 every outcome.
 The implementation agent must never invoke Daybreak/Codex automatically or substitute
 a reviewer. This remains a mandatory pre-completion/pre-merge gate, not a pre-implementation
-eligibility gate. The owner supplies a structured execution/result record; verify exact
-repo/issue/PR/ref identities, requested reviewer/provider, official binary/version/hash,
-dispatch/runtime identity evidence, invocation/turn provenance, prompt/input/result
-digests, findings and a separate context/tool audit. Owner assertion, CLI exit zero or
-model self-report are insufficient; require current `RUNTIME_VERIFIED` identity. Any
-HEAD/base change invalidates approval. A valid owner result may be consumed only in a
-fresh explicit continuation after canonical currentness is re-fetched. If unavailable or
-unverifiable, leave the security gate open; no fallback reviewer. This is Scarcity
-Router-specific and grants no cross-repository authority.
+eligibility gate. Verify the owner result against exact repo/issue/PR/ref identities,
+official binary/version/provenance, requested-model invocation/dispatch, captured
+process/session/turn, immutable input/output digests, structured verdict and separate
+context/tool audit. Owner assertion, CLI exit zero or model self-report alone are
+insufficient. For this Router owner-manual path only, accept explicitly reported
+`RUNTIME_UNOBSERVABLE` when the supported runtime does not expose backend identity,
+all other evidence passes and Adrian accepts the limit; never label it `RUNTIME_VERIFIED`
+or infer backend identity. `DISPATCH_VERIFIED` is configuration only; observed mismatch
+or unauthorized substitution is `FAIL`. Any HEAD/base change invalidates approval. A
+valid owner result is consumed only after fresh canonical currentness. No fallback
+reviewer; this is Scarcity Router-specific and grants no cross-repository authority.
 
 ## MERGE
 

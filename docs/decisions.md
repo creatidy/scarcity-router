@@ -5873,15 +5873,21 @@ neither is a new live check of the current deployment.
 
 ### D-069A - Canonical owner-authorized finite review exception and manual Router security gate
 
-- **Status:** Owner-authorized amendment for implementation in issue #210; effective
-  only after its reviewed PR is integrated. The default remains ten whole-PR reviews.
+- **Status:** Owner-authorized implementation/use for issue #210's remaining reviews
+  #9/#10; general workflow effect follows integration of reviewed PR #211. The default
+  remains ten whole-PR reviews.
 - **Authority:** Adrian's direct instruction is retained in the primary delivery's
   owner-source evidence and transcribed in issue #210 comment17027; its source bytes
   are pinned by SHA-256
   `ea6f2d1236827075a1dd853ae1275ad178e62b63761eaa557e943176594a2049`.
-  The direct authorization scope is the one D-069 governance maintenance delivery
-  and its separately stated #185 resumption. The local delivery ledger records
-  evidence/counters, not authority.
+  The additional owner-authorized Router-only Codex assurance amendment is retained
+  verbatim in `.review-evidence-210/owner-codex-assurance-amendment.txt`, SHA-256
+  `991c4c550557411334fde1dfdb3a89328fa4e165811cad7eff8946914a01bd57`; it is an exact
+  excerpt from the parent-held complete direct owner instruction. No backend-served
+  Codex model identity is inferred.
+  The current authorization applies to this one D-069 maintenance delivery.
+  The separate #185 resumption/max12 source and scope remain unchanged. The local
+  delivery ledger records evidence/counters, not authority.
 - **Exception admission:** A ceiling above ten is usable only for the one named
   canonical `BioMedical-IT/scarcity-router` issue/PR when the root invocation has
   an explicit direct owner decision plus a canonical issue/PR record of that same
@@ -5923,19 +5929,33 @@ neither is a new live check of the current deployment.
   authority/timing only, not the security acceptance gate or merge authority. Do not
   merge/close before the owner-supplied security result is independently verified
   against the exact current objects.
-- **Manual result evidence:** The root accepts no owner assertion alone, pasted
-  model self-identification, CLI exit-zero, unverified task/turn completion or
-  synthetic transport result as security approval. Require a canonical owner result
-  referencing exact repo/issue/PR IDs and current HEAD/base/merge-base; requested
-  reviewer ID/provider; official Codex binary path/version/digest; an independently
-  captured actual dispatch and observed runtime-identity state; request/turn/session
-  or invocation IDs and timestamps; prompt and source/input-manifest digests; terminal
-  result-schema and output digest; structured verdict/findings; and a separate safe
-  context/tool/capture audit result. Credentials and unsafe raw payloads remain
-  transient or parent-held; never expose them in the issue, ledger, fixtures or model
-  context. Only `RUNTIME_VERIFIED` exact reviewer evidence with empty findings and
-  valid exact refs can close the security gate. Any mismatch/unobservable identity or
-  changed HEAD/base leaves the gate open and invalidates approval.
+- **Manual result evidence:** The owner must still conduct the mandatory separate
+  review through the official Codex executable and return a structured verdict. Require
+  a canonical record bound to exact Repo/Issue/PR IDs and current HEAD/base/merge-base;
+  the requested `gpt-daybreak-blue-latest` reviewer; verified official executable path,
+  version and binary provenance; the actual invocation and dispatch configuration;
+  independently captured process/session/turn and timestamps; immutable prompt/input-
+  manifest and output digests; the structured verdict/findings; and a separate safe
+  review-context/tool/capture audit. The owner's outcome, CLI exit-zero or model
+  self-identification alone is insufficient. Credentials and unsafe raw payloads remain
+  transient or owner-held; never expose them in the issue, repository fixtures or the
+  ordinary reviewer context.
+- **Router-only backend identity limit:** For this Scarcity Router owner-manual
+  Codex path only, Adrian explicitly accepts that the supported official execution path
+  may not expose an independently verifiable backend-served model identity. Record
+  `RUNTIME_UNOBSERVABLE` when that metadata is not independently available; do not
+  upgrade a requested/configured model, UI label, CLI echo or self-report to
+  `RUNTIME_VERIFIED`. `DISPATCH_VERIFIED` means only that the actual captured dispatch
+  configuration matches the requested model; it is not backend execution attestation.
+  If all other manual evidence above is verified, exact refs are current, there is no
+  observed mismatch or unauthorized substitution, the structured verdict is
+  `APPROVE` with empty findings, and Adrian explicitly accepts that limitation, this
+  limited case may satisfy the owner-manual gate as
+  `RUNTIME_UNOBSERVABLE`. It is an accepted observability limit, not proof of backend
+  identity. This is not cryptographic certainty. An observed model/dispatch mismatch,
+  unauthorized substitution, incomplete invocation/output/context audit, stale refs or
+  findings is `FAIL`/not approved and keeps the gate open. All other runtime-identity
+  consumers retain the generic D-069/D-065 meanings unchanged.
 - **Synthetic exception conformance cases:** These illustrate the decision contract;
   they are not a runtime authorization service.
 
@@ -5950,7 +5970,8 @@ neither is a new live check of the current deployment.
   | Existing PR209 exception | Canonical #185 comment #16956 plus direct owner source SHA-256 `875ffc0d33c9637c120140316e8818fb4ef22ad4112ac031fb4218e8816ff4bb` | #185/PR #209 only, maximum12; #11 ordinary, #12 owner-manual security, no #13. |
   | Currentness change | A previously reviewed HEAD/base differs from the exact current PR | Approval becomes stale; exception does not make it current. Obtain a fresh counted review only if the exact cap permits. |
   | Role change | Ordinary approval is complete but the mandatory security evidence is not | Assign the currently required security role; an ordinal number alone never chooses the role. |
-  | Incomplete manual security evidence | Owner says approve or Codex exits 0, but actual reviewer identity/execution/output capture is unverifiable | Keep security gate open; do not merge. |
+  | Incomplete manual security evidence | Owner says approve or Codex exits 0, but official binary provenance, requested dispatch, invocation/turn/output provenance, exact refs, structured verdict or independent context/tool audit is missing | Keep security gate open; do not merge. |
+  | Owner-accepted unobservable backend | Official Codex/binary provenance, requested-model invocation/dispatch configuration, process/session/turn and immutable input/output provenance, exact refs, structured `APPROVE`/empty findings and separate context/tool audit all verify; the supported path exposes no independent backend identity and Adrian explicitly accepts that limit | Record `RUNTIME_UNOBSERVABLE`; the manual gate may pass without claiming `RUNTIME_VERIFIED`. Actual mismatch, unauthorized substitution or any other evidence gap fails. |
   | Owner-manual reservation | The ordinary gate passed but the next security ordinal is not reserved against the exact current objects | Do not return the owner handoff or launch Codex; reserve/persist first. A pending reserved slot cannot be reused. |
   | Parent-only generated receipt | The parent validates a focused test runner's stdout-referenced receipt outside the immutable pre-dispatch source catalog | Use the receipt as parent validation evidence; do not authorize the reviewer to Read generated output. |
 - **Security/merge boundary:** Classify changes to review authority, audit evidence or
@@ -5959,9 +5980,12 @@ neither is a new live check of the current deployment.
   does not grant standalone merge authority: only a fresh explicit `/loop` with all
   gates/currentness valid can perform the supported canonical merge.
 - **Preserved:** This addendum does not alter the product architecture, model selector,
-  public contract, reviewers' actual read-only permissions, provider/tool allowlists,
-  model-bound security gate, base review ceiling, previous review results, merge
-  authority, or other repositories. It creates no service, database, second controller,
+  public contract, default-ten ceiling, previous review results, merge authority or
+  other repositories. The ordinary reviewer remains read-only and has no unrestricted
+  shell or Forgejo access; it reads only the immutable parent-prepared evidence packet.
+  Generic runtime-identity meanings and model-bound security gates remain unchanged
+  outside the single Router owner-manual path stated above. It creates no service,
+  database, second controller,
   launcher, auto-merge or exception for any other issue/PR. All limits remain finite.
 
 ### D-070 - Autonomous technical recovery before owner escalation

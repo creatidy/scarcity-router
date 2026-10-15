@@ -29,9 +29,16 @@ Follow the full policy in [`docs/llm-operating-policy.md`](../../docs/llm-operat
   Before handoff, reserve/persist the next owner-manual ordinal against exact frozen refs;
   name it in `READY_FOR_OWNER_SECURITY_REVIEW`. The reservation is not security approval
   or merge authority and cannot be reused; a launched attempt is consumed for any result.
-  Any HEAD/base change invalidates approval. The implementation
-  agent must never invoke Daybreak automatically; require the evidence/provenance
-  validation in `docs/llm-operating-policy.md` and D-069A before closing the gate.
+  Any HEAD/base change invalidates approval. The implementation agent must never invoke
+  Daybreak automatically. On this Router owner-manual path only, accept
+  `RUNTIME_UNOBSERVABLE` when backend identity is not independently exposed, after
+  verifying the official binary/version/provenance, requested-model invocation/dispatch,
+  process/session/turn, immutable input/output, exact refs, structured verdict, separate
+  context/tool audit and Adrian's explicit acceptance of the limitation. Record the
+  state honestly; do not label it `RUNTIME_VERIFIED` or infer backend identity.
+  `DISPATCH_VERIFIED` is dispatch configuration only. `FAIL` on an observed identity
+  mismatch or unauthorized substitution. See `docs/llm-operating-policy.md` and D-069A.
+  Generic runtime-identity requirements and the mandatory human security gate remain.
 - Completed PASS gates, adjudication, remediation, translation and validation
   remain completed unless source changes materially or a concrete regression is
   identified.
