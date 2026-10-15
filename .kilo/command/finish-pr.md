@@ -20,8 +20,9 @@ INCLUDING the initial review, COMMENT, invalidated reviews and corrected retries
 Only an exact, canonical owner-authorized D-069A exception can raise the ceiling for
 the selected issue/PR. Before the first review verify `.task_progress.md` is Git-locally excluded, then
 append a delivery ledger keyed by issue/PR (and `/loop` invocation ID if applicable).
-Before EVERY task dispatch reserve/persist the next review ordinal, frozen SHAs
-and pending result. Record returned verdict, remediation commits and checks.
+Before EVERY whole-PR review Task dispatch reserve/persist the next review ordinal,
+frozen SHAs and pending result. Synthetic access-preflight Tasks are not whole-PR
+reviews and consume no ordinal. Record review verdicts, remediation commits and checks.
 Reinvoking `/finish-pr`, changing phase, reviewer task, model or session MUST reuse
 the same delivery counter, not initialize zero. If prior dispatch/count recovery
 is ambiguous or unavailable, BLOCKED. Do not erase history or reset a stopped
@@ -37,21 +38,33 @@ delivery; STOP_REVISE still requires an explicit owner decision, not a new PR/na
    divergence or conflicting work require diagnosis and safe isolated recovery;
    never classify ordinary checkout inconvenience as an owner decision.
 2. Require the current PR branch to be clean and match MCP HEAD. Freeze exact
-    HEAD/base/merge-base; run all required validation in a parent-prepared sanitized
-    environment. Parent-preflight the effective Kilo permissions, then prepare a
-    flat, owner-read-only immutable packet containing the complete issue acceptance
-    excerpt, canonical Repo/PR identity metadata, original owner sources, exact Git
-    object IDs, full changed-file patches and source copies, provenance and digests.
-    The parent owns MCP/Git currentness and bundle generation. It must not change the
-    packet or refs while the reviewer is active. Missing native task/agent requires
-    diagnosed authorized native failover before BLOCKED; never widen the reviewer tools.
-3. Spawn one fresh foreground native `task` with `subagent_type: pr-reviewer`,
-    `background: false`, no `task_id`. Supply only the prepared packet path, packet
-    digest, expected HEAD/base/merge-base, and independent whole-PR review instructions.
-    Do not pass past findings, implementation reasoning, PR-body history or a desired
-    verdict. The reviewer has native Read only; Bash/Git/Forgejo/search/list/task/history
-    access is denied at runtime. It independently inspects raw packet evidence and
-    returns the stable JSON contract. The reviewer does not execute commands.
+   HEAD/base/merge-base; run all required validation in a parent-prepared sanitized
+   environment. Prepare the complete flat, owner-read-only packet with issue acceptance,
+   canonical Repo/PR metadata, owner sources, exact Git objects, patches/source copies,
+   provenance and digests. The parent owns MCP/Git currentness and bundle generation
+   and must not change the packet or refs while the reviewer is active. The
+   `pr-reviewer` profile has no static Read grants. Build a per-invocation
+   `KILO_CONFIG_CONTENT` overlay with Read default deny and `allow` entries for every
+   exact relative regular-file path in the flat packet; do not allow directories or use
+   path/filename globs. In the same overlay set `agent.code` to `* -> deny` and
+   `task -> allow`. Launch a fresh Kilo CLI parent with `--pure --agent code` and the
+   exact current provider/model/variant. This context is a one-call Task transport only;
+   this `/finish-pr` primary remains the sole selector, packet preparer, ledger owner
+   and auditor.
+   Before reserving a whole-PR ordinal, run a synthetic allowed/denied Read preflight
+   under an equivalent deny-by-default overlay containing only exact synthetic paths.
+   It consumes no review ordinal. After PASS, use only the actual packet's exact path
+   overlay for the whole-PR Task. Missing native task/agent requires diagnosed
+   authorized native failover before BLOCKED; never widen reviewer tools.
+3. Start a fresh Kilo CLI Task parent with the exact packet overlay and spawn one fresh
+   foreground native `task` with `subagent_type: pr-reviewer`, `background: false`,
+   no `task_id`. The parent transport may not read the packet, access Forgejo, run
+   shell/Git commands or audit/interpret the result. Supply only the prepared packet
+   path, packet digest, expected HEAD/base/merge-base, and independent whole-PR review
+   instructions. Do not pass past findings, implementation reasoning, PR-body history
+   or a desired verdict. The reviewer has native Read only; Bash/Git/Forgejo/search/list/
+   task/history access is denied at runtime. It independently inspects raw packet
+   evidence and returns the stable JSON contract. The reviewer does not execute commands.
 4. Parent audits the actual native task export: only permitted Read calls, exact bundle
     paths/ranges/bytes, complete source/patch coverage, no symlinks, and no Bash/Git/
     Forgejo/other tool calls. Re-fetch canonical PR/issue/develop and recheck the local

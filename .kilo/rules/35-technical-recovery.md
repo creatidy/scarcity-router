@@ -124,8 +124,32 @@ nonhistorical owner evidence needed to evaluate scope.
 
 The `pr-reviewer` Kilo profile denies Bash/Git, all direct Forgejo MCP tools,
 search/list/history, external paths, writes and delegation before any call can execute.
-Native Read is limited to flat packet files; the parent verifies the packet is frozen,
-owner-prepared, regular/non-symlink and exact to the selected refs before dispatch.
+Its Read rules are deny-by-default and contain no static packet grants. The primary
+builds a documented `KILO_CONFIG_CONTENT` overlay for each frozen packet with
+`agent.pr-reviewer.permission.read` default deny plus `allow` entries for only the
+exact worktree-relative regular-file paths in the flat packet. Never use directory,
+basename-class or root-wildcard Read grants. Verify the installed Kilo version's
+documented Read path normalization and permission-rule precedence before dispatch;
+record the version and source/runtime evidence. These semantics are version-specific
+and must be reconfirmed after a Kilo update. Order broad denials before exact packet
+allows.
+
+Dispatch from a fresh Kilo CLI parent with `--pure --agent code` and the exact inherited
+provider/model/variant. Its `KILO_CONFIG_CONTENT` sets `agent.code` to `* -> deny` and
+`task -> allow`, alongside the exact `pr-reviewer` file allowlist. It may issue exactly
+one native `pr-reviewer` Task and may not read files, run shell/Git, call MCP or
+interpret the result. This is a transient Task transport only: the selected
+primary remains the sole authority for canonical selection/currentness, packet
+preparation, review ordinals, parent audit and terminal status. A newly created child
+under a long-lived parent is not proof its cached agent configuration was refreshed.
+
+Before reserving a whole-PR review ordinal, run a fresh native Task access preflight
+under an equivalent deny-by-default overlay whose only grants are exact harmless
+synthetic paths. Prove both a complete allowed packet read and denied sibling/absolute/
+traversal/symlink reads before content return. These probes consume no review ordinal.
+After PASS, create a distinct exact-path overlay for only the actual frozen packet files.
+The parent verifies the packet is owner-prepared, regular/non-symlink and exact to the
+selected refs before dispatch.
 Post-execution trace audit checks that only permitted Read calls occurred and that
 their bytes/ranges match the frozen packet, but this is a second gate, not a substitute
 for effective pre-execution Kilo denial. Canonical currentness is fetched and rechecked

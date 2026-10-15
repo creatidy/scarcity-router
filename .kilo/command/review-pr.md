@@ -12,12 +12,14 @@ freeze exact HEAD/base/merge-base and inspect status/branches. Prepare an immuta
 parent evidence packet; do not edit the PR while the reviewer is active.
 Apply `.kilo/rules/35-technical-recovery.md`: repair review infrastructure, not the
 implementation, using bounded secret-safe preparation and changed reviewer strategy.
-Before dispatch, reserve ordinals in the existing delivery ledger when present;
+After the exact synthetic access preflight passes and immediately before the whole-PR
+Task dispatch, reserve the next ordinal in the existing delivery ledger when present;
 otherwise create an excluded standalone ledger with D-069's default ten-review
-ceiling and technical recovery budget. A higher exact cap is permitted only by
-D-069A after independent canonical owner/repo/issue/PR/source verification; the
-ledger records counts but cannot grant or extend that cap. Every prior failed,
-COMMENT or invalidated attempt remains consumed; standalone review never resets it.
+ceiling and technical recovery budget. Access-preflight Tasks are not whole-PR reviews
+and consume no ordinal. A higher exact cap is permitted only by D-069A after independent
+canonical owner/repo/issue/PR/source verification; the ledger records counts but cannot
+grant or extend that cap. Every prior failed, COMMENT or invalidated whole-PR attempt
+remains consumed; standalone review never resets it.
 
 Use ONE designated delivery checkout: safely switch to the fetched PR branch if needed,
 creating its local tracking branch at fetched HEAD only if absent. Require clean status
@@ -25,14 +27,26 @@ and exact frozen HEAD; refuse local divergence rather than rewriting a branch. N
 stash/reset unrelated changes; if they prevent safe switching, prepare a temporary
 exact-revision parent evidence checkout under the recovery rule. Prepare the offline
 locked sanitized environment, verify effective `pr-reviewer` Kilo permissions, and
-freeze the immutable packet. The reviewer never accesses the checkout. Locate `pr-reviewer`.
+freeze the immutable packet. The reviewer never accesses the checkout. The
+`pr-reviewer` profile has no static Read grants. Build a per-invocation
+`KILO_CONFIG_CONTENT` overlay with Read default deny and `allow` entries for every
+exact relative regular-file path in the flat packet; do not allow directories or use
+path/filename globs. In the same overlay restrict `agent.code` to `* -> deny`,
+`task -> allow`. Launch a fresh Kilo CLI parent with `--pure --agent code` and preserve
+the current provider/model/variant exactly. That fresh context is a one-call Task
+transport only; this primary retains canonical, ledger, packet and audit authority.
+Run the synthetic allowed/denied Read preflight under the same
+deny-by-default policy with a separate overlay containing only the exact synthetic
+paths before reserving the review ordinal; it consumes no review ordinal. After PASS,
+use the actual packet's exact path overlay for the whole-PR Task.
 If native task/agent or required access is unavailable, diagnose and try another
 authorized independent native reviewer/tool path before a finite blocker; never
 self-review, weaken model-bound gates or broaden permissions instead.
 
-Invoke `task` with `subagent_type: pr-reviewer`, `background: false`, no `task_id`.
-Pass only the parent-prepared immutable packet path/digest, expected HEAD/base/merge-base
-and fresh whole-PR instructions. The reviewer has native Read only and no Bash/Git,
+Invoke exactly one native `task` from the fresh Kilo parent with
+`subagent_type: pr-reviewer`, `background: false`, no `task_id`. Pass only the
+parent-prepared immutable packet path/digest, expected HEAD/base/merge-base and fresh
+whole-PR instructions. The reviewer has native Read only and no Bash/Git,
 Forgejo, search/list, memory/board or prior-finding access. Do not pass implementation
 reasoning, previous findings, PR-body history or a desired verdict. The agent definition
 owns the JSON result contract and inherited reviewer binding. Never resume a past reviewer.

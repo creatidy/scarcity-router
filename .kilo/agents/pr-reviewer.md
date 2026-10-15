@@ -7,18 +7,6 @@ permission:
     "*": deny
     ".review-evidence-*/pr-reviewer-input/**": deny
     ".review-evidence-*/**": deny
-    ".review-evidence-*/pr-reviewer-input/index.md": allow
-    ".review-evidence-*/pr-reviewer-input/canonical-repo.json": allow
-    ".review-evidence-*/pr-reviewer-input/canonical-pr-metadata.json": allow
-    ".review-evidence-*/pr-reviewer-input/canonical-issue-metadata.json": allow
-    ".review-evidence-*/pr-reviewer-input/issue-acceptance.txt": allow
-    ".review-evidence-*/pr-reviewer-input/owner-d069-original.txt": allow
-    ".review-evidence-*/pr-reviewer-input/owner-185-decision.txt": allow
-    ".review-evidence-*/pr-reviewer-input/owner-185-comment.json": allow
-    ".review-evidence-*/pr-reviewer-input/owner-codex-assurance.txt": allow
-    ".review-evidence-*/pr-reviewer-input/base-*.txt": allow
-    ".review-evidence-*/pr-reviewer-input/source-*.txt": allow
-    ".review-evidence-*/pr-reviewer-input/patch-*.txt": allow
   glob: deny
   grep: deny
   list: deny

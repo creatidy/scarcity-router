@@ -30,8 +30,12 @@
   No edits or branch switches to reviewed checkouts during review.
   Reviewer never accesses the checkout or executes Bash/Git/Forgejo. The primary
   prepares an immutable flat source/patch bundle bound to exact Git objects and
-  complete canonical acceptance/owner evidence. Kilo native Read is the only reviewer
-  capability, restricted to the packet. The parent audits actual task reads/bytes/
+  complete canonical acceptance/owner evidence. The profile has no static Read grants;
+  for each task, the primary adds exact packet-relative file paths using the documented
+  Kilo `KILO_CONFIG_CONTENT` permission override. Spawn from a fresh Kilo CLI parent
+  with `--pure --agent code`, constraining that parent to Task only and preserving the
+  exact inherited model binding. Kilo native Read is the reviewer's only capability.
+  The parent audits actual task reads/bytes/
   ranges and completeness, then re-fetches currentness before/after. Runtime permission
   denial is pre-call enforcement; post-call audit is independent defense-in-depth.
 - Unavailable safe validation/tool state requires bounded technical recovery under

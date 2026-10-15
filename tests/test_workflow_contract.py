@@ -527,79 +527,104 @@ class WorkflowContractTests(unittest.TestCase):
         read_permissions = cast(dict[str, str], permissions["read"])
         self.assertEqual(read_permissions.get("*"), "deny")
         allowed = {pattern for pattern, action in read_permissions.items() if action == "allow"}
-        self.assertTrue(allowed)
-        self.assertTrue(all(pattern.startswith(".review-evidence-*/pr-reviewer-input/") for pattern in allowed))
-        self.assertTrue(all("/../" not in pattern for pattern in allowed))
+        self.assertFalse(allowed)
         self.assertEqual(read_permissions.get(".review-evidence-*/pr-reviewer-input/**"), "deny")
         self.assertEqual(read_permissions.get(".review-evidence-*/**"), "deny")
-        rules = list(read_permissions.items())
-        last_deny = max(index for index, (_, action) in enumerate(rules) if action == "deny")
-        first_allow = min(index for index, (_, action) in enumerate(rules) if action == "allow")
-        self.assertLess(last_deny, first_allow)
         for forbidden in (
             "**/*.py", "**/*.md", "**/*.json", "AGENTS.md", "README.md",
             "**/.review-evidence-*/**/source-index.md", "**/.review-evidence-*/**/audit.py",
         ):
             self.assertNotIn(forbidden, read_permissions)
 
-    def test_kilo_runtime_resolves_reviewer_tool_denies_with_synthetic_home(self) -> None:
+    def test_kilo_runtime_resolves_default_deny_and_exact_packet_overlay(self) -> None:
         binary = os.environ.get("KILO_PERMISSION_RUNTIME_TEST_BIN")
         if not binary:
             self.skipTest("set KILO_PERMISSION_RUNTIME_TEST_BIN to exercise Kilo's effective policy")
         with tempfile.TemporaryDirectory(prefix="kilo-reviewer-runtime-home-") as home:
-            completed = subprocess.run(
-                [binary, "debug", "agent", "pr-reviewer"],
-                cwd=ROOT,
-                env={
-                    "PATH": "/usr/bin:/bin",
-                    "HOME": home,
-                    "LANG": "C",
-                    "LC_ALL": "C",
-                    "PYTHONDONTWRITEBYTECODE": "1",
-                },
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                check=True,
+            environment = {
+                "PATH": "/usr/bin:/bin",
+                "HOME": home,
+                "LANG": "C",
+                "LC_ALL": "C",
+                "PYTHONDONTWRITEBYTECODE": "1",
+            }
+
+            def resolved_agent(agent: str, overlay: str | None = None) -> tuple[
+                dict[str, object], list[dict[str, object]]
+            ]:
+                if overlay is not None:
+                    environment["KILO_CONFIG_CONTENT"] = overlay
+                completed = subprocess.run(
+                    [binary, "debug", "agent", agent],
+                    cwd=ROOT,
+                    env=environment,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    check=True,
+                )
+                decoded: object = cast(object, json.loads(completed.stdout))
+                if not isinstance(decoded, dict):
+                    self.fail("Kilo resolver output must be a JSON object")
+                resolved = cast(dict[str, object], decoded)
+                tools_value = resolved.get("tools")
+                rules_value = resolved.get("permission")
+                if not isinstance(tools_value, dict) or not isinstance(rules_value, list):
+                    self.fail("Kilo resolver output must include tool and permission mappings")
+                rules = [
+                    cast(dict[str, object], item)
+                    for item in cast(list[object], rules_value)
+                    if isinstance(item, dict)
+                ]
+                return cast(dict[str, object], tools_value), rules
+
+            default_tools, default_rules = resolved_agent("pr-reviewer")
+            self.assertTrue(default_tools.get("read", False))
+            self.assertFalse(default_tools.get("bash", False))
+            self.assertFalse(default_tools.get("task", False))
+            self.assertFalse(any(name.startswith("forgejo-mcp_") for name in default_tools))
+            default_read_rules = [rule for rule in default_rules if rule.get("permission") == "read"]
+            default_star_indexes = [index for index, rule in enumerate(default_read_rules)
+                                    if rule.get("pattern") == "*"]
+            self.assertTrue(default_star_indexes)
+            self.assertEqual("deny", default_read_rules[default_star_indexes[-1]].get("action"))
+            self.assertFalse(any(rule.get("action") == "allow"
+                                 and str(rule.get("pattern", "")).startswith(".review-evidence")
+                                 for rule in default_read_rules))
+
+            paths = (
+                ".review-evidence-synthetic/pr-reviewer-input/index.md",
+                ".review-evidence-synthetic/pr-reviewer-input/source-000.txt",
             )
-        decoded = cast(object, json.loads(completed.stdout))
-        if not isinstance(decoded, dict):
-            self.fail("Kilo resolver output must be a JSON object")
-        resolved = cast(dict[str, object], decoded)
-        tools_value = resolved.get("tools")
-        if not isinstance(tools_value, dict):
-            self.fail("Kilo resolver output must include a tool mapping")
-        tools = cast(dict[str, object], tools_value)
-        for tool in (
-            "bash", "glob", "grep", "list", "semantic_search", "external_directory",
-            "task", "board_read", "board_post", "kilo_local_recall", "kilo_memory_recall",
-        ):
-            with self.subTest(tool=tool):
-                self.assertFalse(tools.get(tool, False))
-        self.assertTrue(tools.get("read", False))
-        self.assertFalse(any(name.startswith("forgejo-mcp_") for name in tools))
-        rules_value = resolved.get("permission")
-        if not isinstance(rules_value, list):
-            self.fail("Kilo resolver output must include a permission list")
-        rules = [
-            cast(dict[str, object], item)
-            for item in cast(list[object], rules_value)
-            if isinstance(item, dict)
-        ]
-        self.assertTrue(any(rule.get("permission") == "bash" and rule.get("action") == "deny"
-                            for rule in rules))
-        self.assertTrue(any(rule.get("permission") == "forgejo-mcp_*" and rule.get("action") == "deny"
-                            for rule in rules))
-        read_rules = [rule for rule in rules if rule.get("permission") == "read"]
-        deny_indexes = [index for index, rule in enumerate(read_rules)
-                        if rule.get("pattern") == "*" and rule.get("action") == "deny"]
-        source_indexes = [index for index, rule in enumerate(read_rules)
-                          if rule.get("pattern") == ".review-evidence-*/pr-reviewer-input/source-*.txt"
-                          and rule.get("action") == "allow"]
-        self.assertTrue(deny_indexes)
-        self.assertTrue(source_indexes)
-        self.assertLess(deny_indexes[-1], source_indexes[-1])
+            overlay = json.dumps({
+                "agent": {
+                    "code": {"permission": {"*": "deny", "task": "allow"}},
+                    "pr-reviewer": {"permission": {"read": {
+                        "*": "deny", **{path: "allow" for path in paths},
+                    }}},
+                },
+            })
+            reviewer_tools, reviewer_rules = resolved_agent("pr-reviewer", overlay)
+            self.assertTrue(reviewer_tools.get("read", False))
+            self.assertFalse(reviewer_tools.get("bash", False))
+            self.assertFalse(reviewer_tools.get("task", False))
+            read_rules = [rule for rule in reviewer_rules if rule.get("permission") == "read"]
+            for path in paths:
+                with self.subTest(packet_path=path):
+                    matching = [index for index, rule in enumerate(read_rules)
+                                if rule.get("pattern") == path]
+                    self.assertTrue(matching)
+                    self.assertEqual("allow", read_rules[matching[-1]].get("action"))
+                    self.assertGreater(matching[-1], max(
+                        index for index, rule in enumerate(read_rules)
+                        if rule.get("action") == "deny"))
+
+            parent_tools, _ = resolved_agent("code", overlay)
+            self.assertTrue(parent_tools.get("task", False))
+            for tool in ("bash", "edit", "write", "glob", "grep"):
+                with self.subTest(parent_tool=tool):
+                    self.assertFalse(parent_tools.get(tool, False))
 
     def test_reviewer_packet_and_parent_audit_contract_prevent_checkout_or_receipt_access(self) -> None:
         reviewer = " ".join(text(".kilo/agents/pr-reviewer.md").split())
@@ -624,6 +649,14 @@ class WorkflowContractTests(unittest.TestCase):
             "Post-execution trace audit checks that only permitted Read calls occurred",
         ):
             self.assertIn(requirement, manifest)
+        for path in (".kilo/command/review-pr.md", ".kilo/command/finish-pr.md"):
+            contract = " ".join(text(path).split())
+            for requirement in (
+                "KILO_CONFIG_CONTENT", "exact relative regular-file path",
+                "--pure --agent code", "synthetic allowed/denied Read preflight",
+            ):
+                with self.subTest(path=path, requirement=requirement):
+                    self.assertIn(requirement, contract)
         for path in (".kilo/command/review-pr.md", ".kilo/command/finish-pr.md", ".kilo/command/loop.md"):
             contract = " ".join(text(path).split())
             self.assertIn("immutable", contract)
@@ -636,7 +669,7 @@ class WorkflowContractTests(unittest.TestCase):
             "default at most 10 whole-PR review invocations per issue delivery",
             "INCLUDING the initial review, COMMENT, invalidated reviews and corrected retries",
             "Only an exact, canonical owner-authorized D-069A exception",
-            "Before EVERY task dispatch reserve/persist the next review ordinal",
+            "Before EVERY whole-PR review Task dispatch reserve/persist the next review ordinal",
             "Reinvoking `/finish-pr`, changing phase, reviewer task, model or session "
             + "MUST reuse the same delivery counter",
             "prior dispatch/count recovery is ambiguous or unavailable, BLOCKED",
