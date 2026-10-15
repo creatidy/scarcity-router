@@ -419,7 +419,40 @@ class WorkflowContractTests(unittest.TestCase):
         ):
             with self.subTest(requirement=requirement):
                 self.assertIn(requirement.lower(), normalized.lower())
+
+        exception_rows: dict[str, str] = {}
+        for line in section.splitlines():
+            stripped = line.strip()
+            if not stripped.startswith("|") or stripped.startswith("| ---") or stripped.startswith("| Case |"):
+                continue
+            cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+            self.assertEqual(3, len(cells), msg=line)
+            exception_rows[cells[0]] = cells[2]
+        expected_outcomes = {
+            "Normal delivery": "Default maximum 10.",
+            "Bootstrap #212": "Default maximum 10; the bootstrap cannot use its own proposed rule.",
+            "Pending #210 allocation": "do not reserve/dispatch #10 or #11",
+            "Ledger-only extension": "Deny exception; keep default 10.",
+            "Scope mismatch": "Deny transfer",
+            "Stale or ambiguous evidence": "Fail closed at default 10",
+            "Verified finite exception": "Use only that finite maximum for that issue/PR",
+            "Gate requires another reviewer role": "stop at the effective bound",
+        }
+        self.assertEqual(set(expected_outcomes), set(exception_rows))
+        for case, outcome in expected_outcomes.items():
+            with self.subTest(exception_case=case):
+                self.assertIn(outcome.lower(), exception_rows[case].lower())
         self.assertNotIn(".review-evidence-210/pr-reviewer-input", section)
+        self.assertIn(
+            "The #185/PR #209 and #205/PR #206 histories and any separately recorded owner scopes remain exclusive",
+            normalized,
+        )
+        self.assertIn("none transfers authority to #210 or #212", normalized)
+        d070 = raw.split("### D-070 - Autonomous technical recovery before owner escalation", 1)[1]
+        self.assertIn(
+            "The default ten-review ceiling is subject only to D-069A's exact finite canonical owner exceptions",
+            " ".join(d070.split()),
+        )
         for path in (
             "AGENTS.md",
             ".kilo/rules/10-task-system.md",

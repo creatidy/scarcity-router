@@ -5961,7 +5961,8 @@ neither is a new live check of the current deployment.
   smallest materially distinct choices. BLOCKED names exhausted authorized paths/
   budget or an external dependency with no authorized workaround. Environment
   inconvenience is neither a defect nor a fabricated owner question.
-- **Preserved:** Ten-review ceiling, fresh independent whole-PR exact-HEAD/base
+- **Preserved:** The default ten-review ceiling is subject only to D-069A's exact
+  finite canonical owner exceptions; fresh independent whole-PR exact-HEAD/base
   review, frozen result schema, model-bound/restricted gates, full validation,
   scope/acceptance, canonical merge authority/currentness, and all product/runtime,
   credential/network, licensing and non-delivery model-policy contracts. No new
