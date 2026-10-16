@@ -4,47 +4,59 @@ description: Fresh read-only whole-PR review through the native pr-reviewer suba
 
 Review the exact Forgejo PR: $ARGUMENTS
 
-Run in the primary context; do not require a separate owner-opened session.
-Fetch actual PR metadata and its linked issue through `forgejo-mcp`. Require an
-open, unmerged canonical BioMedical-IT/scarcity-router PR targeting `develop`.
-Read AGENTS.md and its rules, verify canonical remote, fetch current Git objects,
-freeze exact HEAD/base/merge-base and inspect status/branches. Do not edit the PR.
-Apply `.kilo/rules/35-technical-recovery.md`: repair review infrastructure, not the
-implementation, using bounded secret-safe preparation and changed reviewer strategy.
-Before dispatch, reserve ordinals in the existing delivery ledger when present;
-otherwise create an excluded standalone ledger with the default ten-review ceiling
-and technical recovery budget. A greater ceiling is available only through D-069A:
-before reserving above 10, verify the exact direct owner source and canonical Repo,
-Issue, linked PR, scope and finite maximum, and confirm D-069A is integrated in
-freshly fetched `develop`. An exception on an unmerged branch is ineffective;
-missing, stale or mismatched authority leaves the default 10 active. Standalone review
-cannot reset a delivery counter or borrow another issue's exception.
+Run the primary packet-preparation procedure in this context; do not require a
+separate owner-opened session. Fetch the canonical Repo, selected PR, linked Issue
+and directly linked owner-decision objects through exact Forgejo MCP getters. Verify
+the open/unmerged canonical BioMedical-IT/scarcity-router PR, exact IDs/URLs,
+authors/timestamps/body digests, current HEAD/base/merge-base and local Git blob IDs.
+Do not edit the PR. Apply `.kilo/rules/35-technical-recovery.md`; repair review
+infrastructure, not implementation, with bounded secret-safe preparation.
+Preserve the issue-delivery review and technical-recovery counters in the excluded
+ledger. Preflight Tasks are not whole-PR reviews and do not reserve an ordinal. Keep
+the default-ten ceiling; D-069A cannot authorize an exception on its own unmerged
+branch, and exceptions never transfer or renew. Any greater finite ceiling requires
+D-069A to be integrated in freshly fetched `develop` before the primary verifies its
+exact canonical owner authority.
 
-Use ONE designated delivery checkout: safely switch to the fetched PR branch if needed, creating
-its local tracking branch at fetched HEAD only if absent. Require clean status and
-exact frozen HEAD; refuse local divergence rather than rewriting a branch.
-Never stash/reset unrelated changes;
-if they prevent safe switching, prepare a temporary exact-revision worktree/checkout
-under the recovery rule without disturbing owner work. Prepare the offline locked,
-sanitized environment; review frozen Git objects/current clean branch read-only. The
-parent must not edit/switch while the reviewer is active. Locate `pr-reviewer`.
-If native task/agent or required access is unavailable, diagnose and try another
-authorized independent native reviewer/tool path before a finite blocker; never
-self-review, weaken model-bound gates or broaden permissions instead.
+Use one designated source checkout for primary-side Git inspection only. Require clean
+status and exact frozen HEAD/base/merge-base; refuse local divergence rather than
+rewriting a branch. Never stash/reset unrelated work. The reviewer must not receive
+that checkout, its path, a branch/environment path or Git object store. The primary
+prepares the canonical evidence packet, production packet-only workspace and pinned
+external source bytes; use a separate evidence checkout only when needed to retrieve
+an exact public pin. No source checkout is mounted or passed to the reviewer.
 
-Invoke `task` with `subagent_type: pr-reviewer`, `background: false`, no `task_id`.
-Pass only the PR number/URL, expected HEAD/base and fresh whole-PR review
-instructions including exact checkout, prepared environment/source paths and provenance.
-Do not pass implementation
-reasoning, previous findings or desired verdict. The agent definition owns the
-JSON result contract and GPT-6.1 Sol High selection. Never resume a past reviewer.
+Before any native Task, run `tools/reviewer_packet.py prepare` with the sealed packet,
+manifest, exact source checkout, pinned Kilo-source checkout, isolated workspace and
+config parents, installed Kilo 7.8.8 binary and sanitized HOME/TMP paths. It verifies
+the actual effective `code` and `pr-reviewer` tools/prompts using Kilo debug under the
+same `KILO_CONFIG_DIR`, `KILO_CONFIG_CONTENT` and `KILO_DISABLE_PROJECT_CONFIG=1`
+environment that will be used for dispatch. Require parent Task-only, reviewer
+Read-only on exact packet paths, canonical prompt hash match and deny winners for
+all other tools/paths. Then run a real native Task preflight against the complete
+production packet plus harmless sibling, absolute, traversal and symlink canaries.
+Require full allowed reads and denial before content; audit the actual native trace
+and unchanged source packet inventory. Preflight Tasks consume no whole-PR ordinal.
+Any missing/ambiguous/overbroad effective rule or failed preflight aborts before
+reviewer dispatch. Never self-review, substitute a profile/model or widen access.
 
-Require JSON fields reviewed_head, reviewed_base, verdict, findings, limitations,
-checks_run as defined in `.kilo/agents/pr-reviewer.md`. Validate their types and
-exact frozen SHAs. Recheck local HEAD/clean status and MCP before reporting. A
-changed HEAD/base, dirty checkout, malformed result or mismatch cannot support
-approval; classify the limitation and attempt bounded changed-condition recovery
-before the final COMMENT if possible. Preserve every ordinal. Present findings in severity
-order and exactly one verdict.
+After every preflight passes, reserve and persist the next whole-PR ordinal and exact
+head/base/merge-base before reviewer dispatch. Start a fresh native Kilo CLI parent
+with `--pure --agent code` in the packet-only workspace, using exactly the verified
+environment/config returned by `prepare`. The parent effective tool set is Task only;
+it makes exactly one foreground native Task call with `subagent_type: pr-reviewer`,
+`background: false`, no `task_id`, no model override and no other tool use. The
+reviewer receives only packet identity and `packet/index.md` instructions, never a
+checkout/environment path, PR-body text, previous findings or parent conclusions.
+The child effective tool set is native Read only on exact packet paths.
+
+Require the structured JSON result fields and exact frozen SHAs as defined in
+`.kilo/agents/pr-reviewer.md`. After Task, audit the parent/child IDs and tools,
+every Read path/range and winning permission rule, complete packet coverage, packet
+post-inventory and fresh canonical currentness. A changed HEAD/base, dirty source
+checkout, malformed result, incomplete/unauthorized read or audit mismatch cannot
+support approval. Preserve every ordinal; classify concrete findings and limitations
+without treating intentionally denied direct MCP/Git access as a gap when the packet
+bindings are complete. Return findings by severity and exactly one verdict.
 Do not remediate, commit, push, publish a formal review, merge or modify Forgejo
 state. The returned task result is the handoff, not an owner copy or PR comment.

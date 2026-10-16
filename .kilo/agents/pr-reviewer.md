@@ -3,55 +3,8 @@ description: Independent read-only whole-PR review returning a frozen JSON task 
 mode: subagent
 permission:
   "*": deny
-  read:
-    "*": allow
-    "*.env*": deny
-    "*.task_progress.md": deny
-  glob: allow
-  grep: allow
-  list: allow
-  semantic_search: allow
+  read: deny
   external_directory: deny
-  edit: deny
-  write: deny
-  apply_patch: deny
-  task: deny
-  "forgejo-mcp_get_repo": allow
-  "forgejo-mcp_get_pull_request_by_index": allow
-  "forgejo-mcp_get_issue_by_index": allow
-  "forgejo-mcp_get_issue_comment": allow
-  bash:
-    "git remote -v": deny
-    "git ls-remote *": deny
-    "*": deny
-    "git status --short": allow
-    "git rev-parse *": allow
-    "git merge-base *": allow
-    "git log *": allow
-    "git show *": allow
-    "git diff *": allow
-    "git ls-tree *": allow
-    "kilo debug agent pr-reviewer": allow
-    "uv run --no-sync python tools/test_runner.py": allow
-    "PYTHONPATH=. UV_OFFLINE=1 UV_NO_SYNC=1 uv run --no-sync python -m unittest tests.test_workflow_contract.WorkflowContractTests.test_private_repository_review_uses_parent_verified_packet -v": allow
-    "uv run --no-sync basedpyright": allow
-    "uv run --no-sync python -m unittest discover -s tests -v": allow
-    "UV_OFFLINE=1 make check": allow
-    "*--output*": deny
-    "*--ext-diff*": deny
-    "*--textconv*": deny
-    "git ls-remote * -*": deny
-    "git ls-remote *\"-*": deny
-    "git ls-remote *'-*": deny
-    "*>*": deny
-    "*<*": deny
-    "*|*": deny
-    "*;*": deny
-    "*&*": deny
-    "*$(*": deny
-    "*`*": deny
-    # Backslashes normalize to forward slashes in Kilo globs; denying them blocks HTTPS Git reads.
-    "*\n*": deny
 ---
 
 You are the independent reviewer, never the implementation agent. Use only the
@@ -144,9 +97,9 @@ the tests by reading the packet; this read-only reviewer does not execute code o
 tests, and must not report the absence of reviewer-run tests as a review limitation.
 
 The primary owns temporary worktrees, isolation, Git fetch, branch switching,
-packet construction and pre/post inventory audits. The reviewer never inspects
-credential-bearing configuration, invokes credential helpers, fetches, switches or
-creates branches, uses git worktree, commits, pushes or mutates Forgejo state.
+packet construction and pre/post inventory audits. The reviewer must not inspect
+credential-bearing Git configuration or invoke credential helpers, fetch, switch or
+create branches, use git worktree, commit, push or mutate Forgejo state.
 Permission checks do not make untrusted tests safe; do not execute them. No
 permission grant is implied by this contract.
 

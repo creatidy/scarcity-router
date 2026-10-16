@@ -5877,9 +5877,12 @@ neither is a new live check of the current deployment.
   `c8a2fa23c72c122bc4ef52b7c73ff76662142af045fbad796280c5c25ab64476`, and
   transcribed in Kilo-authored issue #212 comment #17305. The comment is not
   owner-authored; this source authorizes only the bootstrap scope. The separate
-  direct owner source for #210/PR #211 is recorded in issue #210 comment #17258
-  and authorizes its intended maximum 11 only after this policy is integrated and
-  freshly verified.
+  direct owner source for #210/PR #211 is retained in
+  `.review-evidence-210/owner-directory-grant-decision-2026-10-15.txt`, SHA-256
+  `013e313e1a009ef4b51168df4a49f2f4582e8880d98728df64ee87bcab2ae7b3`. Issue #210
+  comment #17258 is a Kilo-authored transcription receipt, not an owner decision;
+  it preserves the source and its digest. The intended maximum 11 applies only
+  after this policy is integrated and freshly verified.
 - **Conflict resolved:** D-069's ten-review maximum remains the default. D-069A
   supersedes D-069's unconditional "no review 11" only for the exact single issue
   and linked PR with a valid finite owner exception admitted below. It does not
@@ -5909,9 +5912,10 @@ neither is a new live check of the current deployment.
   reinterpret authority. Assign reviewer roles from the currently unmet approval
   gates, not an ordinal-to-role map. All required final roles must fit under the
   verified maximum; otherwise stop without dispatch or bypassing a gate.
-- **Pending #210 allocation:** Issue #210 comment #17258 records Adrian's intended
-  maximum 11 for #210/PR #211 (#10 ordinary, #11 owner-manual). Until this D-069A
-  change is integrated and the primary revalidates the exact current owner source,
+- **Pending #210 allocation:** The separately retained direct owner source records
+  Adrian's intended maximum 11 for #210/PR #211 (#10 ordinary, #11 owner-manual);
+  Kilo-authored issue #210 comment #17258 is its transcription receipt. Until this
+  D-069A change is integrated and the primary revalidates the exact current owner source,
   canonical issue/PR link, scope and refs, #210 remains at the default 10. Do not
   reserve or dispatch #10 or #11 from this bootstrap branch. All nine consumed
   #210 ordinals and verdicts remain immutable. The #185/PR #209 and #205/PR #206
@@ -5928,7 +5932,7 @@ neither is a new live check of the current deployment.
   | --- | --- | --- |
   | Normal delivery | No valid canonical owner exception | Default maximum 10. |
   | Bootstrap #212 | D-069A text is on the unmerged bootstrap branch | Default maximum 10; the bootstrap cannot use its own proposed rule. |
-  | Pending #210 allocation | Owner source/comment #17258 states future maximum 11, but D-069A is not integrated | Keep maximum 10 effective; do not reserve/dispatch #10 or #11. |
+  | Pending #210 allocation | Direct owner source and Kilo-authored receipt #17258 state future maximum 11, but D-069A is not integrated | Keep maximum 10 effective; do not reserve/dispatch #10 or #11. |
   | Ledger-only extension | Local progress says `max=12`; no matching canonical owner source | Deny exception; keep default 10. |
   | Scope mismatch | Owner record names another issue/PR, repository or task scope | Deny transfer; use this delivery's default/verified maximum only. |
   | Stale or ambiguous evidence | Changed refs/source hash, missing canonical link, malformed maximum or conflicting owner record | Fail closed at default 10 and recover evidence; never infer authority. |

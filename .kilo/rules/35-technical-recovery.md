@@ -113,28 +113,66 @@ them unless required for the selected acceptance and subject to an owner decisio
 
 ## Independent Review Metadata
 
-An acceptance-only whole-PR review manifest may authorize these exact Forgejo
-read operations: `forgejo-mcp_get_repo` for the canonical owner/repository,
-`forgejo-mcp_get_pull_request_by_index` for the selected PR, and
-`forgejo-mcp_get_issue_by_index` for its linked issue. Include
-`forgejo-mcp_get_issue_comment` only for a specifically attested owner decision.
-The manifest records each exact object ID/arguments, canonical URL, author,
-timestamp, retrieval path and content digest. Do not grant wildcard getters,
-list/search access or any Forgejo write. Repository metadata establishes
-canonical identity; current PR refs/SHAs must still agree with the primary-prepared
-clean local Git objects and exact merge base/full diff. Reviewer shell access must
-not inspect credential-bearing Git configuration or invoke credential helpers.
+The primary alone fetches canonical Forgejo Repo/Issue/PR and directly linked
+owner-decision objects with exact getters (`forgejo-mcp_get_repo`,
+`forgejo-mcp_get_pull_request_by_index`, `forgejo-mcp_get_issue_by_index` and only
+the directly linked `forgejo-mcp_get_issue_comment`), and fetches/verifies the Git
+objects. Bind IDs, canonical URLs, author/timestamp/raw-body digests, full HEAD/base/
+merge-base, blobs and the complete merge-base-to-HEAD diff against the primary-prepared
+clean local Git objects into a sealed, indexed packet. Verify the exact merge
+base/full diff. The reviewer has no direct Forgejo getter, no Bash/Git and receives
+Read-only packet access with no checkout, source/environment paths, prior review
+results or parent conclusions. The reviewer must not inspect credential-bearing Git
+configuration or invoke credential helpers.
+
+The committed `.kilo/agents/pr-reviewer.md` is statically deny-all. For each review,
+the primary builds a per-run Kilo config directory containing a byte-identical copy
+of the frozen canonical reviewer profile, and a `KILO_CONFIG_CONTENT` exact-file Read
+overlay for the packet; the same config sets the fresh Kilo parent to Task-only. The
+packet-only Task workspace is outside the source checkout. Use the installed Kilo
+7.8.8 resolver/source semantics: merge order is runtime-specific, `findLast` rules
+are significant, and static/global/managed/saved rules can override an assumed
+overlay. Before creating any reviewer Task, inspect the effective `kilo debug agent
+code` and `pr-reviewer` results under the exact production environment. Require the
+parent tool map to expose Task only and the reviewer tool map Read only; require the
+canonical profile name/prompt hash to match the frozen tracked source; evaluate exact
+per-file Read winners, default-deny out-of-packet paths and direct MCP denies. Missing
+output, unknown rules, any broad capability, or an unverifiable merge order aborts
+before Task creation.
+
+The review parent runs in a sealed temporary workspace containing only a `packet/`
+directory, not the source checkout. It has native Task only and dispatches one fresh
+foreground `pr-reviewer` Task. The child can Read only exact `packet/<file>` names.
+Do not pass checkout paths, environment paths, credentials, issue comments not in the
+packet or previous findings. Do not grant wildcard getters, list/search access or any
+Forgejo write, directory enumeration, network, memory, task/delegation or external-file
+access.
+
+Before reserving a whole-PR review ordinal, run a native Task preflight with a copy of
+the complete production-equivalent packet plus harmless sibling, absolute, traversal
+and symlink canaries. Require every authorized packet file to be read completely and
+every escape to be denied before bytes. Audit the actual preflight Task trace, returned
+content and unchanged packet inventory. A synthetic resolver test is supplementary;
+it does not prove effective Kilo behavior. Pre-access debug/preflight and post-review
+Task-trace/packet audits are separate mandatory gates. The only directory-level Read
+exception remains the owner-authorized issue #210 / PR #211 scope; it never transfers
+to #212 or other deliveries.
 
 ## Public Evidence and Reviewer Failover
 
-A public-research reviewer must inspect cited material independently. If a pinned
-source is inaccessible, try an alternative available read path, then fetch/clone the
-exact public revision into an isolated evidence checkout within authorized network
-access. Verify the specific material claims and preserve pin, origin and provenance
-in review evidence. Parent may stage source bytes but its research conclusions are
-not independent verification. One process's connector failure is not an implementation
-finding. If network/source access is unavailable everywhere authorized, report that
-specific external evidence gap, not an artificial owner question.
+A public-research reviewer inspects cited material independently from pinned source
+bytes in the packet. If a pinned source is inaccessible, try an alternative available
+read path, then fetch/clone the exact public revision in an isolated evidence checkout.
+Connector failure is not an implementation finding.
+The primary must preserve pin, origin and provenance while staging exact revision
+content, Git blob/source digest and relevant ranges. The reviewer verifies the material
+claims against those bytes; implementer research conclusions are not independent
+verification. The primary's research conclusions are not independent verification.
+Parent conclusions are not evidence. If a material source/pin is
+absent or inconsistent in the packet, report that concrete gap. Reviewer external
+network is intentionally denied, so do not fetch/clone or treat that denial alone as a
+change finding. The primary may use an isolated, credential-free public-source
+checkout to prepare the pinned evidence before sealing the packet.
 
 Distinguish **review finding** (evidence the change is wrong/incomplete), **review
 infrastructure failure** (no verdict can be established) and **reviewer disagreement /

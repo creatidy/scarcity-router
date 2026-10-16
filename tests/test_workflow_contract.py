@@ -326,8 +326,10 @@ class WorkflowContractTests(unittest.TestCase):
             self.assertIn(requirement, reviewer)
         # Execution text may evolve; the original read-only permission boundary must not.
         frontmatter = (ROOT / ".kilo/agents/pr-reviewer.md").read_text().split("---", 2)[1]
-        for permission in ("edit: deny", "write: deny", "apply_patch: deny", "task: deny", "external_directory: deny"):
-            self.assertIn(permission, frontmatter)
+        self.assertIn('"*": deny', frontmatter)
+        self.assertIn("read: deny", frontmatter)
+        self.assertIn("external_directory: deny", frontmatter)
+        self.assertNotRegex(frontmatter, r"(?m)^\s+[^#\n]+:\s*allow\s*$")
         self.assertNotIn("docker", frontmatter)
         loop = text(".kilo/command/loop.md")
         self.assertIn("Use `.kilo/command/finish-pr.md` in this SAME primary context", loop)
@@ -366,33 +368,10 @@ class WorkflowContractTests(unittest.TestCase):
         ):
             self.assertNotIn(obsolete, reviewer_prompt)
         raw = (ROOT / ".kilo/agents/pr-reviewer.md").read_text().split("---", 2)[1]
-        getters = {
-            key.strip('"'): value.strip()
-            for line in raw.splitlines()
-            if line.startswith('  "forgejo-mcp_')
-            for key, value in [line.strip().split(":", 1)]
-        }
-        self.assertEqual(getters, {
-            "forgejo-mcp_get_repo": "allow",
-            "forgejo-mcp_get_pull_request_by_index": "allow",
-            "forgejo-mcp_get_issue_by_index": "allow",
-            "forgejo-mcp_get_issue_comment": "allow",
-        })
-        for permission in ("edit: deny", "write: deny", "apply_patch: deny", "task: deny"):
-            self.assertIn(permission, raw)
-        test_command = (
-            "PYTHONPATH=. UV_OFFLINE=1 UV_NO_SYNC=1 uv run --no-sync python -m unittest "
-            + "tests.test_workflow_contract.WorkflowContractTests.test_private_repository_review_"
-            + "uses_parent_verified_packet -v\": allow"
-        )
-        self.assertIn(test_command, raw)
-        shell = raw.split("bash:", 1)[1]
-        self.assertIn('"git remote -v": deny', shell)
-        self.assertIn('"git ls-remote *": deny', shell)
-        self.assertIn('"*": deny', shell)
-        self.assertNotIn('"git remote -v": allow', shell)
-        self.assertNotIn('https://forgejo.creatidy.com', shell)
-        self.assertIn('"git ls-remote * -*": deny', shell)
+        self.assertIn('"*": deny', raw)
+        self.assertIn("read: deny", raw)
+        self.assertIn("external_directory: deny", raw)
+        self.assertNotRegex(raw, r"(?m)^\s+[^#\n]+:\s*allow\s*$")
         manifest = text(".kilo/rules/35-technical-recovery.md").split(
             "## Independent Review Metadata", 1
         )[1].split("## Public Evidence and Reviewer Failover", 1)[0]
@@ -402,7 +381,8 @@ class WorkflowContractTests(unittest.TestCase):
         ):
             self.assertIn(getter, manifest)
         for boundary in (
-            "Do not grant wildcard getters", "list/search access or any Forgejo write",
+            "reviewer has no direct Forgejo getter", "no Bash/Git",
+            "Read-only packet access", "Do not grant wildcard getters", "list/search access or any Forgejo write",
             "primary-prepared clean local Git objects", "exact merge base/full diff",
             "must not inspect credential-bearing Git configuration or invoke credential helpers",
         ):
@@ -510,7 +490,8 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("selection/merge/closure authority lives only in loop.md", finish)
         self.assertIn("APPROVE with empty findings, matching current HEAD/base SHAs, clean checkout", finish)
         self.assertIn("successful required validation", finish)
-        self.assertIn("READY_TO_MERGE / APPROVE. Never merge", finish)
+        self.assertIn("yields ordinary APPROVE", finish)
+        self.assertIn("Never merge", finish)
         loop = text(".kilo/command/loop.md")
         merge = loop.split("## MERGE", 1)[1].split("## COMPLETE", 1)[0]
         for requirement in (
@@ -645,8 +626,8 @@ class WorkflowContractTests(unittest.TestCase):
             "Diagnostics retain names/categories, not values",
             "try an alternative available read path, then fetch/clone the exact public revision",
             "preserve pin, origin and provenance",
-            "its research conclusions are not independent verification",
-            "connector failure is not an implementation finding",
+            "implementer research conclusions are not independent verification",
+            "Connector failure is not an implementation finding",
             "model-bound gates, read-only permissions and reviewer independence",
             "Do not bypass tool restrictions or silently substitute a required restricted reviewer",
         ):

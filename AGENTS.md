@@ -77,8 +77,11 @@ ordinary agent integration branch.
 
 Use one designated delivery checkout and one mutator. Temporary worktrees/isolated
 evidence checkouts are allowed under the technical-recovery rule, never parallel
-implementation controllers. Review frozen Git objects/current clean PR branch
-read-only; the parent must not edit or switch reviewed checkouts while the reviewer runs.
+implementation controllers. The primary verifies canonical currentness, exact frozen
+Git objects and the complete diff, then prepares the immutable indexed review packet.
+The reviewer receives only the sealed packet through native Read; it has no checkout,
+Git or Forgejo access. The primary must not edit or switch source checkouts while the
+reviewer or preflight Task is active.
 Never stash/reset unrelated owner work or bypass unmet dependencies. Do not
 force-push, rewrite published history, merge
 `develop` or `main` into a feature branch, create synchronization merge
@@ -237,16 +240,18 @@ repeated manual work, understandable state). A material UX regression is
 
 **Security-critical work carries an additional independent
 `gpt-daybreak-blue-latest` review gate** when the work is explicitly
-classified `security_critical`. Run it through direct Codex execution, not Kilo
-model discovery or reviewer dispatch, after required validation and ordinary
-independent review at a stable exact PR base/HEAD, before completion or merge.
-It is not a pre-implementation eligibility gate. Kilo discovery failure does not
-imply `SECURITY_REVIEW_UNAVAILABLE`; only failure of the authorized direct Codex
-path after bounded technical recovery can establish that limitation. Record the
-exact base/HEAD, reviewer identity, Codex execution path, findings and verdict;
-any HEAD/base change invalidates security approval. The gate stays open at the
-human decision point if required access is genuinely unavailable; no substitute
-model may close it. This reviewer-path rule is Router-specific — see
+classified `security_critical`. Adrian personally invokes the official direct
+Codex CLI after required validation and ordinary independent review at a stable
+exact PR base/HEAD, before completion or merge. The implementation agent must never
+launch Codex or Daybreak automatically or route this gate through Kilo. It is not a
+pre-implementation eligibility gate. Kilo discovery failure does not imply
+`SECURITY_REVIEW_UNAVAILABLE`; only failure of the authorized direct Codex path after
+bounded technical recovery can establish that limitation. Before handoff, reserve the
+next owner-manual ordinal against exact frozen refs. Record the exact HEAD/base,
+reviewer identity, execution path, findings/verdict and verified provenance; any
+HEAD/base change invalidates security approval. The gate stays open at the human
+decision point if required access is genuinely unavailable; no substitute model may
+close it. This reviewer-path rule is Router-specific — see
 [`docs/llm-operating-policy.md`](docs/llm-operating-policy.md).
 
 The detailed operating policy is

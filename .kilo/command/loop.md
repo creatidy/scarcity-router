@@ -213,11 +213,18 @@ Routine safe reversible coding choices are autonomous, not owner questions.
 ## FINISH
 
 Use `.kilo/command/finish-pr.md` in this SAME primary context, not a second
-orchestrator. Reuse its complete frozen-PR review/remediation procedure and the
-shared `.kilo/agents/pr-reviewer.md` contract used by `/review-pr`. Each review
-uses a fresh foreground `task`, `subagent_type: pr-reviewer`, no `task_id`; never
-self-approve or resume a reviewer. Parent makes no edits/branch switches while it
-runs. Do not feed past findings, reasoning or desired verdict to the reviewer.
+orchestrator. Reuse its complete frozen-PR packet/preflight/review/remediation
+procedure and the shared `.kilo/agents/pr-reviewer.md` contract used by `/review-pr`.
+The loop primary never calls a reviewer Task directly. After the primary validates
+the packet and effective Kilo 7.8.8 permissions, a fresh `--pure --agent code` Kilo
+CLI transport parent in the sealed packet-only workspace may make exactly one native
+Task call with `subagent_type: pr-reviewer`, `background: false`, no `task_id`, no
+model override and no other tool use. That fresh foreground parent is Task-only; the
+same `pr-reviewer` identity is Read-only on exact packet paths. Preflight Tasks do not
+consume review ordinals. Never pass the source checkout/environment path, prior
+findings or desired verdict to the reviewer. The primary must never self-approve or
+resume a reviewer. Parent makes no edits/branch switches while it runs; no source
+edits or branch switches occur while a reviewer or preflight Task is active.
 
 Default maximum 10 whole-PR review invocations per issue delivery, INCLUDING the
 initial review, COMMENT, invalidated reviews and corrected retries. A larger finite
@@ -245,20 +252,23 @@ maximum or make unreviewable further patches.
 
 ## Security Review
 
-For `security_critical` work, after validation and ordinary independent review
-pass at a stable exact PR base/HEAD with no changes pending, invoke the additional
-independent `gpt-daybreak-blue-latest` review directly through Codex, not Kilo.
-This is a pre-completion / pre-merge gate, not a pre-implementation eligibility
-gate. Kilo model discovery failure does not imply `SECURITY_REVIEW_UNAVAILABLE`.
-Follow `docs/llm-operating-policy.md`: fresh read-only complete frozen-PR inspection,
-no prior findings/desired verdict, record exact base/HEAD, reviewer identity,
-Codex execution path, security findings and verdict. No fallback reviewer is
-permitted. Any HEAD/base change invalidates security approval and requires a fresh
-security review after ordinary review/currentness are restored. Remediate scoped
-findings through the same validation/ordinary-review workflow and retained counters.
-Only direct Codex failure after bounded authorized recovery establishes unavailable
-access; never stop merely to ask the owner to invoke an available path manually.
-This path rule is Scarcity Router-specific, not cross-repository maintenance authority.
+For `security_critical` work, after validation and ordinary independent review pass
+at stable exact PR base/HEAD with no changes pending, reserve and persist the next
+owner-manual security ordinal against those exact refs and return
+`READY_FOR_OWNER_SECURITY_REVIEW`. The loop/implementation agent must not launch
+Codex or Daybreak. Adrian performs the official `gpt-daybreak-blue-latest` review
+manually under `docs/llm-operating-policy.md`; the primary verifies exact frozen-input,
+requested-model dispatch, invocation/session/turn, immutable input/output and the
+independent context/tool-audit provenance before recording an assurance level. No
+fallback reviewer is permitted. Any HEAD/base change invalidates a reserved result
+and requires a fresh ordinary review and owner-manual security ordinal. This mandatory
+pre-completion/pre-merge gate is not a pre-implementation eligibility gate; Kilo model
+discovery failure does not imply `SECURITY_REVIEW_UNAVAILABLE`. security approval
+covers those same exact objects. Remediate
+scoped findings through the same validation/packet/ordinary-review workflow and
+retained counters. Preserve failed/unavailable attempts as consumed and return
+`READY_FOR_OWNER_SECURITY_REVIEW` only for the exact current refs. This path rule is
+Scarcity Router-specific, not cross-repository maintenance authority.
 
 ## MERGE
 
@@ -281,9 +291,9 @@ For nonexcluded issues, changed authority/acceptance/gates/disposition still
 invalidates continuation; stop with evidence rather than merge. Otherwise
 re-fetch canonical PR metadata and current canonical develop through normal Git;
 verify approved HEAD/base exactly match current remote and local frozen objects,
-and required direct-Codex security approval covers those same exact objects,
-empty findings, clean checkout, successful required `make check`, open/unmerged PR
-and target develop. A changed HEAD/base invalidates APPROVE: return to FINISH with
+and, when security-critical, security approval covers those same exact objects.
+Require empty findings, clean checkout, successful required `make check`, open/unmerged
+PR and target develop. A changed HEAD/base invalidates APPROVE: return to FINISH with
 the SAME counter (or terminate at the bound); never merge stale approval.
 
 Use supported `forgejo-mcp_merge_pull_request` for this PR, style `merge` (preserve
