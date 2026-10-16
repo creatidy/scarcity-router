@@ -340,19 +340,31 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("Parent makes no edits/branch switches while it runs", loop)
         self.assertIn("Any HEAD/base change invalidates approval", loop)
 
-    def test_private_repository_review_uses_exact_mcp_and_local_evidence(self) -> None:
-        reviewer = text(".kilo/agents/pr-reviewer.md")
+    def test_private_repository_review_uses_parent_verified_packet(self) -> None:
+        reviewer_file = (ROOT / ".kilo/agents/pr-reviewer.md").read_text()
+        reviewer_prompt = " ".join(reviewer_file.split("---", 2)[2].split())
         for requirement in (
-            "`forgejo-mcp_get_repo`", "`forgejo-mcp_get_pull_request_by_index`",
-            "`BioMedical-IT/scarcity-router`", "`https://forgejo.creatidy.com`",
-            "exact expected head/base refs and commit SHAs", "primary-prepared clean checkout's local Git objects",
-            "verify the exact merge base and complete diff",
-            "Anonymous `git ls-remote` is optional corroboration only and is not in the reviewer shell allowlist",
-            "never a required access gate", "A missing, stale or mismatched identity/ref/SHA/object is COMMENT",
-            "Reviewer credentials remain unavailable to the model and shell",
+            "the parent-prepared packet-only evidence path",
+            "The primary, not the reviewer, directly fetches the canonical",
+            "raw owner-source bytes, comment provenance/digests, exact Git blob",
+            "The reviewer must not call Forgejo MCP, Git, Bash",
+            "Do not claim that you independently fetched Forgejo/Git state",
+            "absence of intentionally denied MCP/Git tools is not",
+            "a specific missing, stale, malformed or contradictory repository/issue/PR",
+            "The primary owns the separate validation gate",
+            "does not execute code or tests",
+            "The primary rechecks canonical Forgejo/Git currentness before and after the Task",
         ):
             with self.subTest(requirement=requirement):
-                self.assertIn(requirement, reviewer)
+                self.assertIn(requirement, reviewer_prompt)
+        for obsolete in (
+            "First fetch the canonical repository metadata",
+            "Compare the MCP identities and SHAs",
+            "Inspect exact frozen Git objects/current branch read-only",
+            "Run only inspected safe network-free validation",
+            "Recheck local HEAD/clean status and MCP before returning",
+        ):
+            self.assertNotIn(obsolete, reviewer_prompt)
         raw = (ROOT / ".kilo/agents/pr-reviewer.md").read_text().split("---", 2)[1]
         getters = {
             key.strip('"'): value.strip()
@@ -371,7 +383,7 @@ class WorkflowContractTests(unittest.TestCase):
         test_command = (
             "PYTHONPATH=. UV_OFFLINE=1 UV_NO_SYNC=1 uv run --no-sync python -m unittest "
             + "tests.test_workflow_contract.WorkflowContractTests.test_private_repository_review_"
-            + "uses_exact_mcp_and_local_evidence -v\": allow"
+            + "uses_parent_verified_packet -v\": allow"
         )
         self.assertIn(test_command, raw)
         shell = raw.split("bash:", 1)[1]
