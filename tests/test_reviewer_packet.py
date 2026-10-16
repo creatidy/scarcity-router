@@ -472,6 +472,13 @@ class ReviewerPacketTests(unittest.TestCase):
             with self.assertRaisesRegex(PacketError, "not allow|exact rule"):
                 _ = verify_effective_agent_pair(code, broad_read, result, PROFILE)
 
+            space_suffix_read = dict(reviewer)
+            space_suffix_read["permission"] = [
+                *rules, {"permission": "read *", "pattern": "*", "action": "allow"}
+            ]
+            with self.assertRaisesRegex(PacketError, "exact rule"):
+                _ = verify_effective_agent_pair(code, space_suffix_read, result, PROFILE)
+
     def test_native_preflight_trace_requires_complete_reads_and_denies_before_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

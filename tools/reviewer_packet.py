@@ -740,7 +740,7 @@ def _permission_rules(agent_info: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _wildcard_match(value: str, pattern: str) -> bool:
     normalized_value = value.replace("\\", "/")
-    normalized_pattern = re.escape(pattern.replace("\\", "/"))
+    normalized_pattern = re.escape(pattern.replace("\\", "/")).replace(r"\ ", " ")
     normalized_pattern = normalized_pattern.replace(r"\*", ".*").replace(r"\?", ".")
     if normalized_pattern.endswith(" .*"):
         normalized_pattern = normalized_pattern[:-3] + "( .*)?"
