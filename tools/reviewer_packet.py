@@ -51,7 +51,9 @@ class RuntimeWorkspace:
     allowed_paths: tuple[str, ...]
     denied_paths: tuple[str, ...]
     profile_prompt_sha256: str
-    profile_file_sha256: str
+    canonical_profile_sha256: str
+    overlay_reviewer_profile_sha256: str
+    overlay_config_sha256: str
     kilo_config_content: str
 
 
@@ -641,6 +643,79 @@ def _profile_parts(profile_path: Path) -> tuple[bytes, str, str]:
     return raw, description.group(1), parts[2].lstrip("\n").rstrip()
 
 
+def _yaml_scalar(value: object) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, str):
+        return json.dumps(value)
+    raise PacketError("per-run Kilo profile contains an unsupported YAML value")
+
+
+def _yaml_mapping_lines(mapping: dict[str, object], indent: int) -> list[str]:
+    lines: list[str] = []
+    for key, value in sorted(mapping.items()):
+        prefix = " " * indent + f"{json.dumps(key)}:"
+        if isinstance(value, dict):
+            lines.append(prefix)
+            lines.extend(_yaml_mapping_lines(cast(dict[str, object], value), indent + 2))
+        else:
+            lines.append(f"{prefix} {_yaml_scalar(value)}")
+    return lines
+
+
+def _render_per_run_agent(
+    *,
+    name: str,
+    mode: str,
+    permission: dict[str, object],
+    description: str | None = None,
+    prompt: str | None = None,
+) -> bytes:
+    lines = [f"name: {json.dumps(name)}", f"mode: {json.dumps(mode)}"]
+    if description is not None:
+        lines.append(f"description: {json.dumps(description)}")
+    lines.append("permission:")
+    lines.extend(_yaml_mapping_lines(permission, 2))
+    content = ["---", *lines, "---"]
+    if prompt is not None:
+        content.extend(["", prompt])
+    return ("\n".join(content) + "\n").encode("utf-8")
+
+
+def _verify_overlay_files(runtime: RuntimeWorkspace) -> None:
+    root = runtime.profile_config
+    if not root.is_dir() or root.is_symlink() or stat.S_IMODE(root.stat().st_mode) != 0o555:
+        raise PacketError("per-run Kilo config directory is missing, linked or writable")
+    expected = {".gitignore", "kilo.json", "agents", "agents/pr-reviewer.md"}
+    actual = {path.relative_to(root).as_posix() for path in root.rglob("*")}
+    if actual != expected:
+        raise PacketError("per-run Kilo config directory contains missing or unexpected entries")
+    agents = root / "agents"
+    if (not agents.is_dir() or agents.is_symlink()
+            or stat.S_IMODE(agents.stat().st_mode) != 0o555):
+        raise PacketError("per-run Kilo agents directory is missing, linked or writable")
+    expected_hashes = {
+        "agents/pr-reviewer.md": runtime.overlay_reviewer_profile_sha256,
+        "kilo.json": runtime.overlay_config_sha256,
+    }
+    for relative, expected_sha in expected_hashes.items():
+        path = root / relative
+        info = path.lstat()
+        if (not stat.S_ISREG(info.st_mode) or path.is_symlink() or info.st_nlink != 1
+                or stat.S_IMODE(info.st_mode) != 0o444 or sha256(path.read_bytes()) != expected_sha):
+            raise PacketError(f"per-run Kilo config file is linked, writable or changed: {relative}")
+    if (root / "kilo.json").read_bytes() != runtime.kilo_config_content.encode("utf-8"):
+        raise PacketError("per-run Kilo config file differs from the exact environment content")
+    if (root / ".gitignore").read_bytes() != b"# per-run Kilo reviewer configuration\n":
+        raise PacketError("per-run Kilo config ignore file changed")
+    profile_text = (root / "agents/pr-reviewer.md").read_text(encoding="utf-8")
+    profile_parts = profile_text.split("---", 2)
+    if (len(profile_parts) != 3 or profile_parts[0].strip()
+            or sha256(profile_parts[2].lstrip("\n").rstrip().encode("utf-8"))
+            != runtime.profile_prompt_sha256):
+        raise PacketError("per-run reviewer profile prompt differs from the canonical source")
+
+
 def prepare_task_environment(
     packet_root: Path,
     manifest_path: Path,
@@ -668,7 +743,7 @@ def prepare_task_environment(
         raise PacketError("overlay parent must already exist and be a real directory")
     if source_root is not None and workspace_parent.resolve().is_relative_to(source_root.resolve()):
         raise PacketError("review workspace cannot be inside the source checkout")
-    profile_bytes, _, prompt = _profile_parts(canonical_profile)
+    profile_bytes, description, prompt = _profile_parts(canonical_profile)
     if source_root is not None:
         canonical_profile_relative = ".kilo/agents/pr-reviewer.md"
         frozen_profile = _git(source_root, "show", f"{inspection.head}:{canonical_profile_relative}")
@@ -723,20 +798,36 @@ def prepare_task_environment(
         ]
     os.chmod(workspace, 0o555)
 
+    kilo_config_content = make_kilo_config_content(list(inspection.file_paths))
+    read_rules: dict[str, object] = {"*": "deny"}
+    read_rules.update({f"packet/{path}": "allow" for path in inspection.file_paths})
+    reviewer_overlay_profile = _render_per_run_agent(
+        name="pr-reviewer",
+        mode="subagent",
+        description=description,
+        prompt=prompt,
+        permission={
+            "*": "deny",
+            "read": read_rules,
+            "external_directory": {"*": "deny"},
+        },
+    )
+    kilo_config_bytes = kilo_config_content.encode("utf-8")
+
     overlay = Path(tempfile.mkdtemp(prefix="sr-review-kilo-overlay-", dir=overlay_parent))
     agents = overlay / "agents"
     agents.mkdir(mode=0o700)
     (overlay / ".gitignore").write_text("# per-run Kilo reviewer configuration\n", encoding="utf-8")
     os.chmod(overlay / ".gitignore", 0o444)
     overlay_profile = agents / "pr-reviewer.md"
-    overlay_profile.write_bytes(profile_bytes)
+    overlay_profile.write_bytes(reviewer_overlay_profile)
     os.chmod(overlay_profile, 0o444)
+    overlay_config = overlay / "kilo.json"
+    overlay_config.write_bytes(kilo_config_bytes)
+    os.chmod(overlay_config, 0o444)
     os.chmod(agents, 0o555)
     os.chmod(overlay, 0o555)
-    if overlay_profile.read_bytes() != canonical_profile.read_bytes():
-        raise PacketError("per-run reviewer profile is not byte-identical to the canonical source")
-
-    return RuntimeWorkspace(
+    runtime = RuntimeWorkspace(
         workspace=workspace,
         packet=packet,
         inspection=inspection,
@@ -745,9 +836,13 @@ def prepare_task_environment(
         allowed_paths=tuple(f"packet/{path}" for path in inspection.file_paths),
         denied_paths=tuple(denied_paths),
         profile_prompt_sha256=sha256(prompt.encode()),
-        profile_file_sha256=sha256(profile_bytes),
-        kilo_config_content=make_kilo_config_content(list(inspection.file_paths)),
+        canonical_profile_sha256=sha256(profile_bytes),
+        overlay_reviewer_profile_sha256=sha256(reviewer_overlay_profile),
+        overlay_config_sha256=sha256(kilo_config_bytes),
+        kilo_config_content=kilo_config_content,
     )
+    _verify_overlay_files(runtime)
+    return runtime
 
 
 def _permission_rules(agent_info: dict[str, Any]) -> list[dict[str, Any]]:
@@ -862,8 +957,10 @@ def verify_effective_agent_pair(
     source_sha = sha256(canonical_profile.read_bytes())
     prompt_sha = sha256(prompt.encode())
     overlay_profile_sha = sha256((overlay.profile_config / "agents/pr-reviewer.md").read_bytes())
-    if overlay_profile_sha != source_sha or prompt_sha != sha256(expected_prompt.encode()):
-        raise PacketError("per-run profile/prompt does not match the canonical source")
+    if (source_sha != overlay.canonical_profile_sha256
+            or overlay_profile_sha != overlay.overlay_reviewer_profile_sha256
+            or prompt_sha != sha256(expected_prompt.encode())):
+        raise PacketError("per-run reviewer prompt/profile does not match the canonical source and overlay")
     return {
         "status": "EFFECTIVE_KILO_PERMISSION_PASS",
         "parent_agent": "code",
@@ -872,7 +969,8 @@ def verify_effective_agent_pair(
         "reviewer_effective_tools": ["read"],
         "profile_source_sha256": source_sha,
         "effective_prompt_sha256": prompt_sha,
-        "overlay_profile_sha256": overlay_profile_sha,
+        "overlay_reviewer_profile_sha256": overlay_profile_sha,
+        "overlay_config_sha256": overlay.overlay_config_sha256,
         "allowed_packet_paths": list(overlay.allowed_paths),
         "denied_probe_paths": list(overlay.denied_paths),
         "permission_config_sha256": sha256(overlay.kilo_config_content.encode()),
@@ -890,6 +988,7 @@ def verify_effective_permissions(
     expected_version: str = "7.8.8",
 ) -> dict[str, Any]:
     """Resolve the real Kilo agents before any independent Task exists."""
+    _verify_overlay_files(overlay)
     if not overlay.workspace.is_dir() or overlay.workspace.is_symlink():
         raise PacketError("reviewer workspace is missing or linked")
     if not home.is_dir() or not tmpdir.is_dir():
@@ -1017,6 +1116,7 @@ def audit_task_trace(
     preflight: bool = False,
 ) -> dict[str, Any]:
     """Audit native parent/child tool traces and full packet reads without echoing bytes."""
+    _verify_overlay_files(runtime)
     parent_info = _object(parent_session.get("info"), "parent session info")
     child_info = _object(reviewer_session.get("info"), "reviewer session info")
     parent_id = _string(parent_info.get("id"), "parent session id")
@@ -1132,6 +1232,7 @@ def audit_task_trace(
             if covered[path] != required_lines:
                 raise PacketError(f"reviewer packet coverage is incomplete or unindexed: {filename}")
 
+    _verify_overlay_files(runtime)
     packet_inventory_sha256 = _verify_workspace_copy(runtime)
 
     return {
@@ -1200,7 +1301,7 @@ def _runtime_from_report(
     config_content = _string(report.get("kilo_config_content"), "Kilo config content")
     if report.get("task_created") is not False or report.get("status") != "PRETASK_EFFECTIVE_PERMISSION_PASS":
         raise PacketError("prepared report does not prove pre-Task effective permissions")
-    return RuntimeWorkspace(
+    runtime = RuntimeWorkspace(
         workspace=workspace,
         packet=packet,
         inspection=inspection,
@@ -1209,9 +1310,19 @@ def _runtime_from_report(
         allowed_paths=allowed_paths,
         denied_paths=denied_paths,
         profile_prompt_sha256=_string(effective.get("effective_prompt_sha256"), "effective prompt hash"),
-        profile_file_sha256=_string(effective.get("profile_source_sha256"), "profile source hash"),
+        canonical_profile_sha256=_string(effective.get("profile_source_sha256"), "profile source hash"),
+        overlay_reviewer_profile_sha256=_string(
+            effective.get("overlay_reviewer_profile_sha256"), "per-run reviewer profile hash"
+        ),
+        overlay_config_sha256=_string(effective.get("overlay_config_sha256"), "per-run config file hash"),
         kilo_config_content=config_content,
     )
+    _verify_overlay_files(runtime)
+    if source_root is not None:
+        canonical_profile = source_root / ".kilo/agents/pr-reviewer.md"
+        if sha256(canonical_profile.read_bytes()) != runtime.canonical_profile_sha256:
+            raise PacketError("prepared report is bound to a different canonical reviewer profile")
+    return runtime
 
 
 def _main(argv: list[str] | None = None) -> int:
@@ -1322,6 +1433,8 @@ def _main(argv: list[str] | None = None) -> int:
             "workspace": str(runtime.workspace),
             "packet_workspace": str(runtime.packet),
             "per_run_kilo_config_dir": str(runtime.profile_config),
+            "per_run_reviewer_profile": str(runtime.profile_config / "agents/pr-reviewer.md"),
+            "per_run_kilo_config_file": str(runtime.profile_config / "kilo.json"),
             "kilo_disable_project_config": "1",
             "kilo_config_content": runtime.kilo_config_content,
             "allowed_packet_paths": list(runtime.allowed_paths),

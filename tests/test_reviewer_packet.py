@@ -514,6 +514,24 @@ class ReviewerPacketTests(unittest.TestCase):
             root = Path(temporary)
             source_packet, manifest = _make_packet(root)
             runtime = prepare_task_environment(source_packet, manifest, PROFILE, root, root, preflight=True)
+            overlay = runtime.profile_config
+            self.assertEqual(
+                {path.relative_to(overlay).as_posix() for path in overlay.rglob("*")},
+                {".gitignore", "kilo.json", "agents", "agents/pr-reviewer.md"},
+            )
+            config_path = overlay / "kilo.json"
+            self.assertEqual(
+                json.loads(config_path.read_text(encoding="utf-8")),
+                json.loads(runtime.kilo_config_content),
+            )
+            self.assertEqual(_sha(config_path.read_bytes()), runtime.overlay_config_sha256)
+            for path in (config_path, overlay / "agents/pr-reviewer.md"):
+                self.assertEqual(os.stat(path).st_mode & 0o777, 0o444)
+            canonical_prompt = PROFILE.read_text(encoding="utf-8").split("---", 2)[2].lstrip("\n").rstrip()
+            reviewer_overlay = (overlay / "agents/pr-reviewer.md").read_text(encoding="utf-8")
+            self.assertEqual(reviewer_overlay.split("---", 2)[2].lstrip("\n").rstrip(), canonical_prompt)
+            self.assertIn('"packet/index.md": "allow"', reviewer_overlay)
+            self.assertIn('"task":"allow"', runtime.kilo_config_content)
             parent_id = "ses_parent"
             model_binding = {"providerID": "openai", "modelID": "gpt-6-luna"}
             parent: dict[str, object] = {
