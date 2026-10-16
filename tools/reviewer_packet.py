@@ -501,6 +501,25 @@ def validate_packet(
         raise PacketError("review coverage cannot mark a file both full and ranged")
     if set(full_read_paths) | set(review_ranges) != set(records):
         raise PacketError("review coverage does not cover every indexed packet file")
+    read_plan_start = "<BEGIN-PACKET-READ-PLAN>"
+    read_plan_end = "<END-PACKET-READ-PLAN>"
+    if index_text.count(read_plan_start) != 1 or index_text.count(read_plan_end) != 1:
+        raise PacketError("index must contain one complete packet Read plan")
+    plan_start = index_text.index(read_plan_start) + len(read_plan_start)
+    plan_end = index_text.index(read_plan_end, plan_start)
+    try:
+        read_plan = _object(json.loads(index_text[plan_start:plan_end].strip()), "index Read plan")
+    except json.JSONDecodeError as err:
+        raise PacketError("index packet Read plan is malformed") from err
+    expected_read_plan = {
+        "full_read_paths": [f"packet/{path}" for path in full_read_paths],
+        "source_ranges": {
+            f"packet/{path}": [[start, end] for start, end in ranges]
+            for path, ranges in review_ranges.items()
+        },
+    }
+    if read_plan != expected_read_plan:
+        raise PacketError("index Read plan differs from manifest full paths/ranges")
     if not required.issubset(full_read_paths):
         raise PacketError("review must read the index, patch, raw owner sources and provenance receipts")
 

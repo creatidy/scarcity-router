@@ -65,11 +65,22 @@ def _make_packet(parent: Path) -> tuple[Path, Path]:
     packet.mkdir()
     issue_body = b"The complete accepted scope is supplied here."
     issue_body_sha = _sha(issue_body)
+    full_read_paths = [
+        "external-kilo-source.txt", "index.md", "owner-210-receipt.txt", "owner-210.txt",
+        "owner-bootstrap-receipt.txt", "owner-bootstrap.txt", "patch.diff",
+    ]
+    read_plan = {
+        "full_read_paths": [f"packet/{path}" for path in full_read_paths],
+        "source_ranges": {"packet/source-00.md": [[1, 3]]},
+    }
     contents = {
         "index.md": (
             f'<BEGIN-CANONICAL-ISSUE-212-BODY sha256="{issue_body_sha}">\n'
             f"{issue_body.decode()}\n"
             "<END-CANONICAL-ISSUE-212-BODY>\n"
+            "<BEGIN-PACKET-READ-PLAN>\n"
+            f"{json.dumps(read_plan, sort_keys=True)}\n"
+            "<END-PACKET-READ-PLAN>\n"
             "PR body text is non-authoritative; digest only.\n"
         ).encode(),
         "owner-bootstrap.txt": b"Direct owner source bootstrap fixture.\n",
@@ -195,10 +206,7 @@ def _make_packet(parent: Path) -> tuple[Path, Path]:
              "excerpt_sha256": _sha(contents["external-kilo-source.txt"])},
         ],
         "review_coverage": {
-            "full_read_paths": [
-                "external-kilo-source.txt", "index.md", "owner-210-receipt.txt", "owner-210.txt",
-                "owner-bootstrap-receipt.txt", "owner-bootstrap.txt", "patch.diff",
-            ],
+            "full_read_paths": full_read_paths,
             "source_ranges": {"source-00.md": [[1, 3]]},
         },
         "previous_review_findings_included": False,
@@ -305,6 +313,28 @@ class ReviewerPacketTests(unittest.TestCase):
                     row["sha256"] = _sha(changed)
             _ = manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
             with self.assertRaisesRegex(PacketError, "canonical issue body differs"):
+                _ = validate_packet(packet, manifest_path)
+
+    def test_index_read_plan_must_match_manifest_full_paths_and_ranges(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            packet, manifest_path = _make_packet(root)
+            _ = os.chmod(packet, 0o755)
+            index_path = packet / "index.md"
+            _ = os.chmod(index_path, 0o644)
+            changed = index_path.read_bytes().replace(
+                b"packet/owner-bootstrap.txt", b"packet/not-indexed.txt", 1
+            )
+            _ = index_path.write_bytes(changed)
+            _ = os.chmod(index_path, 0o444)
+            _ = os.chmod(packet, 0o555)
+            manifest = _load_object(manifest_path.read_text(encoding="utf-8"))
+            for row in cast(list[dict[str, object]], manifest["files"]):
+                if row["path"] == "index.md":
+                    row["size"] = len(changed)
+                    row["sha256"] = _sha(changed)
+            _ = manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaisesRegex(PacketError, "index Read plan differs"):
                 _ = validate_packet(packet, manifest_path)
 
     def test_owner_receipt_and_external_origin_tampering_fail(self) -> None:
