@@ -129,8 +129,11 @@ The committed `.kilo/agents/pr-reviewer.md` and
 `.kilo/agents/pr-reviewer-standalone.md` remain statically deny-all. For each
 standalone review, the primary builds a per-run Kilo config directory with a generated
 profile copy whose identity/mode/prompt match the tracked standalone profile and whose
-frontmatter contains only exact packet-path Read allows under wildcard deny. The
-profile config is separate from the packet-only workspace outside the source checkout.
+frontmatter contains only exact packet-path Read allows under wildcard deny. For #212,
+include each relative `packet/<file>` name and its matching workspace-absolute spelling:
+Kilo's actual Read trace can use the absolute form, and both forms must bind the same
+indexed regular file with no directory or prefix grant. The profile config is separate
+from the packet-only workspace outside the source checkout.
 The per-run `kilo.json` and `KILO_CONFIG_CONTENT` are empty (`{}`); r1's actual
 standalone session denied the indexed Read under `agent` `read:* deny` despite a
 passing static environment-overlay check. Do not rely on that env overlay as the
@@ -144,6 +147,12 @@ profile frontmatter to be `mode: primary`, the resolved Kilo mode to be CLI-runn
 enabled tool; evaluate exact per-file profile-frontmatter winners, default-deny paths and
 forbidden-tool denies. Missing output, default-agent fallback, any broad capability or
 an unverifiable merge order aborts before reserving an ordinal.
+The r2 runtime used a workspace-absolute `Read` input, so relative-only rules also
+failed closed despite static permission resolution. Its six escape probes were denied
+before content. Kilo's exported user message wrapped the exact expected prompt in
+literal double quotes; audit may accept only the byte-exact expected prompt or that
+exact wrapper, never additional context. No review ordinal is consumed by these
+preflights.
 
 The standalone Kilo CLI process has its working directory set to a sealed temporary
 workspace whose only entry is a `packet/` directory; it does not receive the source
@@ -151,8 +160,9 @@ checkout. Launch a fresh `kilo --pure run --agent pr-reviewer-standalone` primar
 session without continuation, resume, fork or Task arguments. Verify the exported
 session records the exact agent, `parentID: null`, packet-only directory and requested
 provider/model/variant. The actual enabled tool set is native Read only for exact
-`packet/<file>` names. Do not pass checkout/environment paths, credentials, issue
-comments outside the packet or previous findings. Do not grant wildcard getters,
+relative and matching workspace-absolute packet file names. Do not pass checkout/
+environment paths, credentials, issue comments outside the packet or previous
+findings. Do not grant wildcard getters,
 search/list, Forgejo writes, directory enumeration, external network tools, memory,
 Task/delegation or external-file Read access.
 

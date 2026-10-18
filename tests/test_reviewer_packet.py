@@ -655,12 +655,24 @@ class ReviewerPacketTests(unittest.TestCase):
                 _ = validate_packet(packet, manifest_path)
 
     def test_per_run_profile_allows_only_exact_read_paths(self) -> None:
-        reviewer = make_per_run_permission_map(["index.md", "source-00.md"])
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary) / "workspace"
+            packet = workspace / "packet"
+            packet.mkdir(parents=True)
+            for filename in ("index.md", "source-00.md"):
+                _ = (packet / filename).write_text("synthetic\n", encoding="utf-8")
+            reviewer = make_per_run_permission_map(
+                ["index.md", "source-00.md"], workspace=workspace
+            )
+            absolute_index = str(packet / "index.md")
+            absolute_source = str(packet / "source-00.md")
         self.assertEqual(reviewer["*"], "deny")
         self.assertEqual(reviewer["read"], {
             "*": "deny",
             "packet/index.md": "allow",
             "packet/source-00.md": "allow",
+            absolute_index: "allow",
+            absolute_source: "allow",
         })
         self.assertEqual(cast(dict[str, str], reviewer["external_directory"])["*"], "deny")
 
@@ -731,15 +743,19 @@ class ReviewerPacketTests(unittest.TestCase):
             {"permission": "*", "pattern": "*", "action": "allow"},
             {"permission": "*", "pattern": "*", "action": "deny"},
             {"permission": "read", "pattern": "*", "action": "deny"},
-            *[
-                {"permission": "read", "pattern": path, "action": "allow"}
-                for path in runtime.allowed_paths
-            ],
+            *[{
+                "permission": "read", "pattern": path, "action": "allow"
+            } for path in runtime.allowed_paths],
+            *[{
+                "permission": "read",
+                "pattern": str(runtime.packet / Path(path).name),
+                "action": "allow",
+            } for path in runtime.allowed_paths],
             {"permission": "external_directory", "pattern": "*", "action": "deny"},
         ]
         return {
             "name": "pr-reviewer-standalone",
-            "mode": "all",
+            "mode": "primary",
             "tools": {"read": True, "bash": False, "task": False, "mcp": False},
             "permission": rules,
             "prompt": prompt,
@@ -815,7 +831,8 @@ class ReviewerPacketTests(unittest.TestCase):
                         for number in range(start, end + 1)
                     }
                     lines = line_numbers
-            parts.append(self._read_call(runtime, path, line_numbers=lines))
+            native_path = str(runtime.packet / Path(path).name)
+            parts.append(self._read_call(runtime, native_path, line_numbers=lines))
         if preflight:
             parts.extend(self._read_call(runtime, path, denied=True) for path in runtime.denied_paths)
             final: dict[str, object] = {
@@ -853,7 +870,7 @@ class ReviewerPacketTests(unittest.TestCase):
                 "permission": [],
             },
             "messages": [
-                {"info": {"role": "user"}, "parts": [{"type": "text", "text": prompt}]},
+                {"info": {"role": "user"}, "parts": [{"type": "text", "text": f'"{prompt}"'}]},
                 {"info": {"role": "assistant", "agent": "pr-reviewer-standalone"}, "parts": parts},
                 {"info": {"role": "assistant", "agent": "pr-reviewer-standalone", "finish": "stop"},
                  "parts": [{"type": "text", "text": json.dumps(final)}]},
@@ -869,8 +886,12 @@ class ReviewerPacketTests(unittest.TestCase):
             checked = verify_effective_standalone_agent(resolved, runtime, PROFILE)
             self.assertEqual(checked["reviewer_agent"], "pr-reviewer-standalone")
             self.assertEqual(checked["reviewer_profile_mode"], "primary")
-            self.assertEqual(checked["reviewer_resolved_mode"], "all")
+            self.assertIn(checked["reviewer_resolved_mode"], {"primary", "all"})
             self.assertEqual(checked["reviewer_effective_tools"], ["read"])
+            self.assertEqual(
+                len(cast(list[str], checked["allowed_read_permission_paths"])),
+                2 * len(runtime.allowed_paths),
+            )
             self.assertFalse(checked["os_level_isolation_claimed"])
 
             fallback = dict(resolved, name="code")
@@ -970,6 +991,8 @@ class ReviewerPacketTests(unittest.TestCase):
             self.assertIn('"*": deny', frontmatter)
             for path in runtime.allowed_paths:
                 self.assertIn(f'"{path}": allow', frontmatter)
+                absolute_path = str(runtime.packet / Path(path).name)
+                self.assertIn(f'"{absolute_path}": allow', frontmatter)
             self.assertNotRegex(frontmatter, r'(?m)^\s*"\*":\s*allow\s*$')
             self.assertEqual(
                 profile_text.split("---", 2)[2],
@@ -996,6 +1019,21 @@ class ReviewerPacketTests(unittest.TestCase):
             self.assertEqual(result["allowed_file_count"], len(runtime.allowed_paths))
             self.assertEqual(result["denied_before_content_count"], len(runtime.denied_paths))
             self.assertEqual(result["preflight_result"]["preflight"], "PASS")
+
+            extra_prompt = cast(dict[str, object], json.loads(json.dumps(session)))
+            extra_messages = cast(list[dict[str, object]], extra_prompt["messages"])
+            user_parts = cast(list[dict[str, object]], extra_messages[0]["parts"])
+            user_parts[0]["text"] = f'"{prompt} extra"'
+            with self.assertRaisesRegex(PacketError, "unapproved or prior conversation context"):
+                _ = audit_standalone_session(
+                    extra_prompt,
+                    session_export_sha256="a" * 64,
+                    runtime=runtime,
+                    expected_model=expected_model,
+                    expected_title=title,
+                    expected_prompt=prompt,
+                    preflight=True,
+                )
 
             leaked = cast(dict[str, object], json.loads(json.dumps(session)))
             messages = cast(list[dict[str, object]], leaked["messages"])

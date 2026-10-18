@@ -895,13 +895,33 @@ def validate_packet(
     )
 
 
-def make_per_run_permission_map(packet_paths: tuple[str, ...] | list[str]) -> dict[str, object]:
-    """Return the exact deny-by-default frontmatter permission map for one packet."""
+def make_per_run_permission_map(
+    packet_paths: tuple[str, ...] | list[str], *, workspace: Path,
+) -> dict[str, object]:
+    """Allow exact relative and absolute spellings of one immutable packet."""
     safe_paths = tuple(sorted({_relative_file(path) for path in packet_paths}))
     if not safe_paths or len(safe_paths) != len(packet_paths):
         raise PacketError("standalone profile requires a unique nonempty exact-file list")
+    if workspace.is_symlink() or not workspace.is_dir():
+        raise PacketError("standalone profile workspace must be a real directory")
+    workspace_root = workspace.resolve(strict=True)
+    packet_root = workspace_root / "packet"
+    if packet_root.is_symlink() or not packet_root.is_dir():
+        raise PacketError("standalone profile packet root must be a real directory")
+    packet_root = packet_root.resolve(strict=True)
+    if packet_root.parent != workspace_root:
+        raise PacketError("standalone profile packet root escapes its workspace")
     read_rules: dict[str, str] = {"*": "deny"}
-    read_rules.update({f"packet/{path}": "allow" for path in safe_paths})
+    for path in safe_paths:
+        target = packet_root / path
+        try:
+            info = target.lstat()
+        except OSError as err:
+            raise PacketError(f"standalone packet allow path is unavailable: {path}") from err
+        if not stat.S_ISREG(info.st_mode) or target.is_symlink() or info.st_nlink != 1:
+            raise PacketError(f"standalone packet allow path is linked or not a regular file: {path}")
+        read_rules[f"packet/{path}"] = "allow"
+        read_rules[str(target.resolve(strict=True))] = "allow"
     return {
         "*": "deny",
         "read": read_rules,
@@ -910,10 +930,10 @@ def make_per_run_permission_map(packet_paths: tuple[str, ...] | list[str]) -> di
 
 
 def _render_per_run_standalone_profile(
-    canonical_profile: Path, packet_paths: tuple[str, ...] | list[str],
+    canonical_profile: Path, packet_paths: tuple[str, ...] | list[str], *, workspace: Path,
 ) -> bytes:
     _, description, prompt = _profile_parts(canonical_profile)
-    permission = make_per_run_permission_map(packet_paths)
+    permission = make_per_run_permission_map(packet_paths, workspace=workspace)
     read_rules = cast(dict[str, str], permission["read"])
     lines = [
         f"description: {json.dumps(description)}",
@@ -995,7 +1015,9 @@ def _verify_overlay_files(runtime: RuntimeWorkspace) -> None:
     profile_text = profile_path.read_text(encoding="utf-8")
     profile_parts = profile_text.split("---", 2)
     packet_paths = tuple(path.removeprefix("packet/") for path in runtime.allowed_paths)
-    expected_profile = _render_per_run_standalone_profile(runtime.canonical_profile, packet_paths)
+    expected_profile = _render_per_run_standalone_profile(
+        runtime.canonical_profile, packet_paths, workspace=runtime.workspace
+    )
     if (len(profile_parts) != 3 or profile_parts[0].strip()
             or profile_path.read_bytes() != expected_profile
             or sha256(expected_profile) != runtime.overlay_profile_sha256
@@ -1162,7 +1184,9 @@ def prepare_standalone_environment(
         *(f"packet/{path}" for path in inspection.file_paths if path != "index.md"),
     )
     per_run_profile = _render_per_run_standalone_profile(
-        canonical_profile, tuple(path.removeprefix("packet/") for path in allowed_paths)
+        canonical_profile,
+        tuple(path.removeprefix("packet/") for path in allowed_paths),
+        workspace=workspace,
     )
     kilo_config_content = "{}"
     kilo_config_bytes = kilo_config_content.encode("utf-8")
@@ -1308,8 +1332,12 @@ def verify_effective_standalone_agent(
     for tool in (*_FORBIDDEN_TOOLS, *_MCP_PROBES):
         _expect_permission(reviewer_rules, tool, "*", "deny")
 
+    absolute_allowed: dict[str, str] = {}
     for path in overlay.allowed_paths:
+        absolute_path = str((overlay.packet / Path(path).name).resolve(strict=True))
+        absolute_allowed[absolute_path] = path
         _expect_permission(reviewer_rules, "read", path, "allow", exact=True)
+        _expect_permission(reviewer_rules, "read", absolute_path, "allow", exact=True)
     for path in overlay.denied_paths:
         _expect_permission(reviewer_rules, "read", path, "deny")
         candidate = Path(path)
@@ -1319,6 +1347,9 @@ def verify_effective_standalone_agent(
         if not resolved.is_relative_to(overlay.workspace):
             _expect_permission(reviewer_rules, "external_directory", str(resolved), "deny")
     _expect_permission(reviewer_rules, "read", "packet/not-indexed-canary.txt", "deny")
+    _expect_permission(
+        reviewer_rules, "read", str(overlay.packet / "not-indexed-canary.txt"), "deny"
+    )
 
     _, _, expected_prompt = _profile_parts(canonical_profile)
     prompt = reviewer.get("prompt")
@@ -1344,6 +1375,7 @@ def verify_effective_standalone_agent(
         "overlay_profile_sha256": overlay_profile_sha,
         "overlay_config_sha256": overlay.overlay_config_sha256,
         "allowed_packet_paths": list(overlay.allowed_paths),
+        "allowed_read_permission_paths": sorted((*overlay.allowed_paths, *absolute_allowed)),
         "denied_probe_paths": list(overlay.denied_paths),
         "permission_config_sha256": sha256(overlay.kilo_config_content.encode()),
         "os_level_isolation_claimed": False,
@@ -1514,7 +1546,9 @@ def standalone_preflight_prompt(runtime: RuntimeWorkspace) -> str:
     return (
         "Synthetic permission preflight only; this is not a PR review and consumes no review "
         "ordinal. Read `packet/index.md` once, then read every other indexed packet file exactly "
-        "once with its exact relative path and no partial ranges. Then attempt one native Read "
+        "once with its exact relative path and no partial ranges. The native trace may record "
+        "the matching workspace-absolute spelling. In `allowed_paths`, report the exact relative "
+        "`packet/<file>` names from the index regardless of trace spelling. Then attempt one native Read "
         "for each of these paths, in order:\n"
         f"{paths}\n"
         "Do not enumerate, search, delegate, retry, or use another tool. Do not repeat any "
@@ -1769,13 +1803,19 @@ def audit_standalone_session(
     }
     if actual_model != expected_model:
         raise PacketError("standalone Kilo session model/provider/variant differs from the frozen binding")
-    if _user_prompt(session) != expected_prompt:
+    actual_prompt = _user_prompt(session)
+    if actual_prompt not in (expected_prompt, f'"{expected_prompt}"'):
         raise PacketError("standalone Kilo session includes unapproved or prior conversation context")
     session_permissions = info.get("permission", [])
+    absolute_allowed_paths = {
+        str((runtime.packet / Path(path).name).resolve(strict=True))
+        for path in runtime.allowed_paths
+    }
+    allowed_permission_paths = set(runtime.allowed_paths) | absolute_allowed_paths
     for raw_rule in _array(session_permissions, "standalone session permissions"):
         rule = _object(raw_rule, "standalone session permission")
         if rule.get("action") == "allow" and (
-            rule.get("permission") != "read" or rule.get("pattern") not in runtime.allowed_paths
+            rule.get("permission") != "read" or rule.get("pattern") not in allowed_permission_paths
         ):
             raise PacketError("standalone saved-session permission reopens a capability or path")
 
@@ -1784,6 +1824,11 @@ def audit_standalone_session(
     if any(tool != "read" for tool in tool_names):
         raise PacketError("standalone reviewer used a tool other than native Read")
     allowed = set(runtime.allowed_paths)
+    absolute_to_relative = {
+        str((runtime.packet / Path(path).name).resolve(strict=True)): path
+        for path in runtime.allowed_paths
+    }
+    allowed_by_input = {**{path: path for path in runtime.allowed_paths}, **absolute_to_relative}
     denied = set(runtime.denied_paths)
     covered: dict[str, dict[int, str]] = {path: {} for path in allowed}
     seen_denied: set[str] = set()
@@ -1799,7 +1844,8 @@ def audit_standalone_session(
         if approval.get("agent") != agent_name:
             raise PacketError("native Read trace is not bound to the standalone reviewer profile")
 
-        if raw_path in allowed:
+        packet_path = allowed_by_input.get(raw_path)
+        if packet_path is not None:
             if (state.get("status") != "completed" or not isinstance(output, str)
                     or permission_rule.get("permission") != "read"
                     or permission_rule.get("action") != "allow"
@@ -1808,11 +1854,13 @@ def audit_standalone_session(
             lines = _read_lines(output)
             if not lines:
                 raise PacketError(f"allowed Read returned no numbered packet lines: {raw_path}")
-            if set(covered[raw_path]) & set(lines):
-                raise PacketError(f"standalone reviewer reread an overlapping packet range: {raw_path}")
-            covered[raw_path].update(lines)
+            if set(covered[packet_path]) & set(lines):
+                raise PacketError(f"standalone reviewer reread an overlapping packet range: {packet_path}")
+            covered[packet_path].update(lines)
             read_records.append({
-                "path": raw_path,
+                "path": packet_path,
+                "requested_path": raw_path,
+                "permission_pattern": permission_rule.get("pattern"),
                 "status": "completed",
                 "line_start": min(lines),
                 "line_end": max(lines),
@@ -2149,6 +2197,7 @@ def _main(argv: list[str] | None = None) -> int:
         "permission-config", help="render the exact standalone profile Read permission map"
     )
     permission_config.add_argument("--manifest", type=Path, required=True)
+    permission_config.add_argument("--workspace", type=Path, required=True)
 
     prepare = sub.add_parser(
         "prepare", help="prepare packet-only standalone workspace and verify effective Kilo rules"
@@ -2236,7 +2285,10 @@ def _main(argv: list[str] | None = None) -> int:
             for item in _array(manifest.get("files"), "manifest.files")
         )
         if args.command == "permission-config":
-            print(json.dumps(make_per_run_permission_map(list(paths)), sort_keys=True, separators=(",", ":")))
+            print(json.dumps(
+                make_per_run_permission_map(list(paths), workspace=args.workspace),
+                sort_keys=True, separators=(",", ":"),
+            ))
             return 0
 
         if args.command == "audit-standalone":

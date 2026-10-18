@@ -6310,6 +6310,13 @@ neither is a new live check of the current deployment.
   also failed closed: its `Read("packet/index.md")` was denied by `agent` rule
   `read:* deny` before bytes despite a passing static resolver; no other calls or
   probes occurred. The failure and export digest are in the excluded delivery record.
+  The corrected r2 runtime had the exact standalone identity/model and `parentID: null`,
+  and all six escape probes were denied before content, but its first indexed Read was
+  issued with the workspace-absolute file path, which the relative-only exact rule did
+  not match; zero packet bytes were read. Its exported user prompt was exactly the
+  expected synthetic prompt wrapped in literal double quotes, with no extra context.
+  The filtered r2 trace/export digests remain in the excluded delivery record; r2
+  consumed no review ordinal.
 - **Selected execution:** Each `/review-pr`, `/finish-pr` and `/loop` review uses
   one fresh official Kilo 7.8.8 CLI process/session with `--pure run --agent
   pr-reviewer-standalone --format json` and the explicitly frozen provider/model/
@@ -6325,8 +6332,9 @@ neither is a new live check of the current deployment.
   workspace whose only entry is an immutable `packet/` directory. Its separate
   per-run `KILO_CONFIG_DIR` holds a generated copy with the same identity/mode/prompt
   and an ephemeral frontmatter permission map: all tools denied, Read allowed only
-  for exact indexed packet files, and external directories denied. The tracked
-  canonical profile remains deny-all. r1's actual session denied
+  for each indexed packet file's exact relative name and matching workspace-absolute
+  path, and external directories denied. No directory/prefix grants are allowed. The
+  tracked canonical profile remains deny-all. r1's actual session denied
   `Read("packet/index.md")` under `agent read:* deny` despite static environment
   overlay check passing. Keep per-run `kilo.json` and `KILO_CONFIG_CONTENT` empty (`{}`);
   put packet-specific Read allows directly in the ephemeral primary profile frontmatter.
@@ -6345,6 +6353,8 @@ neither is a new live check of the current deployment.
   Audit the actual primary session identity/mode, `parentID: null`, provider/model/
   variant dispatch, every native tool call, exact permission decision and returned
   bytes, absence of prior context/forbidden tools, and unchanged packet inventory.
+  Kilo's sole user message must equal the exact expected prompt, permitting only the
+  observed literal-double-quote wrapper and no other prefix, suffix or context.
   Preflights do not consume review ordinals. Repeat the actual session/export and
   packet-integrity audit after every whole-PR review; missing trace or any mismatch
   fails closed.

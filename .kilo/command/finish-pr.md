@@ -55,7 +55,8 @@ delivery; STOP_REVISE still requires an explicit owner decision, not a new PR/na
    pinned Kilo sources, owner sources/receipts and one indexed source file per changed
    path) but harmless synthetic bytes only. Use a
     separate profile config directory containing a generated copy with the same
-    standalone identity/mode/prompt and packet-specific Read rules in its frontmatter.
+    standalone identity/mode/prompt and exact relative plus matching workspace-absolute
+    Read rules for each packet file in its frontmatter.
     Run `tools/reviewer_packet.py prepare --synthetic --preflight` with this packet,
     `--profile` set to the tracked `.kilo/agents/pr-reviewer-standalone.md`, and
     `--profile-source-root` set to the clean frozen checkout (omit `--source-root` for

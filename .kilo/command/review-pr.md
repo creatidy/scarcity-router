@@ -42,7 +42,8 @@ HOME/XDG_CONFIG/state/cache/TMP paths, existing authenticated `XDG_DATA_HOME` an
 approved provider/model/variant. The tracked profile frontmatter must declare
 `mode: primary`; Kilo debug must report a CLI-runnable mode (`primary` or `all`,
 never `subagent`), the exact canonical prompt hash and Read as the sole enabled tool
-with exact per-run profile-frontmatter path rules under the same `KILO_CONFIG_DIR`,
+with exact relative and matching workspace-absolute per-run profile-frontmatter
+rules for every indexed packet file under the same `KILO_CONFIG_DIR`,
 empty `KILO_CONFIG_CONTENT={}` and `KILO_DISABLE_PROJECT_CONFIG=1` environment used
 for dispatch.
 
