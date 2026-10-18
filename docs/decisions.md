@@ -6399,7 +6399,7 @@ neither is a new live check of the current deployment.
   `packages/opencode/src/tool/read.ts:203-205`. This corrects input handling only;
   exact per-file worktree-relative allows, wildcard deny, external-directory deny and
   all escape probes remain unchanged.
-- **Current owner-directed ordinal sequence:** Preserve consumed ordinals #1-8,
+- **Prior owner-directed ordinal sequence (retained as history):** Preserve consumed ordinals #1-8,
   including the owner-reported #7 security `REQUEST_CHANGES` with provenance
   `UNVERIFIED`; #8 remains failed with no valid verdict. Adrian's direct instruction
   on 2026-10-18 authorizes #9 as the final ordinary review only after the sanitized
@@ -6409,9 +6409,25 @@ neither is a new live check of the current deployment.
   requirement. Ordinal #10 is reserved for Adrian's later manual
   `gpt-daybreak-blue-latest` security review only after a valid current #9 APPROVE. A
   valid #9 APPROVE returns `READY_FOR_OWNER_SECURITY_REVIEW`. No #11 or other
-  review-ceiling extension is authorized. No Daybreak is invoked automatically. No
-  merge, issue closure, release, deployment, `main` promotion or unrelated
+  review-ceiling extension was authorized at that point. No Daybreak was invoked
+  automatically. No merge, issue closure, release, deployment, `main` promotion or unrelated
   repository/worktree mutation is authorized.
+- **Superseding direct owner amendment for #212/PR #213:** Adrian's direct owner
+  instruction in the Kilo conversation at `2026-10-18T19:24:31Z` explicitly amends
+  the D-069 ceiling and this D-077 ordinal allocation for this bootstrap delivery
+  only. Its exact message is preserved verbatim at the Git-locally excluded
+  `.review-evidence-212/owner-d069-ceiling-amendment-2026-10-18.txt`, SHA-256
+  `be746960ffc98ddbbacd905c4c3a2af01e105484620af57a12b7509168e4d0c4`. The direct
+  owner message is the authority; any Kilo-authored Forgejo comment/body recording
+  it is a transcription, not an owner-authored source.
+  - Effective maximum for #212/PR #213 is 11 invocations: preserve #1-9 unchanged;
+    #10 is the final independent ordinary whole-PR review; after its valid APPROVE,
+    #11 is Adrian's separate manual Daybreak security review through official Codex.
+    No #12 or automatic extension is authorized.
+  - The default maximum remains ten for every other delivery. This is a direct
+    owner amendment to the existing D-069/D-077 decision, not authority from
+    unintegrated D-069A. Do not reset/reclassify history, invoke Daybreak from Kilo,
+    merge or close #212 before both approvals.
 
 ### U-014 - Native coding backend versus Kernel-owned workspace lifecycle
 
