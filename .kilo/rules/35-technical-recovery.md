@@ -130,8 +130,9 @@ The committed `.kilo/agents/pr-reviewer.md` and
 standalone review, the primary builds a per-run Kilo config directory with a generated
 profile copy whose identity/mode/prompt match the tracked standalone profile and whose
 frontmatter contains only exact Kilo worktree-relative Read patterns for indexed files
-under wildcard deny. Kilo 7.8.8's Read schema requires an absolute `filePath`; supply
-the exact workspace-absolute path for each indexed file in the prompt. For this sealed
+under wildcard deny. Although Kilo 7.8.8's Read schema describes `filePath` as absolute,
+the handler resolves relative values against `instance.directory`; supply only exact
+indexed `packet/<file>` values in the prompt. For this sealed
 non-VCS workspace, Kilo resolves `projectID=global` and uses the filesystem root as its
 worktree, so permission patterns are exact paths relative to that root (for example,
 `tmp/.../workspace/packet/index.md`), not merely `packet/index.md`. Do not add absolute,
@@ -156,9 +157,9 @@ nonexistent absolute path; Kilo returned `File not found` before requesting Read
 permission. Thus r3's missing metadata was a path-resolution failure, not an
 authorization result. `KILO_NO_DAEMON=1` also prevents a possible shared-server config
 mismatch; prior trace does not prove whether a daemon was attached. The prompt must bind
-every allowed file to its exact absolute path, and the audit may accept only the expected
-prompt verbatim or Kilo's exact literal-double-quote wrapper. These preflights consume no
-review ordinal.
+every allowed file to its exact relative packet path, and the audit may accept only the
+expected prompt verbatim or Kilo's exact literal-double-quote wrapper. These preflights
+consume no review ordinal.
 
 The standalone Kilo CLI process has its working directory set to a sealed temporary
 workspace whose only entry is a `packet/` directory; it does not receive the source

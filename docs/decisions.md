@@ -6340,9 +6340,11 @@ neither is a new live check of the current deployment.
   per-run `KILO_CONFIG_DIR` holds a generated copy with the same identity/mode/prompt
   and an ephemeral frontmatter permission map: all tools denied, Read allowed only
   for exact Kilo worktree-relative patterns of indexed files, and external directories
-  denied. The primary's prompt supplies the exact workspace-absolute `filePath` for
-  each indexed file because the Kilo Read tool schema requires absolute paths. Kilo
-  normalizes each target with `path.relative(instance.worktree, target)` before
+  denied. Although the Kilo 7.8.8 Read schema description calls `filePath` absolute,
+  its handler resolves relative values against `instance.directory` before permission
+  checks. The primary's prompt therefore supplies only exact indexed relative
+  `packet/<file>` values. Kilo normalizes each target with
+  `path.relative(instance.worktree, target)` before
   checking the profile; for this non-VCS global project the worktree is `/`, so the
   exact patterns include the workspace's relative path from that root. No absolute,
   directory or prefix permission grants are added. The
@@ -6359,18 +6361,19 @@ neither is a new live check of the current deployment.
   `~/.config/kilo/kilo.jsonc`, copy/print credential values or place them in any
   packet, prompt, trace summary or comment.
 - **Required runtime proof:** Static resolver output is supplementary, not a
-   security pass. Before reserving an ordinal, the same standalone CLI path must
-   report `projectID=global`, read every file in a complete production-equivalent synthetic packet and deny
-  sibling, parent, absolute, traversal and symlink-escape reads before content.
+  security pass. Before reserving an ordinal, the same standalone CLI path must
+  report `projectID=global`, read every file in a complete production-equivalent
+  synthetic packet and deny sibling, parent, absolute, traversal and symlink-escape
+  reads before content.
   Audit the actual primary session identity/mode, `parentID: null`, provider/model/
   variant dispatch, every native tool call, exact permission decision and returned
   bytes, absence of prior context/forbidden tools, and unchanged packet inventory.
   Kilo's sole user message must equal the exact expected prompt, permitting only the
   observed literal-double-quote wrapper and no other prefix, suffix or context.
   Launch with `KILO_NO_DAEMON=1` so the fresh CLI process uses the exact per-run profile
-  instead of an existing daemon's configuration. Preflights do not consume review ordinals. Repeat the actual session/export and
-  packet-integrity audit after every whole-PR review; missing trace or any mismatch
-  fails closed.
+  instead of an existing daemon's configuration. Preflights do not consume review
+  ordinals. Repeat the actual session/export and packet-integrity audit after every
+  whole-PR review; missing trace or any mismatch fails closed.
 - **Actual guarantee and limits:** This mechanism enforces a Kilo tool-level
   boundary only. A packet-only working directory is not proof of filesystem or
   OS-level isolation. Record `DISPATCH_VERIFIED` from Kilo session/provider/model/
@@ -6386,14 +6389,29 @@ neither is a new live check of the current deployment.
   performs sanitized executable validation and canonical currentness checks.
   Exact APPROVE, empty findings, full coverage, valid UX assessment and actual
   trace-audit PASS are all required; any HEAD/base change invalidates approval.
-- **Unchanged authority:** Preserve consumed ordinals #1-7 and the owner-reported
-  #7 security `REQUEST_CHANGES` with provenance `UNVERIFIED`. Ordinal #8 remains
-  ordinary review; reserve #9 for Adrian's later manual
-  `gpt-daybreak-blue-latest` security review only after valid #8 approval; #10 is
-  the default-ten contingency. A valid #8 APPROVE returns
-  `READY_FOR_OWNER_SECURITY_REVIEW`. No Daybreak is invoked automatically. No
-  exception above ten, merge, issue closure, release, deployment, `main`
-  promotion or unrelated repository/worktree mutation is authorized.
+- **Path handling correction:** The seven failed #8 Read calls used a stale,
+  model-generated absolute workspace path and returned `File not found` before
+  permission evaluation. The sanitized session separately records a retryable
+  generic `APIError` (`Network connection failed`) with no HTTP status or safe
+  underlying OS cause; the cause remains unverified. The prompt now uses only exact
+  indexed relative paths supported by the pinned 7.8.8 Read implementation at Kilo
+  revision `e2887f08e5a6394299c810ba508f358aaf4c5bc3`,
+  `packages/opencode/src/tool/read.ts:203-205`. This corrects input handling only;
+  exact per-file worktree-relative allows, wildcard deny, external-directory deny and
+  all escape probes remain unchanged.
+- **Current owner-directed ordinal sequence:** Preserve consumed ordinals #1-8,
+  including the owner-reported #7 security `REQUEST_CHANGES` with provenance
+  `UNVERIFIED`; #8 remains failed with no valid verdict. Adrian's direct instruction
+  on 2026-10-18 authorizes #9 as the final ordinary review only after the sanitized
+  diagnosis, exact-relative-path correction and one successful short synthetic
+  session with all escape probes denied. This is a #212 recovery-specific supplement
+  to the prior full r4 synthetic proof; it does not weaken the ordinary full-preflight
+  requirement. Ordinal #10 is reserved for Adrian's later manual
+  `gpt-daybreak-blue-latest` security review only after a valid current #9 APPROVE. A
+  valid #9 APPROVE returns `READY_FOR_OWNER_SECURITY_REVIEW`. No #11 or other
+  review-ceiling extension is authorized. No Daybreak is invoked automatically. No
+  merge, issue closure, release, deployment, `main` promotion or unrelated
+  repository/worktree mutation is authorized.
 
 ### U-014 - Native coding backend versus Kernel-owned workspace lifecycle
 

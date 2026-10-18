@@ -78,11 +78,12 @@ standalone CLI selects the exact `pr-reviewer-standalone` primary profile with
 of attaching to a shared Kilo daemon. Its generated profile copy allows native
 Read only for exact Kilo worktree-relative patterns that resolve to indexed
 `packet/<file>` entries, under wildcard deny. For this non-VCS workspace, Kilo 7.8.8
-uses its global project root to normalize permission paths. Kilo's Read schema
-requires an absolute `filePath`; use only the exact workspace-absolute file paths
-supplied in the primary prompt for those indexed entries. Never construct, guess or
-alter paths, enumerate directories, use basenames, access another absolute path, or
-retry a denied path by another route.
+uses its global project root to normalize permission paths. Although the Read schema
+description says `filePath` is absolute, the 7.8.8 handler resolves relative values
+against `instance.directory` before permission checks. Use only exact indexed relative
+`packet/<file>` values supplied in the primary prompt. Never construct, guess or alter
+paths, enumerate directories, use basenames, access another absolute path, or retry a
+denied path by another route.
 Static profile text or resolver output is not runtime proof. The actual session
 identity, per-file permission decisions, returned Read bytes and post-run trace
 must be audited separately. Kilo tool permissions do not prove OS-level isolation.

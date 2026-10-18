@@ -56,8 +56,9 @@ delivery; STOP_REVISE still requires an explicit owner decision, not a new PR/na
    path) but harmless synthetic bytes only. Use a
     separate profile config directory containing a generated copy with the same
     standalone identity/mode/prompt and only exact Kilo worktree-relative Read rules
-    for indexed `packet/<file>` files in its frontmatter; the prompt supplies their
-    exact workspace-absolute Read filePath values.
+    for indexed `packet/<file>` files in its frontmatter; the prompt supplies only
+    their exact relative Read `filePath` values. Kilo 7.8.8 resolves these against
+    the session directory before checking the exact worktree-relative permission rule.
     Run `tools/reviewer_packet.py prepare --synthetic --preflight` with this packet,
     `--profile` set to the tracked `.kilo/agents/pr-reviewer-standalone.md`, and
     `--profile-source-root` set to the clean frozen checkout (omit `--source-root` for

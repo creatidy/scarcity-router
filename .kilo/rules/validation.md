@@ -40,8 +40,9 @@
   tools. Prepare a per-run `KILO_CONFIG_DIR` with a generated copy whose reviewer
   identity/mode/prompt are unchanged and whose frontmatter allows only exact Kilo
   worktree-relative Read patterns for indexed `packet/<file>` entries under wildcard
-  deny. The standalone prompt must supply the exact workspace-absolute filePath values
-  required by Kilo Read. Set
+  deny. The standalone prompt must supply only exact indexed relative `packet/<file>`
+  values; Kilo 7.8.8 resolves them against the session directory before permission
+  checks despite the schema's absolute-path description. Set
   `KILO_NO_DAEMON=1` to prevent the CLI from attaching to a server with different
   configuration. Keep per-run `kilo.json` and `KILO_CONFIG_CONTENT`
   empty (`{}`): r1's actual standalone session denied the first allowed Read under

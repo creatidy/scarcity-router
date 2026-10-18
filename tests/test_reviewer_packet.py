@@ -826,19 +826,26 @@ class ReviewerPacketTests(unittest.TestCase):
         runtime: RuntimeWorkspace,
         *,
         preflight: bool,
+        short_preflight: bool = False,
         result_override: dict[str, object] | None = None,
     ) -> tuple[dict[str, object], dict[str, str], str, str]:
         expected_model = {"provider_id": "openai", "model_id": "gpt-6-luna", "variant": "max"}
-        title = (
-            "synthetic-standalone-permission-preflight"
-            if preflight else f"review-issue-{runtime.inspection.issue_number}-pr-{runtime.inspection.pull_number}"
-        )
+        if short_preflight:
+            title = "synthetic-standalone-relative-path-preflight"
+        elif preflight:
+            title = "synthetic-standalone-permission-preflight"
+        else:
+            title = f"review-issue-{runtime.inspection.issue_number}-pr-{runtime.inspection.pull_number}"
         prompt = (
-            standalone_preflight_prompt(runtime)
+            standalone_preflight_prompt(runtime, short=short_preflight)
             if preflight else standalone_review_prompt(runtime)
         )
         parts: list[dict[str, object]] = []
-        for path in runtime.allowed_paths:
+        allowed_paths = (
+            ("packet/index.md", "packet/source-00.md")
+            if preflight and short_preflight else runtime.allowed_paths
+        )
+        for path in allowed_paths:
             if preflight:
                 lines = None
             else:
@@ -852,9 +859,10 @@ class ReviewerPacketTests(unittest.TestCase):
                         for number in range(start, end + 1)
                     }
                     lines = line_numbers
-            native_path = str(runtime.packet / Path(path).name)
+            native_path = path
+            resolved_path = runtime.workspace / path
             permission_pattern = str(
-                Path(native_path).resolve().relative_to(Path(runtime.workspace.resolve().anchor))
+                resolved_path.resolve().relative_to(Path(runtime.workspace.resolve().anchor))
             )
             parts.append(self._read_call(
                 runtime, native_path, line_numbers=lines, permission_pattern=permission_pattern
@@ -863,8 +871,8 @@ class ReviewerPacketTests(unittest.TestCase):
             parts.extend(self._read_call(runtime, path, denied=True) for path in runtime.denied_paths)
             final: dict[str, object] = {
                 "preflight": "PASS",
-                "allowed_paths": list(runtime.allowed_paths),
-                "complete_read_count": len(runtime.allowed_paths),
+                "allowed_paths": list(allowed_paths),
+                "complete_read_count": len(allowed_paths),
                 "probe_results": [
                     {"path": path, "result": "DENIED_BEFORE_CONTENT", "bytes_returned": False}
                     for path in runtime.denied_paths
@@ -992,16 +1000,27 @@ class ReviewerPacketTests(unittest.TestCase):
             _, _, runtime = self._prepare_standalone(Path(temporary), preflight=False)
             prompt = standalone_review_prompt(runtime)
             self.assertIn("packet/index.md", prompt)
-            self.assertIn("Kilo's native Read `filePath` requires an absolute path", prompt)
+            self.assertIn("exact relative Read `filePath` values", prompt)
+            self.assertIn("resolves them against the session directory", prompt)
             for path in runtime.allowed_paths:
-                absolute_path = str(runtime.packet / Path(path).name)
-                self.assertIn(f"`{absolute_path}` (`{path}`)", prompt)
+                self.assertIn(f"- `{path}`", prompt)
             self.assertIn(runtime.inspection.head, prompt)
             self.assertIn(runtime.inspection.base, prompt)
             self.assertIn(runtime.inspection.merge_base, prompt)
             self.assertNotIn(str(ROOT), prompt)
+            self.assertNotIn(f"{runtime.packet}/", prompt)
             for historical in ("REQUEST_CHANGES", "prior findings", "r6", "r7", "parent conclusion"):
                 self.assertNotIn(historical, prompt)
+
+    def test_short_preflight_prompt_uses_two_exact_relative_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            _, _, runtime = self._prepare_standalone(Path(temporary), preflight=True)
+            prompt = standalone_preflight_prompt(runtime, short=True)
+            self.assertIn("`packet/index.md`", prompt)
+            self.assertIn("`packet/source-00.md`", prompt)
+            self.assertNotIn("`packet/source-01.md`", prompt)
+            self.assertIn("relative Read `filePath` values", prompt)
+            self.assertNotIn(f"{runtime.packet}/", prompt)
 
     def test_standalone_workspace_contains_only_packet_and_external_canaries(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1073,6 +1092,61 @@ class ReviewerPacketTests(unittest.TestCase):
             self.assertEqual(result["denied_before_content_count"], len(runtime.denied_paths))
             self.assertEqual(result["preflight_result"]["preflight"], "PASS")
 
+    def test_short_preflight_audits_relative_reads_and_every_escape_denial(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            _, _, runtime = self._prepare_standalone(Path(temporary), preflight=True)
+            session, expected_model, title, prompt = self._standalone_session(
+                runtime, preflight=True, short_preflight=True
+            )
+            result = audit_standalone_session(
+                session,
+                session_export_sha256="a" * 64,
+                runtime=runtime,
+                expected_model=expected_model,
+                expected_title=title,
+                expected_prompt=prompt,
+                preflight=True,
+                short_preflight=True,
+            )
+            self.assertEqual(result["status"], "STANDALONE_PREFLIGHT_TRACE_PASS")
+            self.assertTrue(result["short_preflight"])
+            self.assertEqual(result["allowed_file_count"], 2)
+            self.assertEqual(result["denied_before_content_count"], len(runtime.denied_paths))
+            read_trace = cast(list[dict[str, object]], result["read_trace"])
+            self.assertEqual(
+                [call["requested_path"] for call in read_trace[:2]],
+                ["packet/index.md", "packet/source-00.md"],
+            )
+            self.assertEqual(
+                [call["status"] for call in read_trace[2:]],
+                ["denied_before_content"] * len(runtime.denied_paths),
+            )
+
+    def test_standalone_audit_rejects_absolute_paths_and_preflight_tampering(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            _, _, runtime = self._prepare_standalone(Path(temporary), preflight=False)
+            session, expected_model, title, prompt = self._standalone_session(runtime, preflight=False)
+            messages = cast(list[dict[str, object]], session["messages"])
+            parts = cast(list[dict[str, object]], messages[1]["parts"])
+            state = cast(dict[str, object], parts[0]["state"])
+            request = cast(dict[str, object], state["input"])
+            request["filePath"] = str(runtime.packet / "index.md")
+            with self.assertRaisesRegex(PacketError, "unlisted Read path"):
+                _ = audit_standalone_session(
+                    session,
+                    session_export_sha256="a" * 64,
+                    runtime=runtime,
+                    expected_model=expected_model,
+                    expected_title=title,
+                    expected_prompt=prompt,
+                )
+
+            preflight_root = Path(temporary) / "preflight"
+            preflight_root.mkdir()
+            _, _, runtime = self._prepare_standalone(preflight_root, preflight=True)
+            session, expected_model, title, prompt = self._standalone_session(
+                runtime, preflight=True
+            )
             extra_prompt = cast(dict[str, object], json.loads(json.dumps(session)))
             extra_messages = cast(list[dict[str, object]], extra_prompt["messages"])
             user_parts = cast(list[dict[str, object]], extra_messages[0]["parts"])

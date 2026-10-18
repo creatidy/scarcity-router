@@ -43,8 +43,9 @@ approved provider/model/variant. The tracked profile frontmatter must declare
 `mode: primary`; Kilo debug must report a CLI-runnable mode (`primary` or `all`,
 never `subagent`), the exact canonical prompt hash and Read as the sole enabled tool,
 with only exact Kilo worktree-relative rules for indexed `packet/<file>` files under
-wildcard deny. The prompt supplies the corresponding exact workspace-absolute
-filePath values required by Kilo Read. Use `KILO_NO_DAEMON=1` so `run` cannot attach
+wildcard deny. The prompt supplies only exact indexed relative `packet/<file>` values;
+Kilo 7.8.8 resolves them against the session directory before exact permission matching.
+Use `KILO_NO_DAEMON=1` so `run` cannot attach
 to a server with another configuration. Keep `kilo.json`/`KILO_CONFIG_CONTENT` empty
 and `KILO_DISABLE_PROJECT_CONFIG=1` for both static verification and dispatch.
 

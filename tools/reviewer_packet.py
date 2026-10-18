@@ -919,7 +919,7 @@ def _kilo_permission_pattern(worktree_root: Path, absolute_path: Path) -> str:
 
 def _kilo_packet_path_maps(
     packet_paths: tuple[str, ...] | list[str], *, workspace: Path,
-) -> tuple[dict[str, str], dict[str, str]]:
+) -> dict[str, str]:
     safe_paths = tuple(sorted({_relative_file(path) for path in packet_paths}))
     if not safe_paths or len(safe_paths) != len(packet_paths):
         raise PacketError("standalone profile requires a unique nonempty exact-file list")
@@ -931,7 +931,6 @@ def _kilo_packet_path_maps(
     packet_root = packet_root.resolve(strict=True)
     if packet_root.parent != workspace_root:
         raise PacketError("standalone profile packet root escapes its workspace")
-    absolute_paths: dict[str, str] = {}
     permission_patterns: dict[str, str] = {}
     for filename in safe_paths:
         target = packet_root / filename
@@ -947,16 +946,15 @@ def _kilo_packet_path_maps(
         if absolute.parent != packet_root:
             raise PacketError(f"standalone packet allow path escapes its root: {filename}")
         packet_path = f"packet/{filename}"
-        absolute_paths[packet_path] = str(absolute)
         permission_patterns[packet_path] = _kilo_permission_pattern(worktree_root, absolute)
-    return absolute_paths, permission_patterns
+    return permission_patterns
 
 
 def make_per_run_permission_map(
     packet_paths: tuple[str, ...] | list[str], *, workspace: Path,
 ) -> dict[str, object]:
     """Allow only exact Kilo worktree-relative Read patterns for one packet."""
-    _, permission_patterns = _kilo_packet_path_maps(packet_paths, workspace=workspace)
+    permission_patterns = _kilo_packet_path_maps(packet_paths, workspace=workspace)
     read_rules: dict[str, str] = {"*": "deny"}
     read_rules.update({pattern: "allow" for pattern in permission_patterns.values()})
     return {
@@ -1537,18 +1535,10 @@ def _verify_workspace_copy(runtime: RuntimeWorkspace) -> str:
     return sha256(json.dumps(sorted(hashes), separators=(",", ":")).encode())
 
 
-def _absolute_packet_path_map(runtime: RuntimeWorkspace) -> dict[str, str]:
-    absolute_paths, _ = _kilo_packet_path_maps(
-        [Path(path).name for path in runtime.allowed_paths], workspace=runtime.workspace
-    )
-    return absolute_paths
-
-
 def _kilo_permission_path_map(runtime: RuntimeWorkspace) -> dict[str, str]:
-    _, permission_patterns = _kilo_packet_path_maps(
+    return _kilo_packet_path_maps(
         [Path(path).name for path in runtime.allowed_paths], workspace=runtime.workspace
     )
-    return permission_patterns
 
 
 def standalone_review_prompt(runtime: RuntimeWorkspace) -> str:
@@ -1559,16 +1549,17 @@ def standalone_review_prompt(runtime: RuntimeWorkspace) -> str:
     )):
         raise PacketError("standalone review prompt requires exact repository identity and refs")
     paths = "\n".join(
-        f"- `{absolute}` (`{packet_path}`)"
-        for packet_path, absolute in _absolute_packet_path_map(runtime).items()
+        f"- `{packet_path}`"
+        for packet_path in runtime.allowed_paths
     )
     return (
         "Review the complete frozen pull request independently using only `packet/index.md` "
-        "and its indexed packet files. Kilo's native Read `filePath` requires an absolute path. "
-        "Use only the exact absolute paths listed below; do not construct or alter file paths. "
+        "and its indexed packet files. Use only the exact relative Read `filePath` values "
+        "listed below; Kilo 7.8.8 resolves them against the session directory before checking "
+        "the exact per-file permission rule. Do not construct or alter file paths. "
         "Read the index first, then inspect every required file/range yourself. Do not infer "
         "evidence from the primary or outside this packet.\n"
-        f"Exact native Read filePath values:\n{paths}\n\n"
+        f"Exact relative native Read filePath values:\n{paths}\n\n"
         f"Repository: {inspection.repository}\nIssue: #{inspection.issue_number}\n"
         f"PR: #{inspection.pull_number}\nHEAD: {inspection.head}\n"
         f"Base: {inspection.base}\nMerge-base: {inspection.merge_base}\n\n"
@@ -1599,28 +1590,31 @@ def standalone_run_argv(
     ]
 
 
-def standalone_preflight_prompt(runtime: RuntimeWorkspace) -> str:
+def standalone_preflight_prompt(runtime: RuntimeWorkspace, *, short: bool = False) -> str:
     if not runtime.denied_paths or set(runtime.probe_labels) != set(runtime.denied_paths):
         raise PacketError("synthetic standalone preflight requires the complete labeled escape set")
-    allowed_paths = "\n".join(
-        f"- `{absolute}` (`{packet_path}`)"
-        for packet_path, absolute in _absolute_packet_path_map(runtime).items()
-    )
+    short_paths = ("packet/index.md", "packet/source-00.md")
+    if short and not set(short_paths).issubset(runtime.allowed_paths):
+        raise PacketError("short preflight requires the index and first changed-source file")
+    read_paths = short_paths if short else runtime.allowed_paths
+    allowed_paths = "\n".join(f"- `{path}`" for path in read_paths)
     denied_paths = "\n".join(
         f"- `{path}` ({runtime.probe_labels[path]})" for path in runtime.denied_paths
     )
+    read_scope = "the index and first changed-source file" if short else "every indexed packet file"
     return (
         "Synthetic permission preflight only; this is not a PR review and consumes no review "
-        "ordinal. Kilo's native Read `filePath` requires an absolute path. Read `packet/index.md` "
-        "first using its exact path below, then read every other indexed packet file exactly once "
-        "using the corresponding listed absolute path and no partial ranges. In `allowed_paths`, "
-        "report the canonical relative `packet/<file>` names shown in parentheses.\n"
-        f"Exact allowed native Read filePath values:\n{allowed_paths}\n"
+        "ordinal. Kilo 7.8.8 resolves relative Read `filePath` values against the session "
+        "directory before checking the exact per-file permission rule. Read "
+        f"{read_scope} exactly once with no partial ranges, in this order, using only these "
+        "indexed relative paths:\n"
+        f"{allowed_paths}\n"
         "Then attempt one native Read for each of these denied paths, in order, using the exact "
         "path string shown:\n"
         f"{denied_paths}\n"
         "Do not enumerate, search, delegate, retry, or use another tool. Do not repeat any "
-        "synthetic canary value. Return only JSON with keys `preflight`, `allowed_paths`, "
+        "synthetic canary value. In `allowed_paths`, return the exact relative packet paths "
+        "above in order. Return only JSON with keys `preflight`, `allowed_paths`, "
         "`complete_read_count`, `probe_results`, and `unauthorized_bytes_returned`. Each probe "
         "result must contain its exact `path`, `result` equal to `DENIED_BEFORE_CONTENT`, and "
         "`bytes_returned` equal to false. Set `preflight` to PASS only if every allowed read "
@@ -1724,7 +1718,9 @@ def _validate_review_result(text: str, inspection: PacketInspection) -> dict[str
     return result
 
 
-def _validate_preflight_result(text: str, runtime: RuntimeWorkspace) -> dict[str, Any]:
+def _validate_preflight_result(
+    text: str, runtime: RuntimeWorkspace, expected_paths: tuple[str, ...],
+) -> dict[str, Any]:
     try:
         result = _object(json.loads(text), "standalone preflight result")
     except (json.JSONDecodeError, PacketError) as err:
@@ -1735,10 +1731,10 @@ def _validate_preflight_result(text: str, runtime: RuntimeWorkspace) -> dict[str
     }:
         raise PacketError("standalone preflight result has missing or unexpected fields")
     if (result.get("preflight") != "PASS"
-            or result.get("allowed_paths") != list(runtime.allowed_paths)
-            or result.get("complete_read_count") != len(runtime.allowed_paths)
+            or result.get("allowed_paths") != list(expected_paths)
+            or result.get("complete_read_count") != len(expected_paths)
             or result.get("unauthorized_bytes_returned") is not False):
-        raise PacketError("standalone preflight did not report the exact complete packet and denial result")
+        raise PacketError("standalone preflight did not report the exact allowed reads and denial result")
     probes = _array(result.get("probe_results"), "standalone preflight probes")
     if len(probes) != len(runtime.denied_paths):
         raise PacketError("standalone preflight result omits an escape probe")
@@ -1757,6 +1753,7 @@ def summarize_failed_standalone_session(
     session_export_sha256: str,
     reason: str,
     preflight: bool,
+    short_preflight: bool = False,
 ) -> dict[str, Any]:
     """Persist a content-filtered trace when the independent audit fails closed."""
     info = _object(session.get("info"), "failed standalone session info")
@@ -1817,6 +1814,7 @@ def summarize_failed_standalone_session(
     return {
         "status": "STANDALONE_PREFLIGHT_TRACE_FAIL" if preflight else "STANDALONE_REVIEW_TRACE_FAIL",
         "failure_reason": reason,
+        "short_preflight": preflight and short_preflight,
         "session_export_sha256": session_export_sha256,
         "session": {
             "id": info.get("id"),
@@ -1847,6 +1845,7 @@ def audit_standalone_session(
     expected_title: str,
     expected_prompt: str,
     preflight: bool = False,
+    short_preflight: bool = False,
 ) -> dict[str, Any]:
     """Audit a fresh standalone primary session and native Read trace without echoing bytes."""
     _verify_overlay_files(runtime)
@@ -1876,6 +1875,8 @@ def audit_standalone_session(
         raise PacketError("standalone Kilo session includes unapproved or prior conversation context")
     if info.get("projectID") != "global":
         raise PacketError("standalone packet workspace did not resolve as Kilo's non-VCS global project")
+    if short_preflight and not preflight:
+        raise PacketError("short standalone preflight cannot be used for a PR review")
     permission_path_map = _kilo_permission_path_map(runtime)
     allowed_permission_paths = set(permission_path_map.values())
     session_permissions = info.get("permission", [])
@@ -1891,11 +1892,12 @@ def audit_standalone_session(
     if any(tool != "read" for tool in tool_names):
         raise PacketError("standalone reviewer used a tool other than native Read")
     allowed = set(runtime.allowed_paths)
-    absolute_to_relative = {
-        absolute: relative
-        for relative, absolute in _absolute_packet_path_map(runtime).items()
-    }
-    allowed_by_input = {**{path: path for path in runtime.allowed_paths}, **absolute_to_relative}
+    allowed_by_input = {path: path for path in runtime.allowed_paths}
+    preflight_paths = runtime.allowed_paths
+    if short_preflight:
+        preflight_paths = ("packet/index.md", "packet/source-00.md")
+        if not set(preflight_paths).issubset(allowed):
+            raise PacketError("short standalone preflight lacks its exact synthetic read paths")
     denied = set(runtime.denied_paths)
     covered: dict[str, dict[int, str]] = {path: {} for path in allowed}
     seen_denied: set[str] = set()
@@ -1989,13 +1991,15 @@ def audit_standalone_session(
         denied_sequence = [
             record["path"] for record in read_records if record["status"] == "denied_before_content"
         ]
-        if allowed_sequence != list(runtime.allowed_paths) or denied_sequence != list(runtime.denied_paths):
+        if allowed_sequence != list(preflight_paths) or denied_sequence != list(runtime.denied_paths):
             raise PacketError("standalone preflight did not follow the frozen read/probe order")
-        for path in allowed:
+        for path in preflight_paths:
             expected = _expected_line_map(runtime.packet / Path(path).name)
             if covered[path] != expected:
                 raise PacketError(f"standalone preflight did not read the complete packet file: {path}")
-        final_result = _validate_preflight_result(_final_assistant_text(session, agent_name), runtime)
+        final_result = _validate_preflight_result(
+            _final_assistant_text(session, agent_name), runtime, preflight_paths
+        )
     else:
         if seen_denied:
             raise PacketError("standalone PR review attempted an out-of-packet Read")
@@ -2038,11 +2042,12 @@ def audit_standalone_session(
         "runtime_backend_identity": "not independently observed",
         "session_export_sha256": session_export_sha256,
         "reviewer_tools": sorted(set(tool_names)),
-        "allowed_file_count": len(covered),
+        "allowed_file_count": len(preflight_paths) if preflight else len(covered),
         "denied_before_content_count": len(seen_denied),
         "read_trace": read_records,
         "packet_inventory_sha256": packet_inventory_sha256,
         "preflight": preflight,
+        "short_preflight": preflight and short_preflight,
         "preflight_result": final_result if preflight else None,
         "reviewer_result": None if preflight else final_result,
         "os_level_isolation_claimed": False,
@@ -2292,6 +2297,7 @@ def main(argv: list[str] | None = None) -> int:
     prepare.add_argument("--title")
     prepare.add_argument("--report", type=Path)
     prepare.add_argument("--preflight", action="store_true")
+    prepare.add_argument("--short-preflight", action="store_true")
     prepare.add_argument("--synthetic", action="store_true")
 
     audit = sub.add_parser("audit-standalone", help="audit a native standalone Kilo primary session")
@@ -2311,6 +2317,7 @@ def main(argv: list[str] | None = None) -> int:
     audit.add_argument("--kilo", type=Path, required=True)
     audit.add_argument("--report", type=Path)
     audit.add_argument("--preflight", action="store_true")
+    audit.add_argument("--short-preflight", action="store_true")
 
     args = parser.parse_args(argv)
     try:
@@ -2382,6 +2389,10 @@ def main(argv: list[str] | None = None) -> int:
             synthetic = prepared.get("synthetic_packet") is True
             if synthetic != args.preflight:
                 raise PacketError("preflight mode differs from the prepared packet type")
+            if prepared.get("short_preflight", False) is not args.short_preflight:
+                raise PacketError("short preflight mode differs from the prepared invocation")
+            if args.short_preflight and not args.preflight:
+                raise PacketError("short preflight requires a synthetic preflight session")
             if (synthetic and args.source_root is not None) or (
                 not synthetic and args.source_root is None
             ):
@@ -2413,7 +2424,7 @@ def main(argv: list[str] | None = None) -> int:
             }
             title = _string(prepared.get("reviewer_title"), "prepared reviewer title")
             expected_prompt = (
-                standalone_preflight_prompt(runtime)
+                standalone_preflight_prompt(runtime, short=args.short_preflight)
                 if args.preflight else standalone_review_prompt(runtime)
             )
             expected_argv = standalone_run_argv(args.kilo, expected_model, title, expected_prompt)
@@ -2447,6 +2458,7 @@ def main(argv: list[str] | None = None) -> int:
                     expected_title=title,
                     expected_prompt=expected_prompt,
                     preflight=args.preflight,
+                    short_preflight=args.short_preflight,
                 )
             except PacketError as err:
                 report = summarize_failed_standalone_session(
@@ -2454,6 +2466,7 @@ def main(argv: list[str] | None = None) -> int:
                     session_export_sha256=export_sha256,
                     reason=str(err),
                     preflight=args.preflight,
+                    short_preflight=args.short_preflight,
                 )
                 _write_report(args.report, report)
                 print(json.dumps(report, sort_keys=True, separators=(",", ":")))
@@ -2468,6 +2481,8 @@ def main(argv: list[str] | None = None) -> int:
             _ = validate_synthetic_preflight_packet(args.packet, args.manifest)
         elif args.preflight or args.source_root is None:
             raise PacketError("preflight must use a synthetic packet; production preparation requires a source checkout")
+        if args.short_preflight and not (args.preflight and args.synthetic):
+            raise PacketError("short preflight is allowed only for a synthetic permission check")
         canonical_profile = args.profile
         if canonical_profile.resolve() != (
             args.profile_source_root / ".kilo/agents/pr-reviewer-standalone.md"
@@ -2499,7 +2514,7 @@ def main(argv: list[str] | None = None) -> int:
             cache_home=args.cache_home,
         )
         expected_prompt = (
-            standalone_preflight_prompt(runtime)
+            standalone_preflight_prompt(runtime, short=args.short_preflight)
             if args.preflight else standalone_review_prompt(runtime)
         )
         model_binding = {
@@ -2508,7 +2523,9 @@ def main(argv: list[str] | None = None) -> int:
             "variant": args.variant,
         }
         title = args.title or (
-            "synthetic-standalone-permission-preflight"
+            "synthetic-standalone-relative-path-preflight"
+            if args.short_preflight
+            else "synthetic-standalone-permission-preflight"
             if args.preflight
             else f"review-issue-{runtime.inspection.issue_number}-pr-{runtime.inspection.pull_number}"
         )
@@ -2527,6 +2544,7 @@ def main(argv: list[str] | None = None) -> int:
         report: dict[str, Any] = {
             "status": "PRELAUNCH_STANDALONE_PERMISSION_PASS",
             "synthetic_packet": args.synthetic,
+            "short_preflight": args.short_preflight,
             "source_root": str(args.source_root.resolve()) if args.source_root is not None else None,
             "profile_source_root": str(args.profile_source_root.resolve()),
             "canonical_profile": str(canonical_profile.resolve()),
