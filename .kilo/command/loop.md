@@ -214,17 +214,17 @@ Routine safe reversible coding choices are autonomous, not owner questions.
 
 Use `.kilo/command/finish-pr.md` in this SAME primary context, not a second
 orchestrator. Reuse its complete frozen-PR packet/preflight/review/remediation
-procedure and the shared `.kilo/agents/pr-reviewer.md` contract used by `/review-pr`.
-The loop primary never calls a reviewer Task directly. After the primary validates
-the packet and effective Kilo 7.8.8 permissions, a fresh `--pure --agent code` Kilo
-CLI transport parent in the sealed packet-only workspace may make exactly one native
-Task call with `subagent_type: pr-reviewer`, `background: false`, no `task_id`, no
-model override and no other tool use. That fresh foreground parent is Task-only; the
-same `pr-reviewer` identity is Read-only on exact packet paths. Preflight Tasks do not
-consume review ordinals. Never pass the source checkout/environment path, prior
-findings or desired verdict to the reviewer. The primary must never self-approve or
-resume a reviewer. Parent makes no edits/branch switches while it runs; no source
-edits or branch switches occur while a reviewer or preflight Task is active.
+procedure and the shared `.kilo/agents/pr-reviewer-standalone.md` contract used by
+`/review-pr`. After the primary validates the packet and effective Kilo 7.8.8
+permissions, it starts exactly one fresh standalone CLI primary session with
+`--pure run --agent pr-reviewer-standalone --format json` and the verified model and
+environment. The reviewer is not a Task child and has no parent session, resume
+arguments or access to primary context. Its only enabled tool is native Read on exact
+packet paths. Synthetic preflights do not consume review ordinals. Never pass the
+source checkout/environment path, PR-body text, prior findings or desired verdict to
+the reviewer. The primary must never self-approve or resume a reviewer. The primary
+makes no edits/branch switches while the standalone process runs; no source edits or
+branch switches occur while a reviewer or preflight CLI process is active.
 
 Default maximum 10 whole-PR review invocations per issue delivery, INCLUDING the
 initial review, COMMENT, invalidated reviews and corrected retries. A larger finite
@@ -234,10 +234,10 @@ confirms D-069A is integrated in freshly fetched `develop`. A branch cannot use 
 own unintegrated rule, and issue-specific exceptions do not transfer or renew. Missing,
 stale or mismatched authority leaves the default 10 active. Reserve/persist each
 ordinal BEFORE dispatch in the shared delivery ledger; `/finish-pr` reentry, internal
-phases, new tasks and model/session changes cannot reset it. This is a safety ceiling,
+phases, new processes and model/session changes cannot reset it. This is a safety ceiling,
 not a target; stop immediately for a genuine material decision.
-Fresh reviews inspect the COMPLETE PR, exact HEAD/base/merge base, read-only in a
-fresh isolated context, and return the existing structured JSON verdict/result.
+Fresh reviews inspect the COMPLETE PR and exact HEAD/base/merge-base in a read-only
+standalone primary session, and return the structured JSON verdict/result.
 Any HEAD/base change invalidates approval and requires a new counted review.
 
 REQUEST_CHANGES: understand/reproduce actionable in-scope findings, remediate with

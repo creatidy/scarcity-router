@@ -141,25 +141,35 @@ confidence.
 
 Freeze immutable reviewed HEAD/base and serialize worker/reviewer/remediation
 phases. D-069 supersedes the development-delivery defaults: `/finish-pr` and
-`/loop` use fresh isolated foreground read-only whole-PR `pr-reviewer` tasks,
-with a default maximum of 10 invocations per issue delivery including initial,
-COMMENT, invalidated reviews and corrected retries. D-069A permits a greater finite
+`/loop` use one fresh read-only standalone Kilo CLI primary session with the
+dedicated `pr-reviewer-standalone` profile, not a native Task child. Its separate
+workspace contains only the packet and its effective Kilo tools are Read-only on
+exact per-run packet paths. The actual session identity, provider/model dispatch,
+Read decisions/returned bytes and complete native trace are audited; static resolver
+output alone is not proof. This establishes Kilo tool-level confinement, not OS
+sandboxing or backend model identity. The provider request uses the existing
+credential-safe Kilo authentication path; credentials are never copied into the
+reviewer context or evidence. A default maximum of 10 invocations per issue delivery
+includes initial, COMMENT, invalidated reviews and corrected retries. D-069A permits a greater finite
 maximum only after the primary verifies the direct owner source, exact canonical
 repository/issue/linked-PR identity, scope and cap, and confirms the policy is already
 integrated in freshly fetched `develop`. An unmerged branch cannot authorize its own
 exception; stale, missing or mismatched evidence leaves the default 10 active. Reserve
 ordinals BEFORE dispatch in Git-locally excluded `.task_progress.md`; reentry/phase/
-task/model/session changes never reset them. Every HEAD/base change requires a new
+process/model/session changes never reset them. Every HEAD/base change requires a new
 counted review. Missing or ambiguous recovery is BLOCKED. Implementation never
-self-approves or resumes a reviewer. Standalone review is read-only; standalone finish stops at exact
-READY_TO_MERGE, never merging. Only an explicit owner `/loop` may proceed through
+self-approves or resumes a reviewer. Standalone review is read-only. Standalone
+finish returns `READY_TO_MERGE` only when all ordinary gates pass; security-critical
+work instead returns `READY_FOR_OWNER_SECURITY_REVIEW` after reserving its manual
+gate. It never merges. Only an explicit owner `/loop` may proceed through
 canonical Forgejo PR merge into develop, verified integrated acceptance and issue
 closure, then fresh selection. Review independence does not expand scope.
 
 ## UX is a mandatory review dimension (D-053, #121)
 
 Every review — independent review, remediation verification, PR review — must
-answer `UX impact: none` or assess the user-facing consequences of the change.
+explicitly answer `UX impact: none` or assess the user-facing consequences of the
+change. The standalone reviewer JSON records this in its required `ux_impact` field.
 For a user-facing change the reviewer inspects, at minimum: the first-run
 experience; the normal happy path; the recovery/error path; the
 upgrade/model-change path; whether technical IDs are exposed unnecessarily;
@@ -168,8 +178,8 @@ user what to do; whether security friction is necessary and understandable;
 whether the change adds repeated manual work; and whether the user can
 understand current system state. A material UX regression is
 `CHANGES_REQUESTED` even when the implementation is technically correct. This
-is deliberately not a bureaucracy: no separate UX review phase, no UX
-checklist artifacts — one verdict line in the review.
+is deliberately not a bureaucracy: no separate UX review phase or UX checklist
+artifact is required beyond the explicit review-result field.
 
 ## Security-critical review gate (D-053 point 9, #122)
 

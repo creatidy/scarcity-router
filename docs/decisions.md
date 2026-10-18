@@ -6292,6 +6292,74 @@ neither is a new live check of the current deployment.
   authority is granted. D-063/default grants remain supported and #199's
   replacement/retirement gate is untouched.
 
+### D-077 - Standalone Kilo CLI reviewer for issue #212
+
+- **Status:** Owner-authorized direct instruction, 2026-10-17, for the active
+  issue #212 / PR #213 delivery and its repository review workflow. This replaces
+  the failing native Task reviewer execution mechanism; it does not alter Router
+  product architecture, D-069 review budgets or merge/security authority. The
+  updated canonical Issue #212 body records the revised acceptance. The branch
+  must still pass validation and independent review before integration.
+- **Reason:** The prior Kilo 7.8.8 native Task path could not demonstrate its
+  requested policy at runtime: r6 denied the child's first Read under the static
+  agent rule, and the owner-authorized r7 attempt resolved a project-local profile
+  statically but its actual parent Task approval was wildcard `* allow` while the
+  child had no native Read tool. The exact r6/r7 evidence remains in the excluded
+  issue-delivery directory. Do not repeat Task permission-propagation experiments.
+- **Selected execution:** Each `/review-pr`, `/finish-pr` and `/loop` review uses
+  one fresh official Kilo 7.8.8 CLI process/session with `--pure run --agent
+  pr-reviewer-standalone --format json` and the explicitly frozen provider/model/
+  variant. The dedicated `.kilo/agents/pr-reviewer-standalone.md` must be
+  `mode: primary`; Kilo 7.8.8 `kilo run --agent` falls back to its default agent
+  for a `subagent` profile, so actual exported session identity is mandatory.
+  No native Task parent, continuation, session resume, fork or prior reviewer
+  context is used. The implementation primary remains the sole orchestrator.
+- **Input and tool boundary:** The reviewer process works from a dedicated
+  workspace whose only entry is an immutable `packet/` directory. Its separate
+  per-run `KILO_CONFIG_DIR` holds an exact copy of the tracked standalone profile;
+  `KILO_CONFIG_CONTENT` allows native Read only for exact indexed packet files and
+  denies all other tools/paths. Use `KILO_DISABLE_PROJECT_CONFIG=1`, synthetic
+  HOME/XDG config and the exact effective permission config for both resolver and
+  runtime preflight. No source checkout, Git object store, Forgejo MCP, Bash,
+  search, list, glob, memory, write, delegation or external-network tools are
+  available to the reviewer. The only external request is authenticated model
+  inference through the existing Kilo provider path. Never read
+  `~/.config/kilo/kilo.jsonc`, copy/print credential values or place them in any
+  packet, prompt, trace summary or comment.
+- **Required runtime proof:** Static resolver output is supplementary, not a
+  security pass. Before reserving an ordinal, the same standalone CLI path must
+  read every file in a complete production-equivalent synthetic packet and deny
+  sibling, parent, absolute, traversal and symlink-escape reads before content.
+  Audit the actual primary session identity/mode, `parentID: null`, provider/model/
+  variant dispatch, every native tool call, exact permission decision and returned
+  bytes, absence of prior context/forbidden tools, and unchanged packet inventory.
+  Preflights do not consume review ordinals. Repeat the actual session/export and
+  packet-integrity audit after every whole-PR review; missing trace or any mismatch
+  fails closed.
+- **Actual guarantee and limits:** This mechanism enforces a Kilo tool-level
+  boundary only. A packet-only working directory is not proof of filesystem or
+  OS-level isolation. Record `DISPATCH_VERIFIED` from Kilo session/provider/model/
+  variant metadata only; backend identity is not independently observed. Do not infer
+  backend identity or claim `RUNTIME_VERIFIED`.
+  Keep raw session export in Kilo's local session store for audit; persist only the
+  session ID/export digest and filtered tool/path/range/result summary, not raw
+  packet contents or credentials.
+- **Review semantics:** The reviewer independently reads the complete packet,
+  exact frozen HEAD/base/merge-base and changed-source ranges; returns the
+  established verdict/findings/limitations contract plus explicit `ux_impact`;
+  `checks_run` is empty because the reviewer has no execution tools. The primary
+  performs sanitized executable validation and canonical currentness checks.
+  Exact APPROVE, empty findings, full coverage, valid UX assessment and actual
+  trace-audit PASS are all required; any HEAD/base change invalidates approval.
+- **Unchanged authority:** Preserve consumed ordinals #1-7 and the owner-reported
+  #7 security `REQUEST_CHANGES` with provenance `UNVERIFIED`. Ordinal #8 remains
+  ordinary review; reserve #9 for Adrian's later manual
+  `gpt-daybreak-blue-latest` security review only after valid #8 approval; #10 is
+  the default-ten contingency. A valid #8 APPROVE returns
+  `READY_FOR_OWNER_SECURITY_REVIEW`. No Daybreak is invoked automatically. No
+  exception above ten, merge, issue closure, release, deployment, `main`
+  promotion or unrelated repository/worktree mutation is authorized.
+
 ### U-014 - Native coding backend versus Kernel-owned workspace lifecycle
 
 - **Status:** Direction settled by D-073; replacement/retirement evidence remains

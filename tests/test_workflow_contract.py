@@ -314,7 +314,8 @@ class WorkflowContractTests(unittest.TestCase):
             self.assertIn(requirement, loop)
 
     def test_independent_review_contract_is_reused(self) -> None:
-        reviewer = text(".kilo/agents/pr-reviewer.md")
+        reviewer = text(".kilo/agents/pr-reviewer-standalone.md")
+        legacy = text(".kilo/agents/pr-reviewer.md")
         for requirement in (
             "never the implementation agent",
             "Do not read parent conversations, local recall, progress notes or the shared board",
@@ -322,40 +323,54 @@ class WorkflowContractTests(unittest.TestCase):
             '"verdict": "APPROVE | REQUEST_CHANGES | COMMENT"',
             "APPROVE requires sufficient acceptance evidence and no findings",
             "Never publish reviews/comments or other Forgejo mutations",
+            "mode: primary",
+            "standalone Kilo CLI process",
+            "Synthetic Permission Preflight",
+            '"reviewed_merge_base"',
+            '"ux_impact"',
         ):
             self.assertIn(requirement, reviewer)
-        # Execution text may evolve; the original read-only permission boundary must not.
-        frontmatter = (ROOT / ".kilo/agents/pr-reviewer.md").read_text().split("---", 2)[1]
-        self.assertIn('"*": deny', frontmatter)
-        self.assertIn("read: deny", frontmatter)
-        self.assertIn("external_directory: deny", frontmatter)
-        self.assertNotRegex(frontmatter, r"(?m)^\s+[^#\n]+:\s*allow\s*$")
-        self.assertNotIn("docker", frontmatter)
+        self.assertEqual(legacy.split("---", 2)[2], reviewer.split("---", 2)[2])
+        for path, mode in (
+            (".kilo/agents/pr-reviewer.md", "subagent"),
+            (".kilo/agents/pr-reviewer-standalone.md", "primary"),
+        ):
+            frontmatter = text(path).split("---", 2)[1]
+            self.assertIn(f"mode: {mode}", frontmatter)
+            self.assertIn('"*": deny', frontmatter)
+            self.assertIn("read: deny", frontmatter)
+            self.assertIn("external_directory: deny", frontmatter)
+            self.assertNotRegex(frontmatter, r"(?m)^\s+[^#\n]+:\s*allow\s*$")
         loop = text(".kilo/command/loop.md")
         self.assertIn("Use `.kilo/command/finish-pr.md` in this SAME primary context", loop)
-        for path in (".kilo/command/loop.md", ".kilo/command/finish-pr.md"):
+        for path in (".kilo/command/loop.md", ".kilo/command/finish-pr.md", ".kilo/command/review-pr.md"):
             command = text(path)
-            self.assertIn("subagent_type: pr-reviewer", command)
-            self.assertIn("no `task_id`", command)
-            self.assertIn("fresh foreground", command)
+            self.assertIn("pr-reviewer-standalone", command)
+            self.assertIn("--pure", command)
+            self.assertNotIn("subagent_type: pr-reviewer", command)
+            self.assertNotIn("native Task call", command)
         self.assertIn("never self-approve or resume a reviewer", loop)
-        self.assertIn("Parent makes no edits/branch switches while it runs", loop)
+        self.assertIn("The primary makes no edits/branch switches while the standalone process runs", loop)
         self.assertIn("Any HEAD/base change invalidates approval", loop)
 
-    def test_private_repository_review_uses_parent_verified_packet(self) -> None:
-        reviewer_file = (ROOT / ".kilo/agents/pr-reviewer.md").read_text()
+    def test_private_repository_review_uses_standalone_packet(self) -> None:
+        reviewer_file = (ROOT / ".kilo/agents/pr-reviewer-standalone.md").read_text()
         reviewer_prompt = " ".join(reviewer_file.split("---", 2)[2].split())
         for requirement in (
-            "the parent-prepared packet-only evidence path",
+            "the immutable packet-only evidence path",
             "The primary, not the reviewer, directly fetches the canonical",
             "raw owner-source bytes, comment provenance/digests, exact Git blob",
             "The reviewer must not call Forgejo MCP, Git, Bash",
+            "standalone Kilo CLI process",
+            "parentID: null",
+            "profile text or resolver output is not runtime proof",
             "Do not claim that you independently fetched Forgejo/Git state",
             "absence of intentionally denied MCP/Git tools is not",
             "a specific missing, stale, malformed or contradictory repository/issue/PR",
             "The primary owns the separate validation gate",
             "does not execute code or tests",
-            "The primary rechecks canonical Forgejo/Git currentness before and after the Task",
+            "The primary rechecks canonical Forgejo/Git currentness before and after the standalone CLI session",
+            "explicit UX assessment",
         ):
             with self.subTest(requirement=requirement):
                 self.assertIn(requirement, reviewer_prompt)
@@ -367,7 +382,7 @@ class WorkflowContractTests(unittest.TestCase):
             "Recheck local HEAD/clean status and MCP before returning",
         ):
             self.assertNotIn(obsolete, reviewer_prompt)
-        raw = (ROOT / ".kilo/agents/pr-reviewer.md").read_text().split("---", 2)[1]
+        raw = reviewer_file.split("---", 2)[1]
         self.assertIn('"*": deny', raw)
         self.assertIn("read: deny", raw)
         self.assertIn("external_directory: deny", raw)
@@ -381,10 +396,13 @@ class WorkflowContractTests(unittest.TestCase):
         ):
             self.assertIn(getter, manifest)
         for boundary in (
-            "reviewer has no direct Forgejo getter", "no Bash/Git",
-            "Read-only packet access", "Do not grant wildcard getters", "list/search access or any Forgejo write",
+            "exact canonical primary profile/prompt hash", "no Bash/Git",
+            "Read-only packet access", "default-deny out-of-packet paths",
+            "Do not grant wildcard getters, search/list, Forgejo writes",
             "primary-prepared clean local Git objects", "exact merge base/full diff",
             "must not inspect credential-bearing Git configuration or invoke credential helpers",
+            "standalone Kilo CLI process", "actual standalone session", "preflight",
+            "Do not claim OS isolation",
         ):
             self.assertIn(boundary, manifest)
 
@@ -468,8 +486,8 @@ class WorkflowContractTests(unittest.TestCase):
             "D-069A is integrated in freshly fetched `develop`",
             "default 10 effective",
             "INCLUDING the initial review, COMMENT, invalidated reviews and corrected retries",
-            "Before EVERY task dispatch reserve/persist the next review ordinal",
-            "Reinvoking `/finish-pr`, changing phase, reviewer task, model or session "
+            "Before EVERY whole-PR reviewer launch reserve/persist the next review ordinal",
+            "Reinvoking `/finish-pr`, changing phase, reviewer process, model or session "
             + "MUST reuse the same delivery counter",
             "prior dispatch/count recovery is ambiguous or unavailable, BLOCKED",
             "never exceed it without the freshly verified D-069A authority",
@@ -651,3 +669,30 @@ class WorkflowContractTests(unittest.TestCase):
             self.assertIn(requirement, recovery)
         blocked_contract = recovery.split("BLOCKED requires", 1)[1].split("State the exact", 1)[0]
         self.assertNotIn("or a genuine owner decision", blocked_contract)
+
+    def test_d077_records_standalone_reviewer_authority_and_limits(self) -> None:
+        decisions = text("docs/decisions.md")
+        section = decisions.split("### D-077 - Standalone Kilo CLI reviewer for issue #212", 1)[1].split(
+            "### U-014", 1
+        )[0]
+        for requirement in (
+            "Owner-authorized direct instruction",
+            "replaces the failing native Task reviewer execution mechanism",
+            "`mode: primary`",
+            "`parentID: null`",
+            "`KILO_CONFIG_CONTENT` allows native Read only for exact indexed packet files",
+            "Kilo tool-level",
+            "not proof of filesystem or OS-level isolation",
+            "DISPATCH_VERIFIED",
+            "backend identity",
+            "backend identity is not independently observed",
+            "Ordinal #8 remains",
+            "reserve #9 for Adrian's later manual",
+            "#10 is the default-ten contingency",
+            "provenance `UNVERIFIED`",
+            "READY_FOR_OWNER_SECURITY_REVIEW",
+            "No Daybreak is invoked automatically",
+        ):
+            with self.subTest(requirement=requirement):
+                self.assertIn(requirement, section)
+        self.assertIn("claim `RUNTIME_VERIFIED`", section)

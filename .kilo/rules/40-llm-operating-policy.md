@@ -6,6 +6,10 @@ Follow the full policy in [`docs/llm-operating-policy.md`](../../docs/llm-operat
 - Use the least scarce fully capable model; capability deficits are never
   compensated by availability or strength elsewhere.
 - Use a distinct reviewer session for consequential review.
+- PR delivery review uses the fresh standalone Kilo primary profile
+  `pr-reviewer-standalone`, not native Task. Require actual session identity,
+  exact model dispatch, Read-only packet permissions and a complete audited trace;
+  do not claim OS isolation or backend identity from dispatch metadata.
 - LLM output is not evidence. Keep evidence preparation separate from expert
   scientific or methodological adjudication.
 - Follow D-068's ownership and Agreed/Verified/Proposed/To-prove distinction;

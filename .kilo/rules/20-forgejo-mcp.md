@@ -18,10 +18,11 @@
 - Implementation commits/pushes use normal Git under Adrian's Git identity:
   `Adrian Tkacz <adrian.tkacz@creatidy.com>`, Forgejo user `adrian.tkacz`.
   `forgejo-mcp` handles platform operations, not implementation authorship.
-  Independent review uses a newly spawned read-only `pr-reviewer` subagent context,
-  not a manual session or required platform identity. Its native task result is
-  the handoff; Forgejo publication is optional, not orchestration state or an
-  acceptance gate. Never author/commit implementation as forgejo-mcp,
+  Independent review uses one fresh read-only standalone Kilo CLI primary session
+  with `pr-reviewer-standalone`; it has no native Task parent or Forgejo identity.
+  Its exact session export, trace audit and result JSON are the handoff; Forgejo
+  review publication is optional, not orchestration state or an acceptance gate.
+  The reviewer cannot call Forgejo MCP. Never author/commit implementation as forgejo-mcp,
   Kilo, a bot/service identity or the reviewer identity.
 - Before the first commit on an implementation branch, verify
   `git config user.name` and `git config user.email` resolve to the expected owner identity;

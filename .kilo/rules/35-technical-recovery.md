@@ -125,38 +125,43 @@ Read-only packet access with no checkout, source/environment paths, prior review
 results or parent conclusions. The reviewer must not inspect credential-bearing Git
 configuration or invoke credential helpers.
 
-The committed `.kilo/agents/pr-reviewer.md` is statically deny-all. For each review,
+The committed `.kilo/agents/pr-reviewer.md` remains statically deny-all. For each standalone review,
 the primary builds a per-run Kilo config directory containing a byte-identical copy
-of the frozen canonical reviewer profile, and a `KILO_CONFIG_CONTENT` exact-file Read
-overlay for the packet; the same config sets the fresh Kilo parent to Task-only. The
-packet-only Task workspace is outside the source checkout. Use the installed Kilo
+of the frozen standalone reviewer profile, and a `KILO_CONFIG_CONTENT` exact-file Read
+overlay for the packet. The reviewer config is separate from the packet-only workspace
+outside the source checkout. Use the installed Kilo
 7.8.8 resolver/source semantics: merge order is runtime-specific, `findLast` rules
 are significant, and static/global/managed/saved rules can override an assumed
-overlay. Before creating any reviewer Task, inspect the effective `kilo debug agent
-code` and `pr-reviewer` results under the exact production environment. Require the
-parent tool map to expose Task only and the reviewer tool map Read only; require the
-canonical profile name/prompt hash to match the frozen tracked source; evaluate exact
-per-file Read winners, default-deny out-of-packet paths and direct MCP denies. Missing
-output, unknown rules, any broad capability, or an unverifiable merge order aborts
-before Task creation.
+overlay. Before any reviewer session, inspect `kilo debug agent
+pr-reviewer-standalone` under the exact production environment. Require the exact
+canonical primary profile/prompt hash and Read as the sole enabled tool; evaluate exact
+per-file Read winners, default-deny out-of-packet paths and forbidden-tool denies.
+Missing output, unknown rules, fallback identity, any broad capability, or an
+unverifiable merge order aborts before reserving an ordinal.
 
-The review parent runs in a sealed temporary workspace containing only a `packet/`
-directory, not the source checkout. It has native Task only and dispatches one fresh
-foreground `pr-reviewer` Task. The child can Read only exact `packet/<file>` names.
-Do not pass checkout paths, environment paths, credentials, issue comments not in the
-packet or previous findings. Do not grant wildcard getters, list/search access or any
-Forgejo write, directory enumeration, network, memory, task/delegation or external-file
-access.
+The standalone Kilo CLI process has its working directory set to a sealed temporary
+workspace whose only entry is a `packet/` directory; it does not receive the source
+checkout. Launch a fresh `kilo --pure run --agent pr-reviewer-standalone` primary
+session without continuation, resume, fork or Task arguments. Verify the exported
+session records the exact agent, `parentID: null`, packet-only directory and requested
+provider/model/variant. The actual enabled tool set is native Read only for exact
+`packet/<file>` names. Do not pass checkout/environment paths, credentials, issue
+comments outside the packet or previous findings. Do not grant wildcard getters,
+search/list, Forgejo writes, directory enumeration, external network tools, memory,
+Task/delegation or external-file Read access.
 
-Before reserving a whole-PR review ordinal, run a native Task preflight with a copy of
-the complete production-equivalent packet plus harmless sibling, absolute, traversal
-and symlink canaries. Require every authorized packet file to be read completely and
-every escape to be denied before bytes. Audit the actual preflight Task trace, returned
-content and unchanged packet inventory. A synthetic resolver test is supplementary;
-it does not prove effective Kilo behavior. Pre-access debug/preflight and post-review
-Task-trace/packet audits are separate mandatory gates. The only directory-level Read
-exception remains the owner-authorized issue #210 / PR #211 scope; it never transfers
-to #212 or other deliveries.
+Before reserving a whole-PR review ordinal, run the same standalone CLI path against
+the complete production-equivalent synthetic packet plus harmless sibling, parent,
+absolute, traversal and symlink-escape canaries outside the workspace. Require every
+authorized file to be read completely and every escape denied before content. Audit
+the actual standalone session, permission decisions, Read calls/returned bytes,
+forbidden-tool absence and unchanged packet inventory. Static resolver output alone
+is not proof. Pre-access debug/preflight and post-review session-export/packet audits
+are separate mandatory gates. Preserve the full native session in Kilo's local store
+by exact session ID; export it in memory and persist only filtered trace/result
+metadata, not raw packet contents. Preflights do not consume whole-PR ordinals. The
+only directory-level Read exception remains the owner-authorized issue #210 / PR #211
+scope; it never transfers to #212 or other deliveries. Do not claim OS isolation.
 
 ## Public Evidence and Reviewer Failover
 

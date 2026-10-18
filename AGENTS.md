@@ -49,10 +49,11 @@ Commands: `/implement-issue <number|URL|unambiguous title>`,
 A plain `Implement issue #N` follows the implementation workflow. Standalone
 implementation requires owner selection. `/review-pr` is read-only; `/finish-pr`
 authorizes only the selected PR's accepted-scope remediation, never merging.
-Both use the same fresh isolated `.kilo/agents/pr-reviewer.md` native task;
-implementation self-review and resumed reviewers are not independent review.
-Consume task results directly; Forgejo review publication is optional, never
-orchestration state or an owner-relayed handoff.
+Both use the same fresh standalone `.kilo/agents/pr-reviewer-standalone.md` primary
+profile in an independent Kilo CLI process/session; implementation self-review and
+resumed reviewers are not independent review. Consume the audited session result
+directly; Forgejo review publication is optional, never orchestration state or an
+owner-relayed handoff. Do not dispatch a native Task reviewer for this path.
 
 Only an explicit owner `/loop` delegates autonomous selection, approved canonical
 PR merge into `develop`, and completed-issue closure. Its primary invocation
@@ -79,9 +80,9 @@ Use one designated delivery checkout and one mutator. Temporary worktrees/isolat
 evidence checkouts are allowed under the technical-recovery rule, never parallel
 implementation controllers. The primary verifies canonical currentness, exact frozen
 Git objects and the complete diff, then prepares the immutable indexed review packet.
-The reviewer receives only the sealed packet through native Read; it has no checkout,
-Git or Forgejo access. The primary must not edit or switch source checkouts while the
-reviewer or preflight Task is active.
+The standalone reviewer receives only the sealed packet through native Read; it has
+no checkout, Git or Forgejo access. The primary must not edit or switch source
+checkouts while the reviewer CLI process or synthetic preflight is active.
 Never stash/reset unrelated owner work or bypass unmet dependencies. Do not
 force-push, rewrite published history, merge
 `develop` or `main` into a feature branch, create synchronization merge
@@ -95,9 +96,10 @@ scope.
 
 Commands and agents are loaded from `.kilo/command/*` and `.kilo/agents/*` by the
 Kilo workspace runtime. Adding files does not guarantee dynamic availability;
-a workspace reload may be required. Missing native task/agent support requires
-bounded authorized independent reviewer failover before a finite blocker, never
-permission for parent self-review, weakened gates or external orchestration.
+a workspace reload may be required. Missing standalone profile/CLI support requires
+bounded authorized independent reviewer/tool recovery before a finite blocker, never
+permission for implementation self-review, native Task fallback, weakened gates or
+external orchestration.
 
 ## Product boundary
 

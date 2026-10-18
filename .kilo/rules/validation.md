@@ -34,39 +34,48 @@
   and exact pinned external evidence when required. Bind every file to origin,
   revision and digest. The packet must exclude credentials, prior review results,
   unexpected files, symlinks and hardlinks.
-- Before creating any reviewer Task, verify the actual Kilo 7.8.8 effective parent and
-  reviewer permission sets under the exact runtime configuration. The committed
-  `pr-reviewer` profile statically denies all tools. Prepare a per-run `KILO_CONFIG_DIR`
-  with a byte-identical copy of that canonical profile and use `KILO_CONFIG_CONTENT`
-  for parent Task-only and exact reviewer Read paths. Inspect the effective agent
-  debug/config result under those same variables; fail before Task if static, global,
-  managed, saved or per-run configuration reopens a forbidden capability or the rules
-  cannot be resolved. Do not infer effective permissions from Markdown text alone.
-- Run a real native Task preflight with the complete production-equivalent packet
-  and harmless canaries before reserving a whole-PR ordinal. Require complete allowed
-  reads and denial before content for sibling, absolute, traversal and symlink escapes.
-  This preflight proves Kilo tool permissions only, not OS-level isolation. If any
-  unauthorized bytes are returned or an allowed read is incomplete, abort before the
-  whole-PR Task. Pre-access effective-rule verification and this native preflight are
-  separate controls.
-- The Kilo `code` parent is a fresh `--pure` CLI context with Task-only effective
-  access. Its native Task launches the same `pr-reviewer` identity against a sealed
-  packet-only workspace, not a checkout or source/environment path. Reviewer access is
-  Read-only to the exact indexed files; direct Forgejo MCP, Git, Bash, search/list,
-  network, memory, enumeration, delegation and write access remain denied. Do not
-  transfer #210's owner-specific directory grant to another delivery.
+- Before starting any reviewer session, verify the Kilo 7.8.8 effective standalone
+  primary profile under the exact runtime configuration. The dedicated
+  `pr-reviewer-standalone` profile must be `mode: primary` and statically deny all
+  tools. Prepare a per-run `KILO_CONFIG_DIR` with a byte-identical copy of that
+  profile and `KILO_CONFIG_CONTENT` with exact packet-only Read rules. Use synthetic
+  HOME/XDG config and `KILO_DISABLE_PROJECT_CONFIG=1`; preserve the authenticated Kilo
+  data path without reading `~/.config/kilo/kilo.jsonc` or exposing credential values.
+  Inspect the effective agent debug output under those same variables; fail if Kilo
+  falls back to a default agent, a tool/path reopens, or exact rules cannot be resolved.
+  Do not infer runtime permissions from Markdown text alone.
+- Run a real standalone `kilo --pure run --agent pr-reviewer-standalone` synthetic
+  preflight with the complete production-equivalent packet and harmless sibling,
+  parent, absolute, traversal and symlink-escape canaries before reserving a whole-PR
+  ordinal. Require complete allowed reads, denial before content, exact reviewer
+  identity/model dispatch, no prior session context, no forbidden tool calls and a
+  full exportable native session trace. This preflight proves Kilo tool permissions
+  only, not OS-level isolation. Any unauthorized bytes, incomplete allowed read,
+  default fallback, missing trace or additional capability aborts before #8.
+- The reviewer is one fresh standalone primary session in a dedicated workspace that
+  contains only the sealed packet, never a checkout or source/environment path. No
+  Task, continuation, session-resume, fork, memory or parent context is available. The
+  effective reviewer tool set is native Read only on exact indexed files; Forgejo MCP,
+  Git, Bash, search/list, external network tools, enumeration, delegation and write
+  access are denied. The only network request is the selected authenticated model
+  inference. Do not transfer #210's owner-specific directory grant to another
+  delivery, and make no OS-sandbox claim.
 - The reviewer independently examines the entire authorized raw packet, complete
   patch, all changed code/test sources and pinned evidence. It checks internal ID/ref/
   blob/source/digest consistency and assesses correctness, security, architecture, UX
   and tests by inspection. It must not claim direct Forgejo/Git verification or that
   it ran tests. The primary owns currentness retrieval and executable validation;
   those primary conclusions do not substitute for reviewer judgment.
-- After Task, the primary independently audits the actual parent/child trace, all
-  reviewer Read paths/ranges/permission decisions, unchanged packet inventory and
-  fresh canonical currentness. A returned verdict alone cannot approve; a missing,
-  malformed, incomplete or mismatched trace fails closed. Only an exact native reviewer
-  APPROVE with empty findings, full coverage, UX assessment and a fresh matching
-  currentness/validation gate can yield the ordinary-review approval.
+- After the standalone CLI exits, the primary exports the exact session in memory and
+  audits selected identity/no parent, model dispatch, all actual tool calls, every
+  Read path/range/permission decision, reviewer result, unchanged packet inventory
+  and fresh canonical currentness. Do not print or persist raw packet contents; retain
+  the native session ID/export digest and filtered audit summary. A verdict alone
+  cannot approve; a missing, malformed, incomplete or mismatched trace fails closed.
+  Only an exact standalone reviewer APPROVE with empty findings, exact refs, full
+  coverage, explicit UX impact and fresh matching currentness/validation can yield
+  ordinary-review approval. Report dispatch metadata honestly; never infer model
+  backend identity.
 - Unavailable safe validation/tool state requires bounded technical recovery under
   `.kilo/rules/35-technical-recovery.md`, not immediate owner escalation or skipped
   checks. Independent pinned public-source material is staged in the packet so the
