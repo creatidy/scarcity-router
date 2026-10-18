@@ -38,9 +38,12 @@
   primary profile under the exact runtime configuration. The dedicated
   `pr-reviewer-standalone` profile must be `mode: primary` and statically deny all
   tools. Prepare a per-run `KILO_CONFIG_DIR` with a generated copy whose reviewer
-  identity/mode/prompt are unchanged and whose frontmatter has only exact relative
-  and matching workspace-absolute Read allows for indexed packet files under wildcard
-  deny. Keep per-run `kilo.json` and `KILO_CONFIG_CONTENT`
+  identity/mode/prompt are unchanged and whose frontmatter allows only exact Kilo
+  worktree-relative Read patterns for indexed `packet/<file>` entries under wildcard
+  deny. The standalone prompt must supply the exact workspace-absolute filePath values
+  required by Kilo Read. Set
+  `KILO_NO_DAEMON=1` to prevent the CLI from attaching to a server with different
+  configuration. Keep per-run `kilo.json` and `KILO_CONFIG_CONTENT`
   empty (`{}`): r1's actual standalone session denied the first allowed Read under
   `agent read:* deny` despite a passing static env-overlay result. Use synthetic
   HOME/XDG config and `KILO_DISABLE_PROJECT_CONFIG=1`; preserve the authenticated Kilo

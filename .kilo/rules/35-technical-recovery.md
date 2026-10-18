@@ -129,30 +129,36 @@ The committed `.kilo/agents/pr-reviewer.md` and
 `.kilo/agents/pr-reviewer-standalone.md` remain statically deny-all. For each
 standalone review, the primary builds a per-run Kilo config directory with a generated
 profile copy whose identity/mode/prompt match the tracked standalone profile and whose
-frontmatter contains only exact packet-path Read allows under wildcard deny. For #212,
-include each relative `packet/<file>` name and its matching workspace-absolute spelling:
-Kilo's actual Read trace can use the absolute form, and both forms must bind the same
-indexed regular file with no directory or prefix grant. The profile config is separate
-from the packet-only workspace outside the source checkout.
-The per-run `kilo.json` and `KILO_CONFIG_CONTENT` are empty (`{}`); r1's actual
-standalone session denied the indexed Read under `agent` `read:* deny` despite a
-passing static environment-overlay check. Do not rely on that env overlay as the
-Read allow layer; use only the generated per-run profile frontmatter. Use installed Kilo
-7.8.8 resolver/source semantics: merge order is runtime-specific, `findLast` rules
-are significant, and static/global/managed/saved rules can override an assumed
-resolver. Before any reviewer session, inspect `kilo debug agent
+frontmatter contains only exact Kilo worktree-relative Read patterns for indexed files
+under wildcard deny. Kilo 7.8.8's Read schema requires an absolute `filePath`; supply
+the exact workspace-absolute path for each indexed file in the prompt. For this sealed
+non-VCS workspace, Kilo resolves `projectID=global` and uses the filesystem root as its
+worktree, so permission patterns are exact paths relative to that root (for example,
+`tmp/.../workspace/packet/index.md`), not merely `packet/index.md`. Do not add absolute,
+directory or prefix allow rules. The profile config is separate from the packet-only
+workspace outside the source checkout. Keep per-run `kilo.json` and `KILO_CONFIG_CONTENT`
+empty (`{}`), and set `KILO_NO_DAEMON=1` so the CLI cannot attach to a server using another
+configuration. Use installed Kilo 7.8.8 resolver/source semantics: merge order is
+runtime-specific, `findLast` rules are significant, and static/global/managed/saved
+rules can override an assumed resolver. Before any reviewer session, inspect
+`kilo debug agent
 pr-reviewer-standalone` under the exact production environment. Require the tracked
 profile frontmatter to be `mode: primary`, the resolved Kilo mode to be CLI-runnable
 (`primary` or `all`, never `subagent`), the exact prompt hash and Read as the sole
 enabled tool; evaluate exact per-file profile-frontmatter winners, default-deny paths and
 forbidden-tool denies. Missing output, default-agent fallback, any broad capability or
 an unverifiable merge order aborts before reserving an ordinal.
-The r2 runtime used a workspace-absolute `Read` input, so relative-only rules also
-failed closed despite static permission resolution. Its six escape probes were denied
-before content. Kilo's exported user message wrapped the exact expected prompt in
-literal double quotes; audit may accept only the byte-exact expected prompt or that
-exact wrapper, never additional context. No review ordinal is consumed by these
-preflights.
+The r2 actual session used the correct absolute filePath but was denied by `read:* deny`.
+Its `projectID=global`, together with the pinned Project/Read source, establishes that
+the runtime permission pattern was rooted at `/`; the profile instead allowed
+`packet/index.md`, so the wildcard correctly won. In r3 the model supplied a different
+nonexistent absolute path; Kilo returned `File not found` before requesting Read
+permission. Thus r3's missing metadata was a path-resolution failure, not an
+authorization result. `KILO_NO_DAEMON=1` also prevents a possible shared-server config
+mismatch; prior trace does not prove whether a daemon was attached. The prompt must bind
+every allowed file to its exact absolute path, and the audit may accept only the expected
+prompt verbatim or Kilo's exact literal-double-quote wrapper. These preflights consume no
+review ordinal.
 
 The standalone Kilo CLI process has its working directory set to a sealed temporary
 workspace whose only entry is a `packet/` directory; it does not receive the source
@@ -160,7 +166,7 @@ checkout. Launch a fresh `kilo --pure run --agent pr-reviewer-standalone` primar
 session without continuation, resume, fork or Task arguments. Verify the exported
 session records the exact agent, `parentID: null`, packet-only directory and requested
 provider/model/variant. The actual enabled tool set is native Read only for exact
-relative and matching workspace-absolute packet file names. Do not pass checkout/
+worktree-relative packet patterns listed in the generated profile. Do not pass checkout/
 environment paths, credentials, issue comments outside the packet or previous
 findings. Do not grant wildcard getters,
 search/list, Forgejo writes, directory enumeration, external network tools, memory,

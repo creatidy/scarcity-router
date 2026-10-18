@@ -55,8 +55,9 @@ delivery; STOP_REVISE still requires an explicit owner decision, not a new PR/na
    pinned Kilo sources, owner sources/receipts and one indexed source file per changed
    path) but harmless synthetic bytes only. Use a
     separate profile config directory containing a generated copy with the same
-    standalone identity/mode/prompt and exact relative plus matching workspace-absolute
-    Read rules for each packet file in its frontmatter.
+    standalone identity/mode/prompt and only exact Kilo worktree-relative Read rules
+    for indexed `packet/<file>` files in its frontmatter; the prompt supplies their
+    exact workspace-absolute Read filePath values.
     Run `tools/reviewer_packet.py prepare --synthetic --preflight` with this packet,
     `--profile` set to the tracked `.kilo/agents/pr-reviewer-standalone.md`, and
     `--profile-source-root` set to the clean frozen checkout (omit `--source-root` for
@@ -65,7 +66,9 @@ delivery; STOP_REVISE still requires an explicit owner decision, not a new PR/na
     provider/model/variant. It verifies the tracked profile declares `mode: primary`,
     the resolver mode is CLI-runnable (`primary` or `all`, never `subagent`), the
     prompt hash matches and Read is the sole enabled tool with exact packet rules.
-    `KILO_CONFIG_CONTENT` is `{}`; the per-run profile itself carries the exact allowlist.
+    `KILO_CONFIG_CONTENT` is `{}`; the per-run profile carries only exact worktree-relative allow rules.
+    Set `KILO_NO_DAEMON=1` so the CLI uses this per-run configuration instead of an
+    existing daemon.
     The helper only prepares/validates and never starts a reviewer session.
 5. Run one real standalone `kilo --pure run --agent pr-reviewer-standalone` preflight
    against the synthetic packet plus harmless probes outside the packet workspace:

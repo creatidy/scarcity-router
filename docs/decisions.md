@@ -6310,13 +6310,20 @@ neither is a new live check of the current deployment.
   also failed closed: its `Read("packet/index.md")` was denied by `agent` rule
   `read:* deny` before bytes despite a passing static resolver; no other calls or
   probes occurred. The failure and export digest are in the excluded delivery record.
-  The corrected r2 runtime had the exact standalone identity/model and `parentID: null`,
-  and all six escape probes were denied before content, but its first indexed Read was
-  issued with the workspace-absolute file path, which the relative-only exact rule did
-  not match; zero packet bytes were read. Its exported user prompt was exactly the
-  expected synthetic prompt wrapped in literal double quotes, with no extra context.
-  The filtered r2 trace/export digests remain in the excluded delivery record; r2
-  consumed no review ordinal.
+  The r2 runtime had the exact standalone identity/model and `parentID: null`, and all
+  six escape probes were denied before content, but its first correct absolute indexed
+  Read was denied by the agent's `read:* deny` rule despite the static per-run resolver
+  pass. Its saved session has `projectID: global`; for a non-VCS global project the
+  pinned Kilo source sets the worktree root to `/`. Read permission patterns are then
+  relative to `/` (for example, `tmp/kilo/.../workspace/packet/index.md`), not
+  `packet/index.md`, so the wildcard deny correctly won. Kilo's CLI can also attach to
+  an existing daemon unless `KILO_NO_DAEMON=1`; the trace does not establish whether
+  r2 attached, so the environment now disables that path. In r3 the model supplied a
+  different nonexistent absolute path; Kilo returned `File not found` before asking
+  for Read permission. Missing permission metadata in r3 was therefore a path failure,
+  not a permission-decision failure. The expected prompt was wrapped in literal double
+  quotes with no other context. Filtered traces/digests remain in the excluded delivery
+  record; no preflight consumed an ordinal.
 - **Selected execution:** Each `/review-pr`, `/finish-pr` and `/loop` review uses
   one fresh official Kilo 7.8.8 CLI process/session with `--pure run --agent
   pr-reviewer-standalone --format json` and the explicitly frozen provider/model/
@@ -6332,12 +6339,17 @@ neither is a new live check of the current deployment.
   workspace whose only entry is an immutable `packet/` directory. Its separate
   per-run `KILO_CONFIG_DIR` holds a generated copy with the same identity/mode/prompt
   and an ephemeral frontmatter permission map: all tools denied, Read allowed only
-  for each indexed packet file's exact relative name and matching workspace-absolute
-  path, and external directories denied. No directory/prefix grants are allowed. The
+  for exact Kilo worktree-relative patterns of indexed files, and external directories
+  denied. The primary's prompt supplies the exact workspace-absolute `filePath` for
+  each indexed file because the Kilo Read tool schema requires absolute paths. Kilo
+  normalizes each target with `path.relative(instance.worktree, target)` before
+  checking the profile; for this non-VCS global project the worktree is `/`, so the
+  exact patterns include the workspace's relative path from that root. No absolute,
+  directory or prefix permission grants are added. The
   tracked canonical profile remains deny-all. r1's actual session denied
   `Read("packet/index.md")` under `agent read:* deny` despite static environment
   overlay check passing. Keep per-run `kilo.json` and `KILO_CONFIG_CONTENT` empty (`{}`);
-  put packet-specific Read allows directly in the ephemeral primary profile frontmatter.
+  put only exact worktree-relative packet Read rules in the ephemeral primary profile.
   Use `KILO_DISABLE_PROJECT_CONFIG=1`, synthetic HOME/XDG config and the exact
   effective per-run profile in both resolver and runtime checks. No source checkout,
   Git object store, Forgejo MCP, Bash, search, list, glob, memory, write, delegation
@@ -6347,15 +6359,16 @@ neither is a new live check of the current deployment.
   `~/.config/kilo/kilo.jsonc`, copy/print credential values or place them in any
   packet, prompt, trace summary or comment.
 - **Required runtime proof:** Static resolver output is supplementary, not a
-  security pass. Before reserving an ordinal, the same standalone CLI path must
-  read every file in a complete production-equivalent synthetic packet and deny
+   security pass. Before reserving an ordinal, the same standalone CLI path must
+   report `projectID=global`, read every file in a complete production-equivalent synthetic packet and deny
   sibling, parent, absolute, traversal and symlink-escape reads before content.
   Audit the actual primary session identity/mode, `parentID: null`, provider/model/
   variant dispatch, every native tool call, exact permission decision and returned
   bytes, absence of prior context/forbidden tools, and unchanged packet inventory.
   Kilo's sole user message must equal the exact expected prompt, permitting only the
   observed literal-double-quote wrapper and no other prefix, suffix or context.
-  Preflights do not consume review ordinals. Repeat the actual session/export and
+  Launch with `KILO_NO_DAEMON=1` so the fresh CLI process uses the exact per-run profile
+  instead of an existing daemon's configuration. Preflights do not consume review ordinals. Repeat the actual session/export and
   packet-integrity audit after every whole-PR review; missing trace or any mismatch
   fails closed.
 - **Actual guarantee and limits:** This mechanism enforces a Kilo tool-level

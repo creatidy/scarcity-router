@@ -397,7 +397,10 @@ class WorkflowContractTests(unittest.TestCase):
             self.assertIn(getter, manifest)
         for boundary in (
             "generated profile copy whose identity/mode/prompt match the tracked standalone profile",
-            "frontmatter contains only exact packet-path Read allows under wildcard deny",
+            "frontmatter contains only exact Kilo worktree-relative Read patterns for indexed files",
+            "Kilo 7.8.8's Read schema requires an absolute `filePath`",
+            "Kilo resolves `projectID=global` and uses the filesystem root as its",
+            "set `KILO_NO_DAEMON=1` so the CLI cannot attach",
             "no Bash/Git", "Read-only packet access", "default-deny paths",
             "Do not grant wildcard getters, search/list, Forgejo writes",
             "primary-prepared clean local Git objects", "exact merge base/full diff",
@@ -683,7 +686,7 @@ class WorkflowContractTests(unittest.TestCase):
             "effective mode `all`",
             "Kilo 7.8.8 `kilo run --agent`",
             "`parentID: null`",
-            "put packet-specific Read allows directly in the ephemeral primary profile frontmatter",
+            "put only exact worktree-relative packet Read rules in the ephemeral primary profile",
             "Kilo tool-level",
             "not proof of filesystem or OS-level isolation",
             "DISPATCH_VERIFIED",

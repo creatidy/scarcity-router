@@ -895,15 +895,35 @@ def validate_packet(
     )
 
 
-def make_per_run_permission_map(
+def _kilo_worktree_root(workspace: Path) -> Path:
+    if workspace.is_symlink() or not workspace.is_dir():
+        raise PacketError("standalone Kilo workspace must be a real directory")
+    workspace_root = workspace.resolve(strict=True)
+    filesystem_root = Path(workspace_root.anchor)
+    current = workspace_root
+    while current != filesystem_root:
+        git_marker = current / ".git"
+        if git_marker.exists() or git_marker.is_symlink():
+            raise PacketError("standalone Kilo workspace must not be inside a Git worktree")
+        current = current.parent
+    # Kilo 7.8.8 uses the filesystem root as worktree for a non-VCS global project.
+    return filesystem_root
+
+
+def _kilo_permission_pattern(worktree_root: Path, absolute_path: Path) -> str:
+    pattern = str(absolute_path.relative_to(worktree_root))
+    if any(char in pattern for char in "*?[]\\"):
+        raise PacketError("standalone workspace path contains Kilo permission glob syntax")
+    return pattern
+
+
+def _kilo_packet_path_maps(
     packet_paths: tuple[str, ...] | list[str], *, workspace: Path,
-) -> dict[str, object]:
-    """Allow exact relative and absolute spellings of one immutable packet."""
+) -> tuple[dict[str, str], dict[str, str]]:
     safe_paths = tuple(sorted({_relative_file(path) for path in packet_paths}))
     if not safe_paths or len(safe_paths) != len(packet_paths):
         raise PacketError("standalone profile requires a unique nonempty exact-file list")
-    if workspace.is_symlink() or not workspace.is_dir():
-        raise PacketError("standalone profile workspace must be a real directory")
+    worktree_root = _kilo_worktree_root(workspace)
     workspace_root = workspace.resolve(strict=True)
     packet_root = workspace_root / "packet"
     if packet_root.is_symlink() or not packet_root.is_dir():
@@ -911,17 +931,34 @@ def make_per_run_permission_map(
     packet_root = packet_root.resolve(strict=True)
     if packet_root.parent != workspace_root:
         raise PacketError("standalone profile packet root escapes its workspace")
-    read_rules: dict[str, str] = {"*": "deny"}
-    for path in safe_paths:
-        target = packet_root / path
+    absolute_paths: dict[str, str] = {}
+    permission_patterns: dict[str, str] = {}
+    for filename in safe_paths:
+        target = packet_root / filename
         try:
             info = target.lstat()
         except OSError as err:
-            raise PacketError(f"standalone packet allow path is unavailable: {path}") from err
+            raise PacketError(f"standalone packet allow path is unavailable: {filename}") from err
         if not stat.S_ISREG(info.st_mode) or target.is_symlink() or info.st_nlink != 1:
-            raise PacketError(f"standalone packet allow path is linked or not a regular file: {path}")
-        read_rules[f"packet/{path}"] = "allow"
-        read_rules[str(target.resolve(strict=True))] = "allow"
+            raise PacketError(
+                f"standalone packet allow path is linked or not a regular file: {filename}"
+            )
+        absolute = target.resolve(strict=True)
+        if absolute.parent != packet_root:
+            raise PacketError(f"standalone packet allow path escapes its root: {filename}")
+        packet_path = f"packet/{filename}"
+        absolute_paths[packet_path] = str(absolute)
+        permission_patterns[packet_path] = _kilo_permission_pattern(worktree_root, absolute)
+    return absolute_paths, permission_patterns
+
+
+def make_per_run_permission_map(
+    packet_paths: tuple[str, ...] | list[str], *, workspace: Path,
+) -> dict[str, object]:
+    """Allow only exact Kilo worktree-relative Read patterns for one packet."""
+    _, permission_patterns = _kilo_packet_path_maps(packet_paths, workspace=workspace)
+    read_rules: dict[str, str] = {"*": "deny"}
+    read_rules.update({pattern: "allow" for pattern in permission_patterns.values()})
     return {
         "*": "deny",
         "read": read_rules,
@@ -1332,12 +1369,18 @@ def verify_effective_standalone_agent(
     for tool in (*_FORBIDDEN_TOOLS, *_MCP_PROBES):
         _expect_permission(reviewer_rules, tool, "*", "deny")
 
-    absolute_allowed: dict[str, str] = {}
-    for path in overlay.allowed_paths:
-        absolute_path = str((overlay.packet / Path(path).name).resolve(strict=True))
-        absolute_allowed[absolute_path] = path
-        _expect_permission(reviewer_rules, "read", path, "allow", exact=True)
-        _expect_permission(reviewer_rules, "read", absolute_path, "allow", exact=True)
+    permission = make_per_run_permission_map(
+        [Path(path).name for path in overlay.allowed_paths], workspace=overlay.workspace
+    )
+    expected_read_patterns = cast(dict[str, str], permission["read"])
+    allowed_read_patterns = sorted(
+        pattern for pattern, action in expected_read_patterns.items()
+        if pattern != "*" and action == "allow"
+    )
+    if len(allowed_read_patterns) != len(overlay.allowed_paths):
+        raise PacketError("Kilo worktree-relative Read patterns are not one-to-one with packet files")
+    for pattern in allowed_read_patterns:
+        _expect_permission(reviewer_rules, "read", pattern, "allow", exact=True)
     for path in overlay.denied_paths:
         _expect_permission(reviewer_rules, "read", path, "deny")
         candidate = Path(path)
@@ -1347,9 +1390,6 @@ def verify_effective_standalone_agent(
         if not resolved.is_relative_to(overlay.workspace):
             _expect_permission(reviewer_rules, "external_directory", str(resolved), "deny")
     _expect_permission(reviewer_rules, "read", "packet/not-indexed-canary.txt", "deny")
-    _expect_permission(
-        reviewer_rules, "read", str(overlay.packet / "not-indexed-canary.txt"), "deny"
-    )
 
     _, _, expected_prompt = _profile_parts(canonical_profile)
     prompt = reviewer.get("prompt")
@@ -1375,7 +1415,7 @@ def verify_effective_standalone_agent(
         "overlay_profile_sha256": overlay_profile_sha,
         "overlay_config_sha256": overlay.overlay_config_sha256,
         "allowed_packet_paths": list(overlay.allowed_paths),
-        "allowed_read_permission_paths": sorted((*overlay.allowed_paths, *absolute_allowed)),
+        "allowed_read_permission_patterns": allowed_read_patterns,
         "denied_probe_paths": list(overlay.denied_paths),
         "permission_config_sha256": sha256(overlay.kilo_config_content.encode()),
         "os_level_isolation_claimed": False,
@@ -1403,7 +1443,7 @@ def verify_effective_standalone_permissions(
     if any(not path.is_dir() or path.is_symlink()
            for path in (home, tmpdir, config_home, data_home, state_home, cache_home)):
         raise PacketError("Kilo HOME/XDG/cache/temp paths must exist and be real directories")
-    env = _standalone_env(
+    env = standalone_environment(
         kilo_binary=kilo_binary,
         profile_config=overlay.profile_config,
         kilo_config_content=overlay.kilo_config_content,
@@ -1497,18 +1537,38 @@ def _verify_workspace_copy(runtime: RuntimeWorkspace) -> str:
     return sha256(json.dumps(sorted(hashes), separators=(",", ":")).encode())
 
 
-def standalone_review_prompt(
-    inspection: PacketInspection,
-) -> str:
+def _absolute_packet_path_map(runtime: RuntimeWorkspace) -> dict[str, str]:
+    absolute_paths, _ = _kilo_packet_path_maps(
+        [Path(path).name for path in runtime.allowed_paths], workspace=runtime.workspace
+    )
+    return absolute_paths
+
+
+def _kilo_permission_path_map(runtime: RuntimeWorkspace) -> dict[str, str]:
+    _, permission_patterns = _kilo_packet_path_maps(
+        [Path(path).name for path in runtime.allowed_paths], workspace=runtime.workspace
+    )
+    return permission_patterns
+
+
+def standalone_review_prompt(runtime: RuntimeWorkspace) -> str:
     """Build a context-minimal prompt; the indexed packet is the only PR evidence."""
+    inspection = runtime.inspection
     if not all(_SHA1.fullmatch(value) for value in (
         inspection.head, inspection.base, inspection.merge_base,
     )):
         raise PacketError("standalone review prompt requires exact repository identity and refs")
+    paths = "\n".join(
+        f"- `{absolute}` (`{packet_path}`)"
+        for packet_path, absolute in _absolute_packet_path_map(runtime).items()
+    )
     return (
         "Review the complete frozen pull request independently using only `packet/index.md` "
-        "and its indexed packet files. Do not infer evidence from the primary or outside this "
-        "packet. Read every required file/range yourself.\n\n"
+        "and its indexed packet files. Kilo's native Read `filePath` requires an absolute path. "
+        "Use only the exact absolute paths listed below; do not construct or alter file paths. "
+        "Read the index first, then inspect every required file/range yourself. Do not infer "
+        "evidence from the primary or outside this packet.\n"
+        f"Exact native Read filePath values:\n{paths}\n\n"
         f"Repository: {inspection.repository}\nIssue: #{inspection.issue_number}\n"
         f"PR: #{inspection.pull_number}\nHEAD: {inspection.head}\n"
         f"Base: {inspection.base}\nMerge-base: {inspection.merge_base}\n\n"
@@ -1542,15 +1602,23 @@ def standalone_run_argv(
 def standalone_preflight_prompt(runtime: RuntimeWorkspace) -> str:
     if not runtime.denied_paths or set(runtime.probe_labels) != set(runtime.denied_paths):
         raise PacketError("synthetic standalone preflight requires the complete labeled escape set")
-    paths = "\n".join(f"- `{path}` ({runtime.probe_labels[path]})" for path in runtime.denied_paths)
+    allowed_paths = "\n".join(
+        f"- `{absolute}` (`{packet_path}`)"
+        for packet_path, absolute in _absolute_packet_path_map(runtime).items()
+    )
+    denied_paths = "\n".join(
+        f"- `{path}` ({runtime.probe_labels[path]})" for path in runtime.denied_paths
+    )
     return (
         "Synthetic permission preflight only; this is not a PR review and consumes no review "
-        "ordinal. Read `packet/index.md` once, then read every other indexed packet file exactly "
-        "once with its exact relative path and no partial ranges. The native trace may record "
-        "the matching workspace-absolute spelling. In `allowed_paths`, report the exact relative "
-        "`packet/<file>` names from the index regardless of trace spelling. Then attempt one native Read "
-        "for each of these paths, in order:\n"
-        f"{paths}\n"
+        "ordinal. Kilo's native Read `filePath` requires an absolute path. Read `packet/index.md` "
+        "first using its exact path below, then read every other indexed packet file exactly once "
+        "using the corresponding listed absolute path and no partial ranges. In `allowed_paths`, "
+        "report the canonical relative `packet/<file>` names shown in parentheses.\n"
+        f"Exact allowed native Read filePath values:\n{allowed_paths}\n"
+        "Then attempt one native Read for each of these denied paths, in order, using the exact "
+        "path string shown:\n"
+        f"{denied_paths}\n"
         "Do not enumerate, search, delegate, retry, or use another tool. Do not repeat any "
         "synthetic canary value. Return only JSON with keys `preflight`, `allowed_paths`, "
         "`complete_read_count`, `probe_results`, and `unauthorized_bytes_returned`. Each probe "
@@ -1806,12 +1874,11 @@ def audit_standalone_session(
     actual_prompt = _user_prompt(session)
     if actual_prompt not in (expected_prompt, f'"{expected_prompt}"'):
         raise PacketError("standalone Kilo session includes unapproved or prior conversation context")
+    if info.get("projectID") != "global":
+        raise PacketError("standalone packet workspace did not resolve as Kilo's non-VCS global project")
+    permission_path_map = _kilo_permission_path_map(runtime)
+    allowed_permission_paths = set(permission_path_map.values())
     session_permissions = info.get("permission", [])
-    absolute_allowed_paths = {
-        str((runtime.packet / Path(path).name).resolve(strict=True))
-        for path in runtime.allowed_paths
-    }
-    allowed_permission_paths = set(runtime.allowed_paths) | absolute_allowed_paths
     for raw_rule in _array(session_permissions, "standalone session permissions"):
         rule = _object(raw_rule, "standalone session permission")
         if rule.get("action") == "allow" and (
@@ -1825,8 +1892,8 @@ def audit_standalone_session(
         raise PacketError("standalone reviewer used a tool other than native Read")
     allowed = set(runtime.allowed_paths)
     absolute_to_relative = {
-        str((runtime.packet / Path(path).name).resolve(strict=True)): path
-        for path in runtime.allowed_paths
+        absolute: relative
+        for relative, absolute in _absolute_packet_path_map(runtime).items()
     }
     allowed_by_input = {**{path: path for path in runtime.allowed_paths}, **absolute_to_relative}
     denied = set(runtime.denied_paths)
@@ -1849,7 +1916,7 @@ def audit_standalone_session(
             if (state.get("status") != "completed" or not isinstance(output, str)
                     or permission_rule.get("permission") != "read"
                     or permission_rule.get("action") != "allow"
-                    or permission_rule.get("pattern") != raw_path):
+                    or permission_rule.get("pattern") != permission_path_map[packet_path]):
                 raise PacketError(f"allowed Read did not use its exact runtime rule: {raw_path}")
             lines = _read_lines(output)
             if not lines:
@@ -2128,7 +2195,7 @@ def _export_standalone_session(
         raise PacketError("Kilo standalone session export is not valid JSON") from err
 
 
-def _standalone_env(
+def standalone_environment(
     *, kilo_binary: Path, profile_config: Path, kilo_config_content: str,
     home: Path, tmpdir: Path,
     config_home: Path, data_home: Path, state_home: Path, cache_home: Path,
@@ -2143,6 +2210,7 @@ def _standalone_env(
         "XDG_CACHE_HOME": str(cache_home),
         "LANG": "C.UTF-8",
         "LC_ALL": "C.UTF-8",
+        "KILO_NO_DAEMON": "1",
         "KILO_DISABLE_PROJECT_CONFIG": "1",
         "KILO_CONFIG_DIR": str(profile_config),
         "KILO_CONFIG_CONTENT": kilo_config_content,
@@ -2295,7 +2363,7 @@ def _main(argv: list[str] | None = None) -> int:
             prepared = _object(
                 json.loads(args.prepared_report.read_bytes()), "prepared standalone report"
             )
-            launch_env = _standalone_env(
+            launch_env = standalone_environment(
                 kilo_binary=args.kilo,
                 profile_config=Path(_string(
                     prepared.get("per_run_kilo_config_dir"), "prepared Kilo config dir"
@@ -2345,7 +2413,7 @@ def _main(argv: list[str] | None = None) -> int:
             title = _string(prepared.get("reviewer_title"), "prepared reviewer title")
             expected_prompt = (
                 standalone_preflight_prompt(runtime)
-                if args.preflight else standalone_review_prompt(runtime.inspection)
+                if args.preflight else standalone_review_prompt(runtime)
             )
             expected_argv = standalone_run_argv(args.kilo, expected_model, title, expected_prompt)
             if prepared.get("standalone_run_argv") != expected_argv:
@@ -2431,7 +2499,7 @@ def _main(argv: list[str] | None = None) -> int:
         )
         expected_prompt = (
             standalone_preflight_prompt(runtime)
-            if args.preflight else standalone_review_prompt(runtime.inspection)
+            if args.preflight else standalone_review_prompt(runtime)
         )
         model_binding = {
             "provider_id": args.provider_id,
@@ -2444,7 +2512,7 @@ def _main(argv: list[str] | None = None) -> int:
             else f"review-issue-{runtime.inspection.issue_number}-pr-{runtime.inspection.pull_number}"
         )
         run_argv = standalone_run_argv(args.kilo, model_binding, title, expected_prompt)
-        launch_env = _standalone_env(
+        launch_env = standalone_environment(
             kilo_binary=args.kilo,
             profile_config=runtime.profile_config,
             kilo_config_content=runtime.kilo_config_content,

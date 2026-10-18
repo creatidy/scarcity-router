@@ -21,6 +21,7 @@ from tools.reviewer_packet import (
     create_synthetic_standalone_packet,
     make_per_run_permission_map,
     prepare_standalone_environment,
+    standalone_environment,
     summarize_failed_standalone_session,
     standalone_preflight_prompt,
     standalone_review_prompt,
@@ -664,15 +665,14 @@ class ReviewerPacketTests(unittest.TestCase):
             reviewer = make_per_run_permission_map(
                 ["index.md", "source-00.md"], workspace=workspace
             )
-            absolute_index = str(packet / "index.md")
-            absolute_source = str(packet / "source-00.md")
+            worktree_root = Path(workspace.resolve().anchor)
+            index_pattern = str((packet / "index.md").resolve().relative_to(worktree_root))
+            source_pattern = str((packet / "source-00.md").resolve().relative_to(worktree_root))
         self.assertEqual(reviewer["*"], "deny")
         self.assertEqual(reviewer["read"], {
             "*": "deny",
-            "packet/index.md": "allow",
-            "packet/source-00.md": "allow",
-            absolute_index: "allow",
-            absolute_source: "allow",
+            index_pattern: "allow",
+            source_pattern: "allow",
         })
         self.assertEqual(cast(dict[str, str], reviewer["external_directory"])["*"], "deny")
 
@@ -739,18 +739,16 @@ class ReviewerPacketTests(unittest.TestCase):
     def _debug_standalone(self, runtime: RuntimeWorkspace) -> dict[str, object]:
         profile = PROFILE.read_text(encoding="utf-8")
         prompt = profile.split("---", 2)[2].lstrip("\n").rstrip()
+        permission_map = cast(dict[str, str], make_per_run_permission_map(
+            [Path(path).name for path in runtime.allowed_paths], workspace=runtime.workspace
+        )["read"])
         rules = [
             {"permission": "*", "pattern": "*", "action": "allow"},
             {"permission": "*", "pattern": "*", "action": "deny"},
             {"permission": "read", "pattern": "*", "action": "deny"},
             *[{
-                "permission": "read", "pattern": path, "action": "allow"
-            } for path in runtime.allowed_paths],
-            *[{
-                "permission": "read",
-                "pattern": str(runtime.packet / Path(path).name),
-                "action": "allow",
-            } for path in runtime.allowed_paths],
+                "permission": "read", "pattern": path, "action": action
+            } for path, action in permission_map.items()],
             {"permission": "external_directory", "pattern": "*", "action": "deny"},
         ]
         return {
@@ -763,7 +761,7 @@ class ReviewerPacketTests(unittest.TestCase):
 
     def _read_call(
         self, runtime: RuntimeWorkspace, path: str, *, denied: bool = False,
-        line_numbers: set[int] | None = None,
+        line_numbers: set[int] | None = None, permission_pattern: str | None = None,
     ) -> dict[str, object]:
         if denied:
             return {
@@ -795,7 +793,11 @@ class ReviewerPacketTests(unittest.TestCase):
                 "output": rendered,
                 "metadata": {"approval": {
                     "agent": "pr-reviewer-standalone",
-                    "rule": {"permission": "read", "pattern": path, "action": "allow"},
+                    "rule": {
+                        "permission": "read",
+                        "pattern": permission_pattern or path,
+                        "action": "allow",
+                    },
                 }},
             },
         }
@@ -814,7 +816,7 @@ class ReviewerPacketTests(unittest.TestCase):
         )
         prompt = (
             standalone_preflight_prompt(runtime)
-            if preflight else standalone_review_prompt(runtime.inspection)
+            if preflight else standalone_review_prompt(runtime)
         )
         parts: list[dict[str, object]] = []
         for path in runtime.allowed_paths:
@@ -832,7 +834,12 @@ class ReviewerPacketTests(unittest.TestCase):
                     }
                     lines = line_numbers
             native_path = str(runtime.packet / Path(path).name)
-            parts.append(self._read_call(runtime, native_path, line_numbers=lines))
+            permission_pattern = str(
+                Path(native_path).resolve().relative_to(Path(runtime.workspace.resolve().anchor))
+            )
+            parts.append(self._read_call(
+                runtime, native_path, line_numbers=lines, permission_pattern=permission_pattern
+            ))
         if preflight:
             parts.extend(self._read_call(runtime, path, denied=True) for path in runtime.denied_paths)
             final: dict[str, object] = {
@@ -863,6 +870,7 @@ class ReviewerPacketTests(unittest.TestCase):
                 "id": "ses_standalone_fixture",
                 "agent": "pr-reviewer-standalone",
                 "parentID": None,
+                "projectID": "global",
                 "directory": str(runtime.workspace),
                 "model": {"providerID": "openai", "id": "gpt-6-luna", "variant": "max"},
                 "variant": None,
@@ -888,9 +896,14 @@ class ReviewerPacketTests(unittest.TestCase):
             self.assertEqual(checked["reviewer_profile_mode"], "primary")
             self.assertIn(checked["reviewer_resolved_mode"], {"primary", "all"})
             self.assertEqual(checked["reviewer_effective_tools"], ["read"])
+            self.assertEqual(checked["allowed_packet_paths"], list(runtime.allowed_paths))
+            permission_map = cast(dict[str, str], make_per_run_permission_map(
+                [Path(path).name for path in runtime.allowed_paths], workspace=runtime.workspace
+            )["read"])
             self.assertEqual(
-                len(cast(list[str], checked["allowed_read_permission_paths"])),
-                2 * len(runtime.allowed_paths),
+                checked["allowed_read_permission_patterns"],
+                sorted(path for path, action in permission_map.items()
+                       if path != "*" and action == "allow"),
             )
             self.assertFalse(checked["os_level_isolation_claimed"])
 
@@ -958,12 +971,16 @@ class ReviewerPacketTests(unittest.TestCase):
     def test_standalone_review_prompt_has_only_frozen_packet_identity(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             _, _, runtime = self._prepare_standalone(Path(temporary), preflight=False)
-            prompt = standalone_review_prompt(runtime.inspection)
+            prompt = standalone_review_prompt(runtime)
             self.assertIn("packet/index.md", prompt)
+            self.assertIn("Kilo's native Read `filePath` requires an absolute path", prompt)
+            for path in runtime.allowed_paths:
+                absolute_path = str(runtime.packet / Path(path).name)
+                self.assertIn(f"`{absolute_path}` (`{path}`)", prompt)
             self.assertIn(runtime.inspection.head, prompt)
             self.assertIn(runtime.inspection.base, prompt)
             self.assertIn(runtime.inspection.merge_base, prompt)
-            self.assertNotIn(str(runtime.workspace), prompt)
+            self.assertNotIn(str(ROOT), prompt)
             for historical in ("REQUEST_CHANGES", "prior findings", "r6", "r7", "parent conclusion"):
                 self.assertNotIn(historical, prompt)
 
@@ -989,15 +1006,32 @@ class ReviewerPacketTests(unittest.TestCase):
             frontmatter = profile_text.split("---", 2)[1]
             self.assertIn("mode: primary", frontmatter)
             self.assertIn('"*": deny', frontmatter)
-            for path in runtime.allowed_paths:
-                self.assertIn(f'"{path}": allow', frontmatter)
-                absolute_path = str(runtime.packet / Path(path).name)
-                self.assertIn(f'"{absolute_path}": allow', frontmatter)
+            read_rules = cast(dict[str, str], make_per_run_permission_map(
+                [Path(path).name for path in runtime.allowed_paths], workspace=runtime.workspace
+            )["read"])
+            for path, action in read_rules.items():
+                if path != "*" and action == "allow":
+                    self.assertIn(f'{json.dumps(path)}: allow', frontmatter)
+            self.assertNotIn('"packet/index.md": allow', frontmatter)
             self.assertNotRegex(frontmatter, r'(?m)^\s*"\*":\s*allow\s*$')
             self.assertEqual(
                 profile_text.split("---", 2)[2],
                 PROFILE.read_text(encoding="utf-8").split("---", 2)[2],
             )
+
+    def test_standalone_environment_prevents_daemon_config_reuse(self) -> None:
+        env = standalone_environment(
+            kilo_binary=Path("/opt/kilo"),
+            profile_config=Path("/tmp/kilo-config"),
+            kilo_config_content="{}",
+            home=Path("/tmp/home"),
+            tmpdir=Path("/tmp/tmp"),
+            config_home=Path("/tmp/config"),
+            data_home=Path("/tmp/data"),
+            state_home=Path("/tmp/state"),
+            cache_home=Path("/tmp/cache"),
+        )
+        self.assertEqual(env["KILO_NO_DAEMON"], "1")
 
     def test_standalone_preflight_trace_requires_complete_reads_and_actual_denials(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

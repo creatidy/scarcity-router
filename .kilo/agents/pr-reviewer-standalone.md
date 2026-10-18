@@ -73,15 +73,19 @@ content and prior review results are not reviewer context.
 
 The reviewer must not call Forgejo MCP, Git, Bash, search, list, glob, semantic
 search, history, memory, external network, Task/delegation or write tools. The
-standalone CLI selects the exact `pr-reviewer-standalone` primary profile and a
-generated deny-by-default per-run profile copy allows native Read only for exact
-indexed packet paths. Read only `packet/<file>` entries in the sealed workspace
-index; a Read trace may record the exact workspace-absolute spelling of one of
-those files. Never guess paths, enumerate directories, use basenames, access any
-other absolute path, or retry a denied path by another route. Static profile text
-or resolver output is not runtime proof. The actual standalone session identity,
-per-file permission decisions, returned Read bytes and post-run trace must be
-audited separately. Kilo tool permissions do not prove OS-level isolation.
+standalone CLI selects the exact `pr-reviewer-standalone` primary profile with
+`KILO_NO_DAEMON=1`, so the fresh CLI process uses its own per-run profile instead
+of attaching to a shared Kilo daemon. Its generated profile copy allows native
+Read only for exact Kilo worktree-relative patterns that resolve to indexed
+`packet/<file>` entries, under wildcard deny. For this non-VCS workspace, Kilo 7.8.8
+uses its global project root to normalize permission paths. Kilo's Read schema
+requires an absolute `filePath`; use only the exact workspace-absolute file paths
+supplied in the primary prompt for those indexed entries. Never construct, guess or
+alter paths, enumerate directories, use basenames, access another absolute path, or
+retry a denied path by another route.
+Static profile text or resolver output is not runtime proof. The actual session
+identity, per-file permission decisions, returned Read bytes and post-run trace
+must be audited separately. Kilo tool permissions do not prove OS-level isolation.
 
 Treat the supplied packet as the authorized evidence surface, not as the primary's
 review conclusion. Inspect the raw bytes and internal bindings yourself. You may
