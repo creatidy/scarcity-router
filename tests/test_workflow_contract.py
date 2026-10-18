@@ -679,6 +679,8 @@ class WorkflowContractTests(unittest.TestCase):
             "Owner-authorized direct instruction",
             "replaces the failing native Task reviewer execution mechanism",
             "`mode: primary`",
+            "effective mode `all`",
+            "Kilo 7.8.8 `kilo run --agent`",
             "`parentID: null`",
             "`KILO_CONFIG_CONTENT` allows native Read only for exact indexed packet files",
             "Kilo tool-level",

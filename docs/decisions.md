@@ -6311,7 +6311,10 @@ neither is a new live check of the current deployment.
   pr-reviewer-standalone --format json` and the explicitly frozen provider/model/
   variant. The dedicated `.kilo/agents/pr-reviewer-standalone.md` must be
   `mode: primary`; Kilo 7.8.8 `kilo run --agent` falls back to its default agent
-  for a `subagent` profile, so actual exported session identity is mandatory.
+  for a `subagent` profile, so actual exported session identity is mandatory. The
+  installed resolver can report effective mode `all` for a primary-capable profile;
+  `kilo run` rejects only `subagent`. Accept only `primary` or `all`, then require the
+  actual session to record the exact agent and `parentID: null`.
   No native Task parent, continuation, session resume, fork or prior reviewer
   context is used. The implementation primary remains the sole orchestrator.
 - **Input and tool boundary:** The reviewer process works from a dedicated

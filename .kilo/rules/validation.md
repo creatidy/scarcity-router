@@ -41,7 +41,8 @@
   profile and `KILO_CONFIG_CONTENT` with exact packet-only Read rules. Use synthetic
   HOME/XDG config and `KILO_DISABLE_PROJECT_CONFIG=1`; preserve the authenticated Kilo
   data path without reading `~/.config/kilo/kilo.jsonc` or exposing credential values.
-  Inspect the effective agent debug output under those same variables; fail if Kilo
+  Inspect the effective agent debug output under those same variables; require a
+  CLI-runnable resolved mode (`primary` or `all`, never `subagent`) and fail if Kilo
   falls back to a default agent, a tool/path reopens, or exact rules cannot be resolved.
   Do not infer runtime permissions from Markdown text alone.
 - Run a real standalone `kilo --pure run --agent pr-reviewer-standalone` synthetic

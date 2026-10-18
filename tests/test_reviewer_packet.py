@@ -742,7 +742,7 @@ class ReviewerPacketTests(unittest.TestCase):
         ]
         return {
             "name": "pr-reviewer-standalone",
-            "mode": "primary",
+            "mode": "all",
             "tools": {"read": True, "bash": False, "task": False, "mcp": False},
             "permission": rules,
             "prompt": prompt,
@@ -871,7 +871,8 @@ class ReviewerPacketTests(unittest.TestCase):
             resolved = self._debug_standalone(runtime)
             checked = verify_effective_standalone_agent(resolved, runtime, PROFILE)
             self.assertEqual(checked["reviewer_agent"], "pr-reviewer-standalone")
-            self.assertEqual(checked["reviewer_mode"], "primary")
+            self.assertEqual(checked["reviewer_profile_mode"], "primary")
+            self.assertEqual(checked["reviewer_resolved_mode"], "all")
             self.assertEqual(checked["reviewer_effective_tools"], ["read"])
             self.assertFalse(checked["os_level_isolation_claimed"])
 
@@ -880,7 +881,7 @@ class ReviewerPacketTests(unittest.TestCase):
                 _ = verify_effective_standalone_agent(fallback, runtime, PROFILE)
 
             subagent = dict(resolved, mode="subagent")
-            with self.assertRaisesRegex(PacketError, "primary agent"):
+            with self.assertRaisesRegex(PacketError, "subagent and Kilo run would fall back"):
                 _ = verify_effective_standalone_agent(subagent, runtime, PROFILE)
 
             resolved_tools = cast(dict[str, bool], resolved["tools"])

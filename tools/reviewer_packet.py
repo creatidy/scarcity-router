@@ -1277,8 +1277,9 @@ def verify_effective_standalone_agent(
     """Check the Kilo v7.8.8 standalone primary profile and exact Read rules."""
     if reviewer.get("name") != "pr-reviewer-standalone":
         raise PacketError("effective Kilo reviewer identity mismatch or default-agent fallback")
-    if reviewer.get("mode") != "primary":
-        raise PacketError("standalone reviewer must resolve as a primary agent")
+    resolved_mode = _string(reviewer.get("mode"), "resolved reviewer mode")
+    if resolved_mode not in {"primary", "all"}:
+        raise PacketError("standalone reviewer resolves as a subagent and Kilo run would fall back")
     _tool_map(reviewer, {"read"})
     reviewer_rules = _permission_rules(reviewer)
     for tool in (*_FORBIDDEN_TOOLS, *_MCP_PROBES):
@@ -1312,7 +1313,8 @@ def verify_effective_standalone_agent(
     return {
         "status": "EFFECTIVE_STANDALONE_PERMISSION_PASS",
         "reviewer_agent": "pr-reviewer-standalone",
-        "reviewer_mode": "primary",
+        "reviewer_profile_mode": "primary",
+        "reviewer_resolved_mode": resolved_mode,
         "reviewer_effective_tools": ["read"],
         "profile_source_sha256": source_sha,
         "effective_prompt_sha256": prompt_sha,
@@ -2302,7 +2304,8 @@ def _main(argv: list[str] | None = None) -> int:
             "kilo_config_content": runtime.kilo_config_content,
             "launch_environment": launch_env,
             "standalone_agent": "pr-reviewer-standalone",
-            "standalone_mode": "primary",
+            "standalone_profile_mode": effective["reviewer_profile_mode"],
+            "standalone_resolved_mode": effective["reviewer_resolved_mode"],
             "model_binding": model_binding,
             "reviewer_title": title,
             "standalone_run_argv": run_argv,

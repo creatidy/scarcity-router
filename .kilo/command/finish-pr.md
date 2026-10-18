@@ -60,9 +60,10 @@ delivery; STOP_REVISE still requires an explicit owner decision, not a new PR/na
      and `--profile-source-root` set to the clean frozen checkout (omit
     `--source-root` for the synthetic packet), installed Kilo 7.8.8 binary, synthetic
     HOME/XDG_CONFIG/state/cache/TMP paths, existing authenticated `XDG_DATA_HOME`, and
-    approved provider/model/variant. It verifies the profile is discovered as
-   `mode: primary`, the canonical prompt hash matches, and Read is the sole enabled
-   tool with exact packet-path permissions. Reuse the resulting
+     approved provider/model/variant. It verifies the tracked profile declares
+     `mode: primary`, the effective resolver mode is CLI-runnable (`primary` or `all`,
+     never `subagent`), the canonical prompt hash matches, and Read is the sole enabled
+     tool with exact packet-path permissions. Reuse the resulting
    `KILO_CONFIG_DIR`, `KILO_CONFIG_CONTENT` and `KILO_DISABLE_PROJECT_CONFIG=1`
    unchanged. The helper only prepares/validates; it never starts a reviewer session.
 5. Run one real standalone `kilo --pure run --agent pr-reviewer-standalone` preflight
