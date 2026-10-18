@@ -6306,6 +6306,10 @@ neither is a new live check of the current deployment.
   statically but its actual parent Task approval was wildcard `* allow` while the
   child had no native Read tool. The exact r6/r7 evidence remains in the excluded
   issue-delivery directory. Do not repeat Task permission-propagation experiments.
+  The first standalone synthetic runtime, session `ses_eb345f610ffeilrl23CGw7M1Dh`,
+  also failed closed: its `Read("packet/index.md")` was denied by `agent` rule
+  `read:* deny` before bytes despite a passing static resolver; no other calls or
+  probes occurred. The failure and export digest are in the excluded delivery record.
 - **Selected execution:** Each `/review-pr`, `/finish-pr` and `/loop` review uses
   one fresh official Kilo 7.8.8 CLI process/session with `--pure run --agent
   pr-reviewer-standalone --format json` and the explicitly frozen provider/model/
@@ -6319,12 +6323,17 @@ neither is a new live check of the current deployment.
   context is used. The implementation primary remains the sole orchestrator.
 - **Input and tool boundary:** The reviewer process works from a dedicated
   workspace whose only entry is an immutable `packet/` directory. Its separate
-  per-run `KILO_CONFIG_DIR` holds an exact copy of the tracked standalone profile;
-  `KILO_CONFIG_CONTENT` allows native Read only for exact indexed packet files and
-  denies all other tools/paths. Use `KILO_DISABLE_PROJECT_CONFIG=1`, synthetic
-  HOME/XDG config and the exact effective permission config for both resolver and
-  runtime preflight. No source checkout, Git object store, Forgejo MCP, Bash,
-  search, list, glob, memory, write, delegation or external-network tools are
+  per-run `KILO_CONFIG_DIR` holds a generated copy with the same identity/mode/prompt
+  and an ephemeral frontmatter permission map: all tools denied, Read allowed only
+  for exact indexed packet files, and external directories denied. The tracked
+  canonical profile remains deny-all. r1's actual session denied
+  `Read("packet/index.md")` under `agent read:* deny` despite static environment
+  overlay check passing. Keep per-run `kilo.json` and `KILO_CONFIG_CONTENT` empty (`{}`);
+  put packet-specific Read allows directly in the ephemeral primary profile frontmatter.
+  Use `KILO_DISABLE_PROJECT_CONFIG=1`, synthetic HOME/XDG config and the exact
+  effective per-run profile in both resolver and runtime checks. No source checkout,
+  Git object store, Forgejo MCP, Bash, search, list, glob, memory, write, delegation
+  or external-network tools are
   available to the reviewer. The only external request is authenticated model
   inference through the existing Kilo provider path. Never read
   `~/.config/kilo/kilo.jsonc`, copy/print credential values or place them in any

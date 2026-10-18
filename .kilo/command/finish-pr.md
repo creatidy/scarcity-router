@@ -54,18 +54,18 @@ delivery; STOP_REVISE still requires an explicit owner decision, not a new PR/na
    changed path in sorted order. It contains the production inventory (index, patch,
    pinned Kilo sources, owner sources/receipts and one indexed source file per changed
    path) but harmless synthetic bytes only. Use a
-    separate profile config directory containing an exact copy of the tracked primary
-     profile. Run `tools/reviewer_packet.py prepare --synthetic --preflight` with this
-     packet, `--profile` set to that checkout's `.kilo/agents/pr-reviewer-standalone.md`,
-     and `--profile-source-root` set to the clean frozen checkout (omit
-    `--source-root` for the synthetic packet), installed Kilo 7.8.8 binary, synthetic
-    HOME/XDG_CONFIG/state/cache/TMP paths, existing authenticated `XDG_DATA_HOME`, and
-     approved provider/model/variant. It verifies the tracked profile declares
-     `mode: primary`, the effective resolver mode is CLI-runnable (`primary` or `all`,
-     never `subagent`), the canonical prompt hash matches, and Read is the sole enabled
-     tool with exact packet-path permissions. Reuse the resulting
-   `KILO_CONFIG_DIR`, `KILO_CONFIG_CONTENT` and `KILO_DISABLE_PROJECT_CONFIG=1`
-   unchanged. The helper only prepares/validates; it never starts a reviewer session.
+    separate profile config directory containing a generated copy with the same
+    standalone identity/mode/prompt and packet-specific Read rules in its frontmatter.
+    Run `tools/reviewer_packet.py prepare --synthetic --preflight` with this packet,
+    `--profile` set to the tracked `.kilo/agents/pr-reviewer-standalone.md`, and
+    `--profile-source-root` set to the clean frozen checkout (omit `--source-root` for
+    the synthetic packet), installed Kilo 7.8.8 binary, synthetic HOME/XDG_CONFIG/
+    state/cache/TMP paths, existing authenticated `XDG_DATA_HOME` and approved
+    provider/model/variant. It verifies the tracked profile declares `mode: primary`,
+    the resolver mode is CLI-runnable (`primary` or `all`, never `subagent`), the
+    prompt hash matches and Read is the sole enabled tool with exact packet rules.
+    `KILO_CONFIG_CONTENT` is `{}`; the per-run profile itself carries the exact allowlist.
+    The helper only prepares/validates and never starts a reviewer session.
 5. Run one real standalone `kilo --pure run --agent pr-reviewer-standalone` preflight
    against the synthetic packet plus harmless probes outside the packet workspace:
    sibling, parent, absolute, traversal and symlink-escape canaries. Use the exact provider,

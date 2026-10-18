@@ -74,13 +74,13 @@ content and prior review results are not reviewer context.
 The reviewer must not call Forgejo MCP, Git, Bash, search, list, glob, semantic
 search, history, memory, external network, Task/delegation or write tools. The
 standalone CLI selects the exact `pr-reviewer-standalone` primary profile and a
-deny-by-default per-run overlay allows native Read only for exact indexed packet
-paths. Read only `packet/<file>` entries in the sealed workspace index; never guess,
-enumerate directories, use basenames/absolute paths, or retry a denied path by
-another route. Static profile text or resolver output is not runtime proof. The
-actual standalone session identity, per-file permission decisions, returned Read
-bytes and post-run trace must be audited separately. Kilo tool permissions do not
-prove OS-level isolation.
+generated deny-by-default per-run profile copy allows native Read only for exact
+indexed packet paths. Read only `packet/<file>` entries in the sealed workspace
+index; never guess, enumerate directories, use basenames/absolute paths, or retry a
+denied path by another route. Static profile text or resolver output is not runtime
+proof. The actual standalone session identity, per-file permission decisions,
+returned Read bytes and post-run trace must be audited separately. Kilo tool
+permissions do not prove OS-level isolation.
 
 Treat the supplied packet as the authorized evidence surface, not as the primary's
 review conclusion. Inspect the raw bytes and internal bindings yourself. You may

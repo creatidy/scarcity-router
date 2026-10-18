@@ -895,25 +895,41 @@ def validate_packet(
     )
 
 
-def make_kilo_config_content(packet_paths: tuple[str, ...] | list[str]) -> str:
-    """Return deny-by-default standalone reviewer permissions for exact packet paths."""
+def make_per_run_permission_map(packet_paths: tuple[str, ...] | list[str]) -> dict[str, object]:
+    """Return the exact deny-by-default frontmatter permission map for one packet."""
     safe_paths = tuple(sorted({_relative_file(path) for path in packet_paths}))
     if not safe_paths or len(safe_paths) != len(packet_paths):
-        raise PacketError("Kilo overlay requires a unique nonempty exact-file list")
+        raise PacketError("standalone profile requires a unique nonempty exact-file list")
     read_rules: dict[str, str] = {"*": "deny"}
     read_rules.update({f"packet/{path}": "allow" for path in safe_paths})
-    config = {
-        "agent": {
-            "pr-reviewer-standalone": {
-                "permission": {
-                    "*": "deny",
-                    "read": read_rules,
-                    "external_directory": {"*": "deny"},
-                },
-            },
-        },
+    return {
+        "*": "deny",
+        "read": read_rules,
+        "external_directory": {"*": "deny"},
     }
-    return json.dumps(config, separators=(",", ":"), sort_keys=True)
+
+
+def _render_per_run_standalone_profile(
+    canonical_profile: Path, packet_paths: tuple[str, ...] | list[str],
+) -> bytes:
+    _, description, prompt = _profile_parts(canonical_profile)
+    permission = make_per_run_permission_map(packet_paths)
+    read_rules = cast(dict[str, str], permission["read"])
+    lines = [
+        f"description: {json.dumps(description)}",
+        "mode: primary",
+        "permission:",
+        '  "*": deny',
+        "  read:",
+        '    "*": deny',
+    ]
+    lines.extend(
+        f"    {json.dumps(path)}: allow"
+        for path, action in sorted(read_rules.items())
+        if path != "*" and action == "allow"
+    )
+    lines.extend(("  external_directory:", '    "*": deny'))
+    return ("\n".join(("---", *lines, "---", "", prompt, ""))).encode("utf-8")
 
 
 def _profile_parts(profile_path: Path) -> tuple[bytes, str, str]:
@@ -931,7 +947,7 @@ def _profile_parts(profile_path: Path) -> tuple[bytes, str, str]:
     if not re.search(r"(?m)^permission:\s*\n\s+\"\*\":\s*deny\s*$", frontmatter):
         raise PacketError("standalone reviewer static permissions must deny all tools")
     if not re.search(r"(?m)^\s+read:\s*deny\s*$", frontmatter):
-        raise PacketError("standalone reviewer static Read must deny without a per-run overlay")
+        raise PacketError("canonical standalone reviewer Read must deny without a generated profile")
     if re.search(r"(?m)^\s+[^#\n]+:\s*allow\s*$", frontmatter):
         raise PacketError("standalone reviewer frontmatter contains a static allow")
     description = re.search(r"(?m)^description:\s*(.+?)\s*$", frontmatter)
@@ -978,11 +994,14 @@ def _verify_overlay_files(runtime: RuntimeWorkspace) -> None:
     profile_path = root / "agents/pr-reviewer-standalone.md"
     profile_text = profile_path.read_text(encoding="utf-8")
     profile_parts = profile_text.split("---", 2)
+    packet_paths = tuple(path.removeprefix("packet/") for path in runtime.allowed_paths)
+    expected_profile = _render_per_run_standalone_profile(runtime.canonical_profile, packet_paths)
     if (len(profile_parts) != 3 or profile_parts[0].strip()
-            or profile_path.read_bytes() != canonical_profile_bytes
+            or profile_path.read_bytes() != expected_profile
+            or sha256(expected_profile) != runtime.overlay_profile_sha256
             or sha256(profile_parts[2].lstrip("\n").rstrip().encode("utf-8"))
             != runtime.profile_prompt_sha256):
-        raise PacketError("per-run reviewer profile prompt differs from the canonical source")
+        raise PacketError("per-run reviewer profile differs from the exact prompt and packet rules")
 
 
 def _write_probe(path: Path, content: bytes) -> str:
@@ -1138,7 +1157,14 @@ def prepare_standalone_environment(
         ))
     os.chmod(workspace, 0o555)
 
-    kilo_config_content = make_kilo_config_content(list(inspection.file_paths))
+    allowed_paths = (
+        "packet/index.md",
+        *(f"packet/{path}" for path in inspection.file_paths if path != "index.md"),
+    )
+    per_run_profile = _render_per_run_standalone_profile(
+        canonical_profile, tuple(path.removeprefix("packet/") for path in allowed_paths)
+    )
+    kilo_config_content = "{}"
     kilo_config_bytes = kilo_config_content.encode("utf-8")
 
     overlay = Path(tempfile.mkdtemp(prefix="sr-standalone-kilo-config-", dir=overlay_parent))
@@ -1148,7 +1174,7 @@ def prepare_standalone_environment(
     (overlay / ".gitignore").write_text("# per-run Kilo reviewer configuration\n", encoding="utf-8")
     os.chmod(overlay / ".gitignore", 0o444)
     overlay_profile = agents / "pr-reviewer-standalone.md"
-    overlay_profile.write_bytes(profile_bytes)
+    overlay_profile.write_bytes(per_run_profile)
     os.chmod(overlay_profile, 0o444)
     overlay_config = overlay / "kilo.json"
     overlay_config.write_bytes(kilo_config_bytes)
@@ -1167,14 +1193,11 @@ def prepare_standalone_environment(
         probe_hashes=probe_hashes,
         probe_symlinks=probe_symlinks,
         probe_labels=probe_labels,
-        allowed_paths=(
-            "packet/index.md",
-            *(f"packet/{path}" for path in inspection.file_paths if path != "index.md"),
-        ),
+        allowed_paths=allowed_paths,
         denied_paths=tuple(denied_paths),
         profile_prompt_sha256=sha256(prompt.encode()),
         canonical_profile_sha256=sha256(profile_bytes),
-        overlay_profile_sha256=sha256(profile_bytes),
+        overlay_profile_sha256=sha256(per_run_profile),
         overlay_config_sha256=sha256(kilo_config_bytes),
         kilo_config_content=kilo_config_content,
     )
@@ -1626,6 +1649,93 @@ def _validate_preflight_result(text: str, runtime: RuntimeWorkspace) -> dict[str
     return result
 
 
+def summarize_failed_standalone_session(
+    session: dict[str, Any],
+    *,
+    session_export_sha256: str,
+    reason: str,
+    preflight: bool,
+) -> dict[str, Any]:
+    """Persist a content-filtered trace when the independent audit fails closed."""
+    info = _object(session.get("info"), "failed standalone session info")
+    model_info = info.get("model")
+    model_record: dict[str, str] = {}
+    if isinstance(model_info, dict):
+        for key in ("providerID", "id", "modelID", "variant"):
+            value = model_info.get(key)
+            if isinstance(value, str):
+                model_record[key] = value
+    calls = _tool_calls(session)
+    tool_trace: list[dict[str, object]] = []
+    for call in calls:
+        state = _object(call.get("state"), "failed standalone tool state")
+        request = state.get("input")
+        path = request.get("filePath") if isinstance(request, dict) else None
+        metadata = state.get("metadata")
+        approval = metadata.get("approval") if isinstance(metadata, dict) else None
+        rule = approval.get("rule") if isinstance(approval, dict) else None
+        if not isinstance(rule, dict):
+            rule = {}
+        output = state.get("output")
+        tool_trace.append({
+            "tool": call.get("tool") if isinstance(call.get("tool"), str) else "unknown",
+            "path": path if isinstance(path, str) else None,
+            "status": state.get("status") if isinstance(state.get("status"), str) else "unknown",
+            "permission_source": approval.get("source") if isinstance(approval, dict) else None,
+            "permission_agent": approval.get("agent") if isinstance(approval, dict) else None,
+            "permission": rule.get("permission"),
+            "pattern": rule.get("pattern"),
+            "action": rule.get("action"),
+            "content_output_present": output not in (None, ""),
+            "content_output_sha256": sha256(output.encode()) if isinstance(output, str) else None,
+        })
+    final_summary: dict[str, object] = {"parsed": False}
+    try:
+        final_text = _final_assistant_text(session, "pr-reviewer-standalone")
+        final_result = _object(json.loads(final_text), "failed standalone final response")
+        final_summary = {
+            "parsed": True,
+            "keys": sorted(final_result),
+            "preflight": final_result.get("preflight"),
+            "status": final_result.get("status"),
+            "verdict": final_result.get("verdict"),
+            "allowed_path_count": (
+                len(final_result["allowed_paths"])
+                if isinstance(final_result.get("allowed_paths"), list) else None
+            ),
+            "complete_read_count": final_result.get("complete_read_count"),
+            "probe_result_count": (
+                len(final_result["probe_results"])
+                if isinstance(final_result.get("probe_results"), list) else None
+            ),
+            "unauthorized_bytes_returned": final_result.get("unauthorized_bytes_returned"),
+        }
+    except (PacketError, json.JSONDecodeError):
+        pass
+    return {
+        "status": "STANDALONE_PREFLIGHT_TRACE_FAIL" if preflight else "STANDALONE_REVIEW_TRACE_FAIL",
+        "failure_reason": reason,
+        "session_export_sha256": session_export_sha256,
+        "session": {
+            "id": info.get("id"),
+            "agent": info.get("agent"),
+            "parentID": info.get("parentID"),
+            "directory": info.get("directory"),
+            "title": info.get("title"),
+            "model": model_record,
+            "variant": info.get("variant"),
+        },
+        "native_tool_call_count": len(calls),
+        "native_tools": sorted({
+            call.get("tool") for call in calls if isinstance(call.get("tool"), str)
+        }),
+        "native_tool_trace": tool_trace,
+        "final_response_summary": final_summary,
+        "os_level_isolation_claimed": False,
+        "raw_session_export_persisted": False,
+    }
+
+
 def audit_standalone_session(
     session: dict[str, Any],
     *,
@@ -1654,8 +1764,8 @@ def audit_standalone_session(
     model_info = _object(info.get("model"), "standalone model binding")
     actual_model = {
         "provider_id": _string(model_info.get("providerID"), "provider id"),
-        "model_id": _string(model_info.get("modelID"), "model id"),
-        "variant": _string(info.get("variant"), "model variant"),
+        "model_id": _string(model_info.get("id"), "model id"),
+        "variant": _string(model_info.get("variant"), "model variant"),
     }
     if actual_model != expected_model:
         raise PacketError("standalone Kilo session model/provider/variant differs from the frozen binding")
@@ -2035,7 +2145,9 @@ def _main(argv: list[str] | None = None) -> int:
     validate.add_argument("--source-root", type=Path, required=True)
     validate.add_argument("--external-root", action="append", default=[])
 
-    permission_config = sub.add_parser("permission-config", help="render exact Kilo permissions")
+    permission_config = sub.add_parser(
+        "permission-config", help="render the exact standalone profile Read permission map"
+    )
     permission_config.add_argument("--manifest", type=Path, required=True)
 
     prepare = sub.add_parser(
@@ -2124,7 +2236,7 @@ def _main(argv: list[str] | None = None) -> int:
             for item in _array(manifest.get("files"), "manifest.files")
         )
         if args.command == "permission-config":
-            print(make_kilo_config_content(list(paths)))
+            print(json.dumps(make_per_run_permission_map(list(paths)), sort_keys=True, separators=(",", ":")))
             return 0
 
         if args.command == "audit-standalone":
@@ -2205,15 +2317,26 @@ def _main(argv: list[str] | None = None) -> int:
                 workspace=runtime.workspace,
                 env=launch_env,
             )
-            report = audit_standalone_session(
-                session,
-                session_export_sha256=export_sha256,
-                runtime=runtime,
-                expected_model=expected_model,
-                expected_title=title,
-                expected_prompt=expected_prompt,
-                preflight=args.preflight,
-            )
+            try:
+                report = audit_standalone_session(
+                    session,
+                    session_export_sha256=export_sha256,
+                    runtime=runtime,
+                    expected_model=expected_model,
+                    expected_title=title,
+                    expected_prompt=expected_prompt,
+                    preflight=args.preflight,
+                )
+            except PacketError as err:
+                report = summarize_failed_standalone_session(
+                    session,
+                    session_export_sha256=export_sha256,
+                    reason=str(err),
+                    preflight=args.preflight,
+                )
+                _write_report(args.report, report)
+                print(json.dumps(report, sort_keys=True, separators=(",", ":")))
+                return 1
             _write_report(args.report, report)
             print(json.dumps(report, sort_keys=True, separators=(",", ":")))
             return 0

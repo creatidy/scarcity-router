@@ -41,9 +41,10 @@ clean checkout and no `--source-root`. Use the installed Kilo 7.8.8 binary, synt
 HOME/XDG_CONFIG/state/cache/TMP paths, existing authenticated `XDG_DATA_HOME` and
 approved provider/model/variant. The tracked profile frontmatter must declare
 `mode: primary`; Kilo debug must report a CLI-runnable mode (`primary` or `all`,
-never `subagent`), the exact canonical prompt hash and Read as the sole
-enabled tool with exact file rules under the same `KILO_CONFIG_DIR`, `KILO_CONFIG_CONTENT` and
-`KILO_DISABLE_PROJECT_CONFIG=1` environment used for dispatch.
+never `subagent`), the exact canonical prompt hash and Read as the sole enabled tool
+with exact per-run profile-frontmatter path rules under the same `KILO_CONFIG_DIR`,
+empty `KILO_CONFIG_CONTENT={}` and `KILO_DISABLE_PROJECT_CONFIG=1` environment used
+for dispatch.
 
 Run one real standalone Kilo CLI preflight against the complete fixture plus harmless
 sibling, parent, absolute, traversal and symlink probes. Use exactly the reported

@@ -37,13 +37,17 @@
 - Before starting any reviewer session, verify the Kilo 7.8.8 effective standalone
   primary profile under the exact runtime configuration. The dedicated
   `pr-reviewer-standalone` profile must be `mode: primary` and statically deny all
-  tools. Prepare a per-run `KILO_CONFIG_DIR` with a byte-identical copy of that
-  profile and `KILO_CONFIG_CONTENT` with exact packet-only Read rules. Use synthetic
+  tools. Prepare a per-run `KILO_CONFIG_DIR` with a generated copy whose reviewer
+  identity/mode/prompt are unchanged and whose frontmatter has only exact packet-path
+  Read allows under wildcard deny. Keep per-run `kilo.json` and `KILO_CONFIG_CONTENT`
+  empty (`{}`): r1's actual standalone session denied the first allowed Read under
+  `agent read:* deny` despite a passing static env-overlay result. Use synthetic
   HOME/XDG config and `KILO_DISABLE_PROJECT_CONFIG=1`; preserve the authenticated Kilo
   data path without reading `~/.config/kilo/kilo.jsonc` or exposing credential values.
-  Inspect the effective agent debug output under those same variables; require a
-  CLI-runnable resolved mode (`primary` or `all`, never `subagent`) and fail if Kilo
-  falls back to a default agent, a tool/path reopens, or exact rules cannot be resolved.
+  Inspect the effective agent debug output under those same variables; require the
+  tracked profile to declare primary, a CLI-runnable resolved mode (`primary` or
+  `all`, never `subagent`), and fail if Kilo falls back to a default agent, a tool/path
+  reopens, or exact rules cannot be resolved.
   Do not infer runtime permissions from Markdown text alone.
 - Run a real standalone `kilo --pure run --agent pr-reviewer-standalone` synthetic
   preflight with the complete production-equivalent packet and harmless sibling,

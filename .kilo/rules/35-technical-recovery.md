@@ -125,19 +125,25 @@ Read-only packet access with no checkout, source/environment paths, prior review
 results or parent conclusions. The reviewer must not inspect credential-bearing Git
 configuration or invoke credential helpers.
 
-The committed `.kilo/agents/pr-reviewer.md` remains statically deny-all. For each standalone review,
-the primary builds a per-run Kilo config directory containing a byte-identical copy
-of the frozen standalone reviewer profile, and a `KILO_CONFIG_CONTENT` exact-file Read
-overlay for the packet. The reviewer config is separate from the packet-only workspace
-outside the source checkout. Use the installed Kilo
+The committed `.kilo/agents/pr-reviewer.md` and
+`.kilo/agents/pr-reviewer-standalone.md` remain statically deny-all. For each
+standalone review, the primary builds a per-run Kilo config directory with a generated
+profile copy whose identity/mode/prompt match the tracked standalone profile and whose
+frontmatter contains only exact packet-path Read allows under wildcard deny. The
+profile config is separate from the packet-only workspace outside the source checkout.
+The per-run `kilo.json` and `KILO_CONFIG_CONTENT` are empty (`{}`); r1's actual
+standalone session denied the indexed Read under `agent` `read:* deny` despite a
+passing static environment-overlay check. Do not rely on that env overlay as the
+Read allow layer; use only the generated per-run profile frontmatter. Use installed Kilo
 7.8.8 resolver/source semantics: merge order is runtime-specific, `findLast` rules
 are significant, and static/global/managed/saved rules can override an assumed
-overlay. Before any reviewer session, inspect `kilo debug agent
-pr-reviewer-standalone` under the exact production environment. Require the exact
-canonical primary profile/prompt hash and Read as the sole enabled tool; evaluate exact
-per-file Read winners, default-deny out-of-packet paths and forbidden-tool denies.
-Missing output, unknown rules, fallback identity, any broad capability, or an
-unverifiable merge order aborts before reserving an ordinal.
+resolver. Before any reviewer session, inspect `kilo debug agent
+pr-reviewer-standalone` under the exact production environment. Require the tracked
+profile frontmatter to be `mode: primary`, the resolved Kilo mode to be CLI-runnable
+(`primary` or `all`, never `subagent`), the exact prompt hash and Read as the sole
+enabled tool; evaluate exact per-file profile-frontmatter winners, default-deny paths and
+forbidden-tool denies. Missing output, default-agent fallback, any broad capability or
+an unverifiable merge order aborts before reserving an ordinal.
 
 The standalone Kilo CLI process has its working directory set to a sealed temporary
 workspace whose only entry is a `packet/` directory; it does not receive the source

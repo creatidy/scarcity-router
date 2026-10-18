@@ -19,8 +19,9 @@ from tools.reviewer_packet import (
     audit_standalone_session,
     capture_session_id,
     create_synthetic_standalone_packet,
-    make_kilo_config_content,
+    make_per_run_permission_map,
     prepare_standalone_environment,
+    summarize_failed_standalone_session,
     standalone_preflight_prompt,
     standalone_review_prompt,
     standalone_run_argv,
@@ -653,12 +654,8 @@ class ReviewerPacketTests(unittest.TestCase):
             with self.assertRaisesRegex(PacketError, "credential-like"):
                 _ = validate_packet(packet, manifest_path)
 
-    def test_kilo_config_allows_only_exact_read_paths(self) -> None:
-        config = _load_object(make_kilo_config_content(["index.md", "source-00.md"]))
-        agent = cast(dict[str, object], config["agent"])
-        self.assertEqual(set(agent), {"pr-reviewer-standalone"})
-        reviewer_agent = cast(dict[str, object], agent["pr-reviewer-standalone"])
-        reviewer = cast(dict[str, object], reviewer_agent["permission"])
+    def test_per_run_profile_allows_only_exact_read_paths(self) -> None:
+        reviewer = make_per_run_permission_map(["index.md", "source-00.md"])
         self.assertEqual(reviewer["*"], "deny")
         self.assertEqual(reviewer["read"], {
             "*": "deny",
@@ -850,8 +847,8 @@ class ReviewerPacketTests(unittest.TestCase):
                 "agent": "pr-reviewer-standalone",
                 "parentID": None,
                 "directory": str(runtime.workspace),
-                "model": {"providerID": "openai", "modelID": "gpt-6-luna"},
-                "variant": "max",
+                "model": {"providerID": "openai", "id": "gpt-6-luna", "variant": "max"},
+                "variant": None,
                 "title": title,
                 "permission": [],
             },
@@ -965,10 +962,19 @@ class ReviewerPacketTests(unittest.TestCase):
                 "sibling", "parent", "absolute", "traversal",
                 "symlink_to_packet", "symlink_to_outside",
             })
-            config = _load_object(runtime.kilo_config_content)
-            agent = cast(dict[str, object], config["agent"])
-            self.assertEqual(set(agent), {"pr-reviewer-standalone"})
-            self.assertNotIn(str(runtime.workspace), runtime.kilo_config_content)
+            self.assertEqual(_load_object(runtime.kilo_config_content), {})
+            profile_copy = runtime.profile_config / "agents/pr-reviewer-standalone.md"
+            profile_text = profile_copy.read_text(encoding="utf-8")
+            frontmatter = profile_text.split("---", 2)[1]
+            self.assertIn("mode: primary", frontmatter)
+            self.assertIn('"*": deny', frontmatter)
+            for path in runtime.allowed_paths:
+                self.assertIn(f'"{path}": allow', frontmatter)
+            self.assertNotRegex(frontmatter, r'(?m)^\s*"\*":\s*allow\s*$')
+            self.assertEqual(
+                profile_text.split("---", 2)[2],
+                PROFILE.read_text(encoding="utf-8").split("---", 2)[2],
+            )
 
     def test_standalone_preflight_trace_requires_complete_reads_and_actual_denials(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1043,7 +1049,7 @@ class ReviewerPacketTests(unittest.TestCase):
 
             wrong_model = cast(dict[str, object], json.loads(json.dumps(session)))
             wrong_model_info = cast(dict[str, object], wrong_model["info"])
-            cast(dict[str, object], wrong_model_info["model"])["modelID"] = "other-model"
+            cast(dict[str, object], wrong_model_info["model"])["id"] = "other-model"
             with self.assertRaisesRegex(PacketError, "model/provider/variant"):
                 _ = audit_standalone_session(
                     wrong_model,
@@ -1096,6 +1102,26 @@ class ReviewerPacketTests(unittest.TestCase):
                     expected_prompt=prompt,
                     preflight=True,
                 )
+
+    def test_failed_session_summary_filters_packet_content_and_counts_preflight_results(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            _, _, runtime = self._prepare_standalone(Path(temporary), preflight=True)
+            session, _, _, _ = self._standalone_session(runtime, preflight=True)
+            report = summarize_failed_standalone_session(
+                session,
+                session_export_sha256="c" * 64,
+                reason="synthetic audit failure",
+                preflight=True,
+            )
+
+        summary = cast(dict[str, object], report["final_response_summary"])
+        self.assertEqual(report["status"], "STANDALONE_PREFLIGHT_TRACE_FAIL")
+        self.assertEqual(summary["allowed_path_count"], len(runtime.allowed_paths))
+        self.assertEqual(summary["complete_read_count"], len(runtime.allowed_paths))
+        self.assertEqual(summary["probe_result_count"], len(runtime.denied_paths))
+        self.assertFalse(summary["unauthorized_bytes_returned"])
+        self.assertFalse(report["raw_session_export_persisted"])
+        self.assertNotIn("SYNTHETIC ONLY:", json.dumps(report))
 
     def test_standalone_review_result_requires_exact_refs_complete_coverage_and_ux(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
