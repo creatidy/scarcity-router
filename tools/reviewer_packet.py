@@ -75,14 +75,13 @@ def create_synthetic_standalone_packet(
     for path in paths:
         if path == "index.md":
             text = (
-                f'<BEGIN-CANONICAL-ISSUE-212-BODY sha256="{issue_body_sha}">\n'
-                f"{issue_body.decode()}\n"
-                "<END-CANONICAL-ISSUE-212-BODY>\n"
+                "Synthetic-only fixture: every other listed file is harmless.\n"
+                "PR body text is non-authoritative; digest only.\n"
                 "<BEGIN-PACKET-READ-PLAN>\n"
                 f"{json.dumps(read_plan, sort_keys=True)}\n"
                 "<END-PACKET-READ-PLAN>\n"
-                "Synthetic-only fixture: every other listed file is harmless.\n"
-                "PR body text is non-authoritative; digest only.\n"
+                f'<BEGIN-CANONICAL-ISSUE-212-BODY sha256="{issue_body_sha}">\n'
+                f"{issue_body.decode()}\n<END-CANONICAL-ISSUE-212-BODY>"
             )
             contents[path] = text.encode("utf-8")
         elif path == "patch.diff":
@@ -124,7 +123,7 @@ def create_synthetic_standalone_packet(
             kind, origin, revision = "owner-source", "synthetic owner source placeholder", head
         elif path in KILO_SOURCE_PACKET_PATHS:
             source_path = KILO_SOURCE_REPOSITORY_PATHS[path]
-            revision = "e2887f08e5a6394299c810ba508f358aaf4c5bc3"
+            revision = KILO_SOURCE_REVISION
             kind = "external-source"
             origin = f"https://github.com/Kilo-Org/kilocode/blob/{revision}/{source_path}"
         else:
@@ -182,7 +181,7 @@ def create_synthetic_standalone_packet(
     external_sources = []
     for path in KILO_SOURCE_PACKET_PATHS:
         source_path = KILO_SOURCE_REPOSITORY_PATHS[path]
-        revision = "e2887f08e5a6394299c810ba508f358aaf4c5bc3"
+        revision = KILO_SOURCE_REVISION
         external_sources.append({
             "packet_path": path,
             "repository": "Kilo-Org/kilocode",
@@ -252,7 +251,18 @@ def validate_synthetic_preflight_packet(packet_root: Path, manifest_path: Path) 
         data = (packet_root / path).read_bytes()
         if b"synthetic" not in data.lower():
             raise PacketError(f"synthetic preflight packet contains non-synthetic bytes: {path}")
-    return validate_packet(packet_root, manifest_path, require_external_sources=True)
+    manifest_records = {
+        _relative_file(_object(row, "synthetic manifest file").get("path")):
+        _object(row, "synthetic manifest file")
+        for row in _array(manifest.get("files"), "synthetic manifest files")
+    }
+    _validate_kilo_source_records(
+        _array(manifest.get("external_sources"), "synthetic external sources"),
+        manifest_records,
+    )
+    return validate_packet(
+        packet_root, manifest_path, require_external_sources=True, allow_synthetic_fixture=True
+    )
 
 
 @dataclass(frozen=True)
@@ -278,7 +288,9 @@ class RuntimeWorkspace:
     workspace: Path
     packet: Path
     inspection: PacketInspection
+    source_root: Path | None
     external_source_roots: dict[str, Path]
+    synthetic_fixture: bool
     canonical_profile: Path
     profile_source_root: Path | None
     profile_config: Path
@@ -297,6 +309,7 @@ class RuntimeWorkspace:
 
 _SHA1 = re.compile(r"^[0-9a-f]{40}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
+KILO_SOURCE_REVISION = "e2887f08e5a6394299c810ba508f358aaf4c5bc3"
 KILO_SOURCE_PACKET_PATHS = (
     "kilo-LICENSE.txt",
     "kilo-agent-config-schema.ts.txt",
@@ -338,6 +351,11 @@ _SECRET_PATTERNS = (
     ("private-key", re.compile(rb"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----")),
     ("aws-access-key", re.compile(rb"\bAKIA[0-9A-Z]{16}\b")),
     ("github-token", re.compile(rb"\bgh[pousr]_[A-Za-z0-9_]{30,}\b")),
+    ("gitlab-token", re.compile(rb"\bglpat-[A-Za-z0-9_-]{20,}\b")),
+    ("slack-token", re.compile(rb"\bxox[baprs]-[A-Za-z0-9-]{10,}\b")),
+    ("authorization-token", re.compile(
+        rb"(?im)\bAuthorization\s*:\s*(?:token|bearer|basic)\s+[A-Za-z0-9._~+/=-]{16,}"
+    )),
     ("openai-token", re.compile(rb"\bsk-(?:proj-)?[A-Za-z0-9_-]{40,}\b")),
     ("bearer-token", re.compile(rb"\bBearer\s+[A-Za-z0-9._~-]{32,}")),
 )
@@ -458,6 +476,26 @@ def _inventory(packet_root: Path) -> dict[str, dict[str, Any]]:
     return result
 
 
+def _validate_kilo_source_records(
+    external_sources: list[Any], records: dict[str, dict[str, Any]],
+) -> None:
+    paths = [
+        _relative_file(_object(raw, "external source binding").get("packet_path"))
+        for raw in external_sources
+    ]
+    if len(paths) != len(KILO_SOURCE_PACKET_PATHS) or set(paths) != set(KILO_SOURCE_PACKET_PATHS):
+        raise PacketError("packet must contain the complete pinned Kilo source set")
+    for raw in external_sources:
+        external = _object(raw, "external source binding")
+        packet_path = _relative_file(external.get("packet_path"))
+        record = records.get(packet_path)
+        if (record is None or record.get("kind") != "external-source"
+                or external.get("repository") != "Kilo-Org/kilocode"
+                or external.get("revision") != KILO_SOURCE_REVISION
+                or external.get("source_path") != KILO_SOURCE_REPOSITORY_PATHS[packet_path]):
+            raise PacketError(f"external source is not the complete pinned Kilo mapping: {packet_path}")
+
+
 def _git(root: Path, *args: str) -> bytes:
     return _run(["git", *args], root)
 
@@ -531,6 +569,7 @@ def validate_packet(
     profile_source_root: Path | None = None,
     external_source_roots: dict[str, Path] | None = None,
     require_external_sources: bool = True,
+    allow_synthetic_fixture: bool = False,
 ) -> PacketInspection:
     """Validate sealed files, identities, changed-path coverage and source pins."""
     try:
@@ -539,6 +578,15 @@ def validate_packet(
     except (OSError, json.JSONDecodeError) as err:
         raise PacketError("packet manifest is missing or malformed") from err
 
+    if "synthetic_fixture" in manifest and type(manifest["synthetic_fixture"]) is not bool:
+        raise PacketError("synthetic fixture marker must be a boolean")
+    synthetic_marker = manifest.get("synthetic_fixture", False)
+    if synthetic_marker is not allow_synthetic_fixture:
+        raise PacketError("synthetic fixture mode must be explicit and match packet provenance")
+    if not allow_synthetic_fixture and source_root is None:
+        raise PacketError("production packet validation requires the frozen source checkout")
+    if not allow_synthetic_fixture and not external_source_roots:
+        raise PacketError("production packet validation requires pinned external-source checkouts")
     if manifest.get("schema_version") != 1:
         raise PacketError("unsupported reviewer packet manifest version")
     if manifest.get("previous_review_findings_included") is not False:
@@ -636,13 +684,17 @@ def validate_packet(
         r"(?m)^<BEGIN-CANONICAL-ISSUE-212-BODY sha256=\"([0-9a-f]{64})\">$",
         index_text,
     )
-    end_marker = "\n<END-CANONICAL-ISSUE-212-BODY>"
+    end_marker = "<END-CANONICAL-ISSUE-212-BODY>"
     if (body_marker is None or index_text.count("<BEGIN-CANONICAL-ISSUE-212-BODY") != 1
             or index_text.count(end_marker) != 1):
         raise PacketError("index canonical issue body markers are malformed or duplicated")
     body_start = index_text.find("\n", body_marker.end()) + 1
-    body_end = index_text.rfind(end_marker)
-    canonical_issue_body = index_text[body_start:body_end]
+    body_end = index_text.find(end_marker, body_start)
+    if body_end < 0 or body_end == 0 or index_text[body_end - 1] != "\n":
+        raise PacketError("canonical issue body closing tag is not a separate final line")
+    if index_text[body_end + len(end_marker):].strip():
+        raise PacketError("index contains unbound trailing content after the canonical issue body")
+    canonical_issue_body = index_text[body_start:body_end - 1]
     issue_body_sha = _string(issue.get("body_sha256"), "issue body digest")
     if body_marker.group(1) != issue_body_sha or sha256(canonical_issue_body.encode("utf-8")) != issue_body_sha:
         raise PacketError("indexed canonical issue body differs from its bound digest")
@@ -656,9 +708,13 @@ def validate_packet(
     bindings = _object(manifest.get("source_bindings"), "manifest.source_bindings")
     if set(bindings) != set(changed_paths):
         raise PacketError("source binding map does not cover the full changed-path set")
+    source_binding_paths: set[str] = set()
     for source_path in changed_paths:
         binding = _object(bindings[source_path], f"source binding {source_path}")
         packet_path = _relative_file(binding.get("packet_path"))
+        if packet_path in source_binding_paths:
+            raise PacketError(f"multiple changed sources bind to one packet file: {packet_path}")
+        source_binding_paths.add(packet_path)
         record = records.get(packet_path)
         if record is None or record.get("kind") != "git-source":
             raise PacketError(f"changed path lacks an indexed Git source: {source_path}")
@@ -738,6 +794,10 @@ def validate_packet(
     external_sources = _array(manifest.get("external_sources"), "manifest.external_sources")
     if require_external_sources and not external_sources:
         raise PacketError("required pinned external-source evidence is missing")
+    if not allow_synthetic_fixture:
+        _validate_kilo_source_records(external_sources, records)
+        if set(external_source_roots or {}) != {"Kilo-Org/kilocode"}:
+            raise PacketError("production packet requires the exact pinned Kilo source checkout")
     for raw in external_sources:
         external = _object(raw, "external source binding")
         packet_path = _relative_file(external.get("packet_path"))
@@ -795,6 +855,8 @@ def validate_packet(
         raise PacketError("review coverage cannot mark a file both full and ranged")
     if set(full_read_paths) | set(review_ranges) != set(records):
         raise PacketError("review coverage does not cover every indexed packet file")
+    if not source_binding_paths.issubset(set(full_read_paths)):
+        raise PacketError("all changed source files must be covered by full reads")
     read_plan_start = "<BEGIN-PACKET-READ-PLAN>"
     read_plan_end = "<END-PACKET-READ-PLAN>"
     if index_text.count(read_plan_start) != 1 or index_text.count(read_plan_end) != 1:
@@ -827,6 +889,19 @@ def validate_packet(
         actual_changed = _git(source_root, "diff", "--name-only", f"{base}...{head}").decode().splitlines()
         if actual_changed != list(changed_paths):
             raise PacketError("packet changed-path coverage differs from exact Git delta")
+        canonical_patch = _git(
+            source_root,
+            "diff",
+            "--binary",
+            "--full-index",
+            "--no-ext-diff",
+            "--unified=80",
+            f"{merge_base}...{head}",
+            "--",
+            *changed_paths,
+        )
+        if inventory["patch.diff"]["data"] != canonical_patch:
+            raise PacketError("packet patch bytes differ from the canonical frozen Git diff")
         for source_path in changed_paths:
             binding = _object(bindings[source_path], f"source binding {source_path}")
             base_result = subprocess.run(
@@ -1116,6 +1191,7 @@ def prepare_standalone_environment(
     profile_source_root: Path | None = None,
     external_source_roots: dict[str, Path] | None = None,
     preflight: bool = False,
+    allow_synthetic_fixture: bool = False,
 ) -> RuntimeWorkspace:
     """Prepare a packet-only workspace and standalone primary profile config.
 
@@ -1126,6 +1202,7 @@ def prepare_standalone_environment(
         manifest_path,
         source_root=source_root,
         external_source_roots=external_source_roots,
+        allow_synthetic_fixture=allow_synthetic_fixture,
     )
     if source_root is not None:
         validate_standalone_packet_path_plan(inspection)
@@ -1244,7 +1321,9 @@ def prepare_standalone_environment(
         workspace=workspace,
         packet=packet,
         inspection=inspection,
+        source_root=source_root,
         external_source_roots=external_source_roots or {},
+        synthetic_fixture=allow_synthetic_fixture,
         canonical_profile=canonical_profile,
         profile_source_root=profile_source_root,
         profile_config=overlay,
@@ -1483,10 +1562,35 @@ def _read_lines(output: str) -> dict[int, str]:
         raise PacketError("successful Read omitted a delimited content block")
     block = output[start + len("<content>\n"):end]
     result: dict[int, str] = {}
+    footer_seen = False
     for line in block.splitlines():
-        match = re.match(r"^(\d+): (.*)$", line)
+        match = re.fullmatch(r"(\d+): (.*)", line)
         if match:
-            result[int(match.group(1))] = match.group(2)
+            if footer_seen:
+                raise PacketError("successful Read returned numbered lines after its footer")
+            line_number = int(match.group(1))
+            if line_number in result:
+                raise PacketError("successful Read repeated a line number within one output")
+            result[line_number] = match.group(2)
+            continue
+        if line == "":
+            continue
+        if re.fullmatch(r"\(End of file - total \d+ lines\)", line):
+            if footer_seen:
+                raise PacketError("successful Read returned multiple footers")
+            footer_seen = True
+            continue
+        if re.fullmatch(
+            r"\(Showing lines \d+-\d+ of \d+\. Use offset=\d+ to continue\.\)", line
+        ) or re.fullmatch(
+            r"\(Output capped at [^)]+\. Showing lines \d+-\d+\. Use offset=\d+ to continue\.\)",
+            line,
+        ):
+            if footer_seen:
+                raise PacketError("successful Read returned multiple footers")
+            footer_seen = True
+            continue
+        raise PacketError("successful Read returned unnumbered content")
     return result
 
 
@@ -1500,8 +1604,11 @@ def _verify_workspace_copy(runtime: RuntimeWorkspace) -> str:
     current = validate_packet(
         source_packet,
         manifest_path,
+        source_root=runtime.source_root,
+        profile_source_root=runtime.profile_source_root,
         external_source_roots=runtime.external_source_roots,
         require_external_sources=True,
+        allow_synthetic_fixture=runtime.synthetic_fixture,
     )
     if current.manifest_sha256 != runtime.inspection.manifest_sha256:
         raise PacketError("source packet manifest changed while the standalone reviewer was active")
@@ -1900,8 +2007,14 @@ def audit_standalone_session(
             raise PacketError("short standalone preflight lacks its exact synthetic read paths")
     denied = set(runtime.denied_paths)
     covered: dict[str, dict[int, str]] = {path: {} for path in allowed}
+    sealed_packet = Path(runtime.inspection.packet_root)
+    sealed_lines = {
+        path: _expected_line_map(sealed_packet / Path(path).name)
+        for path in runtime.allowed_paths
+    }
     seen_denied: set[str] = set()
     read_records: list[dict[str, Any]] = []
+    repeated_read_line_count = 0
     for call in calls:
         state = _object(call.get("state"), "standalone Read state")
         request = _object(state.get("input"), "standalone Read input")
@@ -1920,12 +2033,49 @@ def audit_standalone_session(
                     or permission_rule.get("action") != "allow"
                     or permission_rule.get("pattern") != permission_path_map[packet_path]):
                 raise PacketError(f"allowed Read did not use its exact runtime rule: {raw_path}")
+            expected_absolute = str((runtime.packet / Path(packet_path).name).resolve())
+            output_path = re.search(r"(?m)^<path>(.*)</path>$", output)
+            output_type = re.search(r"(?m)^<type>(.*)</type>$", output)
+            if (output_path is None or output_path.group(1) != expected_absolute
+                    or output_type is None or output_type.group(1) != "file"):
+                raise PacketError(f"allowed Read output path differs from its exact packet file: {packet_path}")
+            if "<system-reminder>" in output:
+                raise PacketError("allowed Read included automatically loaded system context")
             lines = _read_lines(output)
             if not lines:
                 raise PacketError(f"allowed Read returned no numbered packet lines: {raw_path}")
-            if set(covered[packet_path]) & set(lines):
-                raise PacketError(f"standalone reviewer reread an overlapping packet range: {packet_path}")
-            covered[packet_path].update(lines)
+            display = _object(metadata.get("display"), "standalone Read display metadata")
+            expected_absolute = str((runtime.packet / Path(packet_path).name).resolve())
+            if (display.get("path") != expected_absolute or display.get("type") != "file"
+                    or display.get("totalLines") != len(sealed_lines[packet_path])):
+                raise PacketError(f"allowed Read display metadata differs from the sealed packet: {packet_path}")
+            if (not isinstance(display.get("lineStart"), int)
+                    or not isinstance(display.get("lineEnd"), int)
+                    or not isinstance(display.get("text"), str)):
+                raise PacketError(f"allowed Read omitted line/display metadata: {packet_path}")
+            ordered_lines = sorted(lines.items())
+            if (display.get("lineStart") != ordered_lines[0][0]
+                    or display.get("lineEnd") != ordered_lines[-1][0]
+                    or display.get("text") != "\n".join(text for _, text in ordered_lines)):
+                raise PacketError(f"allowed Read display lines differ from returned packet lines: {packet_path}")
+            loaded = metadata.get("loaded", [])
+            if not isinstance(loaded, list) or loaded:
+                raise PacketError(f"allowed Read auto-loaded context outside its exact result: {packet_path}")
+            overlap_for_call = 0
+            for line_number, text in lines.items():
+                expected_text = sealed_lines[packet_path].get(line_number)
+                if expected_text is None or text != expected_text:
+                    raise PacketError(f"allowed Read bytes differ from immutable packet: {packet_path}:{line_number}")
+                previous = covered[packet_path].get(line_number)
+                if previous is not None:
+                    if previous != text:
+                        raise PacketError(
+                            f"repeated Read returned different immutable packet bytes: {packet_path}:{line_number}"
+                        )
+                    repeated_read_line_count += 1
+                    overlap_for_call += 1
+                else:
+                    covered[packet_path][line_number] = text
             read_records.append({
                 "path": packet_path,
                 "requested_path": raw_path,
@@ -1934,6 +2084,7 @@ def audit_standalone_session(
                 "line_start": min(lines),
                 "line_end": max(lines),
                 "line_count": len(lines),
+                "overlap_line_count": overlap_for_call,
                 "output_sha256": sha256(output.encode("utf-8")),
             })
             continue
@@ -1985,16 +2136,17 @@ def audit_standalone_session(
     if preflight:
         if seen_denied != denied:
             raise PacketError("standalone preflight omitted a required denied escape")
-        allowed_sequence = [
+        allowed_sequence = list(dict.fromkeys(
             record["path"] for record in read_records if record["status"] == "completed"
-        ]
+        ))
         denied_sequence = [
             record["path"] for record in read_records if record["status"] == "denied_before_content"
         ]
-        if allowed_sequence != list(preflight_paths) or denied_sequence != list(runtime.denied_paths):
+        if (list(dict.fromkeys(allowed_sequence)) != list(preflight_paths)
+                or denied_sequence != list(runtime.denied_paths)):
             raise PacketError("standalone preflight did not follow the frozen read/probe order")
         for path in preflight_paths:
-            expected = _expected_line_map(runtime.packet / Path(path).name)
+            expected = sealed_lines[path]
             if covered[path] != expected:
                 raise PacketError(f"standalone preflight did not read the complete packet file: {path}")
         final_result = _validate_preflight_result(
@@ -2011,8 +2163,8 @@ def audit_standalone_session(
         if full_paths | set(ranged_paths) != allowed:
             raise PacketError("manifest coverage does not match the standalone packet")
         for path in allowed:
-            filename = path.removeprefix("packet/")
-            actual = _expected_line_map(runtime.packet / filename)
+            filename = Path(path).name
+            actual = sealed_lines[path]
             if path in full_paths:
                 required_lines = actual
             else:
@@ -2044,6 +2196,7 @@ def audit_standalone_session(
         "reviewer_tools": sorted(set(tool_names)),
         "allowed_file_count": len(preflight_paths) if preflight else len(covered),
         "denied_before_content_count": len(seen_denied),
+        "repeated_read_line_count": repeated_read_line_count,
         "read_trace": read_records,
         "packet_inventory_sha256": packet_inventory_sha256,
         "preflight": preflight,
@@ -2085,8 +2238,11 @@ def _runtime_from_report(
     external_source_roots: dict[str, Path],
     kilo_binary: Path,
     launch_environment: dict[str, str],
+    allow_synthetic_fixture: bool = False,
 ) -> RuntimeWorkspace:
     report = _object(json.loads(report_path.read_bytes()), "prepared runtime report")
+    if report.get("synthetic_packet") is not allow_synthetic_fixture:
+        raise PacketError("prepared report synthetic-packet mode differs from the audit")
     recorded_source_root = report.get("source_root")
     if (source_root is None and recorded_source_root is not None
             or source_root is not None and recorded_source_root != str(source_root.resolve())):
@@ -2111,6 +2267,7 @@ def _runtime_from_report(
         manifest_path,
         source_root=source_root,
         external_source_roots=external_source_roots,
+        allow_synthetic_fixture=allow_synthetic_fixture,
     )
     if source_root is not None:
         validate_standalone_packet_path_plan(inspection)
@@ -2150,7 +2307,9 @@ def _runtime_from_report(
         workspace=workspace,
         packet=packet,
         inspection=inspection,
+        source_root=source_root,
         external_source_roots=external_source_roots,
+        synthetic_fixture=allow_synthetic_fixture,
         canonical_profile=canonical_profile,
         profile_source_root=profile_source_root,
         profile_config=profile_config,
@@ -2415,6 +2574,7 @@ def main(argv: list[str] | None = None) -> int:
                 external_source_roots=_external_roots(args.external_root),
                 kilo_binary=args.kilo,
                 launch_environment=launch_env,
+                allow_synthetic_fixture=synthetic,
             )
             prepared_binding = _object(prepared.get("model_binding"), "prepared model binding")
             expected_model = {
@@ -2501,6 +2661,7 @@ def main(argv: list[str] | None = None) -> int:
             profile_source_root=args.profile_source_root,
             external_source_roots=_external_roots(args.external_root),
             preflight=args.preflight,
+            allow_synthetic_fixture=args.synthetic,
         )
         effective = verify_effective_standalone_permissions(
             kilo_binary=args.kilo,
