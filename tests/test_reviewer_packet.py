@@ -9,6 +9,7 @@ import unittest
 from io import StringIO
 from pathlib import Path
 from typing import cast
+from unittest.mock import patch
 
 from tools.reviewer_packet import (
     PacketError,
@@ -19,6 +20,7 @@ from tools.reviewer_packet import (
     audit_standalone_session,
     capture_session_id,
     create_synthetic_standalone_packet,
+    main,
     make_per_run_permission_map,
     prepare_standalone_environment,
     standalone_environment,
@@ -449,6 +451,23 @@ class ReviewerPacketTests(unittest.TestCase):
         ))
         self.assertEqual(result.review_ranges, {"source-00.md": ((1, 3),)})
         self.assertEqual(result.external_source_count, 1)
+
+    def test_validate_cli_accepts_optional_profile_source_root(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with patch(
+                "tools.reviewer_packet.validate_packet",
+                side_effect=RuntimeError("validator invoked"),
+            ) as validate:
+                with self.assertRaisesRegex(RuntimeError, "validator invoked"):
+                    _ = main([
+                        "validate", "--packet", str(root / "packet"),
+                        "--manifest", str(root / "manifest.json"),
+                        "--source-root", str(root),
+                        "--profile-source-root", str(root),
+                    ])
+            validate.assert_called_once()
+            self.assertEqual(validate.call_args.kwargs["profile_source_root"], root)
 
     def test_new_changed_file_binds_absent_base_blob(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

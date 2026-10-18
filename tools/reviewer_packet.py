@@ -2240,7 +2240,7 @@ def capture_session_id(events: TextIO) -> str:
     return session_id
 
 
-def _main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -2259,6 +2259,7 @@ def _main(argv: list[str] | None = None) -> int:
     validate.add_argument("--packet", type=Path, required=True)
     validate.add_argument("--manifest", type=Path, required=True)
     validate.add_argument("--source-root", type=Path, required=True)
+    validate.add_argument("--profile-source-root", type=Path)
     validate.add_argument("--external-root", action="append", default=[])
 
     permission_config = sub.add_parser(
@@ -2572,4 +2573,4 @@ def _main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(_main())
+    raise SystemExit(main())
