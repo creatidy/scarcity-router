@@ -952,7 +952,9 @@ def validate_packet(
         if source_type == "direct_owner_message":
             if owner.get("owner") != "adrian.tkacz":
                 raise PacketError(f"{packet_path} direct-owner source is not attributed to Adrian Tkacz")
-            _string(owner.get("source_timestamp"), f"{packet_path} source timestamp")
+            # Context-only historical sources may lack timestamps; authority sources may not.
+            if owner.get("source_timestamp") is not None:
+                _string(owner.get("source_timestamp"), f"{packet_path} source timestamp")
         if source_type == "forgejo_owner_comment":
             comment_id = owner.get("comment_id")
             owner_issue = owner.get("issue_number")

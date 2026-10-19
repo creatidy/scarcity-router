@@ -613,6 +613,31 @@ class ReviewerPacketTests(unittest.TestCase):
             with self.assertRaisesRegex(PacketError, "bound raw owner authority source"):
                 _ = validate_packet(packet, manifest, require_external_sources=True)
 
+        with tempfile.TemporaryDirectory() as temporary:
+            packet, manifest = _make_packet(Path(temporary), effective_maximum=14)
+            data = _load_object(manifest.read_text(encoding="utf-8"))
+            owner_sources = cast(list[dict[str, object]], data["owner_sources"])
+            authority = next(
+                source for source in owner_sources
+                if source.get("packet_path") == "owner-review-budget.txt"
+            )
+            _ = authority.pop("source_timestamp")
+            _ = manifest.write_text(json.dumps(data, sort_keys=True), encoding="utf-8")
+            with self.assertRaisesRegex(PacketError, "direct owner exception lacks its raw direct-owner source"):
+                _ = validate_packet(packet, manifest, require_external_sources=True)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            packet, manifest = _make_packet(Path(temporary), effective_maximum=10)
+            data = _load_object(manifest.read_text(encoding="utf-8"))
+            owner_sources = cast(list[dict[str, object]], data["owner_sources"])
+            contextual = next(
+                source for source in owner_sources
+                if source.get("packet_path") == "owner-bootstrap.txt"
+            )
+            _ = contextual.pop("source_timestamp")
+            _ = manifest.write_text(json.dumps(data, sort_keys=True), encoding="utf-8")
+            _ = validate_packet(packet, manifest, require_external_sources=True)
+
     def test_review_exception_owner_scope_and_d069a_integration_are_enforced(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             packet, manifest = _make_packet(Path(temporary), effective_maximum=14)
