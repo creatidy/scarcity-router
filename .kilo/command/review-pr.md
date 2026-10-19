@@ -14,12 +14,13 @@ infrastructure, not implementation, with bounded secret-safe preparation.
 Preserve the issue-delivery review and technical-recovery counters in the excluded
 ledger. Synthetic permission preflights are not whole-PR reviews and do not reserve
 an ordinal. The default ceiling is ten. For the exact #212/PR #213 delivery only,
-the direct D-069/D-077 owner amendment authorizes a finite maximum of 12: #11 is the
-final ordinary review and #12 is owner-manual Daybreak only after valid #11 APPROVE.
-Verify the direct owner source receipt and exact Issue/PR scope/currentness before
-the exceptional reservation; this is not D-069A and cannot transfer. Every other
-greater finite ceiling requires D-069A integrated in freshly fetched `develop` before
-the primary verifies its exact canonical owner authority. The standalone reviewer is a
+Adrian's direct D-069/D-077 amendment authorizes a finite maximum of 14: #12 is the next
+ordinary review; #13 is ordinary only after a diagnosed/corrected #12 failure or manual
+Daybreak after valid #12 APPROVE; #14 is the final manual gate if #13 was ordinary.
+No #15. Verify the exact Section D owner source receipt and Issue/PR scope/currentness
+before every exceptional reservation; this is not D-069A and cannot transfer. Every
+other greater finite ceiling requires D-069A integrated in freshly fetched `develop`
+before the primary verifies its exact canonical owner authority. The standalone reviewer is a
 separate Kilo CLI primary process/session, never a native Task child.
 
 Use one designated source checkout for primary-side Git inspection only. Require clean
@@ -35,9 +36,10 @@ Before any whole-PR ordinal, derive the sorted changed-path list from the frozen
 base-to-HEAD Git delta. This path list is not the evidence packet. Use
 `tools/reviewer_packet.py synthetic-packet --parent <private-temp-dir> --head <sha>
 --base <sha> --merge-base <sha> --changed-path <path>` repeated for each sorted
-changed path to create harmless files whose inventory follows
-`standalone_packet_path_plan` (index, patch, pinned Kilo sources, owner-source/receipt
-files and one numbered source file per changed path).
+changed path, plus `--owner-evidence-path <path>` for every listed owner source/receipt,
+to create harmless files whose inventory follows `standalone_packet_path_plan` (index,
+patch, pinned Kilo sources, dynamic owner-source/receipt files and one numbered source
+file per changed path).
 Then run `tools/reviewer_packet.py prepare --synthetic --preflight` with that fixture,
 `--profile` set to the tracked standalone profile, `--profile-source-root` set to the
 clean checkout and no `--source-root`. Use the installed Kilo 7.8.8 binary, synthetic

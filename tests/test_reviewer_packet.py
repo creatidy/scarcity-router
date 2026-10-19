@@ -16,6 +16,7 @@ from tools.reviewer_packet import (
     PacketInspection,
     RuntimeWorkspace,
     KILO_SOURCE_PACKET_PATHS,
+    KILO_SOURCE_REPOSITORY_PATHS,
     OWNER_EVIDENCE_PACKET_PATHS,
     STANDALONE_PACKET_FIXED_PATHS,
     audit_standalone_session,
@@ -33,8 +34,11 @@ from tools.reviewer_packet import (
     validate_packet as _validate_packet,
     validate_synthetic_preflight_packet,
     validate_read_display,
+    validate_read_context_boundary,
+    validate_standalone_instruction_boundary,
     validate_preflight_result,
     validate_review_result,
+    validate_d069a_integration,
     verify_effective_standalone_agent,
 )
 
@@ -121,15 +125,28 @@ def _git(root: Path, *args: str) -> str:
     return result.stdout.strip()
 
 
-def _make_packet(parent: Path) -> tuple[Path, Path]:
+def _make_packet(
+    parent: Path,
+    *,
+    issue_id: int = 1683,
+    issue_number: int = 212,
+    pull_id: int = 927,
+    pull_number: int = 213,
+    head_branch: str = "issue-212-d069a-bootstrap",
+    effective_maximum: int = 10,
+) -> tuple[Path, Path]:
     packet = parent / "packet"
     packet.mkdir()
     issue_body = b"The complete accepted scope is supplied here."
     issue_body_sha = _sha(issue_body)
+    authority_path = "owner-review-budget.txt" if effective_maximum > 10 else None
     full_read_paths = [
         "external-kilo-source.txt", "index.md", "owner-210-receipt.txt", "owner-210.txt",
         "owner-bootstrap-receipt.txt", "owner-bootstrap.txt", "patch.diff", "source-00.md",
     ]
+    if authority_path is not None:
+        full_read_paths.append(authority_path)
+        full_read_paths.sort()
     read_plan: dict[str, object] = {
         "full_read_paths": [f"packet/{path}" for path in full_read_paths],
         "source_ranges": {},
@@ -140,8 +157,8 @@ def _make_packet(parent: Path) -> tuple[Path, Path]:
             "<BEGIN-PACKET-READ-PLAN>\n"
             f"{json.dumps(read_plan, sort_keys=True)}\n"
             "<END-PACKET-READ-PLAN>\n"
-            f'<BEGIN-CANONICAL-ISSUE-212-BODY sha256="{issue_body_sha}">\n'
-            f"{issue_body.decode()}\n<END-CANONICAL-ISSUE-212-BODY>"
+            f'<BEGIN-CANONICAL-ISSUE-BODY issue="{issue_number}" sha256="{issue_body_sha}">\n'
+            f"{issue_body.decode()}\n<END-CANONICAL-ISSUE-BODY>"
         ).encode(),
         "owner-bootstrap.txt": b"Direct owner source bootstrap fixture.\n",
         "owner-210.txt": b"Direct owner source downstream fixture.\n",
@@ -151,6 +168,11 @@ def _make_packet(parent: Path) -> tuple[Path, Path]:
         "source-00.md": b"line one\nline two\nline three\n",
         "external-kilo-source.txt": b"Pinned Kilo 7.8.8 source excerpt.\n",
     }
+    if authority_path is not None:
+        contents[authority_path] = (
+            f"**Maximum {effective_maximum} total review invocations for Issue #{issue_number} "
+            f"/ PR #{pull_number}.**\n"
+        ).encode()
     rows: list[dict[str, object]] = []
     for name, data in contents.items():
         path = packet / name
@@ -166,6 +188,8 @@ def _make_packet(parent: Path) -> tuple[Path, Path]:
             "external-kilo-source.txt": "external-source",
             "index.md": "index",
         }
+        if name == authority_path:
+            kinds[name] = "owner-source"
         kind = kinds[name]
         receipt_metadata = {
             "owner-bootstrap-receipt.txt": (
@@ -191,7 +215,7 @@ def _make_packet(parent: Path) -> tuple[Path, Path]:
 
     source_sha = _sha(contents["source-00.md"])
     manifest: dict[str, object] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "synthetic_fixture": True,
         "repository": {
             "id": 15,
@@ -200,15 +224,15 @@ def _make_packet(parent: Path) -> tuple[Path, Path]:
             "url": "https://forgejo.creatidy.com/BioMedical-IT/scarcity-router",
         },
         "issue": {
-            "id": 1683, "number": 212,
-            "url": "https://forgejo.creatidy.com/BioMedical-IT/scarcity-router/issues/212",
+            "id": issue_id, "number": issue_number,
+            "url": f"https://forgejo.creatidy.com/BioMedical-IT/scarcity-router/issues/{issue_number}",
             "body_sha256": issue_body_sha,
         },
         "pull_request": {
-            "id": 927,
-            "number": 213,
-            "url": "https://forgejo.creatidy.com/BioMedical-IT/scarcity-router/pulls/213",
-            "head_branch": "issue-212-d069a-bootstrap",
+            "id": pull_id,
+            "number": pull_number,
+            "url": f"https://forgejo.creatidy.com/BioMedical-IT/scarcity-router/pulls/{pull_number}",
+            "head_branch": head_branch,
             "base_branch": "develop",
             "head": HEAD,
             "base": BASE,
@@ -224,8 +248,8 @@ def _make_packet(parent: Path) -> tuple[Path, Path]:
         "currentness": {
             "checked_at": "2026-10-16T12:00:00Z",
             "repo_id": 15,
-            "issue_id": 1683,
-            "pr_id": 927,
+            "issue_id": issue_id,
+            "pr_id": pull_id,
             "head": HEAD,
             "base": BASE,
             "merge_base": MERGE_BASE,
@@ -243,6 +267,9 @@ def _make_packet(parent: Path) -> tuple[Path, Path]:
         },
         "owner_sources": [
             {"packet_path": "owner-bootstrap.txt", "sha256": _sha(contents["owner-bootstrap.txt"]),
+             "source_type": "direct_owner_message", "owner": "adrian.tkacz",
+             "source_timestamp": "2026-10-15T18:45:36Z",
+             "scope": {"issue_number": 212, "pull_number": 213},
              "source_origin": "direct owner response", "decision_type": "bootstrap",
              "transcription_receipt": {
                  "packet_path": "owner-bootstrap-receipt.txt", "comment_id": 17305,
@@ -251,14 +278,25 @@ def _make_packet(parent: Path) -> tuple[Path, Path]:
                  "sha256": _sha(contents["owner-bootstrap-receipt.txt"]),
              }},
             {"packet_path": "owner-210.txt", "sha256": _sha(contents["owner-210.txt"]),
+             "source_type": "direct_owner_message", "owner": "adrian.tkacz",
+             "source_timestamp": "2026-10-15T17:00:37Z",
+             "scope": {"issue_number": 210, "pull_number": 211},
              "source_origin": "direct owner response", "decision_type": "downstream",
              "transcription_receipt": {
                  "packet_path": "owner-210-receipt.txt", "comment_id": 17258,
                  "issue_number": 210, "author": "kilo", "created_at": "2026-10-15T17:09:48Z",
                  "url": "https://forgejo.creatidy.com/BioMedical-IT/scarcity-router/issues/210#issuecomment-17258",
                  "sha256": _sha(contents["owner-210-receipt.txt"]),
-             }},
+              }},
         ],
+        "review_policy": {
+            "default_maximum": 10,
+            "effective_maximum": effective_maximum,
+            "scope": {"issue_number": issue_number, "pull_number": pull_number},
+            "authority_type": "direct_owner_supersession" if authority_path else "default",
+            "authority_source_path": authority_path,
+            "authority_source_sha256": _sha(contents[authority_path]) if authority_path else None,
+        },
         "external_sources": [
             {"packet_path": "external-kilo-source.txt", "url": "https://github.com/Kilo-Org/kilocode/blob/" + "3" * 40 + "/packages/kilo/src.ts",
              "repository": "Kilo-Org/kilocode", "revision": "3" * 40,
@@ -274,6 +312,21 @@ def _make_packet(parent: Path) -> tuple[Path, Path]:
         "pr_body_content_included": False,
         "files": rows,
     }
+    if authority_path is not None:
+        cast(list[dict[str, object]], manifest["owner_sources"]).append({
+            "packet_path": authority_path,
+            "sha256": _sha(contents[authority_path]),
+            "source_type": "direct_owner_message",
+            "source_origin": "synthetic direct owner review-budget source",
+            "decision_type": "synthetic review-budget exception",
+            "owner": "adrian.tkacz",
+            "source_timestamp": "2026-10-19T10:39:34Z",
+            "scope": {
+                "issue_number": issue_number,
+                "pull_number": pull_number,
+                "maximum_reviews": effective_maximum,
+            },
+        })
     manifest_path = parent / "manifest.json"
     _ = manifest_path.write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
     _ = os.chmod(manifest_path, 0o600)
@@ -297,6 +350,8 @@ def _make_standalone_preflight_packet(
         "kilo-config-merge.ts.txt": "packages/opencode/src/config/config.ts",
         "kilo-permission-resolution.ts.txt": "packages/opencode/src/permission/index.ts",
         "kilo-read-path.ts.txt": "packages/opencode/src/tool/read.ts",
+        "kilo-session-instruction.ts.txt": "packages/opencode/src/session/instruction.ts",
+        "kilo-session-tools.ts.txt": "packages/opencode/src/session/tools.ts",
         "kilo-task-inheritance.ts.txt": "packages/opencode/src/kilocode/tool/task.ts",
         "kilo-task-parent.ts.txt": "packages/opencode/src/tool/task.ts",
         "kilo-cli-run-agent-selection.ts.txt": "packages/opencode/src/cli/cmd/run.ts",
@@ -316,7 +371,7 @@ def _make_standalone_preflight_packet(
     source_names = tuple(f"source-{index:02d}.md" for index in range(len(changed_paths)))
     if set(kilo_sources) != set(KILO_SOURCE_PACKET_PATHS):
         raise AssertionError("synthetic Kilo file plan differs from production review plan")
-    paths = standalone_packet_path_plan(changed_paths)
+    paths = standalone_packet_path_plan(changed_paths, owner_names)
     read_plan: dict[str, object] = {
         "full_read_paths": [f"packet/{path}" for path in paths],
         "source_ranges": {},
@@ -338,8 +393,8 @@ def _make_standalone_preflight_packet(
         "<BEGIN-PACKET-READ-PLAN>\n"
         f"{json.dumps(read_plan, sort_keys=True)}\n"
         "<END-PACKET-READ-PLAN>\n"
-        f'<BEGIN-CANONICAL-ISSUE-212-BODY sha256="{body_sha}">\n'
-        f"{body.decode()}\n<END-CANONICAL-ISSUE-212-BODY>"
+            f'<BEGIN-CANONICAL-ISSUE-BODY issue="212" sha256="{body_sha}">\n'
+            f"{body.decode()}\n<END-CANONICAL-ISSUE-BODY>"
     )
     contents["index.md"] = index_body.encode()
 
@@ -388,6 +443,7 @@ def _make_standalone_preflight_packet(
         owner_records.append({
             "packet_path": source,
             "sha256": _sha(contents[source]),
+            "source_type": "synthetic_fixture",
             "source_origin": "synthetic direct owner source placeholder",
             "decision_type": "synthetic-only permission preflight context",
             "transcription_receipt": {
@@ -426,7 +482,7 @@ def _make_standalone_preflight_packet(
         for index, path in enumerate(changed_paths)
     }
     manifest: dict[str, object] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "synthetic_fixture": True,
         "repository": {
             "id": 15,
@@ -469,6 +525,14 @@ def _make_standalone_preflight_packet(
         "changed_paths": list(changed_paths),
         "source_bindings": source_bindings,
         "owner_sources": owner_records,
+        "review_policy": {
+            "default_maximum": 10,
+            "effective_maximum": 10,
+            "scope": {"issue_number": 212, "pull_number": 213},
+            "authority_type": "default",
+            "authority_source_path": None,
+            "authority_source_sha256": None,
+        },
         "external_sources": external_records,
         "review_coverage": {
             "full_read_paths": list(paths),
@@ -485,6 +549,20 @@ def _make_standalone_preflight_packet(
 
 
 class ReviewerPacketTests(unittest.TestCase):
+    def test_pinned_kilo_sources_cover_read_instruction_loading_and_tool_context(self) -> None:
+        self.assertEqual(
+            KILO_SOURCE_REPOSITORY_PATHS["kilo-read-path.ts.txt"],
+            "packages/opencode/src/tool/read.ts",
+        )
+        self.assertEqual(
+            KILO_SOURCE_REPOSITORY_PATHS["kilo-session-instruction.ts.txt"],
+            "packages/opencode/src/session/instruction.ts",
+        )
+        self.assertEqual(
+            KILO_SOURCE_REPOSITORY_PATHS["kilo-session-tools.ts.txt"],
+            "packages/opencode/src/session/tools.ts",
+        )
+
     def test_validate_complete_immutable_packet_and_coverage(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             packet, manifest = _make_packet(Path(temporary))
@@ -498,6 +576,119 @@ class ReviewerPacketTests(unittest.TestCase):
         ))
         self.assertEqual(result.review_ranges, {})
         self.assertEqual(result.external_source_count, 1)
+
+    def test_packet_manifest_v1_is_rejected_after_owner_budget_schema_migration(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            packet, manifest_path = _make_packet(Path(temporary))
+            manifest = _load_object(manifest_path.read_text(encoding="utf-8"))
+            manifest["schema_version"] = 1
+            _ = manifest_path.write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
+            with self.assertRaisesRegex(PacketError, "unsupported reviewer packet manifest version"):
+                _ = validate_packet(packet, manifest_path, require_external_sources=True)
+
+    def test_default_ten_packet_accepts_other_canonical_issue_and_pr(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            packet, manifest = _make_packet(
+                Path(temporary),
+                issue_id=1684,
+                issue_number=214,
+                pull_id=928,
+                pull_number=215,
+                head_branch="issue-214-generic-review",
+            )
+            result = validate_packet(packet, manifest, require_external_sources=True)
+        self.assertEqual(result.issue_number, 214)
+        self.assertEqual(result.pull_number, 215)
+
+    def test_review_exception_requires_raw_scoped_owner_source_in_packet(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            packet, manifest = _make_packet(Path(temporary), effective_maximum=14)
+            inspected = validate_packet(packet, manifest, require_external_sources=True)
+            self.assertIn("owner-review-budget.txt", inspected.owner_evidence_paths)
+
+            data = _load_object(manifest.read_text(encoding="utf-8"))
+            policy = cast(dict[str, object], data["review_policy"])
+            policy["authority_source_path"] = "owner-not-in-packet.txt"
+            _ = manifest.write_text(json.dumps(data, sort_keys=True), encoding="utf-8")
+            with self.assertRaisesRegex(PacketError, "bound raw owner authority source"):
+                _ = validate_packet(packet, manifest, require_external_sources=True)
+
+    def test_review_exception_owner_scope_and_d069a_integration_are_enforced(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            packet, manifest = _make_packet(Path(temporary), effective_maximum=14)
+            data = _load_object(manifest.read_text(encoding="utf-8"))
+            owner_sources = cast(list[dict[str, object]], data["owner_sources"])
+            authority = next(
+                source for source in owner_sources
+                if source.get("packet_path") == "owner-review-budget.txt"
+            )
+            authority["scope"] = {
+                "issue_number": 212,
+                "pull_number": 213,
+                "maximum_reviews": 13,
+            }
+            _ = manifest.write_text(json.dumps(data, sort_keys=True), encoding="utf-8")
+            with self.assertRaisesRegex(PacketError, "does not match the exact issue/PR scope"):
+                _ = validate_packet(packet, manifest, require_external_sources=True)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            packet, manifest = _make_packet(Path(temporary), effective_maximum=11)
+            data = _load_object(manifest.read_text(encoding="utf-8"))
+            policy = cast(dict[str, object], data["review_policy"])
+            policy["authority_type"] = "d069a_integrated"
+            policy["d069a_integrated_head"] = BASE
+            _ = manifest.write_text(json.dumps(data, sort_keys=True), encoding="utf-8")
+            _ = validate_packet(packet, manifest, require_external_sources=True)
+
+            policy["d069a_integrated_head"] = "not-a-git-id"
+            _ = manifest.write_text(json.dumps(data, sort_keys=True), encoding="utf-8")
+            with self.assertRaisesRegex(PacketError, "integration head is not a full Git ID"):
+                _ = validate_packet(packet, manifest, require_external_sources=True)
+
+    def test_d069a_integration_head_must_be_ancestor_of_frozen_base(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repository = root / "repo"
+            unrelated = root / "unrelated"
+            _ = repository.mkdir()
+            _ = unrelated.mkdir()
+            for path in (repository, unrelated):
+                _ = subprocess.run(
+                    ["git", "init", "--initial-branch=main"], cwd=path,
+                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    check=True, text=True,
+                )
+            _ = (repository / "README.txt").write_text("integrated\n", encoding="utf-8")
+            _ = _git(repository, "add", "README.txt")
+            _ = subprocess.run(
+                ["git", "-c", "user.name=Packet Test", "-c", "user.email=packet@example.invalid",
+                 "commit", "--quiet", "-m", "integrate D-069A"],
+                cwd=repository, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, check=True, text=True,
+            )
+            integrated = _git(repository, "rev-parse", "HEAD")
+            _ = (repository / "README.txt").write_text("develop base\n", encoding="utf-8")
+            _ = _git(repository, "add", "README.txt")
+            _ = subprocess.run(
+                ["git", "-c", "user.name=Packet Test", "-c", "user.email=packet@example.invalid",
+                 "commit", "--quiet", "-m", "advance develop"],
+                cwd=repository, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, check=True, text=True,
+            )
+            base = _git(repository, "rev-parse", "HEAD")
+            _ = (unrelated / "README.txt").write_text("unrelated\n", encoding="utf-8")
+            _ = _git(unrelated, "add", "README.txt")
+            _ = subprocess.run(
+                ["git", "-c", "user.name=Packet Test", "-c", "user.email=packet@example.invalid",
+                 "commit", "--quiet", "-m", "unrelated history"],
+                cwd=unrelated, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, check=True, text=True,
+            )
+            unrelated_head = _git(unrelated, "rev-parse", "HEAD")
+
+            validate_d069a_integration(repository, integrated, base)
+            with self.assertRaisesRegex(PacketError, "not integrated into the frozen base"):
+                validate_d069a_integration(repository, unrelated_head, base)
 
     def test_validate_cli_accepts_optional_profile_source_root(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -619,7 +810,7 @@ class ReviewerPacketTests(unittest.TestCase):
                 _ = validate_packet(packet, manifest_path)
 
     def test_index_rejects_duplicate_closer_and_unbound_trailing_content(self) -> None:
-        end_marker = b"<END-CANONICAL-ISSUE-212-BODY>"
+        end_marker = b"<END-CANONICAL-ISSUE-BODY>"
         for suffix in (end_marker, b"\nPrior review findings must not be present."):
             with self.subTest(suffix=suffix[:8]), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
@@ -741,6 +932,12 @@ class ReviewerPacketTests(unittest.TestCase):
             )
             manifest = _load_object(manifest_path.read_text(encoding="utf-8"))
             manifest["synthetic_fixture"] = False
+            for owner_source in cast(list[dict[str, object]], manifest["owner_sources"]):
+                owner_source.update({
+                    "source_type": "direct_owner_message",
+                    "owner": "adrian.tkacz",
+                    "source_timestamp": "2026-10-17T12:00:00Z",
+                })
             external = cast(list[dict[str, object]], manifest["external_sources"])
             external[0]["source_path"] = "packages/not-the-pinned-source.ts"
             _ = manifest_path.write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
@@ -864,7 +1061,7 @@ class ReviewerPacketTests(unittest.TestCase):
             "tests/test_reviewer_packet.py",
             "tools/reviewer_packet.py",
         )
-        expected_paths = standalone_packet_path_plan(changed)
+        expected_paths = standalone_packet_path_plan(changed, OWNER_EVIDENCE_PACKET_PATHS)
         with tempfile.TemporaryDirectory() as temporary:
             packet, manifest = _make_standalone_preflight_packet(
                 Path(temporary), changed_paths=changed, head=HEAD, base=BASE, merge_base=MERGE_BASE
@@ -872,7 +1069,10 @@ class ReviewerPacketTests(unittest.TestCase):
             inspected = validate_packet(packet, manifest, require_external_sources=True)
             self.assertEqual(inspected.file_paths, expected_paths)
             self.assertEqual(inspected.full_read_paths, expected_paths)
-            self.assertEqual(len(expected_paths), len(STANDALONE_PACKET_FIXED_PATHS) + len(changed))
+            self.assertEqual(
+                len(expected_paths),
+                len(STANDALONE_PACKET_FIXED_PATHS) + len(OWNER_EVIDENCE_PACKET_PATHS) + len(changed),
+            )
             self.assertFalse(_load_object(manifest.read_text(encoding="utf-8"))[
                 "previous_review_findings_included"
             ])
@@ -883,14 +1083,21 @@ class ReviewerPacketTests(unittest.TestCase):
             "tests/test_reviewer_packet.py",
             "tools/reviewer_packet.py",
         )))
+        owner_paths = tuple(sorted((*OWNER_EVIDENCE_PACKET_PATHS, "owner-d077-max14.txt")))
         with tempfile.TemporaryDirectory() as temporary:
             parent = Path(temporary)
             packet, manifest = create_synthetic_standalone_packet(
-                parent, changed_paths=changed, head=HEAD, base=BASE, merge_base=MERGE_BASE
+                parent, changed_paths=changed, head=HEAD, base=BASE, merge_base=MERGE_BASE,
+                owner_evidence_paths=owner_paths,
             )
             inspected = validate_packet(packet, manifest, require_external_sources=True)
-            expected_paths = standalone_packet_path_plan(changed)
+            expected_paths = standalone_packet_path_plan(changed, owner_paths)
             self.assertEqual(inspected.file_paths, expected_paths)
+            self.assertIn("owner-d077-max14.txt", inspected.owner_evidence_paths)
+            self.assertIn(
+                b"<system-reminder>",
+                (packet / "source-00.md").read_bytes(),
+            )
             self.assertEqual(inspected.full_read_paths, inspected.file_paths)
             for path in packet.iterdir():
                 text = path.read_text(encoding="utf-8")
@@ -1529,6 +1736,33 @@ class ReviewerPacketTests(unittest.TestCase):
         self.assertFalse(report["raw_session_export_persisted"])
         self.assertNotIn("SYNTHETIC ONLY:", json.dumps(report))
 
+    def test_failed_session_summary_records_loaded_paths_without_content(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            _, _, runtime = self._prepare_standalone(Path(temporary), preflight=True)
+            session, _, _, _ = self._standalone_session(runtime, preflight=True)
+            messages = cast(list[dict[str, object]], session["messages"])
+            calls = [
+                part
+                for message in messages
+                for part in cast(list[dict[str, object]], message["parts"])
+                if part.get("type") == "tool"
+            ]
+            self.assertTrue(calls)
+            state = cast(dict[str, object], calls[0]["state"])
+            metadata = cast(dict[str, object], state["metadata"])
+            metadata["loaded"] = ["/tmp/synthetic/AGENTS.md"]
+            state["output"] = "SYNTHETIC-UNAPPROVED-INSTRUCTION-CONTENT"
+            report = summarize_failed_standalone_session(
+                session,
+                session_export_sha256="d" * 64,
+                reason="synthetic Read context failure",
+                preflight=True,
+            )
+
+        trace = cast(list[dict[str, object]], report["native_tool_trace"])
+        self.assertEqual(trace[0]["metadata_loaded_paths"], ["/tmp/synthetic/AGENTS.md"])
+        self.assertNotIn("SYNTHETIC-UNAPPROVED-INSTRUCTION-CONTENT", json.dumps(report))
+
     def test_standalone_review_result_requires_exact_refs_complete_coverage_and_ux(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             _, _, runtime = self._prepare_standalone(Path(temporary), preflight=False)
@@ -1712,6 +1946,82 @@ class ReviewerPacketTests(unittest.TestCase):
                         display=inconsistent,
                         packet_line_count=6452,
                     )
+
+    def test_read_context_boundary_allows_marker_literal_inside_numbered_packet_bytes(self) -> None:
+        absolute = "/tmp/standalone/workspace/packet/source-15.md"
+        packet_line = 'if "<system-reminder>" in output:'
+        output = (
+            f"<path>{absolute}</path>\n"
+            "<type>file</type>\n<content>\n"
+            f"2156: {packet_line}\n"
+            "\n(End of file - total 2156 lines)\n</content>"
+        )
+        self.assertEqual(validate_read_context_boundary(output, []), 0)
+        validate_read_display(
+            packet_path="source-15.md",
+            expected_absolute=absolute,
+            output=output,
+            lines={2156: packet_line},
+            display={
+                "path": absolute,
+                "type": "file",
+                "lineStart": 2156,
+                "lineEnd": 2156,
+                "totalLines": 2156,
+                "truncated": False,
+                "text": packet_line,
+            },
+            packet_line_count=2156,
+        )
+
+    def test_read_context_boundary_rejects_appended_context_outside_packet_content(self) -> None:
+        output = (
+            "<path>/tmp/standalone/workspace/packet/index.md</path>\n"
+            "<type>file</type>\n<content>\n1: synthetic exact packet line\n"
+            "\n(End of file - total 1 lines)\n</content>\n\n"
+            "<system-reminder>synthetic unapproved instruction</system-reminder>"
+        )
+        with self.assertRaisesRegex(PacketError, "outside the exact packet content block"):
+            _ = validate_read_context_boundary(output, [])
+
+    def test_read_context_boundary_rejects_nonempty_loaded_instruction_paths(self) -> None:
+        output = (
+            "<path>/tmp/standalone/workspace/packet/index.md</path>\n"
+            "<type>file</type>\n<content>\n1: synthetic exact packet line\n"
+            "\n(End of file - total 1 lines)\n</content>"
+        )
+        with self.assertRaisesRegex(PacketError, "auto-loaded instruction paths"):
+            _ = validate_read_context_boundary(output, ["/tmp/synthetic/AGENTS.md"])
+
+    def test_standalone_instruction_boundary_rejects_workspace_or_global_context_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _, _, runtime = self._prepare_standalone(root, preflight=False)
+            home = root / "home"
+            xdg_config = root / "xdg-config"
+            home.mkdir()
+            xdg_config.mkdir()
+            launch_environment = {
+                "HOME": str(home),
+                "XDG_CONFIG_HOME": str(xdg_config),
+                "KILO_CONFIG_DIR": str(runtime.profile_config),
+                "KILO_CONFIG_CONTENT": "{}",
+                "KILO_DISABLE_PROJECT_CONFIG": "1",
+            }
+
+            os.chmod(runtime.packet, 0o700)
+            read_instruction = runtime.packet / "AGENTS.md"
+            _ = read_instruction.write_text("synthetic unapproved instruction\n", encoding="utf-8")
+            with self.assertRaisesRegex(PacketError, "context candidates"):
+                _ = validate_standalone_instruction_boundary(runtime, launch_environment)
+            _ = read_instruction.unlink()
+            os.chmod(runtime.packet, 0o555)
+
+            global_config = xdg_config / "kilo"
+            global_config.mkdir()
+            _ = (global_config / "AGENTS.md").write_text("synthetic global instruction\n", encoding="utf-8")
+            with self.assertRaisesRegex(PacketError, "context candidates"):
+                _ = validate_standalone_instruction_boundary(runtime, launch_environment)
 
 
 if __name__ == "__main__":

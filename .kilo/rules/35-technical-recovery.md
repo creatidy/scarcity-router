@@ -57,10 +57,12 @@ Persist attempts/time across reentry, phases and sessions in the excluded delive
 ledger; renaming an obstacle or reviewer does not reset its budget. Every whole-PR
 review dispatch, including failed/COMMENT attempts and failover, also consumes the
 next reserved ordinal. The default effective ceiling is 10. The sole separate
-direct-owner supersession is #212/PR #213: D-077 records maximum 12, with #11 the
-final ordinary review and #12 owner-manual Daybreak only after valid #11 APPROVE.
-Verify the preserved direct owner source receipt and exact canonical scope/currentness
-before that reservation; this is not D-069A and cannot transfer. For other deliveries,
+direct-owner supersession is #212/PR #213: the final D-077 amendment records maximum
+14; #12 is the next ordinary review, #13 is ordinary only after a diagnosed/corrected
+#12 failure or owner-manual Daybreak after valid #12 APPROVE, and #14 is the final
+manual gate if #13 was ordinary. No #15. Verify the exact Section D owner source and
+canonical scope/currentness before each reservation; this is not D-069A and cannot
+transfer. For other deliveries,
 only a finite D-069A exception verified against the direct owner source and exact
 canonical Repo/Issue/linked-PR scope, with D-069A already integrated into freshly
 fetched `develop`, can raise the cap. Missing/stale/ambiguous authority leaves the

@@ -71,10 +71,12 @@
   native Task dispatch or owner relaying is required.
   Default to at most 10 whole-PR review invocations per issue delivery, including
   initial, COMMENT and retries. The sole separate direct-owner supersession is for
-  #212/PR #213: D-077 records maximum 12, with #11 the final ordinary review and #12
-  owner-manual Daybreak only after valid #11 APPROVE. Verify the preserved direct
-  owner source receipt and exact canonical issue/PR scope/currentness before that
-  reservation; this is not D-069A and does not transfer. Any other larger finite
+  #212/PR #213: the final D-077 direct owner amendment records maximum 14, with #12
+  the next ordinary review; #13 is ordinary only after a diagnosed/corrected #12
+  failure or manual Daybreak after valid #12 APPROVE; #14 is the final manual gate if
+  #13 was ordinary. No #15. Verify the exact Section D owner source receipt and exact
+  canonical issue/PR scope/currentness before each reservation; this is not D-069A
+  and does not transfer. Any other larger finite
   maximum requires D-069A authority: verify its direct owner source, exact canonical
   repository/issue/linked-PR identity, maximum and scope before reservation, and
   confirm D-069A is already integrated in freshly fetched `develop`. A branch cannot

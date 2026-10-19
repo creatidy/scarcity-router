@@ -151,10 +151,11 @@ sandboxing or backend model identity. The provider request uses the existing
 credential-safe Kilo authentication path; credentials are never copied into the
 reviewer context or evidence. A default maximum of 10 invocations per issue delivery
 includes initial, COMMENT, invalidated reviews and corrected retries. The sole separate
-direct-owner supersession is for #212/PR #213: D-077 records maximum 12, with #11 the
-final ordinary review and #12 owner-manual Daybreak only after valid #11 APPROVE.
-Verify the preserved direct owner source receipt and exact canonical scope/currentness
-before that reservation; this is not D-069A and cannot transfer. For every other
+direct-owner supersession is for #212/PR #213: the final D-077 amendment records maximum
+14; #12 is the next ordinary review, #13 is ordinary only after a diagnosed/corrected
+#12 failure or owner-manual Daybreak after valid #12 APPROVE, and #14 is the final manual
+gate if #13 was ordinary. No #15. Verify the exact Section D owner source and canonical
+scope/currentness before each reservation; this is not D-069A and cannot transfer. For every other
 delivery, D-069A permits a greater finite maximum only after the primary verifies the
 direct owner source, exact canonical repository/issue/linked-PR identity, scope and
 cap, and confirms the policy is already integrated in freshly fetched `develop`. An
@@ -328,8 +329,8 @@ Do not repeat identical failures.
 General non-delivery defaults remain one initial review, one remediation and
 narrow verification, as described by `model-policy.json`. Repository command
 delivery uses D-069's scoped override, not those generic round counts: the default
-ceiling is 10 whole-PR reviews. The direct D-077 owner amendment separately sets a
-one-time maximum of 12 for #212/PR #213 only; for every other delivery, D-069A's exact
+ceiling is 10 whole-PR reviews. The final direct D-077 owner amendment separately sets
+a one-time maximum of 14 for #212/PR #213 only; for every other delivery, D-069A's exact
 canonical owner exception can set a greater finite ceiling for one named issue/linked
 PR after integration and fresh verification. Never exceed the effective maximum or
 patch without capacity for a fresh review.

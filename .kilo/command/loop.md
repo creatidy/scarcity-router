@@ -228,11 +228,13 @@ branch switches occur while a reviewer or preflight CLI process is active.
 
 Default maximum 10 whole-PR review invocations per issue delivery, INCLUDING the
 initial review, COMMENT, invalidated reviews and corrected retries. The sole separate
-direct-owner supersession is for #212/PR #213: D-077 records maximum 12, with #11 the
-final ordinary review and #12 owner-manual Daybreak only after valid #11 APPROVE.
-Verify the preserved direct owner source receipt and exact canonical Repo/Issue/PR
-scope/currentness before that reservation; this is not D-069A and does not transfer.
-For any other delivery, a larger finite ceiling is available only through D-069A
+direct-owner supersession is for #212/PR #213: the final D-077 amendment authorizes
+maximum 14. Preserve #1-11 as consumed; #12 is the next ordinary review, #13 is an
+additional ordinary review only after diagnosed/corrected #12 failure or owner-manual
+Daybreak after a valid #12 APPROVE, and #14 is the final owner-manual Daybreak only
+when #13 was needed for ordinary review. No #15. Verify the exact direct owner source,
+canonical Repo/Issue/PR scope and currentness before each exceptional reservation; this
+is not D-069A and does not transfer. For any other delivery, a larger finite ceiling is available only through D-069A
 after the primary verifies the direct owner source and exact canonical Repo/Issue/
 linked-PR identity, scope and maximum, and confirms D-069A is integrated in freshly
 fetched `develop`. A branch cannot use its own unintegrated rule. Missing, stale or
@@ -329,7 +331,13 @@ again with a fresh canonical queue, not a PR-derived backlog.
 
 ## Terminal Reporting
 
-Return exactly one terminal status: QUEUE_EMPTY, STOP_AND_ASK, STOP_REVISE or BLOCKED.
+Return exactly one terminal status: QUEUE_EMPTY, STOP_AND_ASK, STOP_REVISE, BLOCKED
+or READY_FOR_OWNER_SECURITY_REVIEW.
+READY_FOR_OWNER_SECURITY_REVIEW is a terminal handoff after ordinary approval,
+validation and reservation of the exact owner-manual ordinal. Stop before MERGE,
+issue closure or SELECT; report the frozen refs and wait for Adrian's official Codex
+result. Resume only on explicit owner continuation after independently validating that
+result against the same current Issue/PR/HEAD/base. Never launch Daybreak from Kilo.
 Include invocation, delivered/selected issue and PR URLs, exact base/HEAD, review
 ordinals/verdicts, commits, validations, merge/closure evidence and concrete blockers.
 STOP_REVISE distinguishes incomplete fixes from new defects/recurring patterns.

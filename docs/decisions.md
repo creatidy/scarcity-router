@@ -5840,11 +5840,12 @@ neither is a new live check of the current deployment.
   Standalone implement remains owner-selected; review is read-only; finish never
   merges. The migration itself uses pre-migration review limits and remains open
   for human integration; it cannot bootstrap merge authority from its new files.
-- **One-time #212 supersession:** Adrian's later direct owner amendment recorded in
-  D-077 raises the effective maximum to 12 for issue #212/PR #213 only: #1-10 retain
-  their actual outcomes, #11 is the final ordinary review, and #12 is the separate
-  owner-manual Daybreak gate after valid #11 approval. This direct supersession is
-  not derived from D-069A and does not change the default ten for any other delivery.
+- **Final one-time #212 supersession:** Adrian's latest direct owner amendment recorded
+  in D-077 raises the effective maximum to 14 for issue #212/PR #213 only: #1-11 retain
+  their actual outcomes, #12 is the next ordinary review, #13 is an additional ordinary
+  review only after a diagnosed/corrected #12 failure or the owner-manual gate after a
+  valid #12 approval, and #14 is the manual gate if #13 was ordinary. No #15. This direct
+  supersession is not derived from D-069A and does not change the default ten elsewhere.
 - **Preserved model:** The primary invocation context is the sole orchestrator,
   using one normal checkout/one mutator, no worktrees/alternate checkouts or
   stash/reset of owner work. The excluded `.task_progress.md` ledger persists
@@ -5939,7 +5940,7 @@ neither is a new live check of the current deployment.
   | Case | Evidence | Result |
   | --- | --- | --- |
   | Normal delivery | No valid canonical owner exception | Default maximum 10. |
-  | Bootstrap #212 | D-069A remains unintegrated; D-077 records a separate direct owner amendment | Maximum 12 only for #212/PR #213 under that direct amendment; no authority is derived from D-069A. |
+  | Bootstrap #212 | D-069A remains unintegrated; D-077 records the final direct owner amendment | Maximum 14 only for #212/PR #213 under that direct amendment; no authority is derived from D-069A. |
   | Pending #210 allocation | Direct owner source and Kilo-authored receipt #17258 state future maximum 11, but D-069A is not integrated | Keep maximum 10 effective; do not reserve/dispatch #10 or #11. |
   | Ledger-only extension | No matching direct owner source in the canonical accepted scope | Deny exception; keep default 10. |
   | Scope mismatch | Owner record names another issue/PR, repository or task scope | Deny transfer; use this delivery's default/verified maximum only. |
@@ -6437,7 +6438,7 @@ neither is a new live check of the current deployment.
     owner amendment to the existing D-069/D-077 decision, not authority from
     unintegrated D-069A. Do not reset/reclassify history, invoke Daybreak from Kilo,
     merge or close #212 before both approvals.
-- **Final direct owner amendment for #212/PR #213:** Adrian's direct owner instruction
+- **Prior final direct owner amendment for #212/PR #213 (superseded by the max-14 amendment below):** Adrian's direct owner instruction
   in the Kilo conversation at `2026-10-19T07:02:31Z` supersedes the preceding #212
   max-11 allocation. The exact message is preserved verbatim at the Git-locally
   excluded `.review-evidence-212/owner-d069-review-ceiling-amendment-2026-10-19.txt`,
@@ -6451,6 +6452,24 @@ neither is a new live check of the current deployment.
   - The default maximum ten remains for all other deliveries. This is a direct
     one-time owner amendment to D-069/D-077, not authority from unintegrated D-069A.
     Do not reset/reclassify history or invoke Daybreak automatically.
+
+- **Final direct owner amendment for #212/PR #213 (maximum 14):** Adrian's direct
+  owner instruction in the Kilo conversation at `2026-10-19T10:39:34Z` supersedes the
+  preceding maximum-12 amendment above, which remains preserved as historical authority.
+  The exact Section D authorization is retained at the Git-locally excluded
+  `.review-evidence-212/owner-d069-review-ceiling-amendment-2026-10-19-max14.txt`,
+  SHA-256 `ce5d5aad6b1542ba489dbe8f3405468c4ce650d08025678c48058e32082ef023`. The direct
+  user instruction is authoritative; any Kilo-authored Issue/PR or Forgejo body is only
+  a transcription.
+  - Maximum 14 total invocations for #212/PR #213 only. #1-11 remain consumed with
+    their actual outcomes. #12 is the next ordinary whole-PR review. #13 may be an
+    additional ordinary review only when needed after a diagnosed/corrected #12 failure,
+    or the owner-manual Daybreak gate after valid #12 APPROVE. #14 is the final manual
+    Daybreak gate only if #13 was needed for ordinary review. No #15, reset or automatic
+    extension.
+  - Default ten and all other deliveries remain unchanged. This direct supersession is
+    not D-069A authority and does not transfer. Retain the independent owner-manual
+    security gate and `/loop`-only merge authority; Adrian invokes official Codex.
 
 ### U-014 - Native coding backend versus Kernel-owned workspace lifecycle
 

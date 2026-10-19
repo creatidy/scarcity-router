@@ -428,7 +428,7 @@ class WorkflowContractTests(unittest.TestCase):
             "do not reserve or dispatch #10 or #11",
             "issue #210 comment #17258",
             "intended maximum 11",
-            "Maximum 12 only for #212/PR #213 under that direct amendment",
+            "Maximum 14 only for #212/PR #213 under that direct amendment",
             "an exception cannot transfer to another issue/pr",
             "assign reviewer roles from the currently unmet approval gates",
         ):
@@ -445,7 +445,7 @@ class WorkflowContractTests(unittest.TestCase):
             exception_rows[cells[0]] = cells[2]
         expected_outcomes = {
             "Normal delivery": "Default maximum 10.",
-            "Bootstrap #212": "Maximum 12 only for #212/PR #213 under that direct amendment",
+            "Bootstrap #212": "Maximum 14 only for #212/PR #213 under that direct amendment",
             "Pending #210 allocation": "do not reserve/dispatch #10 or #11",
             "Ledger-only extension": "Deny exception; keep default 10.",
             "Scope mismatch": "Deny transfer",
@@ -490,7 +490,10 @@ class WorkflowContractTests(unittest.TestCase):
             "For other deliveries, a greater ceiling requires a D-069A finite exception",
             "D-069A is integrated in freshly fetched `develop`",
             "the exact nontransferable D-077 direct owner amendment for #212/PR #213",
-            "#11 is the final ordinary review and #12 is the owner-manual Daybreak gate",
+            "maximum 14 total; #1-11 remain consumed, #12 is the next ordinary review",
+            "only after diagnosed/corrected #12 failure or owner-manual Daybreak after valid #12 APPROVE",
+            "#14 is the final manual Daybreak if #13 was needed for ordinary review",
+            "No #15, reset or automatic extension",
             "applicable default ceiling in effect",
             "INCLUDING the initial review, COMMENT, invalidated reviews and corrected retries",
             "Before EVERY whole-PR reviewer launch reserve/persist the next review ordinal",
@@ -578,7 +581,16 @@ class WorkflowContractTests(unittest.TestCase):
 
     def test_stop_boundary_and_repository_safety(self) -> None:
         loop = text(".kilo/command/loop.md")
-        self.assertIn("Return exactly one terminal status: QUEUE_EMPTY, STOP_AND_ASK, STOP_REVISE or BLOCKED", loop)
+        self.assertIn(
+            "Return exactly one terminal status: QUEUE_EMPTY, STOP_AND_ASK, STOP_REVISE, BLOCKED or READY_FOR_OWNER_SECURITY_REVIEW",
+            " ".join(loop.split()),
+        )
+        self.assertIn("READY_FOR_OWNER_SECURITY_REVIEW is a terminal handoff", loop)
+        self.assertIn("Stop before MERGE, issue closure or SELECT", loop)
+        self.assertIn("maximum 14", loop)
+        self.assertIn("#12 is the next ordinary review", loop)
+        self.assertIn("#14 is the final owner-manual Daybreak", loop)
+        self.assertIn("No #15", loop)
         self.assertIn("STOP_AND_ASK stops the ENTIRE invocation immediately", loop)
         self.assertIn("never skip the selected issue and continue another", loop)
         for boundary in (
@@ -709,7 +721,7 @@ class WorkflowContractTests(unittest.TestCase):
             "owner-d069-ceiling-amendment-2026-10-18.txt",
             "be746960ffc98ddbbacd905c4c3a2af01e105484620af57a12b7509168e4d0c4",
             "not an owner-authored source",
-            "Final direct owner amendment for #212/PR #213",
+            "Prior final direct owner amendment for #212/PR #213 (superseded by the max-14 amendment below)",
             "2026-10-19T07:02:31Z",
             "owner-d069-review-ceiling-amendment-2026-10-19.txt",
             "fc3b4fa416da3c7083c5140b1ff943afacb87edbe0409f84d98426992d70e301",
@@ -721,6 +733,13 @@ class WorkflowContractTests(unittest.TestCase):
             "No #13 or automatic extension",
             "default maximum ten remains for all other deliveries",
             "not authority from unintegrated D-069A",
+            "Final direct owner amendment for #212/PR #213 (maximum 14)",
+            "2026-10-19T10:39:34Z",
+            "owner-d069-review-ceiling-amendment-2026-10-19-max14.txt",
+            "ce5d5aad6b1542ba489dbe8f3405468c4ce650d08025678c48058e32082ef023",
+            "#12 is the next ordinary whole-PR review",
+            "#14 is the final manual Daybreak gate",
+            "No #15, reset or automatic extension",
         ):
             with self.subTest(requirement=requirement):
                 self.assertIn(requirement, section)

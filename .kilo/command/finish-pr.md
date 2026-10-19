@@ -17,18 +17,19 @@ Delivery budget: default at most 10 whole-PR review invocations per issue delive
 INCLUDING the initial review, COMMENT, invalidated reviews and corrected retries.
 For other deliveries, a greater ceiling requires a D-069A finite exception verified
 against its direct canonical owner source after D-069A is integrated in freshly fetched
-`develop`. The sole exception to that mechanism is the direct, one-time D-069 owner
-amendment for Issue #212/PR #213 recorded in D-077 and the accepted Issue body: maximum
-12, with #1-10 preserved as consumed, #11 the final ordinary review, and #12 the
-owner-manual Daybreak gate only after valid #11 approval. Its original owner source is
-`.review-evidence-212/owner-d069-review-ceiling-amendment-2026-10-19.txt`, SHA-256
-`fc3b4fa416da3c7083c5140b1ff943afacb87edbe0409f84d98426992d70e301`; verify that
-source, exact Repo/Issue/PR identities, D-077/Issue scope and current refs before the
-authorized #11 reservation. This is direct owner authority, not D-069A; it is not
-transferable, not a general exception mechanism, and does not authorize #13. Missing,
-stale, ambiguous or mismatched authority leaves the applicable default ceiling in
-effect. Revalidate before every exceptional reservation; local ledgers count but
-never grant authority.
+`develop`. The sole exception to that mechanism is Adrian's direct, one-time D-069/D-077
+amendment for Issue #212/PR #213: maximum 14 total; #1-11 remain consumed, #12 is the
+next ordinary review, #13 is an additional ordinary review only after diagnosed/corrected
+#12 failure or owner-manual Daybreak after valid #12 APPROVE, and #14 is the final manual
+Daybreak if #13 was needed for ordinary review. No #15, reset or automatic extension.
+The exact owner source is the Section D excerpt in
+`.review-evidence-212/owner-d069-review-ceiling-amendment-2026-10-19-max14.txt`, from
+Adrian's direct Kilo message at `2026-10-19T10:39:34Z`; D-077 binds its SHA-256. Verify
+that direct source, exact Repo/Issue/PR identities, scope and current refs before any
+exceptional reservation. This is not D-069A, is not transferable, and is not a general
+exception mechanism. Missing, stale, ambiguous or mismatched authority leaves the
+applicable default ceiling in effect. Revalidate before every exceptional reservation;
+local ledgers count but never grant authority.
 Before the first review verify `.task_progress.md` is Git-locally excluded, then
 append a delivery ledger keyed by issue/PR (and `/loop` invocation ID if applicable).
 Before EVERY whole-PR reviewer launch reserve/persist the next review ordinal, frozen SHAs
@@ -57,9 +58,11 @@ delivery; STOP_REVISE still requires an explicit owner decision, not a new PR/na
 4. Create a complete production-shaped synthetic packet with
    `tools/reviewer_packet.py synthetic-packet --parent <private-temp-dir> --head <sha>
    --base <sha> --merge-base <sha> --changed-path <path>` repeated for every frozen
-   changed path in sorted order. It contains the production inventory (index, patch,
-   pinned Kilo sources, owner sources/receipts and one indexed source file per changed
-   path) but harmless synthetic bytes only. Use a
+   changed path in sorted order, plus `--owner-evidence-path <path>` for each exact
+   owner-source or transcription-receipt path listed in the packet plan. The fixture
+   contains the production inventory (index, patch, pinned Kilo sources, owner sources/
+   receipts and one indexed source file per changed path) but harmless synthetic bytes
+   only. Use a
     separate profile config directory containing a generated copy with the same
     standalone identity/mode/prompt and only exact Kilo worktree-relative Read rules
     for indexed `packet/<file>` files in its frontmatter; the prompt supplies only
@@ -142,9 +145,13 @@ delivery; STOP_REVISE still requires an explicit owner decision, not a new PR/na
     standalone synthetic preflight before a NEW standalone reviewer process.
 12. The default ceiling is 10; use only a freshly verified D-069A exception for
    other deliveries or the exact nontransferable D-077 direct owner amendment for
-   #212/PR #213 described above. For #212, #11 is the final ordinary review and
-   #12 is the owner-manual Daybreak gate after valid #11 APPROVE; no #13 is allowed.
-   At the effective review bound an exact valid APPROVE may yield READY_TO_MERGE;
+   #212/PR #213 described above. For #212, #12 is the next ordinary review; #13 is
+   ordinary only after diagnosed/corrected #12 failure, otherwise it is owner-manual
+   Daybreak after valid #12 APPROVE; #14 is the manual gate if #13 was ordinary. No
+   #15. After a valid ordinary APPROVE, reserve the next owner-manual ordinal and return
+   READY_FOR_OWNER_SECURITY_REVIEW; never report READY_TO_MERGE while that gate is open.
+   At the effective review bound an exact valid APPROVE may yield READY_TO_MERGE only
+   for deliveries with no remaining owner-manual gate;
    genuine decisions yield OWNER_DECISION_NEEDED and finite
    infrastructure failures BLOCKED. Remaining actionable findings yield STOP_REVISE;
    summarize recurring patterns,

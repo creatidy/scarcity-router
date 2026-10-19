@@ -28,18 +28,30 @@ class PacketError(ValueError):
     """The packet or effective permission boundary is invalid."""
 
 
-def standalone_packet_path_plan(changed_paths: tuple[str, ...] | list[str]) -> tuple[str, ...]:
+def standalone_packet_path_plan(
+    changed_paths: tuple[str, ...] | list[str],
+    owner_evidence_paths: tuple[str, ...] | list[str] = (),
+) -> tuple[str, ...]:
     """Return the private-review packet file inventory for a sorted PR delta."""
     if not changed_paths or tuple(sorted(set(changed_paths))) != tuple(changed_paths):
         raise PacketError("standalone packet plan requires nonempty sorted unique changed paths")
     for changed_path in changed_paths:
         _relative_source_path(changed_path)
+    if tuple(sorted(set(owner_evidence_paths))) != tuple(owner_evidence_paths):
+        raise PacketError("standalone owner-evidence paths must be sorted and unique")
+    for path in owner_evidence_paths:
+        _relative_file(path)
     source_files = tuple(f"source-{index:02d}.md" for index in range(len(changed_paths)))
-    return tuple(sorted((*STANDALONE_PACKET_FIXED_PATHS, *source_files)))
+    paths = (*STANDALONE_PACKET_FIXED_PATHS, *source_files, *owner_evidence_paths)
+    if len(set(paths)) != len(paths):
+        raise PacketError("standalone packet plan contains duplicate file paths")
+    return tuple(sorted(paths))
 
 
 def validate_standalone_packet_path_plan(inspection: PacketInspection) -> None:
-    expected = standalone_packet_path_plan(inspection.changed_paths)
+    expected = standalone_packet_path_plan(
+        inspection.changed_paths, inspection.owner_evidence_paths
+    )
     if inspection.file_paths != expected:
         raise PacketError("standalone packet inventory differs from the complete canonical path plan")
 
@@ -51,9 +63,17 @@ def create_synthetic_standalone_packet(
     head: str,
     base: str,
     merge_base: str,
+    owner_evidence_paths: tuple[str, ...] | None = None,
+    issue_id: int = 1683,
+    issue_number: int = 212,
+    pull_id: int = 927,
+    pull_number: int = 213,
+    head_branch: str = "issue-212-d069a-bootstrap",
 ) -> tuple[Path, Path]:
     """Create a harmless packet with the exact production standalone file-path plan."""
-    paths = standalone_packet_path_plan(changed_paths)
+    if owner_evidence_paths is None:
+        owner_evidence_paths = OWNER_EVIDENCE_PACKET_PATHS
+    paths = standalone_packet_path_plan(changed_paths, owner_evidence_paths)
     if not _SHA1.fullmatch(head) or not _SHA1.fullmatch(base) or not _SHA1.fullmatch(merge_base):
         raise PacketError("synthetic packet refs must be full SHA-1 values")
     if (not parent.is_dir() or parent.is_symlink()
@@ -80,14 +100,19 @@ def create_synthetic_standalone_packet(
                 "<BEGIN-PACKET-READ-PLAN>\n"
                 f"{json.dumps(read_plan, sort_keys=True)}\n"
                 "<END-PACKET-READ-PLAN>\n"
-                f'<BEGIN-CANONICAL-ISSUE-212-BODY sha256="{issue_body_sha}">\n'
-                f"{issue_body.decode()}\n<END-CANONICAL-ISSUE-212-BODY>"
+                f'<BEGIN-CANONICAL-ISSUE-BODY issue="{issue_number}" sha256="{issue_body_sha}">\n'
+                f"{issue_body.decode()}\n<END-CANONICAL-ISSUE-BODY>"
             )
             contents[path] = text.encode("utf-8")
         elif path == "patch.diff":
             contents[path] = b"diff --git a/synthetic b/synthetic\n+synthetic-only patch\n"
         elif path in {"owner-bootstrap-receipt.txt", "owner-210-receipt.txt"}:
             contents[path] = b"SYNTHETIC Kilo transcription receipt; not owner-authored.\n"
+        elif path == "source-00.md":
+            contents[path] = (
+                b'SYNTHETIC ONLY: literal "<system-reminder>" and "</system-reminder>" '
+                b"strings are ordinary frozen packet bytes, not appended context.\n"
+            )
         else:
             contents[path] = f"SYNTHETIC ONLY: {path}\n".encode("utf-8")
 
@@ -104,6 +129,11 @@ def create_synthetic_standalone_packet(
             210, 17258, "2026-10-15T17:09:48Z",
         ),
     }
+    owner_source_paths = tuple(path for path in owner_evidence_paths if not path.endswith("-receipt.txt"))
+    for index, source_path in enumerate(owner_source_paths):
+        receipt_path = f"{source_path.removesuffix('.txt')}-receipt.txt"
+        if receipt_path in owner_evidence_paths and receipt_path not in owner_receipts:
+            owner_receipts[receipt_path] = (issue_number, 30000 + index, "2026-10-17T22:15:33Z")
     file_rows: list[dict[str, Any]] = []
     for path in paths:
         data = contents[path]
@@ -119,7 +149,7 @@ def create_synthetic_standalone_packet(
                 f"{issue_number}#issuecomment-{comment_id}"
             )
             revision = timestamp
-        elif path in OWNER_EVIDENCE_PACKET_PATHS:
+        elif path in owner_evidence_paths:
             kind, origin, revision = "owner-source", "synthetic owner source placeholder", head
         elif path in KILO_SOURCE_PACKET_PATHS:
             source_path = KILO_SOURCE_REPOSITORY_PATHS[path]
@@ -153,31 +183,28 @@ def create_synthetic_standalone_packet(
             "ranges": [[1, 1]],
         }
     owner_sources = []
-    for path, receipt, issue_number, comment_id, timestamp, decision_type in (
-        ("owner-bootstrap.txt", "owner-bootstrap-receipt.txt", 212, 17305,
-         "2026-10-15T19:01:02Z", "synthetic bootstrap owner evidence"),
-        ("owner-210.txt", "owner-210-receipt.txt", 210, 17258,
-         "2026-10-15T17:09:48Z", "synthetic downstream owner evidence"),
-    ):
-        receipt_url = (
-            f"https://forgejo.creatidy.com/BioMedical-IT/scarcity-router/issues/"
-            f"{issue_number}#issuecomment-{comment_id}"
-        )
-        owner_sources.append({
+    for index, path in enumerate(owner_source_paths):
+        receipt_path = f"{path.removesuffix('.txt')}-receipt.txt"
+        record: dict[str, Any] = {
             "packet_path": path,
             "sha256": sha256(contents[path]),
-            "source_origin": "synthetic-only fixture; not an owner decision",
-            "decision_type": decision_type,
-            "transcription_receipt": {
-                "packet_path": receipt,
+            "source_type": "synthetic_fixture",
+            "source_origin": "synthetic-only owner evidence path placeholder",
+            "decision_type": f"synthetic permission-preflight owner source {index}",
+        }
+        receipt_metadata = owner_receipts.get(receipt_path)
+        if receipt_path in owner_evidence_paths and receipt_metadata is not None:
+            receipt_issue, comment_id, timestamp = receipt_metadata
+            record["transcription_receipt"] = {
+                "packet_path": receipt_path,
                 "comment_id": comment_id,
-                "issue_number": issue_number,
+                "issue_number": receipt_issue,
                 "author": "kilo",
                 "created_at": timestamp,
-                "url": receipt_url,
-                "sha256": sha256(contents[receipt]),
-            },
-        })
+                "url": f"https://forgejo.creatidy.com/BioMedical-IT/scarcity-router/issues/{receipt_issue}#issuecomment-{comment_id}",
+                "sha256": sha256(contents[receipt_path]),
+            }
+        owner_sources.append(record)
     external_sources = []
     for path in KILO_SOURCE_PACKET_PATHS:
         source_path = KILO_SOURCE_REPOSITORY_PATHS[path]
@@ -194,16 +221,16 @@ def create_synthetic_standalone_packet(
             "excerpt_sha256": sha256(contents[path]),
         })
     repository_url = "https://forgejo.creatidy.com/BioMedical-IT/scarcity-router"
-    issue_url = f"{repository_url}/issues/212"
-    pr_url = f"{repository_url}/pulls/213"
+    issue_url = f"{repository_url}/issues/{issue_number}"
+    pr_url = f"{repository_url}/pulls/{pull_number}"
     manifest = {
-        "schema_version": 1,
+        "schema_version": 2,
         "synthetic_fixture": True,
         "repository": {"id": 15, "owner": "BioMedical-IT", "name": "scarcity-router", "url": repository_url},
-        "issue": {"id": 1683, "number": 212, "url": issue_url, "body_sha256": issue_body_sha},
+        "issue": {"id": issue_id, "number": issue_number, "url": issue_url, "body_sha256": issue_body_sha},
         "pull_request": {
-            "id": 927, "number": 213, "url": pr_url,
-            "head_branch": "issue-212-d069a-bootstrap", "base_branch": "develop",
+            "id": pull_id, "number": pull_number, "url": pr_url,
+            "head_branch": head_branch, "base_branch": "develop",
             "head": head, "base": base, "merge_base": merge_base,
             "body_sha256": "b" * 64,
         },
@@ -211,12 +238,20 @@ def create_synthetic_standalone_packet(
         "head": head, "base": base, "merge_base": merge_base,
         "currentness": {
             "checked_at": "2026-10-17T22:15:33Z", "repo_id": 15,
-            "issue_id": 1683, "pr_id": 927,
+            "issue_id": issue_id, "pr_id": pull_id,
             "head": head, "base": base, "merge_base": merge_base,
         },
         "changed_paths": list(changed_paths),
         "source_bindings": source_bindings,
         "owner_sources": owner_sources,
+        "review_policy": {
+            "default_maximum": 10,
+            "effective_maximum": 10,
+            "scope": {"issue_number": issue_number, "pull_number": pull_number},
+            "authority_type": "default",
+            "authority_source_path": None,
+            "authority_source_sha256": None,
+        },
         "external_sources": external_sources,
         "review_coverage": {"full_read_paths": list(paths), "source_ranges": {}},
         "previous_review_findings_included": False,
@@ -227,6 +262,17 @@ def create_synthetic_standalone_packet(
     manifest_path.write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
     os.chmod(manifest_path, 0o600)
     return packet, manifest_path
+
+
+def _owner_evidence_paths(manifest: dict[str, Any]) -> tuple[str, ...]:
+    paths: set[str] = set()
+    for raw in _array(manifest.get("owner_sources"), "manifest.owner_sources"):
+        owner = _object(raw, "owner source record")
+        paths.add(_relative_file(owner.get("packet_path")))
+        receipt = owner.get("transcription_receipt")
+        if receipt is not None:
+            paths.add(_relative_file(_object(receipt, "owner transcription receipt").get("packet_path")))
+    return tuple(sorted(paths))
 
 
 def validate_synthetic_preflight_packet(packet_root: Path, manifest_path: Path) -> PacketInspection:
@@ -240,7 +286,8 @@ def validate_synthetic_preflight_packet(packet_root: Path, manifest_path: Path) 
     )
     if tuple(sorted(set(changed_paths))) != changed_paths:
         raise PacketError("synthetic changed paths are not sorted and unique")
-    expected_paths = set(standalone_packet_path_plan(changed_paths))
+    owner_evidence_paths = _owner_evidence_paths(manifest)
+    expected_paths = set(standalone_packet_path_plan(changed_paths, owner_evidence_paths))
     actual_paths = {
         _relative_file(_object(item, "synthetic manifest file").get("path"))
         for item in _array(manifest.get("files"), "synthetic manifest files")
@@ -278,6 +325,7 @@ class PacketInspection:
     merge_base: str
     file_paths: tuple[str, ...]
     changed_paths: tuple[str, ...]
+    owner_evidence_paths: tuple[str, ...]
     source_line_counts: dict[str, int]
     external_source_count: int
     full_read_paths: tuple[str, ...]
@@ -308,6 +356,69 @@ class RuntimeWorkspace:
     kilo_config_content: str
 
 
+def validate_standalone_instruction_boundary(
+    runtime: RuntimeWorkspace, launch_environment: dict[str, str]
+) -> dict[str, Any]:
+    """Fail closed if Kilo can discover an unapproved instruction file."""
+    if (launch_environment.get("KILO_DISABLE_PROJECT_CONFIG") != "1"
+            or launch_environment.get("KILO_CONFIG_CONTENT") != "{}"):
+        raise PacketError("standalone instruction isolation requires disabled project config and empty config content")
+    if {path.name for path in runtime.workspace.iterdir()} != {"packet"}:
+        raise PacketError("standalone workspace contains entries outside the frozen packet")
+
+    names = {"AGENTS.md", "CLAUDE.md", "CONTEXT.md"}
+    read_scope = [
+        path for path in runtime.packet.rglob("*")
+        if path.name in names or path.is_symlink()
+    ]
+    read_scope.extend(
+        path for path in (runtime.workspace / name for name in names)
+        if path.exists() or path.is_symlink()
+    )
+    home = Path(launch_environment["HOME"])
+    xdg_config = Path(launch_environment["XDG_CONFIG_HOME"])
+    kilo_config = Path(launch_environment["KILO_CONFIG_DIR"])
+    system_scope = [
+        kilo_config / "AGENTS.md",
+        xdg_config / "kilo" / "AGENTS.md",
+        home / ".claude" / "CLAUDE.md",
+    ]
+    global_config_files = [xdg_config / "kilo" / name for name in ("kilo.json", "kilo.jsonc")]
+    found = [
+        path for path in (*read_scope, *system_scope, *global_config_files)
+        if path.exists() or path.is_symlink()
+    ]
+    if found:
+        labels = sorted(f"{path.parent.name}/{path.name}" for path in found)
+        raise PacketError("standalone instruction boundary found context candidates: " + ", ".join(labels))
+
+    env_config = _object(json.loads(launch_environment["KILO_CONFIG_CONTENT"]), "KILO_CONFIG_CONTENT")
+    profile_config = _object(
+        json.loads((kilo_config / "kilo.json").read_bytes()), "per-run Kilo config"
+    )
+    for label, config in (("KILO_CONFIG_CONTENT", env_config), ("per-run Kilo config", profile_config)):
+        instructions = config.get("instructions")
+        if instructions not in (None, []):
+            raise PacketError(f"{label} contains unapproved instruction sources")
+    return {
+        "status": "PASS",
+        "project_config_disabled": True,
+        "config_instructions_count": 0,
+        "read_scope_instruction_candidates_checked": [
+            "workspace/packet/{AGENTS.md,CLAUDE.md,CONTEXT.md}",
+            "workspace/{AGENTS.md,CLAUDE.md,CONTEXT.md}",
+        ],
+        "system_instruction_candidates_checked": [
+            "KILO_CONFIG_DIR/AGENTS.md",
+            "XDG_CONFIG_HOME/kilo/AGENTS.md",
+            "HOME/.claude/CLAUDE.md",
+            "XDG_CONFIG_HOME/kilo/kilo.json",
+            "XDG_CONFIG_HOME/kilo/kilo.jsonc",
+        ],
+        "found_unapproved_sources": [],
+    }
+
+
 _SHA1 = re.compile(r"^[0-9a-f]{40}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 KILO_SOURCE_REVISION = "e2887f08e5a6394299c810ba508f358aaf4c5bc3"
@@ -319,6 +430,8 @@ KILO_SOURCE_PACKET_PATHS = (
     "kilo-config-merge.ts.txt",
     "kilo-permission-resolution.ts.txt",
     "kilo-read-path.ts.txt",
+    "kilo-session-instruction.ts.txt",
+    "kilo-session-tools.ts.txt",
     "kilo-task-inheritance.ts.txt",
     "kilo-task-parent.ts.txt",
     "kilo-cli-run-agent-selection.ts.txt",
@@ -333,12 +446,15 @@ KILO_SOURCE_REPOSITORY_PATHS = {
     "kilo-config-merge.ts.txt": "packages/opencode/src/config/config.ts",
     "kilo-permission-resolution.ts.txt": "packages/opencode/src/permission/index.ts",
     "kilo-read-path.ts.txt": "packages/opencode/src/tool/read.ts",
+    "kilo-session-instruction.ts.txt": "packages/opencode/src/session/instruction.ts",
+    "kilo-session-tools.ts.txt": "packages/opencode/src/session/tools.ts",
     "kilo-task-inheritance.ts.txt": "packages/opencode/src/kilocode/tool/task.ts",
     "kilo-task-parent.ts.txt": "packages/opencode/src/tool/task.ts",
     "kilo-cli-run-agent-selection.ts.txt": "packages/opencode/src/cli/cmd/run.ts",
     "kilo-cli-json-events.ts.txt": "packages/opencode/src/cli/cmd/run.ts",
     "kilo-cli-session-export.ts.txt": "packages/opencode/src/cli/cmd/export.ts",
 }
+# Default owner paths for unit-test fixtures only; production paths come from the manifest.
 OWNER_EVIDENCE_PACKET_PATHS = (
     "owner-210-receipt.txt",
     "owner-210.txt",
@@ -346,7 +462,7 @@ OWNER_EVIDENCE_PACKET_PATHS = (
     "owner-bootstrap.txt",
 )
 STANDALONE_PACKET_FIXED_PATHS = (
-    "index.md", *KILO_SOURCE_PACKET_PATHS, *OWNER_EVIDENCE_PACKET_PATHS, "patch.diff",
+    "index.md", *KILO_SOURCE_PACKET_PATHS, "patch.diff",
 )
 _SECRET_PATTERNS = (
     ("private-key", re.compile(rb"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----")),
@@ -614,7 +730,7 @@ def validate_packet(
         raise PacketError("production packet validation requires the frozen source checkout")
     if not allow_synthetic_fixture and not external_source_roots:
         raise PacketError("production packet validation requires pinned external-source checkouts")
-    if manifest.get("schema_version") != 1:
+    if manifest.get("schema_version") != 2:
         raise PacketError("unsupported reviewer packet manifest version")
     if manifest.get("previous_review_findings_included") is not False:
         raise PacketError("previous review findings must not be packet content")
@@ -635,14 +751,22 @@ def validate_packet(
         raise PacketError("manifest repository identity is not canonical")
     issue = _object(manifest.get("issue"), "manifest.issue")
     pull = _object(manifest.get("pull_request"), "manifest.pull_request")
-    if issue.get("id") != 1683 or issue.get("number") != 212:
-        raise PacketError("manifest issue identity is not #212")
-    if issue.get("url") != "https://forgejo.creatidy.com/BioMedical-IT/scarcity-router/issues/212":
+    issue_id = issue.get("id")
+    issue_number = issue.get("number")
+    pull_id = pull.get("id")
+    pull_number = pull.get("number")
+    if (type(issue_id) is not int or issue_id <= 0
+            or type(issue_number) is not int or issue_number <= 0):
+        raise PacketError("manifest Issue ID/number must be positive integers")
+    if (type(pull_id) is not int or pull_id <= 0
+            or type(pull_number) is not int or pull_number <= 0):
+        raise PacketError("manifest PR ID/number must be positive integers")
+    repository_url = "https://forgejo.creatidy.com/BioMedical-IT/scarcity-router"
+    if issue.get("url") != f"{repository_url}/issues/{issue_number}":
         raise PacketError("manifest issue URL is not canonical")
-    if pull.get("id") != 927 or pull.get("number") != 213:
-        raise PacketError("manifest pull-request identity is not #213")
-    if (pull.get("url") != "https://forgejo.creatidy.com/BioMedical-IT/scarcity-router/pulls/213"
-            or pull.get("head_branch") != "issue-212-d069a-bootstrap"
+    head_branch = _string(pull.get("head_branch"), "manifest.pull_request.head_branch")
+    if (pull.get("url") != f"{repository_url}/pulls/{pull_number}"
+            or not head_branch or any(char.isspace() for char in head_branch)
             or pull.get("base_branch") != "develop"):
         raise PacketError("manifest pull-request URL/branch binding is not canonical")
 
@@ -662,9 +786,9 @@ def validate_packet(
 
     currentness = _object(manifest.get("currentness"), "manifest.currentness")
     if (
-        currentness.get("repo_id") != 15
-        or currentness.get("issue_id") != 1683
-        or currentness.get("pr_id") != 927
+        currentness.get("repo_id") != repo.get("id")
+        or currentness.get("issue_id") != issue_id
+        or currentness.get("pr_id") != pull_id
         or currentness.get("head") != head
         or currentness.get("base") != base
         or currentness.get("merge_base") != merge_base
@@ -696,23 +820,20 @@ def validate_packet(
         if actual["size"] != record["size"] or actual["sha256"] != record["sha256"]:
             raise PacketError(f"packet file size/digest mismatch: {path}")
 
-    required = {
-        "index.md", "patch.diff", "owner-bootstrap.txt", "owner-210.txt",
-        "owner-bootstrap-receipt.txt", "owner-210-receipt.txt",
-    }
+    required = {"index.md", "patch.diff"}
     if not required.issubset(records):
         raise PacketError("packet is missing acceptance, patch or raw owner-source evidence")
     index_text = inventory["index.md"]["data"].decode("utf-8", errors="strict")
-    for marker in ("<BEGIN-CANONICAL-ISSUE-212-BODY", "<END-CANONICAL-ISSUE-212-BODY>",
+    for marker in ("<BEGIN-CANONICAL-ISSUE-BODY", "<END-CANONICAL-ISSUE-BODY>",
                    "PR body text is non-authoritative"):
         if marker not in index_text:
             raise PacketError(f"index is missing a required canonical binding: {marker}")
     body_marker = re.search(
-        r"(?m)^<BEGIN-CANONICAL-ISSUE-212-BODY sha256=\"([0-9a-f]{64})\">$",
+        r'(?m)^<BEGIN-CANONICAL-ISSUE-BODY issue="(\d+)" sha256="([0-9a-f]{64})">$',
         index_text,
     )
-    end_marker = "<END-CANONICAL-ISSUE-212-BODY>"
-    if (body_marker is None or index_text.count("<BEGIN-CANONICAL-ISSUE-212-BODY") != 1
+    end_marker = "<END-CANONICAL-ISSUE-BODY>"
+    if (body_marker is None or index_text.count("<BEGIN-CANONICAL-ISSUE-BODY") != 1
             or index_text.count(end_marker) != 1):
         raise PacketError("index canonical issue body markers are malformed or duplicated")
     body_start = index_text.find("\n", body_marker.end()) + 1
@@ -723,7 +844,9 @@ def validate_packet(
         raise PacketError("index contains unbound trailing content after the canonical issue body")
     canonical_issue_body = index_text[body_start:body_end - 1]
     issue_body_sha = _string(issue.get("body_sha256"), "issue body digest")
-    if body_marker.group(1) != issue_body_sha or sha256(canonical_issue_body.encode("utf-8")) != issue_body_sha:
+    if (int(body_marker.group(1)) != issue_number
+            or body_marker.group(2) != issue_body_sha
+            or sha256(canonical_issue_body.encode("utf-8")) != issue_body_sha):
         raise PacketError("indexed canonical issue body differs from its bound digest")
     if records["index.md"].get("kind") != "index" or records["patch.diff"].get("kind") != "patch":
         raise PacketError("canonical index or full PR patch has an invalid file kind")
@@ -776,49 +899,135 @@ def validate_packet(
             previous_end = raw_range[1]
 
     owner_sources = _array(manifest.get("owner_sources"), "manifest.owner_sources")
-    owner_paths: set[str] = set()
-    expected_receipts = {
-        "owner-bootstrap.txt": (212, 17305),
-        "owner-210.txt": (210, 17258),
-    }
+    owner_records: dict[str, dict[str, Any]] = {}
+    receipt_paths: set[str] = set()
     for raw in owner_sources:
         owner = _object(raw, "owner source record")
         packet_path = _relative_file(owner.get("packet_path"))
-        owner_paths.add(packet_path)
+        if packet_path in owner_records:
+            raise PacketError(f"duplicate owner source record: {packet_path}")
         record = records.get(packet_path)
         if record is None or record.get("kind") != "owner-source":
             raise PacketError(f"owner decision is not a raw packet file: {packet_path}")
         if owner.get("sha256") != record.get("sha256"):
             raise PacketError(f"owner decision digest mismatch: {packet_path}")
+        source_type = _string(owner.get("source_type"), f"{packet_path} source type")
+        if source_type not in {
+            "direct_owner_message", "forgejo_owner_comment",
+            "forgejo_comment_transcription", "synthetic_fixture",
+        }:
+            raise PacketError(f"unsupported owner source type: {packet_path}")
+        if source_type == "synthetic_fixture" and not allow_synthetic_fixture:
+            raise PacketError(f"production owner source cannot be synthetic: {packet_path}")
         _string(owner.get("source_origin"), f"{packet_path} source origin")
         _string(owner.get("decision_type"), f"{packet_path} decision type")
-        expected_issue, expected_comment = expected_receipts.get(packet_path, (0, 0))
-        receipt = _object(owner.get("transcription_receipt"), f"{packet_path} transcription receipt")
-        receipt_path = _relative_file(receipt.get("packet_path"))
-        receipt_record = records.get(receipt_path)
-        if receipt_record is None or receipt_record.get("kind") != "transcription-receipt":
-            raise PacketError(f"owner source lacks its canonical transcription receipt: {packet_path}")
-        comment_id = receipt.get("comment_id")
-        issue_number = receipt.get("issue_number")
-        author = receipt.get("author")
-        created_at = _string(receipt.get("created_at"), f"{packet_path} receipt timestamp")
-        url = _string(receipt.get("url"), f"{packet_path} receipt URL")
-        receipt_sha = _string(receipt.get("sha256"), f"{packet_path} receipt digest")
-        expected_url = (
-            f"https://forgejo.creatidy.com/BioMedical-IT/scarcity-router/issues/"
-            f"{expected_issue}#issuecomment-{expected_comment}"
-        )
-        if (comment_id != expected_comment or issue_number != expected_issue or author != "kilo"
-                or url != expected_url or receipt_record.get("origin") != url
-                or receipt_record.get("revision") != created_at
-                or receipt_record.get("sha256") != receipt_sha
-                or not _SHA256.fullmatch(receipt_sha)):
-            raise PacketError(f"canonical transcription receipt metadata mismatch: {packet_path}")
-        receipt_text = inventory[receipt_path]["data"].decode("utf-8", errors="strict")
-        if "Kilo transcription receipt" not in receipt_text or "not owner-authored" not in receipt_text:
-            raise PacketError(f"transcription receipt attribution is not explicit: {receipt_path}")
-    if not {"owner-bootstrap.txt", "owner-210.txt"}.issubset(owner_paths):
-        raise PacketError("packet must contain both direct owner-source files")
+        receipt_raw = owner.get("transcription_receipt")
+        if receipt_raw is not None:
+            receipt = _object(receipt_raw, f"{packet_path} transcription receipt")
+            receipt_path = _relative_file(receipt.get("packet_path"))
+            receipt_paths.add(receipt_path)
+            receipt_record = records.get(receipt_path)
+            if receipt_record is None or receipt_record.get("kind") != "transcription-receipt":
+                raise PacketError(f"owner source lacks its indexed transcription receipt: {packet_path}")
+            comment_id = receipt.get("comment_id")
+            receipt_issue_number = receipt.get("issue_number")
+            author = receipt.get("author")
+            created_at = _string(receipt.get("created_at"), f"{packet_path} receipt timestamp")
+            url = _string(receipt.get("url"), f"{packet_path} receipt URL")
+            receipt_sha = _string(receipt.get("sha256"), f"{packet_path} receipt digest")
+            if (type(comment_id) is not int or comment_id <= 0
+                    or type(receipt_issue_number) is not int or receipt_issue_number <= 0
+                    or author != "kilo"
+                    or url != f"{repository_url}/issues/{receipt_issue_number}#issuecomment-{comment_id}"
+                    or receipt_record.get("origin") != url
+                    or receipt_record.get("revision") != created_at
+                    or receipt_record.get("sha256") != receipt_sha
+                    or not _SHA256.fullmatch(receipt_sha)):
+                raise PacketError(f"canonical transcription receipt metadata mismatch: {packet_path}")
+            receipt_text = inventory[receipt_path]["data"].decode("utf-8", errors="strict")
+            if "Kilo transcription receipt" not in receipt_text or "not owner-authored" not in receipt_text:
+                raise PacketError(f"transcription receipt attribution is not explicit: {receipt_path}")
+        elif source_type == "forgejo_comment_transcription":
+            raise PacketError(f"Forgejo-transcribed owner source lacks its receipt: {packet_path}")
+        if source_type == "direct_owner_message":
+            if owner.get("owner") != "adrian.tkacz":
+                raise PacketError(f"{packet_path} direct-owner source is not attributed to Adrian Tkacz")
+            _string(owner.get("source_timestamp"), f"{packet_path} source timestamp")
+        if source_type == "forgejo_owner_comment":
+            comment_id = owner.get("comment_id")
+            owner_issue = owner.get("issue_number")
+            author = owner.get("author")
+            created_at = _string(owner.get("created_at"), f"{packet_path} owner comment timestamp")
+            url = _string(owner.get("url"), f"{packet_path} owner comment URL")
+            expected_url = (
+                f"{repository_url}/issues/{owner_issue}#issuecomment-{comment_id}"
+            )
+            if (type(comment_id) is not int or comment_id <= 0
+                    or type(owner_issue) is not int or owner_issue <= 0
+                    or author != "adrian.tkacz" or url != expected_url
+                    or record.get("origin") != url or record.get("revision") != created_at):
+                raise PacketError(f"{packet_path} is not a canonical owner-authored Forgejo comment")
+        owner_records[packet_path] = owner
+    owner_evidence_paths = tuple(sorted(set(owner_records) | receipt_paths))
+    indexed_owner_paths = {
+        path for path, record in records.items()
+        if record.get("kind") in {"owner-source", "transcription-receipt"}
+    }
+    if indexed_owner_paths != set(owner_evidence_paths):
+        raise PacketError("owner-source manifest does not cover the exact indexed owner evidence")
+
+    review_policy = _object(manifest.get("review_policy"), "manifest.review_policy")
+    default_maximum = review_policy.get("default_maximum")
+    effective_maximum = review_policy.get("effective_maximum")
+    policy_scope = _object(review_policy.get("scope"), "review_policy.scope")
+    if (default_maximum != 10 or type(effective_maximum) is not int or effective_maximum < 10
+            or policy_scope.get("issue_number") != issue_number
+            or policy_scope.get("pull_number") != pull_number):
+        raise PacketError("review-budget policy has an invalid default, cap or delivery scope")
+    authority_type = review_policy.get("authority_type")
+    authority_path_raw = review_policy.get("authority_source_path")
+    authority_sha = review_policy.get("authority_source_sha256")
+    if effective_maximum == default_maximum:
+        if (authority_type != "default" or authority_path_raw is not None or authority_sha is not None):
+            raise PacketError("default-ten review policy must not claim exception authority")
+    else:
+        if authority_type not in {"direct_owner_supersession", "d069a_integrated"}:
+            raise PacketError("review exception authority type is unsupported")
+        authority_path = _relative_file(authority_path_raw)
+        authority = owner_records.get(authority_path)
+        if authority is None or authority_sha != authority.get("sha256"):
+            raise PacketError("review exception lacks a bound raw owner authority source")
+        authority_source_type = authority.get("source_type")
+        if authority_type == "direct_owner_supersession":
+            if (authority_source_type != "direct_owner_message"
+                    or authority.get("source_timestamp") is None
+                    or authority.get("owner") is None):
+                raise PacketError("direct owner exception lacks its raw direct-owner source")
+        elif authority_source_type not in {"direct_owner_message", "forgejo_owner_comment"}:
+            raise PacketError("D-069A exception lacks its canonical owner source")
+        authority_scope = _object(authority.get("scope"), f"{authority_path} scope")
+        if (authority_scope.get("issue_number") != issue_number
+                or authority_scope.get("pull_number") != pull_number
+                or authority_scope.get("maximum_reviews") != effective_maximum):
+            raise PacketError("direct-owner review ceiling does not match the exact issue/PR scope")
+        if authority_type == "direct_owner_supersession":
+            authority_text = inventory[authority_path]["data"].decode("utf-8", errors="strict")
+            match = re.search(
+                r"(?m)^\*\*Maximum (\d+) total review invocations for Issue #(\d+) / PR #(\d+)\.\*\*$",
+                authority_text,
+            )
+            if (match is None or int(match.group(1)) != effective_maximum
+                    or int(match.group(2)) != issue_number
+                    or int(match.group(3)) != pull_number):
+                raise PacketError("direct owner source text does not authorize this exact finite review scope")
+        if authority_type == "d069a_integrated":
+            integrated_head = _string(review_policy.get("d069a_integrated_head"), "D-069A integrated head")
+            if source_root is not None:
+                validate_d069a_integration(source_root, integrated_head, base)
+            elif not allow_synthetic_fixture:
+                raise PacketError("D-069A integration must be verified against the frozen Git base")
+            elif not _SHA1.fullmatch(integrated_head):
+                raise PacketError("D-069A integration head is not a full Git ID")
 
     external_sources = _array(manifest.get("external_sources"), "manifest.external_sources")
     if require_external_sources and not external_sources:
@@ -905,7 +1114,7 @@ def validate_packet(
     }
     if read_plan != expected_read_plan:
         raise PacketError("index Read plan differs from manifest full paths/ranges")
-    if not required.issubset(full_read_paths):
+    if not (required | set(owner_evidence_paths)).issubset(full_read_paths):
         raise PacketError("review must read the index, patch, raw owner sources and provenance receipts")
 
     if source_root is not None:
@@ -978,7 +1187,7 @@ def validate_packet(
                     or inventory[packet_path]["data"] != excerpt):
                 raise PacketError(f"external source excerpt differs from pinned Git lines: {packet_path}")
 
-    return PacketInspection(
+    inspection = PacketInspection(
         packet_root=str(packet_root),
         manifest_path=str(manifest_path),
         manifest_sha256=sha256(manifest_bytes),
@@ -993,11 +1202,15 @@ def validate_packet(
         merge_base=merge_base,
         file_paths=tuple(sorted(records)),
         changed_paths=changed_paths,
+        owner_evidence_paths=owner_evidence_paths,
         source_line_counts=source_line_counts,
         external_source_count=len(external_sources),
         full_read_paths=tuple(sorted(full_read_paths)),
         review_ranges=review_ranges,
     )
+    if not allow_synthetic_fixture:
+        validate_standalone_packet_path_plan(inspection)
+    return inspection
 
 
 def _kilo_worktree_root(workspace: Path) -> Path:
@@ -1585,6 +1798,22 @@ def _tool_calls(session: dict[str, Any]) -> list[dict[str, Any]]:
     return result
 
 
+def validate_read_context_boundary(output: str, loaded: Any) -> int:
+    """Reject Read-added context outside the exact numbered file-content block."""
+    if not isinstance(loaded, list) or loaded:
+        raise PacketError("allowed Read auto-loaded instruction paths outside its exact result")
+    content_start = output.find("<content>\n")
+    if content_start < 0:
+        raise PacketError("successful Read omitted a delimited content block")
+    content_end = output.find("\n</content>", content_start + len("<content>\n"))
+    if content_end < 0:
+        raise PacketError("successful Read omitted the content closing boundary")
+    suffix = output[content_end + len("\n</content>"):]
+    if suffix.strip():
+        raise PacketError("allowed Read returned data outside the exact packet content block")
+    return len(suffix.encode("utf-8"))
+
+
 def _read_lines(output: str) -> dict[int, str]:
     start = output.find("<content>\n")
     end = output.find("\n</content>", start + 10)
@@ -1936,6 +2165,21 @@ def validate_review_result(text: str, inspection: PacketInspection) -> dict[str,
     return result
 
 
+def validate_d069a_integration(source_root: Path, integrated_head: str, base: str) -> None:
+    if not _SHA1.fullmatch(integrated_head) or not _SHA1.fullmatch(base):
+        raise PacketError("D-069A integration/base refs must be full Git IDs")
+    result = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", integrated_head, base],
+        cwd=source_root,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise PacketError("D-069A exception policy is not integrated into the frozen base")
+
+
 def validate_preflight_result(
     text: str, runtime: RuntimeWorkspace, expected_paths: tuple[str, ...],
 ) -> dict[str, Any]:
@@ -1990,6 +2234,7 @@ def summarize_failed_standalone_session(
         path = request.get("filePath") if isinstance(request, dict) else None
         metadata = state.get("metadata")
         approval = metadata.get("approval") if isinstance(metadata, dict) else None
+        loaded = metadata.get("loaded") if isinstance(metadata, dict) else None
         rule = approval.get("rule") if isinstance(approval, dict) else None
         if not isinstance(rule, dict):
             rule = {}
@@ -2003,6 +2248,7 @@ def summarize_failed_standalone_session(
             "permission": rule.get("permission"),
             "pattern": rule.get("pattern"),
             "action": rule.get("action"),
+            "metadata_loaded_paths": loaded if isinstance(loaded, list) else None,
             "content_output_present": output not in (None, ""),
             "content_output_sha256": sha256(output.encode()) if isinstance(output, str) else None,
         })
@@ -2153,8 +2399,7 @@ def audit_standalone_session(
             if (output_path is None or output_path.group(1) != expected_absolute
                     or output_type is None or output_type.group(1) != "file"):
                 raise PacketError(f"allowed Read output path differs from its exact packet file: {packet_path}")
-            if "<system-reminder>" in output:
-                raise PacketError("allowed Read included automatically loaded system context")
+            output_suffix_bytes = validate_read_context_boundary(output, metadata.get("loaded"))
             lines = _read_lines(output)
             if not lines:
                 raise PacketError(f"allowed Read returned no numbered packet lines: {raw_path}")
@@ -2167,9 +2412,6 @@ def audit_standalone_session(
                 display=display,
                 packet_line_count=len(sealed_lines[packet_path]),
             )
-            loaded = metadata.get("loaded", [])
-            if not isinstance(loaded, list) or loaded:
-                raise PacketError(f"allowed Read auto-loaded context outside its exact result: {packet_path}")
             overlap_for_call = 0
             for line_number, text in lines.items():
                 expected_text = sealed_lines[packet_path].get(line_number)
@@ -2195,6 +2437,8 @@ def audit_standalone_session(
                 "line_count": len(lines),
                 "overlap_line_count": overlap_for_call,
                 "output_sha256": sha256(output.encode("utf-8")),
+                "metadata_loaded_paths": metadata["loaded"],
+                "output_suffix_bytes": output_suffix_bytes,
             })
             continue
 
@@ -2436,6 +2680,11 @@ def _runtime_from_report(
         overlay_config_sha256=_string(effective.get("overlay_config_sha256"), "per-run config file hash"),
         kilo_config_content=config_content,
     )
+    instruction_boundary = validate_standalone_instruction_boundary(
+        runtime, launch_environment
+    )
+    if report.get("instruction_boundary") != instruction_boundary:
+        raise PacketError("prepared report does not preserve the isolated instruction boundary")
     _verify_overlay_files(runtime)
     _verify_probe_inventory(runtime)
     if source_root is not None:
@@ -2524,9 +2773,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     synthetic.add_argument("--parent", type=Path, required=True)
     synthetic.add_argument("--changed-path", action="append", required=True)
+    synthetic.add_argument("--owner-evidence-path", action="append", default=[])
     synthetic.add_argument("--head", required=True)
     synthetic.add_argument("--base", required=True)
     synthetic.add_argument("--merge-base", required=True)
+    synthetic.add_argument("--issue-id", type=int, default=1683)
+    synthetic.add_argument("--issue-number", type=int, default=212)
+    synthetic.add_argument("--pull-id", type=int, default=927)
+    synthetic.add_argument("--pull-number", type=int, default=213)
+    synthetic.add_argument("--head-branch", default="issue-212-d069a-bootstrap")
 
     validate = sub.add_parser("validate", help="validate immutable packet and source bindings")
     validate.add_argument("--packet", type=Path, required=True)
@@ -2607,18 +2862,28 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "synthetic-packet":
             if tuple(sorted(set(args.changed_path))) != tuple(args.changed_path):
                 raise PacketError("synthetic changed paths must be sorted and unique")
+            if tuple(sorted(set(args.owner_evidence_path))) != tuple(args.owner_evidence_path):
+                raise PacketError("synthetic owner-evidence paths must be sorted and unique")
             packet, manifest_path = create_synthetic_standalone_packet(
                 args.parent,
                 changed_paths=tuple(args.changed_path),
                 head=args.head,
                 base=args.base,
                 merge_base=args.merge_base,
+                owner_evidence_paths=tuple(sorted(set(args.owner_evidence_path))),
+                issue_id=args.issue_id,
+                issue_number=args.issue_number,
+                pull_id=args.pull_id,
+                pull_number=args.pull_number,
+                head_branch=args.head_branch,
             )
             print(json.dumps({
                 "status": "SYNTHETIC_PACKET_CREATED",
                 "packet": str(packet),
                 "manifest": str(manifest_path),
-                "file_paths": list(standalone_packet_path_plan(tuple(args.changed_path))),
+                "file_paths": list(standalone_packet_path_plan(
+                    tuple(args.changed_path), tuple(sorted(set(args.owner_evidence_path)))
+                )),
             }, sort_keys=True))
             return 0
 
@@ -2772,6 +3037,18 @@ def main(argv: list[str] | None = None) -> int:
             preflight=args.preflight,
             allow_synthetic_fixture=args.synthetic,
         )
+        launch_env = standalone_environment(
+            kilo_binary=args.kilo,
+            profile_config=runtime.profile_config,
+            kilo_config_content=runtime.kilo_config_content,
+            home=args.home,
+            tmpdir=args.tmpdir,
+            config_home=args.config_home,
+            data_home=args.data_home,
+            state_home=args.state_home,
+            cache_home=args.cache_home,
+        )
+        instruction_boundary = validate_standalone_instruction_boundary(runtime, launch_env)
         effective = verify_effective_standalone_permissions(
             kilo_binary=args.kilo,
             overlay=runtime,
@@ -2783,6 +3060,9 @@ def main(argv: list[str] | None = None) -> int:
             state_home=args.state_home,
             cache_home=args.cache_home,
         )
+        post_resolver_boundary = validate_standalone_instruction_boundary(runtime, launch_env)
+        if post_resolver_boundary != instruction_boundary:
+            raise PacketError("Kilo permission preflight changed the isolated instruction boundary")
         expected_prompt = (
             standalone_preflight_prompt(runtime, short=args.short_preflight)
             if args.preflight else standalone_review_prompt(runtime)
@@ -2800,17 +3080,6 @@ def main(argv: list[str] | None = None) -> int:
             else f"review-issue-{runtime.inspection.issue_number}-pr-{runtime.inspection.pull_number}"
         )
         run_argv = standalone_run_argv(args.kilo, model_binding, title, expected_prompt)
-        launch_env = standalone_environment(
-            kilo_binary=args.kilo,
-            profile_config=runtime.profile_config,
-            kilo_config_content=runtime.kilo_config_content,
-            home=args.home,
-            tmpdir=args.tmpdir,
-            config_home=args.config_home,
-            data_home=args.data_home,
-            state_home=args.state_home,
-            cache_home=args.cache_home,
-        )
         report: dict[str, Any] = {
             "status": "PRELAUNCH_STANDALONE_PERMISSION_PASS",
             "synthetic_packet": args.synthetic,
@@ -2835,6 +3104,7 @@ def main(argv: list[str] | None = None) -> int:
             "kilo_binary": str(args.kilo.resolve()),
             "kilo_config_content": runtime.kilo_config_content,
             "launch_environment": launch_env,
+            "instruction_boundary": instruction_boundary,
             "standalone_agent": "pr-reviewer-standalone",
             "standalone_profile_mode": effective["reviewer_profile_mode"],
             "standalone_resolved_mode": effective["reviewer_resolved_mode"],
