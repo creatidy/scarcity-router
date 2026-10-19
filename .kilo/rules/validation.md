@@ -34,6 +34,13 @@
   and exact pinned external evidence when required. Bind every file to origin,
   revision and digest. The packet must exclude credentials, prior review results,
   unexpected files, symlinks and hardlinks.
+- Mandatory coverage is the complete compact canonical patch (`--unified=3`),
+  acceptance/applicable owner decisions and Git-derived changed-source ranges with
+  immediate context. Other indexed references are optional, not blanket full-file
+  obligations. All performed Reads retain exact permission/provenance/byte audits.
+  Coverage credits only results replayed by pinned Kilo conversion; discarded-error
+  or cleared/compacted results do not count, while qualifying rereads may restore it.
+  Preserve terminal chronology and fail closed on unverifiable compaction context.
 - Before starting any reviewer session, verify the Kilo 7.8.8 effective standalone
   primary profile under the exact runtime configuration. The dedicated
   `pr-reviewer-standalone` profile must be `mode: primary` and statically deny all

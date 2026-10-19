@@ -95,7 +95,16 @@ delivery; STOP_REVISE still requires an explicit owner decision, not a new PR/na
     Build the complete real immutable packet at those exact refs, including canonical
     issue acceptance, direct owner sources/receipts, full patch, all changed code/test
     files, exact Git blobs/ranges and pinned Kilo source files. Exclude PR-body contents,
-    prior findings, implementation reasoning, credentials, symlinks/hardlinks and extras.
+     prior findings, implementation reasoning, credentials, symlinks/hardlinks and extras.
+     Use `diff_context: 3` and `COMPACT_DIFF_FLAGS` (`--binary --full-index --no-ext-diff
+     --no-renames --unified=3`) for the exact byte-verified complete diff. Derive source
+     ranges with `changed_source_ranges` from the frozen Git hunks: HEAD-side for added/
+     modified sources, base-side for deletions. The entire patch covers removed lines
+     in modified files too. Require acceptance/applicable owner decisions, every hunk
+     and these changed ranges with immediate context; list other immutable references
+     in `optional_read_paths`, without forcing unrelated full-file reads. The reviewer
+     independently deepens inspection for material questions. No summaries replace raw
+     changes, no hunks may be dropped, and every optional Read retains all security checks.
      Run `tools/reviewer_packet.py prepare` against the real packet with `--profile` set
      to the tracked standalone profile and `--source-root`/`--profile-source-root` both
      set to the clean frozen checkout plus the pinned
@@ -113,11 +122,15 @@ delivery; STOP_REVISE still requires an explicit owner decision, not a new PR/na
     `set -o pipefail`; never print or save the raw event stream containing returned bytes.
 8. After the standalone CLI exits, export the exact session in memory and audit the
     full trace: selected agent/mode, no parent/resume, model dispatch, every Read
-    path/range and effective permission, complete file coverage before the final text,
+     path/range and effective permission, model-visible mandatory coverage before final text,
     successfully completed terminal response (`finish: stop`, no error, message/text
     timestamps present), no subsequent tool activity, strict final JSON result,
     packet post-inventory and fresh canonical currentness. Do not print or persist raw
-    packet contents. These post-execution checks are separate from static Kilo debug
+     packet contents. Audit every actual call even in discarded messages; only credit
+     evidence replayed by pinned Kilo conversion (meaningful MessageAbortedError is
+     distinct from other assistant errors). Cleared/compacted results earn no coverage;
+     qualifying later rereads can restore it. Unverifiable compaction context fails closed.
+     These post-execution checks are separate from static Kilo debug
     and the standalone preflight. A verdict alone cannot approve; malformed,
     incomplete or mismatched traces fail closed. Never self-review, substitute a
     reviewer/model, widen access or use an external reviewer service.
@@ -167,6 +180,13 @@ delivery; STOP_REVISE still requires an explicit owner decision, not a new PR/na
    through bounded evidence/adjudication, not a fabricated defect. Follow the recovery
    rule's terminal contracts only when paths/budget are exhausted or a genuine owner
    decision remains. Preserve all consumed ordinals, including malformed/failed attempts.
+
+For #212/PR #213, Adrian's `2026-10-19T20:49:07Z` D-077 coverage/remediation mandate
+authorizes implementing/testing this simplified coverage policy only. #1-15 remain
+consumed; #14 COMMENT/PASS and #15 COMMENT/FAIL are unchanged. No additional ordinary
+review is authorized; #16 remains unreserved/security-only. This is not a budget
+extension or authority from unintegrated D-069A. Report measured volume/validation
+and the need for a later explicit finite ordinary-review decision, not security readiness.
 
 For `security_critical` work, ordinary APPROVE alone does not yield completion
 or READY_TO_MERGE. After required validation and ordinary review pass at a stable

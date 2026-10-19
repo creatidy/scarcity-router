@@ -22,6 +22,8 @@ from tools.reviewer_packet import (
     OWNER_EVIDENCE_PACKET_PATHS,
     STANDALONE_PACKET_FIXED_PATHS,
     audit_standalone_session,
+    changed_source_ranges,
+    COMPACT_DIFF_FLAGS,
     capture_session_id,
     create_synthetic_standalone_packet,
     main,
@@ -117,6 +119,29 @@ def _rewrite_packet_file(
 
 def _expected_line_map(path: Path) -> dict[int, str]:
     return {number: line for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)}
+
+
+def _set_compact_read_plan(
+    packet: Path, manifest_path: Path, full: list[str], ranges: dict[str, list[list[int]]], optional: list[str],
+) -> None:
+    manifest = _load_object(manifest_path.read_text(encoding="utf-8"))
+    manifest["diff_context"] = 3
+    manifest["review_coverage"] = {
+        "full_read_paths": sorted(full), "source_ranges": ranges, "optional_read_paths": sorted(optional),
+    }
+    for binding in cast(dict[str, dict[str, object]], manifest["source_bindings"]).values():
+        path = cast(str, binding["packet_path"])
+        if path not in full:
+            binding["ranges"] = ranges.get(path, [])
+    _ = manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    index = (packet / "index.md").read_text(encoding="utf-8")
+    start = index.index("<BEGIN-PACKET-READ-PLAN>") + len("<BEGIN-PACKET-READ-PLAN>")
+    end = index.index("<END-PACKET-READ-PLAN>", start)
+    plan = {"full_read_paths": [f"packet/{path}" for path in sorted(full)],
+            "source_ranges": {f"packet/{path}": value for path, value in ranges.items()},
+            "optional_read_paths": [f"packet/{path}" for path in sorted(optional)]}
+    _rewrite_packet_file(packet, manifest_path, "index.md",
+                         (index[:start] + "\n" + json.dumps(plan) + "\n" + index[end:]).encode())
 
 
 def _git(root: Path, *args: str) -> str:
@@ -1136,6 +1161,90 @@ class ReviewerPacketTests(unittest.TestCase):
             with self.assertRaisesRegex(PacketError, "excerpt differs from pinned Git lines"):
                 _ = validate_packet(packet, manifest_path, external_source_roots={"Kilo-Org/kilocode": external_repo})
 
+    def test_compact_coverage_is_derived_from_every_real_git_hunk_and_bound_source_side(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo, evidence = root / "repo", root / "evidence"
+            _ = repo.mkdir()
+            _ = evidence.mkdir(mode=0o700)
+            _ = _git(repo, "init", "--initial-branch=develop")
+            original = [f"source line {number:03d}\n" for number in range(1, 121)]
+            _ = (repo / "source.py").write_text("".join(original), encoding="utf-8")
+            _ = (repo / "deleted.py").write_text("deleted one\ndeleted two\n", encoding="utf-8")
+            _ = _git(repo, "add", ".")
+            _ = _git(repo, "-c", "user.name=Packet Test", "-c", "user.email=packet@example.invalid", "commit", "-m", "base")
+            base = _git(repo, "rev-parse", "HEAD")
+            changed = original.copy()
+            changed[9], changed[89] = "changed ten\n", "changed ninety\n"
+            del changed[59:61]
+            changed[39:39] = ["inserted one\n", "inserted two\n"]
+            _ = (repo / "source.py").write_text("".join(changed), encoding="utf-8")
+            _ = (repo / "added.py").write_text("added one\nadded two\n", encoding="utf-8")
+            _ = _git(repo, "rm", "deleted.py")
+            _ = _git(repo, "add", ".")
+            _ = _git(repo, "-c", "user.name=Packet Test", "-c", "user.email=packet@example.invalid", "commit", "-m", "change")
+            head = _git(repo, "rev-parse", "HEAD")
+            paths = ("added.py", "deleted.py", "source.py")
+            packet, manifest_path = create_synthetic_standalone_packet(
+                evidence, changed_paths=paths, head=head, base=base, merge_base=base,
+            )
+            patch = subprocess.run(["git", "diff", *COMPACT_DIFF_FLAGS, f"{base}...{head}", "--", *paths],
+                                   cwd=repo, check=True, stdout=subprocess.PIPE).stdout
+            _rewrite_packet_file(packet, manifest_path, "patch.diff", patch)
+            for index, path in enumerate(paths):
+                data = subprocess.run(["git", "show", f"{base if path == 'deleted.py' else head}:{path}"],
+                                      cwd=repo, check=True, stdout=subprocess.PIPE).stdout
+                _rewrite_packet_file(packet, manifest_path, f"source-{index:02d}.md", data)
+            manifest = _load_object(manifest_path.read_text(encoding="utf-8"))
+            bindings = cast(dict[str, dict[str, object]], manifest["source_bindings"])
+            rows = cast(list[dict[str, object]], manifest["files"])
+            ranges: dict[str, list[list[int]]] = {}
+            for path, binding in bindings.items():
+                added, deleted = path == "added.py", path == "deleted.py"
+                row = next(row for row in rows if row["path"] == binding["packet_path"])
+                row["revision"] = base if deleted else head
+                binding.update({"change_type": "added" if added else "deleted" if deleted else "modified",
+                                "base_exists": not added,
+                                "base_blob": None if added else _git(repo, "rev-parse", f"{base}:{path}"),
+                                "head_blob": None if deleted else _git(repo, "rev-parse", f"{head}:{path}"),
+                                "sha256": row["sha256"]})
+                ranges[cast(str, binding["packet_path"])] = changed_source_ranges(repo, base, head, path, deleted=deleted)
+            _ = manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            full = ["index.md", "patch.diff", *OWNER_EVIDENCE_PACKET_PATHS]
+            optional = [cast(str, row["path"]) for row in rows if row["path"] not in full and row["path"] not in ranges]
+            _set_compact_read_plan(packet, manifest_path, full, ranges, optional)
+            inspected = validate_packet(packet, manifest_path, source_root=repo)
+            source_ranges = ranges["source-02.md"]
+            self.assertEqual(len(source_ranges), 4)
+            required = {line for start, end in source_ranges for line in range(start, end + 1)}
+            self.assertTrue({10, 40, 41, 90}.issubset(required))
+            self.assertNotIn(30, required)
+            self.assertLess(len(required), 40)
+            self.assertEqual(ranges["source-00.md"], [[1, 2]])
+            self.assertEqual(ranges["source-01.md"], [[1, 2]])
+            self.assertIn(b"-source line 060\n-source line 061\n", patch)
+            self.assertEqual(inspected.review_ranges["source-02.md"], tuple(tuple(pair) for pair in source_ranges))
+            for omitted in ("source-01.md", "source-02.md"):
+                missing = {path: list(value) for path, value in ranges.items()}
+                missing[omitted] = missing[omitted][:-1]
+                missing_optional = [*optional, omitted] if not missing[omitted] else optional
+                missing = {path: value for path, value in missing.items() if value}
+                _set_compact_read_plan(packet, manifest_path, full, missing, missing_optional)
+                with self.assertRaisesRegex(PacketError, "ranges differ from canonical Git hunks"):
+                    _ = validate_packet(packet, manifest_path, source_root=repo)
+                _set_compact_read_plan(packet, manifest_path, full, ranges, optional)
+            _rewrite_packet_file(packet, manifest_path, "patch.diff", patch.replace(b"+changed ninety\n", b""))
+            with self.assertRaisesRegex(PacketError, "patch bytes differ from the canonical"):
+                _ = validate_packet(packet, manifest_path, source_root=repo)
+            _rewrite_packet_file(packet, manifest_path, "patch.diff", patch)
+            data = (packet / "source-02.md").read_bytes().replace(b"source line 001", b"forged line 001")
+            _rewrite_packet_file(packet, manifest_path, "source-02.md", data)
+            manifest = _load_object(manifest_path.read_text(encoding="utf-8"))
+            cast(dict[str, dict[str, object]], manifest["source_bindings"])["source.py"]["sha256"] = _sha(data)
+            _ = manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaisesRegex(PacketError, "source bytes differ from bound Git blob"):
+                _ = validate_packet(packet, manifest_path, source_root=repo)
+
     def test_canonical_issue_body_bytes_must_match_the_bound_digest(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -1170,35 +1279,53 @@ class ReviewerPacketTests(unittest.TestCase):
                 ):
                     _ = validate_packet(packet, manifest_path)
 
-    def test_review_coverage_requires_full_reads_of_changed_sources(self) -> None:
+    def test_changed_ranges_are_required_optional_reads_are_not_but_remain_audited(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            packet, manifest_path = _make_packet(Path(temporary))
-            manifest = _load_object(manifest_path.read_text(encoding="utf-8"))
-            coverage = cast(dict[str, object], manifest["review_coverage"])
-            source_ranges = cast(dict[str, object], coverage["source_ranges"])
-            source_ranges["source-00.md"] = [[1, 3]]
-            full_read_paths = cast(list[str], coverage["full_read_paths"])
-            full_read_paths.remove("source-00.md")
-            _ = manifest_path.write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
-
-            index_path = packet / "index.md"
-            index = index_path.read_text(encoding="utf-8")
-            start = index.index("<BEGIN-PACKET-READ-PLAN>\n") + len("<BEGIN-PACKET-READ-PLAN>\n")
-            end = index.index("\n<END-PACKET-READ-PLAN>", start)
-            read_plan = _load_object(index[start:end])
-            read_ranges = cast(dict[str, object], read_plan["source_ranges"])
-            read_ranges["packet/source-00.md"] = [[1, 3]]
-            packet_full_paths = cast(list[str], read_plan["full_read_paths"])
-            packet_full_paths.remove("packet/source-00.md")
-            mutated = (
-                index[:start]
-                + json.dumps(read_plan, sort_keys=True)
-                + index[end:]
-            ).encode()
-            _rewrite_packet_file(packet, manifest_path, "index.md", mutated)
-
-            with self.assertRaisesRegex(PacketError, "all changed source files must be covered by full reads"):
-                _ = validate_packet(packet, manifest_path)
+            root = Path(temporary)
+            packet, manifest_path = _make_packet(root)
+            full = ["index.md", "patch.diff", "owner-bootstrap.txt", "owner-bootstrap-receipt.txt"]
+            optional = ["external-kilo-source.txt", "owner-210.txt", "owner-210-receipt.txt"]
+            _set_compact_read_plan(packet, manifest_path, full, {"source-00.md": [[2, 2]]}, optional)
+            workspaces, overlays = root / "workspaces", root / "overlays"
+            _ = workspaces.mkdir(mode=0o700)
+            _ = overlays.mkdir(mode=0o700)
+            runtime = prepare_standalone_environment(
+                packet, manifest_path, PROFILE, workspaces, overlays, allow_synthetic_fixture=True,
+            )
+            session, model, title, prompt = self._standalone_session(runtime, preflight=False)
+            result = audit_standalone_session(
+                session, session_export_sha256="b" * 64, runtime=runtime,
+                expected_model=model, expected_title=title, expected_prompt=prompt,
+            )
+            self.assertEqual(result["mandatory_file_count"], 5)
+            messages = cast(list[dict[str, object]], session["messages"])
+            parts = cast(list[dict[str, object]], messages[1]["parts"])
+            for path in ("packet/source-00.md", "packet/external-kilo-source.txt"):
+                pattern = str((runtime.workspace / path).resolve().relative_to(Path(runtime.workspace.anchor)))
+                parts.append(self._read_call(runtime, path, permission_pattern=pattern))
+            result = audit_standalone_session(
+                session, session_export_sha256="b" * 64, runtime=runtime,
+                expected_model=model, expected_title=title, expected_prompt=prompt,
+            )
+            self.assertEqual(result["status"], "STANDALONE_REVIEW_TRACE_PASS")
+            missing = cast(dict[str, object], json.loads(json.dumps(session)))
+            missing_messages = cast(list[dict[str, object]], missing["messages"])
+            missing_messages[1]["parts"] = [
+                part for part in cast(list[dict[str, object]], missing_messages[1]["parts"])
+                if cast(dict[str, object], cast(dict[str, object], part["state"])["input"])["filePath"] != "packet/source-00.md"
+            ]
+            with self.assertRaisesRegex(PacketError, "coverage is incomplete"):
+                _ = audit_standalone_session(
+                    missing, session_export_sha256="b" * 64, runtime=runtime,
+                    expected_model=model, expected_title=title, expected_prompt=prompt,
+                )
+            state = cast(dict[str, object], parts[-1]["state"])
+            cast(dict[str, object], state["metadata"])["loaded"] = ["unapproved-instructions.md"]
+            with self.assertRaisesRegex(PacketError, "auto-loaded instruction"):
+                _ = audit_standalone_session(
+                    session, session_export_sha256="b" * 64, runtime=runtime,
+                    expected_model=model, expected_title=title, expected_prompt=prompt,
+                )
 
     def test_index_read_plan_must_match_manifest_full_paths_and_ranges(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1581,6 +1708,96 @@ class ReviewerPacketTests(unittest.TestCase):
             )
             self.assertEqual(result["status"], "STANDALONE_REVIEW_TRACE_PASS")
 
+    def test_only_model_visible_reads_count_but_all_calls_are_security_audited(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            _, _, runtime = self._prepare_standalone(Path(temporary), preflight=False)
+            baseline, model, title, prompt = self._standalone_session(runtime, preflight=False)
+            for discarded in ("api_error", "wrong_abort_name", "compacted"):
+                with self.subTest(discarded=discarded):
+                    session = cast(dict[str, object], json.loads(json.dumps(baseline)))
+                    messages = cast(list[dict[str, object]], session["messages"])
+                    info = cast(dict[str, object], messages[1]["info"])
+                    parts = cast(list[dict[str, object]], messages[1]["parts"])
+                    if discarded == "compacted":
+                        for part in parts:
+                            cast(dict[str, object], cast(dict[str, object], part["state"])["time"])["compacted"] = 15
+                    else:
+                        info["error"] = {
+                            "name": "APIError" if discarded == "api_error" else "AbortError",
+                            "data": {"message": "synthetic error", "isRetryable": False},
+                        }
+                    with self.assertRaisesRegex(PacketError, "coverage is incomplete"):
+                        _ = audit_standalone_session(
+                            session, session_export_sha256="b" * 64, runtime=runtime,
+                            expected_model=model, expected_title=title, expected_prompt=prompt,
+                        )
+                    reread = cast(dict[str, object], json.loads(json.dumps(messages[1])))
+                    reread_info = cast(dict[str, object], reread["info"])
+                    _ = reread_info.pop("error", None)
+                    reread_info.update({"id": "msg_reread", "time": {"created": 21, "completed": 25}})
+                    for part in cast(list[dict[str, object]], reread["parts"]):
+                        cast(dict[str, object], part["state"])["time"] = {"start": 22, "end": 23}
+                    messages.insert(2, reread)
+                    result = audit_standalone_session(
+                        session, session_export_sha256="b" * 64, runtime=runtime,
+                        expected_model=model, expected_title=title, expected_prompt=prompt,
+                    )
+                    trace = cast(list[dict[str, object]], result["read_trace"])
+                    self.assertFalse(any(record["coverage_credited"] for record in trace[:len(parts)]))
+                    self.assertTrue(all(record["coverage_credited"] for record in trace[len(parts):]))
+                    self.assertEqual(result["model_visible_evidence_coverage"], "PASS")
+                    for corruption in ("bytes", "path", "permission", "loaded", "tool"):
+                        with self.subTest(corruption=corruption):
+                            tampered = cast(dict[str, object], json.loads(json.dumps(session)))
+                            original = cast(list[dict[str, object]], tampered["messages"])[1]
+                            first = cast(list[dict[str, object]], original["parts"])[0]
+                            state = cast(dict[str, object], first["state"])
+                            metadata = cast(dict[str, object], state["metadata"])
+                            if corruption == "bytes":
+                                state["output"] = cast(str, state["output"]).replace("1: ", "1: forged ", 1)
+                                display = cast(dict[str, object], metadata["display"])
+                                display["text"] = "forged " + cast(str, display["text"])
+                            elif corruption == "path":
+                                cast(dict[str, object], state["input"])["filePath"] = "unlisted-source.txt"
+                            elif corruption == "permission":
+                                approval = cast(dict[str, object], metadata["approval"])
+                                cast(dict[str, object], approval["rule"])["pattern"] = "*"
+                            elif corruption == "loaded":
+                                metadata["loaded"] = ["synthetic-unapproved-instructions.md"]
+                            else:
+                                first["tool"] = "bash"
+                            with self.assertRaises(PacketError):
+                                _ = audit_standalone_session(
+                                    tampered, session_export_sha256="b" * 64, runtime=runtime,
+                                    expected_model=model, expected_title=title, expected_prompt=prompt,
+                                )
+
+    def test_meaningful_message_aborted_error_is_replayed_but_terminal_abort_is_not(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            _, _, runtime = self._prepare_standalone(Path(temporary), preflight=False)
+            session, model, title, prompt = self._standalone_session(runtime, preflight=False)
+            messages = cast(list[dict[str, object]], session["messages"])
+            abort = {"name": "MessageAbortedError", "data": {"message": "synthetic abort"}}
+            cast(dict[str, object], messages[1]["info"])["error"] = abort
+            result = audit_standalone_session(
+                session, session_export_sha256="b" * 64, runtime=runtime,
+                expected_model=model, expected_title=title, expected_prompt=prompt,
+            )
+            self.assertEqual(result["status"], "STANDALONE_REVIEW_TRACE_PASS")
+            cast(dict[str, object], messages[-1]["info"])["error"] = abort
+            with self.assertRaisesRegex(PacketError, "not successfully completed and terminal"):
+                _ = audit_standalone_session(
+                    session, session_export_sha256="b" * 64, runtime=runtime,
+                    expected_model=model, expected_title=title, expected_prompt=prompt,
+                )
+            del cast(dict[str, object], messages[-1]["info"])["error"]
+            cast(dict[str, object], messages[1]["info"])["summary"] = True
+            with self.assertRaisesRegex(PacketError, "compacted summary context"):
+                _ = audit_standalone_session(
+                    session, session_export_sha256="b" * 64, runtime=runtime,
+                    expected_model=model, expected_title=title, expected_prompt=prompt,
+                )
+
     def test_message_dispatch_must_match_even_when_session_model_is_correct(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             _, _, runtime = self._prepare_standalone(Path(temporary), preflight=False)
@@ -1783,8 +2000,12 @@ class ReviewerPacketTests(unittest.TestCase):
         )
         parts: list[dict[str, object]] = []
         allowed_paths = (
-            ("packet/index.md", "packet/source-00.md")
-            if preflight and short_preflight else runtime.allowed_paths
+            ("packet/index.md", "packet/source-00.md") if preflight and short_preflight else
+            runtime.allowed_paths if preflight else tuple(
+                path for path in runtime.allowed_paths
+                if Path(path).name in runtime.inspection.full_read_paths
+                or Path(path).name in runtime.inspection.review_ranges
+            )
         )
         for path in allowed_paths:
             if preflight:

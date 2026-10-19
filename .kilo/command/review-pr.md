@@ -72,7 +72,15 @@ Only after the synthetic preflight passes, freshly re-fetch canonical currentnes
 build the complete real immutable packet at the exact HEAD/base/merge-base. Include the
 canonical issue body, raw owner decisions, full patch, all changed files, exact Git
 blob/range bindings and pinned Kilo source excerpts; exclude PR-body contents, prior
-review findings, credentials, symlinks/hardlinks and extras. Run normal
+review findings, credentials, symlinks/hardlinks and extras. Use `diff_context: 3`
+and the complete byte-bound compact diff (`COMPACT_DIFF_FLAGS` in
+`tools/reviewer_packet.py`). `changed_source_ranges` derives mandatory changed regions
+plus immediate context from frozen Git hunks; deleted files use base-side source.
+Mandatory full reads cover acceptance, applicable owner decisions and every patch
+hunk, not every unchanged source line. Indexed optional references are available for
+deeper material questions; every performed Read remains security audited. Do not
+return COMMENT merely for unread optional material or seek speculative findings.
+Run normal
 `tools/reviewer_packet.py prepare` with `--profile`, `--source-root` and
 `--profile-source-root` bound to the clean source and pinned-source checkouts.
 Require the real packet path plan to equal the synthetic plan and the final exact

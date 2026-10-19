@@ -362,6 +362,28 @@ decisions stop rather than widening authority. A moving HEAD/base invalidates
 the result; valid exact approval requires empty findings, required validation,
 clean checkout and fresh canonical state.
 
+Review effort is subordinate to delivering Scarcity Router. Mandatory inspection
+covers acceptance/applicable owner decisions, the complete byte-verified compact
+Git diff (`--unified=3`) and Git-derived changed-source ranges plus immediate
+context, not unrelated unchanged file bodies. Keep full sources and other contracts
+available as optional indexed references. Reviewers deepen inspection where a
+material dependency/security question requires it; unread optional material alone
+does not justify COMMENT. Prioritize P0/P1 and material P2 with concrete consequences;
+incidental P3 observations are nonblocking absent a material acceptance defect. Do
+not seek speculative requirements or unlimited procedural completeness, and never
+convert genuine material uncertainty into APPROVE.
+
+Security-audit all actual calls, even from assistant messages discarded by Kilo.
+Only model-visible evidence counts toward the final verdict's mandatory coverage;
+pinned conversion drops most errored assistant messages, retains meaningful
+`MessageAbortedError` messages and clears compacted tool results. Qualifying later
+rereads restore coverage. Preserve terminal/model/context/permission checks and
+fail closed when visibility is genuinely unverifiable, without reconstructing a
+new context engine. D-077's `2026-10-19T20:49:07Z` owner mandate authorizes only this
+remediation and coverage simplification for #212/PR #213, not another review or
+budget extension. #1-15 remain consumed and #16 unreserved/security-only; a later
+finite ordinary review requires separate explicit owner authorization.
+
 ## Operational UX and compatibility review
 
 Review of a material refactor, redesign or generalization additionally

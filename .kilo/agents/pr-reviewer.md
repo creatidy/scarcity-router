@@ -97,14 +97,22 @@ Forgejo/Git state. The absence of intentionally denied MCP/Git tools is not by
 itself a limitation when the required currentness and object bindings are present
 in the packet; if they are absent or inconsistent, report the exact gap.
 
-Read the entire acceptance body and patch, and every changed path and indexed
-source range. Review correctness, regressions, architecture, test assertions,
+Read the entire acceptance body and compact canonical patch, including every hunk,
+and the mandatory Git-derived changed-source ranges with immediate context. Full
+source files and other indexed references remain available for optional investigation;
+do not read unrelated unchanged bodies merely to maximize procedural coverage. Decide
+independently when deeper dependency or security-sensitive inspection is necessary.
+Review correctness, regressions, architecture, test assertions,
 temporal/provenance behavior under adversarial valid typed inputs, security/privacy,
 UX and reuse/license evidence where relevant. Do not restrict review to latest
 fixes or assume that test assertions prove behavior. The primary owns the separate
 validation gate and executes repository checks in a sanitized environment. Inspect
 the tests by reading the packet; this read-only reviewer does not execute code or
 tests, and must not report the absence of reviewer-run tests as a review limitation.
+Prioritize P0/P1 and material P2 findings with concrete consequences. Incidental P3
+observations are nonblocking unless they expose a material acceptance defect; do not
+invent speculative requirements or search indefinitely for marginal findings. A genuine
+material/security uncertainty is reportable, never grounds for fabricated approval.
 
 The primary owns temporary worktrees, isolation, Git fetch, branch switching,
 packet construction and pre/post inventory audits. The reviewer must not inspect
@@ -129,14 +137,15 @@ substitutes for source. If a material cited source/pin is absent or cannot be
 verified from the packet, return COMMENT with that exact evidence gap. Do not use
 external access or treat its intentional denial as an implementation finding.
 
-Before returning, ensure every required packet file/range was inspected and report
+Before returning, ensure every mandatory packet file/range was inspected and report
 any concrete inconsistency in the supplied frozen bindings. The primary rechecks
 canonical Forgejo/Git currentness before and after the standalone CLI session; the
 reviewer does not re-fetch or claim that check. A changed/unverified packet binding
 or unresolved review incompleteness yields COMMENT, not current approval. APPROVE
 requires sufficient acceptance evidence and no findings; REQUEST_CHANGES requires
 actionable blocking findings; COMMENT describes stale/incomplete review or genuine
-decision uncertainty.
+decision uncertainty. Unread optional material or unrelated unchanged lines alone
+do not make the review incomplete and do not justify COMMENT.
 
 Return ONLY one JSON object, no Markdown wrapper, with these stable fields:
 

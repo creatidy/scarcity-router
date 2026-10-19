@@ -751,3 +751,22 @@ class WorkflowContractTests(unittest.TestCase):
             with self.subTest(requirement=requirement):
                 self.assertIn(requirement, section)
         self.assertIn("claim `RUNTIME_VERIFIED`", section)
+
+    def test_practical_coverage_changes_no_review_authority_or_security_controls(self) -> None:
+        decisions = text("docs/decisions.md")
+        section = decisions.split("**Owner coverage-policy correction, not a budget amendment", 1)[1].split("### U-014", 1)[0]
+        for requirement in (
+            "2026-10-19T20:49:07Z", "0c3f363222cc8d6c3391e2474cebe2d66c3c3b9a1d981eb507bf3092aebaa8c6",
+            "every hunk", "--unified=3", "changed_source_ranges", "optional", "audit all executed calls",
+            "#14 COMMENT/audit PASS", "#15 COMMENT/audit FAIL", "#16 remains unreserved", "No ordinary invocation",
+        ):
+            with self.subTest(requirement=requirement):
+                self.assertIn(requirement, " ".join(section.split()))
+        profile = text(".kilo/agents/pr-reviewer-standalone.md")
+        for requirement in ("mandatory Git-derived", "optional investigation", "P0/P1 and material P2", "unread optional"):
+            with self.subTest(profile=requirement):
+                self.assertIn(requirement.lower(), profile.lower())
+        finish = text(".kilo/command/finish-pr.md")
+        self.assertIn("optional_read_paths", finish)
+        self.assertIn("only credit", finish)
+        self.assertIn("No additional ordinary review is authorized", " ".join(finish.split()))

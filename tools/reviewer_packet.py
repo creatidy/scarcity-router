@@ -330,6 +330,7 @@ class PacketInspection:
     owner_evidence_paths: tuple[str, ...]
     source_line_counts: dict[str, int]
     external_source_count: int
+    optional_read_paths: tuple[str, ...]
     full_read_paths: tuple[str, ...]
     review_ranges: dict[str, tuple[tuple[int, int], ...]]
 
@@ -485,7 +486,7 @@ KILO_REQUIRED_SOURCE_RANGES = {
     "kilo-session-export-order.ts.txt": (1032, 1055),
     "kilo-cli-session-export.ts.txt": (245, 297),
     "kilo-session-user-summary.ts.txt": (105, 145),
-    "kilo-session-user-conversion.ts.txt": (320, 401),
+    "kilo-session-user-conversion.ts.txt": (320, 495),
 }
 # Default owner paths for unit-test fixtures only; production paths come from the manifest.
 OWNER_EVIDENCE_PACKET_PATHS = (
@@ -683,6 +684,28 @@ def _git(root: Path, *args: str) -> bytes:
     return _run(["git", *args], root)
 
 
+COMPACT_DIFF_FLAGS = ("--binary", "--full-index", "--no-ext-diff", "--no-renames", "--unified=3")
+
+
+def changed_source_ranges(
+    root: Path, base: str, head: str, source_path: str, *, deleted: bool = False,
+) -> list[list[int]]:
+    """Use Git's compact hunk coordinates, including immediate context, on the bound side."""
+    patch = _git(root, "diff", *COMPACT_DIFF_FLAGS, f"{base}...{head}", "--", source_path)
+    ranges: list[list[int]] = []
+    for match in re.finditer(rb"(?m)^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", patch):
+        start = int(match[1] if deleted else match[3])
+        count = int((match[2] if deleted else match[4]) or b"1")
+        if not count:
+            continue
+        end = start + count - 1
+        if ranges and start <= ranges[-1][1] + 1:
+            ranges[-1][1] = max(ranges[-1][1], end)
+        else:
+            ranges.append([start, end])
+    return ranges
+
+
 def _verify_profile_git_binding(profile: Path, source_root: Path, expected_head: str) -> str:
     source_root = source_root.resolve()
     expected_path = source_root / ".kilo/agents/pr-reviewer-standalone.md"
@@ -772,6 +795,9 @@ def validate_packet(
         raise PacketError("production packet validation requires pinned external-source checkouts")
     if manifest.get("schema_version") != 2:
         raise PacketError("unsupported reviewer packet manifest version")
+    compact_diff = "diff_context" in manifest
+    if compact_diff and (type(manifest["diff_context"]) is not int or manifest["diff_context"] != 3):
+        raise PacketError("new reviewer packets require exactly three lines of Git diff context")
     if manifest.get("previous_review_findings_included") is not False:
         raise PacketError("previous review findings must not be packet content")
     if manifest.get("pr_body_content_included") is not False:
@@ -935,7 +961,7 @@ def validate_packet(
             raise PacketError(f"changed source head blob malformed: {source_path}")
         ranges = _array(binding.get("ranges"), f"{source_path} ranges")
         line_count = len(inventory[packet_path]["data"].splitlines())
-        if not ranges and line_count:
+        if not ranges and line_count and not compact_diff:
             raise PacketError(f"changed source lacks required review ranges: {source_path}")
         source_line_counts[source_path] = line_count
         previous_end = 0
@@ -1133,6 +1159,11 @@ def validate_packet(
     )
     if tuple(sorted(set(full_read_paths))) != full_read_paths:
         raise PacketError("full-read paths must be a sorted unique list")
+    optional_paths = tuple(
+        _relative_file(path) for path in _array(coverage.get("optional_read_paths", []), "optional_read_paths")
+    )
+    if tuple(sorted(set(optional_paths))) != optional_paths:
+        raise PacketError("optional-read paths must be a sorted unique list")
     raw_ranges = _object(coverage.get("source_ranges"), "review_coverage.source_ranges")
     review_ranges: dict[str, tuple[tuple[int, int], ...]] = {}
     for raw_path, raw_file_ranges in raw_ranges.items():
@@ -1155,10 +1186,17 @@ def validate_packet(
         review_ranges[path] = tuple(ranges)
     if set(full_read_paths) & set(review_ranges):
         raise PacketError("review coverage cannot mark a file both full and ranged")
-    if set(full_read_paths) | set(review_ranges) != set(records):
-        raise PacketError("review coverage does not cover every indexed packet file")
-    if not source_binding_paths.issubset(set(full_read_paths)):
+    mandatory_paths = set(full_read_paths) | set(review_ranges)
+    if mandatory_paths & set(optional_paths) or mandatory_paths | set(optional_paths) != set(records):
+        raise PacketError("mandatory/optional coverage does not partition the indexed packet files")
+    if not compact_diff and not source_binding_paths.issubset(set(full_read_paths)):
         raise PacketError("all changed source files must be covered by full reads")
+    if compact_diff:
+        for source_path in changed_paths:
+            binding = _object(bindings[source_path], f"source binding {source_path}")
+            path = binding["packet_path"]
+            if path not in full_read_paths and binding["ranges"] != [list(pair) for pair in review_ranges.get(path, ())]:
+                raise PacketError(f"mandatory review ranges do not match source binding: {source_path}")
     read_plan_start = "<BEGIN-PACKET-READ-PLAN>"
     read_plan_end = "<END-PACKET-READ-PLAN>"
     if index_text.count(read_plan_start) != 1 or index_text.count(read_plan_end) != 1:
@@ -1176,9 +1214,21 @@ def validate_packet(
             for path, ranges in review_ranges.items()
         },
     }
+    if compact_diff or optional_paths:
+        expected_read_plan["optional_read_paths"] = [f"packet/{path}" for path in optional_paths]
     if read_plan != expected_read_plan:
         raise PacketError("index Read plan differs from manifest full paths/ranges")
-    if not (required | set(owner_evidence_paths)).issubset(full_read_paths):
+    applicable_owner_paths = set(owner_evidence_paths)
+    if compact_diff:
+        applicable_owner_paths = set()
+        for owner in owner_records.values():
+            scope = owner.get("scope")
+            if not isinstance(scope, dict) or scope.get("issue_number") == issue_number:
+                applicable_owner_paths.add(owner["packet_path"])
+                receipt = owner.get("transcription_receipt")
+                if receipt is not None:
+                    applicable_owner_paths.add(_object(receipt, "applicable owner receipt")["packet_path"])
+    if not (required | applicable_owner_paths).issubset(full_read_paths):
         raise PacketError("review must read the index, patch, raw owner sources and provenance receipts")
 
     if source_root is not None:
@@ -1188,20 +1238,13 @@ def validate_packet(
             raise PacketError("source checkout head/merge-base differs from packet")
         if _git(source_root, "status", "--porcelain"):
             raise PacketError("source checkout is not clean")
-        actual_changed = _git(source_root, "diff", "--name-only", f"{base}...{head}").decode().splitlines()
+        name_flags = ("--no-renames",) if compact_diff else ()
+        actual_changed = _git(source_root, "diff", *name_flags, "--name-only", f"{base}...{head}").decode().splitlines()
         if actual_changed != list(changed_paths):
             raise PacketError("packet changed-path coverage differs from exact Git delta")
-        canonical_patch = _git(
-            source_root,
-            "diff",
-            "--binary",
-            "--full-index",
-            "--no-ext-diff",
-            "--unified=80",
-            f"{merge_base}...{head}",
-            "--",
-            *changed_paths,
-        )
+        # The absent field retains byte-verification of already frozen historical packets.
+        diff_flags = COMPACT_DIFF_FLAGS if compact_diff else ("--binary", "--full-index", "--no-ext-diff", "--unified=80")
+        canonical_patch = _git(source_root, "diff", *diff_flags, f"{merge_base}...{head}", "--", *changed_paths)
         if inventory["patch.diff"]["data"] != canonical_patch:
             raise PacketError("packet patch bytes differ from the canonical frozen Git diff")
         for source_path in changed_paths:
@@ -1233,6 +1276,12 @@ def validate_packet(
             source_bytes = _git(source_root, "show", f"{source_revision}:{source_path}")
             if sha256(source_bytes) != binding["sha256"]:
                 raise PacketError(f"source bytes differ from bound Git blob: {source_path}")
+            if compact_diff:
+                derived_ranges = changed_source_ranges(source_root, base, head, source_path, deleted=deleted)
+                if binding["ranges"] != derived_ranges:
+                    raise PacketError(f"source review ranges differ from canonical Git hunks: {source_path}")
+                if binding["packet_path"] in full_read_paths and derived_ranges != [[1, len(source_bytes.splitlines())]]:
+                    raise PacketError(f"full-source requirement exceeds changed hunks/context: {source_path}")
 
     if external_source_roots:
         for raw in external_sources:
@@ -1278,6 +1327,7 @@ def validate_packet(
         owner_evidence_paths=owner_evidence_paths,
         source_line_counts=source_line_counts,
         external_source_count=len(external_sources),
+        optional_read_paths=optional_paths,
         full_read_paths=tuple(sorted(full_read_paths)),
         review_ranges=review_ranges,
     )
@@ -2099,7 +2149,8 @@ def standalone_review_prompt(runtime: RuntimeWorkspace) -> str:
         "and its indexed packet files. Use only the exact relative Read `filePath` values "
         "listed below; Kilo 7.8.8 resolves them against the session directory before checking "
         "the exact per-file permission rule. Do not construct or alter file paths. "
-        "Read the index first, then inspect every required file/range yourself. Do not infer "
+        "Read the index first, then inspect every mandatory file/range yourself. Optional "
+        "references are available for material questions, not compulsory full-file reads. Do not infer "
         "evidence from the primary or outside this packet.\n"
         f"Exact relative native Read filePath values:\n{paths}\n\n"
         f"Repository: {inspection.repository}\nIssue: #{inspection.issue_number}\n"
@@ -2525,6 +2576,11 @@ def audit_standalone_session(
     actual_prompt = _user_prompt(session)
     if actual_prompt not in (expected_prompt, f'"{expected_prompt}"'):
         raise PacketError("standalone Kilo session includes unapproved or prior conversation context")
+    calls = _tool_calls(session)
+    tool_names = [_string(call.get("tool"), "standalone tool name") for call in calls]
+    if any(tool != "read" for tool in tool_names):
+        raise PacketError("standalone reviewer used a tool other than native Read")
+    visible_calls: set[int] = set()
     for raw_message in _array(session.get("messages"), "standalone messages"):
         message = _object(raw_message, "model-bound message")
         message_info = _object(message.get("info"), "message model info")
@@ -2535,8 +2591,22 @@ def audit_standalone_session(
         if ({"provider_id": dispatch.get("providerID"), "model_id": dispatch.get("modelID"),
              "variant": dispatch.get("variant")} != expected_model):
             raise PacketError("message model/provider/variant provenance differs from frozen binding")
-        for raw_part in _array(message.get("parts"), "model-bound parts"):
+        if message_info.get("role") == "assistant" and message_info.get("summary"):
+            raise PacketError("compacted summary context does not establish original evidence visibility")
+        parts = _array(message.get("parts"), "model-bound parts")
+        error = message_info.get("error")
+        # Kilo message-v2.ts:373-380 drops errored messages except meaningful aborts.
+        replayed = error is None or (
+            _object(error, "assistant error").get("name") == "MessageAbortedError"
+            and any(_object(part, "assistant part").get("type") not in {"step-start", "reasoning"}
+                    for part in parts)
+        )
+        for raw_part in parts:
             part = _object(raw_part, "model-bound part")
+            if part.get("type") == "tool" and replayed:
+                state = _object(part.get("state"), "visible tool state")
+                if not _object(state.get("time"), "visible tool time").get("compacted"):
+                    visible_calls.add(id(part))
             if part.get("type") == "step-finish" and "model" in part:
                 step_model = _object(part["model"], "step-finish model provenance")
                 if (step_model.get("providerID") != expected_model["provider_id"]
@@ -2556,10 +2626,6 @@ def audit_standalone_session(
         ):
             raise PacketError("standalone saved-session permission reopens a capability or path")
 
-    calls = _tool_calls(session)
-    tool_names = [_string(call.get("tool"), "standalone tool name") for call in calls]
-    if any(tool != "read" for tool in tool_names):
-        raise PacketError("standalone reviewer used a tool other than native Read")
     final_text = _final_assistant_text(session, agent_name)
     allowed = set(runtime.allowed_paths)
     allowed_by_input = {path: path for path in runtime.allowed_paths}
@@ -2576,7 +2642,7 @@ def audit_standalone_session(
         for path in runtime.allowed_paths
     }
     seen_denied: set[str] = set()
-    seen_allowed: set[str] = set()
+    seen_visible: set[str] = set()
     read_records: list[dict[str, Any]] = []
     repeated_read_line_count = 0
     for call in calls:
@@ -2623,7 +2689,9 @@ def audit_standalone_session(
                 display=display,
                 packet_line_count=len(sealed_lines[packet_path]),
             )
-            seen_allowed.add(packet_path)
+            credited = id(call) in visible_calls
+            if credited:
+                seen_visible.add(packet_path)
             overlap_for_call = 0
             for line_number, text in lines.items():
                 expected_text = sealed_lines[packet_path].get(line_number)
@@ -2637,7 +2705,7 @@ def audit_standalone_session(
                         )
                     repeated_read_line_count += 1
                     overlap_for_call += 1
-                else:
+                elif credited:
                     covered[packet_path][line_number] = text
             read_records.append({
                 "path": packet_path,
@@ -2651,6 +2719,7 @@ def audit_standalone_session(
                 "output_sha256": sha256(output.encode("utf-8")),
                 "metadata_loaded_paths": metadata["loaded"],
                 "output_suffix_bytes": output_suffix_bytes,
+                "coverage_credited": credited,
             })
             continue
 
@@ -2712,7 +2781,7 @@ def audit_standalone_session(
             raise PacketError("standalone preflight did not follow the frozen read/probe order")
         for path in preflight_paths:
             expected = sealed_lines[path]
-            if path not in seen_allowed or covered[path] != expected:
+            if path not in seen_visible or covered[path] != expected:
                 raise PacketError(f"standalone preflight did not read the complete packet file: {path}")
         final_result = validate_preflight_result(
             final_text, runtime, preflight_paths
@@ -2725,12 +2794,13 @@ def audit_standalone_session(
             f"packet/{path}": ranges
             for path, ranges in runtime.inspection.review_ranges.items()
         }
-        if full_paths | set(ranged_paths) != allowed:
+        optional_paths = {f"packet/{path}" for path in runtime.inspection.optional_read_paths}
+        if full_paths | set(ranged_paths) | optional_paths != allowed:
             raise PacketError("manifest coverage does not match the standalone packet")
-        for path in allowed:
+        for path in full_paths | set(ranged_paths):
             filename = Path(path).name
             actual = sealed_lines[path]
-            if path not in seen_allowed:
+            if path not in seen_visible:
                 raise PacketError(f"standalone reviewer coverage is incomplete; required file Read omitted: {path}")
             if path in full_paths:
                 required_lines = actual
@@ -2743,7 +2813,7 @@ def audit_standalone_session(
                 if not required.issubset(actual):
                     raise PacketError(f"manifest has an out-of-bounds review range: {filename}")
                 required_lines = {line: actual[line] for line in required}
-            if covered[path] != required_lines:
+            if not required_lines.items() <= covered[path].items():
                 raise PacketError(f"standalone reviewer packet coverage is incomplete: {filename}")
         final_result = validate_review_result(
             final_text, runtime.inspection
@@ -2758,6 +2828,7 @@ def audit_standalone_session(
         "terminal_response_and_read_order": "PASS",
         "message_model_binding": "PASS",
         "user_context_boundary": "PASS",
+        "model_visible_evidence_coverage": "PASS",
         "reviewer_directory": str(runtime.workspace),
         "model_dispatch": actual_model,
         "runtime_identity": "DISPATCH_VERIFIED",
@@ -2765,6 +2836,7 @@ def audit_standalone_session(
         "session_export_sha256": session_export_sha256,
         "reviewer_tools": sorted(set(tool_names)),
         "allowed_file_count": len(preflight_paths) if preflight else len(covered),
+        "mandatory_file_count": len(runtime.inspection.full_read_paths) + len(runtime.inspection.review_ranges),
         "denied_before_content_count": len(seen_denied),
         "repeated_read_line_count": repeated_read_line_count,
         "read_trace": read_records,

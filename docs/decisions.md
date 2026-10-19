@@ -6507,6 +6507,51 @@ neither is a new live check of the current deployment.
   `change_type: deleted`; added/modified paths keep HEAD-side evidence. Finding
   line references use the bound source side, and every source remains a full read.
 
+- **Owner coverage-policy correction, not a budget amendment (2026-10-19T20:49:07Z):**
+  Adrian authorizes the reproduced evidence-visibility P1 fix and a practical
+  changed-region coverage contract in the same #212/PR #213 delivery. Exact Sections
+  1/4/8 are retained at
+  `.review-evidence-212/owner-evidence-visibility-coverage-2026-10-19.txt`, SHA-256
+  `0c3f363222cc8d6c3391e2474cebe2d66c3c3b9a1d981eb507bf3092aebaa8c6`.
+  This supersedes the blanket full-source/full-reference read requirement above,
+  not the independent review, security, identity or immutable evidence boundaries.
+  - Mandatory: complete canonical acceptance/applicable owner decisions, every
+    hunk of the exact complete compact diff, all changed-source regions and
+    sufficient immediate context. `COMPACT_DIFF_FLAGS` uses `--binary --full-index
+    --no-ext-diff --no-renames --unified=3`; the patch is compared byte-for-byte to
+    frozen Git objects. `changed_source_ranges` derives HEAD-side hunk coordinates
+    for additions/modifications and base-side coordinates for deletions. The patch
+    also contains removed lines in modified files. No summarized/omitted hunks.
+  - Full source files and other indexed contracts remain optional for material
+    investigation; no obligation to read unrelated unchanged bodies or every
+    reference. Every performed Read still has exact permission, source-byte,
+    loaded-context and inventory checks. Source bindings stay complete even for
+    optional portions. Historical packets retain their original decisions/receipts.
+  - Security and visibility are separate: audit all executed calls, but credit
+    only tool results replayed into the final model input. Pinned Kilo
+    `session/message-v2.ts:373-495` discards errored assistants except meaningful
+    `MessageAbortedError` messages and substitutes cleared text for compacted
+    results. `NamedError.isInstance` checks the exact name (`core/src/util/error.ts:7-10,47-49`).
+    A later eligible reread can restore coverage; discarded calls never escape the
+    security audit. Compaction summaries with unprovable original visibility fail
+    closed. Existing terminal-response and Read-before-verdict checks remain.
+  - The standard prompt conversion passes no additional output-truncation option
+    (`session/prompt.ts:1815-1831`); Read display truncation credits returned lines
+    only, with pagination for missing mandatory lines. No model-context framework
+    or assumption that a raw exported successful call alone proves visibility.
+  - Review priorities are material correctness/security/contracts/regressions:
+    P0/P1 and material P2, not endless marginal/speculative findings. Incidental
+    P3 and unread optional files do not block; genuine material security
+    uncertainty remains reportable and cannot be called APPROVE.
+  - Implementation/tests/docs/synthetic verification/commit/push only. Preserve
+    consumed #1-15, #14 COMMENT/audit PASS and #15 COMMENT/audit FAIL unchanged.
+    Maximum16 is unchanged; #16 remains unreserved and owner-manual Daybreak only
+    after valid ordinary approval. No ordinary invocation, #16 reassignment, #17+,
+    automatic extension, Daybreak, merge or issue closure. A later owner decision
+    on finite ordinary-review authority follows measured cost/validation results;
+    unintegrated D-069A grants nothing. Scarcity Router is the product; this is
+    supporting infrastructure, not a new framework or architecture initiative.
+
 ### U-014 - Native coding backend versus Kernel-owned workspace lifecycle
 
 - **Status:** Direction settled by D-073; replacement/retirement evidence remains
