@@ -71,11 +71,12 @@
   native Task dispatch or owner relaying is required.
   Default to at most 10 whole-PR review invocations per issue delivery, including
   initial, COMMENT and retries. The sole separate direct-owner supersession is for
-  #212/PR #213: the final D-077 direct owner amendment records maximum 16, with #14
-  the next ordinary review; #15 is ordinary only after diagnosed remediation of #14
-  or manual Daybreak after valid #14 APPROVE; #16 is the manual gate if #15 was
-  ordinary. Preserve consumed #1-13. No #16 ordinary review and no #17.
-  Verify the exact Section 2 owner source receipt and exact
+  #212/PR #213: D-077's direct owner amendment records maximum 20, with #16 next
+  ordinary; #17-19 ordinary only after diagnosed findings/recovery and completed
+  remediation. Stop ordinary review after valid approval and reserve the next slot
+  for owner-manual Daybreak. Preserve consumed #1-15. #20 manual security only,
+  never ordinary; no #21. Reserve ordinary ordinals immediately before invocation,
+  not before passed dispatch gates. Verify the exact Section 1 owner source and
   canonical issue/PR scope/currentness before each reservation; this is not D-069A
   and does not transfer. Any other larger finite
   maximum requires D-069A authority: verify its direct owner source, exact canonical

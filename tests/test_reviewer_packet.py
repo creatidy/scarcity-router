@@ -166,7 +166,7 @@ def _make_packet(
     packet.mkdir()
     issue_body = b"The complete accepted scope is supplied here."
     issue_body_sha = _sha(issue_body)
-    authority_path = "owner-d077-max16.txt" if effective_maximum > 10 else None
+    authority_path = "owner-d077-max20.txt" if effective_maximum > 10 else None
     full_read_paths = [
         "external-kilo-source.txt", "index.md", "owner-210-receipt.txt", "owner-210.txt",
         "owner-bootstrap-receipt.txt", "owner-bootstrap.txt", "patch.diff", "source-00.md",
@@ -197,8 +197,8 @@ def _make_packet(
     }
     if authority_path is not None:
         contents[authority_path] = (
-            f"for Issue #{issue_number} / PR #{pull_number}.\n"
-            f"**Effective maximum: {effective_maximum} total review invocations.**\n"
+            "The owner has explicitly approved increasing the maximum review allocation to "
+            f"**{effective_maximum} total invocations**, exclusively for Issue #{issue_number} / PR #{pull_number}.\n"
         ).encode()
     rows: list[dict[str, object]] = []
     for name, data in contents.items():
@@ -344,10 +344,10 @@ def _make_packet(
             "packet_path": authority_path,
             "sha256": _sha(contents[authority_path]),
             "source_type": "direct_owner_message",
-            "source_origin": "Adrian direct Kilo message Section 2, 2026-10-19T17:40:57Z",
-            "decision_type": "D-069/D-077 final max-16 owner review allocation",
+            "source_origin": "Adrian direct Kilo message Section 1, 2026-10-19T22:41:20Z",
+            "decision_type": "D-069/D-077 max-20 owner review allocation",
             "owner": "adrian.tkacz",
-            "source_timestamp": "2026-10-19T17:40:57Z",
+            "source_timestamp": "2026-10-19T22:41:20Z",
             "scope": {
                 "issue_number": issue_number,
                 "pull_number": pull_number,
@@ -637,10 +637,15 @@ class ReviewerPacketTests(unittest.TestCase):
         self.assertEqual(result.pull_number, 215)
 
     def test_review_exception_requires_raw_scoped_owner_source_in_packet(self) -> None:
+        for unauthorized_maximum in (16, 21):
+            with self.subTest(maximum=unauthorized_maximum), tempfile.TemporaryDirectory() as temporary:
+                packet, manifest = _make_packet(Path(temporary), effective_maximum=unauthorized_maximum)
+                with self.assertRaisesRegex(PacketError, "restricted to its exact #212/#213 max-20"):
+                    _ = validate_packet(packet, manifest, require_external_sources=True)
         with tempfile.TemporaryDirectory() as temporary:
-            packet, manifest = _make_packet(Path(temporary), effective_maximum=16)
+            packet, manifest = _make_packet(Path(temporary), effective_maximum=20)
             inspected = validate_packet(packet, manifest, require_external_sources=True)
-            self.assertIn("owner-d077-max16.txt", inspected.owner_evidence_paths)
+            self.assertIn("owner-d077-max20.txt", inspected.owner_evidence_paths)
 
             data = _load_object(manifest.read_text(encoding="utf-8"))
             policy = cast(dict[str, object], data["review_policy"])
@@ -650,12 +655,12 @@ class ReviewerPacketTests(unittest.TestCase):
                 _ = validate_packet(packet, manifest, require_external_sources=True)
 
         with tempfile.TemporaryDirectory() as temporary:
-            packet, manifest = _make_packet(Path(temporary), effective_maximum=16)
+            packet, manifest = _make_packet(Path(temporary), effective_maximum=20)
             data = _load_object(manifest.read_text(encoding="utf-8"))
             owner_sources = cast(list[dict[str, object]], data["owner_sources"])
             authority = next(
                 source for source in owner_sources
-                if source.get("packet_path") == "owner-d077-max16.txt"
+                if source.get("packet_path") == "owner-d077-max20.txt"
             )
             _ = authority.pop("source_timestamp")
             _ = manifest.write_text(json.dumps(data, sort_keys=True), encoding="utf-8")
@@ -676,12 +681,12 @@ class ReviewerPacketTests(unittest.TestCase):
 
     def test_review_exception_owner_scope_and_d069a_integration_are_enforced(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            packet, manifest = _make_packet(Path(temporary), effective_maximum=16)
+            packet, manifest = _make_packet(Path(temporary), effective_maximum=20)
             data = _load_object(manifest.read_text(encoding="utf-8"))
             owner_sources = cast(list[dict[str, object]], data["owner_sources"])
             authority = next(
                 source for source in owner_sources
-                if source.get("packet_path") == "owner-d077-max16.txt"
+                if source.get("packet_path") == "owner-d077-max20.txt"
             )
             authority["scope"] = {
                 "issue_number": 212,
@@ -700,7 +705,7 @@ class ReviewerPacketTests(unittest.TestCase):
                 pull_id=928,
                 pull_number=215,
                 head_branch="issue-214-generic-review",
-                effective_maximum=16,
+                effective_maximum=20,
             )
             with self.assertRaisesRegex(PacketError, "restricted to its exact #212/#213"):
                 _ = validate_packet(packet, manifest, require_external_sources=True)

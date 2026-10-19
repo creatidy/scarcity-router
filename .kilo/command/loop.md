@@ -229,10 +229,10 @@ branch switches occur while a reviewer or preflight CLI process is active.
 Default maximum 10 whole-PR review invocations per issue delivery, INCLUDING the
 initial review, COMMENT, invalidated reviews and corrected retries. The sole separate
 direct-owner supersession is for #212/PR #213: the final D-077 amendment authorizes
-maximum 16. Preserve #1-13 as consumed; #14 is the next ordinary review, #15 is one
-additional ordinary review only after diagnosed remediation of #14 or owner-manual
-Daybreak after a valid #14 APPROVE, and #16 is owner-manual Daybreak only
-when #15 was ordinary. No #16 ordinary review and no #17. Verify the exact direct owner source,
+maximum 20. Preserve #1-15 as consumed; #16 is the next ordinary review, #17-19
+ordinary only after diagnosed findings/recovery and completed remediation. After
+valid approval stop ordinary review and reserve the next slot for owner-manual
+Daybreak. #20 manual security only, never ordinary; no #21. Verify the exact direct owner source,
 canonical Repo/Issue/PR scope and currentness before each exceptional reservation; this
 is not D-069A and does not transfer. For any other delivery, a larger finite ceiling is available only through D-069A
 after the primary verifies the direct owner source and exact canonical Repo/Issue/

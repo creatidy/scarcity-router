@@ -18,13 +18,15 @@ INCLUDING the initial review, COMMENT, invalidated reviews and corrected retries
 For other deliveries, a greater ceiling requires a D-069A finite exception verified
 against its direct canonical owner source after D-069A is integrated in freshly fetched
 `develop`. The sole exception to that mechanism is Adrian's direct, one-time D-069/D-077
-amendment for Issue #212/PR #213: maximum 16 total; #1-13 remain consumed, #14 is the
-next ordinary review, #15 is one additional ordinary review only after diagnosed
-remediation of #14 or owner-manual Daybreak after valid #14 APPROVE, and #16 is manual
-Daybreak if #15 was ordinary. No #16 ordinary review, #17, reset or automatic extension.
-The exact owner source is the Section 2 excerpt in
-`.review-evidence-212/owner-d077-max16.txt`, from
-Adrian's direct Kilo message at `2026-10-19T17:40:57Z`; D-077 binds its SHA-256. Verify
+amendment for Issue #212/PR #213: maximum 20 total; #1-15 remain consumed, #16 is the
+next ordinary review. #17-19 are ordinary only after diagnosed findings/recovery and
+completed remediation. After valid ordinary APPROVE, stop ordinary review and reserve
+the next ordinal for owner-manual Daybreak. #20 is manual security only, never
+ordinary; no #21, reset or automatic extension. Reserve an ordinary ordinal only
+immediately before actual invocation, after all dispatch gates pass.
+The exact owner source is the Section 1 excerpt in
+`.review-evidence-212/owner-d077-max20.txt`, from
+Adrian's direct Kilo message at `2026-10-19T22:41:20Z`; D-077 binds its SHA-256. Verify
 that direct source, exact Repo/Issue/PR identities, scope and current refs before any
 exceptional reservation. This is not D-069A, is not transferable, and is not a general
 exception mechanism. Missing, stale, ambiguous or mismatched authority leaves the
@@ -160,10 +162,9 @@ delivery; STOP_REVISE still requires an explicit owner decision, not a new PR/na
     standalone synthetic preflight before a NEW standalone reviewer process.
 12. The default ceiling is 10; use only a freshly verified D-069A exception for
    other deliveries or the exact nontransferable D-077 direct owner amendment for
-    #212/PR #213 described above. For #212, #14 is the next ordinary review; #15 is
-    ordinary only after diagnosed remediation of #14, otherwise it is owner-manual
-    Daybreak after valid #14 APPROVE; #16 is the manual gate if #15 was ordinary. No
-    #16 ordinary review and no #17. After APPROVE with empty findings and limitations,
+    #212/PR #213 described above. For #212, #16 is next ordinary and #17-19 only follow
+    diagnosed findings/recovery and completed remediation. #20 is manual security
+    only, never ordinary; no #21. After APPROVE with empty findings and limitations,
     reserve the next owner-manual ordinal and return
    READY_FOR_OWNER_SECURITY_REVIEW; never report READY_TO_MERGE while that gate is open.
    At the effective review bound an exact valid APPROVE may yield READY_TO_MERGE only
@@ -181,12 +182,12 @@ delivery; STOP_REVISE still requires an explicit owner decision, not a new PR/na
    rule's terminal contracts only when paths/budget are exhausted or a genuine owner
    decision remains. Preserve all consumed ordinals, including malformed/failed attempts.
 
-For #212/PR #213, Adrian's `2026-10-19T20:49:07Z` D-077 coverage/remediation mandate
-authorizes implementing/testing this simplified coverage policy only. #1-15 remain
-consumed; #14 COMMENT/PASS and #15 COMMENT/FAIL are unchanged. No additional ordinary
-review is authorized; #16 remains unreserved/security-only. This is not a budget
-extension or authority from unintegrated D-069A. Report measured volume/validation
-and the need for a later explicit finite ordinary-review decision, not security readiness.
+For #212/PR #213, retain Adrian's `2026-10-19T20:49:07Z` compact coverage mandate.
+His `2026-10-19T22:41:20Z` max20 amendment supersedes only the earlier no-review/budget
+restriction: #1-15 remain consumed, #14 COMMENT/PASS and #15 COMMENT/FAIL unchanged;
+#16 is next ordinary, #17-19 only after diagnosed corrections/recovery, #20 manual
+security only. No repeated review without a material correction or diagnosed recovery.
+Do not reintroduce blanket full-file coverage or derive authority from unintegrated D-069A.
 
 For `security_critical` work, ordinary APPROVE alone does not yield completion
 or READY_TO_MERGE. After required validation and ordinary review pass at a stable

@@ -1082,16 +1082,16 @@ def validate_packet(
                 raise PacketError("direct owner exception lacks its raw direct-owner source")
             if (repo.get("id") != 15 or issue_id != 1683 or issue_number != 212
                     or pull_id != 927 or pull_number != 213
-                    or effective_maximum != 16
-                    or authority_path != "owner-d077-max16.txt"
+                    or effective_maximum != 20
+                    or authority_path != "owner-d077-max20.txt"
                     or authority.get("owner") != "adrian.tkacz"
-                    or authority.get("source_timestamp") != "2026-10-19T17:40:57Z"):
-                raise PacketError("direct D-077 supersession is restricted to its exact #212/#213 max-16 authority")
+                    or authority.get("source_timestamp") != "2026-10-19T22:41:20Z"):
+                raise PacketError("direct D-077 supersession is restricted to its exact #212/#213 max-20 authority")
             if not allow_synthetic_fixture and (
-                authority.get("sha256") != "c11e3e7dfa39b539eedca7c12ab3795650cc799d2554e991acd4ba04bee175ef"
+                authority.get("sha256") != "222e3be1eadd381ce7a5a351943e7490a44edf907febea4e2f45fa013a53e4af"
                 or authority.get("source_origin")
-                != "Adrian direct Kilo message Section 2, 2026-10-19T17:40:57Z"
-                or authority.get("decision_type") != "D-069/D-077 final max-16 owner review allocation"
+                != "Adrian direct Kilo message Section 1, 2026-10-19T22:41:20Z"
+                or authority.get("decision_type") != "D-069/D-077 max-20 owner review allocation"
             ):
                 raise PacketError("direct D-077 supersession does not match the exact owner-source receipt")
         elif authority_source_type not in {"direct_owner_message", "forgejo_owner_comment"}:
@@ -1104,11 +1104,12 @@ def validate_packet(
         if authority_type == "direct_owner_supersession":
             authority_text = inventory[authority_path]["data"].decode("utf-8", errors="strict")
             match = re.search(
-                r"(?m)^\*\*Effective maximum: (\d+) total review invocations\.\*\*$",
+                r"(?m)^The owner has explicitly approved increasing the maximum review allocation to "
+                r"\*\*(\d+) total invocations\*\*, exclusively for Issue #(\d+) / PR #(\d+)\.$",
                 authority_text,
             )
             if (match is None or int(match.group(1)) != effective_maximum
-                    or f"for Issue #{issue_number} / PR #{pull_number}." not in authority_text):
+                    or int(match.group(2)) != issue_number or int(match.group(3)) != pull_number):
                 raise PacketError("direct owner source text does not authorize this exact finite review scope")
         if authority_type == "d069a_integrated":
             integrated_head = _string(review_policy.get("d069a_integrated_head"), "D-069A integrated head")

@@ -5841,10 +5841,10 @@ neither is a new live check of the current deployment.
   merges. The migration itself uses pre-migration review limits and remains open
   for human integration; it cannot bootstrap merge authority from its new files.
 - **Final one-time #212 supersession:** Adrian's latest direct owner amendment recorded
-  in D-077 raises the effective maximum to 16 for issue #212/PR #213 only: #1-13 retain
-  their actual outcomes, #14 is the next ordinary review, #15 is one additional ordinary
-  review only after diagnosed remediation of #14 or the owner-manual gate after a
-  valid #14 approval, and #16 is the manual gate if #15 was ordinary. No #17. This direct
+  in D-077 raises the effective maximum to 20 for issue #212/PR #213 only: #1-15 retain
+  actual outcomes; #16 is next ordinary, #17-19 ordinary only after diagnosed findings/
+  recovery and completed remediation. After valid approval the next slot is manual
+  security; #20 is manual security only, never ordinary. No #21. This direct
   supersession is not derived from D-069A and does not change the default ten elsewhere.
 - **Preserved model:** The primary invocation context is the sole orchestrator,
   using one normal checkout/one mutator, no worktrees/alternate checkouts or
@@ -5940,7 +5940,7 @@ neither is a new live check of the current deployment.
   | Case | Evidence | Result |
   | --- | --- | --- |
   | Normal delivery | No valid canonical owner exception | Default maximum 10. |
-  | Bootstrap #212 | D-069A remains unintegrated; D-077 records the final direct owner amendment | Maximum 16 only for #212/PR #213 under that direct amendment; no authority is derived from D-069A. |
+  | Bootstrap #212 | D-069A remains unintegrated; D-077 records the final direct owner amendment | Maximum 20 only for #212/PR #213 under that direct amendment; no authority is derived from D-069A. |
   | Pending #210 allocation | Direct owner source and Kilo-authored receipt #17258 state future maximum 11, but D-069A is not integrated | Keep maximum 10 effective; do not reserve/dispatch #10 or #11. |
   | Ledger-only extension | No matching direct owner source in the canonical accepted scope | Deny exception; keep default 10. |
   | Scope mismatch | Owner record names another issue/PR, repository or task scope | Deny transfer; use this delivery's default/verified maximum only. |
@@ -6471,7 +6471,7 @@ neither is a new live check of the current deployment.
     not D-069A authority and does not transfer. Retain the independent owner-manual
     security gate and `/loop`-only merge authority; Adrian invokes official Codex.
 
-- **Final direct owner amendment for #212/PR #213 (maximum 16):** Adrian's direct
+- **Prior direct owner amendment for #212/PR #213 (maximum 16, superseded below):** Adrian's direct
   instruction received at `2026-10-19T17:40:57Z` supersedes the max-14 allocation above.
   The complete instruction is retained at
   `.review-evidence-212/owner-final-remediation-2026-10-19-max16.txt`, SHA-256
@@ -6551,6 +6551,40 @@ neither is a new live check of the current deployment.
     on finite ordinary-review authority follows measured cost/validation results;
     unintegrated D-069A grants nothing. Scarcity Router is the product; this is
     supporting infrastructure, not a new framework or architecture initiative.
+
+- **Direct owner max-20 amendment (2026-10-19T22:41:20Z):** Adrian explicitly
+  authorizes completing this existing delivery with maximum20 exclusively for
+  Repo15 / Issue1683 #212 / PR927 #213. The quoted original owner statement is
+  **"Zatwierdzam, od razu do 20."** The current direct instruction supplies the
+  allocation/decision context and supersedes the previous max16 assignment of #16
+  to security. It does not derive authority from unintegrated D-069A.
+  - Full current direct instruction: `.review-evidence-212/owner-complete-delivery-max20-2026-10-19.txt`,
+    SHA-256 `1433fecd09d557079fbecc0b30b6d9080f3cb406773363e90d0497bc801579b4`.
+    Exact Section1 source with the quoted statement and preceding allocation context:
+    `.review-evidence-212/owner-d077-max20.txt`, SHA-256
+    `222e3be1eadd381ce7a5a351943e7490a44edf907febea4e2f45fa013a53e4af`.
+    The immediately preceding assistant-turn decision context is separately retained
+    at `.review-evidence-212/max20-immediately-preceding-turn-context.txt`, SHA-256
+    `2dd385020cae940037b946611ac190d4d7736e48e77e6ffad4d977b3417ff3a5`.
+    Provenance is the current owner instruction at the timestamp above, including
+    its quotation of the Polish statement; no separate historical source or timestamp
+    for that earlier quoted utterance is invented. Kilo-authored Forgejo text is
+    a transcription, never the owner source or authority.
+  - Preserve consumed #1-15 and all actual results/evidence. #16 is next independent
+    ordinary review. #17-19 ordinary only after diagnosed findings/infrastructure
+    recovery and completed remediation. Do not repeat reviews without material
+    correction or diagnosed recovery. Reserve an ordinary ordinal only immediately
+    before its actual invocation after gates pass, not speculatively.
+  - After valid ordinary APPROVE/audit PASS, stop ordinary review immediately and
+    reserve the next ordinal for Adrian's manual official Codex
+    `gpt-daybreak-blue-latest` gate. That reservation is pending, not consumed until
+    actual owner execution. #20 is final possible manual security, never ordinary.
+    No #21, reset, automatic extension, transfer or default change elsewhere (ten).
+  - Keep the compact, Git-derived changed-region contract and independent
+    Read-only standalone architecture. The 20:49 coverage decision remains in force;
+    only its no-new-review/budget restriction is superseded. No further framework,
+    blanket full-file requirement, speculative findings, automatic Daybreak, merge,
+    issue closure, main, release or deployment authority is granted.
 
 ### U-014 - Native coding backend versus Kernel-owned workspace lifecycle
 

@@ -152,10 +152,10 @@ credential-safe Kilo authentication path; credentials are never copied into the
 reviewer context or evidence. A default maximum of 10 invocations per issue delivery
 includes initial, COMMENT, invalidated reviews and corrected retries. The sole separate
 direct-owner supersession is for #212/PR #213: the final D-077 amendment records maximum
-16; #14 is the next ordinary review, #15 is ordinary only after diagnosed remediation
-of #14 or owner-manual Daybreak after valid #14 APPROVE, and #16 is the manual gate
-if #15 was ordinary. Preserve consumed #1-13. No #16 ordinary review and no #17.
-Verify the exact Section 2 owner source and canonical
+20; #16 is next ordinary, #17-19 ordinary only after diagnosed findings/recovery and
+completed remediation. Stop ordinary review at valid approval and reserve the next
+slot for owner-manual Daybreak. Preserve consumed #1-15. #20 manual security only,
+never ordinary; no #21. Verify the exact Section 1 owner source and canonical
 scope/currentness before each reservation; this is not D-069A and cannot transfer. For every other
 delivery, D-069A permits a greater finite maximum only after the primary verifies the
 direct owner source, exact canonical repository/issue/linked-PR identity, scope and
@@ -331,7 +331,7 @@ General non-delivery defaults remain one initial review, one remediation and
 narrow verification, as described by `model-policy.json`. Repository command
 delivery uses D-069's scoped override, not those generic round counts: the default
 ceiling is 10 whole-PR reviews. The final direct D-077 owner amendment separately sets
-a one-time maximum of 16 for #212/PR #213 only; for every other delivery, D-069A's exact
+a one-time maximum of 20 for #212/PR #213 only; for every other delivery, D-069A's exact
 canonical owner exception can set a greater finite ceiling for one named issue/linked
 PR after integration and fresh verification. Never exceed the effective maximum or
 patch without capacity for a fresh review.
@@ -381,8 +381,10 @@ rereads restore coverage. Preserve terminal/model/context/permission checks and
 fail closed when visibility is genuinely unverifiable, without reconstructing a
 new context engine. D-077's `2026-10-19T20:49:07Z` owner mandate authorizes only this
 remediation and coverage simplification for #212/PR #213, not another review or
-budget extension. #1-15 remain consumed and #16 unreserved/security-only; a later
-finite ordinary review requires separate explicit owner authorization.
+budget extension. The later `2026-10-19T22:41:20Z` direct owner max20 amendment
+supersedes that earlier invocation restriction, not the compact/security contract:
+#1-15 remain consumed, #16 next ordinary, #17-19 only after diagnosed corrections,
+#20 manual security only. Never use unintegrated D-069A or transfer this authority.
 
 ## Operational UX and compatibility review
 

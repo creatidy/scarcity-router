@@ -208,12 +208,14 @@ maximum only for one exact canonical issue/linked PR after the primary verifies 
 direct owner source, canonical repository/issue/PR identities, maximum and scope,
 and verifies D-069A is already integrated in the freshly fetched `develop`. The
 sole direct supersession is Adrian's one-time owner amendment for issue #212/PR #213,
-recorded in D-077 and the canonical issue: maximum 16, ordinals #1-13 preserved,
-#14 the next ordinary review, #15 an additional ordinary review only after diagnosed
-remediation of #14 or owner-manual Daybreak after valid #14 approval, and #16 the
-manual Daybreak if #15 was ordinary. No #16 ordinary review and no #17.
-Its exact Section 2 source is `.review-evidence-212/owner-d077-max16.txt`
-from Adrian's direct Kilo message at `2026-10-19T17:40:57Z`; D-077 binds its SHA-256.
+recorded in D-077 and the canonical issue: maximum 20, ordinals #1-15 preserved,
+#16 the next ordinary review, #17-19 ordinary only after diagnosed findings/recovery
+and completed remediation, otherwise the next ordinal is reserved for owner-manual
+Daybreak immediately after valid ordinary approval. #20 is manual security only,
+never ordinary; no #21, reset or automatic extension. Reserve ordinary ordinals
+only immediately before actual dispatch, not in advance of passed gates.
+Its exact Section 1 source is `.review-evidence-212/owner-d077-max20.txt`
+from Adrian's direct Kilo message at `2026-10-19T22:41:20Z`; D-077 binds its SHA-256.
 This is not D-069A and cannot transfer to another delivery. No other delivery may use
 an exception present only in its own branch/PR. Absent, stale, ambiguous or
 mismatched authority uses the default 10 and fails closed. `/finish-pr` and `/loop`
