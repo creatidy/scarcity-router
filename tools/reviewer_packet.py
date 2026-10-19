@@ -1005,6 +1005,20 @@ def validate_packet(
                     or authority.get("source_timestamp") is None
                     or authority.get("owner") is None):
                 raise PacketError("direct owner exception lacks its raw direct-owner source")
+            if (repo.get("id") != 15 or issue_id != 1683 or issue_number != 212
+                    or pull_id != 927 or pull_number != 213
+                    or effective_maximum != 14
+                    or authority_path != "owner-d077-max14.txt"
+                    or authority.get("owner") != "adrian.tkacz"
+                    or authority.get("source_timestamp") != "2026-10-19T10:39:34Z"):
+                raise PacketError("direct D-077 supersession is restricted to its exact #212/#213 max-14 authority")
+            if not allow_synthetic_fixture and (
+                authority.get("sha256") != "ce5d5aad6b1542ba489dbe8f3405468c4ce650d08025678c48058e32082ef023"
+                or authority.get("source_origin")
+                != "Adrian direct Kilo message Section D, 2026-10-19T10:39:34Z"
+                or authority.get("decision_type") != "D-069/D-077 final max-14 owner review allocation"
+            ):
+                raise PacketError("direct D-077 supersession does not match the exact owner-source receipt")
         elif authority_source_type not in {"direct_owner_message", "forgejo_owner_comment"}:
             raise PacketError("D-069A exception lacks its canonical owner source")
         authority_scope = _object(authority.get("scope"), f"{authority_path} scope")
@@ -1466,13 +1480,18 @@ def prepare_standalone_environment(
         frozen_profile = _git(source_root, "show", f"{inspection.head}:{canonical_profile_relative}")
         if profile_bytes != frozen_profile:
             raise PacketError("effective reviewer source file differs from frozen HEAD")
-        profile_binding = _object(
-            _object(_object(json.loads(manifest_path.read_bytes()), "manifest").get("source_bindings"),
-                    "manifest.source_bindings").get(canonical_profile_relative),
-            "reviewer profile source binding",
+        source_bindings = _object(
+            _object(json.loads(manifest_path.read_bytes()), "manifest").get("source_bindings"),
+            "manifest.source_bindings",
         )
-        if _git(source_root, "rev-parse", f"{inspection.head}:{canonical_profile_relative}").decode().strip() != profile_binding.get("head_blob"):
-            raise PacketError("canonical reviewer profile Git blob differs from packet binding")
+        profile_binding_row = source_bindings.get(canonical_profile_relative)
+        if profile_binding_row is not None:
+            bound_profile = _object(profile_binding_row, "reviewer profile source binding")
+            frozen_blob = _git(
+                source_root, "rev-parse", f"{inspection.head}:{canonical_profile_relative}"
+            ).decode().strip()
+            if frozen_blob != bound_profile.get("head_blob"):
+                raise PacketError("canonical reviewer profile Git blob differs from packet binding")
     if profile_source_root is None:
         profile_source_root = source_root
     if profile_source_root is not None:
@@ -1701,6 +1720,19 @@ def verify_effective_standalone_agent(
     )
     if len(allowed_read_patterns) != len(overlay.allowed_paths):
         raise PacketError("Kilo worktree-relative Read patterns are not one-to-one with packet files")
+    indexed_read_patterns = set(allowed_read_patterns)
+    for rule in reviewer_rules:
+        if rule.get("action") != "allow":
+            continue
+        permission_name = rule.get("permission")
+        pattern = rule.get("pattern")
+        if not isinstance(permission_name, str) or not isinstance(pattern, str):
+            raise PacketError("effective permission allow lacks a string permission or path")
+        if (not _wildcard_match("read", permission_name)
+                or (permission_name == "read" and pattern in indexed_read_patterns)):
+            continue
+        if _effective_rule(reviewer_rules, "read", pattern) is rule:
+            raise PacketError("effective Read allows include an unindexed packet path")
     for pattern in allowed_read_patterns:
         _expect_permission(reviewer_rules, "read", pattern, "allow", exact=True)
     for path in overlay.denied_paths:
@@ -1804,9 +1836,12 @@ def validate_read_context_boundary(output: str, loaded: Any) -> int:
     """Reject Read-added context outside the exact numbered file-content block."""
     if not isinstance(loaded, list) or loaded:
         raise PacketError("allowed Read auto-loaded instruction paths outside its exact result")
-    content_start = output.find("<content>\n")
-    if content_start < 0:
+    if "<content>\n" not in output:
         raise PacketError("successful Read omitted a delimited content block")
+    header = re.match(r"<path>[^\r\n]+</path>\n<type>file</type>\n<content>\n", output)
+    if header is None:
+        raise PacketError("allowed Read returned unapproved text before the packet content block")
+    content_start = header.end() - len("<content>\n")
     content_end = output.find("\n</content>", content_start + len("<content>\n"))
     if content_end < 0:
         raise PacketError("successful Read omitted the content closing boundary")
@@ -2180,6 +2215,37 @@ def validate_d069a_integration(source_root: Path, integrated_head: str, base: st
     )
     if result.returncode != 0:
         raise PacketError("D-069A exception policy is not integrated into the frozen base")
+    required_markers = {
+        "docs/decisions.md": (
+            "### D-069A - Canonical owner-authorized finite review exceptions",
+        ),
+        "tools/reviewer_packet.py": (
+            'authority_type == "d069a_integrated"',
+            "validate_d069a_integration",
+        ),
+        ".kilo/command/finish-pr.md": (
+            "D-069A finite exception",
+            "integrated in freshly fetched",
+        ),
+        "tests/test_reviewer_packet.py": (
+            "test_d069a_integration_head_must_be_ancestor_of_frozen_base",
+        ),
+    }
+    for source_path, markers in required_markers.items():
+        for revision in dict.fromkeys((integrated_head, base)):
+            blob = subprocess.run(
+                ["git", "show", f"{revision}:{source_path}"],
+                cwd=source_root,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+            if blob.returncode != 0:
+                raise PacketError(f"integrated D-069A source is missing from frozen ref: {source_path}")
+            content = blob.stdout.decode("utf-8", errors="strict")
+            if any(marker not in content for marker in markers):
+                raise PacketError(f"frozen ref lacks the accepted D-069A implementation marker: {source_path}")
 
 
 def validate_preflight_result(
@@ -2390,11 +2456,18 @@ def audit_standalone_session(
 
         packet_path = allowed_by_input.get(raw_path)
         if packet_path is not None:
-            if (state.get("status") != "completed" or not isinstance(output, str)
-                    or permission_rule.get("permission") != "read"
+            if (permission_rule.get("permission") != "read"
                     or permission_rule.get("action") != "allow"
                     or permission_rule.get("pattern") != permission_path_map[packet_path]):
                 raise PacketError(f"allowed Read did not use its exact runtime rule: {raw_path}")
+            if state.get("status") == "error":
+                if output not in (None, ""):
+                    raise PacketError(f"failed allowed Read returned unexpected content: {packet_path}")
+                if metadata.get("loaded") not in (None, []):
+                    raise PacketError("failed allowed Read loaded unapproved instruction context")
+                raise PacketError(f"allowed Read tool errored before packet content: {packet_path}")
+            if state.get("status") != "completed" or not isinstance(output, str):
+                raise PacketError(f"allowed Read has an invalid completion result: {packet_path}")
             expected_absolute = str((runtime.packet / Path(packet_path).name).resolve())
             output_path = re.search(r"(?m)^<path>(.*)</path>$", output)
             output_type = re.search(r"(?m)^<type>(.*)</type>$", output)
