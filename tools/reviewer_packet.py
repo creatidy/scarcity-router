@@ -449,6 +449,7 @@ KILO_SOURCE_PACKET_PATHS = (
     "kilo-session-export-order.ts.txt",
     "kilo-session-user-summary.ts.txt",
     "kilo-session-user-conversion.ts.txt",
+    "kilo-board-notice.ts.txt",
 )
 KILO_SOURCE_REPOSITORY_PATHS = {
     "kilo-LICENSE.txt": "LICENSE",
@@ -474,6 +475,7 @@ KILO_SOURCE_REPOSITORY_PATHS = {
     "kilo-session-export-order.ts.txt": "packages/opencode/src/session/session.ts",
     "kilo-session-user-summary.ts.txt": "packages/opencode/src/session/summary.ts",
     "kilo-session-user-conversion.ts.txt": "packages/opencode/src/session/message-v2.ts",
+    "kilo-board-notice.ts.txt": "packages/opencode/src/kilocode/board/notice.ts",
 }
 KILO_REQUIRED_SOURCE_RANGES = {
     "kilo-read-path.ts.txt": (198, 385),
@@ -487,6 +489,7 @@ KILO_REQUIRED_SOURCE_RANGES = {
     "kilo-cli-session-export.ts.txt": (245, 297),
     "kilo-session-user-summary.ts.txt": (105, 145),
     "kilo-session-user-conversion.ts.txt": (320, 495),
+    "kilo-board-notice.ts.txt": (1, 25),
 }
 # Default owner paths for unit-test fixtures only; production paths come from the manifest.
 OWNER_EVIDENCE_PACKET_PATHS = (
@@ -2652,6 +2655,20 @@ def audit_standalone_session(
         raw_path = _string(request.get("filePath"), "standalone Read path")
         output = state.get("output")
         metadata = _object(state.get("metadata"), "standalone Read metadata")
+        # Pinned conversion also replays attachments, interrupted output and board notices.
+        if state.get("attachments") not in (None, []):
+            raise PacketError("sealed text Read returned additional attachment context")
+        if metadata.get("loaded") not in (None, []):
+            raise PacketError("Read auto-loaded instruction paths outside its exact result")
+        if (state.get("status") == "error" and metadata.get("interrupted") is True
+                and isinstance(metadata.get("output"), str) and metadata["output"]):
+            raise PacketError("Read returned interrupted error output outside the sealed text channel")
+        notice = metadata.get("shared_agent_board_notice")
+        if state.get("status") == "completed" and (notice == "unavailable" or (
+            isinstance(notice, (int, float)) and not isinstance(notice, bool)
+            and 0 < notice <= 2**53 - 1 and int(notice) == notice
+        )):
+            raise PacketError("Read metadata would replay additional shared-board notice context")
         approval = _object(metadata.get("approval"), "standalone Read permission decision")
         permission_rule = _object(approval.get("rule"), "standalone Read permission rule")
         if approval.get("agent") != agent_name:

@@ -393,6 +393,7 @@ def _make_standalone_preflight_packet(
         "kilo-session-export-order.ts.txt": "packages/opencode/src/session/session.ts",
         "kilo-session-user-summary.ts.txt": "packages/opencode/src/session/summary.ts",
         "kilo-session-user-conversion.ts.txt": "packages/opencode/src/session/message-v2.ts",
+        "kilo-board-notice.ts.txt": "packages/opencode/src/kilocode/board/notice.ts",
     }
     owner_names = OWNER_EVIDENCE_PACKET_PATHS
     if tuple(sorted(set(changed_paths))) != changed_paths or not changed_paths:
@@ -1751,7 +1752,7 @@ class ReviewerPacketTests(unittest.TestCase):
                     self.assertFalse(any(record["coverage_credited"] for record in trace[:len(parts)]))
                     self.assertTrue(all(record["coverage_credited"] for record in trace[len(parts):]))
                     self.assertEqual(result["model_visible_evidence_coverage"], "PASS")
-                    for corruption in ("bytes", "path", "permission", "loaded", "tool"):
+                    for corruption in ("bytes", "path", "permission", "loaded", "attachment", "tool"):
                         with self.subTest(corruption=corruption):
                             tampered = cast(dict[str, object], json.loads(json.dumps(session)))
                             original = cast(list[dict[str, object]], tampered["messages"])[1]
@@ -1769,6 +1770,11 @@ class ReviewerPacketTests(unittest.TestCase):
                                 cast(dict[str, object], approval["rule"])["pattern"] = "*"
                             elif corruption == "loaded":
                                 metadata["loaded"] = ["synthetic-unapproved-instructions.md"]
+                            elif corruption == "attachment":
+                                state["attachments"] = [{
+                                    "id": "prt_synthetic", "sessionID": "ses_fixture", "messageID": "msg_reads",
+                                    "type": "file", "mime": "text/plain", "url": "data:text/plain,synthetic-unapproved-context",
+                                }]
                             else:
                                 first["tool"] = "bash"
                             with self.assertRaises(PacketError):
@@ -1795,6 +1801,7 @@ class ReviewerPacketTests(unittest.TestCase):
                     session, session_export_sha256="b" * 64, runtime=runtime,
                     expected_model=model, expected_title=title, expected_prompt=prompt,
                 )
+
             del cast(dict[str, object], messages[-1]["info"])["error"]
             cast(dict[str, object], messages[1]["info"])["summary"] = True
             with self.assertRaisesRegex(PacketError, "compacted summary context"):
@@ -1803,6 +1810,70 @@ class ReviewerPacketTests(unittest.TestCase):
                     expected_model=model, expected_title=title, expected_prompt=prompt,
                 )
 
+    def test_text_reads_cannot_return_unvalidated_attachment_or_notice_channels(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            _, _, runtime = self._prepare_standalone(Path(temporary), preflight=False)
+            baseline, model, title, prompt = self._standalone_session(runtime, preflight=False)
+            for channel in ("attachment", "board_notice", "board_float", "board_unavailable"):
+                with self.subTest(channel=channel):
+                    session = cast(dict[str, object], json.loads(json.dumps(baseline)))
+                    messages = cast(list[dict[str, object]], session["messages"])
+                    first = cast(list[dict[str, object]], messages[1]["parts"])[0]
+                    state = cast(dict[str, object], first["state"])
+                    if channel == "attachment":
+                        state["attachments"] = [{
+                            "id": "prt_synthetic", "sessionID": "ses_fixture", "messageID": "msg_reads",
+                            "type": "file", "mime": "text/plain", "url": "data:text/plain,synthetic-unapproved-context",
+                        }]
+                    else:
+                        cast(dict[str, object], state["metadata"])["shared_agent_board_notice"] = (
+                            "unavailable" if channel == "board_unavailable" else 1.0 if channel == "board_float" else 1
+                        )
+                    with self.assertRaisesRegex(PacketError, "additional.*context"):
+                        _ = audit_standalone_session(
+                            session, session_export_sha256="b" * 64, runtime=runtime,
+                            expected_model=model, expected_title=title, expected_prompt=prompt,
+                        )
+            messages = cast(list[dict[str, object]], baseline["messages"])
+            first = cast(list[dict[str, object]], messages[1]["parts"])[0]
+            state = cast(dict[str, object], first["state"])
+            state["attachments"] = cast(list[object], [])
+            for inactive in (0, -1, True, 0.5, 2**53):
+                cast(dict[str, object], state["metadata"])["shared_agent_board_notice"] = inactive
+                result = audit_standalone_session(
+                    baseline, session_export_sha256="b" * 64, runtime=runtime,
+                    expected_model=model, expected_title=title, expected_prompt=prompt,
+                )
+                self.assertEqual(result["status"], "STANDALONE_REVIEW_TRACE_PASS")
+
+    def test_denied_reads_cannot_replay_interrupted_output_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            _, _, runtime = self._prepare_standalone(Path(temporary), preflight=True)
+            session, model, title, prompt = self._standalone_session(runtime, preflight=True)
+            messages = cast(list[dict[str, object]], session["messages"])
+            parts = cast(list[dict[str, object]], messages[1]["parts"])
+            denied = next(part for part in parts if cast(dict[str, object], part["state"])["status"] == "error")
+            state = cast(dict[str, object], denied["state"])
+            metadata = cast(dict[str, object], state["metadata"])
+            metadata.update({"interrupted": True, "output": ""})
+            result = audit_standalone_session(
+                session, session_export_sha256="b" * 64, runtime=runtime,
+                expected_model=model, expected_title=title, expected_prompt=prompt, preflight=True,
+            )
+            self.assertEqual(result["status"], "STANDALONE_PREFLIGHT_TRACE_PASS")
+            metadata["loaded"] = ["synthetic-unapproved-instructions.md"]
+            with self.assertRaisesRegex(PacketError, "auto-loaded instruction"):
+                _ = audit_standalone_session(
+                    session, session_export_sha256="b" * 64, runtime=runtime,
+                    expected_model=model, expected_title=title, expected_prompt=prompt, preflight=True,
+                )
+            _ = metadata.pop("loaded")
+            metadata["output"] = "synthetic unauthorized bytes outside state.output"
+            with self.assertRaisesRegex(PacketError, "interrupted.*output"):
+                _ = audit_standalone_session(
+                    session, session_export_sha256="b" * 64, runtime=runtime,
+                    expected_model=model, expected_title=title, expected_prompt=prompt, preflight=True,
+                )
     def test_message_dispatch_must_match_even_when_session_model_is_correct(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             _, _, runtime = self._prepare_standalone(Path(temporary), preflight=False)

@@ -6586,6 +6586,20 @@ neither is a new live check of the current deployment.
     blanket full-file requirement, speculative findings, automatic Daybreak, merge,
     issue closure, main, release or deployment authority is granted.
 
+- **Diagnosed #16 text-result channel correction:** The pinned conversion also
+  replays completed `state.attachments` and interrupted-error `metadata.output`
+  (`session/message-v2.ts:428-482`). Sealed UTF-8 packet Reads have no authorized
+  media channel; reject nonempty attachments and content-bearing interrupted error
+  output before ordinary/denied/visibility handling. The same conversion applies
+  `BoardNotice.output` to completed text (`:424`); pinned `kilocode/board/notice.ts:1-25`
+  appends a notice only for `shared_agent_board_notice: unavailable` or a positive
+  safe integer. Reject those additional-context markers too, not inactive values.
+  The 25-line upstream proof is optional indexed evidence, not a broader mandatory
+  read policy. These checks apply even to discarded/cleared messages; native empty
+  attachments/output/notice states retain the successful text-only path. This is
+  actual tool-channel security remediation within #16's finding, not a new reviewer
+  architecture, expanded whole-file contract or budget change.
+
 ### U-014 - Native coding backend versus Kernel-owned workspace lifecycle
 
 - **Status:** Direction settled by D-073; replacement/retirement evidence remains
