@@ -2235,9 +2235,16 @@ def _user_prompt(session: dict[str, Any]) -> str:
             user_messages.append(message)
     if len(user_messages) != 1:
         raise PacketError("standalone reviewer must start from exactly one fresh user prompt")
+    user_info = _object(user_messages[0].get("info"), "initial user metadata")
+    if any(key in user_info for key in ("system", "tools", "editorContext", "format", "summary")):
+        raise PacketError("standalone user metadata contains unapproved out-of-band context")
     parts = _array(user_messages[0].get("parts"), "initial user message parts")
     if any(_object(part, "user prompt part").get("type") != "text" for part in parts):
         raise PacketError("standalone reviewer initial input contains non-text context")
+    if any(_object(part, "user text").get("synthetic")
+           or _object(part, "user text").get("ignored")
+           or _object(part, "user text").get("metadata") not in (None, {}) for part in parts):
+        raise PacketError("standalone user text contains unapproved synthetic or metadata context")
     return "".join(
         _string(_object(part, "user prompt part").get("text"), "user prompt text")
         for part in parts
@@ -2509,6 +2516,23 @@ def audit_standalone_session(
     actual_prompt = _user_prompt(session)
     if actual_prompt not in (expected_prompt, f'"{expected_prompt}"'):
         raise PacketError("standalone Kilo session includes unapproved or prior conversation context")
+    for raw_message in _array(session.get("messages"), "standalone messages"):
+        message = _object(raw_message, "model-bound message")
+        message_info = _object(message.get("info"), "message model info")
+        if message_info.get("agent") != agent_name:
+            raise PacketError("message agent differs from the frozen reviewer")
+        dispatch = (_object(message_info.get("model"), "user model provenance")
+                    if message_info.get("role") == "user" else message_info)
+        if ({"provider_id": dispatch.get("providerID"), "model_id": dispatch.get("modelID"),
+             "variant": dispatch.get("variant")} != expected_model):
+            raise PacketError("message model/provider/variant provenance differs from frozen binding")
+        for raw_part in _array(message.get("parts"), "model-bound parts"):
+            part = _object(raw_part, "model-bound part")
+            if part.get("type") == "step-finish" and "model" in part:
+                step_model = _object(part["model"], "step-finish model provenance")
+                if (step_model.get("providerID") != expected_model["provider_id"]
+                        or step_model.get("modelID") != expected_model["model_id"]):
+                    raise PacketError("step-finish model provenance conflicts with frozen binding")
     if info.get("projectID") != "global":
         raise PacketError("standalone packet workspace did not resolve as Kilo's non-VCS global project")
     if short_preflight and not preflight:
@@ -2723,6 +2747,8 @@ def audit_standalone_session(
         "reviewer_agent": agent_name,
         "reviewer_parent_session": None,
         "terminal_response_and_read_order": "PASS",
+        "message_model_binding": "PASS",
+        "user_context_boundary": "PASS",
         "reviewer_directory": str(runtime.workspace),
         "model_dispatch": actual_model,
         "runtime_identity": "DISPATCH_VERIFIED",

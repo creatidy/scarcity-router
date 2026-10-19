@@ -1579,6 +1579,76 @@ class ReviewerPacketTests(unittest.TestCase):
             )
             self.assertEqual(result["status"], "STANDALONE_REVIEW_TRACE_PASS")
 
+    def test_message_dispatch_must_match_even_when_session_model_is_correct(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            _, _, runtime = self._prepare_standalone(Path(temporary), preflight=False)
+            baseline, model, title, prompt = self._standalone_session(runtime, preflight=False)
+            for message_index in range(3):
+                for key in ("providerID", "modelID", "variant"):
+                    for missing in (False, True):
+                        with self.subTest(message=message_index, key=key, missing=missing):
+                            session = cast(dict[str, object], json.loads(json.dumps(baseline)))
+                            messages = cast(list[dict[str, object]], session["messages"])
+                            info = cast(dict[str, object], messages[message_index]["info"])
+                            dispatch = cast(dict[str, object], info["model"]) if message_index == 0 else info
+                            if missing:
+                                del dispatch[key]
+                            else:
+                                dispatch[key] = "synthetic-conflicting-value"
+                            with self.assertRaisesRegex(PacketError, "message model/provider/variant"):
+                                _ = audit_standalone_session(
+                                    session, session_export_sha256="b" * 64, runtime=runtime,
+                                    expected_model=model, expected_title=title, expected_prompt=prompt,
+                                )
+            for step_model, valid in (({"providerID": "openai", "modelID": model["model_id"]}, True),
+                                      ({"providerID": "other", "modelID": model["model_id"]}, False),
+                                      ({"providerID": "openai", "modelID": "other"}, False), ({}, False)):
+                session = cast(dict[str, object], json.loads(json.dumps(baseline)))
+                messages = cast(list[dict[str, object]], session["messages"])
+                cast(list[dict[str, object]], messages[-1]["parts"]).append(
+                    {"type": "step-finish", "reason": "stop", "model": step_model}
+                )
+                if valid:
+                    result = audit_standalone_session(
+                        session, session_export_sha256="b" * 64, runtime=runtime,
+                        expected_model=model, expected_title=title, expected_prompt=prompt,
+                    )
+                    self.assertEqual(result["message_model_binding"], "PASS")
+                else:
+                    with self.assertRaisesRegex(PacketError, "step-finish model provenance"):
+                        _ = audit_standalone_session(
+                            session, session_export_sha256="b" * 64, runtime=runtime,
+                            expected_model=model, expected_title=title, expected_prompt=prompt,
+                        )
+
+    def test_exact_prompt_does_not_authorize_out_of_band_user_context(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            _, _, runtime = self._prepare_standalone(Path(temporary), preflight=False)
+            baseline, model, title, prompt = self._standalone_session(runtime, preflight=False)
+            for key, value in (("system", "synthetic unapproved context"), ("system", ""),
+                               ("tools", {"bash": True}), ("tools", {"read": True}),
+                               ("editorContext", {"text": "synthetic source context"}),
+                               ("format", {"type": "json_schema"}), ("summary", {"diffs": cast(list[object], [])})):
+                with self.subTest(key=key, value=value):
+                    session = cast(dict[str, object], json.loads(json.dumps(baseline)))
+                    messages = cast(list[dict[str, object]], session["messages"])
+                    cast(dict[str, object], messages[0]["info"])[key] = value
+                    with self.assertRaisesRegex(PacketError, "out-of-band context"):
+                        _ = audit_standalone_session(
+                            session, session_export_sha256="b" * 64, runtime=runtime,
+                            expected_model=model, expected_title=title, expected_prompt=prompt,
+                        )
+            for key, value in (("ignored", True), ("synthetic", True), ("metadata", {"context": "synthetic"})):
+                with self.subTest(key=key):
+                    session = cast(dict[str, object], json.loads(json.dumps(baseline)))
+                    messages = cast(list[dict[str, object]], session["messages"])
+                    cast(list[dict[str, object]], messages[0]["parts"])[0][key] = value
+                    with self.assertRaisesRegex(PacketError, "synthetic or metadata context"):
+                        _ = audit_standalone_session(
+                            session, session_export_sha256="b" * 64, runtime=runtime,
+                            expected_model=model, expected_title=title, expected_prompt=prompt,
+                        )
+
     def _prepare_standalone(
         self, root: Path, *, preflight: bool,
     ) -> tuple[Path, Path, RuntimeWorkspace]:
@@ -1764,11 +1834,18 @@ class ReviewerPacketTests(unittest.TestCase):
                 "permission": [],
             },
             "messages": [
-                {"info": {"role": "user", "id": "msg_user", "time": {"created": 1}},
+                {"info": {"role": "user", "id": "msg_user", "time": {"created": 1},
+                          "agent": "pr-reviewer-standalone",
+                          "model": {"providerID": expected_model["provider_id"],
+                                    "modelID": expected_model["model_id"], "variant": expected_model["variant"]}},
                  "parts": [{"type": "text", "text": f'"{prompt}"'}]},
                 {"info": {"role": "assistant", "agent": "pr-reviewer-standalone", "id": "msg_reads",
+                          "providerID": expected_model["provider_id"], "modelID": expected_model["model_id"],
+                          "variant": expected_model["variant"],
                           "parentID": "msg_user", "time": {"created": 10, "completed": 20}}, "parts": parts},
                 {"info": {"role": "assistant", "agent": "pr-reviewer-standalone", "finish": "stop",
+                          "providerID": expected_model["provider_id"], "modelID": expected_model["model_id"],
+                          "variant": expected_model["variant"],
                           "id": "msg_final", "parentID": "msg_user", "time": {"created": 30, "completed": 40}},
                  "parts": [{"type": "text", "text": json.dumps(final), "time": {"start": 31, "end": 39}}]},
             ],
