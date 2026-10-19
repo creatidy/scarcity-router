@@ -142,11 +142,11 @@ def create_synthetic_standalone_packet(
         elif path == "patch.diff":
             kind, origin, revision = "patch", "synthetic preflight patch", head
         elif path in owner_receipts:
-            issue_number, comment_id, timestamp = owner_receipts[path]
+            receipt_issue_number, comment_id, timestamp = owner_receipts[path]
             kind = "transcription-receipt"
             origin = (
                 f"https://forgejo.creatidy.com/BioMedical-IT/scarcity-router/issues/"
-                f"{issue_number}#issuecomment-{comment_id}"
+                f"{receipt_issue_number}#issuecomment-{comment_id}"
             )
             revision = timestamp
         elif path in owner_evidence_paths:
@@ -176,6 +176,7 @@ def create_synthetic_standalone_packet(
         packet_path = f"source-{index:02d}.md"
         source_bindings[source_path] = {
             "packet_path": packet_path,
+            "change_type": "added",
             "base_exists": False,
             "base_blob": None,
             "head_blob": hashlib.sha1(f"synthetic:{source_path}".encode()).hexdigest(),
@@ -303,9 +304,10 @@ def validate_synthetic_preflight_packet(packet_root: Path, manifest_path: Path) 
         _object(row, "synthetic manifest file")
         for row in _array(manifest.get("files"), "synthetic manifest files")
     }
-    _validate_kilo_source_records(
+    validate_kilo_source_records(
         _array(manifest.get("external_sources"), "synthetic external sources"),
         manifest_records,
+        synthetic=True,
     )
     return validate_packet(
         packet_root, manifest_path, require_external_sources=True, allow_synthetic_fixture=True
@@ -437,6 +439,13 @@ KILO_SOURCE_PACKET_PATHS = (
     "kilo-cli-run-agent-selection.ts.txt",
     "kilo-cli-json-events.ts.txt",
     "kilo-cli-session-export.ts.txt",
+    "kilo-project-global.ts.txt",
+    "kilo-project-resolve.ts.txt",
+    "kilo-session-message-schema.ts.txt",
+    "kilo-session-processor-lifecycle.ts.txt",
+    "kilo-session-tool-completion.ts.txt",
+    "kilo-session-message-order.ts.txt",
+    "kilo-session-export-order.ts.txt",
 )
 KILO_SOURCE_REPOSITORY_PATHS = {
     "kilo-LICENSE.txt": "LICENSE",
@@ -453,6 +462,24 @@ KILO_SOURCE_REPOSITORY_PATHS = {
     "kilo-cli-run-agent-selection.ts.txt": "packages/opencode/src/cli/cmd/run.ts",
     "kilo-cli-json-events.ts.txt": "packages/opencode/src/cli/cmd/run.ts",
     "kilo-cli-session-export.ts.txt": "packages/opencode/src/cli/cmd/export.ts",
+    "kilo-project-global.ts.txt": "packages/opencode/src/project/project.ts",
+    "kilo-project-resolve.ts.txt": "packages/core/src/project.ts",
+    "kilo-session-message-schema.ts.txt": "packages/schema/src/v1/session.ts",
+    "kilo-session-processor-lifecycle.ts.txt": "packages/opencode/src/session/processor.ts",
+    "kilo-session-tool-completion.ts.txt": "packages/opencode/src/session/processor.ts",
+    "kilo-session-message-order.ts.txt": "packages/opencode/src/session/message-v2.ts",
+    "kilo-session-export-order.ts.txt": "packages/opencode/src/session/session.ts",
+}
+KILO_REQUIRED_SOURCE_RANGES = {
+    "kilo-read-path.ts.txt": (198, 385),
+    "kilo-project-global.ts.txt": (214, 240),
+    "kilo-project-resolve.ts.txt": (110, 123),
+    "kilo-session-message-schema.ts.txt": (102, 534),
+    "kilo-session-processor-lifecycle.ts.txt": (665, 927),
+    "kilo-session-tool-completion.ts.txt": (265, 312),
+    "kilo-session-message-order.ts.txt": (561, 601),
+    "kilo-session-export-order.ts.txt": (1032, 1055),
+    "kilo-cli-session-export.ts.txt": (245, 297),
 }
 # Default owner paths for unit-test fixtures only; production paths come from the manifest.
 OWNER_EVIDENCE_PACKET_PATHS = (
@@ -619,8 +646,9 @@ def _inventory(packet_root: Path) -> dict[str, dict[str, Any]]:
     return result
 
 
-def _validate_kilo_source_records(
+def validate_kilo_source_records(
     external_sources: list[Any], records: dict[str, dict[str, Any]],
+    *, synthetic: bool = False,
 ) -> None:
     paths = [
         _relative_file(_object(raw, "external source binding").get("packet_path"))
@@ -637,6 +665,12 @@ def _validate_kilo_source_records(
                 or external.get("revision") != KILO_SOURCE_REVISION
                 or external.get("source_path") != KILO_SOURCE_REPOSITORY_PATHS[packet_path]):
             raise PacketError(f"external source is not the complete pinned Kilo mapping: {packet_path}")
+        required_range = KILO_REQUIRED_SOURCE_RANGES.get(packet_path)
+        if not synthetic and required_range is not None:
+            start, end = external.get("start_line"), external.get("end_line")
+            if (type(start) is not int or type(end) is not int
+                    or start > required_range[0] or end < required_range[1]):
+                raise PacketError(f"required pinned Kilo implementation lines omitted: {packet_path}")
 
 
 def _git(root: Path, *args: str) -> bytes:
@@ -869,7 +903,11 @@ def validate_packet(
         record = records.get(packet_path)
         if record is None or record.get("kind") != "git-source":
             raise PacketError(f"changed path lacks an indexed Git source: {source_path}")
-        if record.get("origin") != source_path or record.get("revision") != head:
+        change_type = binding.get("change_type", "modified" if binding.get("base_exists") else "added")
+        if change_type not in {"added", "modified", "deleted"}:
+            raise PacketError(f"changed source change type is invalid: {source_path}")
+        source_revision = base if change_type == "deleted" else head
+        if record.get("origin") != source_path or record.get("revision") != source_revision:
             raise PacketError(f"changed source origin/revision mismatch: {source_path}")
         if binding.get("sha256") != record.get("sha256"):
             raise PacketError(f"changed source digest mismatch: {source_path}")
@@ -882,12 +920,17 @@ def validate_packet(
                 raise PacketError(f"changed source base blob malformed: {source_path}")
         elif base_blob is not None:
             raise PacketError(f"new changed source must not claim a base blob: {source_path}")
-        if not _SHA1.fullmatch(_string(binding.get("head_blob"), f"{source_path} head blob")):
+        if base_exists is not (change_type != "added"):
+            raise PacketError(f"changed source type contradicts base presence: {source_path}")
+        if change_type == "deleted":
+            if binding.get("head_blob") is not None:
+                raise PacketError(f"deleted source must not claim a HEAD blob: {source_path}")
+        elif not _SHA1.fullmatch(_string(binding.get("head_blob"), f"{source_path} head blob")):
             raise PacketError(f"changed source head blob malformed: {source_path}")
         ranges = _array(binding.get("ranges"), f"{source_path} ranges")
-        if not ranges:
-            raise PacketError(f"changed source lacks required review ranges: {source_path}")
         line_count = len(inventory[packet_path]["data"].splitlines())
+        if not ranges and line_count:
+            raise PacketError(f"changed source lacks required review ranges: {source_path}")
         source_line_counts[source_path] = line_count
         previous_end = 0
         for raw_range in ranges:
@@ -1007,16 +1050,16 @@ def validate_packet(
                 raise PacketError("direct owner exception lacks its raw direct-owner source")
             if (repo.get("id") != 15 or issue_id != 1683 or issue_number != 212
                     or pull_id != 927 or pull_number != 213
-                    or effective_maximum != 14
-                    or authority_path != "owner-d077-max14.txt"
+                    or effective_maximum != 16
+                    or authority_path != "owner-d077-max16.txt"
                     or authority.get("owner") != "adrian.tkacz"
-                    or authority.get("source_timestamp") != "2026-10-19T10:39:34Z"):
-                raise PacketError("direct D-077 supersession is restricted to its exact #212/#213 max-14 authority")
+                    or authority.get("source_timestamp") != "2026-10-19T17:40:57Z"):
+                raise PacketError("direct D-077 supersession is restricted to its exact #212/#213 max-16 authority")
             if not allow_synthetic_fixture and (
-                authority.get("sha256") != "ce5d5aad6b1542ba489dbe8f3405468c4ce650d08025678c48058e32082ef023"
+                authority.get("sha256") != "c11e3e7dfa39b539eedca7c12ab3795650cc799d2554e991acd4ba04bee175ef"
                 or authority.get("source_origin")
-                != "Adrian direct Kilo message Section D, 2026-10-19T10:39:34Z"
-                or authority.get("decision_type") != "D-069/D-077 final max-14 owner review allocation"
+                != "Adrian direct Kilo message Section 2, 2026-10-19T17:40:57Z"
+                or authority.get("decision_type") != "D-069/D-077 final max-16 owner review allocation"
             ):
                 raise PacketError("direct D-077 supersession does not match the exact owner-source receipt")
         elif authority_source_type not in {"direct_owner_message", "forgejo_owner_comment"}:
@@ -1029,12 +1072,11 @@ def validate_packet(
         if authority_type == "direct_owner_supersession":
             authority_text = inventory[authority_path]["data"].decode("utf-8", errors="strict")
             match = re.search(
-                r"(?m)^\*\*Maximum (\d+) total review invocations for Issue #(\d+) / PR #(\d+)\.\*\*$",
+                r"(?m)^\*\*Effective maximum: (\d+) total review invocations\.\*\*$",
                 authority_text,
             )
             if (match is None or int(match.group(1)) != effective_maximum
-                    or int(match.group(2)) != issue_number
-                    or int(match.group(3)) != pull_number):
+                    or f"for Issue #{issue_number} / PR #{pull_number}." not in authority_text):
                 raise PacketError("direct owner source text does not authorize this exact finite review scope")
         if authority_type == "d069a_integrated":
             integrated_head = _string(review_policy.get("d069a_integrated_head"), "D-069A integrated head")
@@ -1049,7 +1091,7 @@ def validate_packet(
     if require_external_sources and not external_sources:
         raise PacketError("required pinned external-source evidence is missing")
     if not allow_synthetic_fixture:
-        _validate_kilo_source_records(external_sources, records)
+        validate_kilo_source_records(external_sources, records)
         if set(external_source_roots or {}) != {"Kilo-Org/kilocode"}:
             raise PacketError("production packet requires the exact pinned Kilo source checkout")
     for raw in external_sources:
@@ -1171,9 +1213,18 @@ def validate_packet(
                 raise PacketError(f"base Git path-presence mismatch for {source_path}")
             if base_exists and _git(source_root, "rev-parse", f"{base}:{source_path}").decode().strip() != binding["base_blob"]:
                 raise PacketError(f"base Git blob mismatch for {source_path}")
-            if _git(source_root, "rev-parse", f"{head}:{source_path}").decode().strip() != binding["head_blob"]:
+            head_result = subprocess.run(
+                ["git", "cat-file", "-e", f"{head}:{source_path}"], cwd=source_root,
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL, check=False,
+            )
+            deleted = binding.get("change_type") == "deleted"
+            if (head_result.returncode == 0) is deleted:
+                raise PacketError(f"HEAD Git path-presence mismatch for {source_path}")
+            if not deleted and _git(source_root, "rev-parse", f"{head}:{source_path}").decode().strip() != binding["head_blob"]:
                 raise PacketError(f"HEAD Git blob mismatch for {source_path}")
-            source_bytes = _git(source_root, "show", f"{head}:{source_path}")
+            source_revision = base if deleted else head
+            source_bytes = _git(source_root, "show", f"{source_revision}:{source_path}")
             if sha256(source_bytes) != binding["sha256"]:
                 raise PacketError(f"source bytes differ from bound Git blob: {source_path}")
 
@@ -1928,6 +1979,11 @@ def validate_read_display(
             or not isinstance(truncated, bool) or not isinstance(text, str)):
         raise PacketError(f"allowed Read display metadata is malformed: {packet_path}")
     ordered = sorted(lines.items())
+    if packet_line_count == 0:
+        if (ordered or start != 1 or end != 0 or display_total != 0 or truncated or text
+                or _read_footer(output) != "(End of file - total 0 lines)"):
+            raise PacketError(f"empty-source Read differs from pinned Kilo empty-file output: {packet_path}")
+        return
     if (not ordered or start != ordered[0][0] or end != ordered[-1][0]
             or ordered != [(line, lines[line]) for line in range(start, end + 1)]
             or text != "\n".join(content for _, content in ordered)):
@@ -2104,24 +2160,69 @@ def standalone_preflight_prompt(runtime: RuntimeWorkspace, *, short: bool = Fals
 
 def _final_assistant_text(session: dict[str, Any], agent_name: str) -> str:
     messages = _array(session.get("messages"), "session messages")
-    candidates: list[str] = []
-    for raw_message in messages:
+    if not messages:
+        raise PacketError("standalone session has no terminal reviewer response")
+    final_message = _object(messages[-1], "terminal reviewer message")
+    final_info = _object(final_message.get("info"), "terminal reviewer info")
+    final_time = _object(final_info.get("time"), "terminal reviewer time")
+    created = final_time.get("created")
+    completed = final_time.get("completed")
+    if (final_info.get("role") != "assistant" or final_info.get("agent") != agent_name
+            or final_info.get("finish") != "stop" or final_info.get("error") is not None
+            or type(created) is not int or type(completed) is not int
+            or created < 0 or completed < created):
+        raise PacketError("reviewer response is not successfully completed and terminal")
+    final_parts = [_object(part, "terminal reviewer part")
+                   for part in _array(final_message.get("parts"), "terminal reviewer parts")]
+    text_parts = [part for part in final_parts if part.get("type") == "text"]
+    if not text_parts or any(part.get("type") == "tool" for part in final_parts):
+        raise PacketError("terminal reviewer response has no text or contains tool activity")
+    text_start = completed
+    previous_text_end = created
+    for part in text_parts:
+        timing = _object(part.get("time"), "terminal text time")
+        start, end = timing.get("start"), timing.get("end")
+        if (type(start) is not int or type(end) is not int
+                or not created <= previous_text_end <= start <= end <= completed):
+            raise PacketError("terminal text temporal provenance is incomplete or inconsistent")
+        previous_text_end = end
+        text_start = min(text_start, start)
+    user_id: str | None = None
+    seen_ids: set[str] = set()
+    previous_created = -1
+    for position, raw_message in enumerate(messages):
         message = _object(raw_message, "session message")
         info = _object(message.get("info"), "session message info")
-        if info.get("role") != "assistant":
+        message_id = _string(info.get("id"), "message id")
+        timing = _object(info.get("time"), "message time")
+        message_created = timing.get("created")
+        if (message_id in seen_ids or type(message_created) is not int
+                or message_created < 0
+                or not previous_created <= message_created <= created):
+            raise PacketError("reviewer message order has incomplete temporal provenance")
+        seen_ids.add(message_id)
+        previous_created = message_created
+        if info.get("role") == "user" and position == 0:
+            user_id = message_id
             continue
-        if info.get("agent") != agent_name:
+        if info.get("role") != "assistant" or info.get("agent") != agent_name:
             raise PacketError("standalone session contains a different assistant identity")
-        texts = [
-            _string(_object(part, "assistant text part").get("text"), "assistant text")
-            for part in _array(message.get("parts"), "assistant parts")
-            if _object(part, "assistant part").get("type") == "text"
-        ]
-        if texts:
-            candidates.append("".join(texts))
-    if not candidates:
-        raise PacketError("standalone session has no final reviewer response")
-    return candidates[-1].strip()
+        if user_id is None or info.get("parentID") != user_id:
+            raise PacketError("reviewer response does not answer the single fresh user prompt")
+        message_completed = timing.get("completed")
+        if type(message_completed) is not int or message_completed < message_created:
+            raise PacketError("reviewer message completion provenance is missing")
+        for raw_part in _array(message.get("parts"), "assistant parts"):
+            part = _object(raw_part, "assistant part")
+            if part.get("type") != "tool":
+                continue
+            state = _object(part.get("state"), "temporal tool state")
+            tool_time = _object(state.get("time"), "tool temporal provenance")
+            start, end = tool_time.get("start"), tool_time.get("end")
+            if (type(start) is not int or type(end) is not int
+                    or not message_created <= start <= end <= message_completed <= text_start):
+                raise PacketError("Read did not complete before the terminal verdict")
+    return "".join(_string(part.get("text"), "terminal text") for part in text_parts).strip()
 
 
 def _user_prompt(session: dict[str, Any]) -> str:
@@ -2426,6 +2527,7 @@ def audit_standalone_session(
     tool_names = [_string(call.get("tool"), "standalone tool name") for call in calls]
     if any(tool != "read" for tool in tool_names):
         raise PacketError("standalone reviewer used a tool other than native Read")
+    final_text = _final_assistant_text(session, agent_name)
     allowed = set(runtime.allowed_paths)
     allowed_by_input = {path: path for path in runtime.allowed_paths}
     preflight_paths = runtime.allowed_paths
@@ -2441,6 +2543,7 @@ def audit_standalone_session(
         for path in runtime.allowed_paths
     }
     seen_denied: set[str] = set()
+    seen_allowed: set[str] = set()
     read_records: list[dict[str, Any]] = []
     repeated_read_line_count = 0
     for call in calls:
@@ -2476,7 +2579,7 @@ def audit_standalone_session(
                 raise PacketError(f"allowed Read output path differs from its exact packet file: {packet_path}")
             output_suffix_bytes = validate_read_context_boundary(output, metadata.get("loaded"))
             lines = _read_lines(output)
-            if not lines:
+            if not lines and sealed_lines[packet_path]:
                 raise PacketError(f"allowed Read returned no numbered packet lines: {raw_path}")
             display = _object(metadata.get("display"), "standalone Read display metadata")
             validate_read_display(
@@ -2487,6 +2590,7 @@ def audit_standalone_session(
                 display=display,
                 packet_line_count=len(sealed_lines[packet_path]),
             )
+            seen_allowed.add(packet_path)
             overlap_for_call = 0
             for line_number, text in lines.items():
                 expected_text = sealed_lines[packet_path].get(line_number)
@@ -2507,8 +2611,8 @@ def audit_standalone_session(
                 "requested_path": raw_path,
                 "permission_pattern": permission_rule.get("pattern"),
                 "status": "completed",
-                "line_start": min(lines),
-                "line_end": max(lines),
+                "line_start": min(lines, default=1),
+                "line_end": max(lines, default=0),
                 "line_count": len(lines),
                 "overlap_line_count": overlap_for_call,
                 "output_sha256": sha256(output.encode("utf-8")),
@@ -2575,10 +2679,10 @@ def audit_standalone_session(
             raise PacketError("standalone preflight did not follow the frozen read/probe order")
         for path in preflight_paths:
             expected = sealed_lines[path]
-            if covered[path] != expected:
+            if path not in seen_allowed or covered[path] != expected:
                 raise PacketError(f"standalone preflight did not read the complete packet file: {path}")
         final_result = validate_preflight_result(
-            _final_assistant_text(session, agent_name), runtime, preflight_paths
+            final_text, runtime, preflight_paths
         )
     else:
         if seen_denied:
@@ -2593,6 +2697,8 @@ def audit_standalone_session(
         for path in allowed:
             filename = Path(path).name
             actual = sealed_lines[path]
+            if path not in seen_allowed:
+                raise PacketError(f"standalone reviewer coverage is incomplete; required file Read omitted: {path}")
             if path in full_paths:
                 required_lines = actual
             else:
@@ -2607,7 +2713,7 @@ def audit_standalone_session(
             if covered[path] != required_lines:
                 raise PacketError(f"standalone reviewer packet coverage is incomplete: {filename}")
         final_result = validate_review_result(
-            _final_assistant_text(session, agent_name), runtime.inspection
+            final_text, runtime.inspection
         )
 
     packet_inventory_sha256 = _verify_workspace_copy(runtime)
@@ -2616,6 +2722,7 @@ def audit_standalone_session(
         "reviewer_session": session_id,
         "reviewer_agent": agent_name,
         "reviewer_parent_session": None,
+        "terminal_response_and_read_order": "PASS",
         "reviewer_directory": str(runtime.workspace),
         "model_dispatch": actual_model,
         "runtime_identity": "DISPATCH_VERIFIED",

@@ -5841,10 +5841,10 @@ neither is a new live check of the current deployment.
   merges. The migration itself uses pre-migration review limits and remains open
   for human integration; it cannot bootstrap merge authority from its new files.
 - **Final one-time #212 supersession:** Adrian's latest direct owner amendment recorded
-  in D-077 raises the effective maximum to 14 for issue #212/PR #213 only: #1-11 retain
-  their actual outcomes, #12 is the next ordinary review, #13 is an additional ordinary
-  review only after a diagnosed/corrected #12 failure or the owner-manual gate after a
-  valid #12 approval, and #14 is the manual gate if #13 was ordinary. No #15. This direct
+  in D-077 raises the effective maximum to 16 for issue #212/PR #213 only: #1-13 retain
+  their actual outcomes, #14 is the next ordinary review, #15 is one additional ordinary
+  review only after diagnosed remediation of #14 or the owner-manual gate after a
+  valid #14 approval, and #16 is the manual gate if #15 was ordinary. No #17. This direct
   supersession is not derived from D-069A and does not change the default ten elsewhere.
 - **Preserved model:** The primary invocation context is the sole orchestrator,
   using one normal checkout/one mutator, no worktrees/alternate checkouts or
@@ -5940,7 +5940,7 @@ neither is a new live check of the current deployment.
   | Case | Evidence | Result |
   | --- | --- | --- |
   | Normal delivery | No valid canonical owner exception | Default maximum 10. |
-  | Bootstrap #212 | D-069A remains unintegrated; D-077 records the final direct owner amendment | Maximum 14 only for #212/PR #213 under that direct amendment; no authority is derived from D-069A. |
+  | Bootstrap #212 | D-069A remains unintegrated; D-077 records the final direct owner amendment | Maximum 16 only for #212/PR #213 under that direct amendment; no authority is derived from D-069A. |
   | Pending #210 allocation | Direct owner source and Kilo-authored receipt #17258 state future maximum 11, but D-069A is not integrated | Keep maximum 10 effective; do not reserve/dispatch #10 or #11. |
   | Ledger-only extension | No matching direct owner source in the canonical accepted scope | Deny exception; keep default 10. |
   | Scope mismatch | Owner record names another issue/PR, repository or task scope | Deny transfer; use this delivery's default/verified maximum only. |
@@ -6453,7 +6453,7 @@ neither is a new live check of the current deployment.
     one-time owner amendment to D-069/D-077, not authority from unintegrated D-069A.
     Do not reset/reclassify history or invoke Daybreak automatically.
 
-- **Final direct owner amendment for #212/PR #213 (maximum 14):** Adrian's direct
+- **Prior direct owner amendment for #212/PR #213 (maximum 14, superseded below):** Adrian's direct
   owner instruction in the Kilo conversation at `2026-10-19T10:39:34Z` supersedes the
   preceding maximum-12 amendment above, which remains preserved as historical authority.
   The exact Section D authorization is retained at the Git-locally excluded
@@ -6470,6 +6470,42 @@ neither is a new live check of the current deployment.
   - Default ten and all other deliveries remain unchanged. This direct supersession is
     not D-069A authority and does not transfer. Retain the independent owner-manual
     security gate and `/loop`-only merge authority; Adrian invokes official Codex.
+
+- **Final direct owner amendment for #212/PR #213 (maximum 16):** Adrian's direct
+  instruction received at `2026-10-19T17:40:57Z` supersedes the max-14 allocation above.
+  The complete instruction is retained at
+  `.review-evidence-212/owner-final-remediation-2026-10-19-max16.txt`, SHA-256
+  `9573ac5fe81bfc4fa8dc91e04289cccdd3d997f6dc9d5dc8d2e0fd080fea97bf`.
+  Its exact Section 2 authorization, without historical findings, is retained at
+  `.review-evidence-212/owner-d077-max16.txt`, SHA-256
+  `c11e3e7dfa39b539eedca7c12ab3795650cc799d2554e991acd4ba04bee175ef`.
+  The direct instruction is authority; Kilo-authored Forgejo text is a transcription.
+  - Maximum 16 only for #212/PR #213. Preserve consumed #1-13 and their exact outcomes;
+    #13 remains COMMENT with its original audit PASS. #14 is the next independent
+    ordinary whole-PR review, only after all remediation/validation/preflight gates.
+    After valid #14 APPROVE, reserve #15 for owner-manual Daybreak. Otherwise #15
+    may be one final ordinary review after diagnosed remediation, with #16 available
+    for owner-manual Daybreak only after valid #15 APPROVE. No #16 ordinary review,
+    no #17, reset, transfer, reclassification or automatic extension.
+  - Default ten elsewhere remains unchanged. This direct supersession is not authority
+    from unintegrated D-069A. Preserve official Codex owner-manual security acceptance,
+    no automatic Daybreak, and `/loop`-only integration authority.
+- **Frozen evidence completion:** Pinned Kilo 7.8.8 at
+  `e2887f08e5a6394299c810ba508f358aaf4c5bc3` resolves relative Reads against
+  `instance.directory` (`tool/read.ts:198-211`). `project/project.ts:214-240` and
+  `packages/core/src/project.ts:110-123` bind non-VCS global projects to `/`.
+  The session/export lifecycle is separately bound: `session/processor.ts:265-312`
+  records tool completion time; `:665-927` records finish reason, text start/end,
+  error and message completion (cleanup alone is not success).
+  `packages/schema/src/v1/session.ts:102-534` defines those fields;
+  `session/message-v2.ts:561-601`, `session/session.ts:1032-1055` and
+  `cli/cmd/export.ts:245-297` establish export ordering and retained metadata.
+  The auditor requires the last response to have `finish: stop`, no error, complete
+  text/message timestamps, and every Read completed before verdict text starts.
+  Missing temporal evidence is UNVERIFIED/fail-closed, never inferred from JSON.
+  Deleted sources bind their base blob/bytes and absent HEAD under explicit
+  `change_type: deleted`; added/modified paths keep HEAD-side evidence. Finding
+  line references use the bound source side, and every source remains a full read.
 
 ### U-014 - Native coding backend versus Kernel-owned workspace lifecycle
 

@@ -152,9 +152,10 @@ credential-safe Kilo authentication path; credentials are never copied into the
 reviewer context or evidence. A default maximum of 10 invocations per issue delivery
 includes initial, COMMENT, invalidated reviews and corrected retries. The sole separate
 direct-owner supersession is for #212/PR #213: the final D-077 amendment records maximum
-14; #12 is the next ordinary review, #13 is ordinary only after a diagnosed/corrected
-#12 failure or owner-manual Daybreak after valid #12 APPROVE, and #14 is the final manual
-gate if #13 was ordinary. No #15. Verify the exact Section D owner source and canonical
+16; #14 is the next ordinary review, #15 is ordinary only after diagnosed remediation
+of #14 or owner-manual Daybreak after valid #14 APPROVE, and #16 is the manual gate
+if #15 was ordinary. Preserve consumed #1-13. No #16 ordinary review and no #17.
+Verify the exact Section 2 owner source and canonical
 scope/currentness before each reservation; this is not D-069A and cannot transfer. For every other
 delivery, D-069A permits a greater finite maximum only after the primary verifies the
 direct owner source, exact canonical repository/issue/linked-PR identity, scope and
@@ -330,7 +331,7 @@ General non-delivery defaults remain one initial review, one remediation and
 narrow verification, as described by `model-policy.json`. Repository command
 delivery uses D-069's scoped override, not those generic round counts: the default
 ceiling is 10 whole-PR reviews. The final direct D-077 owner amendment separately sets
-a one-time maximum of 14 for #212/PR #213 only; for every other delivery, D-069A's exact
+a one-time maximum of 16 for #212/PR #213 only; for every other delivery, D-069A's exact
 canonical owner exception can set a greater finite ceiling for one named issue/linked
 PR after integration and fresh verification. Never exceed the effective maximum or
 patch without capacity for a fresh review.

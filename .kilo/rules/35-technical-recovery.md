@@ -58,9 +58,10 @@ ledger; renaming an obstacle or reviewer does not reset its budget. Every whole-
 review dispatch, including failed/COMMENT attempts and failover, also consumes the
 next reserved ordinal. The default effective ceiling is 10. The sole separate
 direct-owner supersession is #212/PR #213: the final D-077 amendment records maximum
-14; #12 is the next ordinary review, #13 is ordinary only after a diagnosed/corrected
-#12 failure or owner-manual Daybreak after valid #12 APPROVE, and #14 is the final
-manual gate if #13 was ordinary. No #15. Verify the exact Section D owner source and
+16; #14 is the next ordinary review, #15 is ordinary only after diagnosed remediation
+of #14 or owner-manual Daybreak after valid #14 APPROVE, and #16 is the manual gate
+if #15 was ordinary. Preserve consumed #1-13. No #16 ordinary review and no #17.
+Verify the exact Section 2 owner source and
 canonical scope/currentness before each reservation; this is not D-069A and cannot
 transfer. For other deliveries,
 only a finite D-069A exception verified against the direct owner source and exact

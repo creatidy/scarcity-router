@@ -17,6 +17,8 @@ from tools.reviewer_packet import (
     RuntimeWorkspace,
     KILO_SOURCE_PACKET_PATHS,
     KILO_SOURCE_REPOSITORY_PATHS,
+    KILO_REQUIRED_SOURCE_RANGES,
+    validate_kilo_source_records,
     OWNER_EVIDENCE_PACKET_PATHS,
     STANDALONE_PACKET_FIXED_PATHS,
     audit_standalone_session,
@@ -139,7 +141,7 @@ def _make_packet(
     packet.mkdir()
     issue_body = b"The complete accepted scope is supplied here."
     issue_body_sha = _sha(issue_body)
-    authority_path = "owner-d077-max14.txt" if effective_maximum > 10 else None
+    authority_path = "owner-d077-max16.txt" if effective_maximum > 10 else None
     full_read_paths = [
         "external-kilo-source.txt", "index.md", "owner-210-receipt.txt", "owner-210.txt",
         "owner-bootstrap-receipt.txt", "owner-bootstrap.txt", "patch.diff", "source-00.md",
@@ -170,8 +172,8 @@ def _make_packet(
     }
     if authority_path is not None:
         contents[authority_path] = (
-            f"**Maximum {effective_maximum} total review invocations for Issue #{issue_number} "
-            f"/ PR #{pull_number}.**\n"
+            f"for Issue #{issue_number} / PR #{pull_number}.\n"
+            f"**Effective maximum: {effective_maximum} total review invocations.**\n"
         ).encode()
     rows: list[dict[str, object]] = []
     for name, data in contents.items():
@@ -317,10 +319,10 @@ def _make_packet(
             "packet_path": authority_path,
             "sha256": _sha(contents[authority_path]),
             "source_type": "direct_owner_message",
-            "source_origin": "Adrian direct Kilo message Section D, 2026-10-19T10:39:34Z",
-            "decision_type": "D-069/D-077 final max-14 owner review allocation",
+            "source_origin": "Adrian direct Kilo message Section 2, 2026-10-19T17:40:57Z",
+            "decision_type": "D-069/D-077 final max-16 owner review allocation",
             "owner": "adrian.tkacz",
-            "source_timestamp": "2026-10-19T10:39:34Z",
+            "source_timestamp": "2026-10-19T17:40:57Z",
             "scope": {
                 "issue_number": issue_number,
                 "pull_number": pull_number,
@@ -357,6 +359,13 @@ def _make_standalone_preflight_packet(
         "kilo-cli-run-agent-selection.ts.txt": "packages/opencode/src/cli/cmd/run.ts",
         "kilo-cli-json-events.ts.txt": "packages/opencode/src/cli/cmd/run.ts",
         "kilo-cli-session-export.ts.txt": "packages/opencode/src/cli/cmd/export.ts",
+        "kilo-project-global.ts.txt": "packages/opencode/src/project/project.ts",
+        "kilo-project-resolve.ts.txt": "packages/core/src/project.ts",
+        "kilo-session-message-schema.ts.txt": "packages/schema/src/v1/session.ts",
+        "kilo-session-processor-lifecycle.ts.txt": "packages/opencode/src/session/processor.ts",
+        "kilo-session-tool-completion.ts.txt": "packages/opencode/src/session/processor.ts",
+        "kilo-session-message-order.ts.txt": "packages/opencode/src/session/message-v2.ts",
+        "kilo-session-export-order.ts.txt": "packages/opencode/src/session/session.ts",
     }
     owner_names = OWNER_EVIDENCE_PACKET_PATHS
     if tuple(sorted(set(changed_paths))) != changed_paths or not changed_paths:
@@ -602,9 +611,9 @@ class ReviewerPacketTests(unittest.TestCase):
 
     def test_review_exception_requires_raw_scoped_owner_source_in_packet(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            packet, manifest = _make_packet(Path(temporary), effective_maximum=14)
+            packet, manifest = _make_packet(Path(temporary), effective_maximum=16)
             inspected = validate_packet(packet, manifest, require_external_sources=True)
-            self.assertIn("owner-d077-max14.txt", inspected.owner_evidence_paths)
+            self.assertIn("owner-d077-max16.txt", inspected.owner_evidence_paths)
 
             data = _load_object(manifest.read_text(encoding="utf-8"))
             policy = cast(dict[str, object], data["review_policy"])
@@ -614,12 +623,12 @@ class ReviewerPacketTests(unittest.TestCase):
                 _ = validate_packet(packet, manifest, require_external_sources=True)
 
         with tempfile.TemporaryDirectory() as temporary:
-            packet, manifest = _make_packet(Path(temporary), effective_maximum=14)
+            packet, manifest = _make_packet(Path(temporary), effective_maximum=16)
             data = _load_object(manifest.read_text(encoding="utf-8"))
             owner_sources = cast(list[dict[str, object]], data["owner_sources"])
             authority = next(
                 source for source in owner_sources
-                if source.get("packet_path") == "owner-d077-max14.txt"
+                if source.get("packet_path") == "owner-d077-max16.txt"
             )
             _ = authority.pop("source_timestamp")
             _ = manifest.write_text(json.dumps(data, sort_keys=True), encoding="utf-8")
@@ -640,12 +649,12 @@ class ReviewerPacketTests(unittest.TestCase):
 
     def test_review_exception_owner_scope_and_d069a_integration_are_enforced(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            packet, manifest = _make_packet(Path(temporary), effective_maximum=14)
+            packet, manifest = _make_packet(Path(temporary), effective_maximum=16)
             data = _load_object(manifest.read_text(encoding="utf-8"))
             owner_sources = cast(list[dict[str, object]], data["owner_sources"])
             authority = next(
                 source for source in owner_sources
-                if source.get("packet_path") == "owner-d077-max14.txt"
+                if source.get("packet_path") == "owner-d077-max16.txt"
             )
             authority["scope"] = {
                 "issue_number": 212,
@@ -664,7 +673,7 @@ class ReviewerPacketTests(unittest.TestCase):
                 pull_id=928,
                 pull_number=215,
                 head_branch="issue-214-generic-review",
-                effective_maximum=14,
+                effective_maximum=16,
             )
             with self.assertRaisesRegex(PacketError, "restricted to its exact #212/#213"):
                 _ = validate_packet(packet, manifest, require_external_sources=True)
@@ -961,6 +970,7 @@ class ReviewerPacketTests(unittest.TestCase):
             source_bindings = cast(dict[str, object], manifest["source_bindings"])
             binding = cast(dict[str, object], source_bindings["tests/example.py"])
             binding["base_exists"] = True
+            binding["change_type"] = "modified"
             binding["base_blob"] = _git(repository, "rev-parse", f"{base}:tests/example.py")
             binding["head_blob"] = _git(repository, "rev-parse", f"{head}:tests/example.py")
             binding["sha256"] = _sha(source_bytes)
@@ -978,6 +988,151 @@ class ReviewerPacketTests(unittest.TestCase):
                 allow_synthetic_fixture=True,
             )
             self.assertEqual(runtime.canonical_profile_sha256, _sha(PROFILE.read_bytes()))
+
+    def test_deleted_sources_bind_base_bytes_and_remain_in_full_review_coverage(self) -> None:
+        for mixed, empty in ((False, False), (True, False), (False, True)):
+            with self.subTest(mixed=mixed, empty=empty), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                repo, evidence = root / "repo", root / "evidence"
+                _ = repo.mkdir()
+                _ = evidence.mkdir(mode=0o700)
+                _ = _git(repo, "init", "--initial-branch=develop")
+                _ = (repo / "deleted.py").write_text("" if empty else "old line one\nold line two\n", encoding="utf-8")
+                _ = (repo / "modified.py").write_text("original\n", encoding="utf-8")
+                _ = _git(repo, "add", ".")
+                _ = _git(repo, "-c", "user.name=Packet Test", "-c", "user.email=packet@example.invalid",
+                         "commit", "-m", "base")
+                base = _git(repo, "rev-parse", "HEAD")
+                _ = _git(repo, "rm", "deleted.py")
+                if mixed:
+                    _ = (repo / "added.py").write_text("new distinct source\n", encoding="utf-8")
+                    _ = (repo / "modified.py").write_text("modified content\n", encoding="utf-8")
+                    _ = _git(repo, "add", ".")
+                _ = _git(repo, "-c", "user.name=Packet Test", "-c", "user.email=packet@example.invalid",
+                         "commit", "-m", "delete and change source")
+                head = _git(repo, "rev-parse", "HEAD")
+                paths = ("added.py", "deleted.py", "modified.py") if mixed else ("deleted.py",)
+                packet, manifest_path = create_synthetic_standalone_packet(
+                    evidence, changed_paths=paths, head=head, base=base, merge_base=base,
+                )
+                canonical_patch = subprocess.run(
+                    ["git", "diff", "--binary", "--full-index", "--no-ext-diff", "--unified=80",
+                     f"{base}...{head}", "--", *paths], cwd=repo, check=True, stdout=subprocess.PIPE,
+                ).stdout
+                _rewrite_packet_file(packet, manifest_path, "patch.diff", canonical_patch)
+                for index, source in enumerate(paths):
+                    revision = base if source == "deleted.py" else head
+                    data = subprocess.run(["git", "show", f"{revision}:{source}"], cwd=repo,
+                                          check=True, stdout=subprocess.PIPE).stdout
+                    _rewrite_packet_file(packet, manifest_path, f"source-{index:02d}.md", data)
+                manifest = _load_object(manifest_path.read_text(encoding="utf-8"))
+                bindings = cast(dict[str, dict[str, object]], manifest["source_bindings"])
+                rows = cast(list[dict[str, object]], manifest["files"])
+                for source in paths:
+                    binding = bindings[source]
+                    added, deleted = source == "added.py", source == "deleted.py"
+                    revision = base if deleted else head
+                    binding.update({
+                        "change_type": "added" if added else "deleted" if deleted else "modified",
+                        "base_exists": not added,
+                        "base_blob": None if added else _git(repo, "rev-parse", f"{base}:{source}"),
+                        "head_blob": None if deleted else _git(repo, "rev-parse", f"{head}:{source}"),
+                    })
+                    row = next(row for row in rows if row["path"] == binding["packet_path"])
+                    row["revision"] = revision
+                    binding["sha256"] = row["sha256"]
+                    count = len((packet / cast(str, binding["packet_path"])).read_bytes().splitlines())
+                    binding["ranges"] = [[1, count]] if count else []
+                _ = manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+                inspected = validate_packet(packet, manifest_path, source_root=repo)
+                self.assertEqual(inspected.source_line_counts["deleted.py"], 0 if empty else 2)
+                deletion = bindings["deleted.py"]
+                self.assertIsNone(deletion["head_blob"])
+                self.assertIn(deletion["packet_path"], inspected.full_read_paths)
+                finding = {
+                    "reviewed_head": head, "reviewed_base": base, "reviewed_merge_base": base,
+                    "verdict": "REQUEST_CHANGES", "checks_run": [], "limitations": [], "ux_impact": "none",
+                    "findings": [{"severity": "P2", "file": "deleted.py", "line_start": 2, "line_end": 2,
+                                  "evidence": "base-side source", "consequence": "deleted behavior",
+                                  "required_remediation": "restore necessary behavior"}],
+                }
+                if empty:
+                    with self.assertRaises(PacketError):
+                        _ = validate_review_result(json.dumps(finding), inspected)
+                else:
+                    _ = validate_review_result(json.dumps(finding), inspected)
+                baseline = json.dumps(manifest)
+                for mutation in ("absent_base", "forged_base_blob", "head_blob", "missing_ranges", "missing_binding"):
+                    with self.subTest(mutation=mutation):
+                        changed = _load_object(baseline)
+                        changed_bindings = cast(dict[str, dict[str, object]], changed["source_bindings"])
+                        target = changed_bindings["deleted.py"]
+                        if mutation == "absent_base":
+                            target["base_exists"], target["base_blob"] = False, None
+                        elif mutation == "forged_base_blob":
+                            target["base_blob"] = "f" * 40
+                        elif mutation == "head_blob":
+                            target["head_blob"] = "e" * 40
+                        elif mutation == "missing_ranges":
+                            if empty:
+                                continue
+                            target["ranges"] = []
+                        else:
+                            del changed_bindings["deleted.py"]
+                        _ = manifest_path.write_text(json.dumps(changed), encoding="utf-8")
+                        with self.assertRaises(PacketError):
+                            _ = validate_packet(packet, manifest_path, source_root=repo)
+                if mixed:
+                    changed = _load_object(baseline)
+                    target = cast(dict[str, dict[str, object]], changed["source_bindings"])["modified.py"]
+                    target.update({"change_type": "deleted", "head_blob": None})
+                    row = next(row for row in cast(list[dict[str, object]], changed["files"])
+                               if row["path"] == target["packet_path"])
+                    row["revision"] = base
+                    _ = manifest_path.write_text(json.dumps(changed), encoding="utf-8")
+                    with self.assertRaisesRegex(PacketError, "HEAD Git path-presence mismatch"):
+                        _ = validate_packet(packet, manifest_path, source_root=repo)
+                _ = manifest_path.write_text(baseline, encoding="utf-8")
+                deleted_packet = cast(str, deletion["packet_path"])
+                forged = b"forged base evidence\n"
+                _rewrite_packet_file(packet, manifest_path, deleted_packet, forged)
+                changed = _load_object(manifest_path.read_text(encoding="utf-8"))
+                target = cast(dict[str, dict[str, object]], changed["source_bindings"])["deleted.py"]
+                target["sha256"], target["ranges"] = _sha(forged), [[1, 1]]
+                _ = manifest_path.write_text(json.dumps(changed), encoding="utf-8")
+                with self.assertRaisesRegex(PacketError, "source bytes differ from bound Git blob"):
+                    _ = validate_packet(packet, manifest_path, source_root=repo)
+
+    def test_external_excerpt_bytes_cannot_be_substituted_even_when_packet_hashes_match(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            packet, manifest_path = _make_packet(root)
+            external_repo = root / "upstream"
+            _ = external_repo.mkdir()
+            _ = _git(external_repo, "init", "--initial-branch=main")
+            _ = (external_repo / "LICENSE").write_bytes(b"Pinned Kilo 7.8.8 source excerpt.\n")
+            _ = _git(external_repo, "add", ".")
+            _ = _git(external_repo, "-c", "user.name=Packet Test", "-c", "user.email=packet@example.invalid",
+                     "commit", "-m", "synthetic upstream")
+            revision = _git(external_repo, "rev-parse", "HEAD")
+            manifest = _load_object(manifest_path.read_text(encoding="utf-8"))
+            external = cast(list[dict[str, object]], manifest["external_sources"])[0]
+            external["revision"] = revision
+            external["source_path"] = "LICENSE"
+            external["url"] = f"https://github.com/Kilo-Org/kilocode/blob/{revision}/LICENSE"
+            external["blob_sha1"] = _git(external_repo, "rev-parse", f"{revision}:LICENSE")
+            row = next(row for row in cast(list[dict[str, object]], manifest["files"])
+                       if row["path"] == "external-kilo-source.txt")
+            row["origin"], row["revision"] = external["url"], revision
+            _ = manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            _ = validate_packet(packet, manifest_path, external_source_roots={"Kilo-Org/kilocode": external_repo})
+            forged = b"Substituted excerpt bytes.\n"
+            _rewrite_packet_file(packet, manifest_path, "external-kilo-source.txt", forged)
+            manifest = _load_object(manifest_path.read_text(encoding="utf-8"))
+            cast(list[dict[str, object]], manifest["external_sources"])[0]["excerpt_sha256"] = _sha(forged)
+            _ = manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaisesRegex(PacketError, "excerpt differs from pinned Git lines"):
+                _ = validate_packet(packet, manifest_path, external_source_roots={"Kilo-Org/kilocode": external_repo})
 
     def test_canonical_issue_body_bytes_must_match_the_bound_digest(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1300,6 +1455,130 @@ class ReviewerPacketTests(unittest.TestCase):
                 validate_synthetic_preflight_packet(packet, manifest).file_paths, expected_paths
             )
 
+    def test_synthetic_selected_identity_is_not_overwritten_by_contextual_receipts(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            packet, manifest = create_synthetic_standalone_packet(
+                Path(temporary), changed_paths=("tests/example.py",),
+                head=HEAD, base=BASE, merge_base=BASE,
+                issue_id=1684, issue_number=214, pull_id=928, pull_number=215,
+                head_branch="issue-214-synthetic-identity",
+            )
+            inspected = validate_synthetic_preflight_packet(packet, manifest)
+            self.assertEqual((inspected.issue_number, inspected.pull_number), (214, 215))
+            data = _load_object(manifest.read_text(encoding="utf-8"))
+            issue = cast(dict[str, object], data["issue"])
+            self.assertEqual(issue["url"], "https://forgejo.creatidy.com/BioMedical-IT/scarcity-router/issues/214")
+            owners = cast(list[dict[str, object]], data["owner_sources"])
+            contextual = next(owner for owner in owners if owner["packet_path"] == "owner-210.txt")
+            receipt = cast(dict[str, object], contextual["transcription_receipt"])
+            self.assertEqual(receipt["issue_number"], 210)
+            self.assertIn("/issues/210#issuecomment-17258", cast(str, receipt["url"]))
+            policy = cast(dict[str, object], data["review_policy"])
+            self.assertEqual(policy["scope"], {"issue_number": 214, "pull_number": 215})
+            issue["number"] = 212
+            _ = manifest.write_text(json.dumps(data), encoding="utf-8")
+            with self.assertRaises(PacketError):
+                _ = validate_synthetic_preflight_packet(packet, manifest)
+
+    def test_required_pinned_implementation_ranges_cannot_be_omitted_or_substituted(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            packet, manifest = create_synthetic_standalone_packet(
+                Path(temporary), changed_paths=("tests/example.py",),
+                head=HEAD, base=BASE, merge_base=BASE,
+            )
+            _ = packet
+            data = _load_object(manifest.read_text(encoding="utf-8"))
+            rows = cast(list[dict[str, object]], data["external_sources"])
+            records = {cast(str, row["path"]): row for row in cast(list[dict[str, object]], data["files"])}
+            for row in rows:
+                required = KILO_REQUIRED_SOURCE_RANGES.get(cast(str, row["packet_path"]))
+                if required is not None:
+                    row["start_line"], row["end_line"] = required
+            validate_kilo_source_records(rows, records)
+            for path in KILO_REQUIRED_SOURCE_RANGES:
+                with self.subTest(path=path):
+                    missing = [row for row in rows if row["packet_path"] != path]
+                    with self.assertRaisesRegex(PacketError, "complete pinned Kilo source set"):
+                        validate_kilo_source_records(missing, records)
+                    target = next(row for row in rows if row["packet_path"] == path)
+                    original = target.copy()
+                    target["start_line"] = cast(int, target["start_line"]) + 1
+                    with self.assertRaisesRegex(PacketError, "implementation lines omitted"):
+                        validate_kilo_source_records(rows, records)
+                    target.update(original)
+                    target["source_path"] = "packages/not-the-implementation.ts"
+                    with self.assertRaisesRegex(PacketError, "complete pinned Kilo mapping"):
+                        validate_kilo_source_records(rows, records)
+                    target.update(original)
+
+    def test_terminal_verdict_requires_completed_read_before_text_provenance(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            _, _, runtime = self._prepare_standalone(Path(temporary), preflight=False)
+            baseline, model, title, prompt = self._standalone_session(runtime, preflight=False)
+            for mutation in (
+                "missing_completed", "missing_finish", "interrupted", "failed", "unfinished_text",
+                "missing_read_time", "late_read", "pre_read_json", "tools_after_verdict",
+                "earlier_json_only", "nonmonotone_messages", "wrong_response_parent",
+            ):
+                with self.subTest(mutation=mutation):
+                    session = cast(dict[str, object], json.loads(json.dumps(baseline)))
+                    messages = cast(list[dict[str, object]], session["messages"])
+                    final_info = cast(dict[str, object], messages[-1]["info"])
+                    final_parts = cast(list[dict[str, object]], messages[-1]["parts"])
+                    calls = cast(list[dict[str, object]], messages[1]["parts"])
+                    if mutation == "missing_completed":
+                        del cast(dict[str, object], final_info["time"])["completed"]
+                    elif mutation == "missing_finish":
+                        del final_info["finish"]
+                    elif mutation == "interrupted":
+                        final_info["error"] = {"name": "MessageAbortedError", "data": {"message": "synthetic"}}
+                    elif mutation == "failed":
+                        final_info["finish"] = "error"
+                    elif mutation == "unfinished_text":
+                        del cast(dict[str, object], final_parts[0]["time"])["end"]
+                    elif mutation == "missing_read_time":
+                        del cast(dict[str, object], calls[0]["state"])["time"]
+                    elif mutation == "late_read":
+                        cast(dict[str, object], calls[0]["state"])["time"] = {"start": 32, "end": 33}
+                    elif mutation == "pre_read_json":
+                        final_parts[0]["time"] = {"start": 2, "end": 3}
+                    elif mutation == "tools_after_verdict":
+                        final_parts.append(calls[0])
+                    elif mutation == "earlier_json_only":
+                        calls.insert(0, final_parts[0])
+                        messages[-1]["parts"] = []
+                    elif mutation == "nonmonotone_messages":
+                        messages[1], messages[2] = messages[2], messages[1]
+                    else:
+                        final_info["parentID"] = "msg_unrelated"
+                    with self.assertRaises(PacketError):
+                        _ = audit_standalone_session(
+                            session, session_export_sha256="b" * 64, runtime=runtime,
+                            expected_model=model, expected_title=title, expected_prompt=prompt,
+                        )
+
+    def test_empty_frozen_source_still_requires_a_complete_native_read(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            packet, manifest, _ = self._prepare_standalone(root, preflight=False)
+            _rewrite_packet_file(packet, manifest, "source-00.md", b"")
+            data = _load_object(manifest.read_text(encoding="utf-8"))
+            binding = cast(dict[str, dict[str, object]], data["source_bindings"])["tests/example.py"]
+            binding.update({"sha256": _sha(b""), "ranges": []})
+            _ = manifest.write_text(json.dumps(data), encoding="utf-8")
+            workspaces, overlays = root / "empty-workspaces", root / "empty-overlays"
+            _ = workspaces.mkdir(mode=0o700)
+            _ = overlays.mkdir(mode=0o700)
+            runtime = prepare_standalone_environment(
+                packet, manifest, PROFILE, workspaces, overlays, allow_synthetic_fixture=True,
+            )
+            session, model, title, prompt = self._standalone_session(runtime, preflight=False)
+            result = audit_standalone_session(
+                session, session_export_sha256="b" * 64, runtime=runtime,
+                expected_model=model, expected_title=title, expected_prompt=prompt,
+            )
+            self.assertEqual(result["status"], "STANDALONE_REVIEW_TRACE_PASS")
+
     def _prepare_standalone(
         self, root: Path, *, preflight: bool,
     ) -> tuple[Path, Path, RuntimeWorkspace]:
@@ -1349,6 +1628,7 @@ class ReviewerPacketTests(unittest.TestCase):
                 "tool": "read",
                 "state": {
                     "status": "error",
+                    "time": {"start": 11, "end": 12},
                     "input": {"filePath": path},
                     "output": None,
                     "error": "Permission denied before content",
@@ -1363,8 +1643,8 @@ class ReviewerPacketTests(unittest.TestCase):
         if line_numbers is not None:
             file_lines = {number: file_lines[number] for number in line_numbers}
         absolute_path = str((runtime.packet / Path(path).name).resolve())
-        line_start = min(file_lines)
-        line_end = max(file_lines)
+        line_start = min(file_lines, default=1)
+        line_end = max(file_lines, default=0)
         footer = (
             f"(End of file - total {len(full_file_lines)} lines)"
             if line_end == len(full_file_lines)
@@ -1378,6 +1658,7 @@ class ReviewerPacketTests(unittest.TestCase):
             "tool": "read",
             "state": {
                 "status": "completed",
+                "time": {"start": 11, "end": 12},
                 "input": {"filePath": path},
                 "output": rendered,
                 "metadata": {"approval": {
@@ -1391,8 +1672,8 @@ class ReviewerPacketTests(unittest.TestCase):
                     "type": "file",
                     "path": str((runtime.packet / Path(path).name).resolve()),
                     "text": "\n".join(file_lines.values()),
-                    "lineStart": min(file_lines),
-                    "lineEnd": max(file_lines),
+                    "lineStart": min(file_lines, default=1),
+                    "lineEnd": max(file_lines, default=0),
                     "totalLines": len(full_file_lines),
                     "truncated": len(file_lines) != len(full_file_lines),
                 }},
@@ -1483,10 +1764,13 @@ class ReviewerPacketTests(unittest.TestCase):
                 "permission": [],
             },
             "messages": [
-                {"info": {"role": "user"}, "parts": [{"type": "text", "text": f'"{prompt}"'}]},
-                {"info": {"role": "assistant", "agent": "pr-reviewer-standalone"}, "parts": parts},
-                {"info": {"role": "assistant", "agent": "pr-reviewer-standalone", "finish": "stop"},
-                 "parts": [{"type": "text", "text": json.dumps(final)}]},
+                {"info": {"role": "user", "id": "msg_user", "time": {"created": 1}},
+                 "parts": [{"type": "text", "text": f'"{prompt}"'}]},
+                {"info": {"role": "assistant", "agent": "pr-reviewer-standalone", "id": "msg_reads",
+                          "parentID": "msg_user", "time": {"created": 10, "completed": 20}}, "parts": parts},
+                {"info": {"role": "assistant", "agent": "pr-reviewer-standalone", "finish": "stop",
+                          "id": "msg_final", "parentID": "msg_user", "time": {"created": 30, "completed": 40}},
+                 "parts": [{"type": "text", "text": json.dumps(final), "time": {"start": 31, "end": 39}}]},
             ],
         }
         return session, expected_model, title, prompt

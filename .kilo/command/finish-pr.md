@@ -18,13 +18,13 @@ INCLUDING the initial review, COMMENT, invalidated reviews and corrected retries
 For other deliveries, a greater ceiling requires a D-069A finite exception verified
 against its direct canonical owner source after D-069A is integrated in freshly fetched
 `develop`. The sole exception to that mechanism is Adrian's direct, one-time D-069/D-077
-amendment for Issue #212/PR #213: maximum 14 total; #1-11 remain consumed, #12 is the
-next ordinary review, #13 is an additional ordinary review only after diagnosed/corrected
-#12 failure or owner-manual Daybreak after valid #12 APPROVE, and #14 is the final manual
-Daybreak if #13 was needed for ordinary review. No #15, reset or automatic extension.
-The exact owner source is the Section D excerpt in
-`.review-evidence-212/owner-d069-review-ceiling-amendment-2026-10-19-max14.txt`, from
-Adrian's direct Kilo message at `2026-10-19T10:39:34Z`; D-077 binds its SHA-256. Verify
+amendment for Issue #212/PR #213: maximum 16 total; #1-13 remain consumed, #14 is the
+next ordinary review, #15 is one additional ordinary review only after diagnosed
+remediation of #14 or owner-manual Daybreak after valid #14 APPROVE, and #16 is manual
+Daybreak if #15 was ordinary. No #16 ordinary review, #17, reset or automatic extension.
+The exact owner source is the Section 2 excerpt in
+`.review-evidence-212/owner-d077-max16.txt`, from
+Adrian's direct Kilo message at `2026-10-19T17:40:57Z`; D-077 binds its SHA-256. Verify
 that direct source, exact Repo/Issue/PR identities, scope and current refs before any
 exceptional reservation. This is not D-069A, is not transferable, and is not a general
 exception mechanism. Missing, stale, ambiguous or mismatched authority leaves the
@@ -113,7 +113,9 @@ delivery; STOP_REVISE still requires an explicit owner decision, not a new PR/na
     `set -o pipefail`; never print or save the raw event stream containing returned bytes.
 8. After the standalone CLI exits, export the exact session in memory and audit the
     full trace: selected agent/mode, no parent/resume, model dispatch, every Read
-    path/range and effective permission, complete file coverage, final JSON result,
+    path/range and effective permission, complete file coverage before the final text,
+    successfully completed terminal response (`finish: stop`, no error, message/text
+    timestamps present), no subsequent tool activity, strict final JSON result,
     packet post-inventory and fresh canonical currentness. Do not print or persist raw
     packet contents. These post-execution checks are separate from static Kilo debug
     and the standalone preflight. A verdict alone cannot approve; malformed,
@@ -145,10 +147,11 @@ delivery; STOP_REVISE still requires an explicit owner decision, not a new PR/na
     standalone synthetic preflight before a NEW standalone reviewer process.
 12. The default ceiling is 10; use only a freshly verified D-069A exception for
    other deliveries or the exact nontransferable D-077 direct owner amendment for
-   #212/PR #213 described above. For #212, #12 is the next ordinary review; #13 is
-   ordinary only after diagnosed/corrected #12 failure, otherwise it is owner-manual
-   Daybreak after valid #12 APPROVE; #14 is the manual gate if #13 was ordinary. No
-   #15. After a valid ordinary APPROVE, reserve the next owner-manual ordinal and return
+    #212/PR #213 described above. For #212, #14 is the next ordinary review; #15 is
+    ordinary only after diagnosed remediation of #14, otherwise it is owner-manual
+    Daybreak after valid #14 APPROVE; #16 is the manual gate if #15 was ordinary. No
+    #16 ordinary review and no #17. After APPROVE with empty findings and limitations,
+    reserve the next owner-manual ordinal and return
    READY_FOR_OWNER_SECURITY_REVIEW; never report READY_TO_MERGE while that gate is open.
    At the effective review bound an exact valid APPROVE may yield READY_TO_MERGE only
    for deliveries with no remaining owner-manual gate;
