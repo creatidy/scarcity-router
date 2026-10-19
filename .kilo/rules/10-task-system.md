@@ -70,12 +70,16 @@
   the dedicated `pr-reviewer-standalone` profile for each frozen whole-PR review; no
   native Task dispatch or owner relaying is required.
   Default to at most 10 whole-PR review invocations per issue delivery, including
-  initial, COMMENT and retries. A larger finite maximum requires D-069A authority:
-  the primary verifies the direct owner source, exact canonical repository/issue/
-  linked-PR identity, maximum and scope before reservation, and confirms D-069A is
-  already integrated in freshly fetched `develop`. A branch cannot use its own
-  unintegrated rule; issue-specific exceptions do not transfer or renew. Otherwise
-  the effective ceiling remains 10. Persist ordinals before dispatch in excluded
+  initial, COMMENT and retries. The sole separate direct-owner supersession is for
+  #212/PR #213: D-077 records maximum 12, with #11 the final ordinary review and #12
+  owner-manual Daybreak only after valid #11 APPROVE. Verify the preserved direct
+  owner source receipt and exact canonical issue/PR scope/currentness before that
+  reservation; this is not D-069A and does not transfer. Any other larger finite
+  maximum requires D-069A authority: verify its direct owner source, exact canonical
+  repository/issue/linked-PR identity, maximum and scope before reservation, and
+  confirm D-069A is already integrated in freshly fetched `develop`. A branch cannot
+  use its own unintegrated rule. Otherwise the effective ceiling remains 10. Persist
+  ordinals before dispatch in excluded
   progress; finish reentry, internal phase, new reviewer process/model/session cannot
   reset the counter.
   Current APPROVE yields READY_TO_MERGE, never a standalone merge; only `/loop`

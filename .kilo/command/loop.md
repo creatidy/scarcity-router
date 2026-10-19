@@ -227,12 +227,16 @@ makes no edits/branch switches while the standalone process runs; no source edit
 branch switches occur while a reviewer or preflight CLI process is active.
 
 Default maximum 10 whole-PR review invocations per issue delivery, INCLUDING the
-initial review, COMMENT, invalidated reviews and corrected retries. A larger finite
-ceiling is available only through D-069A after the primary verifies the direct owner
-source and exact canonical Repo/Issue/linked-PR identity, scope and maximum, and
-confirms D-069A is integrated in freshly fetched `develop`. A branch cannot use its
-own unintegrated rule, and issue-specific exceptions do not transfer or renew. Missing,
-stale or mismatched authority leaves the default 10 active. Reserve/persist each
+initial review, COMMENT, invalidated reviews and corrected retries. The sole separate
+direct-owner supersession is for #212/PR #213: D-077 records maximum 12, with #11 the
+final ordinary review and #12 owner-manual Daybreak only after valid #11 APPROVE.
+Verify the preserved direct owner source receipt and exact canonical Repo/Issue/PR
+scope/currentness before that reservation; this is not D-069A and does not transfer.
+For any other delivery, a larger finite ceiling is available only through D-069A
+after the primary verifies the direct owner source and exact canonical Repo/Issue/
+linked-PR identity, scope and maximum, and confirms D-069A is integrated in freshly
+fetched `develop`. A branch cannot use its own unintegrated rule. Missing, stale or
+mismatched authority leaves the default 10 active. Reserve/persist each
 ordinal BEFORE dispatch in the shared delivery ledger; `/finish-pr` reentry, internal
 phases, new processes and model/session changes cannot reset it. This is a safety ceiling,
 not a target; stop immediately for a genuine material decision.

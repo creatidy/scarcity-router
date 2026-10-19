@@ -15,14 +15,20 @@ every failed/COMMENT/failover whole-PR attempt consumes its reserved ordinal.
 
 Delivery budget: default at most 10 whole-PR review invocations per issue delivery,
 INCLUDING the initial review, COMMENT, invalidated reviews and corrected retries.
-Only a D-069A finite exception can authorize a greater ceiling for the exact named
-issue/linked PR. Before reserving any ordinal above 10, the primary re-fetches the
-canonical Repo, Issue, PR and directly linked owner-decision object(s) through MCP;
-verifies exact identities/links, direct source provenance and digest, finite maximum,
-scope and current refs; and confirms D-069A is integrated in freshly fetched `develop`.
-An exception on the current branch or in its unmerged PR is not effective. Missing,
-stale, ambiguous or mismatched evidence leaves the default 10 effective. Revalidate
-before every exceptional reservation; local ledgers count but never grant authority.
+For other deliveries, a greater ceiling requires a D-069A finite exception verified
+against its direct canonical owner source after D-069A is integrated in freshly fetched
+`develop`. The sole exception to that mechanism is the direct, one-time D-069 owner
+amendment for Issue #212/PR #213 recorded in D-077 and the accepted Issue body: maximum
+12, with #1-10 preserved as consumed, #11 the final ordinary review, and #12 the
+owner-manual Daybreak gate only after valid #11 approval. Its original owner source is
+`.review-evidence-212/owner-d069-review-ceiling-amendment-2026-10-19.txt`, SHA-256
+`fc3b4fa416da3c7083c5140b1ff943afacb87edbe0409f84d98426992d70e301`; verify that
+source, exact Repo/Issue/PR identities, D-077/Issue scope and current refs before the
+authorized #11 reservation. This is direct owner authority, not D-069A; it is not
+transferable, not a general exception mechanism, and does not authorize #13. Missing,
+stale, ambiguous or mismatched authority leaves the applicable default ceiling in
+effect. Revalidate before every exceptional reservation; local ledgers count but
+never grant authority.
 Before the first review verify `.task_progress.md` is Git-locally excluded, then
 append a delivery ledger keyed by issue/PR (and `/loop` invocation ID if applicable).
 Before EVERY whole-PR reviewer launch reserve/persist the next review ordinal, frozen SHAs
@@ -134,9 +140,12 @@ delivery; STOP_REVISE still requires an explicit owner decision, not a new PR/na
    canonical Git. Never amend, squash, force-push or rewrite published history.
     Recheck remote/MCP head, return to step 3, rebuild the path plan and repeat the
     standalone synthetic preflight before a NEW standalone reviewer process.
-12. The default ceiling is 10; never exceed it without the freshly verified D-069A
-   authority above. At the effective review bound an exact valid APPROVE may yield
-   READY_TO_MERGE; genuine decisions yield OWNER_DECISION_NEEDED and finite
+12. The default ceiling is 10; use only a freshly verified D-069A exception for
+   other deliveries or the exact nontransferable D-077 direct owner amendment for
+   #212/PR #213 described above. For #212, #11 is the final ordinary review and
+   #12 is the owner-manual Daybreak gate after valid #11 APPROVE; no #13 is allowed.
+   At the effective review bound an exact valid APPROVE may yield READY_TO_MERGE;
+   genuine decisions yield OWNER_DECISION_NEEDED and finite
    infrastructure failures BLOCKED. Remaining actionable findings yield STOP_REVISE;
    summarize recurring patterns,
    especially substantial new semantic/architectural defects across repository product boundaries. Never

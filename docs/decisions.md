@@ -5840,11 +5840,17 @@ neither is a new live check of the current deployment.
   Standalone implement remains owner-selected; review is read-only; finish never
   merges. The migration itself uses pre-migration review limits and remains open
   for human integration; it cannot bootstrap merge authority from its new files.
+- **One-time #212 supersession:** Adrian's later direct owner amendment recorded in
+  D-077 raises the effective maximum to 12 for issue #212/PR #213 only: #1-10 retain
+  their actual outcomes, #11 is the final ordinary review, and #12 is the separate
+  owner-manual Daybreak gate after valid #11 approval. This direct supersession is
+  not derived from D-069A and does not change the default ten for any other delivery.
 - **Preserved model:** The primary invocation context is the sole orchestrator,
   using one normal checkout/one mutator, no worktrees/alternate checkouts or
   stash/reset of owner work. The excluded `.task_progress.md` ledger persists
   pre-dispatch ordinals across phase/finish/task/model/session changes; no review
-  11. Fresh isolated read-only reviewers inspect the complete frozen PR. Selection
+  above ten by default except the exact #212 supersession recorded below. Fresh
+  isolated read-only reviewers inspect the complete frozen PR. Selection
   pages all current open canonical issues, filters only exact case-insensitive
   invalid/wontfix/duplicate, verifies explicit gates and orders by explicit
   priority/required ordering/created_at/issue number. Issues, not PRs, select work.
@@ -5871,7 +5877,8 @@ neither is a new live check of the current deployment.
 
 - **Status:** Owner-authorized bootstrap under issue #212. This policy text is
   proposed on the bootstrap branch and has no operational effect until the change
-  is integrated into `develop`. It does not authorize an exception for issue #212.
+  is integrated into `develop`. This mechanism itself does not authorize an
+  exception for #212; the separate direct owner supersession is recorded in D-077.
 - **Authority:** Adrian's direct bootstrap instruction is retained in
   `.review-evidence-212/owner-authorization-2026-10-15.txt`, SHA-256
   `c8a2fa23c72c122bc4ef52b7c73ff76662142af045fbad796280c5c25ab64476`, and
@@ -5889,7 +5896,8 @@ neither is a new live check of the current deployment.
   alter the default, product contracts, security gates or `/loop`-only merge
   authority. A delivery cannot use this rule merely because its branch or PR
   contains it: the primary must verify that D-069A is already present in the
-  freshly fetched canonical `develop`.
+  freshly fetched canonical `develop`. This generic mechanism is not the source of
+  D-077's one-time direct owner amendment for #212/PR #213.
 - **Exception admission:** A maximum above ten is usable only for one specifically
   named canonical `BioMedical-IT/scarcity-router` issue and its linked PR, with a
   positive finite integer maximum and exact task scope. Before reserving each
@@ -5931,9 +5939,9 @@ neither is a new live check of the current deployment.
   | Case | Evidence | Result |
   | --- | --- | --- |
   | Normal delivery | No valid canonical owner exception | Default maximum 10. |
-  | Bootstrap #212 | D-069A text is on the unmerged bootstrap branch | Default maximum 10; the bootstrap cannot use its own proposed rule. |
+  | Bootstrap #212 | D-069A remains unintegrated; D-077 records a separate direct owner amendment | Maximum 12 only for #212/PR #213 under that direct amendment; no authority is derived from D-069A. |
   | Pending #210 allocation | Direct owner source and Kilo-authored receipt #17258 state future maximum 11, but D-069A is not integrated | Keep maximum 10 effective; do not reserve/dispatch #10 or #11. |
-  | Ledger-only extension | Local progress says `max=12`; no matching canonical owner source | Deny exception; keep default 10. |
+  | Ledger-only extension | No matching direct owner source in the canonical accepted scope | Deny exception; keep default 10. |
   | Scope mismatch | Owner record names another issue/PR, repository or task scope | Deny transfer; use this delivery's default/verified maximum only. |
   | Stale or ambiguous evidence | Changed refs/source hash, missing canonical link, malformed maximum or conflicting owner record | Fail closed at default 10 and recover evidence; never infer authority. |
   | Verified finite exception | D-069A is integrated and direct source plus exact canonical Repo/Issue/PR record match | Use only that finite maximum for that issue/PR; preserve all prior ordinals/results. |
@@ -5965,8 +5973,9 @@ neither is a new live check of the current deployment.
   smallest materially distinct choices. BLOCKED names exhausted authorized paths/
   budget or an external dependency with no authorized workaround. Environment
   inconvenience is neither a defect nor a fabricated owner question.
-- **Preserved:** The default ten-review ceiling is subject only to D-069A's exact
-  finite canonical owner exceptions; fresh independent whole-PR exact-HEAD/base
+- **Preserved:** The default ten-review ceiling is subject to D-069A's exact
+  finite canonical owner exceptions and the separately recorded one-time direct
+  owner supersession for issue #212/PR #213; fresh independent whole-PR exact-HEAD/base
   review, frozen result schema, model-bound/restricted gates, full validation,
   scope/acceptance, canonical merge authority/currentness, and all product/runtime,
   credential/network, licensing and non-delivery model-policy contracts. No new
@@ -6412,7 +6421,7 @@ neither is a new live check of the current deployment.
   review-ceiling extension was authorized at that point. No Daybreak was invoked
   automatically. No merge, issue closure, release, deployment, `main` promotion or unrelated
   repository/worktree mutation is authorized.
-- **Superseding direct owner amendment for #212/PR #213:** Adrian's direct owner
+- **Prior direct owner amendment for #212/PR #213 (superseded by the later max-12 amendment below):** Adrian's direct owner
   instruction in the Kilo conversation at `2026-10-18T19:24:31Z` explicitly amends
   the D-069 ceiling and this D-077 ordinal allocation for this bootstrap delivery
   only. Its exact message is preserved verbatim at the Git-locally excluded
@@ -6424,10 +6433,24 @@ neither is a new live check of the current deployment.
     #10 is the final independent ordinary whole-PR review; after its valid APPROVE,
     #11 is Adrian's separate manual Daybreak security review through official Codex.
     No #12 or automatic extension is authorized.
-  - The default maximum remains ten for every other delivery. This is a direct
+  - The default maximum remains ten for every other delivery. This was a direct
     owner amendment to the existing D-069/D-077 decision, not authority from
     unintegrated D-069A. Do not reset/reclassify history, invoke Daybreak from Kilo,
     merge or close #212 before both approvals.
+- **Final direct owner amendment for #212/PR #213:** Adrian's direct owner instruction
+  in the Kilo conversation at `2026-10-19T07:02:31Z` supersedes the preceding #212
+  max-11 allocation. The exact message is preserved verbatim at the Git-locally
+  excluded `.review-evidence-212/owner-d069-review-ceiling-amendment-2026-10-19.txt`,
+  SHA-256 `fc3b4fa416da3c7083c5140b1ff943afacb87edbe0409f84d98426992d70e301`. The
+  direct user message is authoritative; any Kilo-authored Forgejo comment or body
+  update is a transcription, not an owner-authored source.
+  - Effective maximum: 12 invocations for this issue/PR only. Preserve #1-10 and
+    their actual outcomes; #11 is the final fresh ordinary whole-PR review; only
+    after its valid APPROVE may #12 be reserved for Adrian's separate manual
+    Daybreak security review through official Codex. No #13 or automatic extension.
+  - The default maximum ten remains for all other deliveries. This is a direct
+    one-time owner amendment to D-069/D-077, not authority from unintegrated D-069A.
+    Do not reset/reclassify history or invoke Daybreak automatically.
 
 ### U-014 - Native coding backend versus Kernel-owned workspace lifecycle
 

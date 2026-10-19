@@ -150,11 +150,16 @@ output alone is not proof. This establishes Kilo tool-level confinement, not OS
 sandboxing or backend model identity. The provider request uses the existing
 credential-safe Kilo authentication path; credentials are never copied into the
 reviewer context or evidence. A default maximum of 10 invocations per issue delivery
-includes initial, COMMENT, invalidated reviews and corrected retries. D-069A permits a greater finite
-maximum only after the primary verifies the direct owner source, exact canonical
-repository/issue/linked-PR identity, scope and cap, and confirms the policy is already
-integrated in freshly fetched `develop`. An unmerged branch cannot authorize its own
-exception; stale, missing or mismatched evidence leaves the default 10 active. Reserve
+includes initial, COMMENT, invalidated reviews and corrected retries. The sole separate
+direct-owner supersession is for #212/PR #213: D-077 records maximum 12, with #11 the
+final ordinary review and #12 owner-manual Daybreak only after valid #11 APPROVE.
+Verify the preserved direct owner source receipt and exact canonical scope/currentness
+before that reservation; this is not D-069A and cannot transfer. For every other
+delivery, D-069A permits a greater finite maximum only after the primary verifies the
+direct owner source, exact canonical repository/issue/linked-PR identity, scope and
+cap, and confirms the policy is already integrated in freshly fetched `develop`. An
+unmerged branch cannot authorize its own exception; stale, missing or mismatched
+evidence leaves the default 10 active. Reserve
 ordinals BEFORE dispatch in Git-locally excluded `.task_progress.md`; reentry/phase/
 process/model/session changes never reset them. Every HEAD/base change requires a new
 counted review. Missing or ambiguous recovery is BLOCKED. Implementation never
@@ -323,10 +328,11 @@ Do not repeat identical failures.
 General non-delivery defaults remain one initial review, one remediation and
 narrow verification, as described by `model-policy.json`. Repository command
 delivery uses D-069's scoped override, not those generic round counts: the default
-ceiling is 10 whole-PR reviews; D-069A's exact canonical owner exception can set a
-greater finite ceiling for one named issue/linked PR after integration and fresh
-verification. Never exceed the effective maximum or patch without capacity for a
-fresh review.
+ceiling is 10 whole-PR reviews. The direct D-077 owner amendment separately sets a
+one-time maximum of 12 for #212/PR #213 only; for every other delivery, D-069A's exact
+canonical owner exception can set a greater finite ceiling for one named issue/linked
+PR after integration and fresh verification. Never exceed the effective maximum or
+patch without capacity for a fresh review.
 Command delivery follows [the shared technical-recovery contract](../.kilo/rules/35-technical-recovery.md)
 under D-070: distinguish engineering blockers from genuine owner decisions and
 review findings from infrastructure failure or unresolved judgment. Diagnose and

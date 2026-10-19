@@ -32,6 +32,9 @@ from tools.reviewer_packet import (
     standalone_packet_path_plan,
     validate_packet as _validate_packet,
     validate_synthetic_preflight_packet,
+    validate_read_display,
+    validate_preflight_result,
+    validate_review_result,
     verify_effective_standalone_agent,
 )
 
@@ -963,9 +966,16 @@ class ReviewerPacketTests(unittest.TestCase):
         if line_numbers is not None:
             file_lines = {number: file_lines[number] for number in line_numbers}
         absolute_path = str((runtime.packet / Path(path).name).resolve())
+        line_start = min(file_lines)
+        line_end = max(file_lines)
+        footer = (
+            f"(End of file - total {len(full_file_lines)} lines)"
+            if line_end == len(full_file_lines)
+            else f"(Showing lines {line_start}-{line_end} of {len(full_file_lines)}. Use offset={line_end + 1} to continue.)"
+        )
         rendered = f"<path>{absolute_path}</path>\n<type>file</type>\n<content>\n" + "\n".join(
             f"{number}: {line}" for number, line in file_lines.items()
-        ) + "\n</content>"
+        ) + f"\n\n{footer}\n</content>"
         return {
             "type": "tool",
             "tool": "read",
@@ -1579,6 +1589,129 @@ class ReviewerPacketTests(unittest.TestCase):
                     expected_title=title,
                     expected_prompt=prompt,
                 )
+
+    def test_review_and_preflight_result_parsers_reject_nested_duplicate_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            _, _, runtime = self._prepare_standalone(Path(temporary), preflight=False)
+            session, _, _, _ = self._standalone_session(runtime, preflight=False)
+            messages = cast(list[dict[str, object]], session["messages"])
+            final_parts = cast(list[dict[str, object]], messages[-1]["parts"])
+            result = cast(dict[str, object], json.loads(cast(str, final_parts[0]["text"])))
+
+            result["verdict"] = "APPROVE"
+            result["findings"] = []
+            top_level = json.dumps(result, separators=(",", ":"))
+            top_level = top_level.replace(
+                '"verdict":"APPROVE"', '"verdict":"REQUEST_CHANGES","verdict":"APPROVE"', 1
+            )
+            with self.assertRaisesRegex(PacketError, "strict JSON object"):
+                _ = validate_review_result(top_level, runtime.inspection)
+
+            finding = {
+                "severity": "P1",
+                "file": "tests/example.py",
+                "line_start": 1,
+                "line_end": 1,
+                "evidence": "synthetic evidence",
+                "consequence": "synthetic consequence",
+                "required_remediation": "synthetic remediation",
+            }
+            result["verdict"] = "REQUEST_CHANGES"
+            result["findings"] = [finding]
+            nested = json.dumps(result, separators=(",", ":"))
+            nested = nested.replace('"severity":"P1"', '"severity":"P0","severity":"P1"', 1)
+            with self.assertRaisesRegex(PacketError, "strict JSON object"):
+                _ = validate_review_result(nested, runtime.inspection)
+
+            preflight_root = Path(temporary) / "preflight"
+            preflight_root.mkdir()
+            preflight_runtime = self._prepare_standalone(preflight_root, preflight=True)[2]
+            preflight_session, _, _, _ = self._standalone_session(
+                preflight_runtime, preflight=True, short_preflight=True
+            )
+            preflight_messages = cast(list[dict[str, object]], preflight_session["messages"])
+            preflight_parts = cast(list[dict[str, object]], preflight_messages[-1]["parts"])
+            preflight_result = cast(dict[str, object], json.loads(cast(str, preflight_parts[0]["text"])))
+            preflight_json = json.dumps(preflight_result, separators=(",", ":"))
+            first_probe = preflight_runtime.denied_paths[0]
+            field = f'"path":{json.dumps(first_probe)}'
+            preflight_json = preflight_json.replace(field, f'{field},{field}', 1)
+            with self.assertRaisesRegex(PacketError, "strict JSON object"):
+                _ = validate_preflight_result(
+                    preflight_json,
+                    preflight_runtime,
+                    ("packet/index.md", "packet/source-00.md"),
+                )
+
+    def test_reviewer_finding_line_ranges_are_bounded_to_frozen_head_source(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            packet, manifest = _make_packet(Path(temporary))
+            inspection = validate_packet(packet, manifest)
+            response: dict[str, object] = {
+                "reviewed_head": inspection.head,
+                "reviewed_base": inspection.base,
+                "reviewed_merge_base": inspection.merge_base,
+                "verdict": "REQUEST_CHANGES",
+                "findings": [{
+                    "severity": "P2",
+                    "file": "tests/example.py",
+                    "line_start": 2,
+                    "line_end": 3,
+                    "evidence": "Synthetic evidence for frozen source lines.",
+                    "consequence": "Synthetic consequence.",
+                    "required_remediation": "Synthetic remediation.",
+                }],
+                "limitations": [],
+                "checks_run": [],
+                "ux_impact": "none",
+            }
+            _ = validate_review_result(json.dumps(response), inspection)
+            finding = cast(dict[str, object], cast(list[object], response["findings"])[0])
+            finding["line_end"] = 4
+            with self.assertRaisesRegex(PacketError, "exceeds its frozen HEAD source"):
+                _ = validate_review_result(json.dumps(response), inspection)
+
+    def test_kilo_read_byte_cap_accepts_chunk_total_852_853_of_6452(self) -> None:
+        path = "packet/source-11.md"
+        absolute = "/tmp/standalone/workspace/packet/source-11.md"
+        lines = {line: f"line-{line}" for line in range(1, 853)}
+        text = "\n".join(lines.values())
+        output = (
+            f"<path>{absolute}</path>\n<type>file</type>\n<content>\n"
+            + "\n".join(f"{line}: {value}" for line, value in lines.items())
+            + "\n\n(Output capped at 50 KB. Showing lines 1-852. Use offset=853 to continue.)\n</content>"
+        )
+        display: dict[str, object] = {
+            "path": absolute,
+            "type": "file",
+            "text": text,
+            "lineStart": 1,
+            "lineEnd": 852,
+            "totalLines": 853,
+            "truncated": True,
+        }
+        validate_read_display(
+            packet_path=path,
+            expected_absolute=absolute,
+            output=output,
+            lines=lines,
+            display=display,
+            packet_line_count=6452,
+        )
+
+        for field, value in (("totalLines", 852), ("lineEnd", 851), ("truncated", False)):
+            with self.subTest(field=field):
+                inconsistent = dict(display)
+                inconsistent[field] = value
+                with self.assertRaises(PacketError):
+                    validate_read_display(
+                        packet_path=path,
+                        expected_absolute=absolute,
+                        output=output,
+                        lines=lines,
+                        display=inconsistent,
+                        packet_line_count=6452,
+                    )
 
 
 if __name__ == "__main__":

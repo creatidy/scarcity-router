@@ -419,7 +419,7 @@ class WorkflowContractTests(unittest.TestCase):
         normalized = " ".join(section.split())
         for requirement in (
             "has no operational effect until the change is integrated into `develop`",
-            "does not authorize an exception for issue #212",
+            "does not authorize an exception for #212",
             "D-069's ten-review maximum remains the default",
             "positive finite integer maximum and exact task scope",
             "original source bytes and digest",
@@ -428,7 +428,7 @@ class WorkflowContractTests(unittest.TestCase):
             "do not reserve or dispatch #10 or #11",
             "issue #210 comment #17258",
             "intended maximum 11",
-            "maximum 10; the bootstrap cannot use its own proposed rule",
+            "Maximum 12 only for #212/PR #213 under that direct amendment",
             "an exception cannot transfer to another issue/pr",
             "assign reviewer roles from the currently unmet approval gates",
         ):
@@ -445,7 +445,7 @@ class WorkflowContractTests(unittest.TestCase):
             exception_rows[cells[0]] = cells[2]
         expected_outcomes = {
             "Normal delivery": "Default maximum 10.",
-            "Bootstrap #212": "Default maximum 10; the bootstrap cannot use its own proposed rule.",
+            "Bootstrap #212": "Maximum 12 only for #212/PR #213 under that direct amendment",
             "Pending #210 allocation": "do not reserve/dispatch #10 or #11",
             "Ledger-only extension": "Deny exception; keep default 10.",
             "Scope mismatch": "Deny transfer",
@@ -465,7 +465,7 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("none transfers authority to #210 or #212", normalized)
         d070 = raw.split("### D-070 - Autonomous technical recovery before owner escalation", 1)[1]
         self.assertIn(
-            "The default ten-review ceiling is subject only to D-069A's exact finite canonical owner exceptions",
+            "The default ten-review ceiling is subject to D-069A's exact finite canonical owner exceptions and the separately recorded one-time direct owner supersession for issue #212/PR #213",
             " ".join(d070.split()),
         )
         for path in (
@@ -487,15 +487,17 @@ class WorkflowContractTests(unittest.TestCase):
         finish = text(".kilo/command/finish-pr.md")
         for requirement in (
             "default at most 10 whole-PR review invocations per issue delivery",
-            "Only a D-069A finite exception can authorize a greater ceiling",
+            "For other deliveries, a greater ceiling requires a D-069A finite exception",
             "D-069A is integrated in freshly fetched `develop`",
-            "default 10 effective",
+            "the exact nontransferable D-077 direct owner amendment for #212/PR #213",
+            "#11 is the final ordinary review and #12 is the owner-manual Daybreak gate",
+            "applicable default ceiling in effect",
             "INCLUDING the initial review, COMMENT, invalidated reviews and corrected retries",
             "Before EVERY whole-PR reviewer launch reserve/persist the next review ordinal",
             "Reinvoking `/finish-pr`, changing phase, reviewer process, model or session "
             + "MUST reuse the same delivery counter",
             "prior dispatch/count recovery is ambiguous or unavailable, BLOCKED",
-            "never exceed it without the freshly verified D-069A authority",
+            "use only a freshly verified D-069A exception for other deliveries",
             "without patches that cannot receive a fresh review",
             "not a target: stop as soon as an owner decision is clearly required",
         ):
@@ -702,15 +704,22 @@ class WorkflowContractTests(unittest.TestCase):
             "provenance `UNVERIFIED`",
             "READY_FOR_OWNER_SECURITY_REVIEW",
             "No Daybreak was invoked automatically",
-            "Superseding direct owner amendment for #212/PR #213",
+            "Prior direct owner amendment for #212/PR #213 (superseded by the later max-12 amendment below)",
             "2026-10-18T19:24:31Z",
             "owner-d069-ceiling-amendment-2026-10-18.txt",
             "be746960ffc98ddbbacd905c4c3a2af01e105484620af57a12b7509168e4d0c4",
             "not an owner-authored source",
-            "Effective maximum for #212/PR #213 is 11 invocations",
-            "#10 is the final independent ordinary whole-PR review",
-            "#11 is Adrian's separate manual Daybreak security review",
-            "No #12 or automatic extension is authorized",
+            "Final direct owner amendment for #212/PR #213",
+            "2026-10-19T07:02:31Z",
+            "owner-d069-review-ceiling-amendment-2026-10-19.txt",
+            "fc3b4fa416da3c7083c5140b1ff943afacb87edbe0409f84d98426992d70e301",
+            "max-11 allocation",
+            "Effective maximum: 12 invocations for this issue/PR only",
+            "Preserve #1-10",
+            "#11 is the final fresh ordinary whole-PR review",
+            "#12 be reserved for Adrian's separate manual",
+            "No #13 or automatic extension",
+            "default maximum ten remains for all other deliveries",
             "not authority from unintegrated D-069A",
         ):
             with self.subTest(requirement=requirement):

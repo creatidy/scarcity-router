@@ -56,10 +56,15 @@ of technical recovery per issue delivery (or the existing smaller execution budg
 Persist attempts/time across reentry, phases and sessions in the excluded delivery
 ledger; renaming an obstacle or reviewer does not reset its budget. Every whole-PR
 review dispatch, including failed/COMMENT attempts and failover, also consumes the
-next reserved ordinal. The default effective ceiling is 10. Only a finite D-069A
-exception verified against the direct owner source and exact canonical Repo/Issue/
-linked-PR scope, with D-069A already integrated into freshly fetched `develop`, can
-raise it. Missing/stale/ambiguous authority leaves the default 10 effective. Never
+next reserved ordinal. The default effective ceiling is 10. The sole separate
+direct-owner supersession is #212/PR #213: D-077 records maximum 12, with #11 the
+final ordinary review and #12 owner-manual Daybreak only after valid #11 APPROVE.
+Verify the preserved direct owner source receipt and exact canonical scope/currentness
+before that reservation; this is not D-069A and cannot transfer. For other deliveries,
+only a finite D-069A exception verified against the direct owner source and exact
+canonical Repo/Issue/linked-PR scope, with D-069A already integrated into freshly
+fetched `develop`, can raise the cap. Missing/stale/ambiguous authority leaves the
+default 10 effective. Never
 dispatch beyond the effective ceiling or patch without capacity for fresh review.
 Budget exhaustion is a finite stop, not permission to weaken a gate or invent an owner
 decision.

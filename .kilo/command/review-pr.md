@@ -13,10 +13,13 @@ Do not edit the PR. Apply `.kilo/rules/35-technical-recovery.md`; repair review
 infrastructure, not implementation, with bounded secret-safe preparation.
 Preserve the issue-delivery review and technical-recovery counters in the excluded
 ledger. Synthetic permission preflights are not whole-PR reviews and do not reserve
-an ordinal. Keep the default-ten ceiling; D-069A cannot authorize an exception on
-its own unmerged branch, and exceptions never transfer or renew. Any greater finite
-ceiling requires D-069A to be integrated in freshly fetched `develop` before the
-primary verifies its exact canonical owner authority. The standalone reviewer is a
+an ordinal. The default ceiling is ten. For the exact #212/PR #213 delivery only,
+the direct D-069/D-077 owner amendment authorizes a finite maximum of 12: #11 is the
+final ordinary review and #12 is owner-manual Daybreak only after valid #11 APPROVE.
+Verify the direct owner source receipt and exact Issue/PR scope/currentness before
+the exceptional reservation; this is not D-069A and cannot transfer. Every other
+greater finite ceiling requires D-069A integrated in freshly fetched `develop` before
+the primary verifies its exact canonical owner authority. The standalone reviewer is a
 separate Kilo CLI primary process/session, never a native Task child.
 
 Use one designated source checkout for primary-side Git inspection only. Require clean

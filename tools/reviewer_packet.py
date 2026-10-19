@@ -278,6 +278,7 @@ class PacketInspection:
     merge_base: str
     file_paths: tuple[str, ...]
     changed_paths: tuple[str, ...]
+    source_line_counts: dict[str, int]
     external_source_count: int
     full_read_paths: tuple[str, ...]
     review_ranges: dict[str, tuple[tuple[int, int], ...]]
@@ -377,6 +378,32 @@ def _object(value: object, label: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise PacketError(f"{label} must be an object")
     return cast(dict[str, Any], value)
+
+
+def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise PacketError(f"duplicate JSON object key: {key}")
+        result[key] = value
+    return result
+
+
+def _reject_json_constant(value: str) -> None:
+    raise PacketError(f"non-standard JSON constant is not allowed: {value}")
+
+
+def _strict_json_loads(text: str, label: str) -> Any:
+    try:
+        return json.loads(
+            text,
+            object_pairs_hook=_unique_json_object,
+            parse_constant=_reject_json_constant,
+        )
+    except PacketError as err:
+        raise PacketError(f"{label} is not strict JSON: {err}") from err
+    except json.JSONDecodeError as err:
+        raise PacketError(f"{label} is not valid JSON") from err
 
 
 def _array(value: object, label: str) -> list[Any]:
@@ -709,6 +736,7 @@ def validate_packet(
     if set(bindings) != set(changed_paths):
         raise PacketError("source binding map does not cover the full changed-path set")
     source_binding_paths: set[str] = set()
+    source_line_counts: dict[str, int] = {}
     for source_path in changed_paths:
         binding = _object(bindings[source_path], f"source binding {source_path}")
         packet_path = _relative_file(binding.get("packet_path"))
@@ -737,6 +765,7 @@ def validate_packet(
         if not ranges:
             raise PacketError(f"changed source lacks required review ranges: {source_path}")
         line_count = len(inventory[packet_path]["data"].splitlines())
+        source_line_counts[source_path] = line_count
         previous_end = 0
         for raw_range in ranges:
             if (not isinstance(raw_range, list) or len(raw_range) != 2
@@ -964,6 +993,7 @@ def validate_packet(
         merge_base=merge_base,
         file_paths=tuple(sorted(records)),
         changed_paths=changed_paths,
+        source_line_counts=source_line_counts,
         external_source_count=len(external_sources),
         full_read_paths=tuple(sorted(full_read_paths)),
         review_ranges=review_ranges,
@@ -1594,6 +1624,83 @@ def _read_lines(output: str) -> dict[int, str]:
     return result
 
 
+def _read_footer(output: str) -> str:
+    start = output.find("<content>\n")
+    end = output.find("\n</content>", start + len("<content>\n"))
+    if start < 0 or end < 0:
+        raise PacketError("successful Read omitted a delimited content block")
+    footers = [
+        line for line in output[start + len("<content>\n"):end].splitlines()
+        if (re.fullmatch(r"\(End of file - total \d+ lines\)", line)
+            or re.fullmatch(r"\(Showing lines \d+-\d+ of \d+\. Use offset=\d+ to continue\.\)", line)
+            or re.fullmatch(r"\(Output capped at [^)]+\. Showing lines \d+-\d+\. Use offset=\d+ to continue\.\)", line))
+    ]
+    if len(footers) != 1:
+        raise PacketError("successful Read omitted or duplicated Kilo pagination metadata")
+    return footers[0]
+
+
+def validate_read_display(
+    *,
+    packet_path: str,
+    expected_absolute: str,
+    output: str,
+    lines: dict[int, str],
+    display: dict[str, Any],
+    packet_line_count: int,
+) -> None:
+    if display.get("path") != expected_absolute or display.get("type") != "file":
+        raise PacketError(f"allowed Read display path differs from the sealed packet: {packet_path}")
+    start = display.get("lineStart")
+    end = display.get("lineEnd")
+    display_total = display.get("totalLines")
+    truncated = display.get("truncated")
+    text = display.get("text")
+    if (not isinstance(start, int) or isinstance(start, bool)
+            or not isinstance(end, int) or isinstance(end, bool)
+            or not isinstance(display_total, int) or isinstance(display_total, bool)
+            or not isinstance(truncated, bool) or not isinstance(text, str)):
+        raise PacketError(f"allowed Read display metadata is malformed: {packet_path}")
+    ordered = sorted(lines.items())
+    if (not ordered or start != ordered[0][0] or end != ordered[-1][0]
+            or ordered != [(line, lines[line]) for line in range(start, end + 1)]
+            or text != "\n".join(content for _, content in ordered)):
+        raise PacketError(f"allowed Read display text/range differs from returned packet lines: {packet_path}")
+    if display_total < end or display_total > packet_line_count + 1:
+        raise PacketError(f"allowed Read display count is outside the frozen packet: {packet_path}")
+
+    footer = _read_footer(output)
+    end_match = re.fullmatch(r"\(End of file - total (\d+) lines\)", footer)
+    page_match = re.fullmatch(
+        r"\(Showing lines (\d+)-(\d+) of (\d+)\. Use offset=(\d+) to continue\.\)", footer
+    )
+    capped_match = re.fullmatch(
+        r"\(Output capped at [^)]+\. Showing lines (\d+)-(\d+)\. Use offset=(\d+) to continue\.\)",
+        footer,
+    )
+    if end_match:
+        total = int(end_match.group(1))
+        if (truncated or display_total != total
+                or end != total or total != packet_line_count):
+            raise PacketError(f"Kilo end-of-file metadata is inconsistent with the packet: {packet_path}")
+        return
+    if page_match:
+        page_start, page_end, total, next_offset = map(int, page_match.groups())
+        if (not truncated or (page_start, page_end) != (start, end)
+                or total != display_total or next_offset != end + 1
+                or total > packet_line_count + 1):
+            raise PacketError(f"Kilo pagination metadata is inconsistent with the packet: {packet_path}")
+        return
+    if capped_match:
+        page_start, page_end, next_offset = map(int, capped_match.groups())
+        if (not truncated or (page_start, page_end) != (start, end)
+                or display_total != end + 1 or next_offset != end + 1
+                or end > packet_line_count + 1):
+            raise PacketError(f"Kilo output-cap metadata is inconsistent with the packet: {packet_path}")
+        return
+    raise PacketError(f"unsupported Kilo Read footer metadata: {packet_path}")
+
+
 def _expected_line_map(path: Path) -> dict[int, str]:
     return {index: line for index, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)}
 
@@ -1770,11 +1877,11 @@ def _user_prompt(session: dict[str, Any]) -> str:
     )
 
 
-def _validate_review_result(text: str, inspection: PacketInspection) -> dict[str, Any]:
+def validate_review_result(text: str, inspection: PacketInspection) -> dict[str, Any]:
     try:
-        result = _object(json.loads(text), "standalone reviewer result")
-    except (json.JSONDecodeError, PacketError) as err:
-        raise PacketError("standalone reviewer result is not a single JSON object") from err
+        result = _object(_strict_json_loads(text, "standalone reviewer result"), "standalone reviewer result")
+    except PacketError as err:
+        raise PacketError("standalone reviewer result is not a single strict JSON object") from err
     required = {
         "reviewed_head", "reviewed_base", "reviewed_merge_base", "verdict", "findings",
         "limitations", "checks_run", "ux_impact",
@@ -1800,13 +1907,17 @@ def _validate_review_result(text: str, inspection: PacketInspection) -> dict[str
             raise PacketError("standalone reviewer finding has missing or unexpected fields")
         if finding.get("severity") not in {"P0", "P1", "P2", "P3"}:
             raise PacketError("standalone reviewer finding has an invalid severity")
-        if finding.get("file") not in changed_paths:
+        finding_path = _string(finding.get("file"), "reviewer finding file")
+        if finding_path not in changed_paths:
             raise PacketError("standalone reviewer finding is not bound to a changed PR path")
         start = finding.get("line_start")
         end = finding.get("line_end")
         if (not isinstance(start, int) or isinstance(start, bool) or start < 1
                 or not isinstance(end, int) or isinstance(end, bool) or end < start):
             raise PacketError("standalone reviewer finding has an invalid line range")
+        source_line_count = inspection.source_line_counts.get(finding_path)
+        if source_line_count is None or end > source_line_count:
+            raise PacketError("standalone reviewer finding line range exceeds its frozen HEAD source")
         for field in ("evidence", "consequence", "required_remediation"):
             if not isinstance(finding.get(field), str) or not finding[field].strip():
                 raise PacketError(f"standalone reviewer finding has no {field}")
@@ -1825,13 +1936,13 @@ def _validate_review_result(text: str, inspection: PacketInspection) -> dict[str
     return result
 
 
-def _validate_preflight_result(
+def validate_preflight_result(
     text: str, runtime: RuntimeWorkspace, expected_paths: tuple[str, ...],
 ) -> dict[str, Any]:
     try:
-        result = _object(json.loads(text), "standalone preflight result")
-    except (json.JSONDecodeError, PacketError) as err:
-        raise PacketError("standalone preflight response is not one JSON object") from err
+        result = _object(_strict_json_loads(text, "standalone preflight result"), "standalone preflight result")
+    except PacketError as err:
+        raise PacketError("standalone preflight response is not one strict JSON object") from err
     if set(result) != {
         "preflight", "allowed_paths", "complete_read_count", "probe_results",
         "unauthorized_bytes_returned",
@@ -1898,7 +2009,10 @@ def summarize_failed_standalone_session(
     final_summary: dict[str, object] = {"parsed": False}
     try:
         final_text = _final_assistant_text(session, "pr-reviewer-standalone")
-        final_result = _object(json.loads(final_text), "failed standalone final response")
+        final_result = _object(
+            _strict_json_loads(final_text, "failed standalone final response"),
+            "failed standalone final response",
+        )
         final_summary = {
             "parsed": True,
             "keys": sorted(final_result),
@@ -2045,19 +2159,14 @@ def audit_standalone_session(
             if not lines:
                 raise PacketError(f"allowed Read returned no numbered packet lines: {raw_path}")
             display = _object(metadata.get("display"), "standalone Read display metadata")
-            expected_absolute = str((runtime.packet / Path(packet_path).name).resolve())
-            if (display.get("path") != expected_absolute or display.get("type") != "file"
-                    or display.get("totalLines") != len(sealed_lines[packet_path])):
-                raise PacketError(f"allowed Read display metadata differs from the sealed packet: {packet_path}")
-            if (not isinstance(display.get("lineStart"), int)
-                    or not isinstance(display.get("lineEnd"), int)
-                    or not isinstance(display.get("text"), str)):
-                raise PacketError(f"allowed Read omitted line/display metadata: {packet_path}")
-            ordered_lines = sorted(lines.items())
-            if (display.get("lineStart") != ordered_lines[0][0]
-                    or display.get("lineEnd") != ordered_lines[-1][0]
-                    or display.get("text") != "\n".join(text for _, text in ordered_lines)):
-                raise PacketError(f"allowed Read display lines differ from returned packet lines: {packet_path}")
+            validate_read_display(
+                packet_path=packet_path,
+                expected_absolute=expected_absolute,
+                output=output,
+                lines=lines,
+                display=display,
+                packet_line_count=len(sealed_lines[packet_path]),
+            )
             loaded = metadata.get("loaded", [])
             if not isinstance(loaded, list) or loaded:
                 raise PacketError(f"allowed Read auto-loaded context outside its exact result: {packet_path}")
@@ -2149,7 +2258,7 @@ def audit_standalone_session(
             expected = sealed_lines[path]
             if covered[path] != expected:
                 raise PacketError(f"standalone preflight did not read the complete packet file: {path}")
-        final_result = _validate_preflight_result(
+        final_result = validate_preflight_result(
             _final_assistant_text(session, agent_name), runtime, preflight_paths
         )
     else:
@@ -2178,7 +2287,7 @@ def audit_standalone_session(
                 required_lines = {line: actual[line] for line in required}
             if covered[path] != required_lines:
                 raise PacketError(f"standalone reviewer packet coverage is incomplete: {filename}")
-        final_result = _validate_review_result(
+        final_result = validate_review_result(
             _final_assistant_text(session, agent_name), runtime.inspection
         )
 
