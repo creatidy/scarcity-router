@@ -446,6 +446,8 @@ KILO_SOURCE_PACKET_PATHS = (
     "kilo-session-tool-completion.ts.txt",
     "kilo-session-message-order.ts.txt",
     "kilo-session-export-order.ts.txt",
+    "kilo-session-user-summary.ts.txt",
+    "kilo-session-user-conversion.ts.txt",
 )
 KILO_SOURCE_REPOSITORY_PATHS = {
     "kilo-LICENSE.txt": "LICENSE",
@@ -469,6 +471,8 @@ KILO_SOURCE_REPOSITORY_PATHS = {
     "kilo-session-tool-completion.ts.txt": "packages/opencode/src/session/processor.ts",
     "kilo-session-message-order.ts.txt": "packages/opencode/src/session/message-v2.ts",
     "kilo-session-export-order.ts.txt": "packages/opencode/src/session/session.ts",
+    "kilo-session-user-summary.ts.txt": "packages/opencode/src/session/summary.ts",
+    "kilo-session-user-conversion.ts.txt": "packages/opencode/src/session/message-v2.ts",
 }
 KILO_REQUIRED_SOURCE_RANGES = {
     "kilo-read-path.ts.txt": (198, 385),
@@ -480,6 +484,8 @@ KILO_REQUIRED_SOURCE_RANGES = {
     "kilo-session-message-order.ts.txt": (561, 601),
     "kilo-session-export-order.ts.txt": (1032, 1055),
     "kilo-cli-session-export.ts.txt": (245, 297),
+    "kilo-session-user-summary.ts.txt": (105, 145),
+    "kilo-session-user-conversion.ts.txt": (320, 401),
 }
 # Default owner paths for unit-test fixtures only; production paths come from the manifest.
 OWNER_EVIDENCE_PACKET_PATHS = (
@@ -2236,7 +2242,10 @@ def _user_prompt(session: dict[str, Any]) -> str:
     if len(user_messages) != 1:
         raise PacketError("standalone reviewer must start from exactly one fresh user prompt")
     user_info = _object(user_messages[0].get("info"), "initial user metadata")
-    if any(key in user_info for key in ("system", "tools", "editorContext", "format", "summary")):
+    if any(key in user_info for key in ("system", "tools", "editorContext", "format")):
+        raise PacketError("standalone user metadata contains unapproved out-of-band context")
+    # Kilo adds this empty UI diff summary after execution; it is not model input.
+    if "summary" in user_info and user_info["summary"] != {"diffs": []}:
         raise PacketError("standalone user metadata contains unapproved out-of-band context")
     parts = _array(user_messages[0].get("parts"), "initial user message parts")
     if any(_object(part, "user prompt part").get("type") != "text" for part in parts):

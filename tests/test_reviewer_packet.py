@@ -366,6 +366,8 @@ def _make_standalone_preflight_packet(
         "kilo-session-tool-completion.ts.txt": "packages/opencode/src/session/processor.ts",
         "kilo-session-message-order.ts.txt": "packages/opencode/src/session/message-v2.ts",
         "kilo-session-export-order.ts.txt": "packages/opencode/src/session/session.ts",
+        "kilo-session-user-summary.ts.txt": "packages/opencode/src/session/summary.ts",
+        "kilo-session-user-conversion.ts.txt": "packages/opencode/src/session/message-v2.ts",
     }
     owner_names = OWNER_EVIDENCE_PACKET_PATHS
     if tuple(sorted(set(changed_paths))) != changed_paths or not changed_paths:
@@ -1625,10 +1627,20 @@ class ReviewerPacketTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             _, _, runtime = self._prepare_standalone(Path(temporary), preflight=False)
             baseline, model, title, prompt = self._standalone_session(runtime, preflight=False)
+            empty_ui_summary = cast(dict[str, object], json.loads(json.dumps(baseline)))
+            summary_messages = cast(list[dict[str, object]], empty_ui_summary["messages"])
+            cast(dict[str, object], summary_messages[0]["info"])["summary"] = {"diffs": cast(list[object], [])}
+            accepted = audit_standalone_session(
+                empty_ui_summary, session_export_sha256="b" * 64, runtime=runtime,
+                expected_model=model, expected_title=title, expected_prompt=prompt,
+            )
+            self.assertEqual(accepted["user_context_boundary"], "PASS")
             for key, value in (("system", "synthetic unapproved context"), ("system", ""),
                                ("tools", {"bash": True}), ("tools", {"read": True}),
                                ("editorContext", {"text": "synthetic source context"}),
-                               ("format", {"type": "json_schema"}), ("summary", {"diffs": cast(list[object], [])})):
+                               ("format", {"type": "json_schema"}),
+                               ("summary", {"diffs": [{"file": "synthetic-unapproved"}]}),
+                               ("summary", {"diffs": cast(list[object], []), "body": "synthetic context"})):
                 with self.subTest(key=key, value=value):
                     session = cast(dict[str, object], json.loads(json.dumps(baseline)))
                     messages = cast(list[dict[str, object]], session["messages"])
