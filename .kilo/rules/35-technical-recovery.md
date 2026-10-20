@@ -53,8 +53,9 @@ Use the smallest safe, reversible, in-scope mechanism. Before recovery begins,
 record the diagnosis, relevant changed condition and expected proof. Allow at most
 three materially different recovery attempts per obstacle and at most 120 minutes
 of technical recovery per issue delivery (or the existing smaller execution budget).
-Persist attempts/time across reentry, phases and sessions in the excluded delivery
-ledger; renaming an obstacle or reviewer does not reset its budget. Every whole-PR
+Keep minimal attempts/time across reentry, phases and sessions canonically;
+local notes are optional, not a gate. Renaming an obstacle or reviewer does not
+reset its budget. Every whole-PR
 review dispatch, including failed/COMMENT attempts and failover, also consumes the
 next reserved ordinal. The default effective ceiling is 10. The sole separate
 direct-owner supersession is #212/PR #213: the final D-077 amendment records maximum
@@ -62,7 +63,9 @@ direct-owner supersession is #212/PR #213: the final D-077 amendment records max
 the P1 correction/validation and #20 owner-manual combined correctness/security
 Daybreak without ordinary APPROVE, for this delivery only. No more ordinary Kilo,
 #21, blind retry or counter reset. If the combined result is nonpositive/incomplete/
-unverified, preserve it and stop for the owner. Verify the exact Section2 source and
+unverified, preserve it and stop for the owner. The current owner reaffirms the
+exception while retiring local files/scripts. Verify legitimate native owner
+source/current reaffirmation, not deleted local paths or transcriptions, and
 canonical scope/currentness before each reservation; this is not D-069A and cannot
 transfer. For other deliveries,
 only a finite D-069A exception verified against the direct owner source and exact
@@ -103,10 +106,10 @@ Available mechanisms, where applicable:
 - Split independent source inspection from safe test execution when they need different
   environments, or reproduce a claim with a smaller synthetic/offline proof. Preserve
   mandatory full validation and explicitly open any real-environment acceptance gap.
-- Use another available authorized independent native reviewer/tool path automatically
-  after diagnosing infrastructure failure. Preserve the complete frozen PR contract,
-  result schema, model-bound gates, read-only permissions and reviewer independence.
-  Do not bypass tool restrictions or silently substitute a required restricted reviewer.
+- Prepare a concise user-visible reviewer handoff after diagnosing harness limitations.
+  Preserve frozen PR scope, model-bound gates, read-only access and independence.
+  The user selects/starts the next model; recovery never authorizes scripts,
+  subprocesses, Task/delegation, background/HTTP inference or a hidden substitute.
 
 ## Secret-Safe Environments
 
@@ -120,104 +123,33 @@ Keep authenticated platform operations outside test sandboxes. If unauthorized r
 credentials are genuinely necessary, record the specific evidence gap; do not ask for
 them unless required for the selected acceptance and subject to an owner decision.
 
-## Independent Review Metadata
+## Visible Review Handoffs
 
-The primary alone fetches canonical Forgejo Repo/Issue/PR and directly linked
-owner-decision objects with exact getters (`forgejo-mcp_get_repo`,
-`forgejo-mcp_get_pull_request_by_index`, `forgejo-mcp_get_issue_by_index` and only
-the directly linked `forgejo-mcp_get_issue_comment`), and fetches/verifies the Git
-objects. Bind IDs, canonical URLs, author/timestamp/raw-body digests, full HEAD/base/
-merge-base, blobs and the complete merge-base-to-HEAD diff against the primary-prepared
-clean local Git objects into a sealed, indexed packet. Verify the exact merge
-base/full diff. The reviewer has no direct Forgejo getter, no Bash/Git and receives
-Read-only packet access with no checkout, source/environment paths, prior review
-results or parent conclusions. The reviewer must not inspect credential-bearing Git
-configuration or invoke credential helpers.
+Verify actual Git objects and canonical Repo/Issue/PR/owner authority. Provide concise
+frozen refs, acceptance and source instructions directly to a fresh user-visible
+read-only Kilo/Codex reviewer. The user selects the model and starts the session;
+technical recovery may not spawn another model, generate a wrapper or hide it in a
+background/HTTP/Task call. If no authorized visible mechanism can perform the next
+step, hand off that exact pending gate without skipping it or claiming QUEUE_EMPTY.
 
-The committed `.kilo/agents/pr-reviewer.md` and
-`.kilo/agents/pr-reviewer-standalone.md` remain statically deny-all. For each
-standalone review, the primary builds a per-run Kilo config directory with a generated
-profile copy whose identity/mode/prompt match the tracked standalone profile and whose
-frontmatter contains only exact Kilo worktree-relative Read patterns for indexed files
-under wildcard deny. Although Kilo 7.8.8's Read schema describes `filePath` as absolute,
-the handler resolves relative values against `instance.directory`; supply only exact
-indexed `packet/<file>` values in the prompt. For this sealed
-non-VCS workspace, Kilo resolves `projectID=global` and uses the filesystem root as its
-worktree, so permission patterns are exact paths relative to that root (for example,
-`tmp/.../workspace/packet/index.md`), not merely `packet/index.md`. Do not add absolute,
-directory or prefix allow rules. The profile config is separate from the packet-only
-workspace outside the source checkout. Keep per-run `kilo.json` and `KILO_CONFIG_CONTENT`
-empty (`{}`), and set `KILO_NO_DAEMON=1` so the CLI cannot attach to a server using another
-configuration. Use installed Kilo 7.8.8 resolver/source semantics: merge order is
-runtime-specific, `findLast` rules are significant, and static/global/managed/saved
-rules can override an assumed resolver. Before any reviewer session, inspect
-`kilo debug agent
-pr-reviewer-standalone` under the exact production environment. Require the tracked
-profile frontmatter to be `mode: primary`, the resolved Kilo mode to be CLI-runnable
-(`primary` or `all`, never `subagent`), the exact prompt hash and Read as the sole
-enabled tool; evaluate exact per-file profile-frontmatter winners, default-deny paths and
-forbidden-tool denies. Missing output, default-agent fallback, any broad capability or
-an unverifiable merge order aborts before reserving an ordinal.
-The r2 actual session used the correct absolute filePath but was denied by `read:* deny`.
-Its `projectID=global`, together with the pinned Project/Read source, establishes that
-the runtime permission pattern was rooted at `/`; the profile instead allowed
-`packet/index.md`, so the wildcard correctly won. In r3 the model supplied a different
-nonexistent absolute path; Kilo returned `File not found` before requesting Read
-permission. Thus r3's missing metadata was a path-resolution failure, not an
-authorization result. `KILO_NO_DAEMON=1` also prevents a possible shared-server config
-mismatch; prior trace does not prove whether a daemon was attached. The prompt must bind
-every allowed file to its exact relative packet path, and the audit may accept only the
-expected prompt verbatim or Kilo's exact literal-double-quote wrapper. These preflights
-consume no review ordinal.
+Use native harness records and minimal canonical ordinals/outcomes/provenance, not
+persistent local receipts, copied source/transcripts or reconstructed evidence trees.
+Historical deleted files are unavailable; historical hashes/transcriptions do not
+recreate their original bytes or grant authority. Recover legitimate native owner
+records or obtain direct owner confirmation only when authority is truly unresolved.
+For #212 the current owner explicitly reaffirms pending/unconsumed #20 combined
+Daybreak and forbids scripts; use D-077/Issue #212 history, not deleted paths.
 
-The standalone Kilo CLI process has its working directory set to a sealed temporary
-workspace whose only entry is a `packet/` directory; it does not receive the source
-checkout. Launch a fresh `kilo --pure run --agent pr-reviewer-standalone` primary
-session without continuation, resume, fork or Task arguments. Verify the exported
-session records the exact agent, `parentID: null`, packet-only directory and requested
-provider/model/variant. The actual enabled tool set is native Read only for exact
-worktree-relative packet patterns listed in the generated profile. Do not pass checkout/
-environment paths, credentials, issue comments outside the packet or previous
-findings. Do not grant wildcard getters,
-search/list, Forgejo writes, directory enumeration, external network tools, memory,
-Task/delegation or external-file Read access.
-
-Before reserving a whole-PR review ordinal, run the same standalone CLI path against
-the complete production-equivalent synthetic packet plus harmless sibling, parent,
-absolute, traversal and symlink-escape canaries outside the workspace. Require every
-authorized file to be read completely and every escape denied before content. Audit
-the actual standalone session, permission decisions, Read calls/returned bytes,
-forbidden-tool absence and unchanged packet inventory. Static resolver output alone
-is not proof. Pre-access debug/preflight and post-review session-export/packet audits
-are separate mandatory gates. Preserve the full native session in Kilo's local store
-by exact session ID; export it in memory and persist only filtered trace/result
-metadata, not raw packet contents. Preflights do not consume whole-PR ordinals. The
-only directory-level Read exception remains the owner-authorized issue #210 / PR #211
-scope; it never transfers to #212 or other deliveries. Do not claim OS isolation.
-
-## Public Evidence and Reviewer Failover
-
-A public-research reviewer inspects cited material independently from pinned source
-bytes in the packet. If a pinned source is inaccessible, try an alternative available
-read path, then fetch/clone the exact public revision in an isolated evidence checkout.
-Connector failure is not an implementation finding.
-The primary must preserve pin, origin and provenance while staging exact revision
-content, Git blob/source digest and relevant ranges. The reviewer verifies the material
-claims against those bytes; implementer research conclusions are not independent
-verification. The primary's research conclusions are not independent verification.
-Parent conclusions are not evidence. If a material source/pin is
-absent or inconsistent in the packet, report that concrete gap. Reviewer external
-network is intentionally denied, so do not fetch/clone or treat that denial alone as a
-change finding. The primary may use an isolated, credential-free public-source
-checkout to prepare the pinned evidence before sealing the packet.
-
-Distinguish **review finding** (evidence the change is wrong/incomplete), **review
-infrastructure failure** (no verdict can be established) and **reviewer disagreement /
-uncertainty** (evidence exists, judgment unresolved). Infrastructure failure calls for
-changed environment/strategy, not identical retries or fabricated defects. Uncertainty
-calls for bounded independent evidence/adjudication; escalate only a genuine class-B
-decision. Never accept incomplete review as APPROVE. Retain all failed/COMMENT ordinals
-and obtain a fresh whole-PR review at exact HEAD/base after implementation changes.
+For public-source access failure, try an alternative available read path, then fetch/clone the exact public revision
+in safe temporary space when authorized; preserve pin, origin and provenance.
+The visible reviewer verifies actual claims; implementer research conclusions are not independent verification.
+Connector failure is not an implementation finding. Preserve model-bound gates, read-only permissions and reviewer independence.
+Do not bypass tool restrictions or silently substitute a required restricted reviewer.
+Public source inspection remains bounded, pinned and read-only where needed.
+Distinguish review finding, infrastructure failure and reviewer disagreement / uncertainty;
+never accept incomplete review as APPROVE or silently substitute models. Keep all
+consumed attempts, exact refs and real outcomes without storing large local histories.
+Deterministic offline fixtures use cleaned normal OS temporary directories only.
 
 ## Terminal Contracts
 
@@ -236,11 +168,12 @@ the agent cannot change with any authorized workaround. Class-B decisions instea
 require STOP_AND_ASK / OWNER_DECISION_NEEDED with all five decision fields above.
 State the exact missing capability/dependency, attempted paths, remaining evidence gap
 and consumed budget. A reviewer lacking tools is insufficient while a suitable clean
-environment/container/alternate authorized reviewer path remains. Do not ask an
+environment or a user-authorized visible reviewer path remains. Do not ask an
 artificial question for an external non-decision blocker. STOP_REVISE remains the
 review-bound disposition for actionable defects, not a technical environment failure.
 
 Continue implementation -> validation -> independent review -> ordinary remediation
 -> fresh validation/review until exact independent APPROVE with acceptance satisfied,
 genuine budget exhaustion, an external condition with no authorized workaround or a
-class-B decision. Never stop merely because the first reviewer environment is inconvenient.
+class-B decision. A required user-visible review start is an explicit pending-gate
+handoff, not authorization for a hidden model or an artificial infrastructure question.

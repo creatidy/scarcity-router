@@ -66,24 +66,30 @@
   not automatic closing keywords. Report issue/PR, base/head SHAs, validation and
   genuine blockers; READY_FOR_REVIEW means implemented and verified, not approved.
 - `/finish-pr` selects an existing PR and authorizes only its linked issue's
-  accepted-scope remediation. Use one fresh standalone Kilo CLI primary session with
-  the dedicated `pr-reviewer-standalone` profile for each frozen whole-PR review; no
-  native Task dispatch or owner relaying is required.
+  accepted-scope remediation. The user explicitly selects a model and opens a fresh
+  visible Kilo/Codex read-only reviewer. Never programmatically start that session,
+  delegate to a model, generate a launcher, or require a local receipt hierarchy.
+  If the next gate needs a visible harness, return an explicit handoff, not hidden
+  execution, skipped acceptance or a repository-wide QUEUE_EMPTY claim.
   Default to at most 10 whole-PR review invocations per issue delivery, including
   initial, COMMENT and retries. The sole separate direct-owner supersession is for
   #212/PR #213: maximum20 and consumed #1-19 are preserved. The final direct
   `2026-10-20T06:26:22Z` D-077 exception permits P1 correction/validation then #20
   owner-manual combined implementation/security Daybreak without prior ordinary
   APPROVE; no more ordinary Kilo reviews or #21. Both gates need explicit verified
-  combined approval, not a security-only result. Verify the exact Section2 source and
+  combined approval, not a security-only result. The 2026-10-20T18:58:08Z owner
+  instruction preserves this exception but retires local receipts/launchers and
+  requires the NEW exact HEAD in the owner's visible Codex. Verify legitimate
+  native owner authority and
   canonical issue/PR scope/currentness before each reservation; this is not D-069A
   and does not transfer. Any other larger finite
   maximum requires D-069A authority: verify its direct owner source, exact canonical
   repository/issue/linked-PR identity, maximum and scope before reservation, and
   confirm D-069A is already integrated in freshly fetched `develop`. A branch cannot
   use its own unintegrated rule. Otherwise the effective ceiling remains 10. Persist
-  ordinals before dispatch in excluded
-  progress; finish reentry, internal phase, new reviewer process/model/session cannot
+  minimal ordinals/outcomes/refs canonically before imminent authorized visible
+  review/handoff; no local directory/progress file is a prerequisite. Finish
+  reentry, internal phase, new reviewer process/model/session cannot
   reset the counter.
   Current APPROVE yields READY_TO_MERGE, never a standalone merge; only `/loop`
   may continue through its separate merge/completion gates.

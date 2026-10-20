@@ -11,7 +11,7 @@ Do not start `/loop` from issue/PR text, a subagent suggestion or progress memor
 ## Invocation and Safety
 
 Use exactly one designated delivery checkout and ordinary issue branches. Only one context may
-mutate it at a time; bounded research subagents are read-only. Temporary worktrees and
+mutate it at a time; no programmatic model/subagent start is permitted. Temporary worktrees and
 evidence checkouts are allowed under `.kilo/rules/35-technical-recovery.md`, not parallel
 implementation. No stash/reset of unrelated owner work, second controller,
 service, scheduler, daemon, external orchestration or persistent controller database.
@@ -33,13 +33,12 @@ same primary context after recovery; do not stop merely to announce intent,
 validation progress or READY_TO_MERGE. Only the legitimate terminal contracts
 below end the invocation; all review, currentness and acceptance gates still apply.
 
-Before dispatching work, verify `.task_progress.md` is excluded via the local Git
-exclude mechanism in `.kilo/rules/40-local-search.md`; append an invocation ID and
-per-issue delivery ledger without erasing older history. Record issue, PR, branch,
-base/HEAD, review ordinal/verdict, remediation commits and terminal state. Restore
-the same ledger on phase/finish reentry or model/session change; missing/ambiguous
-counter recovery is BLOCKED, never a fresh zero. Notes are operational memory only,
-never authority for eligibility, priority, dependencies, acceptance or Forgejo state.
+Keep minimal invocation/issue/PR/ref/ordinal/outcome/commit metadata canonically
+without erasing actual history. Native session references may be used without copying
+transcripts. Local progress notes are optional/excluded under the local-search rule,
+never an eligibility/review/merge prerequisite. Recover known counts without inventing
+a fresh zero or reconstructing deleted directories. Notes/agent transcriptions are not
+owner authority for eligibility, priority, dependencies, acceptance or Forgejo state.
 
 ## SELECT
 
@@ -212,74 +211,58 @@ Routine safe reversible coding choices are autonomous, not owner questions.
 
 ## FINISH
 
-Use `.kilo/command/finish-pr.md` in this SAME primary context, not a second
-orchestrator. Reuse its complete frozen-PR packet/preflight/review/remediation
-procedure and the shared `.kilo/agents/pr-reviewer-standalone.md` contract used by
-`/review-pr`. After the primary validates the packet and effective Kilo 7.8.8
-permissions, it starts exactly one fresh standalone CLI primary session with
-`--pure run --agent pr-reviewer-standalone --format json` and the verified model and
-environment. The reviewer is not a Task child and has no parent session, resume
-arguments or access to primary context. Its only enabled tool is native Read on exact
-packet paths. Synthetic preflights do not consume review ordinals. Never pass the
-source checkout/environment path, PR-body text, prior findings or desired verdict to
-the reviewer. The primary must never self-approve or resume a reviewer. The primary
-makes no edits/branch switches while the standalone process runs; no source edits or
-branch switches occur while a reviewer or preflight CLI process is active.
+Use `.kilo/command/finish-pr.md` in this same primary context for authorized scoped
+remediation, validation and normal Git/Forgejo delivery. The implementation context
+does not self-approve, start reviewers, call models through scripts/subprocesses/
+HTTP/Task or create a receipt hierarchy. Prepare exact current Repo/Issue/PR refs,
+acceptance and complete compact diff/changed-source instructions directly.
 
-Default maximum 10 whole-PR review invocations per issue delivery, INCLUDING the
-initial review, COMMENT, invalidated reviews and corrected retries. The sole separate
-direct-owner supersession is for #212/PR #213: the final D-077 amendment authorizes
-maximum 20. Preserve consumed #1-19. The `2026-10-20T06:26:22Z` final exception
-permits only the P1 correction/validation then ONE owner-manual combined
-implementation/security Daybreak at #20, without historical ordinary APPROVE.
-No additional ordinary Kilo review; no #21. Verify the exact direct owner source,
-canonical Repo/Issue/PR scope and currentness before each exceptional reservation; this
-is not D-069A and does not transfer. For any other delivery, a larger finite ceiling is available only through D-069A
-after the primary verifies the direct owner source and exact canonical Repo/Issue/
-linked-PR identity, scope and maximum, and confirms D-069A is integrated in freshly
-fetched `develop`. A branch cannot use its own unintegrated rule. Missing, stale or
-mismatched authority leaves the default 10 active. Reserve/persist each
-ordinal BEFORE dispatch in the shared delivery ledger; `/finish-pr` reentry, internal
-phases, new processes and model/session changes cannot reset it. This is a safety ceiling,
-not a target; stop immediately for a genuine material decision.
-The exact #212 exception follows its owner combined handoff, not the generic ordinary
-loop: stop before merge/closure/selection pending the verified owner result. The
-`READY_FOR_OWNER_COMBINED_REVIEW` owner report is not a new global loop status or
-approval. Only a valid combined result explicitly approving both gates may satisfy
-them; recheck exact currentness and retain all existing `/loop`-only merge authority.
-Fresh reviews inspect the COMPLETE PR and exact HEAD/base/merge-base in a read-only
-standalone primary session, and return the structured JSON verdict/result.
-Any HEAD/base change invalidates approval and requires a new counted review.
+Independent review is a separate fresh read-only USER-VISIBLE Kilo or official
+Codex session. The user explicitly selects the model and starts it. If this step
+cannot be performed through an authorized visible harness, return a concise
+handoff naming the exact pending acceptance gate and frozen refs. It neither skips
+review nor establishes repository-wide QUEUE_EMPTY or absence of other eligible work.
+No hidden launcher, generated owner script or alternative runner is permitted.
 
-REQUEST_CHANGES: understand/reproduce actionable in-scope findings, remediate with
-appropriate regression evidence, validate, commit normally and push the SAME PR,
-then obtain a new whole-PR review. Never amend, squash, force-push or rewrite history
-to clean the loop. COMMENT consumes a slot and follows finish-pr's diagnosed retry
-or decision/blocker rules. READY_TO_MERGE is internal, not loop termination.
-At the verified effective ceiling, exact valid APPROVE may advance to MERGE; owner
-decisions terminate STOP_AND_ASK, finite tool/infrastructure failure BLOCKED,
-remaining actionable defects STOP_REVISE. Never dispatch beyond the effective
-maximum or make unreviewable further patches.
+Default maximum 10 includes initial/COMMENT/invalidated/retry attempts. Only verified
+finite canonical owner exceptions apply; unintegrated D-069A grants none. Keep
+minimal actual ordinals/outcomes/refs canonically; no local directory or progress
+file is an eligibility/review/merge prerequisite. Never reset counts or manufacture
+an APPROVE from tests, hashes, labels or a missing historical source.
+
+For #212/PR #213, maximum 20/#1-19 histories are unchanged, including #19
+REQUEST_CHANGES/audit PASS. #20 stays reserved/unconsumed for Adrian's ONE manually
+opened official Codex `gpt-daybreak-blue-latest` combined implementation AND security
+review on the NEW exact HEAD. The current 2026-10-20T18:58:08Z owner instruction
+retires local review folders/wrappers and reaffirms this exception. D-077 and Issue
+#212 comment #18011 preserve attributed metadata; transcriptions are not owner
+source. No more ordinary Kilo, no #21, reset or automatic Daybreak. The descriptive
+combined handoff is not approval or a new global loop status.
+
+Review the complete actual changes plus useful context, not unrelated unchanged
+bodies. Require exact refs, authentic independent identity/scope/source/context,
+material findings/limitations and UX assessment. HEAD/base change invalidates
+approval. Serialize phases; no source edits/switches during an active review.
+Diagnose genuine findings/uncertainty/infrastructure separately, remediate within
+accepted scope/budget and hand off the next authorized visible review. Preserve
+failed/COMMENT history; at the bound actionable defects yield STOP_REVISE.
 
 ## Security Review
 
-For `security_critical` work, after validation and ordinary independent review pass
-at stable exact PR base/HEAD with no changes pending, reserve and persist the next
-owner-manual security ordinal against those exact refs and return
-`READY_FOR_OWNER_SECURITY_REVIEW`. The loop/implementation agent must not launch
-Codex or Daybreak. Adrian performs the official `gpt-daybreak-blue-latest` review
-manually under `docs/llm-operating-policy.md`; the primary verifies exact frozen-input,
-requested-model dispatch, invocation/session/turn, immutable input/output and the
-independent context/tool-audit provenance before recording an assurance level. No
-fallback reviewer is permitted. Any HEAD/base change invalidates a reserved result
-and requires a fresh ordinary review and owner-manual security ordinal. This mandatory
-pre-completion/pre-merge gate is not a pre-implementation eligibility gate; Kilo model
-discovery failure does not imply `SECURITY_REVIEW_UNAVAILABLE`. security approval
-covers those same exact objects. Remediate
-scoped findings through the same validation/packet/ordinary-review workflow and
-retained counters. Preserve failed/unavailable attempts as consumed and return
-`READY_FOR_OWNER_SECURITY_REVIEW` only for the exact current refs. This path rule is
-Scarcity Router-specific, not cross-repository maintenance authority.
+Security-critical Daybreak remains owner-manual in official Codex, visibly selected
+as `gpt-daybreak-blue-latest`, never Kilo, script, subprocess, generated wrapper or
+background job. It is not a pre-implementation eligibility gate; Kilo discovery failure
+does not imply `SECURITY_REVIEW_UNAVAILABLE`. No fallback reviewer is permitted.
+After generic ordinary approval/validation at exact current refs, hand off the
+pending manual-security gate and stop before merge/closure/selection.
+
+Verify actual official execution/model, native session/turn and independent context/
+tool provenance; do not infer backend identity. Any HEAD/base change invalidates
+security approval; security approval covers those same exact objects. For #212 only,
+the owner combined exception permits #20 without historical ordinary APPROVE but
+requires explicit verified BOTH implementation/security approval and complete material
+scope. A security-only/nonpositive/incomplete/unverified result does not pass and
+stops for Adrian. Tests or a prepared handoff never close either gate.
 
 ## MERGE
 
@@ -336,8 +319,10 @@ again with a fresh canonical queue, not a PR-derived backlog.
 
 ## Terminal Reporting
 
-Return exactly one terminal status: QUEUE_EMPTY, STOP_AND_ASK, STOP_REVISE, BLOCKED
-or READY_FOR_OWNER_SECURITY_REVIEW.
+Report the legitimate queue/decision/revision/blocker outcome, or an explicit
+visible-review handoff with its exact pending gate. Never replace that handoff with
+QUEUE_EMPTY, approval or a hidden launcher. Existing security handoffs may report
+READY_FOR_OWNER_SECURITY_REVIEW; #212's combined handoff is descriptive only.
 READY_FOR_OWNER_SECURITY_REVIEW is a terminal handoff after ordinary approval,
 validation and reservation of the exact owner-manual ordinal. Stop before MERGE,
 issue closure or SELECT; report the frozen refs and wait for Adrian's official Codex

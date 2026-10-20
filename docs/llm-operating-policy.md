@@ -139,30 +139,36 @@ the default. Use one only when uncertainty remains, evidence conflicts, the
 consequence is unusually high or independent confirmation materially increases
 confidence.
 
-Freeze immutable reviewed HEAD/base and serialize worker/reviewer/remediation
-phases. D-069 supersedes the development-delivery defaults: `/finish-pr` and
-`/loop` use one fresh read-only standalone Kilo CLI primary session with the
-dedicated `pr-reviewer-standalone` profile, not a native Task child. Its separate
-workspace contains only the packet and its effective Kilo tools are Read-only on
-exact per-run packet paths. The actual session identity, provider/model dispatch,
-Read decisions/returned bytes and complete native trace are audited; static resolver
-output alone is not proof. This establishes Kilo tool-level confinement, not OS
-sandboxing or backend model identity. The provider request uses the existing
-credential-safe Kilo authentication path; credentials are never copied into the
-reviewer context or evidence. A default maximum of 10 invocations per issue delivery
+Freeze immutable reviewed HEAD/base and serialize implementation/review/remediation.
+All development/review model selection and session starts are explicitly user-visible
+in Kilo or official Codex. The user opens a separate fresh read-only reviewer; no
+script/subprocess, Task/subagent, background job, Make/CI/hook, HTTP inference or
+generated owner wrapper may launch a model. No silent substitute/fallback. Provide
+acceptance, exact Git refs and source instructions directly; no persistent local
+packet/source/transcript or renamed receipt hierarchy. Native harness records and
+canonical metadata preserve actual identity/scope/results without claiming OS
+isolation or backend identity from UI/self-report. Credentials remain outside context.
+If a visible mechanism is required, hand off the exact pending gate rather than
+skip review, run a hidden model or claim the repository has no eligible work.
+A default maximum of 10 invocations per issue delivery
 includes initial, COMMENT, invalidated reviews and corrected retries. The sole separate
 direct-owner supersession is for #212/PR #213: the final D-077 amendment records maximum
 20, with consumed #1-19 preserved. The final `2026-10-20T06:26:22Z` owner exception
 permits only P1 correction/validation then #20 owner-manual combined implementation/
 security Daybreak without prior ordinary APPROVE, exclusively for this delivery.
-No more ordinary Kilo reviews or #21. Verify the exact Section2 source and canonical
+No more ordinary Kilo reviews or #21. The 2026-10-20T18:58:08Z owner cleanup decision
+reaffirms this exception on the NEW exact HEAD and retires old local files/launchers.
+Use legitimate native owner records and canonical D-077/Issue history, never an agent
+transcription as original evidence or an old hash as proof of local availability.
+Verify source and canonical
 scope/currentness before each reservation; this is not D-069A and cannot transfer. For every other
 delivery, D-069A permits a greater finite maximum only after the primary verifies the
 direct owner source, exact canonical repository/issue/linked-PR identity, scope and
 cap, and confirms the policy is already integrated in freshly fetched `develop`. An
 unmerged branch cannot authorize its own exception; stale, missing or mismatched
-evidence leaves the default 10 active. Reserve
-ordinals BEFORE dispatch in Git-locally excluded `.task_progress.md`; reentry/phase/
+evidence leaves the default 10 active. Record minimal ordinals/outcomes/refs canonically
+before imminent authorized visible review/handoff; no local file is a prerequisite.
+Reentry/phase/
 process/model/session changes never reset them. Every HEAD/base change requires a new
 counted review. Missing or ambiguous recovery is BLOCKED. Implementation never
 self-approves or resumes a reviewer. Standalone review is read-only. Standalone
@@ -340,7 +346,8 @@ under D-070: distinguish engineering blockers from genuine owner decisions and
 review findings from infrastructure failure or unresolved judgment. Diagnose and
 automatically attempt the minimum sufficient authorized changed environment/strategy,
 including secret-safe synthetic environments, ephemeral containers/checkouts, locked
-dependencies, pinned public source inspection and independent native reviewer failover.
+dependencies and pinned public source inspection. Reviewer recovery produces an
+explicit user-visible harness handoff, never automatic model failover or a script.
 Docker isolation is not product dependency adoption. No permission/model-bound gate
 is weakened. At most three materially different recovery attempts per obstacle and
 120 minutes of technical recovery per delivery (or an existing smaller budget) persist
@@ -366,14 +373,16 @@ Review effort is subordinate to delivering Scarcity Router. Mandatory inspection
 covers acceptance/applicable owner decisions, the complete byte-verified compact
 Git diff (`--unified=3`) and Git-derived changed-source ranges plus immediate
 context, not unrelated unchanged file bodies. Keep full sources and other contracts
-available as optional indexed references. Reviewers deepen inspection where a
+available as optional actual source references. Reviewers deepen inspection where a
 material dependency/security question requires it; unread optional material alone
 does not justify COMMENT. Prioritize P0/P1 and material P2 with concrete consequences;
 incidental P3 observations are nonblocking absent a material acceptance defect. Do
 not seek speculative requirements or unlimited procedural completeness, and never
 convert genuine material uncertainty into APPROVE.
 
-Security-audit all actual calls, even from assistant messages discarded by Kilo.
+Retained deterministic offline auditors security-check all supplied calls, even
+from assistant messages discarded by the pinned Kilo conversion. They are not live
+harness connectors or required review machinery; fixtures use cleaned OS temp space.
 Only model-visible evidence counts toward the final verdict's mandatory coverage;
 pinned conversion drops most errored assistant messages, retains meaningful
 `MessageAbortedError` messages and clears compacted tool results. Qualifying later
@@ -395,6 +404,12 @@ Report `READY_FOR_OWNER_COMBINED_REVIEW` only as this owner handoff label, not a
 global state or acceptance; reserve pending #20 after validation, never invoke it
 automatically or consume it through tests. Default ten elsewhere and `/loop`-only
 integration remain; no #21, transfer or authority from unintegrated D-069A.
+The later cleanup policy prohibits any more scripted/invisible development model
+execution, including synthetic preflight model calls. Offline synthetic responses,
+Git/hash/static/build tools remain allowed. No `.review-evidence-*` directory or
+replacement hierarchy may be created or required. Historical source bytes removed
+at the owner's direction are unavailable; canonical metadata is not reconstructed
+original authority. No fresh owner input is needed merely to rebuild obsolete files.
 
 ## Operational UX and compatibility review
 

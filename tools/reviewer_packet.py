@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Validate sealed packets and the standalone Kilo 7.8.8 reviewer boundary.
+"""Deterministic offline packet/trace validators and temporary test fixtures.
 
-This is a primary-side validator/config preparer/auditor, not a reviewer launcher
-or controller. It never launches a reviewer session, fetches Forgejo data, or edits
-the source checkout. Audit mode exports one exact Kilo session in memory and emits
-only a filtered trace/result summary; the caller owns selection and currentness.
+These legacy-format validators are not a development workflow or acceptance authority.
+They never start/export a harness session, select/invoke a model or fetch platform
+state. Visible Kilo/Codex sessions use Git and canonical acceptance directly; no
+local packet or receipt directory is a prerequisite. Fixture creators are confined
+to normal OS temporary space outside Git worktrees and must be cleaned by callers.
 """
 
 from __future__ import annotations
@@ -17,11 +18,10 @@ import re
 import shutil
 import stat
 import subprocess
-import sys
 import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any, TextIO, cast
+from typing import Any, cast
 
 
 class PacketError(ValueError):
@@ -56,6 +56,20 @@ def validate_standalone_packet_path_plan(inspection: PacketInspection) -> None:
         raise PacketError("standalone packet inventory differs from the complete canonical path plan")
 
 
+def _temporary_fixture_parent(parent: Path) -> None:
+    resolved = parent.resolve()
+    if (parent.is_symlink() or not parent.is_dir()
+            or not resolved.is_relative_to(Path(tempfile.gettempdir()).resolve())
+            or any(part.startswith(".review-evidence-") for part in resolved.parts)):
+        raise PacketError("offline fixtures require normal OS temporary space, not review-evidence storage")
+    probe = subprocess.run(
+        ["git", "-C", str(resolved), "rev-parse", "--show-toplevel"],
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+    )
+    if probe.returncode == 0:
+        raise PacketError("offline fixtures cannot be created inside a repository worktree")
+
+
 def create_synthetic_standalone_packet(
     parent: Path,
     *,
@@ -76,6 +90,7 @@ def create_synthetic_standalone_packet(
     paths = standalone_packet_path_plan(changed_paths, owner_evidence_paths)
     if not _SHA1.fullmatch(head) or not _SHA1.fullmatch(base) or not _SHA1.fullmatch(merge_base):
         raise PacketError("synthetic packet refs must be full SHA-1 values")
+    _temporary_fixture_parent(parent)
     if (not parent.is_dir() or parent.is_symlink()
             or stat.S_IMODE(parent.stat().st_mode) & 0o077):
         raise PacketError("synthetic packet parent must be a private existing real directory")
@@ -631,6 +646,8 @@ def _relative_source_path(value: object) -> str:
 
 
 def _run(argv: list[str], cwd: Path) -> bytes:
+    if not argv or argv[0] != "git":
+        raise PacketError("offline validation permits Git only; model/harness subprocesses are prohibited")
     result = subprocess.run(
         argv,
         cwd=cwd,
@@ -1475,8 +1492,8 @@ def _profile_parts(profile_path: Path) -> tuple[bytes, str, str]:
         raise PacketError("standalone reviewer mode must be primary")
     if not re.search(r"(?m)^permission:\s*\n\s+\"\*\":\s*deny\s*$", frontmatter):
         raise PacketError("standalone reviewer static permissions must deny all tools")
-    if not re.search(r"(?m)^\s+read:\s*deny\s*$", frontmatter):
-        raise PacketError("canonical standalone reviewer Read must deny without a generated profile")
+    if not re.search(r"(?m)^\s+read:\s*(?:deny|ask)\s*$", frontmatter):
+        raise PacketError("reviewer Read must require explicit source approval, never a static allow")
     if re.search(r"(?m)^\s+[^#\n]+:\s*allow\s*$", frontmatter):
         raise PacketError("standalone reviewer frontmatter contains a static allow")
     description = re.search(r"(?m)^description:\s*(.+?)\s*$", frontmatter)
@@ -1592,10 +1609,11 @@ def prepare_standalone_environment(
     preflight: bool = False,
     allow_synthetic_fixture: bool = False,
 ) -> RuntimeWorkspace:
-    """Prepare a packet-only workspace and standalone primary profile config.
-
-    This function prepares files/configuration only; it never starts Kilo.
-    """
+    """Create an offline permission fixture only; never a live reviewer runtime."""
+    if not allow_synthetic_fixture:
+        raise PacketError("offline fixture preparation is not a live reviewer workflow")
+    _temporary_fixture_parent(workspace_parent)
+    _temporary_fixture_parent(overlay_parent)
     inspection = validate_packet(
         packet_root,
         manifest_path,
@@ -1804,37 +1822,6 @@ def _expect_permission(
     return winner
 
 
-def _debug_agent(
-    kilo_binary: Path, agent_name: str, workspace: Path, env: dict[str, str]
-) -> dict[str, Any]:
-    result = subprocess.run(
-        [str(kilo_binary), "--pure", "debug", "agent", agent_name],
-        cwd=workspace,
-        env=env,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        text=True,
-        timeout=120,
-        check=False,
-    )
-    if result.returncode:
-        raise PacketError(f"Kilo could not resolve effective permissions for {agent_name}")
-    try:
-        return _object(json.loads(result.stdout), f"Kilo debug agent {agent_name}")
-    except (json.JSONDecodeError, PacketError) as err:
-        raise PacketError(f"Kilo debug agent output is not valid JSON for {agent_name}") from err
-
-
-def _minimal_cli_path(kilo_binary: Path) -> str:
-    entries = [str(kilo_binary.parent)]
-    node = shutil.which("node")
-    if node is not None:
-        entries.append(str(Path(node).parent))
-    entries.extend(os.defpath.split(os.pathsep))
-    return os.pathsep.join(dict.fromkeys(entries))
-
-
 def verify_effective_standalone_agent(
     reviewer: dict[str, Any], overlay: RuntimeWorkspace,
     canonical_profile: Path,
@@ -1915,49 +1902,6 @@ def verify_effective_standalone_agent(
         "os_level_isolation_claimed": False,
         "review_session_started": False,
     }
-
-
-def verify_effective_standalone_permissions(
-    *,
-    kilo_binary: Path,
-    overlay: RuntimeWorkspace,
-    canonical_profile: Path,
-    home: Path,
-    tmpdir: Path,
-    config_home: Path,
-    data_home: Path,
-    state_home: Path,
-    cache_home: Path,
-    expected_version: str = "7.8.8",
-) -> dict[str, Any]:
-    """Resolve the standalone primary before any reviewer session is started."""
-    _verify_overlay_files(overlay)
-    if not overlay.workspace.is_dir() or overlay.workspace.is_symlink():
-        raise PacketError("reviewer workspace is missing or linked")
-    if any(not path.is_dir() or path.is_symlink()
-           for path in (home, tmpdir, config_home, data_home, state_home, cache_home)):
-        raise PacketError("Kilo HOME/XDG/cache/temp paths must exist and be real directories")
-    env = standalone_environment(
-        kilo_binary=kilo_binary,
-        profile_config=overlay.profile_config,
-        kilo_config_content=overlay.kilo_config_content,
-        home=home,
-        tmpdir=tmpdir,
-        config_home=config_home,
-        data_home=data_home,
-        state_home=state_home,
-        cache_home=cache_home,
-    )
-    version = subprocess.run(
-        [str(kilo_binary), "--version"], cwd=overlay.workspace, env=env,
-        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-        text=True, timeout=60, check=False)
-    if version.returncode or version.stdout.strip() != expected_version:
-        raise PacketError("installed Kilo version does not match pinned permission evidence")
-
-    reviewer = _debug_agent(kilo_binary, "pr-reviewer-standalone", overlay.workspace, env)
-    result = verify_effective_standalone_agent(reviewer, overlay, canonical_profile)
-    return {"kilo_version": expected_version, **result}
 
 
 def _tool_calls(session: dict[str, Any]) -> list[dict[str, Any]]:
@@ -2193,27 +2137,6 @@ def standalone_review_prompt(runtime: RuntimeWorkspace) -> str:
         "source inspection. Do not run tests or claim direct Forgejo/Git verification. "
         "Return only the exact JSON result contract in your reviewer profile."
     )
-
-
-def standalone_run_argv(
-    kilo_binary: Path,
-    model_binding: dict[str, str],
-    title: str,
-    prompt: str,
-) -> list[str]:
-    provider = _string(model_binding.get("provider_id"), "reviewer provider")
-    model = _string(model_binding.get("model_id"), "reviewer model")
-    variant = _string(model_binding.get("variant"), "reviewer variant")
-    if (not title.strip() or not prompt.strip()
-            or any(char.isspace() or char == "/" for char in provider)
-            or not re.fullmatch(r"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)?", model)
-            or any(char.isspace() for char in variant)):
-        raise PacketError("standalone CLI invocation binding/title/prompt is malformed")
-    return [
-        str(kilo_binary.resolve()), "--pure", "run", "--agent", "pr-reviewer-standalone",
-        "--model", f"{provider}/{model}", "--variant", variant,
-        "--format", "json", "--title", title, prompt,
-    ]
 
 
 def standalone_preflight_prompt(runtime: RuntimeWorkspace, *, short: bool = False) -> str:
@@ -2899,560 +2822,34 @@ def _external_roots(values: list[str]) -> dict[str, Path]:
     return roots
 
 
-def _write_report(path: Path | None, report: dict[str, Any]) -> None:
-    if path is None:
-        return
-    if not path.parent.is_dir() or path.parent.is_symlink():
-        raise PacketError("report parent must already exist and be a real directory")
-    path.write_text(json.dumps(report, sort_keys=True, indent=2) + "\n", encoding="utf-8")
-    os.chmod(path, 0o600)
 
 
-def _runtime_from_report(
-    report_path: Path,
-    packet_root: Path,
-    manifest_path: Path,
-    *,
-    source_root: Path | None,
-    profile_source_root: Path | None,
-    external_source_roots: dict[str, Path],
-    kilo_binary: Path,
-    launch_environment: dict[str, str],
-    allow_synthetic_fixture: bool = False,
-) -> RuntimeWorkspace:
-    report = _object(json.loads(report_path.read_bytes()), "prepared runtime report")
-    if report.get("synthetic_packet") is not allow_synthetic_fixture:
-        raise PacketError("prepared report synthetic-packet mode differs from the audit")
-    recorded_source_root = report.get("source_root")
-    if (source_root is None and recorded_source_root is not None
-            or source_root is not None and recorded_source_root != str(source_root.resolve())):
-        raise PacketError("prepared report source-checkout mode differs from the audit")
-    recorded_profile_root = report.get("profile_source_root")
-    if (profile_source_root is None and recorded_profile_root is not None
-            or profile_source_root is not None
-            and recorded_profile_root != str(profile_source_root.resolve())):
-        raise PacketError("prepared report profile-source checkout differs from the audit")
-    report_external = _object(report.get("external_source_roots"), "report external source roots")
-    if {name: str(path.resolve()) for name, path in external_source_roots.items()} != report_external:
-        raise PacketError("prepared report and audit disagree on pinned external source checkouts")
-    if (report.get("kilo_binary") != str(kilo_binary.resolve())
-            or report.get("kilo_version") != "7.8.8"
-            or report.get("launch_environment") != launch_environment):
-        raise PacketError("standalone audit environment differs from the frozen prelaunch config")
-    manifest_bytes = manifest_path.read_bytes()
-    if report.get("manifest_sha256") != sha256(manifest_bytes):
-        raise PacketError("prepared runtime report is bound to a different manifest")
-    inspection = validate_packet(
-        packet_root,
-        manifest_path,
-        source_root=source_root,
-        external_source_roots=external_source_roots,
-        allow_synthetic_fixture=allow_synthetic_fixture,
-    )
-    if source_root is not None:
-        validate_standalone_packet_path_plan(inspection)
-    canonical_profile = Path(_string(report.get("canonical_profile"), "canonical profile path"))
-    if profile_source_root is not None:
-        _verify_profile_git_binding(canonical_profile, profile_source_root, inspection.head)
-    workspace = Path(_string(report.get("workspace"), "prepared workspace"))
-    packet = Path(_string(report.get("packet_workspace"), "prepared packet workspace"))
-    profile_config = Path(_string(report.get("per_run_kilo_config_dir"), "prepared Kilo config dir"))
-    allowed_paths = tuple(_string(p, "allowed packet path") for p in _array(
-        report.get("allowed_packet_paths"), "allowed packet paths"))
-    denied_paths = tuple(_string(p, "denied probe path") for p in _array(
-        report.get("denied_canary_paths"), "denied canary paths"))
-    raw_probe_hashes = _object(report.get("probe_hashes"), "probe file hashes")
-    probe_hashes = {
-        _string(path, "probe path"): _string(value, "probe SHA-256")
-        for path, value in raw_probe_hashes.items()
-    }
-    raw_probe_symlinks = _object(report.get("probe_symlinks"), "probe symlinks")
-    probe_symlinks = {
-        _string(path, "probe symlink path"): _string(value, "probe symlink target")
-        for path, value in raw_probe_symlinks.items()
-    }
-    raw_probe_labels = _object(report.get("probe_labels"), "probe labels")
-    probe_labels = {
-        _string(path, "labeled probe path"): _string(value, "probe label")
-        for path, value in raw_probe_labels.items()
-    }
-    probe_root_raw = report.get("probe_root")
-    probe_root = Path(_string(probe_root_raw, "probe root")) if probe_root_raw is not None else None
-    effective = _object(report.get("effective_permissions"), "effective permissions report")
-    config_content = _string(report.get("kilo_config_content"), "Kilo config content")
-    if (report.get("review_session_started") is not False
-            or report.get("status") != "PRELAUNCH_STANDALONE_PERMISSION_PASS"):
-        raise PacketError("prepared report does not prove pre-launch standalone permissions")
-    runtime = RuntimeWorkspace(
-        workspace=workspace,
-        packet=packet,
-        inspection=inspection,
-        source_root=source_root,
-        external_source_roots=external_source_roots,
-        synthetic_fixture=allow_synthetic_fixture,
-        canonical_profile=canonical_profile,
-        profile_source_root=profile_source_root,
-        profile_config=profile_config,
-        probe_root=probe_root,
-        probe_hashes=probe_hashes,
-        probe_symlinks=probe_symlinks,
-        probe_labels=probe_labels,
-        allowed_paths=allowed_paths,
-        denied_paths=denied_paths,
-        profile_prompt_sha256=_string(effective.get("effective_prompt_sha256"), "effective prompt hash"),
-        canonical_profile_sha256=_string(effective.get("profile_source_sha256"), "profile source hash"),
-        overlay_profile_sha256=_string(
-            effective.get("overlay_profile_sha256"), "per-run standalone profile hash"
-        ),
-        overlay_config_sha256=_string(effective.get("overlay_config_sha256"), "per-run config file hash"),
-        kilo_config_content=config_content,
-    )
-    instruction_boundary = validate_standalone_instruction_boundary(
-        runtime, launch_environment
-    )
-    if report.get("instruction_boundary") != instruction_boundary:
-        raise PacketError("prepared report does not preserve the isolated instruction boundary")
-    _verify_overlay_files(runtime)
-    _verify_probe_inventory(runtime)
-    if source_root is not None:
-        canonical_profile = source_root / ".kilo/agents/pr-reviewer-standalone.md"
-        if sha256(canonical_profile.read_bytes()) != runtime.canonical_profile_sha256:
-            raise PacketError("prepared report is bound to a different standalone reviewer profile")
-    return runtime
 
 
-def _export_standalone_session(
-    *, kilo_binary: Path, session_id: str, workspace: Path, env: dict[str, str],
-) -> tuple[dict[str, Any], str]:
-    if re.fullmatch(r"ses_[A-Za-z0-9]+", session_id) is None:
-        raise PacketError("standalone Kilo session ID is malformed")
-    result = subprocess.run(
-        [str(kilo_binary), "--pure", "export", session_id],
-        cwd=workspace,
-        env=env,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        timeout=120,
-        check=False,
-    )
-    if result.returncode:
-        raise PacketError("Kilo could not export the exact standalone session trace")
-    try:
-        return _object(json.loads(result.stdout), "Kilo standalone session export"), sha256(result.stdout)
-    except (json.JSONDecodeError, PacketError) as err:
-        raise PacketError("Kilo standalone session export is not valid JSON") from err
 
 
-def standalone_environment(
-    *, kilo_binary: Path, profile_config: Path, kilo_config_content: str,
-    home: Path, tmpdir: Path,
-    config_home: Path, data_home: Path, state_home: Path, cache_home: Path,
-) -> dict[str, str]:
-    return {
-        "PATH": _minimal_cli_path(kilo_binary),
-        "HOME": str(home),
-        "TMPDIR": str(tmpdir),
-        "XDG_CONFIG_HOME": str(config_home),
-        "XDG_DATA_HOME": str(data_home),
-        "XDG_STATE_HOME": str(state_home),
-        "XDG_CACHE_HOME": str(cache_home),
-        "LANG": "C.UTF-8",
-        "LC_ALL": "C.UTF-8",
-        "KILO_NO_DAEMON": "1",
-        "KILO_DISABLE_PRUNE": "1",
-        "KILO_DISABLE_AUTOCOMPACT": "1",
-        "KILO_DISABLE_PROJECT_CONFIG": "1",
-        "KILO_CONFIG_DIR": str(profile_config),
-        "KILO_CONFIG_CONTENT": kilo_config_content,
-    }
 
 
-def capture_session_id(events: TextIO) -> str:
-    """Consume Kilo JSON events without emitting packet text or tool outputs."""
-    session_id: str | None = None
-    for line_number, line in enumerate(events, 1):
-        if not line.strip():
-            continue
-        try:
-            event = _object(json.loads(line), "Kilo JSON event")
-        except (json.JSONDecodeError, PacketError) as err:
-            raise PacketError(f"Kilo run emitted a non-JSON event at line {line_number}") from err
-        if event.get("sessionID") is None:
-            raise PacketError("Kilo JSON event omitted its session ID")
-        current = _string(event.get("sessionID"), "Kilo event session ID")
-        if re.fullmatch(r"ses_[A-Za-z0-9]+", current) is None:
-            raise PacketError("Kilo run emitted a malformed session ID")
-        if session_id is not None and current != session_id:
-            raise PacketError("Kilo run JSON events contain more than one session")
-        session_id = current
-    if session_id is None:
-        raise PacketError("Kilo run emitted no session ID")
-    return session_id
+
+
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
-
-    sub.add_parser("capture-session-id", help="filter Kilo JSON events to their single session ID")
-
-    synthetic = sub.add_parser(
-        "synthetic-packet", help="create harmless production-shaped preflight packet files"
-    )
-    synthetic.add_argument("--parent", type=Path, required=True)
-    synthetic.add_argument("--changed-path", action="append", required=True)
-    synthetic.add_argument("--owner-evidence-path", action="append", default=[])
-    synthetic.add_argument("--head", required=True)
-    synthetic.add_argument("--base", required=True)
-    synthetic.add_argument("--merge-base", required=True)
-    synthetic.add_argument("--issue-id", type=int, default=1683)
-    synthetic.add_argument("--issue-number", type=int, default=212)
-    synthetic.add_argument("--pull-id", type=int, default=927)
-    synthetic.add_argument("--pull-number", type=int, default=213)
-    synthetic.add_argument("--head-branch", default="issue-212-d069a-bootstrap")
-
-    validate = sub.add_parser("validate", help="validate immutable packet and source bindings")
+    validate = sub.add_parser("validate", help="offline validation of caller-supplied immutable data; no model execution")
     validate.add_argument("--packet", type=Path, required=True)
     validate.add_argument("--manifest", type=Path, required=True)
     validate.add_argument("--source-root", type=Path, required=True)
     validate.add_argument("--profile-source-root", type=Path)
     validate.add_argument("--external-root", action="append", default=[])
-
-    permission_config = sub.add_parser(
-        "permission-config", help="render the exact standalone profile Read permission map"
-    )
-    permission_config.add_argument("--manifest", type=Path, required=True)
-    permission_config.add_argument("--workspace", type=Path, required=True)
-
-    prepare = sub.add_parser(
-        "prepare", help="prepare packet-only standalone workspace and verify effective Kilo rules"
-    )
-    prepare.add_argument("--packet", type=Path, required=True)
-    prepare.add_argument("--manifest", type=Path, required=True)
-    prepare.add_argument("--profile", type=Path, required=True)
-    prepare.add_argument("--source-root", type=Path)
-    prepare.add_argument("--profile-source-root", type=Path, required=True)
-    prepare.add_argument("--external-root", action="append", default=[])
-    prepare.add_argument("--workspace-parent", type=Path, required=True)
-    prepare.add_argument("--overlay-parent", type=Path, required=True)
-    prepare.add_argument("--home", type=Path, required=True)
-    prepare.add_argument("--tmpdir", type=Path, required=True)
-    prepare.add_argument("--config-home", type=Path, required=True)
-    prepare.add_argument("--data-home", type=Path, required=True)
-    prepare.add_argument("--state-home", type=Path, required=True)
-    prepare.add_argument("--cache-home", type=Path, required=True)
-    prepare.add_argument("--kilo", type=Path, required=True)
-    prepare.add_argument("--provider-id", required=True)
-    prepare.add_argument("--model-id", required=True)
-    prepare.add_argument("--variant", required=True)
-    prepare.add_argument("--title")
-    prepare.add_argument("--report", type=Path)
-    prepare.add_argument("--preflight", action="store_true")
-    prepare.add_argument("--short-preflight", action="store_true")
-    prepare.add_argument("--synthetic", action="store_true")
-
-    audit = sub.add_parser("audit-standalone", help="audit a native standalone Kilo primary session")
-    audit.add_argument("--packet", type=Path, required=True)
-    audit.add_argument("--manifest", type=Path, required=True)
-    audit.add_argument("--source-root", type=Path)
-    audit.add_argument("--profile-source-root", type=Path, required=True)
-    audit.add_argument("--external-root", action="append", default=[])
-    audit.add_argument("--prepared-report", type=Path, required=True)
-    audit.add_argument("--session-id", required=True)
-    audit.add_argument("--home", type=Path, required=True)
-    audit.add_argument("--tmpdir", type=Path, required=True)
-    audit.add_argument("--config-home", type=Path, required=True)
-    audit.add_argument("--data-home", type=Path, required=True)
-    audit.add_argument("--state-home", type=Path, required=True)
-    audit.add_argument("--cache-home", type=Path, required=True)
-    audit.add_argument("--kilo", type=Path, required=True)
-    audit.add_argument("--report", type=Path)
-    audit.add_argument("--preflight", action="store_true")
-    audit.add_argument("--short-preflight", action="store_true")
-
     args = parser.parse_args(argv)
     try:
-        if args.command == "validate":
-            result = validate_packet(
-                args.packet,
-                args.manifest,
-                source_root=args.source_root,
-                profile_source_root=args.profile_source_root,
-                external_source_roots=_external_roots(args.external_root),
-            )
-            print(json.dumps({"status": "PACKET_VALID", **asdict(result)}, sort_keys=True))
-            return 0
-
-        if args.command == "capture-session-id":
-            print(capture_session_id(sys.stdin))
-            return 0
-
-        if args.command == "synthetic-packet":
-            if tuple(sorted(set(args.changed_path))) != tuple(args.changed_path):
-                raise PacketError("synthetic changed paths must be sorted and unique")
-            if tuple(sorted(set(args.owner_evidence_path))) != tuple(args.owner_evidence_path):
-                raise PacketError("synthetic owner-evidence paths must be sorted and unique")
-            packet, manifest_path = create_synthetic_standalone_packet(
-                args.parent,
-                changed_paths=tuple(args.changed_path),
-                head=args.head,
-                base=args.base,
-                merge_base=args.merge_base,
-                owner_evidence_paths=tuple(sorted(set(args.owner_evidence_path))),
-                issue_id=args.issue_id,
-                issue_number=args.issue_number,
-                pull_id=args.pull_id,
-                pull_number=args.pull_number,
-                head_branch=args.head_branch,
-            )
-            print(json.dumps({
-                "status": "SYNTHETIC_PACKET_CREATED",
-                "packet": str(packet),
-                "manifest": str(manifest_path),
-                "file_paths": list(standalone_packet_path_plan(
-                    tuple(args.changed_path), tuple(sorted(set(args.owner_evidence_path)))
-                )),
-            }, sort_keys=True))
-            return 0
-
-        manifest_bytes = args.manifest.read_bytes()
-        manifest = _object(json.loads(manifest_bytes), "manifest")
-        paths = tuple(
-            _relative_file(_object(item, "manifest file row").get("path"))
-            for item in _array(manifest.get("files"), "manifest.files")
+        result = validate_packet(
+            args.packet, args.manifest, source_root=args.source_root,
+            profile_source_root=args.profile_source_root, external_source_roots=_external_roots(args.external_root),
         )
-        if args.command == "permission-config":
-            print(json.dumps(
-                make_per_run_permission_map(list(paths), workspace=args.workspace),
-                sort_keys=True, separators=(",", ":"),
-            ))
-            return 0
-
-        if args.command == "audit-standalone":
-            prepared = _object(
-                json.loads(args.prepared_report.read_bytes()), "prepared standalone report"
-            )
-            launch_env = standalone_environment(
-                kilo_binary=args.kilo,
-                profile_config=Path(_string(
-                    prepared.get("per_run_kilo_config_dir"), "prepared Kilo config dir"
-                )),
-                kilo_config_content=_string(
-                    prepared.get("kilo_config_content"), "prepared Kilo config content"
-                ),
-                home=args.home,
-                tmpdir=args.tmpdir,
-                config_home=args.config_home,
-                data_home=args.data_home,
-                state_home=args.state_home,
-                cache_home=args.cache_home,
-            )
-            synthetic = prepared.get("synthetic_packet") is True
-            if synthetic != args.preflight:
-                raise PacketError("preflight mode differs from the prepared packet type")
-            if prepared.get("short_preflight", False) is not args.short_preflight:
-                raise PacketError("short preflight mode differs from the prepared invocation")
-            if args.short_preflight and not args.preflight:
-                raise PacketError("short preflight requires a synthetic preflight session")
-            if (synthetic and args.source_root is not None) or (
-                not synthetic and args.source_root is None
-            ):
-                raise PacketError("audit source checkout differs from the prepared packet type")
-            if synthetic:
-                _ = validate_synthetic_preflight_packet(args.packet, args.manifest)
-            canonical_profile = Path(_string(
-                prepared.get("canonical_profile"), "prepared canonical reviewer profile"
-            ))
-            if canonical_profile.resolve() != (
-                args.profile_source_root / ".kilo/agents/pr-reviewer-standalone.md"
-            ).resolve():
-                raise PacketError("audit profile path differs from the frozen source profile")
-            runtime = _runtime_from_report(
-                args.prepared_report,
-                args.packet,
-                args.manifest,
-                source_root=args.source_root,
-                profile_source_root=args.profile_source_root,
-                external_source_roots=_external_roots(args.external_root),
-                kilo_binary=args.kilo,
-                launch_environment=launch_env,
-                allow_synthetic_fixture=synthetic,
-            )
-            prepared_binding = _object(prepared.get("model_binding"), "prepared model binding")
-            expected_model = {
-                "provider_id": _string(prepared_binding.get("provider_id"), "expected provider"),
-                "model_id": _string(prepared_binding.get("model_id"), "expected model"),
-                "variant": _string(prepared_binding.get("variant"), "expected variant"),
-            }
-            title = _string(prepared.get("reviewer_title"), "prepared reviewer title")
-            expected_prompt = (
-                standalone_preflight_prompt(runtime, short=args.short_preflight)
-                if args.preflight else standalone_review_prompt(runtime)
-            )
-            expected_argv = standalone_run_argv(args.kilo, expected_model, title, expected_prompt)
-            if prepared.get("standalone_run_argv") != expected_argv:
-                raise PacketError("reviewer CLI argv differs from the frozen standalone invocation")
-            effective = verify_effective_standalone_permissions(
-                kilo_binary=args.kilo,
-                overlay=runtime,
-                canonical_profile=canonical_profile,
-                home=args.home,
-                tmpdir=args.tmpdir,
-                config_home=args.config_home,
-                data_home=args.data_home,
-                state_home=args.state_home,
-                cache_home=args.cache_home,
-            )
-            if effective != prepared.get("effective_permissions"):
-                raise PacketError("effective standalone permissions changed after preparation")
-            session, export_sha256 = _export_standalone_session(
-                kilo_binary=args.kilo,
-                session_id=args.session_id,
-                workspace=runtime.workspace,
-                env=launch_env,
-            )
-            try:
-                report = audit_standalone_session(
-                    session,
-                    session_export_sha256=export_sha256,
-                    runtime=runtime,
-                    expected_model=expected_model,
-                    expected_title=title,
-                    expected_prompt=expected_prompt,
-                    preflight=args.preflight,
-                    short_preflight=args.short_preflight,
-                )
-            except PacketError as err:
-                report = summarize_failed_standalone_session(
-                    session,
-                    session_export_sha256=export_sha256,
-                    reason=str(err),
-                    preflight=args.preflight,
-                    short_preflight=args.short_preflight,
-                )
-                _write_report(args.report, report)
-                print(json.dumps(report, sort_keys=True, separators=(",", ":")))
-                return 1
-            _write_report(args.report, report)
-            print(json.dumps(report, sort_keys=True, separators=(",", ":")))
-            return 0
-
-        if args.synthetic:
-            if not args.preflight or args.source_root is not None or args.external_root:
-                raise PacketError("synthetic packet preparation is allowed only for preflight without a source checkout")
-            _ = validate_synthetic_preflight_packet(args.packet, args.manifest)
-        elif args.preflight or args.source_root is None:
-            raise PacketError("preflight must use a synthetic packet; production preparation requires a source checkout")
-        if args.short_preflight and not (args.preflight and args.synthetic):
-            raise PacketError("short preflight is allowed only for a synthetic permission check")
-        canonical_profile = args.profile
-        if canonical_profile.resolve() != (
-            args.profile_source_root / ".kilo/agents/pr-reviewer-standalone.md"
-        ).resolve():
-            raise PacketError("canonical reviewer profile must be the tracked standalone profile")
-        if (args.source_root is not None
-                and args.source_root.resolve() != args.profile_source_root.resolve()):
-            raise PacketError("packet and profile source checkouts must be the same frozen worktree")
-        runtime = prepare_standalone_environment(
-            args.packet,
-            args.manifest,
-            canonical_profile,
-            args.workspace_parent,
-            args.overlay_parent,
-            source_root=args.source_root,
-            profile_source_root=args.profile_source_root,
-            external_source_roots=_external_roots(args.external_root),
-            preflight=args.preflight,
-            allow_synthetic_fixture=args.synthetic,
-        )
-        launch_env = standalone_environment(
-            kilo_binary=args.kilo,
-            profile_config=runtime.profile_config,
-            kilo_config_content=runtime.kilo_config_content,
-            home=args.home,
-            tmpdir=args.tmpdir,
-            config_home=args.config_home,
-            data_home=args.data_home,
-            state_home=args.state_home,
-            cache_home=args.cache_home,
-        )
-        instruction_boundary = validate_standalone_instruction_boundary(runtime, launch_env)
-        effective = verify_effective_standalone_permissions(
-            kilo_binary=args.kilo,
-            overlay=runtime,
-            canonical_profile=args.profile,
-            home=args.home,
-            tmpdir=args.tmpdir,
-            config_home=args.config_home,
-            data_home=args.data_home,
-            state_home=args.state_home,
-            cache_home=args.cache_home,
-        )
-        post_resolver_boundary = validate_standalone_instruction_boundary(runtime, launch_env)
-        if post_resolver_boundary != instruction_boundary:
-            raise PacketError("Kilo permission preflight changed the isolated instruction boundary")
-        expected_prompt = (
-            standalone_preflight_prompt(runtime, short=args.short_preflight)
-            if args.preflight else standalone_review_prompt(runtime)
-        )
-        model_binding = {
-            "provider_id": args.provider_id,
-            "model_id": args.model_id,
-            "variant": args.variant,
-        }
-        title = args.title or (
-            "synthetic-standalone-relative-path-preflight"
-            if args.short_preflight
-            else "synthetic-standalone-permission-preflight"
-            if args.preflight
-            else f"review-issue-{runtime.inspection.issue_number}-pr-{runtime.inspection.pull_number}"
-        )
-        run_argv = standalone_run_argv(args.kilo, model_binding, title, expected_prompt)
-        report: dict[str, Any] = {
-            "status": "PRELAUNCH_STANDALONE_PERMISSION_PASS",
-            "synthetic_packet": args.synthetic,
-            "short_preflight": args.short_preflight,
-            "source_root": str(args.source_root.resolve()) if args.source_root is not None else None,
-            "profile_source_root": str(args.profile_source_root.resolve()),
-            "canonical_profile": str(canonical_profile.resolve()),
-            "manifest_sha256": sha256(manifest_bytes),
-            "workspace": str(runtime.workspace),
-            "packet_workspace": str(runtime.packet),
-            "external_source_roots": {
-                name: str(path.resolve())
-                for name, path in runtime.external_source_roots.items()
-            },
-            "per_run_kilo_config_dir": str(runtime.profile_config),
-            "per_run_reviewer_profile": str(
-                runtime.profile_config / "agents/pr-reviewer-standalone.md"
-            ),
-            "per_run_kilo_config_file": str(runtime.profile_config / "kilo.json"),
-            "kilo_disable_project_config": "1",
-            "kilo_version": effective["kilo_version"],
-            "kilo_binary": str(args.kilo.resolve()),
-            "kilo_config_content": runtime.kilo_config_content,
-            "launch_environment": launch_env,
-            "instruction_boundary": instruction_boundary,
-            "standalone_agent": "pr-reviewer-standalone",
-            "standalone_profile_mode": effective["reviewer_profile_mode"],
-            "standalone_resolved_mode": effective["reviewer_resolved_mode"],
-            "model_binding": model_binding,
-            "reviewer_title": title,
-            "standalone_run_argv": run_argv,
-            "standalone_prompt": expected_prompt,
-            "allowed_packet_paths": list(runtime.allowed_paths),
-            "denied_canary_paths": list(runtime.denied_paths),
-            "probe_root": str(runtime.probe_root) if runtime.probe_root is not None else None,
-            "probe_hashes": runtime.probe_hashes,
-            "probe_symlinks": runtime.probe_symlinks,
-            "probe_labels": runtime.probe_labels,
-            "effective_permissions": effective,
-            "review_session_started": False,
-            "os_level_isolation_claimed": False,
-        }
-        _write_report(args.report, report)
-        print(json.dumps(report, sort_keys=True, separators=(",", ":")))
+        print(json.dumps({"status": "OFFLINE_PACKET_VALID_NOT_REVIEW_APPROVAL", **asdict(result)}, sort_keys=True))
         return 0
     except (PacketError, OSError, json.JSONDecodeError, subprocess.SubprocessError) as err:
         print(json.dumps({"status": "FAIL_CLOSED", "reason": str(err)}, sort_keys=True))

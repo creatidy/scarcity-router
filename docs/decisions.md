@@ -6302,383 +6302,109 @@ neither is a new live check of the current deployment.
   authority is granted. D-063/default grants remain supported and #199's
   replacement/retirement gate is untouched.
 
-### D-077 - Standalone Kilo CLI reviewer for issue #212
+### D-077 - Transparent visible review and the #212 acceptance history
 
-- **Status:** Owner-authorized direct instruction, 2026-10-17, for the active
-  issue #212 / PR #213 delivery and its repository review workflow. This replaces
-  the failing native Task reviewer execution mechanism; it does not alter Router
-  product architecture, D-069 review budgets or merge/security authority. The
-  updated canonical Issue #212 body records the revised acceptance. The branch
-  must still pass validation and independent review before integration.
-- **Reason:** The prior Kilo 7.8.8 native Task path could not demonstrate its
-  requested policy at runtime: r6 denied the child's first Read under the static
-  agent rule, and the owner-authorized r7 attempt resolved a project-local profile
-  statically but its actual parent Task approval was wildcard `* allow` while the
-  child had no native Read tool. The exact r6/r7 evidence remains in the excluded
-  issue-delivery directory. Do not repeat Task permission-propagation experiments.
-  The first standalone synthetic runtime, session `ses_eb345f610ffeilrl23CGw7M1Dh`,
-  also failed closed: its `Read("packet/index.md")` was denied by `agent` rule
-  `read:* deny` before bytes despite a passing static resolver; no other calls or
-  probes occurred. The failure and export digest are in the excluded delivery record.
-  The r2 runtime had the exact standalone identity/model and `parentID: null`, and all
-  six escape probes were denied before content, but its first correct absolute indexed
-  Read was denied by the agent's `read:* deny` rule despite the static per-run resolver
-  pass. Its saved session has `projectID: global`; for a non-VCS global project the
-  pinned Kilo source sets the worktree root to `/`. Read permission patterns are then
-  relative to `/` (for example, `tmp/kilo/.../workspace/packet/index.md`), not
-  `packet/index.md`, so the wildcard deny correctly won. Kilo's CLI can also attach to
-  an existing daemon unless `KILO_NO_DAEMON=1`; the trace does not establish whether
-  r2 attached, so the environment now disables that path. In r3 the model supplied a
-  different nonexistent absolute path; Kilo returned `File not found` before asking
-  for Read permission. Missing permission metadata in r3 was therefore a path failure,
-  not a permission-decision failure. The expected prompt was wrapped in literal double
-  quotes with no other context. Filtered traces/digests remain in the excluded delivery
-  record; no preflight consumed an ordinal.
-- **Selected execution:** Each `/review-pr`, `/finish-pr` and `/loop` review uses
-  one fresh official Kilo 7.8.8 CLI process/session with `--pure run --agent
-  pr-reviewer-standalone --format json` and the explicitly frozen provider/model/
-  variant. The dedicated `.kilo/agents/pr-reviewer-standalone.md` must be
-  `mode: primary`; Kilo 7.8.8 `kilo run --agent` falls back to its default agent
-  for a `subagent` profile, so actual exported session identity is mandatory. The
-  installed resolver can report effective mode `all` for a primary-capable profile;
-  `kilo run` rejects only `subagent`. Accept only `primary` or `all`, then require the
-  actual session to record the exact agent and `parentID: null`.
-  No native Task parent, continuation, session resume, fork or prior reviewer
-  context is used. The implementation primary remains the sole orchestrator.
-- **Input and tool boundary:** The reviewer process works from a dedicated
-  workspace whose only entry is an immutable `packet/` directory. Its separate
-  per-run `KILO_CONFIG_DIR` holds a generated copy with the same identity/mode/prompt
-  and an ephemeral frontmatter permission map: all tools denied, Read allowed only
-  for exact Kilo worktree-relative patterns of indexed files, and external directories
-  denied. Although the Kilo 7.8.8 Read schema description calls `filePath` absolute,
-  its handler resolves relative values against `instance.directory` before permission
-  checks. The primary's prompt therefore supplies only exact indexed relative
-  `packet/<file>` values. Kilo normalizes each target with
-  `path.relative(instance.worktree, target)` before
-  checking the profile; for this non-VCS global project the worktree is `/`, so the
-  exact patterns include the workspace's relative path from that root. No absolute,
-  directory or prefix permission grants are added. The
-  tracked canonical profile remains deny-all. r1's actual session denied
-  `Read("packet/index.md")` under `agent read:* deny` despite static environment
-  overlay check passing. Keep per-run `kilo.json` and `KILO_CONFIG_CONTENT` empty (`{}`);
-  put only exact worktree-relative packet Read rules in the ephemeral primary profile.
-  Use `KILO_DISABLE_PROJECT_CONFIG=1`, synthetic HOME/XDG config and the exact
-  effective per-run profile in both resolver and runtime checks. No source checkout,
-  Git object store, Forgejo MCP, Bash, search, list, glob, memory, write, delegation
-  or external-network tools are
-  available to the reviewer. The only external request is authenticated model
-  inference through the existing Kilo provider path. Never read
-  `~/.config/kilo/kilo.jsonc`, copy/print credential values or place them in any
-  packet, prompt, trace summary or comment.
-- **Required runtime proof:** Static resolver output is supplementary, not a
-  security pass. Before reserving an ordinal, the same standalone CLI path must
-  report `projectID=global`, read every file in a complete production-equivalent
-  synthetic packet and deny sibling, parent, absolute, traversal and symlink-escape
-  reads before content.
-  Audit the actual primary session identity/mode, `parentID: null`, provider/model/
-  variant dispatch, every native tool call, exact permission decision and returned
-  bytes, absence of prior context/forbidden tools, and unchanged packet inventory.
-  Kilo's sole user message must equal the exact expected prompt, permitting only the
-  observed literal-double-quote wrapper and no other prefix, suffix or context.
-  Launch with `KILO_NO_DAEMON=1` so the fresh CLI process uses the exact per-run profile
-  instead of an existing daemon's configuration. Preflights do not consume review
-  ordinals. Repeat the actual session/export and packet-integrity audit after every
-  whole-PR review; missing trace or any mismatch fails closed.
-- **Actual guarantee and limits:** This mechanism enforces a Kilo tool-level
-  boundary only. A packet-only working directory is not proof of filesystem or
-  OS-level isolation. Record `DISPATCH_VERIFIED` from Kilo session/provider/model/
-  variant metadata only; backend identity is not independently observed. Do not infer
-  backend identity or claim `RUNTIME_VERIFIED`.
-  Keep raw session export in Kilo's local session store for audit; persist only the
-  session ID/export digest and filtered tool/path/range/result summary, not raw
-  packet contents or credentials.
-- **Review semantics:** The reviewer independently reads the complete packet,
-  exact frozen HEAD/base/merge-base and changed-source ranges; returns the
-  established verdict/findings/limitations contract plus explicit `ux_impact`;
-  `checks_run` is empty because the reviewer has no execution tools. The primary
-  performs sanitized executable validation and canonical currentness checks.
-  Exact APPROVE, empty findings, full coverage, valid UX assessment and actual
-  trace-audit PASS are all required; any HEAD/base change invalidates approval.
-- **Path handling correction:** The seven failed #8 Read calls used a stale,
-  model-generated absolute workspace path and returned `File not found` before
-  permission evaluation. The sanitized session separately records a retryable
-  generic `APIError` (`Network connection failed`) with no HTTP status or safe
-  underlying OS cause; the cause remains unverified. The prompt now uses only exact
-  indexed relative paths supported by the pinned 7.8.8 Read implementation at Kilo
-  revision `e2887f08e5a6394299c810ba508f358aaf4c5bc3`,
-  `packages/opencode/src/tool/read.ts:203-205`. This corrects input handling only;
-  exact per-file worktree-relative allows, wildcard deny, external-directory deny and
-  all escape probes remain unchanged.
-- **Prior owner-directed ordinal sequence (retained as history):** Preserve consumed ordinals #1-8,
-  including the owner-reported #7 security `REQUEST_CHANGES` with provenance
-  `UNVERIFIED`; #8 remains failed with no valid verdict. Adrian's direct instruction
-  on 2026-10-18 authorizes #9 as the final ordinary review only after the sanitized
-  diagnosis, exact-relative-path correction and one successful short synthetic
-  session with all escape probes denied. This is a #212 recovery-specific supplement
-  to the prior full r4 synthetic proof; it does not weaken the ordinary full-preflight
-  requirement. Ordinal #10 is reserved for Adrian's later manual
-  `gpt-daybreak-blue-latest` security review only after a valid current #9 APPROVE. A
-  valid #9 APPROVE returns `READY_FOR_OWNER_SECURITY_REVIEW`. No #11 or other
-  review-ceiling extension was authorized at that point. No Daybreak was invoked
-  automatically. No merge, issue closure, release, deployment, `main` promotion or unrelated
-  repository/worktree mutation is authorized.
-- **Prior direct owner amendment for #212/PR #213 (superseded by the later max-12 amendment below):** Adrian's direct owner
-  instruction in the Kilo conversation at `2026-10-18T19:24:31Z` explicitly amends
-  the D-069 ceiling and this D-077 ordinal allocation for this bootstrap delivery
-  only. Its exact message is preserved verbatim at the Git-locally excluded
-  `.review-evidence-212/owner-d069-ceiling-amendment-2026-10-18.txt`, SHA-256
-  `be746960ffc98ddbbacd905c4c3a2af01e105484620af57a12b7509168e4d0c4`. The direct
-  owner message is the authority; any Kilo-authored Forgejo comment/body recording
-  it is a transcription, not an owner-authored source.
-  - Effective maximum for #212/PR #213 is 11 invocations: preserve #1-9 unchanged;
-    #10 is the final independent ordinary whole-PR review; after its valid APPROVE,
-    #11 is Adrian's separate manual Daybreak security review through official Codex.
-    No #12 or automatic extension is authorized.
-  - The default maximum remains ten for every other delivery. This was a direct
-    owner amendment to the existing D-069/D-077 decision, not authority from
-    unintegrated D-069A. Do not reset/reclassify history, invoke Daybreak from Kilo,
-    merge or close #212 before both approvals.
-- **Prior final direct owner amendment for #212/PR #213 (superseded by the max-14 amendment below):** Adrian's direct owner instruction
-  in the Kilo conversation at `2026-10-19T07:02:31Z` supersedes the preceding #212
-  max-11 allocation. The exact message is preserved verbatim at the Git-locally
-  excluded `.review-evidence-212/owner-d069-review-ceiling-amendment-2026-10-19.txt`,
-  SHA-256 `fc3b4fa416da3c7083c5140b1ff943afacb87edbe0409f84d98426992d70e301`. The
-  direct user message is authoritative; any Kilo-authored Forgejo comment or body
-  update is a transcription, not an owner-authored source.
-  - Effective maximum: 12 invocations for this issue/PR only. Preserve #1-10 and
-    their actual outcomes; #11 is the final fresh ordinary whole-PR review; only
-    after its valid APPROVE may #12 be reserved for Adrian's separate manual
-    Daybreak security review through official Codex. No #13 or automatic extension.
-  - The default maximum ten remains for all other deliveries. This is a direct
-    one-time owner amendment to D-069/D-077, not authority from unintegrated D-069A.
-    Do not reset/reclassify history or invoke Daybreak automatically.
+- **Current owner decision (2026-10-20T18:58:08Z):** All development/review model
+  selection and session starts must be explicit and USER-VISIBLE inside Kilo or
+  official Codex. The implementation agent may code, test, use Git and perform
+  bounded technical recovery, but cannot start another model through scripts,
+  subprocesses, Task/delegation, background jobs, Make/CI/hooks or HTTP inference.
+  Do not generate a convenience owner launcher or reproduce it under another name.
+  This changes development workflow, not the Router product's authorized inference.
+- **Review:** Prepare concise acceptance/source instructions and exact frozen
+  HEAD/base/merge-base directly. The user opens a fresh independent read-only
+  harness session and chooses its model. Use actual Git objects, complete compact
+  diff/changed regions and necessary context, canonical Forgejo records and native
+  harness references. Keep source integrity, scoped permissions, no credentials/
+  unapproved context, actual identity/provenance and explicit UX assessment. A
+  handoff names the exact pending gate; it is not approval, skipped review or proof
+  that the repository has no eligible work. No self-review or silent substitution.
+- **Evidence retirement:** The owner authorized removal of ALL local
+  `.review-evidence-*` directories in registered Scarcity Router worktrees, including
+  obsolete generated packets, source copies, transcripts and `run-owner-review.sh`.
+  Do not retain complete copies/archives/renamed replacements or create an evidence
+  database, receipt hierarchy or persistent runner. Ordinary offline tests use
+  cleaned OS temporary directories, never worktrees. No local directory/history
+  reconstruction is an eligibility, review, merge or acceptance prerequisite.
+  Retained packet/trace validators are optional deterministic offline test tools,
+  not live harness connectors, model launchers or authority.
+- **Authority and attribution:** The current direct owner instruction is in the
+  user-visible Kilo conversation, supplied timestamp above; no source hash or
+  unexposed session ID is invented for it. Canonical Issue/PR comments and this
+  document are agent transcriptions, not owner-authored evidence. Original owner
+  messages/native records remain the legitimate sources where available. Local
+  source files listed by older commits existed historically but were deleted by
+  explicit owner instruction; historical hashes do not imply current availability
+  or recreate authority. An unavailable original is not replaced by an agent claim.
+  The current owner explicitly reaffirms the #20 exception below.
 
-- **Prior direct owner amendment for #212/PR #213 (maximum 14, superseded below):** Adrian's direct
-  owner instruction in the Kilo conversation at `2026-10-19T10:39:34Z` supersedes the
-  preceding maximum-12 amendment above, which remains preserved as historical authority.
-  The exact Section D authorization is retained at the Git-locally excluded
-  `.review-evidence-212/owner-d069-review-ceiling-amendment-2026-10-19-max14.txt`,
-  SHA-256 `ce5d5aad6b1542ba489dbe8f3405468c4ce650d08025678c48058e32082ef023`. The direct
-  user instruction is authoritative; any Kilo-authored Issue/PR or Forgejo body is only
-  a transcription.
-  - Maximum 14 total invocations for #212/PR #213 only. #1-11 remain consumed with
-    their actual outcomes. #12 is the next ordinary whole-PR review. #13 may be an
-    additional ordinary review only when needed after a diagnosed/corrected #12 failure,
-    or the owner-manual Daybreak gate after valid #12 APPROVE. #14 is the final manual
-    Daybreak gate only if #13 was needed for ordinary review. No #15, reset or automatic
-    extension.
-  - Default ten and all other deliveries remain unchanged. This direct supersession is
-    not D-069A authority and does not transfer. Retain the independent owner-manual
-    security gate and `/loop`-only merge authority; Adrian invokes official Codex.
+**Preserved #212/PR #213 decisions (not transferred to other deliveries):**
 
-- **Prior direct owner amendment for #212/PR #213 (maximum 16, superseded below):** Adrian's direct
-  instruction received at `2026-10-19T17:40:57Z` supersedes the max-14 allocation above.
-  The complete instruction is retained at
-  `.review-evidence-212/owner-final-remediation-2026-10-19-max16.txt`, SHA-256
-  `9573ac5fe81bfc4fa8dc91e04289cccdd3d997f6dc9d5dc8d2e0fd080fea97bf`.
-  Its exact Section 2 authorization, without historical findings, is retained at
-  `.review-evidence-212/owner-d077-max16.txt`, SHA-256
-  `c11e3e7dfa39b539eedca7c12ab3795650cc799d2554e991acd4ba04bee175ef`.
-  The direct instruction is authority; Kilo-authored Forgejo text is a transcription.
-  - Maximum 16 only for #212/PR #213. Preserve consumed #1-13 and their exact outcomes;
-    #13 remains COMMENT with its original audit PASS. #14 is the next independent
-    ordinary whole-PR review, only after all remediation/validation/preflight gates.
-    After valid #14 APPROVE, reserve #15 for owner-manual Daybreak. Otherwise #15
-    may be one final ordinary review after diagnosed remediation, with #16 available
-    for owner-manual Daybreak only after valid #15 APPROVE. No #16 ordinary review,
-    no #17, reset, transfer, reclassification or automatic extension.
-  - Default ten elsewhere remains unchanged. This direct supersession is not authority
-    from unintegrated D-069A. Preserve official Codex owner-manual security acceptance,
-    no automatic Daybreak, and `/loop`-only integration authority.
-- **Frozen evidence completion:** Pinned Kilo 7.8.8 at
-  `e2887f08e5a6394299c810ba508f358aaf4c5bc3` resolves relative Reads against
-  `instance.directory` (`tool/read.ts:198-211`). `project/project.ts:214-240` and
-  `packages/core/src/project.ts:110-123` bind non-VCS global projects to `/`.
-  The session/export lifecycle is separately bound: `session/processor.ts:265-312`
-  records tool completion time; `:665-927` records finish reason, text start/end,
-  error and message completion (cleanup alone is not success).
-  `packages/schema/src/v1/session.ts:102-534` defines those fields;
-  `session/message-v2.ts:561-601`, `session/session.ts:1032-1055` and
-  `cli/cmd/export.ts:245-297` establish export ordering and retained metadata.
-  The auditor requires the last response to have `finish: stop`, no error, complete
-  text/message timestamps, and every Read completed before verdict text starts.
-  Missing temporal evidence is UNVERIFIED/fail-closed, never inferred from JSON.
-  Deleted sources bind their base blob/bytes and absent HEAD under explicit
-  `change_type: deleted`; added/modified paths keep HEAD-side evidence. Finding
-  line references use the bound source side, and every source remains a full read.
+| Direct instruction | Historical decision | Current effect |
+|---|---|---|
+| 2026-10-17 | Separate standalone Kilo path for bootstrap review | Historical architecture; scripted session starts retired by current owner |
+| 2026-10-18 | Issue-specific maximum11 | Superseded ceiling, actual attempts preserved |
+| 2026-10-19T07:16:05Z | Maximum12 | Superseded ceiling, no counter reset |
+| 2026-10-19T10:39:34Z | Maximum14 | Superseded ceiling, actual results unchanged |
+| 2026-10-19T17:40:57Z | Maximum16 | Superseded allocation, not D-069A authority |
+| 2026-10-19T20:49:07Z | Model-visible evidence and practical changed-region coverage | Retain substantive source/security guarantees, not persistent packets |
+| 2026-10-19T22:41:20Z | Maximum20, quoted "Zatwierdzam, od razu do 20." | Ceiling remains20, default ten elsewhere; no #21/reset/transfer |
+| 2026-10-20T06:26:22Z | ONE final owner-manual combined correctness AND security review at #20 without historical ordinary APPROVE | Remains in force, no ordinary Kilo review |
+| 2026-10-20T18:58:08Z | Remove local evidence/launch scripts; use visible harnesses | Current workflow; #20 stays reserved/unconsumed on NEW exact HEAD |
 
-- **Owner coverage-policy correction, not a budget amendment (2026-10-19T20:49:07Z):**
-  Adrian authorizes the reproduced evidence-visibility P1 fix and a practical
-  changed-region coverage contract in the same #212/PR #213 delivery. Exact Sections
-  1/4/8 are retained at
-  `.review-evidence-212/owner-evidence-visibility-coverage-2026-10-19.txt`, SHA-256
-  `0c3f363222cc8d6c3391e2474cebe2d66c3c3b9a1d981eb507bf3092aebaa8c6`.
-  This supersedes the blanket full-source/full-reference read requirement above,
-  not the independent review, security, identity or immutable evidence boundaries.
-  - Mandatory: complete canonical acceptance/applicable owner decisions, every
-    hunk of the exact complete compact diff, all changed-source regions and
-    sufficient immediate context. `COMPACT_DIFF_FLAGS` uses `--binary --full-index
-    --no-ext-diff --no-renames --unified=3`; the patch is compared byte-for-byte to
-    frozen Git objects. `changed_source_ranges` derives HEAD-side hunk coordinates
-    for additions/modifications and base-side coordinates for deletions. The patch
-    also contains removed lines in modified files. No summarized/omitted hunks.
-  - Full source files and other indexed contracts remain optional for material
-    investigation; no obligation to read unrelated unchanged bodies or every
-    reference. Every performed Read still has exact permission, source-byte,
-    loaded-context and inventory checks. Source bindings stay complete even for
-    optional portions. Historical packets retain their original decisions/receipts.
-  - Security and visibility are separate: audit all executed calls, but credit
-    only tool results replayed into the final model input. Pinned Kilo
-    `session/message-v2.ts:373-495` discards errored assistants except meaningful
-    `MessageAbortedError` messages and substitutes cleared text for compacted
-    results. `NamedError.isInstance` checks the exact name (`core/src/util/error.ts:7-10,47-49`).
-    A later eligible reread can restore coverage; discarded calls never escape the
-    security audit. Compaction summaries with unprovable original visibility fail
-    closed. Existing terminal-response and Read-before-verdict checks remain.
-  - The standard prompt conversion passes no additional output-truncation option
-    (`session/prompt.ts:1815-1831`); Read display truncation credits returned lines
-    only, with pagination for missing mandatory lines. No model-context framework
-    or assumption that a raw exported successful call alone proves visibility.
-  - Review priorities are material correctness/security/contracts/regressions:
-    P0/P1 and material P2, not endless marginal/speculative findings. Incidental
-    P3 and unread optional files do not block; genuine material security
-    uncertainty remains reportable and cannot be called APPROVE.
-  - Implementation/tests/docs/synthetic verification/commit/push only. Preserve
-    consumed #1-15, #14 COMMENT/audit PASS and #15 COMMENT/audit FAIL unchanged.
-    Maximum16 is unchanged; #16 remains unreserved and owner-manual Daybreak only
-    after valid ordinary approval. No ordinary invocation, #16 reassignment, #17+,
-    automatic extension, Daybreak, merge or issue closure. A later owner decision
-    on finite ordinary-review authority follows measured cost/validation results;
-    unintegrated D-069A grants nothing. Scarcity Router is the product; this is
-    supporting infrastructure, not a new framework or architecture initiative.
+The combined source was the direct owner instruction, historically preserved as
+full-source SHA-256 `90594e2d98c4ae713073497d5c0427279f25910d3fe308b7983250367c816922`
+and Section2 SHA-256 `4386e0ac0f881b0ad0cbc5d0b7d1bccf7f8c7aa3fa569120808c25a6a09b67d5`.
+Those local bytes are now unavailable by owner-authorized deletion, not required to
+be reconstructed. The current direct instruction reaffirms scope. Prior max20
+source SHA-256 `222e3be1eadd381ce7a5a351943e7490a44edf907febea4e2f45fa013a53e4af`
+is likewise historical metadata, not current proof by itself. Earlier detailed
+decision text remains in Git history at `1dcb4a08d9d57d02ed67bf8e7f7d15275c5b3ecf`;
+this is not a claim that deleted original owner files were Git-tracked.
 
-- **Direct owner max-20 amendment (2026-10-19T22:41:20Z):** Adrian explicitly
-  authorizes completing this existing delivery with maximum20 exclusively for
-  Repo15 / Issue1683 #212 / PR927 #213. The quoted original owner statement is
-  **"Zatwierdzam, od razu do 20."** The current direct instruction supplies the
-  allocation/decision context and supersedes the previous max16 assignment of #16
-  to security. It does not derive authority from unintegrated D-069A.
-  - Full current direct instruction: `.review-evidence-212/owner-complete-delivery-max20-2026-10-19.txt`,
-    SHA-256 `1433fecd09d557079fbecc0b30b6d9080f3cb406773363e90d0497bc801579b4`.
-    Exact Section1 source with the quoted statement and preceding allocation context:
-    `.review-evidence-212/owner-d077-max20.txt`, SHA-256
-    `222e3be1eadd381ce7a5a351943e7490a44edf907febea4e2f45fa013a53e4af`.
-    The immediately preceding assistant-turn decision context is separately retained
-    at `.review-evidence-212/max20-immediately-preceding-turn-context.txt`, SHA-256
-    `2dd385020cae940037b946611ac190d4d7736e48e77e6ffad4d977b3417ff3a5`.
-    Provenance is the current owner instruction at the timestamp above, including
-    its quotation of the Polish statement; no separate historical source or timestamp
-    for that earlier quoted utterance is invented. Kilo-authored Forgejo text is
-    a transcription, never the owner source or authority.
-  - Preserve consumed #1-15 and all actual results/evidence. #16 is next independent
-    ordinary review. #17-19 ordinary only after diagnosed findings/infrastructure
-    recovery and completed remediation. Do not repeat reviews without material
-    correction or diagnosed recovery. Reserve an ordinary ordinal only immediately
-    before its actual invocation after gates pass, not speculatively.
-  - After valid ordinary APPROVE/audit PASS, stop ordinary review immediately and
-    reserve the next ordinal for Adrian's manual official Codex
-    `gpt-daybreak-blue-latest` gate. That reservation is pending, not consumed until
-    actual owner execution. #20 is final possible manual security, never ordinary.
-    No #21, reset, automatic extension, transfer or default change elsewhere (ten).
-  - Keep the compact, Git-derived changed-region contract and independent
-    Read-only standalone architecture. The 20:49 coverage decision remains in force;
-    only its no-new-review/budget restriction is superseded. No further framework,
-    blanket full-file requirement, speculative findings, automatic Daybreak, merge,
-    issue closure, main, release or deployment authority is granted.
+**Minimal actual review history:** canonical Issue #212 comment
+[#18011](https://forgejo.creatidy.com/BioMedical-IT/scarcity-router/issues/212#issuecomment-18011)
+records #1-19 outcomes, exact frozen Git SHAs, known native session references and
+availability caveats. It is an attributed metadata transcription, not new owner
+authority. This preserves #6's APPROVE at an old, later-invalidated HEAD; #7's
+owner-reported manual REQUEST_CHANGES with unverified provenance; and #19's
+REQUEST_CHANGES with valid runtime audit. No historical failure/COMMENT is upgraded.
+Do not require large local audit files/transcripts for future work.
 
-- **Diagnosed #16 text-result channel correction:** The pinned conversion also
-  replays completed `state.attachments` and interrupted-error `metadata.output`
-  (`session/message-v2.ts:428-482`). Sealed UTF-8 packet Reads have no authorized
-  media channel; reject nonempty attachments and content-bearing interrupted error
-  output before ordinary/denied/visibility handling. The same conversion applies
-  `BoardNotice.output` to completed text (`:424`); pinned `kilocode/board/notice.ts:1-25`
-  appends a notice only for `shared_agent_board_notice: unavailable` or a positive
-  safe integer. Reject those additional-context markers too, not inactive values.
-  The 25-line upstream proof is optional indexed evidence, not a broader mandatory
-  read policy. These checks apply even to discarded/cleared messages; native empty
-  attachments/output/notice states retain the successful text-only path. This is
-  actual tool-channel security remediation within #16's finding, not a new reviewer
-  architecture, expanded whole-file contract or budget change.
+**#20 final combined gate:** Adrian manually opens official Codex in the existing
+worktree at the NEW final HEAD, visibly selects `gpt-daybreak-blue-latest`, enables
+read-only source access and starts ONE complete PR review. No script, batch command,
+Kilo invocation, automatic retry, model substitute, #21 or counter reset. #20 is
+reserved but remains unconsumed until actual invocation. The old generated handoff
+is retired, not executed, archived or silently reused. A valid result must explicitly
+approve BOTH implementation and security, exact reviewed refs and complete material
+scope with no unresolved blockers and verified real execution/context/tool provenance.
+Security-only/nonpositive/incomplete/unverified results are preserved and stop for
+Adrian. Do not infer backend identity from self-report or labels; existing Router
+owner-manual provenance/explicit-acceptance requirements remain.
 
-- **Diagnosed #17 denial-text and pruning recovery:** Native error strings are
-  also replayed by pinned `session/message-v2.ts:461-482`. The denied-probe security
-  check must reject canary/content blocks in both output and error text, not mistake
-  a denial phrase plus leaked contents for zero disclosure. Valid synthetic fixtures
-  reproduced the old false PASS before the small common-channel correction.
-  The actual #17 export also contains 35 `state.time.compacted` Read results: raw
-  export retention is not final-model visibility. Kilo7.8.8 supports per-process
-  `KILO_DISABLE_PRUNE=1` and `KILO_DISABLE_AUTOCOMPACT=1`
-  (`core/src/flag/flag.ts:4-57`, `config/config.ts:1049-1054`);
-  `session/compaction.ts:296-354` returns before pruning when disabled.
-  Set these only in the existing sanitized standalone child environment. Keep the
-  instruction/config JSON empty, exact profile/Read permissions unchanged, and all
-  existing compacted-result/terminal/coverage checks fail-closed. Three short source
-  excerpts are optional support, not extra mandatory review volume or a new system.
-  This is diagnosed infrastructure recovery plus a real source fix within max20,
-  not a blind retry, model substitution, authority change or security relaxation.
+`CLEAN_WORKFLOW_READY_FOR_OWNER_COMBINED_REVIEW` is descriptive handoff only, never
+acceptance or READY_TO_MERGE. Only after actual verified acceptance, exact fresh
+currentness/clean state and explicit applicable `/loop` authority may integration/
+closure occur. No merge, main promotion, release or deployment is granted here.
 
-- **Diagnosed #18 cap-footer correction:** Pinned `tool/read.ts:29-30,358-360`
-  fixes the native label at `50 KB`. Accept that exact label in all three footer
-  recognition paths, rather than arbitrary label text outside frozen numbered
-  bytes. A full-session two-page >50KB fixture reproduced the augmented-label
-  false PASS before correction; genuine cap/EOF pagination remains accepted and
-  label injection/wrong labels fail. The existing exact raw path-header binding is
-  also preserved/regression-tested. An eight-line optional constants excerpt
-  provides the missing upstream definition; no other runtime/coverage/budget or
-  reviewer architecture changes are required.
+**Retired local source-cache provenance:** All copies were clean/inactive, separate
+from registered source worktrees/shared Git stores; canonical objects are retained.
+Source references, not copies or current-availability claims:
 
-- **Final owner combined-acceptance exception (2026-10-20T06:26:22Z):** Exclusively
-  Repo15 / Issue1683 #212 / PR927 #213, Adrian directly authorizes the verified P1
-  correction, regression/synthetic/full validation, commit/push and one final
-  owner-manual official Codex `gpt-daybreak-blue-latest` review at ordinal #20.
-  It must independently assess BOTH complete implementation correctness and security.
-  A valid positive combined result may satisfy both remaining gates without a prior
-  ordinary APPROVE. This consciously supersedes that prerequisite for this delivery
-  only; it does not reinterpret #19 REQUEST_CHANGES/audit PASS or any #1-19 history.
-  - Full current instruction/decision context is retained at
-    `.review-evidence-212/owner-combined-acceptance-2026-10-20.txt`, SHA-256
-    `90594e2d98c4ae713073497d5c0427279f25910d3fe308b7983250367c816922`.
-    Exact Section2 authority is
-    `.review-evidence-212/owner-combined-acceptance-section2.txt`, SHA-256
-    `4386e0ac0f881b0ad0cbc5d0b7d1bccf7f8c7aa3fa569120808c25a6a09b67d5`.
-    Provenance is the current direct owner message and its supplied timestamp;
-    no earlier proposal source/time/authorship is invented. Forgejo issue/comment
-    transcriptions are not original owner authority. Unintegrated D-069A grants none.
-  - Maximum20 remains; consumed #1-19 and actual outcomes stay immutable, default
-    ten elsewhere. No further ordinary Kilo review, #21, reset, transfer, automatic
-    extension or automatic Daybreak. Tests/preflights do not consume #20. After
-    successful validation and exact currentness, reserve/persist #20 pending for
-    the owner's actual combined invocation; consumption begins at that invocation.
-  - The complete PR against frozen base, current acceptance/D-069/D-077/exception,
-    source/tests/regressions/UX/architecture, security/credentials, evidence integrity
-    and standalone execution/auditing all belong in the final independent scope.
-    No security-only spot-check or last-commit-only review. Supply neutral source,
-    acceptance/authority and execution evidence, not parent reasoning, separate past
-    reviewer conclusions or a desired verdict. Require explicit implementation AND
-    security approval, complete material scope, exact reviewed refs, no unresolved
-    blocking findings and verified official execution/model/context/tool provenance.
-    Existing identity evidence rules remain, with no guessed backend identity.
-  - A security-only APPROVE, COMMENT/REQUEST_CHANGES, incomplete or unverified
-    result does not pass; retain the actual result and stop for Adrian's next
-    decision. `READY_FOR_OWNER_COMBINED_REVIEW` is this owner's reporting label,
-    not a new repository-wide status, ordinary approval, security acceptance or
-    READY_TO_MERGE. Exact source/base changes invalidate the handoff/result.
-    Only after actual owner result verification and fresh currentness may existing
-    explicit `/loop` integration authority apply; no merge/closure/main/release/deploy
-    is granted by this remediation or handoff.
-- **Positive native denial contract:** Pinned Kilo core `v1/permission.ts:21-27`
-  constructs `PermissionDeniedError.message` with its deciding rule's compact JSON;
-  `permission/index.ts:216-249` returns that actual agent rule on denial.
-  `session/processor.ts:297-309` stores `errorMessage(error)` as a string;
-  `tui/src/util/error.ts:125-140` takes the message without a class prefix. Six
-  existing sanitized native traces confirm this exact representation. The auditor
-  now requires status error, exact probe/path/class-specific deny rule and agent
-  approval metadata (including canonical outside-workspace target where applicable),
-  empty output, and equality of the entire supported native message plus exact
-  rule JSON. No denial-keyword/whole-canary blacklist, dictionary error fallback,
-  unknown format, leading/trailing/embedded instructions or partial disclosure is
-  accepted. Export has a message string, not a separate denial-class identity field;
-  none is invented. Valid authorized Reads and all six genuine denials are retained.
+| Removed cache | Canonical source/ref retained as metadata |
+|---|---|
+| #175 kernel-source | https://forgejo.creatidy.com/Creatidy/creatidy-kernel.git at `a9a65006cc8cc5b5e4468746a18ff51daf742e6b` |
+| #182 rich-source | https://github.com/Textualize/rich.git at `9d8f9a372cc5916fd4781fec207ced7ddac2f08f` |
+| #180 Codex copies | https://github.com/openai/codex.git at `be2951ea34f0d295ed0becf97079f92fa5f6950e` and `01fc69f4026735edfdf6789820549727a4867b11` (latter confirmed by canonical upstream commit getter) |
+| #180 ZCode copy | https://github.com/zai-org/ZCode.git at `29628c9acdb81b703bbd4080c207a0e7ce5e276e` |
+| #180 frozen Router snapshots | Existing canonical Scarcity Router Git objects for #174/#185/#205, not registered delivery worktrees |
+| #212 generated source copy | Existing canonical Router object `1dcb4a08d9d57d02ed67bf8e7f7d15275c5b3ecf`; no unique work |
+
+The exact native-denial correction remains in source and offline regression tests:
+positive pinned PermissionDeniedError representation and request/rule/path binding,
+not permissive denial keywords or canary blacklists. No security validation or product
+adapter is removed merely to eliminate orchestration. See the actual Git source/tests.
 
 ### U-014 - Native coding backend versus Kernel-owned workspace lifecycle
 

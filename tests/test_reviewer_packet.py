@@ -24,16 +24,13 @@ from tools.reviewer_packet import (
     audit_standalone_session,
     changed_source_ranges,
     COMPACT_DIFF_FLAGS,
-    capture_session_id,
     create_synthetic_standalone_packet,
     main,
     make_per_run_permission_map,
     prepare_standalone_environment,
-    standalone_environment,
     summarize_failed_standalone_session,
     standalone_preflight_prompt,
     standalone_review_prompt,
-    standalone_run_argv,
     standalone_packet_path_plan,
     validate_packet as _validate_packet,
     validate_synthetic_preflight_packet,
@@ -2319,40 +2316,10 @@ class ReviewerPacketTests(unittest.TestCase):
             standalone = PROFILE.read_text(encoding="utf-8")
             self.assertIn("mode: subagent", legacy)
             self.assertIn("mode: primary", standalone)
-            self.assertEqual(legacy.split("---", 2)[2], standalone.split("---", 2)[2])
+            self.assertIn("not a review execution path", legacy)
+            self.assertIn("read: ask", standalone.split("---", 2)[1])
 
-    def test_standalone_run_args_select_fresh_primary_without_resume_or_task(self) -> None:
-        argv = standalone_run_argv(
-            Path("/opt/kilo"),
-            {"provider_id": "openai", "model_id": "gpt-6-luna", "variant": "max"},
-            "review-issue-212-pr-213",
-            "Review only the exact packet.",
-        )
-        self.assertEqual(argv[:9], [
-            "/opt/kilo", "--pure", "run", "--agent", "pr-reviewer-standalone",
-            "--model", "openai/gpt-6-luna", "--variant", "max",
-        ])
-        self.assertIn("--format", argv)
-        self.assertIn("json", argv)
-        self.assertNotIn("--continue", argv)
-        self.assertNotIn("--session", argv)
-        self.assertNotIn("--fork", argv)
-        self.assertFalse(any(arg == "task" or arg == "pr-reviewer" for arg in argv))
 
-    def test_kilo_event_filter_returns_only_one_session_id(self) -> None:
-        events = StringIO(
-            '{"type":"step_start","sessionID":"ses_abc123"}\n' +
-            '{"type":"tool_use","sessionID":"ses_abc123","part":{"state":{"output":"private packet bytes"}}}\n'
-        )
-        self.assertEqual(capture_session_id(events), "ses_abc123")
-        with self.assertRaisesRegex(PacketError, "more than one session"):
-            _ = capture_session_id(StringIO(
-                '{"sessionID":"ses_abc123"}\n{"sessionID":"ses_other"}\n'
-            ))
-        with self.assertRaisesRegex(PacketError, "non-JSON event"):
-            _ = capture_session_id(StringIO("warning before stream\n"))
-        with self.assertRaisesRegex(PacketError, "omitted its session ID"):
-            _ = capture_session_id(StringIO("{}\n"))
 
     def test_standalone_review_prompt_has_only_frozen_packet_identity(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -2416,22 +2383,6 @@ class ReviewerPacketTests(unittest.TestCase):
                 PROFILE.read_text(encoding="utf-8").split("---", 2)[2],
             )
 
-    def test_standalone_environment_prevents_daemon_config_reuse(self) -> None:
-        env = standalone_environment(
-            kilo_binary=Path("/opt/kilo"),
-            profile_config=Path("/tmp/kilo-config"),
-            kilo_config_content="{}",
-            home=Path("/tmp/home"),
-            tmpdir=Path("/tmp/tmp"),
-            config_home=Path("/tmp/config"),
-            data_home=Path("/tmp/data"),
-            state_home=Path("/tmp/state"),
-            cache_home=Path("/tmp/cache"),
-        )
-        self.assertEqual(env["KILO_NO_DAEMON"], "1")
-        self.assertEqual(env["KILO_DISABLE_PRUNE"], "1")
-        self.assertEqual(env["KILO_DISABLE_AUTOCOMPACT"], "1")
-        self.assertEqual(env["KILO_CONFIG_CONTENT"], "{}")
 
     def test_standalone_preflight_trace_requires_complete_reads_and_actual_denials(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -3104,6 +3055,34 @@ class ReviewerPacketTests(unittest.TestCase):
             _ = (global_config / "AGENTS.md").write_text("synthetic global instruction\n", encoding="utf-8")
             with self.assertRaisesRegex(PacketError, "context candidates"):
                 _ = validate_standalone_instruction_boundary(runtime, launch_environment)
+
+
+    def test_retired_cli_cannot_start_or_connect_to_a_model_harness(self) -> None:
+        from tools import reviewer_packet
+        for name in ("standalone_run_argv", "capture_session_id", "standalone_environment",
+                     "verify_effective_standalone_permissions", "_export_standalone_session"):
+            self.assertFalse(hasattr(reviewer_packet, name))
+        for command in ("prepare", "audit-standalone", "capture-session-id", "synthetic-packet"):
+            with self.subTest(command=command), patch("subprocess.run") as run, patch("sys.stderr", new=StringIO()):
+                with self.assertRaises(SystemExit) as raised:
+                    _ = main([command])
+                self.assertEqual(raised.exception.code, 2)
+                run.assert_not_called()
+
+    def test_offline_fixture_creation_cannot_persist_in_worktrees_or_review_folders(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            retired = root / ".review-evidence-forbidden"
+            _ = retired.mkdir()
+            repository = root / "repo"
+            _ = repository.mkdir()
+            _ = _git(repository, "init", "--initial-branch=fixture")
+            for parent in (ROOT, retired, repository):
+                with self.subTest(parent=parent), self.assertRaisesRegex(PacketError, "temporary space|worktree"):
+                    _ = create_synthetic_standalone_packet(
+                        parent, changed_paths=("tools/example.py",), head=HEAD, base=BASE, merge_base=BASE,
+                    )
+                self.assertFalse((parent / "packet").exists())
 
 
 if __name__ == "__main__":
