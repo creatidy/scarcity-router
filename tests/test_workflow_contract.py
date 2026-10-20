@@ -1,5 +1,6 @@
 """Offline consistency guards for command text, not proof of runtime execution."""
 
+import ast
 import re
 import unittest
 from pathlib import Path
@@ -313,117 +314,87 @@ class WorkflowContractTests(unittest.TestCase):
         ):
             self.assertIn(requirement, loop)
 
-    def test_independent_review_contract_is_reused(self) -> None:
-        reviewer = text(".kilo/agents/pr-reviewer.md")
-        for requirement in (
-            "never the implementation agent",
-            "Do not read parent conversations, local recall, progress notes or the shared board",
-            "Return ONLY one JSON object",
-            '"verdict": "APPROVE | REQUEST_CHANGES | COMMENT"',
-            "APPROVE requires sufficient acceptance evidence and no findings",
-            "Never publish reviews/comments or other Forgejo mutations",
-        ):
-            self.assertIn(requirement, reviewer)
-        # Execution text may evolve; the original read-only permission boundary must not.
-        frontmatter = (ROOT / ".kilo/agents/pr-reviewer.md").read_text().split("---", 2)[1]
-        for permission in ("edit: deny", "write: deny", "apply_patch: deny", "task: deny", "external_directory: deny"):
-            self.assertIn(permission, frontmatter)
-        self.assertNotIn("docker", frontmatter)
-        loop = text(".kilo/command/loop.md")
-        self.assertIn("Use `.kilo/command/finish-pr.md` in this SAME primary context", loop)
-        for path in (".kilo/command/loop.md", ".kilo/command/finish-pr.md"):
-            command = text(path)
-            self.assertIn("subagent_type: pr-reviewer", command)
-            self.assertIn("no `task_id`", command)
-            self.assertIn("fresh foreground", command)
-        self.assertIn("never self-approve or resume a reviewer", loop)
-        self.assertIn("Parent makes no edits/branch switches while it runs", loop)
-        self.assertIn("Any HEAD/base change invalidates approval", loop)
 
-    def test_private_repository_review_uses_exact_mcp_and_local_evidence(self) -> None:
-        reviewer = text(".kilo/agents/pr-reviewer.md")
+
+    def test_d069a_exception_contract_is_integrated_finite_and_issue_specific(self) -> None:
+        raw = (ROOT / "docs/decisions.md").read_text()
+        section = raw.split("### D-069A - Canonical owner-authorized finite review exceptions", 1)[1].split(
+            "### D-070", 1
+        )[0]
+        normalized = " ".join(section.split())
         for requirement in (
-            "`forgejo-mcp_get_repo`", "`forgejo-mcp_get_pull_request_by_index`",
-            "`BioMedical-IT/scarcity-router`", "`https://forgejo.creatidy.com`",
-            "exact expected head/base refs and commit SHAs", "primary-prepared clean checkout's local Git objects",
-            "verify the exact merge base and complete diff",
-            "Anonymous `git ls-remote` is optional corroboration only and is not in the reviewer shell allowlist",
-            "never a required access gate", "A missing, stale or mismatched identity/ref/SHA/object is COMMENT",
-            "Reviewer credentials remain unavailable to the model and shell",
+            "has no operational effect until the change is integrated into `develop`",
+            "does not authorize an exception for #212",
+            "D-069's ten-review maximum remains the default",
+            "positive finite integer maximum and exact task scope",
+            "original source bytes and digest",
+            "Kilo-authored transcription is not owner-authored",
+            "the local excluded ledger records usage only",
+            "do not reserve or dispatch #10 or #11",
+            "issue #210 comment #17258",
+            "intended maximum 11",
+            "Maximum 20 only for #212/PR #213 under that direct amendment",
+            "an exception cannot transfer to another issue/pr",
+            "assign reviewer roles from the currently unmet approval gates",
         ):
             with self.subTest(requirement=requirement):
-                self.assertIn(requirement, reviewer)
-        raw = (ROOT / ".kilo/agents/pr-reviewer.md").read_text().split("---", 2)[1]
-        getters = {
-            key.strip('"'): value.strip()
-            for line in raw.splitlines()
-            if line.startswith('  "forgejo-mcp_')
-            for key, value in [line.strip().split(":", 1)]
-        }
-        self.assertEqual(getters, {
-            "forgejo-mcp_get_repo": "allow",
-            "forgejo-mcp_get_pull_request_by_index": "allow",
-            "forgejo-mcp_get_issue_by_index": "allow",
-            "forgejo-mcp_get_issue_comment": "allow",
-        })
-        for permission in ("edit: deny", "write: deny", "apply_patch: deny", "task: deny"):
-            self.assertIn(permission, raw)
-        test_command = (
-            "PYTHONPATH=. UV_OFFLINE=1 UV_NO_SYNC=1 uv run --no-sync python -m unittest "
-            + "tests.test_workflow_contract.WorkflowContractTests.test_private_repository_review_"
-            + "uses_exact_mcp_and_local_evidence -v\": allow"
-        )
-        self.assertIn(test_command, raw)
-        shell = raw.split("bash:", 1)[1]
-        self.assertIn('"git remote -v": deny', shell)
-        self.assertIn('"git ls-remote *": deny', shell)
-        self.assertIn('"*": deny', shell)
-        self.assertNotIn('"git remote -v": allow', shell)
-        self.assertNotIn('https://forgejo.creatidy.com', shell)
-        self.assertIn('"git ls-remote * -*": deny', shell)
-        manifest = text(".kilo/rules/35-technical-recovery.md").split(
-            "## Independent Review Metadata", 1
-        )[1].split("## Public Evidence and Reviewer Failover", 1)[0]
-        for getter in (
-            "`forgejo-mcp_get_repo`", "`forgejo-mcp_get_pull_request_by_index`",
-            "`forgejo-mcp_get_issue_by_index`", "`forgejo-mcp_get_issue_comment`",
-        ):
-            self.assertIn(getter, manifest)
-        for boundary in (
-            "Do not grant wildcard getters", "list/search access or any Forgejo write",
-            "primary-prepared clean local Git objects", "exact merge base/full diff",
-            "must not inspect credential-bearing Git configuration or invoke credential helpers",
-        ):
-            self.assertIn(boundary, manifest)
+                self.assertIn(requirement.lower(), normalized.lower())
 
-    def test_delivery_counter_survives_reentry(self) -> None:
-        finish = text(".kilo/command/finish-pr.md")
-        for requirement in (
-            "at most 10 whole-PR review invocations per issue delivery",
-            "INCLUDING the initial review, COMMENT, invalidated reviews and corrected retries",
-            "Before EVERY task dispatch reserve/persist the next review ordinal",
-            "Reinvoking `/finish-pr`, changing phase, reviewer task, model or session "
-            + "MUST reuse the same delivery counter",
-            "prior dispatch/count recovery is ambiguous or unavailable, BLOCKED",
-            "Never dispatch review 11",
-            "without patches that cannot receive a fresh review",
-            "not a target: stop as soon as an owner decision is clearly required",
+        exception_rows: dict[str, str] = {}
+        for line in section.splitlines():
+            stripped = line.strip()
+            if not stripped.startswith("|") or stripped.startswith("| ---") or stripped.startswith("| Case |"):
+                continue
+            cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+            self.assertEqual(3, len(cells), msg=line)
+            exception_rows[cells[0]] = cells[2]
+        expected_outcomes = {
+            "Normal delivery": "Default maximum 10.",
+            "Bootstrap #212": "Maximum 20 only for #212/PR #213 under that direct amendment",
+            "Pending #210 allocation": "do not reserve/dispatch #10 or #11",
+            "Ledger-only extension": "Deny exception; keep default 10.",
+            "Scope mismatch": "Deny transfer",
+            "Stale or ambiguous evidence": "Fail closed at default 10",
+            "Verified finite exception": "Use only that finite maximum for that issue/PR",
+            "Gate requires another reviewer role": "stop at the effective bound",
+        }
+        self.assertEqual(set(expected_outcomes), set(exception_rows))
+        for case, outcome in expected_outcomes.items():
+            with self.subTest(exception_case=case):
+                self.assertIn(outcome.lower(), exception_rows[case].lower())
+        self.assertNotIn(".review-evidence-210/pr-reviewer-input", section)
+        self.assertIn(
+            "The #185/PR #209 and #205/PR #206 histories and any separately recorded owner scopes remain exclusive",
+            normalized,
+        )
+        self.assertIn("none transfers authority to #210 or #212", normalized)
+        d070 = raw.split("### D-070 - Autonomous technical recovery before owner escalation", 1)[1]
+        self.assertIn(
+            "The default ten-review ceiling is subject to D-069A's exact finite canonical owner exceptions and the separately recorded one-time direct owner supersession for issue #212/PR #213",
+            " ".join(d070.split()),
+        )
+        for path in (
+            "AGENTS.md",
+            ".kilo/rules/10-task-system.md",
+            ".kilo/rules/35-technical-recovery.md",
+            ".kilo/command/finish-pr.md",
+            ".kilo/command/review-pr.md",
+            ".kilo/command/loop.md",
+            "docs/llm-operating-policy.md",
         ):
-            self.assertIn(requirement, finish)
-        for path in ("AGENTS.md", ".kilo/rules/10-task-system.md", ".kilo/command/finish-pr.md"):
-            self.assertNotRegex(text(path), r"(?i)(?:at most|maximum) three|THREE remediation")
-        progress = text(".kilo/rules/40-local-search.md")
-        self.assertIn("ordinal reserved BEFORE dispatch", progress)
-        self.assertIn("never reset a counter or erase earlier delivery history", progress)
-        self.assertIn("Missing/ambiguous recovery is BLOCKED", progress)
-        self.assertIn("canonical evidence, never from the ledger", progress)
+            policy = " ".join(text(path).split())
+            with self.subTest(policy_path=path):
+                self.assertIn("D-069A", policy)
+                self.assertIn("default", policy.lower())
+                self.assertIn("integrated", policy.lower())
+
 
     def test_exact_approval_and_loop_only_pr_merge(self) -> None:
         finish = text(".kilo/command/finish-pr.md")
-        self.assertIn("selection/merge/closure authority lives only in loop.md", finish)
-        self.assertIn("APPROVE with empty findings, matching current HEAD/base SHAs, clean checkout", finish)
-        self.assertIn("successful required validation", finish)
-        self.assertIn("READY_TO_MERGE / APPROVE. Never merge", finish)
+        self.assertIn("only an explicit applicable `/loop` can later merge/close", finish)
+        self.assertIn("Any HEAD/base change invalidates approval", finish)
+        self.assertIn("Exit0, labels, self-report or tests alone are not approval", finish)
+        self.assertIn("complete actual changes", finish)
         loop = text(".kilo/command/loop.md")
         merge = loop.split("## MERGE", 1)[1].split("## COMPLETE", 1)[0]
         for requirement in (
@@ -485,7 +456,15 @@ class WorkflowContractTests(unittest.TestCase):
 
     def test_stop_boundary_and_repository_safety(self) -> None:
         loop = text(".kilo/command/loop.md")
-        self.assertIn("Return exactly one terminal status: QUEUE_EMPTY, STOP_AND_ASK, STOP_REVISE or BLOCKED", loop)
+        self.assertIn("explicit visible-review handoff with its exact pending gate", loop)
+        self.assertIn("Never replace that handoff with QUEUE_EMPTY, approval or a hidden launcher", loop)
+        self.assertIn("READY_FOR_OWNER_SECURITY_REVIEW is a terminal handoff", loop)
+        self.assertIn("Stop before MERGE, issue closure or SELECT", loop)
+        self.assertIn("maximum 20", loop)
+        self.assertIn("#1-19 histories are unchanged", loop)
+        self.assertIn("ONE manually opened official Codex", loop)
+        self.assertIn("not approval or a new global loop status", loop)
+        self.assertIn("no #21", loop)
         self.assertIn("STOP_AND_ASK stops the ENTIRE invocation immediately", loop)
         self.assertIn("never skip the selected issue and continue another", loop)
         for boundary in (
@@ -535,14 +514,15 @@ class WorkflowContractTests(unittest.TestCase):
             "A: Engineering / execution blocker", "B: Genuine owner decision",
             "three materially different recovery attempts per obstacle",
             "120 minutes of technical recovery per issue delivery",
-            "Persist attempts/time across reentry, phases and sessions",
+            "Keep minimal attempts/time across reentry, phases and sessions canonically",
             "including failed/COMMENT attempts and failover",
             "never repeat a failed operation with the same relevant inputs and environment",
             "Session/model change alone is not a diagnosis",
             "minimum sufficient authorized technical remediation automatically",
             "Owner attention is scarce",
             "No persistent service, privileged container, Docker socket mount or security weakening",
-            "No blind retries", "Never dispatch review 11",
+            "No blind retries", "The default effective ceiling is 10",
+            "Never dispatch beyond the effective ceiling",
         ):
             self.assertIn(requirement, recovery)
 
@@ -557,8 +537,8 @@ class WorkflowContractTests(unittest.TestCase):
             "Diagnostics retain names/categories, not values",
             "try an alternative available read path, then fetch/clone the exact public revision",
             "preserve pin, origin and provenance",
-            "its research conclusions are not independent verification",
-            "connector failure is not an implementation finding",
+            "implementer research conclusions are not independent verification",
+            "Connector failure is not an implementation finding",
             "model-bound gates, read-only permissions and reviewer independence",
             "Do not bypass tool restrictions or silently substitute a required restricted reviewer",
         ):
@@ -576,9 +556,95 @@ class WorkflowContractTests(unittest.TestCase):
             "BLOCKED requires exhausted authorized technical paths/budget",
             "Class-B decisions instead require STOP_AND_ASK / OWNER_DECISION_NEEDED with all five decision fields",
             "Do not ask an artificial question for an external non-decision blocker",
-            "Never stop merely because the first reviewer environment is inconvenient",
+            "A required user-visible review start is an explicit pending-gate handoff",
             "Preserve mandatory full validation",
         ):
             self.assertIn(requirement, recovery)
         blocked_contract = recovery.split("BLOCKED requires", 1)[1].split("State the exact", 1)[0]
         self.assertNotIn("or a genuine owner decision", blocked_contract)
+
+    def test_visible_harnesses_replace_launchers_and_local_receipt_gates(self) -> None:
+        for path in ("AGENTS.md", ".kilo/command/finish-pr.md", ".kilo/command/review-pr.md",
+                     ".kilo/command/implement-issue.md", ".kilo/command/loop.md",
+                     ".kilo/rules/35-technical-recovery.md", ".kilo/rules/validation.md",
+                     "docs/llm-operating-policy.md"):
+            content = text(path)
+            with self.subTest(path=path):
+                self.assertIn("visible", content.lower())
+                self.assertRegex(content.lower(), r"hand ?off")
+                self.assertNotRegex(content, r"\.review-evidence-\d+/")
+                self.assertNotIn("run-owner-review.sh", content)
+                self.assertNotIn("standalone_run_argv", content)
+        finish = text(".kilo/command/finish-pr.md")
+        self.assertIn("user explicitly selects the model", finish.lower())
+        self.assertIn("No persistent `.review-evidence-*`", finish)
+        self.assertIn("not original owner authority", finish)
+        self.assertIn("No ordinary #212 Kilo", text(".kilo/rules/validation.md"))
+
+    def test_development_validator_has_no_harness_or_inference_execution_path(self) -> None:
+        source = (ROOT / "tools/reviewer_packet.py").read_text()
+        tree = ast.parse(source)
+        names = {node.name for node in tree.body if isinstance(node, ast.FunctionDef)}
+        git_helper = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_run")
+        for removed in ("standalone_run_argv", "capture_session_id", "_debug_agent",
+                        "verify_effective_standalone_permissions", "_export_standalone_session",
+                        "_runtime_from_report", "standalone_environment"):
+            self.assertNotIn(removed, names)
+        self.assertIn('argv[0] != "git"', source)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                continue
+            if not isinstance(node.func.value, ast.Name) or node.func.value.id != "subprocess":
+                continue
+            self.assertEqual(node.func.attr, "run")
+            command = node.args[0]
+            if isinstance(command, ast.Name):
+                self.assertEqual(command.id, "argv")  # Guarded Git-only helper above.
+                assert node.end_lineno is not None and git_helper.end_lineno is not None
+                self.assertGreater(node.lineno, git_helper.lineno)
+                self.assertLessEqual(node.end_lineno, git_helper.end_lineno)
+            else:
+                assert isinstance(command, ast.List)
+                self.assertEqual(ast.literal_eval(command.elts[0]), "git")
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                self.assertTrue({item.name.split(".")[0] for item in node.names}.isdisjoint(
+                    {"openai", "httpx", "requests", "aiohttp", "litellm"}))
+
+    def test_build_and_workflow_scripts_do_not_launch_development_models(self) -> None:
+        paths = [ROOT / "Makefile", *sorted((ROOT / "tools").glob("*.py"))]
+        for directory in (".github/workflows", ".forgejo/workflows", ".githooks", ".kilo/scripts"):
+            if (ROOT / directory).is_dir():
+                paths.extend(path for path in (ROOT / directory).rglob("*") if path.is_file())
+        for path in paths:
+            content = path.read_text()
+            with self.subTest(path=path.relative_to(ROOT)):
+                self.assertNotRegex(content, r"\bkilo\s+(?:--pure\s+)?run\b")
+                self.assertNotRegex(content, r"\bcodex\s+(?:exec|app-server|review)\b")
+                self.assertNotRegex(content, r"\.review-evidence-\d+/")
+        # Product adapters intentionally remain outside this development-script scope.
+        self.assertTrue((ROOT / "scarcity_router").is_dir())
+
+    def test_visible_profile_requires_user_read_approval_and_no_write_or_external_tools(self) -> None:
+        profile = text(".kilo/agents/pr-reviewer-standalone.md")
+        frontmatter = profile.split("---", 2)[1]
+        for requirement in ("mode: primary", '"*": deny', "read: ask", "external_directory: deny"):
+            self.assertIn(requirement, frontmatter)
+        self.assertNotRegex(frontmatter, r"\b(?:bash|edit|task):\s*allow")
+        for requirement in ("CURRENT fresh user-visible", "source Reads approved by the user",
+                            "Do not grant yourself permissions", "No desired verdict", "UX"):
+            self.assertIn(requirement, profile)
+        self.assertIn("not a review execution path", text(".kilo/agents/pr-reviewer.md"))
+
+    def test_canonical_history_is_attributed_and_final_combined_slot_is_unchanged(self) -> None:
+        decisions = text("docs/decisions.md")
+        section = decisions.split("### D-077 - Transparent visible review", 1)[1].split("### U-014", 1)[0]
+        for requirement in ("2026-10-20T18:58:08Z", "#18011", "agent transcriptions",
+                            "historical hashes", "No historical failure/COMMENT is upgraded",
+                            "#19's REQUEST_CHANGES with valid runtime audit", "#20 is reserved",
+                            "unconsumed until actual invocation", "NEW final HEAD",
+                            "BOTH implementation and security", "No script", "default ten elsewhere",
+                            "no ordinary Kilo review", "no #21", "not a claim that deleted original owner files were Git-tracked"):
+            with self.subTest(requirement=requirement):
+                self.assertIn(requirement.lower(), section.lower())
+        self.assertIn("No local directory/history reconstruction", section)

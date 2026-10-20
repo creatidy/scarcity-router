@@ -1,106 +1,90 @@
 ---
-description: Finish an existing PR through bounded native review and in-scope remediation
+description: Remediate one selected PR and hand off outstanding gates to a user-visible reviewer
 ---
 
-Finish the owner-selected Forgejo PR: $ARGUMENTS
+Finish only the owner-selected Forgejo PR: $ARGUMENTS
 
-Operate in the primary implementation context. Read AGENTS.md and its rules.
-This invocation authorizes only the selected PR's linked issue scope and normal
-remediation commits/pushes; no additional issue, replacement PR or merge.
-An explicit owner `/loop` may reuse this procedure in its sole primary context;
-selection/merge/closure authority lives only in loop.md, never in `/finish-pr`.
-Apply `.kilo/rules/35-technical-recovery.md` before any terminal escalation. Its
-persistent technical recovery budget coexists with the ten-review ceiling below;
-every failed/COMMENT/failover whole-PR attempt consumes its reserved ordinal.
+Read AGENTS.md and `.kilo/rules/35-technical-recovery.md`. Fetch the exact canonical Repo/PR/linked Issue and
+directly linked owner decisions through Forgejo MCP; verify IDs, URLs, authors,
+acceptance and currentness. Never select unrelated work. The implementation agent
+may code, test, use Git and recover routine execution problems autonomously, but
+must not invoke another model, start a session or delegate to a hidden reviewer.
 
-Delivery budget: at most 10 whole-PR review invocations per issue delivery,
-INCLUDING the initial review, COMMENT, invalidated reviews and corrected retries.
-Before the first review verify `.task_progress.md` is Git-locally excluded, then
-append a delivery ledger keyed by issue/PR (and `/loop` invocation ID if applicable).
-Before EVERY task dispatch reserve/persist the next review ordinal, frozen SHAs
-and pending result. Record returned verdict, remediation commits and checks.
-Reinvoking `/finish-pr`, changing phase, reviewer task, model or session MUST reuse
-the same delivery counter, not initialize zero. If prior dispatch/count recovery
-is ambiguous or unavailable, BLOCKED. Do not erase history or reset a stopped
-delivery; STOP_REVISE still requires an explicit owner decision, not a new PR/name.
+1. Fetch canonical develop and the existing PR branch. Verify exact HEAD/base/
+   merge-base, ancestry and status in the designated checkout. Preserve unrelated
+   work; no stash/reset, history rewrite, synchronization merge or replacement PR.
+2. Recover minimal review ordinals/outcomes from canonical Issue/PR records and
+   existing decision documentation; native Kilo/Codex session references may be
+   used where actually available. Default maximum ten, with only verified finite
+   owner exceptions under D-069/D-077. For other deliveries a D-069A exception must
+   already be integrated into freshly fetched develop and verified for its finite
+   original owner scope; unintegrated D-069A has no authority. Reentry does not reset history. Agent-authored
+   comments are transcriptions, not original owner authority. Missing original
+   authority is not repaired by a local hash or an agent-written receipt.
+3. Understand/reproduce genuine accepted-scope findings, apply the smallest fix
+   and meaningful deterministic tests. Follow bounded secret-safe recovery; ask
+   only genuine owner-controlled decisions. Run `uv sync --only-dev`, focused
+   checks, `make check`, `uv run basedpyright`, `make package-check` where relevant,
+   and working/staged whitespace checks. Inspect the complete intended/base delta,
+   commit explicit files under the owner identity and push the same PR normally.
+4. If independent review is pending, prepare concise instructions directly: exact
+   Issue/PR acceptance and legitimate owner-decision references, frozen HEAD/base/
+   merge-base, complete canonical compact Git diff and changed regions with useful
+   context, validation and exact pending gate. Use actual Git objects and canonical
+   records, not duplicated source trees, receipt hierarchies or large transcripts.
+   Optional deeper source inspection is the reviewer's material judgment.
+5. The USER explicitly selects the model and starts a separate fresh user-visible
+   Kilo or official Codex session with read-only source access. Never programmatically
+   start it: no script/subprocess, batch model CLI, HTTP inference, Task/subagent,
+   background model job or generated convenience wrapper. No persistent
+   `.review-evidence-*` folders or renamed equivalent are created or required.
+   Deterministic offline fixtures may use cleaned OS temporary directories only.
+6. Hand off the instructions/source references in the visible harness. Do not pass
+   implementation reasoning, previous reviewer conclusions, credentials or a desired
+   verdict. If the next step cannot be performed through an authorized visible
+   harness, return an explicit handoff naming the pending acceptance gate. This
+   does not skip review or establish that the repository has no eligible work.
+7. Record actual invocation ordinal, selected model/harness, native session reference
+   when available, exact reviewed refs, verdict, material findings/limitations and
+   explicit UX assessment minimally in canonical records. Reserve only an imminent
+   authorized review or required owner handoff; a pending reservation is not execution.
+   Approval needs authentic independent scope/identity, complete actual changes,
+   source integrity, no unauthorized access/context and no unresolved blocking
+   finding. Exit0, labels, self-report or tests alone are not approval. Any HEAD/base
+   change invalidates approval; do not edit source during an active review.
+8. COMMENT/REQUEST_CHANGES consume an actual attempt. Distinguish substantive
+   defects, uncertainty and infrastructure failure; do not manufacture blockers
+   from optional unread unchanged lines or style preferences. Remediate only when
+   authorized and a subsequent independent gate can still be satisfied, or when
+   the owner explicitly grants remediation-only/combined acceptance. No automatic
+   model fallback, review retry or ceiling extension. At the bound report STOP_REVISE
+   for actionable defects; report genuine external/decision blockers honestly.
 
-1. Fetch actual PR metadata and linked issue via `forgejo-mcp`. Require an open,
-   unmerged canonical BioMedical-IT/scarcity-router PR targeting `develop`. Verify
-   canonical remote, fetch current base/head and inspect status/branches. Use ONE
-   designated delivery checkout; safely switch to the existing PR branch, or create its local
-   tracking branch at the fetched PR HEAD if absent. Never create a replacement
-   branch. Temporary delivery worktrees/evidence checkouts follow the recovery rule. Never stash/reset or overwrite
-   others' work. Unrelated uncommitted changes preventing safe switching, local
-   divergence or conflicting work require diagnosis and safe isolated recovery;
-   never classify ordinary checkout inconvenience as an owner decision.
-2. Require the current PR branch to be clean and match MCP HEAD. Freeze exact
-   HEAD, base and merge base; run required `make check`, prepare its offline locked
-   environment and inspect
-   reviewer permissions and secret-safe execution strategy. Review frozen objects/current
-   clean branch in the designated checkout or prepared exact-revision evidence checkout.
-   The parent must not edit/switch branches while the reviewer is active.
-   Missing native task/agent requires diagnosed authorized native reviewer failover
-   before BLOCKED, never permission to self-review, widen permissions or use an external service.
-3. Spawn a fresh foreground native `task` with `subagent_type: pr-reviewer`,
-   `background: false`, no `task_id`. Supply only PR URL/number, exact expected
-   HEAD/base and whole-PR review instructions with the exact checkout and prepared
-   environment/source paths plus provenance (not implementation conclusions).
-   Do not supply past findings, implementation reasoning or a requested outcome.
-   The agent owns the result contract/model. Parse its JSON and require the exact
-   frozen SHAs and valid field types/verdict. Consume returned findings directly.
-   Recheck local HEAD/clean status; a changed or dirty checkout invalidates review.
-4. Re-fetch PR metadata and canonical develop. APPROVE with empty findings,
-   matching current HEAD/base SHAs, clean checkout, successful required validation
-   and still open/unmerged develop target yields READY_TO_MERGE / APPROVE. Never merge.
-   Changed HEAD/base invalidates approval. Diagnose external changes, malformed results
-   and infrastructure failures; recover safe currentness and use a materially changed
-   execution strategy within the persistent recovery/review budgets. Never race a
-   concurrent writer, approve stale state or retry on a new session/model alone.
-5. REQUEST_CHANGES: first check findings against accepted scope and authority.
-   Genuine incompatible acceptance, architecture or material scope decisions
-   yield OWNER_DECISION_NEEDED with concrete alternatives. Otherwise reproduce
-   each actionable finding. Before patching check the remaining delivery budget;
-   at 10 return STOP_REVISE without patches that cannot receive a fresh review.
-   Remediate all in scope and add regression tests.
-   Classify each as direct incomplete remediation or genuinely new semantic/
-   architectural defect; record that distinction and the reviewed HEAD/verdict.
-6. Run focused validation and full `make check`; inspect status, intended diff,
-   full base delta, whitespace and recent commit style. Verify configured and
-   effective author/committer are Adrian Tkacz <adrian.tkacz@creatidy.com>.
-   Stage only intended files, commit normally and push the SAME PR branch through
-   canonical Git. Never amend, squash, force-push or rewrite published history.
-   Recheck remote/MCP head and return to step 2 with a NEW reviewer task.
-7. Never dispatch review 11. At the 10-review bound an exact valid APPROVE may
-   yield READY_TO_MERGE; genuine decisions yield OWNER_DECISION_NEEDED and finite
-   infrastructure failures BLOCKED. Remaining actionable findings yield STOP_REVISE;
-   summarize recurring patterns,
-   especially substantial new semantic/architectural defects across repository product boundaries. Never
-   reset the issue delivery's review count or patch indefinitely. The ceiling is
-   not a target: stop as soon as an owner decision is clearly required.
-8. COMMENT: distinguish review findings, infrastructure failure and unresolved
-   judgment. Diagnose and automatically change the environment or authorized
-   independent reviewer/tool path for infrastructure failure; resolve uncertainty
-   through bounded evidence/adjudication, not a fabricated defect. Follow the recovery
-   rule's terminal contracts only when paths/budget are exhausted or a genuine owner
-   decision remains. Preserve all consumed ordinals, including malformed/failed attempts.
+## Security And #212 Exception
 
-For `security_critical` work, ordinary APPROVE alone does not yield completion
-or READY_TO_MERGE. After required validation and ordinary review pass at a stable
-exact base/HEAD with no changes pending, run the additional independent
-`gpt-daybreak-blue-latest` review directly through Codex, not Kilo, under
-`docs/llm-operating-policy.md`. This is a pre-completion / pre-merge gate, not a
-pre-implementation eligibility gate. Kilo discovery failure does not imply
-`SECURITY_REVIEW_UNAVAILABLE`. Record exact reviewed base/HEAD, reviewer identity,
-Codex execution path, findings and verdict; any HEAD/base change requires fresh
-security review. No fallback reviewer is permitted. Apply bounded technical
-recovery to direct Codex problems before declaring required access unavailable.
+Security-critical Daybreak is owner-manual through official Codex, selected visibly
+as `gpt-daybreak-blue-latest`, never through Kilo or a script. It is not a
+pre-implementation eligibility gate; Kilo discovery failure does not imply
+`SECURITY_REVIEW_UNAVAILABLE`. The implementation agent does not invoke it.
+Preserve exact refs, official execution/model provenance and independent context/tool
+checks; never infer backend identity. Use the existing Router owner-manual identity
+contract, including explicit owner acceptance for a permitted unobservable runtime.
 
-Return one final report: issue/PR URLs, every reviewed HEAD/base/verdict,
-review ordinals, remediation commits, final exact HEAD, validation/limitations and exactly one
-terminal status READY_TO_MERGE, STOP_REVISE, OWNER_DECISION_NEEDED or BLOCKED.
-Optional concise final issue/PR comments are reporting only; reviewer task results
-are the handoff. Do not require owner relaying, Forgejo review publication,
-external orchestration, release, deployment or main promotion.
-When reused by `/loop`, READY_TO_MERGE is internal; map OWNER_DECISION_NEEDED to
-STOP_AND_ASK and stop the entire invocation. Other blockers/bounds terminate the
-loop too, never skip to another issue. Merge/completion remain loop.md's procedure.
+For #212/PR #213 only, the direct 2026-10-20T06:26:22Z combined exception remains:
+consumed #1-19 (including #19 REQUEST_CHANGES/audit PASS), maximum20, #20 reserved
+but unconsumed for ONE owner-manual complete implementation AND security review.
+No more ordinary Kilo, #21/reset/automatic extension. The owner reaffirmed this on
+2026-10-20T18:58:08Z while retiring all local review directories and launchers.
+Canonical history/provenance: Issue #212 comment #18011 and D-077. Historical
+source files have been removed by owner decision; those records do not pretend
+the bytes remain available or turn agent transcriptions into owner-authored evidence.
+The current direct owner instruction/native conversation supplies the reaffirmation.
+
+Provide the NEW exact HEAD and direct review instructions; Adrian manually opens
+official Codex and selects Daybreak. No local packet/history reconstruction is a
+prerequisite. Require explicit verified approval of BOTH correctness and security,
+complete material PR scope and no unresolved blockers. A security-only, nonpositive,
+incomplete or unverified result is preserved and stops for Adrian. No actual review
+is consumed by deterministic checks. A descriptive owner handoff is not acceptance
+or READY_TO_MERGE; only an explicit applicable `/loop` can later merge/close after
+actual combined acceptance and fresh currentness. Never deploy/release/promote main.

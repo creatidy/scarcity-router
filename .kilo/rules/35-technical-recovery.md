@@ -53,12 +53,28 @@ Use the smallest safe, reversible, in-scope mechanism. Before recovery begins,
 record the diagnosis, relevant changed condition and expected proof. Allow at most
 three materially different recovery attempts per obstacle and at most 120 minutes
 of technical recovery per issue delivery (or the existing smaller execution budget).
-Persist attempts/time across reentry, phases and sessions in the excluded delivery
-ledger; renaming an obstacle or reviewer does not reset its budget. Every whole-PR
+Keep minimal attempts/time across reentry, phases and sessions canonically;
+local notes are optional, not a gate. Renaming an obstacle or reviewer does not
+reset its budget. Every whole-PR
 review dispatch, including failed/COMMENT attempts and failover, also consumes the
-next reserved ordinal within the existing ten-review ceiling. Never dispatch review
-11 or patch without capacity for fresh review. Budget exhaustion is a finite stop,
-not permission to weaken a gate or invent an owner decision.
+next reserved ordinal. The default effective ceiling is 10. The sole separate
+direct-owner supersession is #212/PR #213: the final D-077 amendment records maximum
+20, consumed #1-19 unchanged. The final `2026-10-20T06:26:22Z` exception permits
+the P1 correction/validation and #20 owner-manual combined correctness/security
+Daybreak without ordinary APPROVE, for this delivery only. No more ordinary Kilo,
+#21, blind retry or counter reset. If the combined result is nonpositive/incomplete/
+unverified, preserve it and stop for the owner. The current owner reaffirms the
+exception while retiring local files/scripts. Verify legitimate native owner
+source/current reaffirmation, not deleted local paths or transcriptions, and
+canonical scope/currentness before each reservation; this is not D-069A and cannot
+transfer. For other deliveries,
+only a finite D-069A exception verified against the direct owner source and exact
+canonical Repo/Issue/linked-PR scope, with D-069A already integrated into freshly
+fetched `develop`, can raise the cap. Missing/stale/ambiguous authority leaves the
+default 10 effective. Never
+dispatch beyond the effective ceiling or patch without capacity for fresh review.
+Budget exhaustion is a finite stop, not permission to weaken a gate or invent an owner
+decision.
 
 No blind retries means never repeat a failed operation with the same relevant
 inputs and environment. It does not mean stop after one failed approach. A corrected
@@ -90,10 +106,10 @@ Available mechanisms, where applicable:
 - Split independent source inspection from safe test execution when they need different
   environments, or reproduce a claim with a smaller synthetic/offline proof. Preserve
   mandatory full validation and explicitly open any real-environment acceptance gap.
-- Use another available authorized independent native reviewer/tool path automatically
-  after diagnosing infrastructure failure. Preserve the complete frozen PR contract,
-  result schema, model-bound gates, read-only permissions and reviewer independence.
-  Do not bypass tool restrictions or silently substitute a required restricted reviewer.
+- Prepare a concise user-visible reviewer handoff after diagnosing harness limitations.
+  Preserve frozen PR scope, model-bound gates, read-only access and independence.
+  The user selects/starts the next model; recovery never authorizes scripts,
+  subprocesses, Task/delegation, background/HTTP inference or a hidden substitute.
 
 ## Secret-Safe Environments
 
@@ -107,38 +123,33 @@ Keep authenticated platform operations outside test sandboxes. If unauthorized r
 credentials are genuinely necessary, record the specific evidence gap; do not ask for
 them unless required for the selected acceptance and subject to an owner decision.
 
-## Independent Review Metadata
+## Visible Review Handoffs
 
-An acceptance-only whole-PR review manifest may authorize these exact Forgejo
-read operations: `forgejo-mcp_get_repo` for the canonical owner/repository,
-`forgejo-mcp_get_pull_request_by_index` for the selected PR, and
-`forgejo-mcp_get_issue_by_index` for its linked issue. Include
-`forgejo-mcp_get_issue_comment` only for a specifically attested owner decision.
-The manifest records each exact object ID/arguments, canonical URL, author,
-timestamp, retrieval path and content digest. Do not grant wildcard getters,
-list/search access or any Forgejo write. Repository metadata establishes
-canonical identity; current PR refs/SHAs must still agree with the primary-prepared
-clean local Git objects and exact merge base/full diff. Reviewer shell access must
-not inspect credential-bearing Git configuration or invoke credential helpers.
+Verify actual Git objects and canonical Repo/Issue/PR/owner authority. Provide concise
+frozen refs, acceptance and source instructions directly to a fresh user-visible
+read-only Kilo/Codex reviewer. The user selects the model and starts the session;
+technical recovery may not spawn another model, generate a wrapper or hide it in a
+background/HTTP/Task call. If no authorized visible mechanism can perform the next
+step, hand off that exact pending gate without skipping it or claiming QUEUE_EMPTY.
 
-## Public Evidence and Reviewer Failover
+Use native harness records and minimal canonical ordinals/outcomes/provenance, not
+persistent local receipts, copied source/transcripts or reconstructed evidence trees.
+Historical deleted files are unavailable; historical hashes/transcriptions do not
+recreate their original bytes or grant authority. Recover legitimate native owner
+records or obtain direct owner confirmation only when authority is truly unresolved.
+For #212 the current owner explicitly reaffirms pending/unconsumed #20 combined
+Daybreak and forbids scripts; use D-077/Issue #212 history, not deleted paths.
 
-A public-research reviewer must inspect cited material independently. If a pinned
-source is inaccessible, try an alternative available read path, then fetch/clone the
-exact public revision into an isolated evidence checkout within authorized network
-access. Verify the specific material claims and preserve pin, origin and provenance
-in review evidence. Parent may stage source bytes but its research conclusions are
-not independent verification. One process's connector failure is not an implementation
-finding. If network/source access is unavailable everywhere authorized, report that
-specific external evidence gap, not an artificial owner question.
-
-Distinguish **review finding** (evidence the change is wrong/incomplete), **review
-infrastructure failure** (no verdict can be established) and **reviewer disagreement /
-uncertainty** (evidence exists, judgment unresolved). Infrastructure failure calls for
-changed environment/strategy, not identical retries or fabricated defects. Uncertainty
-calls for bounded independent evidence/adjudication; escalate only a genuine class-B
-decision. Never accept incomplete review as APPROVE. Retain all failed/COMMENT ordinals
-and obtain a fresh whole-PR review at exact HEAD/base after implementation changes.
+For public-source access failure, try an alternative available read path, then fetch/clone the exact public revision
+in safe temporary space when authorized; preserve pin, origin and provenance.
+The visible reviewer verifies actual claims; implementer research conclusions are not independent verification.
+Connector failure is not an implementation finding. Preserve model-bound gates, read-only permissions and reviewer independence.
+Do not bypass tool restrictions or silently substitute a required restricted reviewer.
+Public source inspection remains bounded, pinned and read-only where needed.
+Distinguish review finding, infrastructure failure and reviewer disagreement / uncertainty;
+never accept incomplete review as APPROVE or silently substitute models. Keep all
+consumed attempts, exact refs and real outcomes without storing large local histories.
+Deterministic offline fixtures use cleaned normal OS temporary directories only.
 
 ## Terminal Contracts
 
@@ -157,11 +168,12 @@ the agent cannot change with any authorized workaround. Class-B decisions instea
 require STOP_AND_ASK / OWNER_DECISION_NEEDED with all five decision fields above.
 State the exact missing capability/dependency, attempted paths, remaining evidence gap
 and consumed budget. A reviewer lacking tools is insufficient while a suitable clean
-environment/container/alternate authorized reviewer path remains. Do not ask an
+environment or a user-authorized visible reviewer path remains. Do not ask an
 artificial question for an external non-decision blocker. STOP_REVISE remains the
 review-bound disposition for actionable defects, not a technical environment failure.
 
 Continue implementation -> validation -> independent review -> ordinary remediation
 -> fresh validation/review until exact independent APPROVE with acceptance satisfied,
 genuine budget exhaustion, an external condition with no authorized workaround or a
-class-B decision. Never stop merely because the first reviewer environment is inconvenient.
+class-B decision. A required user-visible review start is an explicit pending-gate
+handoff, not authorization for a hidden model or an artificial infrastructure question.
