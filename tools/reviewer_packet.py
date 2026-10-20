@@ -366,6 +366,9 @@ def validate_standalone_instruction_boundary(
     if (launch_environment.get("KILO_DISABLE_PROJECT_CONFIG") != "1"
             or launch_environment.get("KILO_CONFIG_CONTENT") != "{}"):
         raise PacketError("standalone instruction isolation requires disabled project config and empty config content")
+    if (launch_environment.get("KILO_DISABLE_PRUNE") != "1"
+            or launch_environment.get("KILO_DISABLE_AUTOCOMPACT") != "1"):
+        raise PacketError("standalone review must preserve evidence without pruning or automatic compaction")
     if {path.name for path in runtime.workspace.iterdir()} != {"packet"}:
         raise PacketError("standalone workspace contains entries outside the frozen packet")
 
@@ -406,6 +409,8 @@ def validate_standalone_instruction_boundary(
     return {
         "status": "PASS",
         "project_config_disabled": True,
+        "tool_result_pruning_disabled": True,
+        "automatic_compaction_disabled": True,
         "config_instructions_count": 0,
         "read_scope_instruction_candidates_checked": [
             "workspace/packet/{AGENTS.md,CLAUDE.md,CONTEXT.md}",
@@ -450,6 +455,9 @@ KILO_SOURCE_PACKET_PATHS = (
     "kilo-session-user-summary.ts.txt",
     "kilo-session-user-conversion.ts.txt",
     "kilo-board-notice.ts.txt",
+    "kilo-evidence-preservation-flags.ts.txt",
+    "kilo-evidence-preservation-config.ts.txt",
+    "kilo-evidence-preservation-prune.ts.txt",
 )
 KILO_SOURCE_REPOSITORY_PATHS = {
     "kilo-LICENSE.txt": "LICENSE",
@@ -476,6 +484,9 @@ KILO_SOURCE_REPOSITORY_PATHS = {
     "kilo-session-user-summary.ts.txt": "packages/opencode/src/session/summary.ts",
     "kilo-session-user-conversion.ts.txt": "packages/opencode/src/session/message-v2.ts",
     "kilo-board-notice.ts.txt": "packages/opencode/src/kilocode/board/notice.ts",
+    "kilo-evidence-preservation-flags.ts.txt": "packages/core/src/flag/flag.ts",
+    "kilo-evidence-preservation-config.ts.txt": "packages/opencode/src/config/config.ts",
+    "kilo-evidence-preservation-prune.ts.txt": "packages/opencode/src/session/compaction.ts",
 }
 KILO_REQUIRED_SOURCE_RANGES = {
     "kilo-read-path.ts.txt": (198, 385),
@@ -490,6 +501,9 @@ KILO_REQUIRED_SOURCE_RANGES = {
     "kilo-session-user-summary.ts.txt": (105, 145),
     "kilo-session-user-conversion.ts.txt": (320, 495),
     "kilo-board-notice.ts.txt": (1, 25),
+    "kilo-evidence-preservation-flags.ts.txt": (4, 57),
+    "kilo-evidence-preservation-config.ts.txt": (1049, 1054),
+    "kilo-evidence-preservation-prune.ts.txt": (296, 354),
 }
 # Default owner paths for unit-test fixtures only; production paths come from the manifest.
 OWNER_EVIDENCE_PACKET_PATHS = (
@@ -2760,15 +2774,17 @@ def audit_standalone_session(
             denial_text = output
         if state.get("status") != "error" or not re.search(r"denied|permission|not allowed", denial_text, re.I):
             raise PacketError(f"unauthorized Read was not denied by Kilo: {raw_path}")
-        if output not in (None, ""):
-            if not isinstance(output, str):
+        for returned in (output, denial_text):
+            if returned in (None, ""):
+                continue
+            if not isinstance(returned, str):
                 raise PacketError(f"unauthorized Read returned a non-text result: {raw_path}")
             for canary_path, expected_hash in runtime.probe_hashes.items():
                 if sha256(Path(canary_path).read_bytes()) == expected_hash:
                     marker = Path(canary_path).read_text(encoding="utf-8").strip()
-                    if marker and marker in output:
+                    if marker and marker in returned:
                         raise PacketError(f"unauthorized Read returned canary bytes: {raw_path}")
-            if "<content>" in output or "</content>" in output:
+            if "<content>" in returned or "</content>" in returned:
                 raise PacketError(f"unauthorized Read returned a content block: {raw_path}")
         if permission_rule.get("action") != "deny" or permission_rule.get("permission") not in {
             "read", "external_directory"
@@ -3040,6 +3056,8 @@ def standalone_environment(
         "LANG": "C.UTF-8",
         "LC_ALL": "C.UTF-8",
         "KILO_NO_DAEMON": "1",
+        "KILO_DISABLE_PRUNE": "1",
+        "KILO_DISABLE_AUTOCOMPACT": "1",
         "KILO_DISABLE_PROJECT_CONFIG": "1",
         "KILO_CONFIG_DIR": str(profile_config),
         "KILO_CONFIG_CONTENT": kilo_config_content,

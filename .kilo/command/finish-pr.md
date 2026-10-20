@@ -132,6 +132,9 @@ delivery; STOP_REVISE still requires an explicit owner decision, not a new PR/na
      evidence replayed by pinned Kilo conversion (meaningful MessageAbortedError is
      distinct from other assistant errors). Cleared/compacted results earn no coverage;
      qualifying later rereads can restore it. Unverifiable compaction context fails closed.
+     The isolated launch uses supported `KILO_DISABLE_PRUNE=1` and
+     `KILO_DISABLE_AUTOCOMPACT=1` to retain mandatory evidence until the verdict;
+     this does not change permissions or permit credit for actually cleared results.
      These post-execution checks are separate from static Kilo debug
     and the standalone preflight. A verdict alone cannot approve; malformed,
     incomplete or mismatched traces fail closed. Never self-review, substitute a

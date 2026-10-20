@@ -394,6 +394,12 @@ def _make_standalone_preflight_packet(
         "kilo-session-user-summary.ts.txt": "packages/opencode/src/session/summary.ts",
         "kilo-session-user-conversion.ts.txt": "packages/opencode/src/session/message-v2.ts",
         "kilo-board-notice.ts.txt": "packages/opencode/src/kilocode/board/notice.ts",
+        "kilo-evidence-preservation-flags.ts.txt": "packages/core/src/flag/flag.ts",
+        "kilo-evidence-preservation-config.ts.txt": "packages/opencode/src/config/config.ts",
+        "kilo-evidence-preservation-prune.ts.txt": "packages/opencode/src/session/compaction.ts",
+        "kilo-evidence-preservation-flags.ts.txt": "packages/core/src/flag/flag.ts",
+        "kilo-evidence-preservation-config.ts.txt": "packages/opencode/src/config/config.ts",
+        "kilo-evidence-preservation-prune.ts.txt": "packages/opencode/src/session/compaction.ts",
     }
     owner_names = OWNER_EVIDENCE_PACKET_PATHS
     if tuple(sorted(set(changed_paths))) != changed_paths or not changed_paths:
@@ -1874,6 +1880,26 @@ class ReviewerPacketTests(unittest.TestCase):
                     session, session_export_sha256="b" * 64, runtime=runtime,
                     expected_model=model, expected_title=title, expected_prompt=prompt, preflight=True,
                 )
+
+    def test_denied_native_error_text_cannot_carry_probe_bytes_or_content_blocks(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            _, _, runtime = self._prepare_standalone(Path(temporary), preflight=True)
+            baseline, model, title, prompt = self._standalone_session(runtime, preflight=True)
+            probe_path = runtime.denied_paths[0]
+            marker = (runtime.workspace / probe_path).resolve().read_text(encoding="utf-8").strip()
+            for content in (marker, "<content>synthetic unauthorized bytes</content>"):
+                with self.subTest(content=content):
+                    session = cast(dict[str, object], json.loads(json.dumps(baseline)))
+                    messages = cast(list[dict[str, object]], session["messages"])
+                    denied = next(part for part in cast(list[dict[str, object]], messages[1]["parts"])
+                                  if cast(dict[str, object], part["state"])["status"] == "error")
+                    cast(dict[str, object], denied["state"])["error"] = "Permission denied before content: " + content
+                    with self.assertRaisesRegex(PacketError, "unauthorized Read returned"):
+                        _ = audit_standalone_session(
+                            session, session_export_sha256="b" * 64, runtime=runtime,
+                            expected_model=model, expected_title=title, expected_prompt=prompt, preflight=True,
+                        )
+
     def test_message_dispatch_must_match_even_when_session_model_is_correct(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             _, _, runtime = self._prepare_standalone(Path(temporary), preflight=False)
@@ -2334,6 +2360,9 @@ class ReviewerPacketTests(unittest.TestCase):
             cache_home=Path("/tmp/cache"),
         )
         self.assertEqual(env["KILO_NO_DAEMON"], "1")
+        self.assertEqual(env["KILO_DISABLE_PRUNE"], "1")
+        self.assertEqual(env["KILO_DISABLE_AUTOCOMPACT"], "1")
+        self.assertEqual(env["KILO_CONFIG_CONTENT"], "{}")
 
     def test_standalone_preflight_trace_requires_complete_reads_and_actual_denials(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -2925,7 +2954,13 @@ class ReviewerPacketTests(unittest.TestCase):
                 "KILO_CONFIG_DIR": str(runtime.profile_config),
                 "KILO_CONFIG_CONTENT": "{}",
                 "KILO_DISABLE_PROJECT_CONFIG": "1",
+                "KILO_DISABLE_PRUNE": "1",
+                "KILO_DISABLE_AUTOCOMPACT": "1",
             }
+            for flag in ("KILO_DISABLE_PRUNE", "KILO_DISABLE_AUTOCOMPACT"):
+                with self.subTest(flag=flag):
+                    with self.assertRaisesRegex(PacketError, "preserve evidence"):
+                        _ = validate_standalone_instruction_boundary(runtime, {**launch_environment, flag: "0"})
 
             os.chmod(runtime.packet, 0o700)
             read_instruction = runtime.packet / "AGENTS.md"

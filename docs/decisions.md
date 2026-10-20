@@ -6600,6 +6600,23 @@ neither is a new live check of the current deployment.
   actual tool-channel security remediation within #16's finding, not a new reviewer
   architecture, expanded whole-file contract or budget change.
 
+- **Diagnosed #17 denial-text and pruning recovery:** Native error strings are
+  also replayed by pinned `session/message-v2.ts:461-482`. The denied-probe security
+  check must reject canary/content blocks in both output and error text, not mistake
+  a denial phrase plus leaked contents for zero disclosure. Valid synthetic fixtures
+  reproduced the old false PASS before the small common-channel correction.
+  The actual #17 export also contains 35 `state.time.compacted` Read results: raw
+  export retention is not final-model visibility. Kilo7.8.8 supports per-process
+  `KILO_DISABLE_PRUNE=1` and `KILO_DISABLE_AUTOCOMPACT=1`
+  (`core/src/flag/flag.ts:4-57`, `config/config.ts:1049-1054`);
+  `session/compaction.ts:296-354` returns before pruning when disabled.
+  Set these only in the existing sanitized standalone child environment. Keep the
+  instruction/config JSON empty, exact profile/Read permissions unchanged, and all
+  existing compacted-result/terminal/coverage checks fail-closed. Three short source
+  excerpts are optional support, not extra mandatory review volume or a new system.
+  This is diagnosed infrastructure recovery plus a real source fix within max20,
+  not a blind retry, model substitution, authority change or security relaxation.
+
 ### U-014 - Native coding backend versus Kernel-owned workspace lifecycle
 
 - **Status:** Direction settled by D-073; replacement/retirement evidence remains
