@@ -4,6 +4,13 @@ description: Read-only independent review in a fresh user-visible Kilo or Codex 
 
 Review the selected canonical Forgejo PR: $ARGUMENTS
 
+## Current #212 Status
+
+This notice supersedes conflicting historical #212 references below: #212/PR #213
+is complete, all #1-20 are consumed, #20 approval is only at1dcb4a0, cleanupcddcac0
+was separately accepted, and merge121ee3f/#212 closure are verified. No #20 reuse,
+#21 or transfer. Other deliveries retain their own verified scopes and gates.
+
 Read `.kilo/rules/35-technical-recovery.md`. This command is instructions for the CURRENT user-visible reviewer session. It
 does not start a model or another session. The user explicitly selects the model
 and opens a fresh independent Kilo or official Codex session. If this is still the
@@ -41,10 +48,12 @@ only minimal native session reference/outcome metadata canonically; do not copy 
 large transcript into the repository. Any HEAD/base change invalidates approval.
 
 Default ten and finite integrated D-069A owner exceptions remain for other deliveries;
-unintegrated D-069A grants none. #212/PR #213 is completed history: #1-20 consumed,
-owner-confirmed combined APPROVE only at1dcb4a0, separately owner-accepted cleanup
-to cddcac0, integrated as121ee3f/closed. Do not claim review of that cleanup, reuse
-#20 or invoke #21. Canonical #18057/D-077 retain actual outcomes and attribution;
-no deleted local source is required or claimed available. All other deliveries
-need their own complete independent gates/source authority. No script, automatic
-invocation, merge or issue closure is authorized by this read-only command.
+unintegrated D-069A grants none. For #212/PR #213, no further ordinary Kilo review is authorized. #1-19 stay consumed;
+#20 remains reserved/unconsumed for Adrian's ONE manually opened official Codex
+`gpt-daybreak-blue-latest` combined full-PR correctness AND security review. Verify
+the original direct owner decision/current reaffirmation via the native owner
+conversation and canonical acceptance/D-077; Issue #212 comment #18011 is an agent
+metadata transcription, not owner-authored evidence. No deleted local source is
+required or claimed available. Both explicit approvals and verified execution/
+context/currentness are required; a security-only or incomplete/unverified/nonpositive
+result stops for Adrian. No script, automatic invocation, #21, merge or issue closure.

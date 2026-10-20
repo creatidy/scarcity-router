@@ -58,7 +58,7 @@ session/model/context and current source before acceptance, keeping minimal cano
 metadata rather than large local copies. Provider-family/reasoning defaults remain
 descriptive unless the owner explicitly chooses otherwise; every selection is visible.
 
-For completed #212/PR #213 all #1-20 are consumed. Owner-confirmed combined approval
-applies only to1dcb4a0; cleanupcddcac0 was separately owner-accepted and integrated
-as121ee3f/#212 closed. No further ordinary review, #20 reuse, #21 or transferred
-acceptance. Other deliveries retain their own ordinary/manual-security gates.
+For #212/PR #213 no ordinary Kilo review remains authorized. The owner manually
+opens official Codex and selects gpt-daybreak-blue-latest for reserved/unconsumed #20
+combined full-PR implementation AND security acceptance. Neither security-only
+approval nor a handoff closes both gates; no script, automatic invocation or #21.

@@ -4,6 +4,13 @@ description: Remediate one selected PR and hand off outstanding gates to a user-
 
 Finish only the owner-selected Forgejo PR: $ARGUMENTS
 
+## Current #212 Status
+
+This notice supersedes conflicting historical #212 references below: #212/PR #213
+is complete, all #1-20 are consumed, #20 approval is only at1dcb4a0, cleanupcddcac0
+was separately accepted, and merge121ee3f/#212 closure are verified. No #20 reuse,
+#21 or transfer. Other deliveries retain their own verified scopes and gates.
+
 Read AGENTS.md and `.kilo/rules/35-technical-recovery.md`. Fetch the exact canonical Repo/PR/linked Issue and
 directly linked owner decisions through Forgejo MCP; verify IDs, URLs, authors,
 acceptance and currentness. Never select unrelated work. The implementation agent
@@ -70,15 +77,21 @@ Preserve exact refs, official execution/model provenance and independent context
 checks; never infer backend identity. Use the existing Router owner-manual identity
 contract, including explicit owner acceptance for a permitted unobservable runtime.
 
-The #212/PR #213 one-time exception is completed history: #1-20 consumed, #19
-REQUEST_CHANGES/audit PASS preserved, #20 owner-confirmed combined APPROVE at1dcb4a0.
-The owner separately accepted the cleanup to cddcac0 through narrow verification on
-2026-10-20T21:10:00Z; develop merge121ee3f integrated it and #212 closed. D-077 and
-canonical #212 comment #18057 distinguish those objects; Daybreak did not review the
-later cleanup. No #20 reuse/#21 or transfer. Removed local files/transcriptions do
-not recreate authority or current availability. Other deliveries retain their own
-counts, fresh ordinary/manual-security gates and original owner scope.
+For #212/PR #213 only, the direct 2026-10-20T06:26:22Z combined exception remains:
+consumed #1-19 (including #19 REQUEST_CHANGES/audit PASS), maximum20, #20 reserved
+but unconsumed for ONE owner-manual complete implementation AND security review.
+No more ordinary Kilo, #21/reset/automatic extension. The owner reaffirmed this on
+2026-10-20T18:58:08Z while retiring all local review directories and launchers.
+Canonical history/provenance: Issue #212 comment #18011 and D-077. Historical
+source files have been removed by owner decision; those records do not pretend
+the bytes remain available or turn agent transcriptions into owner-authored evidence.
+The current direct owner instruction/native conversation supplies the reaffirmation.
 
-A descriptive owner handoff is not acceptance or READY_TO_MERGE; only explicit
-applicable `/loop` authority may later merge/close after actual verified acceptance
-and fresh currentness. Never deploy/release/promote main.
+Provide the NEW exact HEAD and direct review instructions; Adrian manually opens
+official Codex and selects Daybreak. No local packet/history reconstruction is a
+prerequisite. Require explicit verified approval of BOTH correctness and security,
+complete material PR scope and no unresolved blockers. A security-only, nonpositive,
+incomplete or unverified result is preserved and stops for Adrian. No actual review
+is consumed by deterministic checks. A descriptive owner handoff is not acceptance
+or READY_TO_MERGE; only an explicit applicable `/loop` can later merge/close after
+actual combined acceptance and fresh currentness. Never deploy/release/promote main.

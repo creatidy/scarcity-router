@@ -1,5 +1,24 @@
 # LLM Operating Policy
 
+## Current D-069A Amendment (2026-10-20)
+
+This current notice supersedes conflicting later historical #212 references in this
+document. All #1-20 for #212/PR #213 are consumed; #20 approval applies only to
+`1dcb4a08d9d57d02ed67bf8e7f7d15275c5b3ecf`, cleanup `cddcac0d7a475c32eb2d8ad942b4f004c1ea1256`
+was separately owner-accepted, and `121ee3fe33b74dc38b2401d22e7aa6df1b124bc9` integrated
+the PR and closed #212. No #20 reuse, #21 or transfer.
+
+D-069A remains default ten; only verified direct owner evidence and exact canonical
+scope can admit #210/PR #211 at maximum11. Nine prior outcomes remain unchanged; #10
+is ordinary, #11 is owner-manual security only after #10 passes, and #12 is prohibited.
+The Router-only manual Codex backend-identity limit is narrow: if the official path
+cannot independently expose backend identity, use `RUNTIME_UNOBSERVABLE` only after
+official binary/provenance, actual requested-model dispatch, native session/turn/input/
+output, context/tool audit, exact refs, structured APPROVE and no blockers are verified.
+Never infer `RUNTIME_VERIFIED` from UI/configuration/self-report. Mismatch/substitution
+is FAIL; other missing proof keeps the gate open. No automatic Daybreak, skipped review,
+generic identity weakening, or cross-delivery transfer.
+
 ## Purpose
 
 This document is the authoritative human-readable policy for multi-model work
@@ -153,10 +172,11 @@ skip review, run a hidden model or claim the repository has no eligible work.
 A default maximum of 10 invocations per issue delivery
 includes initial, COMMENT, invalidated reviews and corrected retries. The sole separate
 direct-owner supersession is for #212/PR #213: the final D-077 amendment records maximum
-20, with all #1-20 consumed. The owner confirms historical combined #20 APPROVE only
-at1dcb4a0, separately accepted the verified cleanup delta to cddcac0 on
-2026-10-20T21:10:00Z, and integration121ee3f/#212 closure is complete. Do not claim
-Daybreak reviewed the cleanup, reuse #20, invoke #21 or transfer that acceptance.
+20, with consumed #1-19 preserved. The final `2026-10-20T06:26:22Z` owner exception
+permits only P1 correction/validation then #20 owner-manual combined implementation/
+security Daybreak without prior ordinary APPROVE, exclusively for this delivery.
+No more ordinary Kilo reviews or #21. The 2026-10-20T18:58:08Z owner cleanup decision
+reaffirms this exception on the NEW exact HEAD and retires old local files/launchers.
 Use legitimate native owner records and canonical D-077/Issue history, never an agent
 transcription as original evidence or an old hash as proof of local availability.
 Verify source and canonical
@@ -237,33 +257,6 @@ Discipline:
   `SECURITY_REVIEW_UNAVAILABLE` and the gate remains OPEN/FAILED — final
   completion pauses at that external/human gate. Substituting another model
   and claiming the gate passed is forbidden.
-
-### Router-Only Manual Codex Observability Limit (D-069A)
-
-Adrian's original native user decision, verified and canonically attested in #210
-comment #18085, accepts the supported official-Codex backend identity observability
-limit only for Scarcity Router's owner-manual security gate. It is not permission
-to substitute a model, skip security review, dispatch it through Kilo or scripts,
-or weaken generic identity requirements elsewhere.
-
-The owner visibly selects/starts `gpt-daybreak-blue-latest` after implementation,
-ordinary approval and validation. Verify official executable/version/provenance,
-the actual requested-model invocation/dispatch, native process/session/turn and
-immutable input/output provenance, structured verdict/findings, independent safe
-context/tool audit and exact current Repo/Issue/PR/HEAD/base/merge-base. Native
-records and nonsecret digests are sufficient sources; do not create local receipt/
-transcript/source hierarchies or require a model-launch script. Owner assertion,
-CLI exit0, UI/configuration and model self-identification alone are insufficient.
-
-If the supported official path exposes no independent backend identity, record
-`RUNTIME_UNOBSERVABLE`, never `RUNTIME_VERIFIED`; `DISPATCH_VERIFIED` is actual
-dispatch only. With every other gate/evidence/currentness valid, APPROVE/no blocking
-findings, no observed mismatch/substitution and the owner's explicit acceptance of
-that precise limit, the manual gate may pass as unobservable. Do not invent backend
-attestation or cryptographic certainty. Observed identity/dispatch mismatch or
-unauthorized substitution is FAIL; missing invocation/context/output proof, stale
-refs or substantive findings keeps acceptance open. Default separate independent
-review and `/loop`-only merge/closure remain; no cross-delivery exception transfer.
 
 ## Evidence work
 
@@ -420,14 +413,16 @@ budget extension. The later `2026-10-19T22:41:20Z` direct owner max20 amendment
 supersedes that earlier invocation restriction, not the compact/security contract:
 #1-15 were preserved, #16-19 were the remaining ordinary allocation and #20 manual
 security. The final `2026-10-20T06:26:22Z` D-077 exception now preserves consumed
-#1-19 and authorized ONE owner-manual combined review at #20 for #212/PR #213 only.
-That review is now consumed: owner-confirmed APPROVE at1dcb4a0. The owner separately
-accepted narrow cleanup verification tocddcac0 at21:10Z; exact code/CI/tree/currentness
-were checked and canonical merge121ee3f/#212 closure verified. This is completed
-history, not another pending gate or an ordinary APPROVE for a later SHA. No #20
-reuse/#21, transferred exception or global change to independent security/currentness
-requirements. Default ten elsewhere and `/loop`-only integration remain. Other
-deliveries require their own authentic ordinary/manual-security acceptance and counts.
+#1-19, forbids further ordinary Kilo review and uses #20 as ONE owner-manual combined
+acceptance review. This consciously waives the ordinary-APPROVE prerequisite only
+for #212/PR #213, not the source/security/identity/currentness guarantees. Require
+the full PR, explicit implementation AND security approval, no unresolved blocking
+findings, verified official Codex/Daybreak provenance and independent context/tool
+audit. Security-only approval, nonpositive/incomplete/unverified results do not pass.
+Report `READY_FOR_OWNER_COMBINED_REVIEW` only as this owner handoff label, not a
+global state or acceptance; reserve pending #20 after validation, never invoke it
+automatically or consume it through tests. Default ten elsewhere and `/loop`-only
+integration remain; no #21, transfer or authority from unintegrated D-069A.
 The later cleanup policy prohibits any more scripted/invisible development model
 execution, including synthetic preflight model calls. Offline synthetic responses,
 Git/hash/static/build tools remain allowed. No `.review-evidence-*` directory or

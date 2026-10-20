@@ -1,5 +1,12 @@
 # Validation Rules
 
+## Current #212 Status
+
+This notice supersedes conflicting historical #212 references below: #212/PR #213
+is complete, all #1-20 are consumed, #20 approval is only at1dcb4a0, cleanupcddcac0
+was separately accepted, and merge121ee3f/#212 closure are verified. No #20 reuse,
+#21 or transfer. Other deliveries retain their own verified scopes and gates.
+
 Use `.kilo/rules/35-technical-recovery.md` for bounded secret-safe execution recovery;
 it never authorizes a hidden model call.
 
@@ -54,11 +61,12 @@ it never authorizes a hidden model call.
   or Kilo call. It is not a pre-implementation eligibility gate; Kilo discovery
   failure does not imply `SECURITY_REVIEW_UNAVAILABLE`. Preserve real provenance
   and model-bound gates, no fallback reviewer or automatic retry.
-- Completed #212/PR #213 exception: all #1-20 consumed, #19 REQUEST_CHANGES/audit PASS
-  unchanged. Owner confirmed #20 combined approval only at1dcb4a0 and separately
-  accepted verified cleanupcddcac0 on2026-10-20T21:10:00Z, integrated as121ee3f/closed.
-  No #20 reuse/#21, source review attribution to the cleanup or gate transfer.
-  Other deliveries retain default ten/their own verified scope and both gates.
+- Exact #212/PR #213 combined exception (owner 2026-10-20T06:26:22Z, reaffirmed
+  18:58:08Z): #1-19 consumed outcomes stay, including #19 REQUEST_CHANGES/audit PASS;
+  #20 reserved/unconsumed for ONE full implementation AND security review in the
+  owner's visible Codex on the NEW HEAD. Both explicit verified approvals, complete
+  material scope and no unresolved blockers are required. Security-only/nonpositive/
+  incomplete/unverified results stop for Adrian. Default ten elsewhere; no #21.
 - `CLEAN_WORKFLOW_READY_FOR_OWNER_COMBINED_REVIEW` is descriptive handoff, not
   acceptance or READY_TO_MERGE. No ordinary #212 Kilo review or #20 consumption
   during cleanup/tests. Only actual acceptance/currentness plus explicit applicable

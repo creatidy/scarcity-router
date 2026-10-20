@@ -1,5 +1,25 @@
 # Instructions for repository agents
 
+## Current D-069A And #212 Status (2026-10-20)
+
+This current notice supersedes conflicting later historical #212 text in this file
+and any profile/rule mirror; the completed canonical state below is authoritative.
+All #1-20 for #212/PR #213 are consumed; #20 approval applies only to
+`1dcb4a08d9d57d02ed67bf8e7f7d15275c5b3ecf`, cleanup `cddcac0d7a475c32eb2d8ad942b4f004c1ea1256`
+was separately owner-accepted, and `121ee3fe33b74dc38b2401d22e7aa6df1b124bc9` integrated
+the PR and closed #212. No #20 reuse, #21 or transfer. Other deliveries keep their
+own scope and gates. D-069A's default ceiling is ten; its verified, exact #210/PR #211
+owner exception is maximum11 only, with nine outcomes preserved, #10 ordinary, #11
+owner-manual security only after #10 passes, and no #12.
+
+For Router owner-manual Codex security review only, backend identity may be honestly
+`RUNTIME_UNOBSERVABLE` under the exact explicit owner acceptance if all other required
+official binary, requested dispatch, native session/turn/input/output, context/tool,
+verdict and current-ref evidence passes. Never infer `RUNTIME_VERIFIED`; mismatch or
+unauthorized substitution is FAIL, other evidence gaps keep the gate open. No script,
+no automatic Daybreak, generic identity-policy change, or skipped security review. See
+D-069A and `docs/llm-operating-policy.md` for the complete contract.
+
 ## Mission and priority
 
 Build a small service that recommends which available subscription-backed AI
@@ -212,11 +232,13 @@ maximum only for one exact canonical issue/linked PR after the primary verifies 
 direct owner source, canonical repository/issue/PR identities, maximum and scope,
 and verifies D-069A is already integrated in the freshly fetched `develop`. The
 sole direct supersession is Adrian's one-time owner amendment for issue #212/PR #213,
-recorded in D-077 and the canonical issue: maximum20, all #1-20 consumed. The owner
-confirmed #20 combined Daybreak APPROVE at exact1dcb4a0 and separately accepted the
-authorized cleanup delta to cddcac0 on 2026-10-20T21:10:00Z. PR #213 was integrated
-as121ee3f and #212 closed. Do not claim Daybreak reviewed the later cleanup, reuse
-#20, request #21 or transfer that one-time acceptance to another delivery. Use D-077,
+recorded in D-077 and the canonical issue: maximum20, consumed #1-19 preserved.
+Adrian's `2026-10-20T06:26:22Z` final exception permits only the verified P1 fix,
+validation and one owner-manual combined implementation/security Daybreak at #20.
+No more ordinary Kilo review, #21, reset, transfer or automatic extension. For this
+delivery only, valid combined approval can satisfy both remaining gates without
+historical ordinary APPROVE. The owner reaffirmed this on 2026-10-20T18:58:08Z
+while retiring local evidence folders and all model-launch wrappers. Use D-077,
 canonical Issue/PR history and legitimate native owner/session records; historical
 file hashes do not imply current local availability or create authority.
 This is not D-069A and cannot transfer to another delivery. No other delivery may use
@@ -282,21 +304,18 @@ secret-safe recovery automatically. Record changed conditions, consumed budgets
 and the STOP_AND_ASK/BLOCKED contracts before escalation; owner attention is not
 a substitute for ordinary execution diagnosis.
 
-The #212/PR #213 combined exception is completed history, not a pending gate or
-source of another ordinary/security invocation. Canonical #212 comment #18057 and
-closure record distinguish exact historical approval, verified cleanup acceptance
-and integrated source. All other issues retain their own independently verified
-scope/counts and ordinary/manual-security gates. Visible user-started sessions and
-the prohibition on scripts/local receipt requirements remain repository-wide.
-
-For the Router-only owner-manual Codex path, D-069A records the original explicit
-owner observability amendment. Verify official binary/version/provenance, actual
-requested-model dispatch, independent native session/turn/input/output/context/tool
-evidence, structured verdict and exact current refs. If only backend identity is
-not exposed, honestly use `RUNTIME_UNOBSERVABLE` under that precise owner acceptance;
-never infer `RUNTIME_VERIFIED` from UI/configuration/self-report. Actual mismatch or
-unauthorized substitution is FAIL; other missing proof or blockers keep the gate
-open. No script, skipped security, transfer or generic identity-policy weakening.
+For #212/PR #213 only, the later D-077 combined-acceptance exception supersedes the
+ordinary-APPROVE-before-Daybreak prerequisite above, not security identity/provenance,
+exact currentness or `/loop`-only integration. After correction/validation reserve #20
+as pending owner-manual combined review and report `READY_FOR_OWNER_COMBINED_REVIEW`
+(owner handoff label only, not a new global status or approval). Positive result must
+explicitly approve BOTH implementation and security. COMMENT/REQUEST_CHANGES,
+incomplete/unverified or security-only approval stops for Adrian; no automatic retry.
+The current transparent workflow reports `CLEAN_WORKFLOW_READY_FOR_OWNER_COMBINED_REVIEW`
+as a descriptive handoff only. Adrian manually opens official Codex on the NEW exact
+HEAD, visibly selects `gpt-daybreak-blue-latest` and starts the combined review.
+No launch script or retired local evidence directory is required; #20 remains
+reserved/unconsumed until the actual invocation. Historical #1-19 remain unchanged.
 
 ## Validation gate
 

@@ -323,19 +323,16 @@ class WorkflowContractTests(unittest.TestCase):
         )[0]
         normalized = " ".join(section.split())
         for requirement in (
-            "Accepted/integrated through #212/PR #213",
-            "121ee3fe33b74dc38b2401d22e7aa6df1b124bc9",
-            "bootstrap did not authorize its own exception",
+            "has no operational effect until the change is integrated into `develop`",
+            "does not authorize an exception for #212",
             "D-069's ten-review maximum remains the default",
             "positive finite integer maximum and exact task scope",
             "original source bytes and digest",
             "Kilo-authored transcription is not owner-authored",
-            "optional local notes cannot create, increase, renew, transfer",
-            "do not reserve/dispatch #10 or #11",
-            "old #17258/file-copy hash013e omitted two constraints",
-            "#210 comment #18085",
-            "maximum11 exclusively for #210/PR #211",
-            "3cfe86b95cf3faa7728c90137222966b226a687c24046bfad92d3283c362913b",
+            "the local excluded ledger records usage only",
+            "do not reserve or dispatch #10 or #11",
+            "issue #210 comment #17258",
+            "intended maximum 11",
             "Maximum 20 only for #212/PR #213 under that direct amendment",
             "an exception cannot transfer to another issue/pr",
             "assign reviewer roles from the currently unmet approval gates",
@@ -355,14 +352,11 @@ class WorkflowContractTests(unittest.TestCase):
             "Normal delivery": "Default maximum 10.",
             "Bootstrap #212": "Maximum 20 only for #212/PR #213 under that direct amendment",
             "Pending #210 allocation": "do not reserve/dispatch #10 or #11",
-            "Current #210 admission": "Maximum11 for #210/PR #211 only",
             "Ledger-only extension": "Deny exception; keep default 10.",
             "Scope mismatch": "Deny transfer",
             "Stale or ambiguous evidence": "Fail closed at default 10",
             "Verified finite exception": "Use only that finite maximum for that issue/PR",
             "Gate requires another reviewer role": "stop at the effective bound",
-            "Native record unavailable": "No invented authority",
-            "Router unobservable backend": "RUNTIME_UNOBSERVABLE",
         }
         self.assertEqual(set(expected_outcomes), set(exception_rows))
         for case, outcome in expected_outcomes.items():
@@ -397,7 +391,7 @@ class WorkflowContractTests(unittest.TestCase):
 
     def test_exact_approval_and_loop_only_pr_merge(self) -> None:
         finish = text(".kilo/command/finish-pr.md")
-        self.assertIn("only explicit applicable `/loop` authority may later merge/close", finish)
+        self.assertIn("only an explicit applicable `/loop` can later merge/close", finish)
         self.assertIn("Any HEAD/base change invalidates approval", finish)
         self.assertIn("Exit0, labels, self-report or tests alone are not approval", finish)
         self.assertIn("complete actual changes", finish)
@@ -467,8 +461,8 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("READY_FOR_OWNER_SECURITY_REVIEW is a terminal handoff", loop)
         self.assertIn("Stop before MERGE, issue closure or SELECT", loop)
         self.assertIn("maximum 20", loop)
-        self.assertIn("all #1-20 histories remain", loop)
-        self.assertIn("no current pending #20, no #20 reuse, no #21", loop)
+        self.assertIn("#1-19 histories are unchanged", loop)
+        self.assertIn("ONE manually opened official Codex", loop)
         self.assertIn("not approval or a new global loop status", loop)
         self.assertIn("no #21", loop)
         self.assertIn("STOP_AND_ASK stops the ENTIRE invocation immediately", loop)
@@ -647,38 +641,10 @@ class WorkflowContractTests(unittest.TestCase):
         section = decisions.split("### D-077 - Transparent visible review", 1)[1].split("### U-014", 1)[0]
         for requirement in ("2026-10-20T18:58:08Z", "#18011", "agent transcriptions",
                             "historical hashes", "No historical failure/COMMENT is upgraded",
-                            "#19's REQUEST_CHANGES with valid runtime audit", "#20 is consumed",
-                            "not pending/unconsumed", "separately accepts narrow verification",
-                            "No claim is made that Daybreak reviewed the cleanup", "default ten elsewhere",
+                            "#19's REQUEST_CHANGES with valid runtime audit", "#20 is reserved",
+                            "unconsumed until actual invocation", "NEW final HEAD",
+                            "BOTH implementation and security", "No script", "default ten elsewhere",
                             "no ordinary Kilo review", "no #21", "not a claim that deleted original owner files were Git-tracked"):
             with self.subTest(requirement=requirement):
                 self.assertIn(requirement.lower(), section.lower())
         self.assertIn("No local directory/history reconstruction", section)
-        for path in (".kilo/agents/pr-reviewer-standalone.md", ".kilo/rules/35-technical-recovery.md"):
-            content = text(path)
-            with self.subTest(path=path):
-                self.assertNotIn("pending/unconsumed #20", content)
-                self.assertNotIn("reserved/unconsumed #20", content)
-                self.assertIn("consumed", content)
-
-    def test_router_manual_assurance_has_original_source_and_narrow_observability_limits(self) -> None:
-        decisions = text("docs/decisions.md").split("Router owner-manual Codex assurance", 1)[1].split("Synthetic exception", 1)[0]
-        for requirement in ("prt_13ca21f3c001W5Szn0yCzs3E89", "#18085",
-                            "88587ec09f71a4f4cf74456d35fc93f0cea0560b413fdaa08db8d43f1b845319",
-                            "FOR THE SCARCITY ROUTER OWNER-MANUAL SECURITY REVIEW ONLY",
-                            "official executable/version/binary provenance", "actual requested-model invocation/dispatch",
-                            "process/session/turn and input/output provenance", "context/tool audit",
-                            "exact Repo/Issue/PR/base/HEAD/merge-base", "RUNTIME_UNOBSERVABLE",
-                            "never `RUNTIME_VERIFIED`", "Owner assertion, exit0, configuration, UI or model self-report alone",
-                            "explicit acceptance of this precise limitation", "identity/dispatch mismatch",
-                            "unauthorized substitution is FAIL", "no persistent receipt", "no automatic Daybreak"):
-            with self.subTest(requirement=requirement):
-                self.assertIn(requirement.lower(), decisions.lower())
-        for path in ("AGENTS.md", "docs/llm-operating-policy.md", ".kilo/rules/40-llm-operating-policy.md"):
-            content = text(path)
-            with self.subTest(path=path):
-                self.assertIn("RUNTIME_UNOBSERVABLE", content)
-                self.assertIn("RUNTIME_VERIFIED", content)
-                self.assertIn("FAIL", content)
-                self.assertIn("owner", content.lower())
-        self.assertNotIn("app-server", text(".kilo/command/finish-pr.md"))

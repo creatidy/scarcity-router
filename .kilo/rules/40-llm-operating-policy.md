@@ -2,6 +2,16 @@
 
 Follow the full policy in [`docs/llm-operating-policy.md`](../../docs/llm-operating-policy.md).
 
+## Router Owner-Manual Codex Amendment (D-069A)
+
+For Scarcity Router's owner-manual security review only, the accepted owner decision
+permits `RUNTIME_UNOBSERVABLE` solely when the official Codex path cannot independently
+expose backend identity. Official binary/provenance, requested-model dispatch, native
+session/turn/input/output, context/tool audit, exact refs and a structured APPROVE with
+no blockers remain mandatory. Never infer `RUNTIME_VERIFIED` from UI/configuration or
+self-report. Mismatch/substitution is FAIL; other missing evidence keeps the gate open.
+No automatic Daybreak, hidden launcher, skipped review or generic identity weakening.
+
 - Route by role and task fit, not prestige.
 - Use the least scarce fully capable model; capability deficits are never
   compensated by availability or strength elsewhere.
@@ -32,13 +42,6 @@ Follow the full policy in [`docs/llm-operating-policy.md`](../../docs/llm-operat
   failure is not an implementation finding or owner decision. Use bounded authorized
   deterministic environment recovery; reviewer starts remain an explicit visible
   user action. Preserve ordinals and restricted gates, no hidden failover.
-- Router owner-manual Codex only: D-069A permits honestly recorded
-  `RUNTIME_UNOBSERVABLE` for unsupported backend identity exposure after verified
-  official binary/provenance, requested-model dispatch, native session/turn/input/
-  output/context/tool evidence, exact refs, structured APPROVE/no blockers and the
-  original explicit owner acceptance of that narrow limit. Configuration/UI/self-report
-  never becomes `RUNTIME_VERIFIED`; actual identity mismatch/substitution is FAIL.
-  Other evidence gaps remain open; no skipped security, script or exception elsewhere.
 - Completed PASS gates, adjudication, remediation, translation and validation
   remain completed unless source changes materially or a concrete regression is
   identified.
