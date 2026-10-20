@@ -6617,6 +6617,16 @@ neither is a new live check of the current deployment.
   This is diagnosed infrastructure recovery plus a real source fix within max20,
   not a blind retry, model substitution, authority change or security relaxation.
 
+- **Diagnosed #18 cap-footer correction:** Pinned `tool/read.ts:29-30,358-360`
+  fixes the native label at `50 KB`. Accept that exact label in all three footer
+  recognition paths, rather than arbitrary label text outside frozen numbered
+  bytes. A full-session two-page >50KB fixture reproduced the augmented-label
+  false PASS before correction; genuine cap/EOF pagination remains accepted and
+  label injection/wrong labels fail. The existing exact raw path-header binding is
+  also preserved/regression-tested. An eight-line optional constants excerpt
+  provides the missing upstream definition; no other runtime/coverage/budget or
+  reviewer architecture changes are required.
+
 ### U-014 - Native coding backend versus Kernel-owned workspace lifecycle
 
 - **Status:** Direction settled by D-073; replacement/retirement evidence remains

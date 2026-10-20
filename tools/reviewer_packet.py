@@ -438,6 +438,7 @@ KILO_SOURCE_PACKET_PATHS = (
     "kilo-config-merge.ts.txt",
     "kilo-permission-resolution.ts.txt",
     "kilo-read-path.ts.txt",
+    "kilo-read-cap-constants.ts.txt",
     "kilo-session-instruction.ts.txt",
     "kilo-session-tools.ts.txt",
     "kilo-task-inheritance.ts.txt",
@@ -467,6 +468,7 @@ KILO_SOURCE_REPOSITORY_PATHS = {
     "kilo-config-merge.ts.txt": "packages/opencode/src/config/config.ts",
     "kilo-permission-resolution.ts.txt": "packages/opencode/src/permission/index.ts",
     "kilo-read-path.ts.txt": "packages/opencode/src/tool/read.ts",
+    "kilo-read-cap-constants.ts.txt": "packages/opencode/src/tool/read.ts",
     "kilo-session-instruction.ts.txt": "packages/opencode/src/session/instruction.ts",
     "kilo-session-tools.ts.txt": "packages/opencode/src/session/tools.ts",
     "kilo-task-inheritance.ts.txt": "packages/opencode/src/kilocode/tool/task.ts",
@@ -490,6 +492,7 @@ KILO_SOURCE_REPOSITORY_PATHS = {
 }
 KILO_REQUIRED_SOURCE_RANGES = {
     "kilo-read-path.ts.txt": (198, 385),
+    "kilo-read-cap-constants.ts.txt": (23, 30),
     "kilo-project-global.ts.txt": (214, 240),
     "kilo-project-resolve.ts.txt": (110, 123),
     "kilo-session-message-schema.ts.txt": (102, 534),
@@ -2004,7 +2007,7 @@ def _read_lines(output: str) -> dict[int, str]:
         if re.fullmatch(
             r"\(Showing lines \d+-\d+ of \d+\. Use offset=\d+ to continue\.\)", line
         ) or re.fullmatch(
-            r"\(Output capped at [^)]+\. Showing lines \d+-\d+\. Use offset=\d+ to continue\.\)",
+            r"\(Output capped at 50 KB\. Showing lines \d+-\d+\. Use offset=\d+ to continue\.\)",
             line,
         ):
             if footer_seen:
@@ -2024,7 +2027,7 @@ def _read_footer(output: str) -> str:
         line for line in output[start + len("<content>\n"):end].splitlines()
         if (re.fullmatch(r"\(End of file - total \d+ lines\)", line)
             or re.fullmatch(r"\(Showing lines \d+-\d+ of \d+\. Use offset=\d+ to continue\.\)", line)
-            or re.fullmatch(r"\(Output capped at [^)]+\. Showing lines \d+-\d+\. Use offset=\d+ to continue\.\)", line))
+            or re.fullmatch(r"\(Output capped at 50 KB\. Showing lines \d+-\d+\. Use offset=\d+ to continue\.\)", line))
     ]
     if len(footers) != 1:
         raise PacketError("successful Read omitted or duplicated Kilo pagination metadata")
@@ -2071,7 +2074,7 @@ def validate_read_display(
         r"\(Showing lines (\d+)-(\d+) of (\d+)\. Use offset=(\d+) to continue\.\)", footer
     )
     capped_match = re.fullmatch(
-        r"\(Output capped at [^)]+\. Showing lines (\d+)-(\d+)\. Use offset=(\d+) to continue\.\)",
+        r"\(Output capped at 50 KB\. Showing lines (\d+)-(\d+)\. Use offset=(\d+) to continue\.\)",
         footer,
     )
     if end_match:
