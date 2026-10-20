@@ -18,15 +18,13 @@ INCLUDING the initial review, COMMENT, invalidated reviews and corrected retries
 For other deliveries, a greater ceiling requires a D-069A finite exception verified
 against its direct canonical owner source after D-069A is integrated in freshly fetched
 `develop`. The sole exception to that mechanism is Adrian's direct, one-time D-069/D-077
-amendment for Issue #212/PR #213: maximum 20 total; #1-15 remain consumed, #16 is the
-next ordinary review. #17-19 are ordinary only after diagnosed findings/recovery and
-completed remediation. After valid ordinary APPROVE, stop ordinary review and reserve
-the next ordinal for owner-manual Daybreak. #20 is manual security only, never
-ordinary; no #21, reset or automatic extension. Reserve an ordinary ordinal only
-immediately before actual invocation, after all dispatch gates pass.
-The exact owner source is the Section 1 excerpt in
-`.review-evidence-212/owner-d077-max20.txt`, from
-Adrian's direct Kilo message at `2026-10-19T22:41:20Z`; D-077 binds its SHA-256. Verify
+amendment for Issue #212/PR #213: maximum 20 total; #1-19 remain consumed. The later
+`2026-10-20T06:26:22Z` exception authorizes the final P1 correction/validation and
+ONE owner-manual combined implementation/security Daybreak at #20, without a prior
+ordinary APPROVE. No further ordinary Kilo review; no #21, reset or automatic extension.
+The exact exception source is Section2 in
+`.review-evidence-212/owner-combined-acceptance-section2.txt`; D-077 binds its SHA-256.
+The prior `.review-evidence-212/owner-d077-max20.txt` remains ceiling/history source. Verify
 that direct source, exact Repo/Issue/PR identities, scope and current refs before any
 exceptional reservation. This is not D-069A, is not transferable, and is not a general
 exception mechanism. Missing, stale, ambiguous or mismatched authority leaves the
@@ -40,6 +38,20 @@ Reinvoking `/finish-pr`, changing phase, reviewer process, model or session MUST
 the same delivery counter, not initialize zero. If prior dispatch/count recovery
 is ambiguous or unavailable, BLOCKED. Do not erase history or reset a stopped
 delivery; STOP_REVISE still requires an explicit owner decision, not a new PR/name.
+
+For exact #212/PR #213 only, after revalidating that exception skip the ordinary
+review dispatch/remediation loop below. Fix only the authorized P1, run regressions,
+harmless synthetic preflight and full repository validation, push the existing PR,
+freeze exact refs and prepare #20 pending owner-manual official Codex
+`gpt-daybreak-blue-latest` as ONE complete combined review, not a security spot-check.
+Provide independent source/acceptance/owner evidence, prompt, structured result and
+execution/provenance instructions without parent reasoning or past review conclusions.
+Report `READY_FOR_OWNER_COMBINED_REVIEW` as the owner handoff label only; #20 stays
+unconsumed until owner execution. Valid verified result must explicitly approve BOTH
+implementation and security with no unresolved blocking findings; security-only
+APPROVE, COMMENT/REQUEST_CHANGES, incomplete/unverified result stops for Adrian.
+No automatic Codex/Daybreak, ordinary invocation or integration; all generic paths
+and the standard ordinary-before-security prerequisite remain for other deliveries.
 
 1. Fetch canonical Repo/Issue/PR and directly linked owner-decision objects through
    the exact Forgejo MCP getters. Require an open, unmerged canonical
@@ -165,9 +177,8 @@ delivery; STOP_REVISE still requires an explicit owner decision, not a new PR/na
     standalone synthetic preflight before a NEW standalone reviewer process.
 12. The default ceiling is 10; use only a freshly verified D-069A exception for
    other deliveries or the exact nontransferable D-077 direct owner amendment for
-    #212/PR #213 described above. For #212, #16 is next ordinary and #17-19 only follow
-    diagnosed findings/recovery and completed remediation. #20 is manual security
-    only, never ordinary; no #21. After APPROVE with empty findings and limitations,
+    #212/PR #213 described above (which instead takes the combined owner path).
+    For all generic ordinary paths, after APPROVE with empty findings and limitations,
     reserve the next owner-manual ordinal and return
    READY_FOR_OWNER_SECURITY_REVIEW; never report READY_TO_MERGE while that gate is open.
    At the effective review bound an exact valid APPROVE may yield READY_TO_MERGE only
@@ -185,12 +196,10 @@ delivery; STOP_REVISE still requires an explicit owner decision, not a new PR/na
    rule's terminal contracts only when paths/budget are exhausted or a genuine owner
    decision remains. Preserve all consumed ordinals, including malformed/failed attempts.
 
-For #212/PR #213, retain Adrian's `2026-10-19T20:49:07Z` compact coverage mandate.
-His `2026-10-19T22:41:20Z` max20 amendment supersedes only the earlier no-review/budget
-restriction: #1-15 remain consumed, #14 COMMENT/PASS and #15 COMMENT/FAIL unchanged;
-#16 is next ordinary, #17-19 only after diagnosed corrections/recovery, #20 manual
-security only. No repeated review without a material correction or diagnosed recovery.
-Do not reintroduce blanket full-file coverage or derive authority from unintegrated D-069A.
+For #212/PR #213 retain the compact contract and all historical #1-19 outcomes,
+including #19 REQUEST_CHANGES/audit PASS. The final combined owner path above is the
+only remaining invocation; it does not claim historical ordinary approval or derive
+authority from unintegrated D-069A. No blanket full-file Kilo review or counter reset.
 
 For `security_critical` work, ordinary APPROVE alone does not yield completion
 or READY_TO_MERGE. After required validation and ordinary review pass at a stable

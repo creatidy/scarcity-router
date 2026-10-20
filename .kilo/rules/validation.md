@@ -93,6 +93,14 @@
   coverage, explicit UX impact and fresh matching currentness/validation can yield
   ordinary-review approval. Report dispatch metadata honestly; never infer model
   backend identity.
+- Exact #212/PR #213 exception only: Adrian's `2026-10-20T06:26:22Z` Section2 direct
+  source allows P1 remediation/validation with no more ordinary Kilo reviews, then
+  ONE owner-manual official Codex Daybreak #20 to assess both implementation and
+  security. Preserve #19 REQUEST_CHANGES/audit PASS, no claimed ordinary approval.
+  Handoff report `READY_FOR_OWNER_COMBINED_REVIEW` is not acceptance or a global
+  status. Only actual verified combined approval of both gates may satisfy them;
+  incomplete/unverified/nonpositive or security-only result stops for the owner.
+  #20 stays unconsumed through tests/preflight; no automatic invocation or #21.
 - Unavailable safe validation/tool state requires bounded technical recovery under
   `.kilo/rules/35-technical-recovery.md`, not immediate owner escalation or skipped
   checks. Independent pinned public-source material is staged in the packet so the

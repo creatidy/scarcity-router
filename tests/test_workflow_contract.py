@@ -490,9 +490,9 @@ class WorkflowContractTests(unittest.TestCase):
             "For other deliveries, a greater ceiling requires a D-069A finite exception",
             "D-069A is integrated in freshly fetched `develop`",
             "the exact nontransferable D-077 direct owner amendment for #212/PR #213",
-            "maximum 20 total; #1-15 remain consumed, #16 is the next ordinary review",
-            "#17-19 are ordinary only after diagnosed findings/recovery and completed remediation",
-            "#20 is manual security only, never ordinary",
+            "maximum 20 total; #1-19 remain consumed",
+            "ONE owner-manual combined implementation/security Daybreak at #20",
+            "No further ordinary Kilo review",
             "no #21, reset or automatic extension",
             "applicable default ceiling in effect",
             "INCLUDING the initial review, COMMENT, invalidated reviews and corrected retries",
@@ -588,8 +588,9 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("READY_FOR_OWNER_SECURITY_REVIEW is a terminal handoff", loop)
         self.assertIn("Stop before MERGE, issue closure or SELECT", loop)
         self.assertIn("maximum 20", loop)
-        self.assertIn("#16 is the next ordinary review", loop)
-        self.assertIn("#20 manual security only", loop)
+        self.assertIn("Preserve consumed #1-19", loop)
+        self.assertIn("ONE owner-manual combined implementation/security Daybreak at #20", loop)
+        self.assertIn("not a new global loop status", loop)
         self.assertIn("no #21", loop)
         self.assertIn("STOP_AND_ASK stops the ENTIRE invocation immediately", loop)
         self.assertIn("never skip the selected issue and continue another", loop)
@@ -769,9 +770,30 @@ class WorkflowContractTests(unittest.TestCase):
         finish = text(".kilo/command/finish-pr.md")
         self.assertIn("optional_read_paths", finish)
         self.assertIn("only credit", finish)
-        self.assertIn("2026-10-19T22:41:20Z", finish)
-        self.assertIn("#20 manual security only", finish)
+        self.assertIn("2026-10-20T06:26:22Z", finish)
+        self.assertIn("#20 pending owner-manual", finish)
         for requirement in ("Direct owner max-20 amendment", "Zatwierdzam, od razu do 20.",
                             "222e3be1eadd381ce7a5a351943e7490a44edf907febea4e2f45fa013a53e4af",
                             "#20 is final possible manual security, never ordinary", "No #21"):
             self.assertIn(requirement, decisions)
+
+    def test_final_combined_exception_is_scoped_pending_and_requires_both_acceptances(self) -> None:
+        decisions = text("docs/decisions.md")
+        section = decisions.split("Final owner combined-acceptance exception", 1)[1].split("Positive native denial contract", 1)[0]
+        for requirement in (
+            "2026-10-20T06:26:22Z", "Repo15 / Issue1683 #212 / PR927 #213",
+            "4386e0ac0f881b0ad0cbc5d0b7d1bccf7f8c7aa3fa569120808c25a6a09b67d5",
+            "#19 REQUEST_CHANGES/audit PASS", "Maximum20 remains", "default ten elsewhere",
+            "No further ordinary Kilo review", "explicit implementation AND security approval",
+            "security-only APPROVE", "READY_FOR_OWNER_COMBINED_REVIEW", "not a new repository-wide status",
+            "owner's actual combined invocation", "stop for Adrian's next decision", "`/loop` integration authority",
+        ):
+            with self.subTest(requirement=requirement):
+                self.assertIn(requirement, section)
+        for path in ("AGENTS.md", ".kilo/command/finish-pr.md", ".kilo/command/loop.md",
+                     ".kilo/rules/validation.md", "docs/llm-operating-policy.md"):
+            content = text(path)
+            with self.subTest(path=path):
+                self.assertIn("2026-10-20T06:26:22Z", content)
+                self.assertIn("combined", content)
+                self.assertIn("READY_FOR_OWNER_COMBINED_REVIEW", content)

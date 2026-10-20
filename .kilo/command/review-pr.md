@@ -14,11 +14,13 @@ infrastructure, not implementation, with bounded secret-safe preparation.
 Preserve the issue-delivery review and technical-recovery counters in the excluded
 ledger. Synthetic permission preflights are not whole-PR reviews and do not reserve
 an ordinal. The default ceiling is ten. For the exact #212/PR #213 delivery only,
-Adrian's direct D-069/D-077 amendment authorizes maximum20: #16 next ordinary;
-#17-19 ordinary only after diagnosed findings/recovery and completed remediation.
-After valid approval stop ordinary review and reserve the next slot for owner-manual
-Daybreak. Preserve consumed #1-15; #20 manual security only, never ordinary; no #21.
-Verify the exact Section 1 owner source receipt and Issue/PR scope/currentness
+Adrian's final `2026-10-20T06:26:22Z` D-069/D-077 exception preserves consumed #1-19
+and maximum20, forbids any more ordinary Kilo invocation, and assigns #20 to ONE
+owner-manual official Codex combined implementation/security review. For this exact
+delivery, report current handoff/evidence state without dispatching the ordinary
+reviewer below; verify Section2 `.review-evidence-212/owner-combined-acceptance-section2.txt`
+and exact Issue/PR/currentness. Both approvals and verified provenance are mandatory;
+no automatic Daybreak, ordinary prerequisite, #21 or scope transfer. Verify authority
 before every exceptional reservation; this is not D-069A and cannot transfer. Every
 other greater finite ceiling requires D-069A integrated in freshly fetched `develop`
 before the primary verifies its exact canonical owner authority. The standalone reviewer is a

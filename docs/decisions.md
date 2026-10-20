@@ -6627,6 +6627,59 @@ neither is a new live check of the current deployment.
   provides the missing upstream definition; no other runtime/coverage/budget or
   reviewer architecture changes are required.
 
+- **Final owner combined-acceptance exception (2026-10-20T06:26:22Z):** Exclusively
+  Repo15 / Issue1683 #212 / PR927 #213, Adrian directly authorizes the verified P1
+  correction, regression/synthetic/full validation, commit/push and one final
+  owner-manual official Codex `gpt-daybreak-blue-latest` review at ordinal #20.
+  It must independently assess BOTH complete implementation correctness and security.
+  A valid positive combined result may satisfy both remaining gates without a prior
+  ordinary APPROVE. This consciously supersedes that prerequisite for this delivery
+  only; it does not reinterpret #19 REQUEST_CHANGES/audit PASS or any #1-19 history.
+  - Full current instruction/decision context is retained at
+    `.review-evidence-212/owner-combined-acceptance-2026-10-20.txt`, SHA-256
+    `90594e2d98c4ae713073497d5c0427279f25910d3fe308b7983250367c816922`.
+    Exact Section2 authority is
+    `.review-evidence-212/owner-combined-acceptance-section2.txt`, SHA-256
+    `4386e0ac0f881b0ad0cbc5d0b7d1bccf7f8c7aa3fa569120808c25a6a09b67d5`.
+    Provenance is the current direct owner message and its supplied timestamp;
+    no earlier proposal source/time/authorship is invented. Forgejo issue/comment
+    transcriptions are not original owner authority. Unintegrated D-069A grants none.
+  - Maximum20 remains; consumed #1-19 and actual outcomes stay immutable, default
+    ten elsewhere. No further ordinary Kilo review, #21, reset, transfer, automatic
+    extension or automatic Daybreak. Tests/preflights do not consume #20. After
+    successful validation and exact currentness, reserve/persist #20 pending for
+    the owner's actual combined invocation; consumption begins at that invocation.
+  - The complete PR against frozen base, current acceptance/D-069/D-077/exception,
+    source/tests/regressions/UX/architecture, security/credentials, evidence integrity
+    and standalone execution/auditing all belong in the final independent scope.
+    No security-only spot-check or last-commit-only review. Supply neutral source,
+    acceptance/authority and execution evidence, not parent reasoning, separate past
+    reviewer conclusions or a desired verdict. Require explicit implementation AND
+    security approval, complete material scope, exact reviewed refs, no unresolved
+    blocking findings and verified official execution/model/context/tool provenance.
+    Existing identity evidence rules remain, with no guessed backend identity.
+  - A security-only APPROVE, COMMENT/REQUEST_CHANGES, incomplete or unverified
+    result does not pass; retain the actual result and stop for Adrian's next
+    decision. `READY_FOR_OWNER_COMBINED_REVIEW` is this owner's reporting label,
+    not a new repository-wide status, ordinary approval, security acceptance or
+    READY_TO_MERGE. Exact source/base changes invalidate the handoff/result.
+    Only after actual owner result verification and fresh currentness may existing
+    explicit `/loop` integration authority apply; no merge/closure/main/release/deploy
+    is granted by this remediation or handoff.
+- **Positive native denial contract:** Pinned Kilo core `v1/permission.ts:21-27`
+  constructs `PermissionDeniedError.message` with its deciding rule's compact JSON;
+  `permission/index.ts:216-249` returns that actual agent rule on denial.
+  `session/processor.ts:297-309` stores `errorMessage(error)` as a string;
+  `tui/src/util/error.ts:125-140` takes the message without a class prefix. Six
+  existing sanitized native traces confirm this exact representation. The auditor
+  now requires status error, exact probe/path/class-specific deny rule and agent
+  approval metadata (including canonical outside-workspace target where applicable),
+  empty output, and equality of the entire supported native message plus exact
+  rule JSON. No denial-keyword/whole-canary blacklist, dictionary error fallback,
+  unknown format, leading/trailing/embedded instructions or partial disclosure is
+  accepted. Export has a message string, not a separate denial-class identity field;
+  none is invented. Valid authorized Reads and all six genuine denials are retained.
+
 ### U-014 - Native coding backend versus Kernel-owned workspace lifecycle
 
 - **Status:** Direction settled by D-073; replacement/retirement evidence remains

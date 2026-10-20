@@ -229,10 +229,10 @@ branch switches occur while a reviewer or preflight CLI process is active.
 Default maximum 10 whole-PR review invocations per issue delivery, INCLUDING the
 initial review, COMMENT, invalidated reviews and corrected retries. The sole separate
 direct-owner supersession is for #212/PR #213: the final D-077 amendment authorizes
-maximum 20. Preserve #1-15 as consumed; #16 is the next ordinary review, #17-19
-ordinary only after diagnosed findings/recovery and completed remediation. After
-valid approval stop ordinary review and reserve the next slot for owner-manual
-Daybreak. #20 manual security only, never ordinary; no #21. Verify the exact direct owner source,
+maximum 20. Preserve consumed #1-19. The `2026-10-20T06:26:22Z` final exception
+permits only the P1 correction/validation then ONE owner-manual combined
+implementation/security Daybreak at #20, without historical ordinary APPROVE.
+No additional ordinary Kilo review; no #21. Verify the exact direct owner source,
 canonical Repo/Issue/PR scope and currentness before each exceptional reservation; this
 is not D-069A and does not transfer. For any other delivery, a larger finite ceiling is available only through D-069A
 after the primary verifies the direct owner source and exact canonical Repo/Issue/
@@ -242,6 +242,11 @@ mismatched authority leaves the default 10 active. Reserve/persist each
 ordinal BEFORE dispatch in the shared delivery ledger; `/finish-pr` reentry, internal
 phases, new processes and model/session changes cannot reset it. This is a safety ceiling,
 not a target; stop immediately for a genuine material decision.
+The exact #212 exception follows its owner combined handoff, not the generic ordinary
+loop: stop before merge/closure/selection pending the verified owner result. The
+`READY_FOR_OWNER_COMBINED_REVIEW` owner report is not a new global loop status or
+approval. Only a valid combined result explicitly approving both gates may satisfy
+them; recheck exact currentness and retain all existing `/loop`-only merge authority.
 Fresh reviews inspect the COMPLETE PR and exact HEAD/base/merge-base in a read-only
 standalone primary session, and return the structured JSON verdict/result.
 Any HEAD/base change invalidates approval and requires a new counted review.

@@ -152,10 +152,10 @@ credential-safe Kilo authentication path; credentials are never copied into the
 reviewer context or evidence. A default maximum of 10 invocations per issue delivery
 includes initial, COMMENT, invalidated reviews and corrected retries. The sole separate
 direct-owner supersession is for #212/PR #213: the final D-077 amendment records maximum
-20; #16 is next ordinary, #17-19 ordinary only after diagnosed findings/recovery and
-completed remediation. Stop ordinary review at valid approval and reserve the next
-slot for owner-manual Daybreak. Preserve consumed #1-15. #20 manual security only,
-never ordinary; no #21. Verify the exact Section 1 owner source and canonical
+20, with consumed #1-19 preserved. The final `2026-10-20T06:26:22Z` owner exception
+permits only P1 correction/validation then #20 owner-manual combined implementation/
+security Daybreak without prior ordinary APPROVE, exclusively for this delivery.
+No more ordinary Kilo reviews or #21. Verify the exact Section2 source and canonical
 scope/currentness before each reservation; this is not D-069A and cannot transfer. For every other
 delivery, D-069A permits a greater finite maximum only after the primary verifies the
 direct owner source, exact canonical repository/issue/linked-PR identity, scope and
@@ -383,8 +383,18 @@ new context engine. D-077's `2026-10-19T20:49:07Z` owner mandate authorizes only
 remediation and coverage simplification for #212/PR #213, not another review or
 budget extension. The later `2026-10-19T22:41:20Z` direct owner max20 amendment
 supersedes that earlier invocation restriction, not the compact/security contract:
-#1-15 remain consumed, #16 next ordinary, #17-19 only after diagnosed corrections,
-#20 manual security only. Never use unintegrated D-069A or transfer this authority.
+#1-15 were preserved, #16-19 were the remaining ordinary allocation and #20 manual
+security. The final `2026-10-20T06:26:22Z` D-077 exception now preserves consumed
+#1-19, forbids further ordinary Kilo review and uses #20 as ONE owner-manual combined
+acceptance review. This consciously waives the ordinary-APPROVE prerequisite only
+for #212/PR #213, not the source/security/identity/currentness guarantees. Require
+the full PR, explicit implementation AND security approval, no unresolved blocking
+findings, verified official Codex/Daybreak provenance and independent context/tool
+audit. Security-only approval, nonpositive/incomplete/unverified results do not pass.
+Report `READY_FOR_OWNER_COMBINED_REVIEW` only as this owner handoff label, not a
+global state or acceptance; reserve pending #20 after validation, never invoke it
+automatically or consume it through tests. Default ten elsewhere and `/loop`-only
+integration remain; no #21, transfer or authority from unintegrated D-069A.
 
 ## Operational UX and compatibility review
 

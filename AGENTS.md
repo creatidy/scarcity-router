@@ -208,14 +208,13 @@ maximum only for one exact canonical issue/linked PR after the primary verifies 
 direct owner source, canonical repository/issue/PR identities, maximum and scope,
 and verifies D-069A is already integrated in the freshly fetched `develop`. The
 sole direct supersession is Adrian's one-time owner amendment for issue #212/PR #213,
-recorded in D-077 and the canonical issue: maximum 20, ordinals #1-15 preserved,
-#16 the next ordinary review, #17-19 ordinary only after diagnosed findings/recovery
-and completed remediation, otherwise the next ordinal is reserved for owner-manual
-Daybreak immediately after valid ordinary approval. #20 is manual security only,
-never ordinary; no #21, reset or automatic extension. Reserve ordinary ordinals
-only immediately before actual dispatch, not in advance of passed gates.
-Its exact Section 1 source is `.review-evidence-212/owner-d077-max20.txt`
-from Adrian's direct Kilo message at `2026-10-19T22:41:20Z`; D-077 binds its SHA-256.
+recorded in D-077 and the canonical issue: maximum20, consumed #1-19 preserved.
+Adrian's `2026-10-20T06:26:22Z` final exception permits only the verified P1 fix,
+validation and one owner-manual combined implementation/security Daybreak at #20.
+No more ordinary Kilo review, #21, reset, transfer or automatic extension. For this
+delivery only, valid combined approval can satisfy both remaining gates without
+historical ordinary APPROVE. Source `.review-evidence-212/owner-combined-acceptance-section2.txt`
+is bound by D-077; the prior max20 source remains ceiling/history authority.
 This is not D-069A and cannot transfer to another delivery. No other delivery may use
 an exception present only in its own branch/PR. Absent, stale, ambiguous or
 mismatched authority uses the default 10 and fails closed. `/finish-pr` and `/loop`
@@ -274,6 +273,14 @@ engineering obstacles separately from owner decisions and attempting bounded
 secret-safe recovery automatically. Record changed conditions, consumed budgets
 and the STOP_AND_ASK/BLOCKED contracts before escalation; owner attention is not
 a substitute for ordinary execution diagnosis.
+
+For #212/PR #213 only, the later D-077 combined-acceptance exception supersedes the
+ordinary-APPROVE-before-Daybreak prerequisite above, not security identity/provenance,
+exact currentness or `/loop`-only integration. After correction/validation reserve #20
+as pending owner-manual combined review and report `READY_FOR_OWNER_COMBINED_REVIEW`
+(owner handoff label only, not a new global status or approval). Positive result must
+explicitly approve BOTH implementation and security. COMMENT/REQUEST_CHANGES,
+incomplete/unverified or security-only approval stops for Adrian; no automatic retry.
 
 ## Validation gate
 
