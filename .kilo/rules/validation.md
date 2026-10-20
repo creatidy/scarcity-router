@@ -1,75 +1,65 @@
 # Validation Rules
 
+Use `.kilo/rules/35-technical-recovery.md` for bounded secret-safe execution recovery;
+it never authorizes a hidden model call.
+
 ## Required Checks
 
-- Run the repository's final validation before finalizing changes: `make
-  check` (full test suite plus typecheck).
-- Python changes require `basedpyright` invoked through the uv-managed
-  environment (`uv run basedpyright`); plain `pyright` is not an acceptable
-  substitute.
-- Provider/capacity work requires redacted fixture and contract tests;
-  selection work requires deterministic policy tests and explanation
-  assertions.
-- Run `uv sync --only-dev`, `make check`, `uv run basedpyright` and
-  `git diff --check` before committing or opening/updating a PR. Preserve the
-  existing repository gate; do not add Model Intelligence's Ruff gate or weaken
-  type rules. Inspect staged whitespace with `git diff --cached --check` too.
+- Start with focused deterministic tests, then run `uv sync --only-dev`, `make
+  check`, `uv run basedpyright`, `make package-check` when packaging/workflow is
+  affected, `git diff --check` and staged whitespace before commit/PR update.
+- Use repo-managed basedpyright through uv; no plain pyright, weakened rules,
+  exclusions or baselines. Preserve the repository gate; no unrelated lint gate.
+- Provider/capacity changes need redacted representative fixture/contract tests;
+  selection changes need deterministic policy/explanation tests. No live quota.
+- Tests/builds/static analysis/Git/hash operations perform NO development/review
+  model inference. Model-response fixtures are synthetic/offline. No test/Make/CI/
+  hook may spawn a real reviewer or call an inference endpoint for orchestration.
+- Tests that observe inherited state receive deliberate synthetic HOME/cache/temp
+  and minimal variables, not ambient credentials. Do not mount/copy credential
+  directories or print secret values. Imports remain safe without provider access.
 
-## Review and Handoff
+## Review And Handoff
 
-- Before commit inspect status, intended diff, recent commit style and full delta
-  against the recorded canonical develop SHA. Stage explicit intended files only;
-  exclude secrets, caches, runtime state and `.task_progress.md`. Verify exact
-  HEAD, base ancestry and clean status afterwards; never undo others' work.
-- Parent prepares the offline locked development environment at exact clean PR HEAD
-  in the designated delivery or temporary evidence checkout under the recovery rule.
-  Use explicit sanitized child environments, synthetic HOME/cache/temp and fixture
-  values for tests that can observe inherited state. Never expose ambient secrets,
-  mount credential directories unnecessarily or print environment values. Prefer
-  read-only required mounts with separate writable synthetic scratch paths.
-  No edits or branch switches to reviewed checkouts during review.
-  Reviewer never accesses the checkout or executes Bash/Git/Forgejo. The primary
-  prepares an immutable flat source/patch bundle bound to exact Git objects and
-  complete canonical acceptance/owner evidence. The profile has no static Read grants;
-  default to exact packet-relative file paths using the documented Kilo
-  `KILO_CONFIG_CONTENT` permission override. The sole owner-authorized exception is
-  issue #210 / PR #211's independent ordinary reviewer, which may receive one Read
-  grant for `.review-evidence-210/pr-reviewer-input/**` after the full 48-file packet
-  inventory/hash, no-links/no-extras, read-only mode and no-concurrent-writer checks
-  pass. Verify every path/hash before and after the Task. Spawn from a fresh Kilo CLI parent
-  with `--pure --agent code`, constraining that parent to Task only and preserving the
-  exact inherited model binding. Kilo native Read is the reviewer's only capability.
-  The parent audits actual task reads/bytes/
-  ranges and completeness, verifies unchanged packet inventory/hashes and then
-  re-fetches currentness before/after. Runtime permission denial is pre-call
-  enforcement; post-call audit is independent defense-in-depth. Native Task checks
-  prove Kilo tool permissions only, not OS-level isolation.
-- Unavailable safe validation/tool state requires bounded technical recovery under
-  `.kilo/rules/35-technical-recovery.md`, not immediate owner escalation or skipped
-  checks. Independent source verification may use a separately prepared exact public
-  pinned checkout; reviewer verifies claims and provenance, not parent conclusions.
-- `/finish-pr` records each reserved ordinal, reviewed HEAD/base/verdict, remediation
-  commits, checks and currentness in the excluded delivery ledger. Only an exact
-  native reviewer result plus final MCP/Git currentness and required validation
-  can yield READY_TO_MERGE. Standalone finish never merges or closes the issue.
-- Handoff includes issue/PR URLs, exact base/HEAD, substantive files, executed
-  checks/results and genuine blockers. Never claim unobserved validation or writes.
+- Inspect status, intended/full base diff, recent commit style, exact refs/ancestry
+  and scope. Stage explicit files only; exclude secrets, caches and local state.
+  Preserve unrelated owner work; never stash/reset it or rewrite published history.
+- Freeze canonical HEAD/base/merge-base and acceptance/legitimate owner authority.
+  Use actual Git objects and complete compact diff/changed-source regions with
+  useful context. No LLM summaries or silent hunk omission. Additional unchanged
+  context is a material reviewer judgment, not blanket full-file bureaucracy.
+- Independent review is a fresh separate read-only USER-VISIBLE Kilo/Codex session.
+  The user selects/starts the model explicitly. No programmatic launcher, Task,
+  subprocess, background/HTTP inference or generated owner wrapper. If a visible
+  mechanism is unavailable, hand off the exact gate rather than bypass it or
+  declare the repository has no eligible work.
+- Preserve source integrity, scoped permissions, no credentials/unapproved context,
+  actual model/execution identity, terminal/native-session provenance and exact
+  currentness. Do not infer backend identity from self-report/UI labels. Tests,
+  exit0, a handoff or an agent-written comment alone are never approval. Any
+  HEAD/base change invalidates approval; no writes/switches during active review.
+- Record minimal real ordinals/outcomes/refs/provenance canonically. Native records
+  may be referenced without large local transcript copies. No persistent
+  `.review-evidence-*` folder, source duplicate, renamed receipt hierarchy or local
+  history reconstruction is required for eligibility/review/merge/acceptance.
+  Deleted historical original files are unavailable; their old hashes or agent
+  transcriptions do not recreate owner authority. Do not reset consumed history.
+- Retained `tools/reviewer_packet.py` checks are deterministic offline validators,
+  not harness connectors, model launchers or mandatory workflow infrastructure.
+  Their synthetic fixtures use cleaned OS temp space outside worktrees only.
 
-## Test Quality
+## Security And Delivery
 
-- Start with focused tests while iterating, then finish with the full
-  repo-level validation.
-- Keep tests deterministic and behavior-focused. Mock external boundaries
-  such as network, credentials, subprocesses and clocks; never mock the
-  behavior being tested.
-- Use fixtures shaped like the real producer output, structurally
-  representative and redacted; do not prove behavior only with invented
-  fields, and never record real credentials or personal quota values.
-
-## Runtime Safety
-
-- Keep imports safe without requiring runtime secrets or provider access at
-  import time.
-- Preserve safe behavior when provider credentials or access are
-  unavailable: operational provider states remain normalized status data and
-  tests must not depend on live quota.
+- Daybreak is manually selected/opened by Adrian in official Codex, never a script
+  or Kilo call. It is not a pre-implementation eligibility gate; Kilo discovery
+  failure does not imply `SECURITY_REVIEW_UNAVAILABLE`. Preserve real provenance
+  and model-bound gates, no fallback reviewer or automatic retry.
+- Completed #212/PR #213 exception: all #1-20 consumed, #19 REQUEST_CHANGES/audit PASS
+  unchanged. Owner confirmed #20 combined approval only at1dcb4a0 and separately
+  accepted verified cleanupcddcac0 on2026-10-20T21:10:00Z, integrated as121ee3f/closed.
+  No #20 reuse/#21, source review attribution to the cleanup or gate transfer.
+  Other deliveries retain default ten/their own verified scope and both gates.
+- `CLEAN_WORKFLOW_READY_FOR_OWNER_COMBINED_REVIEW` is descriptive handoff, not
+  acceptance or READY_TO_MERGE. No ordinary #212 Kilo review or #20 consumption
+  during cleanup/tests. Only actual acceptance/currentness plus explicit applicable
+  `/loop` authority permits merge/closure. Never main, release or deployment.

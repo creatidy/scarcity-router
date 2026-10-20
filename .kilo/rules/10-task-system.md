@@ -66,30 +66,32 @@
   not automatic closing keywords. Report issue/PR, base/head SHAs, validation and
   genuine blockers; READY_FOR_REVIEW means implemented and verified, not approved.
 - `/finish-pr` selects an existing PR and authorizes only its linked issue's
-  accepted-scope remediation. Before each fresh foreground `pr-reviewer` native task,
-  the primary freezes canonical objects/Git refs and prepares an immutable raw evidence
-  bundle. The reviewer has Read-only packet access, no Bash/Git/Forgejo/search/history
-  tools; the parent audits its exact native task trace and re-fetches currentness.
-  Consume the native result without owner relaying.
-  Ten whole-PR review invocations per issue delivery is the default, including
-  initial, COMMENT, invalidated and corrected retries. D-069A permits only a finite
-  issue/PR-specific owner exception after the sole primary independently verifies
-  canonical owner/source/repository/issue/PR authority, exact scope and maximum
-  before reservation. The excluded progress ledger records counts/history; it never
-  grants or extends an exception. Persist every ordinal before dispatch. Finish
-  reentry, internal phases, new tasks, models and sessions cannot reset the counter.
-  Role is derived from the currently outstanding required gates, not a permanent
-  ordinal-to-role map. Current APPROVE with empty findings satisfies only ordinary
-  review; a security-critical Router delivery first reserves/persists the next
-  owner-manual security ordinal against exact frozen refs, then returns
-  READY_FOR_OWNER_SECURITY_REVIEW with that reserved ordinal. That handoff is not
-  security approval or standalone merge; the pending slot cannot be reused and any
-  launched attempt stays consumed.
-  Only `/loop` may merge after every required gate passes and may continue
-  through its separate completion gates.
-  At the effective authorized bound return STOP_REVISE with new defects versus
-  incomplete fixes and recurring architectural/semantic patterns; never dispatch
-  past the verified maximum. Material scope/architecture decisions
+  accepted-scope remediation. The user explicitly selects a model and opens a fresh
+  visible Kilo/Codex read-only reviewer. Never programmatically start that session,
+  delegate to a model, generate a launcher, or require a local receipt hierarchy.
+  If the next gate needs a visible harness, return an explicit handoff, not hidden
+  execution, skipped acceptance or a repository-wide QUEUE_EMPTY claim.
+  Default to at most 10 whole-PR review invocations per issue delivery, including
+  initial, COMMENT and retries. The sole separate direct-owner supersession is for
+  #212/PR #213: maximum20, all #1-20 consumed; owner confirmed #20 combined approval
+  only at1dcb4a0 and separately accepted cleanupcddcac0 on2026-10-20T21:10:00Z.
+  Integration121ee3f/#212 closure complete; no #20 reuse/#21 or approval attribution
+  to the later cleanup. Historical sources/attributed canonical records remain,
+  not local receipt prerequisites. Verify legitimate native owner authority and
+  canonical issue/PR scope/currentness before each reservation; this is not D-069A
+  and does not transfer. Any other larger finite
+  maximum requires D-069A authority: verify its direct owner source, exact canonical
+  repository/issue/linked-PR identity, maximum and scope before reservation, and
+  confirm D-069A is already integrated in freshly fetched `develop`. A branch cannot
+  use its own unintegrated rule. Otherwise the effective ceiling remains 10. Persist
+  minimal ordinals/outcomes/refs canonically before imminent authorized visible
+  review/handoff; no local directory/progress file is a prerequisite. Finish
+  reentry, internal phase, new reviewer process/model/session cannot
+  reset the counter.
+  Current APPROVE yields READY_TO_MERGE, never a standalone merge; only `/loop`
+  may continue through its separate merge/completion gates.
+  At the bound return STOP_REVISE with new defects versus incomplete fixes and
+  recurring architectural/semantic patterns. Material scope/architecture decisions
   yield OWNER_DECISION_NEEDED only after recording the recovery rule's decision
   contract. Unavailable tools require bounded autonomous technical recovery before
   a precise finite BLOCKED; keep every failed/COMMENT ordinal.

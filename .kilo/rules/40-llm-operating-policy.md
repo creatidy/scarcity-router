@@ -6,6 +6,17 @@ Follow the full policy in [`docs/llm-operating-policy.md`](../../docs/llm-operat
 - Use the least scarce fully capable model; capability deficits are never
   compensated by availability or strength elsewhere.
 - Use a distinct reviewer session for consequential review.
+- All development/review model selection and session starts are explicit and
+  user-visible in Kilo or official Codex. No scripts/subprocesses, Task/delegation,
+  background/HTTP inference or generated model-launch wrapper. Prepare direct
+  source/ref instructions and hand off the pending gate instead of hiding execution.
+- No persistent local review-evidence folders or replacement receipt hierarchy.
+  Use Git/canonical records/native harness references; offline fixtures use cleaned
+  OS temporary directories. This does not alter authorized Router product inference.
+- PR delivery review uses a fresh user-visible read-only Kilo/Codex session,
+  never programmatic dispatch. Require actual session identity, explicit selected
+  model, source permissions and genuine native execution/context provenance;
+  do not claim OS isolation or backend identity from dispatch metadata.
 - LLM output is not evidence. Keep evidence preparation separate from expert
   scientific or methodological adjudication.
 - Follow D-068's ownership and Agreed/Verified/Proposed/To-prove distinction;
@@ -19,26 +30,15 @@ Follow the full policy in [`docs/llm-operating-policy.md`](../../docs/llm-operat
   identical failures.
 - Command delivery follows `.kilo/rules/35-technical-recovery.md`: infrastructure
   failure is not an implementation finding or owner decision. Use bounded authorized
-  environment/reviewer failover automatically; preserve ordinals and restricted gates.
-- D-069's whole-PR review ceiling is ten by default. A finite per-issue exception
-  exists only through D-069A and only after canonical owner/repository/issue/PR/source
-  authority, scope and maximum are independently verified; the local ledger is only
-  a counter. Reviewer roles are based on current required gates, not ordinal numbers.
-- For Scarcity Router `security_critical` work, Adrian invokes the mandatory official
-  Codex `gpt-daybreak-blue-latest` review manually after ordinary approval/validation.
-  Before handoff, reserve/persist the next owner-manual ordinal against exact frozen refs;
-  name it in `READY_FOR_OWNER_SECURITY_REVIEW`. The reservation is not security approval
-  or merge authority and cannot be reused; a launched attempt is consumed for any result.
-  Any HEAD/base change invalidates approval. The implementation agent must never invoke
-  Daybreak automatically. On this Router owner-manual path only, accept
-  `RUNTIME_UNOBSERVABLE` when backend identity is not independently exposed, after
-  verifying the official binary/version/provenance, requested-model invocation/dispatch,
-  process/session/turn, immutable input/output, exact refs, structured verdict, separate
-  context/tool audit and Adrian's explicit acceptance of the limitation. Record the
-  state honestly; do not label it `RUNTIME_VERIFIED` or infer backend identity.
-  `DISPATCH_VERIFIED` is dispatch configuration only. `FAIL` on an observed identity
-  mismatch or unauthorized substitution. See `docs/llm-operating-policy.md` and D-069A.
-  Generic runtime-identity requirements and the mandatory human security gate remain.
+  deterministic environment recovery; reviewer starts remain an explicit visible
+  user action. Preserve ordinals and restricted gates, no hidden failover.
+- Router owner-manual Codex only: D-069A permits honestly recorded
+  `RUNTIME_UNOBSERVABLE` for unsupported backend identity exposure after verified
+  official binary/provenance, requested-model dispatch, native session/turn/input/
+  output/context/tool evidence, exact refs, structured APPROVE/no blockers and the
+  original explicit owner acceptance of that narrow limit. Configuration/UI/self-report
+  never becomes `RUNTIME_VERIFIED`; actual identity mismatch/substitution is FAIL.
+  Other evidence gaps remain open; no skipped security, script or exception elsewhere.
 - Completed PASS gates, adjudication, remediation, translation and validation
   remain completed unless source changes materially or a concrete regression is
   identified.

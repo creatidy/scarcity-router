@@ -18,10 +18,12 @@
 - Implementation commits/pushes use normal Git under Adrian's Git identity:
   `Adrian Tkacz <adrian.tkacz@creatidy.com>`, Forgejo user `adrian.tkacz`.
   `forgejo-mcp` handles platform operations, not implementation authorship.
-  Independent review uses a newly spawned read-only `pr-reviewer` subagent context,
-  not a manual session or required platform identity. Its native task result is
-  the handoff; Forgejo publication is optional, not orchestration state or an
-  acceptance gate. Never author/commit implementation as forgejo-mcp,
+  Independent review uses a separate fresh read-only USER-VISIBLE Kilo or official
+  Codex session, selected and started explicitly by the user, not scripts/Task or
+  hidden processes. Use actual frozen Git source, canonical acceptance and native
+  harness records; no persistent packet/receipt directory is required. Forgejo
+  review publication is optional, not orchestration state or an acceptance gate.
+  The reviewer cannot call Forgejo MCP. Never author/commit implementation as forgejo-mcp,
   Kilo, a bot/service identity or the reviewer identity.
 - Before the first commit on an implementation branch, verify
   `git config user.name` and `git config user.email` resolve to the expected owner identity;
@@ -42,13 +44,6 @@
 
 - Use `forgejo-mcp` narrowly for the exact issue, PR, comment, review or
   label operation the task requires.
-- The `pr-reviewer` subagent receives no direct Forgejo MCP getter or writer. The
-  primary fetches the exact selected Repo/Issue/PR and directly linked owner-decision
-  objects, validates their IDs/URLs/authors/timestamps/content, and places complete
-  raw acceptance/owner evidence plus exact Git-object bindings in the immutable
-  reviewer packet. Reviewer packet copies cannot authorize broader Forgejo access;
-  the reviewer independently reads the supplied bytes through native Read only.
-  Post-execution audit supplements this pre-call Kilo denial and never replaces it.
 - Do not list all repositories, issues, PRs, branches, organization
   resources, Projects, or milestones unless Adrian explicitly asks.
   The explicit owner `/loop` exception permits paging all open canonical

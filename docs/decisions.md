@@ -5833,22 +5833,25 @@ neither is a new live check of the current deployment.
   migration start. This decision authorizes the contract, not its own merge.
 - **Conflict resolved:** D-015/D-029, AGENTS and the operating policy previously
   limited delivery to one initial review/one remediation/narrow verification and
-  a human-only merge gate. D-069 set the repository-command default to at most 10
-  persistent whole-PR review invocations per issue delivery (initial, COMMENT,
-  invalidated and corrected attempts all count). The owner-authorized D-069A
-  addendum below permits only an independently verified, canonical, finite
-  issue/PR-specific exception; it does not change the default or the descriptive
-  `model-policy.json`. Exact HEAD/base approval and explicit `/loop`-only canonical
-  Forgejo merge into develop followed by integrated acceptance/closure/SELECT
-  remain unchanged. Standalone review is read-only; finish never merges. The
-  migration itself uses pre-migration limits and remains open for human integration;
-  it cannot bootstrap merge authority from its new files.
+  a human-only merge gate. For repository command delivery only, the owner mandate
+  supersedes those defaults: at most 10 persistent whole-PR review invocations,
+  exact HEAD/base approval, and explicit `/loop`-only canonical Forgejo PR merge
+  into develop followed by verified integrated acceptance/issue closure/SELECT.
+  Standalone implement remains owner-selected; review is read-only; finish never
+  merges. The migration itself uses pre-migration review limits and remains open
+  for human integration; it cannot bootstrap merge authority from its new files.
+- **Final one-time #212 supersession:** Adrian's latest direct owner amendment recorded
+  in D-077 set maximum20 for issue #212/PR #213 only. All #1-20 are now consumed:
+  owner-confirmed combined approval at1dcb4a0, separately accepted cleanupcddcac0,
+  integrated as121ee3f/#212 closed under the direct21:10 reconciliation. No claim
+  of review of the cleanup, no #20 reuse/#21 or transfer. This direct
+  supersession is not derived from D-069A and does not change the default ten elsewhere.
 - **Preserved model:** The primary invocation context is the sole orchestrator,
   using one normal checkout/one mutator, no worktrees/alternate checkouts or
   stash/reset of owner work. The excluded `.task_progress.md` ledger persists
-  pre-dispatch chronological ordinals across phase/finish/task/model/session changes.
-  No ordinal has a permanent role; reviewer roles derive from current required gates.
-  Fresh isolated read-only reviewers inspect the complete frozen PR. Selection
+  pre-dispatch ordinals across phase/finish/task/model/session changes; no review
+  above ten by default except the exact #212 supersession recorded below. Fresh
+  isolated read-only reviewers inspect the complete frozen PR. Selection
   pages all current open canonical issues, filters only exact case-insensitive
   invalid/wontfix/duplicate, verifies explicit gates and orders by explicit
   priority/required ordering/created_at/issue number. Issues, not PRs, select work.
@@ -5871,153 +5874,112 @@ neither is a new live check of the current deployment.
   replaceable by ordinary review. Offline text contract tests are consistency
   evidence, not proof of live loop execution or dynamic native-agent discovery.
 
-### D-069A - Canonical owner-authorized finite review exception and manual Router security gate
+### D-069A - Canonical owner-authorized finite review exceptions
 
-- **Status:** Owner-authorized implementation for issue #210, including the narrowly
-  scoped reviewer packet Read grant below. The default remains ten whole-PR reviews.
-  Ordinals 1-9 are consumed, with #9 `COMMENT`; Adrian's 2026-10-15 instruction prohibits
-  #10 and Daybreak. The stated future maximum11 is not active until the governing policy
-  change is integrated and the required canonical authorization is verified.
-- **Authority:** Adrian's direct instruction is retained in the primary delivery's
-  owner-source evidence and transcribed in issue #210 comment17027; its source bytes
-  are pinned by SHA-256
-  `ea6f2d1236827075a1dd853ae1275ad178e62b63761eaa557e943176594a2049`.
-  The additional owner-authorized Router-only Codex assurance amendment is retained
-  verbatim in `.review-evidence-210/owner-codex-assurance-amendment.txt`, SHA-256
-  `991c4c550557411334fde1dfdb3a89328fa4e165811cad7eff8946914a01bd57`; it is an exact
-  excerpt from the parent-held complete direct owner instruction. No backend-served
-  Codex model identity is inferred.
-  The current authorization applies to this one D-069 maintenance delivery. The
-  separate #185 resumption/max12 source and scope remain unchanged. The local delivery
-  ledger records evidence/counters, not authority.
-- **Owner-approved reviewer Read scope (2026-10-15):** Adrian's direct instruction is
-  retained at `.review-evidence-210/owner-directory-grant-decision-2026-10-15.txt`,
-  SHA-256 `013e313e1a009ef4b51168df4a49f2f4582e8880d98728df64ee87bcab2ae7b3`, and
-  transcribed by Kilo in issue #210 comment #17258. It authorizes exactly one
-  `Read` permission rule, `.review-evidence-210/pr-reviewer-input/**`, only for the
-  independent ordinary reviewer of #210/PR #211. Preconditions are the native 48-file
-  PASS, an exact-revision packet with no credential/extra/link entries, complete
-  per-path SHA-256 inventory checked before and after, and no concurrent writer. The
-  reviewer retains no shell, Git, MCP, search, directory listing, write, delegation or
-  external capability; full trace audit and PR coverage remain mandatory. The grant is
-  Kilo tool permission only and does not establish OS-level isolation or authorize any
-  review ordinal.
-- **Exception admission:** A ceiling above ten is usable only for the one named
-  canonical `BioMedical-IT/scarcity-router` issue/PR when the root invocation has
-  an explicit direct owner decision plus a canonical issue/PR record of that same
-  decision. Before reserving any exceptional ordinal, fetch `get_repo`, the exact
-  selected issue and PR, and each exact owner-decision comment by MCP. Verify the
-  repository ID/name, issue database ID/index/URL, linked PR/repository ID/index/URL,
-  current branch/head/base/merge-base, decision author/provenance, exact source
-  digest, selected scope and a positive finite integer maximum. A Kilo-authored
-  transcription is not a directly owner-authored comment: it is acceptable only
-  when the original direct owner message is present in the primary root context and
+- **Status:** Accepted/integrated through #212/PR #213 on 2026-10-20, canonical
+  develop merge `121ee3fe33b74dc38b2401d22e7aa6df1b124bc9`. The bootstrap did not
+  authorize its own exception; D-077 records the separate direct owner decisions.
+  Presence only in another unmerged branch remains insufficient for that delivery.
+- **Authority:** Native owner instructions are the source, not old local files or
+  agent-authored Forgejo receipts. The bootstrap is recorded in #212/#17305 and
+  D-077 with historical availability caveats. For #210/PR #211, the primary freshly
+  verified native Kilo session `ses_edcee3d47ffedWKe8vBjTUNCG7`, user part
+  `prt_1408235dd001UMJyvip9N29CFM`, native time1792083637749, exact original text
+  SHA-256 `3cfe86b95cf3faa7728c90137222966b226a687c24046bfad92d3283c362913b`.
+  Corrected canonical attested source is #210 comment #18085; old #17258/file-copy
+  hash013e omitted two constraints and is not asserted equal to the complete
+  original. Both pre-bootstrap prohibition and conditional future allocation are
+  preserved. No raw file/transcript copy is recreated, no comment becomes owner-authored.
+- **Conflict resolved:** D-069's ten-review maximum remains the default. D-069A
+  supersedes D-069's unconditional "no review 11" only for the exact single issue
+  and linked PR with a valid finite owner exception admitted below. It does not
+  alter the default, product contracts, security gates or `/loop`-only merge
+  authority. A delivery cannot use this rule merely because its branch or PR
+  contains it: the primary must verify that D-069A is already present in the
+  freshly fetched canonical `develop`. This generic mechanism is not the source of
+  D-077's one-time direct owner amendment for #212/PR #213.
+- **Exception admission:** A maximum above ten is usable only for one specifically
+  named canonical `BioMedical-IT/scarcity-router` issue and its linked PR, with a
+  positive finite integer maximum and exact task scope. Before reserving each
+  exceptional ordinal, the primary fetches the canonical repository, selected
+  issue, linked PR and directly linked owner-decision object(s) through Forgejo
+  MCP. Verify repository identity/database ID, issue and PR IDs/URLs/ownership,
+  the issue-to-PR link, owner source author/provenance/time, original source bytes
+  and digest, canonical source record, maximum and scope against current frozen
+  refs. A Kilo-authored transcription is not owner-authored; it is acceptable only
+  when the original direct owner instruction is present in the primary context and
   the canonical comment preserves the exact source (or an exact attested excerpt)
-  and matching digest. A missing/ambiguous/stale mismatch, unrelated owner statement,
-  local-ledger-only entry, or unlinked issue/PR is not authorization; fail closed at
-  the default ceiling and stop for an owner decision if necessary.
-- **Pending #210 future ceiling:** The direct owner source and issue #210 comment #17258
-  state an intended maximum11 for #210/PR #211 (#10 ordinary, #11 owner-manual). That
-  allocation remains inactive until a separate governing-policy bootstrap is integrated
-  and the primary verifies that the exact canonical authorization is valid under the
-  integrated policy. It does not transfer #185's maximum12 or alter the current default10.
-  Adrian's 2026-10-15 instruction separately prohibits dispatching #10 or Daybreak;
-  revalidate any later authority rather than assuming this pending ceiling.
-- **Narrow #210 pre-bootstrap patch:** Adrian explicitly authorized implementation of
-  the one packet-directory Read remediation in #210/PR #211 even though no further
-  review ordinal is currently authorized. This permits only that preparation patch; it
-  does not reserve a review, make the patch reviewable/mergeable under the current cap,
-  waive validation, or authorize unrelated work. Preserve it open until the separate
-  bootstrap makes a fresh review possible. This one-time permission does not weaken the
-  normal rule against patches that cannot receive review within an effective ceiling.
-- **Persistence and role allocation:** Count all whole-PR invocations chronologically
-  and reserve each ordinal before dispatch. No reentry, phase/model/task/session change,
-  new branch or exception can reset/reuse a reservation or erase a result. The local
-  excluded ledger must independently show all prior consumed reservations and may
-  confirm they fit under the freshly revalidated canonical maximum; it cannot create,
-  increase, extend, transfer or reinterpret that maximum. A new exception requires a
-  new direct owner decision and canonical record, never an automatic extension.
-  Assign ordinary/security/reverification roles from currently unmet approval gates,
-  not from permanent ordinal-to-role rules. Every required final role must fit under
-  the exact verified maximum before dispatch; if a patch cannot receive fresh review
-  within remaining capacity, do not patch or silently skip the gate.
-- **Manual Scarcity Router security gate:** For Scarcity Router, the implementation
-  agent never invokes Daybreak/Codex automatically. After all implementation,
-  validation and ordinary independent review work completes, the root reserves and
-  persists the next authorization-verified ordinal in the same delivery ledger for role
-  `owner-manual-security`, bound to the exact current Repo/Issue/PR/HEAD/base/merge-base
-  and requested `gpt-daybreak-blue-latest` reviewer. Only then return
-  `READY_FOR_OWNER_SECURITY_REVIEW`, naming that reserved ordinal. The pending
-  reservation blocks every further patch, review dispatch or merge until resolved; it
-  cannot be reused. Adrian manually runs only that reserved mandatory independent
-  official-Codex review using a separate prompt. Count the reserved slot against the
-  exact ceiling; once invocation begins,
-  every successful, failed, cancelled, invalidated or unobservable attempt remains
-  consumed with its result/limitation recorded. This changes invocation
-  authority/timing only, not the security acceptance gate or merge authority. Do not
-  merge/close before the owner-supplied security result is independently verified
-  against the exact current objects.
-- **Manual result evidence:** The owner must still conduct the mandatory separate
-  review through the official Codex executable and return a structured verdict. Require
-  a canonical record bound to exact Repo/Issue/PR IDs and current HEAD/base/merge-base;
-  the requested `gpt-daybreak-blue-latest` reviewer; verified official executable path,
-  version and binary provenance; the actual invocation and dispatch configuration;
-  independently captured process/session/turn and timestamps; immutable prompt/input-
-  manifest and output digests; the structured verdict/findings; and a separate safe
-  review-context/tool/capture audit. The owner's outcome, CLI exit-zero or model
-  self-identification alone is insufficient. Credentials and unsafe raw payloads remain
-  transient or owner-held; never expose them in the issue, repository fixtures or the
-  ordinary reviewer context.
-- **Router-only backend identity limit:** For this Scarcity Router owner-manual
-  Codex path only, Adrian explicitly accepts that the supported official execution path
-  may not expose an independently verifiable backend-served model identity. Record
-  `RUNTIME_UNOBSERVABLE` when that metadata is not independently available; do not
-  upgrade a requested/configured model, UI label, CLI echo or self-report to
-  `RUNTIME_VERIFIED`. `DISPATCH_VERIFIED` means only that the actual captured dispatch
-  configuration matches the requested model; it is not backend execution attestation.
-  If all other manual evidence above is verified, exact refs are current, there is no
-  observed mismatch or unauthorized substitution, the structured verdict is
-  `APPROVE` with empty findings, and Adrian explicitly accepts that limitation, this
-  limited case may satisfy the owner-manual gate as
-  `RUNTIME_UNOBSERVABLE`. It is an accepted observability limit, not proof of backend
-  identity. This is not cryptographic certainty. An observed model/dispatch mismatch,
-  unauthorized substitution, incomplete invocation/output/context audit, stale refs or
-  findings is `FAIL`/not approved and keeps the gate open. All other runtime-identity
-  consumers retain the generic D-069/D-065 meanings unchanged.
-- **Synthetic exception conformance cases:** These illustrate the decision contract;
-  they are not a runtime authorization service.
+  with a matching digest. Missing, stale, conflicting, mismatched, ambiguous or
+  unlinked evidence fails closed at the default 10.
+- **Scope and persistence:** An exception cannot transfer to another issue/PR,
+  renew itself, expand its stated scope or raise the cap automatically. Reserve and
+  persist every invocation ordinal before dispatch, including failed, COMMENT and
+  invalidated attempts. Preserve every prior verdict/reservation across reentry,
+  phases, reviewers, models, sessions and source changes. Minimal canonical/native
+  metadata records usage; optional local notes cannot create, increase, renew, transfer or
+  reinterpret authority and are not a reconstruction prerequisite. Assign reviewer roles from the currently unmet approval
+  gates, not an ordinal-to-role map. All required final roles must fit under the
+  verified maximum; otherwise stop without dispatch or bypassing a gate.
+- **Post-bootstrap #210 allocation:** The exact native owner source above states
+  maximum11 exclusively for #210/PR #211: #10 fresh ordinary, #11 owner-manual
+  Daybreak, nine prior outcomes preserved. The separate governing bootstrap is now
+  integrated; fresh original/canonical identity/source/scope/ref verification is
+  still required before each actual invocation. Those conditions, not an unmerged
+  #211 branch or a local hash, admit this finite exception. No ordinal is reserved
+  merely by this policy text. The superseded packet-directory/Task grant is retired
+  under the later owner-visible policy; it supplies no current execution capability.
+  The #185/PR #209 and #205/PR #206
+  histories and any separately recorded owner scopes remain exclusive and require
+  their own fresh verification; none transfers authority to #210 or #212.
+- **Security and merge boundary:** Review-authority changes are `security_critical`.
+  Fresh independent whole-PR ordinary approval, the existing mandatory owner-manual
+  security gate when applicable, exact currentness and full repository validation
+  remain unchanged. This addendum does not authorize automatic Daybreak, substituted
+  approval, standalone merge or issue closure; only an explicit owner `/loop` may
+  merge after every accepted gate passes.
+- **Router owner-manual Codex assurance:** The original direct user instruction is
+  native part `prt_13ca21f3c001W5Szn0yCzs3E89` in the same session, native
+  time1792018620227, full text SHA-256
+  `88587ec09f71a4f4cf74456d35fc93f0cea0560b413fdaa08db8d43f1b845319`.
+  Exact P2 section substring (no trailing separator whitespace) SHA-256
+  `87db81f409f9cafa359e422c482346f9dd4de5fb2d60278c342e763d28b0e06c`
+  and its verbatim canonical attestation are in #18085. Old file-copy991c is
+  historical, not a claim of matching full native bytes or current availability.
+  - Adrian explicitly accepts the supported official Codex backend-identity
+    observability limit FOR THE SCARCITY ROUTER OWNER-MANUAL SECURITY REVIEW ONLY.
+    The user visibly selects/starts the restricted `gpt-daybreak-blue-latest` review
+    after ordinary approval and validation; the agent never invokes it or a wrapper.
+  - Verify official executable/version/binary provenance, actual requested-model
+    invocation/dispatch, independent native process/session/turn and input/output
+    provenance, exact Repo/Issue/PR/base/HEAD/merge-base, structured verdict/findings
+    and a separate safe context/tool audit. Native records and ordinary digests
+    suffice; no persistent receipt, copied source, transcript hierarchy or script.
+    Owner assertion, exit0, configuration, UI or model self-report alone are not proof.
+  - If the supported path does not independently expose backend identity, honestly
+    record `RUNTIME_UNOBSERVABLE`, never `RUNTIME_VERIFIED`. `DISPATCH_VERIFIED`
+    proves actual captured dispatch only. With all other evidence/currentness valid,
+    structured APPROVE/no blocking findings, no observed mismatch/substitution and
+    the owner's explicit acceptance of this precise limitation, that Router manual
+    gate may pass as unobservable; do not invent cryptographic attestation.
+  - An observed identity/dispatch mismatch or unauthorized substitution is FAIL;
+    missing invocation/output/context proof, stale refs or material findings keep
+    the gate open. Default independent security acceptance and generic identity
+    consumers outside this one Router owner-manual path are unchanged. No automatic
+    Daybreak, waived review, cross-repo mutation or standalone merge/closure.
 
   | Case | Evidence | Result |
   | --- | --- | --- |
-  | Normal delivery | No exception record | The default maximum remains 10. |
-  | Pending #210 ceiling | Owner source/comment states future maximum11, but bootstrap policy is not integrated | Keep the default10 effective; do not reserve or dispatch #10/Daybreak. |
-  | Ledger-only extension | `.task_progress.md` says `max=12`; no canonical owner/source record | Deny the exception; never reserve ordinal 11. |
-  | Unverified transcript | Kilo-authored Forgejo summary but no matching direct owner source/message digest | Deny the exception. |
-  | Scope mismatch | Canonical owner record names a different repository, issue, linked PR or bounded task | Deny the exception for this delivery. |
-  | Malformed or superseded authority | Missing/noninteger/zero maximum, changed source/hash, conflicting later owner record, or source not current | Deny/stop; the ledger cannot resolve the conflict. |
-  | Verified finite exception | Root verifies the direct owner instruction and exact canonical linked Repo/Issue/PR record with finite maximum and scope | Use only that maximum for that delivery; preserve every prior ordinal/result. |
-  | Existing PR209 exception | Canonical #185 comment #16956 plus direct owner source SHA-256 `875ffc0d33c9637c120140316e8818fb4ef22ad4112ac031fb4218e8816ff4bb` | #185/PR #209 only, maximum12; #11 ordinary, #12 owner-manual security, no #13. |
-  | Currentness change | A previously reviewed HEAD/base differs from the exact current PR | Approval becomes stale; exception does not make it current. Obtain a fresh counted review only if the exact cap permits. |
-  | Role change | Ordinary approval is complete but the mandatory security evidence is not | Assign the currently required security role; an ordinal number alone never chooses the role. |
-  | Incomplete manual security evidence | Owner says approve or Codex exits 0, but official binary provenance, requested dispatch, invocation/turn/output provenance, exact refs, structured verdict or independent context/tool audit is missing | Keep security gate open; do not merge. |
-  | Owner-accepted unobservable backend | Official Codex/binary provenance, requested-model invocation/dispatch configuration, process/session/turn and immutable input/output provenance, exact refs, structured `APPROVE`/empty findings and separate context/tool audit all verify; the supported path exposes no independent backend identity and Adrian explicitly accepts that limit | Record `RUNTIME_UNOBSERVABLE`; the manual gate may pass without claiming `RUNTIME_VERIFIED`. Actual mismatch, unauthorized substitution or any other evidence gap fails. |
-  | Owner-manual reservation | The ordinary gate passed but the next security ordinal is not reserved against the exact current objects | Do not return the owner handoff or launch Codex; reserve/persist first. A pending reserved slot cannot be reused. |
-  | Parent-only generated receipt | The parent validates a focused test runner's stdout-referenced receipt outside the immutable pre-dispatch source catalog | Use the receipt as parent validation evidence; do not authorize the reviewer to Read generated output. |
-- **Security/merge boundary:** Classify changes to review authority, audit evidence or
-  restricted reviewer admission as `security_critical` when they alter that trust
-  boundary. Ordinary APPROVE alone cannot close that gate. The owner-manual result
-  does not grant standalone merge authority: only a fresh explicit `/loop` with all
-  gates/currentness valid can perform the supported canonical merge.
-- **Preserved:** This addendum does not alter the product architecture, model selector,
-  public contract, default-ten ceiling, previous review results, merge authority or
-  other repositories. The ordinary reviewer remains read-only and has no unrestricted
-  shell or Forgejo access. The sole #210 permission exception is the single Kilo Read
-  rule documented above for its verified immutable evidence packet; no OS-level
-  isolation is claimed.
-  Generic runtime-identity meanings and model-bound security gates remain unchanged
-  outside the single Router owner-manual path stated above. It creates no service,
-  database, second controller,
-  launcher, auto-merge or exception for any other issue/PR. All limits remain finite.
+  | Normal delivery | No valid canonical owner exception | Default maximum 10. |
+  | Bootstrap #212 | Historical unintegrated bootstrap; separate D-077 direct owner authority | Maximum 20 only for #212/PR #213 under that direct amendment; no authority is derived from D-069A. |
+  | Pending #210 allocation | Before governing integration or without verified original/canonical source | Keep maximum 10 effective; do not reserve/dispatch #10 or #11. |
+  | Current #210 admission | Governing policy integrated at121ee3f, original native source plus exact canonical #210/PR #211 scope/source/refs freshly verified | Maximum11 for #210/PR #211 only; nine outcomes preserved, #10 ordinary/#11 manual when actually invoked, no #12. |
+  | Ledger-only extension | No matching direct owner source in the canonical accepted scope | Deny exception; keep default 10. |
+  | Scope mismatch | Owner record names another issue/PR, repository or task scope | Deny transfer; use this delivery's default/verified maximum only. |
+  | Stale or ambiguous evidence | Changed refs/source hash, missing canonical link, malformed maximum or conflicting owner record | Fail closed at default 10 and recover evidence; never infer authority. |
+  | Verified finite exception | D-069A is integrated and direct source plus exact canonical Repo/Issue/PR record match | Use only that finite maximum for that issue/PR; preserve all prior ordinals/results. |
+  | Gate requires another reviewer role | The verified maximum cannot fit every currently required gate | Do not dispatch/patch around the gate; stop at the effective bound. |
+  | Native record unavailable | Only agent transcription or old local hash remains, with no legitimate original/current owner source | No invented authority; recover evidence or obtain a genuine owner decision, never reconstruct a directory as a prerequisite. |
+  | Router unobservable backend | Official Codex/requested-model/session/input/output/context/ref proof all valid, APPROVE/no blockers and explicit owner acceptance of only the unsupported backend identity exposure | Record RUNTIME_UNOBSERVABLE; actual mismatch, substitution or any other material evidence gap is FAIL/not accepted. |
 
 ### D-070 - Autonomous technical recovery before owner escalation
 
@@ -6045,7 +6007,9 @@ neither is a new live check of the current deployment.
   smallest materially distinct choices. BLOCKED names exhausted authorized paths/
   budget or an external dependency with no authorized workaround. Environment
   inconvenience is neither a defect nor a fabricated owner question.
-- **Preserved:** Ten-review ceiling, fresh independent whole-PR exact-HEAD/base
+- **Preserved:** The default ten-review ceiling is subject to D-069A's exact
+  finite canonical owner exceptions and the separately recorded one-time direct
+  owner supersession for issue #212/PR #213; fresh independent whole-PR exact-HEAD/base
   review, frozen result schema, model-bound/restricted gates, full validation,
   scope/acceptance, canonical merge authority/currentness, and all product/runtime,
   credential/network, licensing and non-delivery model-policy contracts. No new
@@ -6370,6 +6334,117 @@ neither is a new live check of the current deployment.
   stays explicitly open; no broad completion, deployment or external mutation
   authority is granted. D-063/default grants remain supported and #199's
   replacement/retirement gate is untouched.
+
+### D-077 - Transparent visible review and the #212 acceptance history
+
+- **Current owner decision (2026-10-20T18:58:08Z):** All development/review model
+  selection and session starts must be explicit and USER-VISIBLE inside Kilo or
+  official Codex. The implementation agent may code, test, use Git and perform
+  bounded technical recovery, but cannot start another model through scripts,
+  subprocesses, Task/delegation, background jobs, Make/CI/hooks or HTTP inference.
+  Do not generate a convenience owner launcher or reproduce it under another name.
+  This changes development workflow, not the Router product's authorized inference.
+- **Review:** Prepare concise acceptance/source instructions and exact frozen
+  HEAD/base/merge-base directly. The user opens a fresh independent read-only
+  harness session and chooses its model. Use actual Git objects, complete compact
+  diff/changed regions and necessary context, canonical Forgejo records and native
+  harness references. Keep source integrity, scoped permissions, no credentials/
+  unapproved context, actual identity/provenance and explicit UX assessment. A
+  handoff names the exact pending gate; it is not approval, skipped review or proof
+  that the repository has no eligible work. No self-review or silent substitution.
+- **Evidence retirement:** The owner authorized removal of ALL local
+  `.review-evidence-*` directories in registered Scarcity Router worktrees, including
+  obsolete generated packets, source copies, transcripts and `run-owner-review.sh`.
+  Do not retain complete copies/archives/renamed replacements or create an evidence
+  database, receipt hierarchy or persistent runner. Ordinary offline tests use
+  cleaned OS temporary directories, never worktrees. No local directory/history
+  reconstruction is an eligibility, review, merge or acceptance prerequisite.
+  Retained packet/trace validators are optional deterministic offline test tools,
+  not live harness connectors, model launchers or authority.
+- **Authority and attribution:** The current direct owner instruction is in the
+  user-visible Kilo conversation, supplied timestamp above; no source hash or
+  unexposed session ID is invented for it. Canonical Issue/PR comments and this
+  document are agent transcriptions, not owner-authored evidence. Original owner
+  messages/native records remain the legitimate sources where available. Local
+  source files listed by older commits existed historically but were deleted by
+  explicit owner instruction; historical hashes do not imply current availability
+  or recreate authority. An unavailable original is not replaced by an agent claim.
+  The current owner explicitly reaffirms the #20 exception below.
+
+**Preserved #212/PR #213 decisions (not transferred to other deliveries):**
+
+| Direct instruction | Historical decision | Current effect |
+|---|---|---|
+| 2026-10-17 | Separate standalone Kilo path for bootstrap review | Historical architecture; scripted session starts retired by current owner |
+| 2026-10-18 | Issue-specific maximum11 | Superseded ceiling, actual attempts preserved |
+| 2026-10-19T07:16:05Z | Maximum12 | Superseded ceiling, no counter reset |
+| 2026-10-19T10:39:34Z | Maximum14 | Superseded ceiling, actual results unchanged |
+| 2026-10-19T17:40:57Z | Maximum16 | Superseded allocation, not D-069A authority |
+| 2026-10-19T20:49:07Z | Model-visible evidence and practical changed-region coverage | Retain substantive source/security guarantees, not persistent packets |
+| 2026-10-19T22:41:20Z | Maximum20, quoted "Zatwierdzam, od razu do 20." | Ceiling remains20, default ten elsewhere; no #21/reset/transfer |
+| 2026-10-20T06:26:22Z | ONE final owner-manual combined correctness AND security review at #20 without historical ordinary APPROVE | Historical assignment, subsequently consumed; no ordinary Kilo review |
+| 2026-10-20T18:58:08Z | Remove local evidence/launch scripts; use visible harnesses | Current transparent workflow; old pending #20 state superseded below |
+| 2026-10-20T21:10:00Z | Owner confirms consumed #20 APPROVE at exact1dcb4a0, accepts verified cleanup delta tocddcac0 and authorizes /loop integration | PR213 merged121ee3f, #212 accepted/closed; no claim Daybreak reviewed cleanup, no #21 |
+
+The combined source was the direct owner instruction, historically preserved as
+full-source SHA-256 `90594e2d98c4ae713073497d5c0427279f25910d3fe308b7983250367c816922`
+and Section2 SHA-256 `4386e0ac0f881b0ad0cbc5d0b7d1bccf7f8c7aa3fa569120808c25a6a09b67d5`.
+Those local bytes are now unavailable by owner-authorized deletion, not required to
+be reconstructed. The current direct instruction reaffirms scope. Prior max20
+source SHA-256 `222e3be1eadd381ce7a5a351943e7490a44edf907febea4e2f45fa013a53e4af`
+is likewise historical metadata, not current proof by itself. Earlier detailed
+decision text remains in Git history at `1dcb4a08d9d57d02ed67bf8e7f7d15275c5b3ecf`;
+this is not a claim that deleted original owner files were Git-tracked.
+
+**Minimal actual review history:** canonical Issue #212 comment
+[#18011](https://forgejo.creatidy.com/BioMedical-IT/scarcity-router/issues/212#issuecomment-18011)
+records #1-19 outcomes, exact frozen Git SHAs, known native session references and
+availability caveats. It is an attributed metadata transcription, not new owner
+authority. This preserves #6's APPROVE at an old, later-invalidated HEAD; #7's
+owner-reported manual REQUEST_CHANGES with unverified provenance; and #19's
+REQUEST_CHANGES with valid runtime audit. No historical failure/COMMENT is upgraded.
+Do not require large local audit files/transcripts for future work.
+
+**#20 executed and integration completed:** The direct owner /loop instruction at
+2026-10-20T21:10:00Z confirms that the combined Daybreak review was actually executed
+and APPROVE applies to exact `1dcb4a08d9d57d02ed67bf8e7f7d15275c5b3ecf`, base
+`79795ec99960c442901f729804569138d85a902d`. #20 is consumed, not pending/unconsumed.
+The owner separately accepts narrow verification of authorized cleanup to exact
+`cddcac0d7a475c32eb2d8ad942b4f004c1ea1256` as the final integration condition,
+without a review #21/new Daybreak/approval ceremony. No claim is made that Daybreak
+reviewed the cleanup, or that independently unavailable native runtime identity/time
+was newly observed. This one-time reconciliation does not transfer or weaken other
+deliveries' exact approval, security or identity/provenance requirements.
+Canonical #212 comment #18057 records attributed owner acceptance and actual narrow
+verification; source CI3005 SUCCESS, focused93/type/whitespace and unchanged
+full2,849/17-skips/package gate passed, no product runtime delta. Supported normal
+Forgejo merge produced `121ee3fe33b74dc38b2401d22e7aa6df1b124bc9`, exact parents
+base79795ec/cddcac0 and identical accepted tree; integrated acceptance verified and
+#212 closed before fresh queue selection. Existing feature history preserved. No
+model invocation, #20 reuse/#21, force/auto-merge, main/release/deployment occurred.
+
+`CLEAN_WORKFLOW_READY_FOR_OWNER_COMBINED_REVIEW` is descriptive handoff only, never
+acceptance or READY_TO_MERGE. Only after actual verified acceptance, exact fresh
+currentness/clean state and explicit applicable `/loop` authority may integration/
+closure occur. No merge, main promotion, release or deployment is granted here.
+
+**Retired local source-cache provenance:** All copies were clean/inactive, separate
+from registered source worktrees/shared Git stores; canonical objects are retained.
+Source references, not copies or current-availability claims:
+
+| Removed cache | Canonical source/ref retained as metadata |
+|---|---|
+| #175 kernel-source | https://forgejo.creatidy.com/Creatidy/creatidy-kernel.git at `a9a65006cc8cc5b5e4468746a18ff51daf742e6b` |
+| #182 rich-source | https://github.com/Textualize/rich.git at `9d8f9a372cc5916fd4781fec207ced7ddac2f08f` |
+| #180 Codex copies | https://github.com/openai/codex.git at `be2951ea34f0d295ed0becf97079f92fa5f6950e` and `01fc69f4026735edfdf6789820549727a4867b11` (latter confirmed by canonical upstream commit getter) |
+| #180 ZCode copy | https://github.com/zai-org/ZCode.git at `29628c9acdb81b703bbd4080c207a0e7ce5e276e` |
+| #180 frozen Router snapshots | Existing canonical Scarcity Router Git objects for #174/#185/#205, not registered delivery worktrees |
+| #212 generated source copy | Existing canonical Router object `1dcb4a08d9d57d02ed67bf8e7f7d15275c5b3ecf`; no unique work |
+
+The exact native-denial correction remains in source and offline regression tests:
+positive pinned PermissionDeniedError representation and request/rule/path binding,
+not permissive denial keywords or canary blacklists. No security validation or product
+adapter is removed merely to eliminate orchestration. See the actual Git source/tests.
 
 ### U-014 - Native coding backend versus Kernel-owned workspace lifecycle
 

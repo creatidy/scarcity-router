@@ -139,27 +139,49 @@ the default. Use one only when uncertainty remains, evidence conflicts, the
 consequence is unusually high or independent confirmation materially increases
 confidence.
 
-Freeze immutable reviewed HEAD/base and serialize worker/reviewer/remediation
-phases. D-069 sets the default delivery ceiling to 10 whole-PR invocations per
-issue delivery, including initial, COMMENT, invalidated reviews and corrected
-retries. A narrowly scoped finite exception is permitted only by D-069A after the
-primary independently verifies canonical owner/source/repository/issue/PR
-authority, exact scope and maximum before reservation; the local excluded
-`.task_progress.md` ledger records counts but can never grant, extend or reset
-that exception. Reviewer roles are derived from current approval requirements;
-ordinals are chronological, not permanent role assignments. Reserve every ordinal
-BEFORE dispatch. Reentry/phase/task/model/session changes never reset a count, and
-no invocation may exceed the exact effective cap. Missing/ambiguous authority is
-BLOCKED. Implementation never self-approves or resumes a reviewer. Standalone
-review is read-only; standalone finish stops at exact READY_TO_MERGE, never merging.
-Only an explicit owner `/loop` may proceed through canonical Forgejo PR merge into
-develop, verified integrated acceptance and issue closure, then fresh selection.
-Review independence does not expand scope.
+Freeze immutable reviewed HEAD/base and serialize implementation/review/remediation.
+All development/review model selection and session starts are explicitly user-visible
+in Kilo or official Codex. The user opens a separate fresh read-only reviewer; no
+script/subprocess, Task/subagent, background job, Make/CI/hook, HTTP inference or
+generated owner wrapper may launch a model. No silent substitute/fallback. Provide
+acceptance, exact Git refs and source instructions directly; no persistent local
+packet/source/transcript or renamed receipt hierarchy. Native harness records and
+canonical metadata preserve actual identity/scope/results without claiming OS
+isolation or backend identity from UI/self-report. Credentials remain outside context.
+If a visible mechanism is required, hand off the exact pending gate rather than
+skip review, run a hidden model or claim the repository has no eligible work.
+A default maximum of 10 invocations per issue delivery
+includes initial, COMMENT, invalidated reviews and corrected retries. The sole separate
+direct-owner supersession is for #212/PR #213: the final D-077 amendment records maximum
+20, with all #1-20 consumed. The owner confirms historical combined #20 APPROVE only
+at1dcb4a0, separately accepted the verified cleanup delta to cddcac0 on
+2026-10-20T21:10:00Z, and integration121ee3f/#212 closure is complete. Do not claim
+Daybreak reviewed the cleanup, reuse #20, invoke #21 or transfer that acceptance.
+Use legitimate native owner records and canonical D-077/Issue history, never an agent
+transcription as original evidence or an old hash as proof of local availability.
+Verify source and canonical
+scope/currentness before each reservation; this is not D-069A and cannot transfer. For every other
+delivery, D-069A permits a greater finite maximum only after the primary verifies the
+direct owner source, exact canonical repository/issue/linked-PR identity, scope and
+cap, and confirms the policy is already integrated in freshly fetched `develop`. An
+unmerged branch cannot authorize its own exception; stale, missing or mismatched
+evidence leaves the default 10 active. Record minimal ordinals/outcomes/refs canonically
+before imminent authorized visible review/handoff; no local file is a prerequisite.
+Reentry/phase/
+process/model/session changes never reset them. Every HEAD/base change requires a new
+counted review. Missing or ambiguous recovery is BLOCKED. Implementation never
+self-approves or resumes a reviewer. Standalone review is read-only. Standalone
+finish returns `READY_TO_MERGE` only when all ordinary gates pass; security-critical
+work instead returns `READY_FOR_OWNER_SECURITY_REVIEW` after reserving its manual
+gate. It never merges. Only an explicit owner `/loop` may proceed through
+canonical Forgejo PR merge into develop, verified integrated acceptance and issue
+closure, then fresh selection. Review independence does not expand scope.
 
 ## UX is a mandatory review dimension (D-053, #121)
 
 Every review — independent review, remediation verification, PR review — must
-answer `UX impact: none` or assess the user-facing consequences of the change.
+explicitly answer `UX impact: none` or assess the user-facing consequences of the
+change. The standalone reviewer JSON records this in its required `ux_impact` field.
 For a user-facing change the reviewer inspects, at minimum: the first-run
 experience; the normal happy path; the recovery/error path; the
 upgrade/model-change path; whether technical IDs are exposed unnecessarily;
@@ -168,10 +190,10 @@ user what to do; whether security friction is necessary and understandable;
 whether the change adds repeated manual work; and whether the user can
 understand current system state. A material UX regression is
 `CHANGES_REQUESTED` even when the implementation is technically correct. This
-is deliberately not a bureaucracy: no separate UX review phase, no UX
-checklist artifacts — one verdict line in the review.
+is deliberately not a bureaucracy: no separate UX review phase or UX checklist
+artifact is required beyond the explicit review-result field.
 
-## Security-critical review gate (D-053 point 9, #122; Router manual path D-069A)
+## Security-critical review gate (D-053 point 9, #122)
 
 Work explicitly classified `security_critical` requires an INDEPENDENT
 `gpt-daybreak-blue-latest` review before the platform claims completion of
@@ -183,53 +205,24 @@ security_critical -> independent Daybreak Blue review required
 
 Discipline:
 
-- For Scarcity Router repository delivery, the owner personally invokes
-  `gpt-daybreak-blue-latest` through official Codex after implementation, validation
-  and fresh ordinary independent review are complete. The implementation agent must
-  never invoke Codex/Daybreak automatically, substitute a reviewer or claim security
-  acceptance. This remains a mandatory **pre-completion / pre-merge gate**, not a
-  pre-implementation eligibility gate. Kilo model discovery failure does not imply
-  `SECURITY_REVIEW_UNAVAILABLE`.
-- After required validation and ordinary whole-PR approval pass with no changes
-  pending, freeze exact PR base/HEAD/merge-base and reserve/persist the next
-  owner-manual security review ordinal in the delivery ledger before returning
-  `READY_FOR_OWNER_SECURITY_REVIEW`. Name that reserved ordinal in the handoff. The
-  fresh independent Codex reviewer inspects
-  the complete frozen PR and relevant security/authority context without prior
-  findings or desired verdict. Use read-only execution and preserve credential
-  boundaries. Adrian supplies the manual result and execution evidence for verification.
-  The pending reservation blocks any patch/review/merge until resolution; once launched,
-  the ordinal remains consumed for every outcome and cannot be reused.
-- The evidence must bind exact repository/issue/PR identities and URL, reviewed
-  HEAD/base/merge-base, requested `gpt-daybreak-blue-latest`, official Codex executable
-  path/version and verified binary provenance, actual invocation/dispatch configuration,
-  independently captured process/session/turn and timestamps, prompt/input-manifest and
-  output digests, terminal result schema, structured verdict/findings, and a separate
-  captured context/tool audit. Owner assertion, CLI exit zero, transcript text or model
-  self-report alone is not independent approval.
-- D-069A's explicit owner amendment accepts `RUNTIME_UNOBSERVABLE` **only** for the
-  Scarcity Router owner-manual Codex path when the supported official runtime does not
-  independently expose its backend-served model identity. In that case, verify every
-  other binary/provenance, actual-invocation/dispatch, process/session/turn, immutable
-  input/output, exact-ref, structured-verdict and context/tool-audit requirement; record
-  `RUNTIME_UNOBSERVABLE`; and record Adrian's explicit acceptance of that limitation.
-  This is not `RUNTIME_VERIFIED`, proof of backend execution identity or cryptographic
-  certainty. `DISPATCH_VERIFIED` means only that actual captured dispatch configuration
-  matches the requested model. Never infer runtime identity from requested configuration,
-  UI labels, CLI text or model self-report. Any actually observed mismatch or unauthorized
-  substitution is `FAIL`; missing other evidence, findings or stale refs keep the gate
-  open. Generic runtime-identity meanings and every other model-bound gate remain
-  unchanged.
-- Ordinary approval alone cannot close the gate. The implementation agent never
-  invokes Daybreak automatically and cannot substitute another reviewer.
-- Classify `SECURITY_REVIEW_UNAVAILABLE` only when the owner's required direct Codex
-  invocation/provenance path cannot be independently evidenced after authorized bounded
-  technical recovery. The owner-accepted Router-only `RUNTIME_UNOBSERVABLE` backend
-  identity state is not by itself `SECURITY_REVIEW_UNAVAILABLE` when all other required
-  manual evidence is complete.
-  Diagnose routine Kilo preparation/environment problems automatically; do not replace
-  the manual owner review with an automatic Kilo call. New restricted access/authority
-  remains owner-controlled; no fallback reviewer is permitted.
+- For Scarcity Router repository delivery, invoke `gpt-daybreak-blue-latest`
+  **directly through Codex**, never through Kilo discovery or reviewer dispatch.
+  This is a mandatory **pre-completion / pre-merge gate**, not a pre-implementation
+  eligibility gate. Kilo model discovery
+  failure does not imply `SECURITY_REVIEW_UNAVAILABLE`.
+- After required validation and ordinary independent whole-PR review pass with
+  no further implementation changes pending, freeze exact PR base and HEAD.
+  The fresh independent Codex reviewer inspects the complete frozen PR and
+  relevant security/authority context, without prior findings or desired verdict.
+  Use read-only execution and preserve credential boundaries. Persist exact
+  reviewed base/HEAD, identity `gpt-daybreak-blue-latest`, Codex execution path,
+  security findings and final verdict. Any HEAD/base change invalidates approval
+  and requires a fresh security review; ordinary approval alone cannot close it.
+- Classify `SECURITY_REVIEW_UNAVAILABLE` only when the required direct Codex path
+  cannot be exercised after authorized bounded technical recovery. Diagnose
+  routine environment/tool problems automatically under the shared recovery rule,
+  never ask the owner to operate an available authorized path. New restricted
+  access/authority remains owner-controlled; no fallback reviewer is permitted.
   Do not propagate this repository-specific path rule to other repositories.
 - Daybreak Blue (`gpt-daybreak-blue-latest`) is a RESTRICTED security-review
   capability: discovery in some runtime's inventory never proves execution
@@ -244,6 +237,33 @@ Discipline:
   `SECURITY_REVIEW_UNAVAILABLE` and the gate remains OPEN/FAILED — final
   completion pauses at that external/human gate. Substituting another model
   and claiming the gate passed is forbidden.
+
+### Router-Only Manual Codex Observability Limit (D-069A)
+
+Adrian's original native user decision, verified and canonically attested in #210
+comment #18085, accepts the supported official-Codex backend identity observability
+limit only for Scarcity Router's owner-manual security gate. It is not permission
+to substitute a model, skip security review, dispatch it through Kilo or scripts,
+or weaken generic identity requirements elsewhere.
+
+The owner visibly selects/starts `gpt-daybreak-blue-latest` after implementation,
+ordinary approval and validation. Verify official executable/version/provenance,
+the actual requested-model invocation/dispatch, native process/session/turn and
+immutable input/output provenance, structured verdict/findings, independent safe
+context/tool audit and exact current Repo/Issue/PR/HEAD/base/merge-base. Native
+records and nonsecret digests are sufficient sources; do not create local receipt/
+transcript/source hierarchies or require a model-launch script. Owner assertion,
+CLI exit0, UI/configuration and model self-identification alone are insufficient.
+
+If the supported official path exposes no independent backend identity, record
+`RUNTIME_UNOBSERVABLE`, never `RUNTIME_VERIFIED`; `DISPATCH_VERIFIED` is actual
+dispatch only. With every other gate/evidence/currentness valid, APPROVE/no blocking
+findings, no observed mismatch/substitution and the owner's explicit acceptance of
+that precise limit, the manual gate may pass as unobservable. Do not invent backend
+attestation or cryptographic certainty. Observed identity/dispatch mismatch or
+unauthorized substitution is FAIL; missing invocation/context/output proof, stale
+refs or substantive findings keeps acceptance open. Default separate independent
+review and `/loop`-only merge/closure remain; no cross-delivery exception transfer.
 
 ## Evidence work
 
@@ -341,16 +361,19 @@ Do not repeat identical failures.
 
 General non-delivery defaults remain one initial review, one remediation and
 narrow verification, as described by `model-policy.json`. Repository command
-delivery uses D-069's default ten-review ceiling plus only the exact, canonical,
-finite D-069A owner exception. No dispatch may exceed the independently verified
-maximum or begin a patch that cannot receive a fresh whole-PR review within the
-remaining count.
+delivery uses D-069's scoped override, not those generic round counts: the default
+ceiling is 10 whole-PR reviews. The final direct D-077 owner amendment separately sets
+a one-time maximum of 20 for #212/PR #213 only; for every other delivery, D-069A's exact
+canonical owner exception can set a greater finite ceiling for one named issue/linked
+PR after integration and fresh verification. Never exceed the effective maximum or
+patch without capacity for a fresh review.
 Command delivery follows [the shared technical-recovery contract](../.kilo/rules/35-technical-recovery.md)
 under D-070: distinguish engineering blockers from genuine owner decisions and
 review findings from infrastructure failure or unresolved judgment. Diagnose and
 automatically attempt the minimum sufficient authorized changed environment/strategy,
 including secret-safe synthetic environments, ephemeral containers/checkouts, locked
-dependencies, pinned public source inspection and independent native reviewer failover.
+dependencies and pinned public source inspection. Reviewer recovery produces an
+explicit user-visible harness handoff, never automatic model failover or a script.
 Docker isolation is not product dependency adoption. No permission/model-bound gate
 is weakened. At most three materially different recovery attempts per obstacle and
 120 minutes of technical recovery per delivery (or an existing smaller budget) persist
@@ -371,6 +394,46 @@ complete PR review within the persistent ceiling. Genuine architecture/scope
 decisions stop rather than widening authority. A moving HEAD/base invalidates
 the result; valid exact approval requires empty findings, required validation,
 clean checkout and fresh canonical state.
+
+Review effort is subordinate to delivering Scarcity Router. Mandatory inspection
+covers acceptance/applicable owner decisions, the complete byte-verified compact
+Git diff (`--unified=3`) and Git-derived changed-source ranges plus immediate
+context, not unrelated unchanged file bodies. Keep full sources and other contracts
+available as optional actual source references. Reviewers deepen inspection where a
+material dependency/security question requires it; unread optional material alone
+does not justify COMMENT. Prioritize P0/P1 and material P2 with concrete consequences;
+incidental P3 observations are nonblocking absent a material acceptance defect. Do
+not seek speculative requirements or unlimited procedural completeness, and never
+convert genuine material uncertainty into APPROVE.
+
+Retained deterministic offline auditors security-check all supplied calls, even
+from assistant messages discarded by the pinned Kilo conversion. They are not live
+harness connectors or required review machinery; fixtures use cleaned OS temp space.
+Only model-visible evidence counts toward the final verdict's mandatory coverage;
+pinned conversion drops most errored assistant messages, retains meaningful
+`MessageAbortedError` messages and clears compacted tool results. Qualifying later
+rereads restore coverage. Preserve terminal/model/context/permission checks and
+fail closed when visibility is genuinely unverifiable, without reconstructing a
+new context engine. D-077's `2026-10-19T20:49:07Z` owner mandate authorizes only this
+remediation and coverage simplification for #212/PR #213, not another review or
+budget extension. The later `2026-10-19T22:41:20Z` direct owner max20 amendment
+supersedes that earlier invocation restriction, not the compact/security contract:
+#1-15 were preserved, #16-19 were the remaining ordinary allocation and #20 manual
+security. The final `2026-10-20T06:26:22Z` D-077 exception now preserves consumed
+#1-19 and authorized ONE owner-manual combined review at #20 for #212/PR #213 only.
+That review is now consumed: owner-confirmed APPROVE at1dcb4a0. The owner separately
+accepted narrow cleanup verification tocddcac0 at21:10Z; exact code/CI/tree/currentness
+were checked and canonical merge121ee3f/#212 closure verified. This is completed
+history, not another pending gate or an ordinary APPROVE for a later SHA. No #20
+reuse/#21, transferred exception or global change to independent security/currentness
+requirements. Default ten elsewhere and `/loop`-only integration remain. Other
+deliveries require their own authentic ordinary/manual-security acceptance and counts.
+The later cleanup policy prohibits any more scripted/invisible development model
+execution, including synthetic preflight model calls. Offline synthetic responses,
+Git/hash/static/build tools remain allowed. No `.review-evidence-*` directory or
+replacement hierarchy may be created or required. Historical source bytes removed
+at the owner's direction are unavailable; canonical metadata is not reconstructed
+original authority. No fresh owner input is needed merely to rebuild obsolete files.
 
 ## Operational UX and compatibility review
 
@@ -475,12 +538,8 @@ module issues with evidence.
 
 The portable `model-policy.json` artifact remains descriptive and unchanged.
 D-069 is the explicit repository-command override to its generic review/merge
-defaults; D-069A defines verified per-delivery finite-cap exceptions. The separate
-owner-approved D-069A Read-scope exception applies only to the independent ordinary
-reviewer for #210/PR #211's sealed packet directory; it does not change a review cap
-or grant an ordinal. Neither decision changes model classes, selectors, profiles,
-ratings or product contracts. Immutable review objects and serialized phases remain
-mandatory. Only the sole
+defaults; it does not redesign the model or change selectors/profiles/ratings.
+Immutable review objects and serialized phases remain mandatory. Only the sole
 primary context of an explicit owner `/loop` has the narrowly checked PR merge
 and completed-issue closure authority. Never direct-push develop, touch main,
 release/deploy, mutate other repositories or use Scarcity Router for model
