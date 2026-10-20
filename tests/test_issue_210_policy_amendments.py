@@ -14,7 +14,7 @@ def text(relative_path: str) -> str:
 
 
 class Issue210PolicyAmendmentTests(unittest.TestCase):
-    def test_completed_212_notice_precedes_legacy_historical_text(self) -> None:
+    def test_completed_212_notices_explicitly_supersede_historical_text(self) -> None:
         markers = {
             "AGENTS.md": "Current D-069A And #212 Status",
             ".kilo/command/finish-pr.md": "Current #212 Status",
@@ -31,9 +31,8 @@ class Issue210PolicyAmendmentTests(unittest.TestCase):
                 content = " ".join(text(path).split())
                 self.assertIn(marker.lower(), content.lower())
                 current_notice = content.lower().index(marker.lower())
-                normalized = content.lower()
-                self.assertLess(current_notice, normalized.index("all #1-20"))
-                self.assertLess(current_notice, normalized.index("no #20 reuse"))
+                self.assertIn("supersedes", content.lower()[current_notice:])
+                self.assertLess(current_notice, content.lower().index("no #20 reuse", current_notice))
 
     def test_d069a_amendment_records_exact_210_scope_and_router_limit(self) -> None:
         decisions = " ".join(text("docs/decisions.md").split())

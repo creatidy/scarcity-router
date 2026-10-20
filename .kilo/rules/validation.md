@@ -1,12 +1,5 @@
 # Validation Rules
 
-## Current #212 Status
-
-This notice supersedes conflicting historical #212 references below: #212/PR #213
-is complete, all #1-20 are consumed, #20 approval is only at1dcb4a0, cleanupcddcac0
-was separately accepted, and merge121ee3f/#212 closure are verified. No #20 reuse,
-#21 or transfer. Other deliveries retain their own verified scopes and gates.
-
 Use `.kilo/rules/35-technical-recovery.md` for bounded secret-safe execution recovery;
 it never authorizes a hidden model call.
 
@@ -71,3 +64,11 @@ it never authorizes a hidden model call.
   acceptance or READY_TO_MERGE. No ordinary #212 Kilo review or #20 consumption
   during cleanup/tests. Only actual acceptance/currentness plus explicit applicable
   `/loop` authority permits merge/closure. Never main, release or deployment.
+
+## Current #212 Status (supersedes historical text above)
+
+#212/PR #213 is complete, all #1-20 are consumed, #20 approval is only at
+`1dcb4a08d9d57d02ed67bf8e7f7d15275c5b3ecf`, cleanup
+`cddcac0d7a475c32eb2d8ad942b4f004c1ea1256` was separately accepted, and merge
+`121ee3fe33b74dc38b2401d22e7aa6df1b124bc9` closed #212. No #20 reuse, #21 or transfer.
+Other deliveries retain their own verified scopes and gates.
