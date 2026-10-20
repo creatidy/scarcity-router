@@ -3,7 +3,7 @@
 ## Current D-069A And #212 Status (2026-10-20)
 
 This current notice supersedes conflicting later historical #212 text in this file
-and any profile/rule mirror; the completed canonical state below is authoritative.
+and any command/profile/rule mirror; the completed canonical state below is authoritative.
 All #1-20 for #212/PR #213 are consumed; #20 approval applies only to
 `1dcb4a08d9d57d02ed67bf8e7f7d15275c5b3ecf`, cleanup `cddcac0d7a475c32eb2d8ad942b4f004c1ea1256`
 was separately owner-accepted, and `121ee3fe33b74dc38b2401d22e7aa6df1b124bc9` integrated

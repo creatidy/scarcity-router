@@ -50,11 +50,3 @@ metadata transcription, not owner-authored evidence. No deleted local source is
 required or claimed available. Both explicit approvals and verified execution/
 context/currentness are required; a security-only or incomplete/unverified/nonpositive
 result stops for Adrian. No script, automatic invocation, #21, merge or issue closure.
-
-## Current #212 Status (supersedes historical text above)
-
-#212/PR #213 is complete, all #1-20 are consumed, #20 approval is only at
-`1dcb4a08d9d57d02ed67bf8e7f7d15275c5b3ecf`, cleanup
-`cddcac0d7a475c32eb2d8ad942b4f004c1ea1256` was separately accepted, and merge
-`121ee3fe33b74dc38b2401d22e7aa6df1b124bc9` closed #212. No #20 reuse, #21 or transfer.
-Other deliveries retain their own verified scopes and gates.

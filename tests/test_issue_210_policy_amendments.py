@@ -17,12 +17,9 @@ class Issue210PolicyAmendmentTests(unittest.TestCase):
     def test_completed_212_notices_explicitly_supersede_historical_text(self) -> None:
         markers = {
             "AGENTS.md": "Current D-069A And #212 Status",
-            ".kilo/command/finish-pr.md": "Current #212 Status",
             ".kilo/command/loop.md": "Current #212 Status",
-            ".kilo/command/review-pr.md": "Current #212 Status",
             ".kilo/rules/10-task-system.md": "Current #212 Status",
             ".kilo/rules/35-technical-recovery.md": "Current #212 Status",
-            ".kilo/rules/validation.md": "Current #212 Status",
             "docs/decisions.md": "Current D-069A And #212 Amendment",
             "docs/llm-operating-policy.md": "Current D-069A Amendment",
         }
@@ -33,6 +30,12 @@ class Issue210PolicyAmendmentTests(unittest.TestCase):
                 current_notice = content.lower().index(marker.lower())
                 self.assertIn("supersedes", content.lower()[current_notice:])
                 self.assertLess(current_notice, content.lower().index("no #20 reuse", current_notice))
+
+    def test_root_notice_overrides_unmergeable_instruction_mirrors(self) -> None:
+        current = text("AGENTS.md").split("## Mission and priority", 1)[0].lower()
+        self.assertIn("any command/profile/rule mirror", current)
+        self.assertIn("all #1-20 for #212/pr #213 are consumed", current)
+        self.assertIn("121ee3fe33b74dc38b2401d22e7aa6df1b124bc9", current)
 
     def test_d069a_amendment_records_exact_210_scope_and_router_limit(self) -> None:
         decisions = " ".join(text("docs/decisions.md").split())
