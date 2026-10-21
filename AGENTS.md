@@ -1,5 +1,25 @@
 # Instructions for repository agents
 
+## Current D-069A And #212 Status (2026-10-20)
+
+This current notice supersedes conflicting later historical #212 text in this file
+and any command/profile/rule mirror; the completed canonical state below is authoritative.
+All #1-20 for #212/PR #213 are consumed; #20 approval applies only to
+`1dcb4a08d9d57d02ed67bf8e7f7d15275c5b3ecf`, cleanup `cddcac0d7a475c32eb2d8ad942b4f004c1ea1256`
+was separately owner-accepted, and `121ee3fe33b74dc38b2401d22e7aa6df1b124bc9` integrated
+the PR and closed #212. No #20 reuse, #21 or transfer. Other deliveries keep their
+own scope and gates. D-069A's default ceiling is ten; its verified, exact #210/PR #211
+owner exception is maximum11 only, with nine outcomes preserved, #10 ordinary, #11
+owner-manual security only after #10 passes, and no #12.
+
+For Router owner-manual Codex security review only, backend identity may be honestly
+`RUNTIME_UNOBSERVABLE` under the exact explicit owner acceptance if all other required
+official binary, requested dispatch, native session/turn/input/output, context/tool,
+verdict and current-ref evidence passes. Never infer `RUNTIME_VERIFIED`; mismatch or
+unauthorized substitution is FAIL, other evidence gaps keep the gate open. No script,
+no automatic Daybreak, generic identity-policy change, or skipped security review. See
+D-069A and `docs/llm-operating-policy.md` for the complete contract.
+
 ## Mission and priority
 
 Build a small service that recommends which available subscription-backed AI

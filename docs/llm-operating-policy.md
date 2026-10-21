@@ -1,5 +1,24 @@
 # LLM Operating Policy
 
+## Current D-069A Amendment (2026-10-20)
+
+This current notice supersedes conflicting later historical #212 references in this
+document. All #1-20 for #212/PR #213 are consumed; #20 approval applies only to
+`1dcb4a08d9d57d02ed67bf8e7f7d15275c5b3ecf`, cleanup `cddcac0d7a475c32eb2d8ad942b4f004c1ea1256`
+was separately owner-accepted, and `121ee3fe33b74dc38b2401d22e7aa6df1b124bc9` integrated
+the PR and closed #212. No #20 reuse, #21 or transfer.
+
+D-069A remains default ten; only verified direct owner evidence and exact canonical
+scope can admit #210/PR #211 at maximum11. Nine prior outcomes remain unchanged; #10
+is ordinary, #11 is owner-manual security only after #10 passes, and #12 is prohibited.
+The Router-only manual Codex backend-identity limit is narrow: if the official path
+cannot independently expose backend identity, use `RUNTIME_UNOBSERVABLE` only after
+official binary/provenance, actual requested-model dispatch, native session/turn/input/
+output, context/tool audit, exact refs, structured APPROVE and no blockers are verified.
+Never infer `RUNTIME_VERIFIED` from UI/configuration/self-report. Mismatch/substitution
+is FAIL; other missing proof keeps the gate open. No automatic Daybreak, skipped review,
+generic identity weakening, or cross-delivery transfer.
+
 ## Purpose
 
 This document is the authoritative human-readable policy for multi-model work

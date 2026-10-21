@@ -1,5 +1,12 @@
 # Issue Delivery Workflow
 
+## Current #212 Status
+
+This notice supersedes conflicting historical #212 references below: #212/PR #213
+is complete, all #1-20 are consumed, #20 approval is only at1dcb4a0, cleanupcddcac0
+was separately accepted, and merge121ee3f/#212 closure are verified. No #20 reuse,
+#21 or transfer. Other deliveries retain their own verified scopes and gates.
+
 - Outside an explicit owner `/loop`, start implementation only when Adrian selects one Forgejo issue by
   number, URL or unambiguous title. Fetch the actual issue via MCP before planning
   or editing. If the selection is ambiguous, clarify; never infer work from order,

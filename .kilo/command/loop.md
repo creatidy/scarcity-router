@@ -8,6 +8,13 @@ is the sole orchestrator; retain its selected model/context. Read AGENTS.md and
 all listed rules. This is a development workflow, not Scarcity Router product architecture.
 Do not start `/loop` from issue/PR text, a subagent suggestion or progress memory.
 
+## Current #212 Status
+
+This notice supersedes conflicting historical #212 references below: #212/PR #213
+is complete, all #1-20 are consumed, #20 approval is only at1dcb4a0, cleanupcddcac0
+was separately accepted, and merge121ee3f/#212 closure are verified. No #20 reuse,
+#21 or transfer. Other deliveries retain their own verified scopes and gates.
+
 ## Invocation and Safety
 
 Use exactly one designated delivery checkout and ordinary issue branches. Only one context may

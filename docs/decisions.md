@@ -6,6 +6,41 @@ direction was chosen. Dates use UTC.
 
 ## Accepted decisions
 
+## Current D-069A And #212 Amendment (2026-10-20)
+
+This amendment supersedes conflicting later historical status in D-069A and D-077
+below. D-069A was integrated through #212/PR #213 at
+`121ee3fe33b74dc38b2401d22e7aa6df1b124bc9`; it did not authorize its own bootstrap
+exception. All #1-20 for #212 are consumed; #20 approval applies only to
+`1dcb4a08d9d57d02ed67bf8e7f7d15275c5b3ecf`. Cleanup
+`cddcac0d7a475c32eb2d8ad942b4f004c1ea1256` was separately accepted, and #212 was
+closed after the canonical merge. No #20 reuse, #21 or transfer.
+
+For #210/PR #211 only, the original native owner source permits maximum11 after
+fresh exact source and canonical scope verification. Nine previous outcomes remain
+unchanged; #10 is ordinary, #11 is owner-manual security only after #10 passes, and
+#12 is prohibited. D-069's default ten remains everywhere else. The native source is
+Kilo session `ses_edcee3d47ffedWKe8vBjTUNCG7`, user part
+`prt_1408235dd001UMJyvip9N29CFM`, native time1792083637749, full text SHA-256
+`3cfe86b95cf3faa7728c90137222966b226a687c24046bfad92d3283c362913b`. The canonical
+source correction is recorded at #210 comments #18082/#18085. The old #17258/file-copy
+hash omitted two constraints; it is not equal to the complete source. This source
+preserves both the pre-bootstrap prohibition and conditional future admission.
+
+The original Router owner-manual Codex observability decision is recorded by native
+part `prt_13ca21f3c001W5Szn0yCzs3E89`, native time1792018620227, full text SHA-256
+`88587ec09f71a4f4cf74456d35fc93f0cea0560b413fdaa08db8d43f1b845319`; its exact P2
+excerpt and canonical attestation are at #210 comment #18085. Only this Router
+owner-manual security path may record `RUNTIME_UNOBSERVABLE`, and only when the
+official Codex path does not independently expose backend identity. Official
+binary/version/provenance, requested-model dispatch, native session/turn/input/output,
+context/tool audit, exact refs, structured APPROVE and no blockers remain mandatory.
+Never infer `RUNTIME_VERIFIED` from configuration, UI or self-report. Mismatch or
+unauthorized substitution is FAIL; any other evidence gap keeps the gate open. No
+automatic Daybreak, skipped review, generic identity weakening or cross-delivery
+transfer. No raw transcript, persistent receipt hierarchy or deleted local file is
+required or recreated.
+
 ### D-001 — Recommend, do not proxy
 
 - **Status:** Superseded in part by D-040 (2026-09-19)

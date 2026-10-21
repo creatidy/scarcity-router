@@ -1,5 +1,12 @@
 # Bounded Technical Recovery
 
+## Current #212 Status
+
+This notice supersedes conflicting historical #212 references below: #212/PR #213
+is complete, all #1-20 are consumed, #20 approval is only at1dcb4a0, cleanupcddcac0
+was separately accepted, and merge121ee3f/#212 closure are verified. No #20 reuse,
+#21 or transfer. Other deliveries retain their own verified scopes and gates.
+
 This shared development-workflow contract applies to implementation, validation,
 review and remediation. It does not authorize product changes, persistent services,
 new dependencies, paid/live inference, external effects or broader access.
