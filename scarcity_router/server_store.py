@@ -52,6 +52,7 @@ import sqlite3
 import stat
 import time
 import threading
+import weakref
 from contextlib import contextmanager
 from collections.abc import Generator, Mapping
 from dataclasses import dataclass
@@ -65,6 +66,55 @@ STORE_SCHEMA_VERSION = 2
 STORE_FILE_NAME = "server-state.sqlite3"
 DATA_DIR_NAME = "scarcity-router"
 SERVER_DATA_DIR_NAME = "server"
+
+
+@dataclass(slots=True)
+class _DatabaseDescriptorLease:
+    """Keep a raw validation descriptor open while SQLite connections live."""
+
+    descriptors: list[int]
+    references: int
+
+    @property
+    def fd(self) -> int:
+        return self.descriptors[0]
+
+
+_DATABASE_DESCRIPTOR_LEASES_LOCK = threading.RLock()
+_DATABASE_DESCRIPTOR_LEASES: dict[tuple[int, int], _DatabaseDescriptorLease] = {}
+
+
+def _release_database_descriptor_lease(key: tuple[int, int]) -> None:
+    """Close validation descriptors only after every store connection closes.
+
+    POSIX record locks are process-owned. Closing any descriptor for an inode
+    can release locks held by a different SQLite connection in this process,
+    so the validation descriptor must share the managed connection lifetime.
+    """
+    with _DATABASE_DESCRIPTOR_LEASES_LOCK:
+        lease = _DATABASE_DESCRIPTOR_LEASES.get(key)
+        if lease is None:
+            return
+        lease.references -= 1
+        if lease.references < 0:
+            raise RuntimeError("server store descriptor lease underflow")
+        if lease.references:
+            return
+        for fd in lease.descriptors:
+            try:
+                os.close(fd)
+            except OSError:
+                # The descriptor is no longer associated with a live SQLite
+                # connection. A close error must not release another lease.
+                pass
+        del _DATABASE_DESCRIPTOR_LEASES[key]
+
+
+def _close_connection_and_release_lease(
+    connection: sqlite3.Connection, key: tuple[int, int]
+) -> None:
+    connection.close()
+    _release_database_descriptor_lease(key)
 
 # Each migration is (version, statements). Versions are applied in order
 # inside one transaction for the pending set; the recorded versions advance
@@ -255,10 +305,16 @@ class ServerStore:
     _lock: threading.RLock
     _connection: sqlite3.Connection
     _parent_info: os.stat_result
+    _lease_key: tuple[int, int] | None
+    _database_fd: int | None
+    _close_finalizer: weakref.finalize[..., ServerStore] | None
 
     def __init__(self, path: Path) -> None:
         self._path = path
         self._lock = threading.RLock()
+        self._lease_key = None
+        self._database_fd = None
+        self._close_finalizer = None
         try:
             path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
             # Directory aliases are supported; the final database entry is not
@@ -271,21 +327,23 @@ class ServerStore:
             _ = self._check_store_entry(path, expected)
             with self._recovery_guard(path, expected) as expected:
                 _ = self._check_store_entry(path, expected)
-                flags = getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
-                flags |= os.O_RDONLY if expected is not None else os.O_RDWR | os.O_CREAT | os.O_EXCL
-                fd = os.open(path, flags, 0o600)
-                try:
-                    opened = os.fstat(fd)
-                    if expected is None:
-                        expected = opened
-                    if not os.path.samestat(opened, expected) or not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1:
-                        raise ServerStoreError("server store entry identity changed; refusing access")
-                    _ = self._check_store_entry(path, expected)
-                    self._connection = self._open_store(path, expected, fd)
-                finally:
-                    os.close(fd)
+                lease_key, fd, expected = self._acquire_database_descriptor(path, expected)
+                self._lease_key = lease_key
+                self._database_fd = fd
+                _ = self._check_store_entry(path, expected)
+                self._connection = self._open_store(path, expected, fd)
+                self._close_finalizer = weakref.finalize(
+                    self,
+                    _close_connection_and_release_lease,
+                    self._connection,
+                    lease_key,
+                )
         except OSError:
+            self._cleanup_failed_open()
             raise ServerStoreError("server store filesystem access is unavailable; refusing access") from None
+        except BaseException:
+            self._cleanup_failed_open()
+            raise
 
     def _store_info(self, path: Path, *, directory: bool = False) -> os.stat_result | None:
         try:
@@ -315,10 +373,124 @@ class ServerStore:
             _ = self._store_info(path.with_name(path.name + suffix))
         return current
 
+    def _acquire_database_descriptor(
+        self, path: Path, expected: os.stat_result | None
+    ) -> tuple[tuple[int, int], int, os.stat_result]:
+        """Acquire a per-inode descriptor lease without closing live-store fds.
+
+        POSIX record locks are process-owned; closing any descriptor for a
+        database inode can release locks held by a different SQLite
+        connection in this process. Reuse the existing descriptor for the
+        inode and defer its close until the last ``ServerStore`` connection
+        has closed.
+        """
+        with _DATABASE_DESCRIPTOR_LEASES_LOCK:
+            if expected is not None:
+                key = (expected.st_dev, expected.st_ino)
+                lease = _DATABASE_DESCRIPTOR_LEASES.get(key)
+                if lease is not None:
+                    opened = os.fstat(lease.fd)
+                    if (
+                        not os.path.samestat(opened, expected)
+                        or not stat.S_ISREG(opened.st_mode)
+                        or opened.st_nlink != 1
+                    ):
+                        raise ServerStoreError(
+                            "server store entry identity changed; refusing access"
+                        )
+                    current = self._check_store_entry(path, expected)
+                    if current is None or not os.path.samestat(opened, current):
+                        raise ServerStoreError(
+                            "server store entry identity changed; refusing access"
+                        )
+                    lease.references += 1
+                    return key, lease.fd, opened
+
+            flags = getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+            flags |= os.O_RDONLY if expected is not None else os.O_RDWR | os.O_CREAT | os.O_EXCL
+            fd = os.open(path, flags, 0o600)
+            registered = False
+            opened: os.stat_result | None = None
+            try:
+                opened = os.fstat(fd)
+                if expected is None:
+                    expected = opened
+                if (
+                    not os.path.samestat(opened, expected)
+                    or not stat.S_ISREG(opened.st_mode)
+                    or opened.st_nlink != 1
+                ):
+                    raise ServerStoreError(
+                        "server store entry identity changed; refusing access"
+                    )
+                current = self._check_store_entry(path, expected)
+                if current is None or not os.path.samestat(opened, current):
+                    raise ServerStoreError(
+                        "server store entry identity changed; refusing access"
+                    )
+
+                key = (opened.st_dev, opened.st_ino)
+                existing = _DATABASE_DESCRIPTOR_LEASES.get(key)
+                if existing is not None:
+                    existing_info = os.fstat(existing.fd)
+                    if not os.path.samestat(existing_info, opened):
+                        raise ServerStoreError(
+                            "server store descriptor lease identity changed"
+                        )
+                    # A path replacement raced the initial stat. Do not close
+                    # this descriptor while another managed SQLite connection
+                    # may hold process-scoped locks on its inode.
+                    existing.descriptors.append(fd)
+                    existing.references += 1
+                    registered = True
+                    return key, existing.fd, opened
+
+                _DATABASE_DESCRIPTOR_LEASES[key] = _DatabaseDescriptorLease(
+                    descriptors=[fd], references=1
+                )
+                registered = True
+                return key, fd, opened
+            finally:
+                if not registered:
+                    if opened is None:
+                        os.close(fd)
+                    else:
+                        # If validation failed after a raced replacement, keep
+                        # the descriptor attached to any existing lease rather
+                        # than closing an inode another store still uses.
+                        existing = _DATABASE_DESCRIPTOR_LEASES.get(
+                            (opened.st_dev, opened.st_ino)
+                        )
+                        if existing is None:
+                            os.close(fd)
+                        else:
+                            existing.descriptors.append(fd)
+
+    def _cleanup_failed_open(self) -> None:
+        connection = getattr(self, "_connection", None)
+        if isinstance(connection, sqlite3.Connection):
+            try:
+                connection.close()
+            except sqlite3.Error:
+                # Keep the descriptor lease pinned if SQLite did not close.
+                return
+        if self._lease_key is not None:
+            _release_database_descriptor_lease(self._lease_key)
+            self._lease_key = None
+            self._database_fd = None
+
+    def _database_lease_references(self) -> int:
+        if self._lease_key is None:
+            return 0
+        with _DATABASE_DESCRIPTOR_LEASES_LOCK:
+            lease = _DATABASE_DESCRIPTOR_LEASES.get(self._lease_key)
+            return lease.references if lease is not None else 0
+
     def _open_store(self, path: Path, expected: os.stat_result, fd: int) -> sqlite3.Connection:
         parent = path.parent
-        # sqlite3 opens filenames, not validated descriptors. Keep the bound
-        # descriptor and recheck around opens; this is not an atomic VFS fence.
+        # sqlite3 opens filenames, not validated descriptors. The raw
+        # validation descriptor is leased across all managed connections to
+        # this inode because an independent close can release their POSIX locks.
         _ = self._check_store_entry(path, expected)
         # Closing the last writable WAL reader can checkpoint even on a
         # refusal. Inspect stores read-only first, including WAL.
@@ -398,7 +570,11 @@ class ServerStore:
 
     def close(self) -> None:
         with self._lock:
-            self._connection.close()
+            finalizer = self._close_finalizer
+            if finalizer is not None and finalizer.alive:
+                # The finalizer closes SQLite first, then releases the shared
+                # raw descriptor lease. Never reverse that ownership order.
+                _ = finalizer()
 
     @property
     def path(self) -> Path:
@@ -539,9 +715,63 @@ class ServerStore:
         finally:
             reference.close()
 
+    def _copy_database_from_lease(
+        self, target: Path, expected: tuple[int, ...]
+    ) -> None:
+        """Copy the main file without opening or closing another DB fd."""
+        fd = self._database_fd
+        if fd is None:
+            raise ServerStoreError("server store recovery descriptor is unavailable")
+        info = os.fstat(fd)
+        opened = (
+            info.st_dev,
+            info.st_ino,
+            info.st_mode,
+            info.st_uid,
+            info.st_nlink,
+            info.st_size,
+            info.st_mtime_ns,
+            info.st_ctime_ns,
+        )
+        if opened != expected:
+            raise ServerStoreError("server store changed during recovery inspection; retry")
+
+        target_fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            with os.fdopen(target_fd, "wb", closefd=False) as writer:
+                # This descriptor is shared by the live store lease. Read it
+                # in place; opening/closing another fd for the DB inode could
+                # release process-owned POSIX locks held by SQLite.
+                with _DATABASE_DESCRIPTOR_LEASES_LOCK:
+                    position = os.lseek(fd, 0, os.SEEK_CUR)
+                    try:
+                        _ = os.lseek(fd, 0, os.SEEK_SET)
+                        remaining = info.st_size
+                        while remaining:
+                            chunk = os.read(fd, min(1024 * 1024, remaining))
+                            if not chunk:
+                                raise ServerStoreError(
+                                    "server store changed during recovery inspection; retry"
+                                )
+                            _ = writer.write(chunk)
+                            remaining -= len(chunk)
+                    finally:
+                        _ = os.lseek(fd, position, os.SEEK_SET)
+                writer.flush()
+                os.fsync(writer.fileno())
+        finally:
+            os.close(target_fd)
+
     def _inspect_interrupted_store(self, path: Path) -> None:
         """Authorize normal SQLite rollback only from a validated private copy."""
         try:
+            # A recovery copy is only safe when this opener owns the sole
+            # ServerStore lease. Another live connection may be in a write
+            # transaction; do not inspect or snapshot its database in place.
+            if self._database_lease_references() != 1:
+                raise ServerStoreError(
+                    "server store recovery refused while another store connection is open"
+                )
             parent_info = path.parent.lstat()
             if not stat.S_ISDIR(parent_info.st_mode):
                 raise ServerStoreError("server store recovery requires an owned directory")
@@ -566,6 +796,10 @@ class ServerStore:
                 for source, stamp in before.items():
                     if stamp is None:
                         continue
+                    target = directory / source.name
+                    if source == path:
+                        self._copy_database_from_lease(target, stamp)
+                        continue
                     fd = os.open(source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
                     with os.fdopen(fd, "rb") as reader:
                         info = os.fstat(reader.fileno())
@@ -582,7 +816,6 @@ class ServerStore:
                             if reader.read(8) == magic:
                                 raise ServerStoreError("server store recovery journal is unsupported")
                             _ = reader.seek(0)
-                        target = directory / source.name
                         output = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
                         with os.fdopen(output, "wb") as writer:
                             shutil.copyfileobj(reader, writer)

@@ -1590,7 +1590,13 @@ class NoExecutionAndNoIdeMutationTests(GuardrailTestCase):
                 for definition in tree.body:
                     if isinstance(definition, ast.ClassDef) and definition.name == "ServerStore":
                         for member in definition.body:
-                            if isinstance(member, ast.FunctionDef) and member.name in {"_inspect_interrupted_store", "_recovery_guard", "_write_recovery_claim"}:
+                            if isinstance(member, ast.FunctionDef) and member.name in {
+                                "_acquire_database_descriptor",
+                                "_copy_database_from_lease",
+                                "_inspect_interrupted_store",
+                                "_recovery_guard",
+                                "_write_recovery_claim",
+                            }:
                                 recovery_calls.update(id(call) for call in ast.walk(member) if isinstance(call, ast.Call))
             for node in ast.walk(tree):
                 if not isinstance(node, ast.Call):

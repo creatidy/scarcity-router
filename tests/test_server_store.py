@@ -33,6 +33,11 @@ T0 = "2026-09-16T12:00:00.000Z"
 T1 = "2026-09-16T12:01:00.000Z"
 
 
+def _store_connection(store: ServerStore) -> sqlite3.Connection:
+    """Private transaction seam needed for inode-lock regression tests."""
+    return cast(sqlite3.Connection, getattr(store, "_connection"))
+
+
 class DatabaseEntryTests(unittest.TestCase):
     def test_linked_cold_sidecars_refuse_before_sqlite_or_recovery_access(self) -> None:
         for journal in ("DELETE", "WAL"):
@@ -311,6 +316,161 @@ class DatabaseEntryTests(unittest.TestCase):
             finally:
                 direct.close()
             self.assertEqual((0o700, 0o600), (stat.S_IMODE(directory.stat().st_mode), stat.S_IMODE(filename.stat().st_mode)))
+
+
+class DatabaseDescriptorLeaseTests(unittest.TestCase):
+    _EXTERNAL_WRITER: str = """
+import sqlite3, sys, time
+connection = sqlite3.connect(sys.argv[1], timeout=0)
+connection.execute("PRAGMA busy_timeout=0")
+print("READY", flush=True)
+deadline = time.monotonic() + 10
+blocked = False
+while True:
+    try:
+        if not connection.in_transaction:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                "INSERT INTO provider_secrets VALUES (?, ?, ?)",
+                ("external", "external-secret", sys.argv[2]),
+            )
+            print("PENDING", flush=True)
+        connection.commit()
+        print("COMMITTED", flush=True)
+        break
+    except sqlite3.OperationalError as error:
+        if (error.sqlite_errorcode & 0xFF) not in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
+            print("ERROR", flush=True)
+            raise
+        if not blocked:
+            print("BLOCKED", flush=True)
+            blocked = True
+        if time.monotonic() >= deadline:
+            print("TIMEOUT", flush=True)
+            sys.exit(2)
+        time.sleep(0.01)
+connection.close()
+"""
+
+    def _start_external_writer(self, path: Path) -> subprocess.Popen[str]:
+        return subprocess.Popen(
+            [sys.executable, "-c", self._EXTERNAL_WRITER, str(path), T1],
+            cwd=path.parent,
+            env={"PATH": os.defpath, "HOME": str(path.parent), "TMPDIR": str(path.parent)},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+
+    def _wait_for_external_line(
+        self, writer: subprocess.Popen[str], expected: str
+    ) -> None:
+        assert writer.stdout is not None
+        lines: list[str] = []
+        while True:
+            line = cast(str, writer.stdout.readline())
+            if not line:
+                break
+            value = line.strip()
+            lines.append(value)
+            if value == expected:
+                return
+            if value in ("COMMITTED", "TIMEOUT", "ERROR"):
+                break
+        self.fail(f"external writer output did not reach {expected}: {lines}")
+
+    @staticmethod
+    def _stop_external_writer(writer: subprocess.Popen[str]) -> None:
+        if writer.poll() is None:
+            writer.kill()
+            _ = writer.wait(timeout=10)
+        for stream in (writer.stdout, writer.stderr):
+            if stream is not None:
+                stream.close()
+
+    def _finish_external_writer(
+        self, writer: subprocess.Popen[str], first: ServerStore
+    ) -> None:
+        assert writer.stdout is not None
+        _ = _store_connection(first).execute("COMMIT")
+        self._wait_for_external_line(writer, "COMMITTED")
+        self.assertEqual(0, writer.wait(timeout=10))
+        assert writer.stderr is not None
+        self.assertEqual("", cast(str, writer.stderr.read()))
+
+    def _assert_both_provider_secrets_survived(self, directory: Path) -> None:
+        reopened = ServerStore.open(directory)
+        try:
+            self.assertEqual("first-secret", reopened.get_provider_secret("first"))
+            self.assertEqual("external-secret", reopened.get_provider_secret("external"))
+        finally:
+            reopened.close()
+
+    def test_successful_second_open_and_close_preserve_active_read_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as parent:
+            directory = Path(parent) / "server"
+            first = ServerStore.open(directory)
+            writer: subprocess.Popen[str] | None = None
+            try:
+                first.set_provider_secret(provider_id="first", secret="first-secret", at=T0)
+                _ = _store_connection(first).execute("BEGIN")
+                count = cast(sqlite3.Row | None, _store_connection(first).execute(
+                    "SELECT COUNT(*) FROM provider_secrets"
+                ).fetchone())
+                assert count is not None
+                self.assertEqual(1, count[0])
+
+                # Close a second ServerStore open while the first still owns
+                # a SQLite read transaction. The no-migration seam isolates
+                # constructor success; the following test exercises the
+                # production migration-failure path.
+                second = ServerStore.open(directory, migrate=False)
+                second.close()
+
+                writer = self._start_external_writer(first.path)
+                assert writer.stdout is not None
+                self.assertEqual("READY", cast(str, writer.stdout.readline()).strip())
+                self._wait_for_external_line(writer, "BLOCKED")
+                self._finish_external_writer(writer, first)
+            finally:
+                if writer is not None:
+                    self._stop_external_writer(writer)
+                first.close()
+
+            self._assert_both_provider_secrets_survived(directory)
+
+    def test_failed_second_open_keeps_write_lock_until_first_commit(self) -> None:
+        with tempfile.TemporaryDirectory() as parent:
+            directory = Path(parent) / "server"
+            first = ServerStore.open(directory)
+            writer: subprocess.Popen[str] | None = None
+            try:
+                _ = _store_connection(first).execute("BEGIN IMMEDIATE")
+                _ = _store_connection(first).execute(
+                    "INSERT INTO provider_secrets VALUES (?, ?, ?)",
+                    ("first", "first-secret", T0),
+                )
+
+                second_open_failed = False
+                try:
+                    second = ServerStore.open(directory)
+                except ServerStoreError:
+                    second_open_failed = True
+                else:
+                    second.close()
+                self.assertTrue(second_open_failed, "the write-locked reopen should refuse safely")
+
+                writer = self._start_external_writer(first.path)
+                assert writer.stdout is not None
+                self.assertEqual("READY", cast(str, writer.stdout.readline()).strip())
+                self._wait_for_external_line(writer, "BLOCKED")
+                self._finish_external_writer(writer, first)
+            finally:
+                if writer is not None:
+                    self._stop_external_writer(writer)
+                first.close()
+
+            self._assert_both_provider_secrets_survived(directory)
 
 
 class RecoveryLifecycleTests(unittest.TestCase):
