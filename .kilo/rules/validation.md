@@ -31,9 +31,13 @@ it never authorizes a hidden model call.
 - Independent review is a fresh separate read-only USER-VISIBLE Kilo/Codex session.
   Under D-077's direct owner amendment, the sole authorized primary may start ordinary
   Kilo review through a single initial Agent Manager prompt using
-  `pr-reviewer-standalone`; the session inherits the current primary model unless the
-  owner explicitly selects another. Include exact refs, complete compact diff and
-  acceptance, then retrieve the structured native result without owner copy/paste.
+  `pr-reviewer-standalone`; explicitly bind the exact provider-qualified model selected
+  by the current primary, plus its provider and known reasoning variant. Adrian may
+  explicitly select another permitted identity per review; Highspeed is not currently
+  authorized. Never rely on a workspace default, provider fallback or silent
+  substitution. If the exact requested identity cannot be resolved, do not dispatch
+  review content. Include exact refs, complete compact diff and acceptance, then
+  retrieve the structured native result without owner copy/paste.
   No programmatic hidden launcher, Task/subagent, model subprocess, background/HTTP
   inference or generated wrapper. Daybreak remains owner-manual through official
   Codex. If the visible Manager result path fails, preserve the attempted ordinal and

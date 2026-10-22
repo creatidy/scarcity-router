@@ -135,23 +135,39 @@ Issue comments before reservation and never transferable:
 - #185/PR #209: maximum14. Preserve #1-11; #12 remains reserved/unconsumed, not
   reclassified. #13 ordinary; #14 owner-manual Daybreak only after valid #13 APPROVE;
   no #15. Canonical Issue #185 comment #18355.
-- #205/PR #206: maximum16. Preserve #1-14. #15 ordinary; #16 owner-manual Daybreak
-  only after valid #15 APPROVE; no #17. Canonical Issue #205 comment #18351.
-- #174/PR #204: maximum20. Preserve #1-18. #19 ordinary; #20 owner-manual Daybreak
-  only after valid #19 APPROVE; no #21. The #19 session recorded at comment #18387
-  returned no verdict. Canonical Issue #174 comment #18355.
+- #205/PR #206: maximum18. Preserve #1-15, including #15 REQUEST_CHANGES. The
+  unused #16 Daybreak reservation is explicitly superseded/skipped, not reclassified
+  or executed. #17 is ordinary; #18 is owner-manual Daybreak only after valid #17
+  APPROVE on identical refs; no #19. Canonical Issue #205 comments #18436/#18444.
+- #174/PR #204: maximum20. Preserve #1-18. #19 was consumed with no verdict and is
+  failed/unverified (Issue #174 comment #18387); do not retry. The #20 Daybreak
+  condition is unsatisfied and #20 is ineligible; no #21. Keep parked. Canonical
+  Issue #174 comments #17189/#18387.
+
+Current #185/PR #209 state: #13 was dispatched but returned no structured result;
+it is failed/unverified, not an approval. #14 is ineligible because it requires a
+valid #13 APPROVE; no #15 is authorized. Preserve the RCA in Issue #185 comments
+#18428/#18433 and do not retry or start another model session pending direct owner
+disposition.
 
 Historical #205/PR #206 authority is preserved, not erased: comments #16179/#16250
-authorized the earlier ceiling12, and comment #16611 superseded that with ceiling15.
-Comment #18351 is the current direct owner amendment to ceiling16 and preserves all
-#1-14 outcomes unchanged. Comment #16611 separately authorized #205 parking if its
-final review gates could not close within15: preserve issue/PR open and unmerged at
-STOP_REVISE with the old invocation's terminal state, every ordinal and recovery
-history. Only THEN could a distinctly NEW owner-authorized `/loop` invocation with a
-fresh full canonical queue reselect it; this was not a silent skip inside the
-terminated invocation, not a global parking exception, and not restart authority for
-parked #174 or #205. The direct 2026-10-22 owner instruction is a separate new loop
-for the three explicitly selected PRs, reopens no other delivery and resets nothing.
+authorized the earlier ceiling12; #16611 set ceiling15; #18351 set ceiling16 and
+preserved #1-14. The direct owner amendment #18436 now sets maximum18 only for
+#205/PR #206: #15 REQUEST_CHANGES remains unchanged, #16 is explicitly skipped without
+reclassification or execution, #17 is the next ordinary review and #18 is owner-manual
+Daybreak only after valid #17 approval. Comment #18444 binds ordinary review to the
+exact main model by default and prohibits Highspeed/default-provider fallback. No
+#19/reset/transfer. The direct 2026-10-22 owner instruction is limited to this issue
+and explicitly selected batch; it reopens no other delivery. #174 remains parked:
+comment #18387 records #19 as no-verdict/failed-unverified, so #20 cannot be dispatched.
+Comment #16611 separately authorized #205 parking if it cannot close all gates within
+the then-current ceiling; #18436 supersedes only that numeric ceiling. If #205 cannot
+close within18, preserve the issue/PR open and unmerged at STOP_REVISE, retaining the
+old invocation's terminal state, every ordinal and recovery history. Only THEN may a
+distinctly NEW, separately owner-authorized `/loop` invocation use a fresh full
+canonical queue; never silently skip or restart a parked delivery. This is not a
+silent skip inside the terminated invocation, not a global parking exception and not
+restart authority for parked #174 or #205.
 After successful integration, normal `/loop` selection may continue after acceptance
 and closure. No source fixture or ledger claim supplies owner authority.
 
@@ -203,12 +219,18 @@ Available mechanisms, where applicable:
 - Under the direct D-077 owner amendment, the single authorized primary may start a
   fresh ordinary Kilo reviewer through Agent Manager after exact refs, accepted scope,
   validation, current owner authority and enough remaining budget are verified and
-  recorded. Use one initial prompt with the complete compact diff and `pr-reviewer-
-  standalone`; it is a separate read-only user-visible session, not a Task/subagent
-  or second controller. The reviewer inherits the current primary model unless the
-  owner explicitly selected another. No model fallback/substitution is allowed.
-  This is not authority for scripts/subprocesses, background/HTTP inference or a
-  generated launcher. Daybreak remains owner-manual through official Codex.
+  recorded. Bind the exact provider-qualified model selected by the main primary,
+  including its provider and known reasoning variant, in the Agent Manager task's
+  `model` request. Only an explicit per-review owner override may select another
+  permitted identity. Highspeed models, workspace-default selection and provider
+  fallback are not authorized. If the exact model cannot be bound, stop before
+  dispatch. Use one initial prompt with the complete compact diff and
+  `pr-reviewer-standalone`; it is a separate read-only visible session, not a
+  Task/subagent or second controller. A model mismatch/provider error is terminal for
+  that ordinal; stop the session and do not send status/retry prompts to a `retrying`
+  session. Preserve the exact failure; no fallback. This is not authority for
+  scripts/subprocesses, background/HTTP inference or a generated launcher. Daybreak
+  remains owner-manual through official Codex.
 
 ## Secret-Safe Environments
 

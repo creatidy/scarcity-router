@@ -6469,6 +6469,37 @@ transfer review authority, bypass a predecessor, or permit merging an unaccepted
 Other genuine owner-only architecture/security/product decisions retain normal
 STOP_AND_ASK semantics.
 
+**Owner amendment (2026-10-22T15:53:36Z; Issue #205 comment #18444):** Ordinary
+visible Agent Manager review defaults to the exact provider-qualified model selected
+by the main implementation session, including its provider and known reasoning
+variant. The primary explicitly binds that identity in the task request rather than
+relying on a workspace default or implicit provider routing. Adrian may explicitly
+select another permitted model for one review. Highspeed models have never been
+authorized and are not an implicit or ordinary override choice; a future direct owner
+instruction would be required to lift that prohibition. An unresolved identity,
+mismatch, provider-plan error or retrying session is a stop condition: do not send
+review content, retry or substitute. This development-review rule does not alter the
+Router product selector, catalog or authorized product inference. This supersedes
+D-077's earlier inherited-default wording. The comment is a Kilo-authored
+transcription; the direct source is Adrian's current primary-session instruction.
+
+**Owner amendment (2026-10-22T16:49:02Z; Issue #205 comment #18436):** Maximum18
+applies only to Issue #205/PR #206. Preserve #1-15 and the #15 REQUEST_CHANGES
+outcome. The unused #16 conditional Daybreak reservation is explicitly superseded and
+skipped without reclassification, execution or history reset. #17 is the next ordinary
+independent review after scoped correction, validation and a frozen exact HEAD; #18 is
+the separate owner-manual official Codex Daybreak security review only after valid
+#17 APPROVE on the same refs. No #19 or higher. This cap/role sequence does not
+transfer to #185/PR #209 or #174/PR #204. The comment is a Kilo-authored transcription
+of Adrian's direct decision, not owner-authored evidence.
+
+**Current preserved batch review states:** #205/#206 #15 remains REQUEST_CHANGES;
+#16 is skipped. #185/#209 #13 returned no structured result after the unauthorized
+Highspeed route and remains failed/unverified; #14 is ineligible and no #15 is
+authorized. #174/#204 #19 returned no verdict per Issue #174 comment #18387, so its
+conditional #20 security gate is also ineligible. These issue-local states do not
+authorize retries, role changes, transfers or resets.
+
 ### U-014 - Native coding backend versus Kernel-owned workspace lifecycle
 
 - **Status:** Direction settled by D-073; replacement/retirement evidence remains

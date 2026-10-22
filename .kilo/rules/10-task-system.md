@@ -75,8 +75,12 @@ was separately accepted, and merge121ee3f/#212 closure are verified. No #20 reus
 - `/finish-pr` selects an existing PR and authorizes only its linked issue's
   accepted-scope remediation. Under the direct D-077 owner amendment, the sole
   `/loop` or authorized `/finish-pr` primary may start one fresh visible ordinary Kilo
-  reviewer through Agent Manager using `pr-reviewer-standalone`; it inherits the
-  exact current primary model unless the owner explicitly selects another. The
+  reviewer through Agent Manager using `pr-reviewer-standalone`; bind the exact
+  provider-qualified model selected by the current primary, plus its provider and
+  known reasoning variant. Adrian may explicitly select another permitted identity
+  per review. Highspeed models and automatic workspace/provider fallback are not
+  authorized. If the exact model cannot be bound or dispatch reports a mismatch/error,
+  stop without retry/substitution and preserve the ordinal. The
   primary supplies exact refs, acceptance and complete compact diff and retrieves the
   structured result through the native Agent Manager/Kilo session without owner
   copy/paste. This remains a distinct read-only session, not self-review or a second

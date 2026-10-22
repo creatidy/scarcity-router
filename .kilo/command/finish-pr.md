@@ -36,12 +36,14 @@ must not invoke another model, start a session or delegate to a hidden reviewer.
  5. Under the direct D-077 owner amendment, start one fresh read-only ordinary Kilo
     reviewer using a single initial `agent_manager` local-session prompt and the
     selectable `pr-reviewer-standalone` agent. Include the complete Git diff and exact
-    issue criteria in that prompt. Omit model/provider/variant overrides so the fresh
-    session inherits the current primary's exact selection; no fallback. The session
-    is user-visible and separate; the Agent Manager reply ID/session identity is
-    retained. Do not use an empty prepared session followed by a second whole-PR
-    prompt, Task/subagent, shell/Python/HTTP model launcher, background model job or
-    generated wrapper. Daybreak remains owner-manual through official Codex only.
+    issue criteria in that prompt. Resolve the current primary's exact provider-
+    qualified model and pass it explicitly as `model`, with the same provider and
+    known reasoning variant. Only Adrian may explicitly select another permitted
+    identity for this review. Highspeed models and automatic provider fallback are not
+    authorized. On model mismatch or provider error, stop without retrying or
+    substitution. Retain the Agent Manager reply ID/session identity. Do not use Task,
+    shell/Python/HTTP model launchers, background model jobs or generated wrappers.
+    Daybreak remains owner-manual through official Codex only.
   6. Retrieve the structured reviewer JSON directly through the native Agent Manager
      `replyTo` channel; if that reply is absent after the session completes, use
      `kilo_local_recall` on that exact session. Validate schema and exact refs, then

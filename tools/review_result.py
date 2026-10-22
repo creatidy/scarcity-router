@@ -38,6 +38,11 @@ AGENT_MANAGER_FIELDS: frozenset[str] = frozenset(
 )
 FINDING_FIELDS: frozenset[str] = frozenset(("severity", "file", "line_start", "line_end", "evidence", "consequence", "required_remediation"))
 SHA = re.compile(r"[0-9a-f]{40}")
+SHA256 = re.compile(r"[0-9a-f]{64}")
+SPAWN_FIELDS = frozenset((
+    "pid", "host", "executable", "executable_sha256", "version", "version_source",
+    "context", "model_identity", "lifecycle", "started_ns",
+))
 SECRET = re.compile(
     r"(?i)(?:\bsk-[a-z0-9_-]{8,}|\bbearer\s+\S+|"
     + r"eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+|"
@@ -630,6 +635,35 @@ def _object(store: PrivateStore, name: str) -> dict[str, Json] | None:
     return value
 
 
+def _valid_spawn_identity(
+    spawned: dict[str, Json], context: Context, executable_sha256: str
+) -> bool:
+    executable = spawned.get("executable")
+    digest = spawned.get("executable_sha256")
+    version = spawned.get("version")
+    host = spawned.get("host")
+    return (
+        frozenset(spawned) == SPAWN_FIELDS
+        and type(spawned.get("pid")) is int
+        and cast(int, spawned["pid"]) > 0
+        and isinstance(host, str)
+        and re.fullmatch(HOST, host) is not None
+        and isinstance(executable, str)
+        and os.path.isabs(executable)
+        and isinstance(digest, str)
+        and SHA256.fullmatch(digest) is not None
+        and digest == executable_sha256
+        and isinstance(version, str)
+        and re.fullmatch(r"[A-Za-z0-9 ._+-]{1,80}", version) is not None
+        and spawned.get("version_source") == "parent_attested"
+        and spawned.get("context") == context.json()
+        and spawned.get("model_identity") == "UNVERIFIED"
+        and spawned.get("lifecycle") == "started"
+        and type(spawned.get("started_ns")) is int
+        and cast(int, spawned["started_ns"]) > 0
+    )
+
+
 def _finish_cleanup(store: PrivateStore, native: PrivateStore, envelope: dict[str, Json],
                     diagnostic: Diagnostic) -> Diagnostic:
     """Finish only the durably bound original; missing may mean unlink already ran."""
@@ -728,8 +762,14 @@ def recover(store: PrivateStore, native: PrivateStore, context: Context, policy:
         "context": context.json(),
         "public_policy_sha256": sha256(encode(cast(Json, [asdict(source) for source in policy.sources]))),
     }
-    if claim is None or encode(claim) != encode(expected_binding):
+    claimed_executable_sha256 = claim.get("executable_sha256") if isinstance(claim, dict) else None
+    if (claim is None or set(claim) != {"context", "public_policy_sha256", "executable_sha256"}
+            or encode({key: claim.get(key) for key in ("context", "public_policy_sha256")})
+            != encode(expected_binding)
+            or not isinstance(claimed_executable_sha256, str)
+            or SHA256.fullmatch(claimed_executable_sha256) is None):
         raise Rejected(Stage.RECOVERY, Code.CLAIM)
+    expected_binding["executable_sha256"] = claimed_executable_sha256
     original_binding = parse(encode(claim))
     # The typed receipt is parent-owned, never exposed to reviewer tools.
     prior = _object(store, "receipt.json")
@@ -737,7 +777,7 @@ def recover(store: PrivateStore, native: PrivateStore, context: Context, policy:
         receipt_binding = prior.get("binding")
         if (prior.get("NOT_APPROVAL") is not True or type(prior.get("terminal")) is not bool
                 or not isinstance(receipt_binding, dict)
-                or set(receipt_binding) != {"context", "public_policy_sha256"}
+                or set(receipt_binding) != set(expected_binding)
                 or not isinstance(receipt_binding.get("context"), dict)):
             raise Rejected(Stage.RECOVERY, Code.TYPE)
         transitioning = encode(receipt_binding) != encode(claim)
@@ -803,14 +843,28 @@ def recover(store: PrivateStore, native: PrivateStore, context: Context, policy:
     spawned = cast(dict[str, Json], queued.get("spawn.json", spawned))
     exited = cast(dict[str, Json], queued.get("exit.json", exited))
     capture_state = cast(dict[str, Json], queued.get("capture.json", capture_state))
+    terminal_rejection = prior.get("source_rejection") is not None
+    if (spawned and prior.get("rescreen_pending") is not True and not terminal_rejection
+            and not _valid_spawn_identity(
+                spawned, context, expected_binding["executable_sha256"]
+            )):
+        raise Rejected(Stage.RECOVERY, Code.CLAIM)
     prior_value = prior.get("diagnostic")
     cached = _diagnostic(prior_value) if isinstance(prior_value, dict) else Diagnostic()
     rescreened: Rejected | None = None
     unsafe_public_binding = False
     try:
-        binding: dict[str, Json] = {"context": context.json(), "public_policy_sha256": policy.binding()}
+        binding: dict[str, Json] = {
+            "context": context.json(),
+            "public_policy_sha256": policy.binding(),
+            "executable_sha256": expected_binding["executable_sha256"],
+        }
     except Rejected as rejection:
-        binding = {"context": context.json(), "public_policy_sha256": None}
+        binding = {
+            "context": context.json(),
+            "public_policy_sha256": None,
+            "executable_sha256": expected_binding["executable_sha256"],
+        }
         rescreened = rejection
         unsafe_public_binding = True
     # Prepare every scrub before writing. Typed internal state is not reviewer
@@ -844,11 +898,16 @@ def recover(store: PrivateStore, native: PrivateStore, context: Context, policy:
                                 rescreened, changed = rejection, True
                         value[key] = typed.json()
                         continue
+                    if (key == "executable_sha256" and isinstance(item, str)
+                            and SHA256.fullmatch(item) is not None):
+                        # A validated executable digest is typed launch identity, not
+                        # reviewer prose or a credential-bearing payload.
+                        continue
                     if ((value is capture_state or value is prior.get("cleanup_failure"))
                             and (key == "stage" and item in tuple(Stage) or key == "code" and item in tuple(Code))
                             or value is exited and key == "capture_code" and item in tuple(Code)
                             or value is spawned and key == "model_identity" and item == "UNVERIFIED"
-                            or value is spawned and key == "version_source" and item == "parent_observed"
+                            or value is spawned and key == "version_source" and item == "parent_attested"
                             or value is spawned and key == "lifecycle" and item == "started"
                             or value is exited and key == "lifecycle" and item == "exited"
                             or value is prior.get("cleanup") and key == "state" and item in ("pending", "done", "blocked")):
@@ -1053,6 +1112,10 @@ def recover(store: PrivateStore, native: PrivateStore, context: Context, policy:
     failures: list[str] = []
     if type(spawned.get("pid")) is not int or cast(int, spawned.get("pid", 0)) <= 0:
         failures.append(Code.NO_SPAWN)
+    elif not _valid_spawn_identity(
+        spawned, context, expected_binding["executable_sha256"]
+    ):
+        failures.append(Code.CLAIM)
     if type(exit_code) is not int:
         failures.append(Code.NO_EXIT)
     elif exit_code != 0:
@@ -1062,7 +1125,8 @@ def recover(store: PrivateStore, native: PrivateStore, context: Context, policy:
     interruption = exited.get("capture_code")
     if interruption is None:
         interruption = capture_state.get("code")
-    if interruption in (Code.TIMEOUT, Code.INTERRUPTED, Code.IO, Code.INPUT):
+    if interruption in (Code.TIMEOUT, Code.INTERRUPTED, Code.IO, Code.INPUT,
+                        Code.CHANGED, Code.CLAIM):
         failures.append(cast(str, interruption))
     diagnostic.execution_failures = failures
     diagnostic.complete = not failures and diagnostic.schema_valid and diagnostic.revisions_valid and diagnostic.code == Code.OK
@@ -1145,17 +1209,65 @@ def _diagnostic(obj: dict[str, Json]) -> Diagnostic:
     return result
 
 
+def _executable_fingerprint(info: os.stat_result) -> tuple[int, ...]:
+    return (
+        info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_size,
+        info.st_mtime_ns, info.st_ctime_ns,
+    )
+
+
+def _open_pinned_executable(
+    path: str, expected_sha256: str, policy: TextPolicy
+) -> tuple[Path, int, str, tuple[int, ...]]:
+    """Hash and pin one stable executable inode for the child process."""
+    nofollow = os.O_NOFOLLOW
+    try:
+        resolved = Path(path).resolve(strict=True)
+        fd = os.open(
+            resolved,
+            os.O_RDONLY | nofollow | os.O_CLOEXEC,
+        )
+    except (OSError, RuntimeError):
+        raise Rejected(Stage.FILE, Code.FILE) from None
+    try:
+        before = os.fstat(fd)
+        if (not stat.S_ISREG(before.st_mode) or not before.st_mode & 0o111
+                or before.st_uid not in (0, os.getuid()) or before.st_mode & 0o022):
+            raise Rejected(Stage.FILE, Code.MODE)
+        digest = hashlib.sha256()
+        _ = os.lseek(fd, 0, os.SEEK_SET)
+        while chunk := os.read(fd, 1024 * 1024):
+            digest.update(chunk)
+        after = os.fstat(fd)
+        path_info = os.stat(resolved, follow_symlinks=False)
+        fingerprint = _executable_fingerprint(after)
+        if (_executable_fingerprint(before) != fingerprint
+                or (path_info.st_dev, path_info.st_ino) != (after.st_dev, after.st_ino)):
+            raise Rejected(Stage.FILE, Code.CHANGED)
+        actual_sha256 = digest.hexdigest()
+        if actual_sha256 != expected_sha256:
+            raise Rejected(Stage.PROCESS, Code.CLAIM)
+        policy.check_identity(str(resolved))
+        policy.check_identity(actual_sha256, SHA256.pattern)
+        _ = os.lseek(fd, 0, os.SEEK_SET)
+        return resolved, fd, actual_sha256, fingerprint
+    except BaseException:
+        os.close(fd)
+        raise
+
+
 def run_prepared(store: PrivateStore, native: PrivateStore, context: Context,
                  argv: list[str], prompt: bytes, env: dict[str, str], policy: TextPolicy,
-                 *, executable_version: str, timeout: float = 600,
+                 *, executable_version: str, executable_sha256: str, timeout: float = 600,
                  progress: Callable[[dict[str, Json]], None] | None = None) -> Diagnostic:
     """One explicit prepared command, no shell, credential lookup, selection or retry.
 
     Invoke with an existing tracked Kilo process or foreground POSIX wait. The
-    parent must isolate the receipt store from tools and attest version separately.
+    parent isolates the receipt store and attests version plus executable SHA-256.
     """
     if (not argv or not os.path.isabs(argv[0]) or not 0 < timeout <= 3600
             or len(prompt) > INPUT_LIMIT or not re.fullmatch(r"[A-Za-z0-9 ._+-]{1,80}", executable_version)
+            or SHA256.fullmatch(executable_sha256) is None
             or native.path == store.path or threading.current_thread() is not threading.main_thread()):
         raise ValueError("isolated_explicit_prepared_launch_required")
     store_info, native_info = os.fstat(store.fd), os.fstat(native.fd)
@@ -1163,9 +1275,8 @@ def run_prepared(store: PrivateStore, native: PrivateStore, context: Context,
         raise ValueError("isolated_explicit_prepared_launch_required")
     policy.check(context.json(), context)
     policy.check(executable_version, context)
+    policy.check_identity(executable_sha256, SHA256.pattern)
     public_binding = policy.binding()
-    executable = Path(argv[0]).resolve()
-    policy.check(str(executable), context)
     host = socket.gethostname()
     policy.check_identity(host, HOST)
     for name in ("launch.claim", "spawn.json", "exit.json", "turn.json", "receipt.json", "capture.json"):
@@ -1183,27 +1294,53 @@ def run_prepared(store: PrivateStore, native: PrivateStore, context: Context,
             raise
     else:
         raise Rejected(Stage.FILE, Code.CHANGED)
-    store.atomic("launch.claim", {"context": context.json(), "public_policy_sha256": public_binding}, exclusive=True)
-    capture = EventCapture(context, policy)
-    child: subprocess.Popen[bytes] | None = None
-    selector = selectors.DefaultSelector()
-    capture_code = Code.OK
-    stderr_size = 0
-    stderr_digest = hashlib.sha256()
-    deadline = time.monotonic() + timeout
-    old_term = signal.getsignal(signal.SIGTERM)
+    executable, executable_fd, actual_executable_sha256, executable_fingerprint = (
+        _open_pinned_executable(argv[0], executable_sha256, policy)
+    )
+    try:
+        store.atomic("launch.claim", {
+            "context": context.json(),
+            "public_policy_sha256": public_binding,
+            "executable_sha256": actual_executable_sha256,
+        }, exclusive=True)
+    except BaseException:
+        os.close(executable_fd)
+        raise
+    try:
+        capture = EventCapture(context, policy)
+        child: subprocess.Popen[bytes] | None = None
+        selector = selectors.DefaultSelector()
+        capture_code = Code.OK
+        stderr_size = 0
+        stderr_digest = hashlib.sha256()
+        deadline = time.monotonic() + timeout
+        old_term = signal.getsignal(signal.SIGTERM)
+    except BaseException:
+        os.close(executable_fd)
+        raise
 
     def interrupted(_signum: int, _frame: FrameType | None) -> None:
         raise KeyboardInterrupt
 
     try:
         _ = signal.signal(signal.SIGTERM, interrupted)
-        # Only the native output dirfd crosses exec, never the receipt store.
-        child = subprocess.Popen(argv, cwd=f"/dev/fd/{native.fd}", pass_fds=(native.fd,), env=env, stdin=subprocess.PIPE,
-                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                 start_new_session=True, umask=0o077)
+        # Only the native output dirfd and pinned executable fd cross exec,
+        # never the receipt store.
+        child = subprocess.Popen(
+            argv,
+            executable=f"/dev/fd/{executable_fd}",
+            cwd=f"/dev/fd/{native.fd}",
+            pass_fds=(native.fd, executable_fd),
+            env=env,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+            umask=0o077,
+        )
         receipt: dict[str, Json] = {"pid": child.pid, "host": host, "executable": str(executable),
-                                    "version": executable_version, "version_source": "parent_observed",
+                                    "executable_sha256": actual_executable_sha256,
+                                    "version": executable_version, "version_source": "parent_attested",
                                     "context": context.json(), "model_identity": "UNVERIFIED", "lifecycle": "started",
                                     "started_ns": time.time_ns()}
         store.atomic("spawn.json", receipt)
@@ -1222,6 +1359,9 @@ def run_prepared(store: PrivateStore, native: PrivateStore, context: Context,
         progress_count = 0
         progress_at = time.monotonic()
         while selector.get_map():
+            if _executable_fingerprint(os.fstat(executable_fd)) != executable_fingerprint:
+                capture_code = Code.CHANGED
+                break
             if time.monotonic() >= deadline:
                 capture_code = Code.TIMEOUT
                 break
@@ -1270,34 +1410,50 @@ def run_prepared(store: PrivateStore, native: PrivateStore, context: Context,
                         buffer.clear()
                         dropping = False
         if capture_code == Code.OK:
-            try:
-                _ = child.wait(timeout=max(0.001, deadline - time.monotonic()))
-            except subprocess.TimeoutExpired:
-                capture_code = Code.TIMEOUT
+            while child.poll() is None:
+                if _executable_fingerprint(os.fstat(executable_fd)) != executable_fingerprint:
+                    capture_code = Code.CHANGED
+                    break
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    capture_code = Code.TIMEOUT
+                    break
+                try:
+                    _ = child.wait(timeout=min(0.2, remaining))
+                except subprocess.TimeoutExpired:
+                    continue
     except KeyboardInterrupt:
         capture_code = Code.INTERRUPTED
     except (OSError, ValueError):
         capture_code = Code.IO
     finally:
-        _ = signal.signal(signal.SIGTERM, old_term)
-        selector.close()
-        if child is not None:
-            if capture_code != Code.OK or child.poll() is None:
-                try:
-                    os.killpg(child.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-            code = child.wait()
-            for stream in (child.stdin, child.stdout, child.stderr):
-                if stream is not None:
-                    stream.close()
-            store.atomic("exit.json", {"exit_code": code, "capture_code": capture_code,
-                                       "stderr_size": stderr_size, "stderr_sha256": stderr_digest.hexdigest(),
-                                       "lifecycle": "exited", "exited_ns": time.time_ns()})
-        if capture_code != Code.OK:
-            capture.failed, capture.completed = True, False
-            store.atomic("capture.json", {"stage": Stage.PROCESS, "code": capture_code})
-        capture.persist(store)
+        try:
+            _ = signal.signal(signal.SIGTERM, old_term)
+            selector.close()
+            if child is not None:
+                if capture_code != Code.OK or child.poll() is None:
+                    try:
+                        os.killpg(child.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                code = child.wait()
+                if _executable_fingerprint(os.fstat(executable_fd)) != executable_fingerprint:
+                    capture_code = Code.CHANGED
+                for stream in (child.stdin, child.stdout, child.stderr):
+                    if stream is not None:
+                        stream.close()
+                store.atomic("exit.json", {"exit_code": code, "capture_code": capture_code,
+                                           "stderr_size": stderr_size, "stderr_sha256": stderr_digest.hexdigest(),
+                                           "lifecycle": "exited", "exited_ns": time.time_ns()})
+            if capture_code != Code.OK:
+                capture.failed, capture.completed = True, False
+                store.atomic("capture.json", {"stage": Stage.PROCESS, "code": capture_code})
+            capture.persist(store)
+        finally:
+            try:
+                os.close(executable_fd)
+            except OSError:
+                pass
     result = recover(store, native, context, policy)
     if progress is not None:
         progress({"lifecycle": result.lifecycle, "complete": result.complete,

@@ -153,20 +153,23 @@ workflow must have explicit stop conditions and a finite budget.
 
 Consequential review uses a distinct session from the author or implementer.
 A different model family is useful when it materially improves independence,
-but is not mandatory in every case. A second complete specialist review is not
+but it is never selected automatically; it requires Adrian's explicit per-review
+override. By default, use the exact primary-session model. A second complete specialist review is not
 the default. Use one only when uncertainty remains, evidence conflicts, the
 consequence is unusually high or independent confirmation materially increases
 confidence.
 
 Freeze immutable reviewed HEAD/base and serialize implementation/review/remediation.
 All development/review model selection and session starts are explicitly user-visible
-in Kilo or official Codex. The user opens a separate fresh read-only reviewer; no
-script/subprocess, Task/subagent, background job, Make/CI/hook, HTTP inference or
-generated owner wrapper may launch a model. No silent substitute/fallback. Provide
-acceptance, exact Git refs and source instructions directly; no persistent local
-packet/source/transcript or renamed receipt hierarchy. Native harness records and
-canonical metadata preserve actual identity/scope/results without claiming OS
-isolation or backend identity from UI/self-report. Credentials remain outside context.
+in Kilo or official Codex. Under D-077's owner amendment, the sole authorized primary
+may start a fresh read-only ordinary Kilo reviewer through Agent Manager; security
+Daybreak remains owner-manual through official Codex. No script/subprocess,
+Task/subagent, background job, Make/CI/hook, HTTP inference or generated owner wrapper
+may launch a model. No silent substitute/fallback. Provide acceptance, exact Git refs
+and source instructions directly; no persistent local packet/source/transcript or
+renamed receipt hierarchy. Native harness records and canonical metadata preserve
+actual identity/scope/results without claiming OS isolation or backend identity from
+UI/self-report. Credentials remain outside context.
 If a visible mechanism is required, hand off the exact pending gate rather than
 skip review, run a hidden model or claim the repository has no eligible work.
 A default maximum of 10 invocations per issue delivery
@@ -196,6 +199,24 @@ work instead returns `READY_FOR_OWNER_SECURITY_REVIEW` after reserving its manua
 gate. It never merges. Only an explicit owner `/loop` may proceed through
 canonical Forgejo PR merge into develop, verified integrated acceptance and issue
 closure, then fresh selection. Review independence does not expand scope.
+
+### Development-review model binding (D-077 owner amendment, 2026-10-22)
+
+An ordinary visible Agent Manager reviewer uses the exact provider-qualified model
+selected by the main implementation session by default. The primary resolves that
+identity from its active session and explicitly binds it in the Agent Manager task's
+`model` field, with the same provider and any known reasoning variant; do not delegate
+selection to a workspace default or provider router. Adrian may explicitly choose
+another permitted model/provider/variant for one specific review. Highspeed models
+are not authorized by the current owner instruction and are not an implicit or
+ordinary override choice. A future direct owner instruction is required to lift that
+prohibition. If the main identity or explicit override cannot be resolved/bound, or
+the native session reports a mismatch/provider error, stop without sending review
+content, retrying or substituting. A task's requested model is not proof of runtime
+identity; record `REQUESTED`, `DISPATCH_VERIFIED`, `RUNTIME_VERIFIED`,
+`RUNTIME_UNOBSERVABLE` or `FAIL` according to actual native evidence, never model
+self-report. This development-review rule does not alter the Router product selector,
+catalog or authorized product inference.
 
 ## UX is a mandatory review dimension (D-053, #121)
 

@@ -16,13 +16,22 @@ No automatic Daybreak, hidden launcher, skipped review or generic identity weake
 - Use the least scarce fully capable model; capability deficits are never
   compensated by availability or strength elsewhere.
 - Use a distinct reviewer session for consequential review.
+- For ordinary Agent Manager review, bind the exact provider-qualified model selected
+  by the current primary session, including the provider and any known reasoning
+  variant. Adrian may explicitly select another permitted identity for one review.
+  Highspeed models and automatic workspace/provider fallback are not authorized.
+  An unresolved identity, mismatch or provider error is a stop condition, not authority
+  to retry or substitute.
 - Development model selection/starts remain explicit and user-visible. For ordinary
   PR review only, the direct D-077 owner amendment permits the sole authorized primary
   `/loop` or `/finish-pr` context to start a fresh visible Kilo Agent Manager session
-  using the read-only `pr-reviewer-standalone` agent. The session inherits the exact
-  current primary model/reasoning choice unless the owner explicitly selects another;
-  no fallback/substitution. The primary supplies exact refs, acceptance and complete
-  compact Git diff, and retrieves the structured native result without owner
+  using the read-only `pr-reviewer-standalone` agent. The task explicitly binds the
+  exact provider-qualified model selected by the current primary, plus its provider
+  and known reasoning variant. Adrian may explicitly select another permitted model
+  for that review. Highspeed is not authorized by the current owner instruction.
+  Never rely on workspace defaults, implicit provider routing or fallback. The primary
+  supplies exact refs, acceptance and complete compact Git diff, and retrieves the
+  structured native result without owner
   copy/paste. No scripts/subprocesses, Task/delegation, background/HTTP inference or
   generated model launcher; no self-review or second orchestrator.
 - No persistent local review-evidence folders or replacement receipt hierarchy.

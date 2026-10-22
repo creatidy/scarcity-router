@@ -235,8 +235,14 @@ owner-scope and full-budget preflight, the single primary starts one fresh,
 user-visible, read-only ordinary Kilo reviewer through the supported Agent Manager
 tool. Use `mode: local`, the selectable `pr-reviewer-standalone` agent and an initial
 prompt in the start request; do not prepare an empty session then send a second whole-
-PR prompt. Omit model/provider/variant overrides so the reviewer inherits the exact
-current primary selection; no fallback or silent substitution. This is a separate
+PR prompt. Resolve the current primary's exact provider-qualified model ID and pass
+it explicitly in the task's `model` field; pass its provider and known reasoning
+variant exactly. This is the default, not an alternate-model choice. Only Adrian may
+explicitly override it for that review, with an exact permitted model/provider/variant.
+Highspeed models are not authorized by the current owner rule. Never rely on an Agent
+Manager workspace default, provider fallback or silent substitution. If the main
+identity cannot be resolved, or dispatch reports a mismatch/provider error, stop
+without retrying or sending review content; preserve the ordinal. This is a separate
 review context, not an implementation subagent or second controller.
 
 The initial prompt is constructed automatically from Forgejo's selected issue/PR

@@ -73,11 +73,15 @@ Independent review takes place in a separate fresh USER-VISIBLE Kilo or official
 Codex session. Under the direct 2026-10-22 owner amendment in D-077, the sole
 primary `/loop` or authorized `/finish-pr` context may start an ordinary Kilo
 review session through Agent Manager using the read-only `pr-reviewer-standalone`
-agent. It inherits the exact current primary model/reasoning selection unless the
-owner explicitly chooses another; never silently substitute or fall back. The
-orchestrator supplies the exact refs, complete compact diff, acceptance and scope,
-then retrieves the structured result from the native Agent Manager/Kilo session
-without owner copy/paste and records minimal provenance canonically. The reviewer
+agent. Bind the exact provider-qualified model selected by the current primary
+session, plus its provider and known reasoning variant; never rely on a workspace
+default. Only Adrian may explicitly choose another permitted identity for that
+review. Highspeed models and automatic provider fallback are not currently
+authorized. On unresolved identity, mismatch or dispatch error, stop without
+retrying or sending review content. The orchestrator supplies exact refs, complete
+compact diff, acceptance and scope, then retrieves the structured result from the
+native Agent Manager/Kilo session without owner copy/paste and records minimal
+provenance canonically. The reviewer
 is a fresh independent session; implementation self-review or resumed reviewer
 context is not independent. Daybreak remains owner-manual in official Codex.
 Never start development/review models through scripts, subprocesses, Task/subagents,

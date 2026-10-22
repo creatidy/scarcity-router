@@ -2,13 +2,14 @@
 
 from pathlib import Path
 from dataclasses import dataclass, replace
+import hashlib
 import json
 import os
 import signal
 import sys
 import tempfile
 import unittest
-from typing import override
+from typing import cast, override
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -22,6 +23,38 @@ from tools.review_result import (
 )
 
 CONTEXT = Context("a" * 40, "b" * 40, 1, "synthetic-model", "synthetic-job")
+EXECUTABLE = str(Path(sys.executable).resolve())
+EXECUTABLE_SHA256 = hashlib.sha256(Path(EXECUTABLE).read_bytes()).hexdigest()
+
+
+def claim_record(context: Context = CONTEXT, policy: TextPolicy | None = None) -> dict[str, Json]:
+    active_policy = policy if policy is not None else TextPolicy()
+    return {
+        "context": context.json(),
+        "public_policy_sha256": active_policy.binding(),
+        "executable_sha256": EXECUTABLE_SHA256,
+    }
+
+
+def spawn_record(
+    context: Context = CONTEXT,
+    *,
+    pid: int = 123,
+    host: str = "fixture-host",
+    version: str = "fixture-version",
+) -> dict[str, Json]:
+    return {
+        "pid": pid,
+        "host": host,
+        "executable": EXECUTABLE,
+        "executable_sha256": EXECUTABLE_SHA256,
+        "version": version,
+        "version_source": "parent_attested",
+        "context": context.json(),
+        "model_identity": "UNVERIFIED",
+        "lifecycle": "started",
+        "started_ns": 1,
+    }
 
 
 def result(verdict: str = "COMMENT") -> dict[str, Json]:
@@ -93,10 +126,11 @@ class ReviewResultTests(unittest.TestCase):
         env = {"HOME": str(self.native.path), "TMPDIR": str(self.native.path),
                "PYTHONPATH": str(ROOT), "SYNTHETIC_VALUE": "fixture-only"}
         return run_prepared(self.store, self.native, CONTEXT,
-                            [sys.executable, str(ROOT / "tests/review_result_fixture.py"), mode,
+                             [sys.executable, str(ROOT / "tests/review_result_fixture.py"), mode,
                               CONTEXT.head, CONTEXT.base], b"synthetic prompt", env,
                              policy if policy is not None else TextPolicy(),
-                            executable_version="synthetic Python fixture", timeout=timeout,
+                             executable_version="synthetic Python fixture",
+                             executable_sha256=EXECUTABLE_SHA256, timeout=timeout,
                             progress=progress.append if progress is not None else None)
 
     def reset_stores(self) -> None:
@@ -126,6 +160,72 @@ class ReviewResultTests(unittest.TestCase):
                     self.assertNotIn(b"synthetic prompt", data)
                 self.assertFalse((self.native.path / "last-message.json").exists())
                 self.reset_stores()
+
+    def test_spawn_record_binds_parent_version_to_pinned_executable_hash(self) -> None:
+        captured = self.launch("COMMENT")
+        self.assertTrue(captured.complete)
+        spawn = parse(self.store.read("spawn.json")[0])
+        assert isinstance(spawn, dict)
+        self.assertEqual(spawn["executable"], EXECUTABLE)
+        self.assertEqual(spawn["executable_sha256"], EXECUTABLE_SHA256)
+        self.assertEqual(spawn["version"], "synthetic Python fixture")
+        self.assertEqual(spawn["version_source"], "parent_attested")
+
+    def test_executable_hash_mismatch_rejects_before_spawn(self) -> None:
+        with patch("tools.review_result.subprocess.Popen") as process:
+            with self.assertRaises(Rejected) as caught:
+                _ = run_prepared(
+                    self.store, self.native, CONTEXT, [sys.executable], b"", {}, TextPolicy(),
+                    executable_version="synthetic Python fixture", executable_sha256="0" * 64,
+                )
+        self.assertEqual(caught.exception.code, Code.CLAIM)
+        process.assert_not_called()
+        self.assertEqual(list(self.store.path.iterdir()), [])
+
+    def test_spawn_uses_pinned_executable_descriptor(self) -> None:
+        with tempfile.TemporaryDirectory(dir=self.temporary.name) as directory:
+            alias = Path(directory) / "review-python"
+            alias.symlink_to(EXECUTABLE)
+            env = {"HOME": str(self.native.path), "TMPDIR": str(self.native.path),
+                   "PYTHONPATH": str(ROOT), "SYNTHETIC_VALUE": "fixture-only"}
+            with patch("tools.review_result.subprocess.Popen", side_effect=FileNotFoundError("synthetic")) as process:
+                captured = run_prepared(
+                    self.store, self.native, CONTEXT,
+                    [str(alias), str(ROOT / "tests/review_result_fixture.py"), "COMMENT",
+                     CONTEXT.head, CONTEXT.base],
+                    b"synthetic prompt", env, TextPolicy(),
+                    executable_version="synthetic Python fixture",
+                    executable_sha256=EXECUTABLE_SHA256,
+            )
+            self.assertFalse(captured.complete)
+            self.assertIn(Code.NO_SPAWN, captured.execution_failures)
+            self.assertIsNotNone(process.call_args)
+            assert process.call_args is not None
+            call = cast(tuple[tuple[object, ...], dict[str, object]], process.call_args)
+            arguments, keyword_arguments = call
+            self.assertIsInstance(arguments[0], list)
+            self.assertEqual(cast(list[str], arguments[0])[0], str(alias))
+            executable_argument = keyword_arguments["executable"]
+            self.assertIsInstance(executable_argument, str)
+            assert isinstance(executable_argument, str)
+            self.assertTrue(executable_argument.startswith("/dev/fd/"))
+            executable_fd = int(executable_argument.rsplit("/", 1)[1])
+            pass_fds = keyword_arguments["pass_fds"]
+            self.assertIsInstance(pass_fds, tuple)
+            self.assertIn(executable_fd, cast(tuple[int, ...], pass_fds))
+
+    def test_spawn_hash_mismatch_cannot_become_parent_approval(self) -> None:
+        captured = self.launch("APPROVE")
+        self.assertTrue(captured.complete)
+        spawn = parse(self.store.read("spawn.json")[0])
+        assert isinstance(spawn, dict)
+        spawn["executable_sha256"] = "0" * 64
+        self.store.atomic("spawn.json", spawn)
+        before = self.snapshot_stores()
+        with self.assertRaises(Rejected) as caught:
+            _ = recover(self.store, self.native, CONTEXT, TextPolicy())
+        self.assertEqual(caught.exception.code, Code.CLAIM)
+        self.assertEqual(self.snapshot_stores(), before)
 
     def test_subprocess_rejection_diagnostics(self) -> None:
         cases = {"malformed": Code.JSON, "duplicate": Code.DUPLICATE, "nonfinite": Code.NUMBER,
@@ -328,7 +428,7 @@ class ReviewResultTests(unittest.TestCase):
                 self.assertEqual(recover(self.store, self.native, CONTEXT, TextPolicy()), captured)
 
     def test_claim_without_spawn_or_exit_is_not_retry_authority(self) -> None:
-        self.store.atomic("launch.claim", {"context": CONTEXT.json(), "public_policy_sha256": TextPolicy().binding()})
+        self.store.atomic("launch.claim", claim_record())
         captured = recover(self.store, self.native, CONTEXT, TextPolicy())
         self.assertIn(Code.NO_EXIT, captured.execution_failures)
         self.assertIn(Code.NO_SPAWN, captured.execution_failures)
@@ -345,7 +445,8 @@ class ReviewResultTests(unittest.TestCase):
             with self.subTest(version=version):
                 with self.assertRaises(Rejected) as caught:
                     _ = run_prepared(self.store, self.native, CONTEXT, [sys.executable], b"", {},
-                                     policy, executable_version=version)
+                                     policy, executable_version=version,
+                                     executable_sha256=EXECUTABLE_SHA256)
                 self.assertEqual(caught.exception.code, Code.UNSAFE)
                 for name in ("launch.claim", "spawn.json", "exit.json", "receipt.json"):
                     self.assertFalse((self.store.path / name).exists())
@@ -497,23 +598,26 @@ class ReviewResultTests(unittest.TestCase):
 
     def test_input_bound_is_separate_from_result_bound_and_checked_before_claim(self) -> None:
         captured = run_prepared(self.store, self.native, CONTEXT,
-                               [sys.executable, str(ROOT / "tests/review_result_fixture.py"), "COMMENT",
-                                CONTEXT.head, CONTEXT.base], b"x" * (128 * 1024 + 1),
-                               {"HOME": str(self.native.path), "PYTHONPATH": str(ROOT)}, TextPolicy(),
-                               executable_version="synthetic Python fixture")
+                                [sys.executable, str(ROOT / "tests/review_result_fixture.py"), "COMMENT",
+                                 CONTEXT.head, CONTEXT.base], b"x" * (128 * 1024 + 1),
+                                {"HOME": str(self.native.path), "PYTHONPATH": str(ROOT)}, TextPolicy(),
+                                executable_version="synthetic Python fixture",
+                                executable_sha256=EXECUTABLE_SHA256)
         self.assertTrue(captured.complete)
         self.reset_stores()
         with self.assertRaises(ValueError):
             _ = run_prepared(self.store, self.native, CONTEXT, [sys.executable],
-                             b"x" * (INPUT_LIMIT + 1), {}, TextPolicy(), executable_version="synthetic")
+                             b"x" * (INPUT_LIMIT + 1), {}, TextPolicy(), executable_version="synthetic",
+                             executable_sha256=EXECUTABLE_SHA256)
         self.assertFalse((self.store.path / "launch.claim").exists())
 
     def test_partial_prompt_delivery_cannot_accept_valid_looking_result(self) -> None:
         captured = run_prepared(self.store, self.native, CONTEXT,
-                               [sys.executable, str(ROOT / "tests/review_result_fixture.py"), "input-disconnect",
-                                CONTEXT.head, CONTEXT.base], b"x" * INPUT_LIMIT,
-                               {"HOME": str(self.native.path), "PYTHONPATH": str(ROOT)}, TextPolicy(),
-                               executable_version="synthetic Python fixture")
+                                [sys.executable, str(ROOT / "tests/review_result_fixture.py"), "input-disconnect",
+                                 CONTEXT.head, CONTEXT.base], b"x" * INPUT_LIMIT,
+                                {"HOME": str(self.native.path), "PYTHONPATH": str(ROOT)}, TextPolicy(),
+                                executable_version="synthetic Python fixture",
+                                executable_sha256=EXECUTABLE_SHA256)
         self.assertIn(Code.INPUT, captured.execution_failures)
         self.assertFalse(captured.complete)
         self.assertFalse(captured.parent_approval)
@@ -607,8 +711,10 @@ class ReviewResultTests(unittest.TestCase):
         self.assertTrue(recover(self.store, self.native, CONTEXT, TextPolicy()).complete)
 
     def test_spawn_failure_has_no_invented_exit(self) -> None:
-        captured = run_prepared(self.store, self.native, CONTEXT, ["/nonexistent/synthetic-cli"], b"", {},
-                                TextPolicy(), executable_version="synthetic", timeout=1)
+        with patch("tools.review_result.subprocess.Popen", side_effect=FileNotFoundError("synthetic")):
+            captured = run_prepared(self.store, self.native, CONTEXT, [sys.executable], b"", {},
+                                    TextPolicy(), executable_version="synthetic",
+                                    executable_sha256=EXECUTABLE_SHA256, timeout=1)
         self.assertIn(Code.NO_SPAWN, captured.execution_failures)
         self.assertIn(Code.NO_EXIT, captured.execution_failures)
         self.assertIn(Code.IO, captured.execution_failures)
@@ -623,7 +729,8 @@ class ReviewResultTests(unittest.TestCase):
         captured = run_prepared(self.store, self.native, CONTEXT,
                                 [sys.executable, str(ROOT / "tests/review_result_fixture.py"), "timeout",
                                  CONTEXT.head, CONTEXT.base], b"", {"PYTHONPATH": str(ROOT)}, TextPolicy(),
-                                executable_version="synthetic Python fixture", progress=interrupt)
+                                executable_version="synthetic Python fixture",
+                                executable_sha256=EXECUTABLE_SHA256, progress=interrupt)
         self.assertIn(Code.INTERRUPTED, captured.execution_failures)
         self.assertTrue(self.store.read("exit.json")[0])
         self.assertEqual(signal.getsignal(signal.SIGTERM), previous)
@@ -783,7 +890,11 @@ class ReviewResultTests(unittest.TestCase):
                 elif corruption == "binding":
                     receipt = parse(self.store.read("receipt.json")[0])
                     assert isinstance(receipt, dict)
-                    receipt["binding"] = {"context": CONTEXT.json(), "public_policy_sha256": "e" * 64}
+                    receipt["binding"] = {
+                        "context": CONTEXT.json(),
+                        "public_policy_sha256": "e" * 64,
+                        "executable_sha256": EXECUTABLE_SHA256,
+                    }
                     self.store.atomic("receipt.json", receipt)
                 else:
                     if corruption == "empty":
@@ -859,8 +970,7 @@ class ReviewResultTests(unittest.TestCase):
                         self.reset_stores()
                         with self.subTest(public=public, state=state, boundary=boundary, after=after):
                             path = self.prepare_recovery(encode(result("APPROVE")), exited=True)
-                            self.store.atomic("launch.claim", {"context": CONTEXT.json(),
-                                                               "public_policy_sha256": original.binding()})
+                            self.store.atomic("launch.claim", claim_record(policy=original))
                             if state == "pending":
                                 with patch.object(self.native, "remove", side_effect=RuntimeError("synthetic unlink crash")):
                                     with self.assertRaises(RuntimeError):
@@ -1010,7 +1120,8 @@ class ReviewResultTests(unittest.TestCase):
     def test_metadata_scrub_journal_survives_every_write_prefix_and_policy_relaxation(self) -> None:
         session = "12345678-1234-1234-1234-123456789abc"
         policy = TextPolicy(forbidden=("fixture-host", "fixture-version", session, "fixture-only", "OK",
-                                       "CAPTURE_INTERRUPTED", "process", "started", "exited"))
+                                       "CAPTURE_INTERRUPTED", "process", "started", "exited",
+                                       "parent_attested"))
         for pending in (False, True):
             for boundary in range(1, 7):
                 for after in (False, True):
@@ -1019,8 +1130,7 @@ class ReviewResultTests(unittest.TestCase):
                         payload = result("COMMENT")
                         payload["limitations"] = ["fixture-only", "OK"]
                         _ = self.prepare_recovery(encode(payload), exited=True)
-                        self.store.atomic("spawn.json", {"pid": 123, "host": "fixture-host", "version": "fixture-version",
-                            "lifecycle": "started", "model_identity": "UNVERIFIED", "version_source": "parent_observed"})
+                        self.store.atomic("spawn.json", spawn_record(host="fixture-host", version="fixture-version"))
                         self.store.atomic("exit.json", {"exit_code": 0, "capture_code": Code.INTERRUPTED, "lifecycle": "exited"})
                         self.store.atomic("capture.json", {"stage": Stage.PROCESS, "code": Code.INTERRUPTED})
                         capture = EventCapture(CONTEXT, TextPolicy())
@@ -1066,6 +1176,9 @@ class ReviewResultTests(unittest.TestCase):
                         self.assertEqual(captured.code, Code.UNSAFE)
                         self.assertFalse(captured.complete)
                         self.assertIsNone(captured.actual_verdict)
+                        spawn = parse(self.store.read("spawn.json")[0])
+                        assert isinstance(spawn, dict)
+                        self.assertEqual(spawn["version_source"], "parent_attested")
                         for path in self.store.path.iterdir():
                             data = self.store.read(path.name)[0]
                             for literal in ("fixture-host", "fixture-version", session, "fixture-only"):
@@ -1163,15 +1276,16 @@ class ReviewResultTests(unittest.TestCase):
         self.native.path = parent / "declared-other-output"
         with self.assertRaises(ValueError):
             _ = run_prepared(self.store, self.native, CONTEXT, [sys.executable], b"", {},
-                             TextPolicy(), executable_version="synthetic")
+                             TextPolicy(), executable_version="synthetic",
+                             executable_sha256=EXECUTABLE_SHA256)
         self.assertFalse((self.store.path / "launch.claim").exists())
 
     def test_native_rejection_before_exit_cannot_become_jsonl_approval(self) -> None:
         for mode, expected in (("malformed", Code.JSON), ("unsafe", Code.UNSAFE), ("conflict", Code.CONFLICT)):
             self.reset_stores()
             with self.subTest(mode=mode):
-                self.store.atomic("launch.claim", {"context": CONTEXT.json(), "public_policy_sha256": TextPolicy().binding()})
-                self.store.atomic("spawn.json", {"pid": 123})
+                self.store.atomic("launch.claim", claim_record())
+                self.store.atomic("spawn.json", spawn_record())
                 capture = EventCapture(CONTEXT, TextPolicy())
                 capture.feed(encode({"type": "turn.started"}))
                 capture.feed(encode({"type": "item.completed", "item": {"type": "agent_message", "text": json.dumps(result("APPROVE"))}}))
@@ -1195,8 +1309,8 @@ class ReviewResultTests(unittest.TestCase):
                 self.assertFalse(recover(self.store, self.native, CONTEXT, TextPolicy()).complete)
 
     def prepare_recovery(self, raw: bytes, *, exited: bool = False) -> Path:
-        self.store.atomic("launch.claim", {"context": CONTEXT.json(), "public_policy_sha256": TextPolicy().binding()})
-        self.store.atomic("spawn.json", {"pid": 123})
+        self.store.atomic("launch.claim", claim_record())
+        self.store.atomic("spawn.json", spawn_record())
         capture = EventCapture(CONTEXT, TextPolicy())
         capture.feed(encode({"type": "turn.started"}))
         capture.feed(encode({"type": "item.completed", "item": {"type": "agent_message", "text": json.dumps(result("APPROVE"))}}))
