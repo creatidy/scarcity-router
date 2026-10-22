@@ -6423,6 +6423,24 @@ acceptance or READY_TO_MERGE. Only after actual verified acceptance, exact fresh
 currentness/clean state and explicit applicable `/loop` authority may integration/
 closure occur. No merge, main promotion, release or deployment is granted here.
 
+**Retired local source-cache provenance:** All copies were clean/inactive, separate
+from registered source worktrees/shared Git stores; canonical objects are retained.
+Source references, not copies or current-availability claims:
+
+| Removed cache | Canonical source/ref retained as metadata |
+|---|---|
+| #175 kernel-source | https://forgejo.creatidy.com/Creatidy/creatidy-kernel.git at `a9a65006cc8cc5b5e4468746a18ff51daf742e6b` |
+| #182 rich-source | https://github.com/Textualize/rich.git at `9d8f9a372cc5916fd4781fec207ced7ddac2f08f` |
+| #180 Codex copies | https://github.com/openai/codex.git at `be2951ea34f0d295ed0becf97079f92fa5f6950e` and `01fc69f4026735edfdf6789820549727a4867b11` (latter confirmed by canonical upstream commit getter) |
+| #180 ZCode copy | https://github.com/zai-org/ZCode.git at `29628c9acdb81b703bbd4080c207a0e7ce5e276e` |
+| #180 frozen Router snapshots | Existing canonical Scarcity Router Git objects for #174/#185/#205, not registered delivery worktrees |
+| #212 generated source copy | Existing canonical Router object `1dcb4a08d9d57d02ed67bf8e7f7d15275c5b3ecf`; no unique work |
+
+The exact native-denial correction remains in source and offline regression tests:
+positive pinned PermissionDeniedError representation and request/rule/path binding,
+not permissive denial keywords or canary blacklists. No security validation or product
+adapter is removed merely to eliminate orchestration. See the actual Git source/tests.
+
 ### D-078 - Additive executable recommendation and retained requirements
 
 - **Numbering conflict and resolution:** PR #204 recorded this #174 contract as
@@ -6482,24 +6500,6 @@ closure occur. No merge, main promotion, release or deployment is granted here.
   live provider billing. Kernel #52 and REAL_HARNESS_IDENTITY_ACCEPTANCE under
   #174/#181 remain separate integration/acceptance, requiring explicit live/effect
   authorization; no owner approval, deployment or product GO is fabricated.
-
-**Retired local source-cache provenance:** All copies were clean/inactive, separate
-from registered source worktrees/shared Git stores; canonical objects are retained.
-Source references, not copies or current-availability claims:
-
-| Removed cache | Canonical source/ref retained as metadata |
-|---|---|
-| #175 kernel-source | https://forgejo.creatidy.com/Creatidy/creatidy-kernel.git at `a9a65006cc8cc5b5e4468746a18ff51daf742e6b` |
-| #182 rich-source | https://github.com/Textualize/rich.git at `9d8f9a372cc5916fd4781fec207ced7ddac2f08f` |
-| #180 Codex copies | https://github.com/openai/codex.git at `be2951ea34f0d295ed0becf97079f92fa5f6950e` and `01fc69f4026735edfdf6789820549727a4867b11` (latter confirmed by canonical upstream commit getter) |
-| #180 ZCode copy | https://github.com/zai-org/ZCode.git at `29628c9acdb81b703bbd4080c207a0e7ce5e276e` |
-| #180 frozen Router snapshots | Existing canonical Scarcity Router Git objects for #174/#185/#205, not registered delivery worktrees |
-| #212 generated source copy | Existing canonical Router object `1dcb4a08d9d57d02ed67bf8e7f7d15275c5b3ecf`; no unique work |
-
-The exact native-denial correction remains in source and offline regression tests:
-positive pinned PermissionDeniedError representation and request/rule/path binding,
-not permissive denial keywords or canary blacklists. No security validation or product
-adapter is removed merely to eliminate orchestration. See the actual Git source/tests.
 
 ### U-014 - Native coding backend versus Kernel-owned workspace lifecycle
 
