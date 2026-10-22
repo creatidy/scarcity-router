@@ -33,6 +33,9 @@ LIMIT = 128 * 1024
 INPUT_LIMIT = 900_000
 LINE_LIMIT = 256 * 1024
 FIELDS: frozenset[str] = frozenset(("reviewed_head", "reviewed_base", "verdict", "findings", "limitations", "checks_run"))
+AGENT_MANAGER_FIELDS: frozenset[str] = frozenset(
+    (*FIELDS, "reviewed_merge_base", "ux_impact")
+)
 FINDING_FIELDS: frozenset[str] = frozenset(("severity", "file", "line_start", "line_end", "evidence", "consequence", "required_remediation"))
 SHA = re.compile(r"[0-9a-f]{40}")
 SECRET = re.compile(
@@ -354,6 +357,74 @@ def inspect(data: bytes, context: Context, policy: TextPolicy) -> tuple[Diagnost
         diagnostic.actual_verdict, diagnostic.lifecycle = None, "rejected"
         safe = False
     return diagnostic, obj if safe and bounded else None
+
+
+def inspect_agent_manager_result(
+    data: bytes,
+    context: Context,
+    merge_base: str,
+    policy: TextPolicy,
+    *,
+    session_completed: bool,
+) -> tuple[Diagnostic, Json]:
+    """Validate the structured result returned by a fresh Agent Manager review.
+
+    This is an in-memory handoff validator, not a session launcher or receipt
+    store. The caller must establish native session completion/identity and exact
+    refs before passing the final response here.
+    """
+    diagnostic = Diagnostic(size=len(data), sha256=sha256(data))
+    if not session_completed:
+        diagnostic.stage = Stage.TURN
+        diagnostic.code = Code.INCOMPLETE
+        diagnostic.lifecycle = "rejected"
+        return diagnostic, None
+    try:
+        obj = parse(data)
+        if not isinstance(obj, dict) or set(obj) != set(AGENT_MANAGER_FIELDS):
+            raise Rejected(Stage.SCHEMA, Code.FIELDS)
+        reviewed_merge_base = obj["reviewed_merge_base"]
+        ux_impact = obj["ux_impact"]
+        if (not isinstance(reviewed_merge_base, str)
+                or not SHA.fullmatch(reviewed_merge_base)
+                or not SHA.fullmatch(merge_base)
+                or reviewed_merge_base != merge_base):
+            raise Rejected(Stage.REVISION, Code.REVISION)
+        if not isinstance(ux_impact, str) or not ux_impact.strip():
+            raise Rejected(Stage.SCHEMA, Code.TYPE)
+        policy.check_identity(reviewed_merge_base, SHA.pattern)
+        policy.check_identity(ux_impact)
+
+        common = {key: obj[key] for key in FIELDS}
+        common_diagnostic, common_result = inspect(encode(cast(Json, common)), context, policy)
+        if common_result is None or common_diagnostic.code != Code.OK:
+            common_diagnostic.size = len(data)
+            common_diagnostic.sha256 = sha256(data)
+            return common_diagnostic, None
+        common_diagnostic.size = len(data)
+        common_diagnostic.sha256 = sha256(data)
+        common_diagnostic.field_types["reviewed_merge_base"] = "str"
+        common_diagnostic.field_types["ux_impact"] = "str"
+        common_diagnostic.unknown_field_count = 0
+        common_diagnostic.complete = True
+        common_diagnostic.parent_approval = False
+        return common_diagnostic, obj
+    except Rejected as error:
+        diagnostic.stage, diagnostic.code = error.stage, error.code
+        diagnostic.lifecycle = "rejected"
+        return diagnostic, None
+
+
+def agent_manager_handoff_action(diagnostic: Diagnostic, result: Json) -> str:
+    """Map a validated ordinary result directly to the current implementer action."""
+    if not diagnostic.complete or diagnostic.code != Code.OK or not isinstance(result, dict):
+        return "HOLD"
+    if diagnostic.actual_verdict == "REQUEST_CHANGES":
+        findings = result.get("findings")
+        return "REMEDIATE" if isinstance(findings, list) and findings else "HOLD"
+    if diagnostic.actual_verdict == "APPROVE":
+        return "NEXT_GATE"
+    return "HOLD"
 
 
 class PrivateStore:

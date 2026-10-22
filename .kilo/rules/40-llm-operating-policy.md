@@ -2,10 +2,37 @@
 
 Follow the full policy in [`docs/llm-operating-policy.md`](../../docs/llm-operating-policy.md).
 
+## Router Owner-Manual Codex Amendment (D-069A)
+
+For Scarcity Router's owner-manual security review only, the accepted owner decision
+permits `RUNTIME_UNOBSERVABLE` solely when the official Codex path cannot independently
+expose backend identity. Official binary/provenance, requested-model dispatch, native
+session/turn/input/output, context/tool audit, exact refs and a structured APPROVE with
+no blockers remain mandatory. Never infer `RUNTIME_VERIFIED` from UI/configuration or
+self-report. Mismatch/substitution is FAIL; other missing evidence keeps the gate open.
+No automatic Daybreak, hidden launcher, skipped review or generic identity weakening.
+
 - Route by role and task fit, not prestige.
 - Use the least scarce fully capable model; capability deficits are never
   compensated by availability or strength elsewhere.
 - Use a distinct reviewer session for consequential review.
+- Development model selection/starts remain explicit and user-visible. For ordinary
+  PR review only, the direct D-077 owner amendment permits the sole authorized primary
+  `/loop` or `/finish-pr` context to start a fresh visible Kilo Agent Manager session
+  using the read-only `pr-reviewer-standalone` agent. The session inherits the exact
+  current primary model/reasoning choice unless the owner explicitly selects another;
+  no fallback/substitution. The primary supplies exact refs, acceptance and complete
+  compact Git diff, and retrieves the structured native result without owner
+  copy/paste. No scripts/subprocesses, Task/delegation, background/HTTP inference or
+  generated model launcher; no self-review or second orchestrator.
+- No persistent local review-evidence folders or replacement receipt hierarchy.
+  Use Git/canonical records/native harness references; offline fixtures use cleaned
+  OS temporary directories. This does not alter authorized Router product inference.
+- PR delivery review uses a fresh separate user-visible read-only Kilo/Codex session.
+  Ordinary Kilo sessions may be started by the authorized primary through Agent
+  Manager under D-077; preserve actual session/model identity, source permissions and
+  native context provenance, never infer OS isolation or backend identity from
+  dispatch metadata. Official security Daybreak remains manually started by Adrian.
 - LLM output is not evidence. Keep evidence preparation separate from expert
   scientific or methodological adjudication.
 - Follow D-068's ownership and Agreed/Verified/Proposed/To-prove distinction;
@@ -19,7 +46,9 @@ Follow the full policy in [`docs/llm-operating-policy.md`](../../docs/llm-operat
   identical failures.
 - Command delivery follows `.kilo/rules/35-technical-recovery.md`: infrastructure
   failure is not an implementation finding or owner decision. Use bounded authorized
-  environment/reviewer failover automatically; preserve ordinals and restricted gates.
+  deterministic environment recovery; ordinary review uses the visible Agent Manager
+  path only under the direct owner amendment. Preserve ordinals and restricted gates,
+  with no hidden failover or automatic Daybreak.
 - Completed PASS gates, adjudication, remediation, translation and validation
   remain completed unless source changes materially or a concrete regression is
   identified.

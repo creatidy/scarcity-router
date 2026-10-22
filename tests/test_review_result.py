@@ -17,7 +17,8 @@ if str(ROOT) not in sys.path:
 
 from tools.review_result import (
     Code, Context, Diagnostic, EventCapture, INPUT_LIMIT, Json, PrivateStore, PublicSource,
-    Rejected, Stage, TextPolicy, encode, inspect, parse, recover, run_prepared, status_code,
+    Rejected, Stage, TextPolicy, agent_manager_handoff_action, encode, inspect,
+    inspect_agent_manager_result, parse, recover, run_prepared, status_code,
 )
 
 CONTEXT = Context("a" * 40, "b" * 40, 1, "synthetic-model", "synthetic-job")
@@ -26,6 +27,10 @@ CONTEXT = Context("a" * 40, "b" * 40, 1, "synthetic-model", "synthetic-job")
 def result(verdict: str = "COMMENT") -> dict[str, Json]:
     return {"reviewed_head": CONTEXT.head, "reviewed_base": CONTEXT.base,
             "verdict": verdict, "findings": [], "limitations": [], "checks_run": []}
+
+
+def agent_manager_result(verdict: str = "COMMENT") -> dict[str, Json]:
+    return {**result(verdict), "reviewed_merge_base": "c" * 40, "ux_impact": "none"}
 
 
 @dataclass
@@ -519,6 +524,47 @@ class ReviewResultTests(unittest.TestCase):
         self.assertEqual(captured.actual_verdict, "REQUEST_CHANGES")
         self.assertFalse(captured.parent_approval)
         self.assertIn(b"offline source", self.store.read("receipt.json")[0])
+
+    def test_agent_manager_request_changes_routes_to_implementer_without_approval(self) -> None:
+        context = Context(CONTEXT.head, CONTEXT.base, 15, "synthetic-model", "manager-session")
+        finding: dict[str, Json] = {
+            "severity": "P1",
+            "file": "scarcity_router/server_store.py",
+            "line_start": 1,
+            "line_end": 2,
+            "evidence": "Synthetic same-process transaction lock release.",
+            "consequence": "A committed row can be lost.",
+            "required_remediation": "Keep descriptor lifetime coordinated with open SQLite connections.",
+        }
+        response = agent_manager_result("REQUEST_CHANGES")
+        response["findings"] = [finding]
+
+        diagnostic, validated = inspect_agent_manager_result(
+            encode(response), context, "c" * 40, TextPolicy(), session_completed=True
+        )
+        self.assertEqual(diagnostic.code, Code.OK)
+        self.assertTrue(diagnostic.complete)
+        self.assertEqual(diagnostic.actual_verdict, "REQUEST_CHANGES")
+        self.assertFalse(diagnostic.parent_approval)
+        self.assertEqual(agent_manager_handoff_action(diagnostic, validated), "REMEDIATE")
+        if not isinstance(validated, dict):
+            self.fail("valid Agent Manager findings must produce a result object")
+        self.assertEqual(validated["findings"], [finding])
+
+    def test_agent_manager_missing_completion_or_stale_merge_base_holds(self) -> None:
+        context = Context(CONTEXT.head, CONTEXT.base, 15, "synthetic-model", "manager-session")
+        response = encode(agent_manager_result("APPROVE"))
+        incomplete, no_result = inspect_agent_manager_result(
+            response, context, "c" * 40, TextPolicy(), session_completed=False
+        )
+        self.assertFalse(incomplete.complete)
+        self.assertEqual(agent_manager_handoff_action(incomplete, no_result), "HOLD")
+
+        stale, no_result = inspect_agent_manager_result(
+            response, context, "d" * 40, TextPolicy(), session_completed=True
+        )
+        self.assertEqual(stale.code, Code.REVISION)
+        self.assertEqual(agent_manager_handoff_action(stale, no_result), "HOLD")
 
     def test_cached_terminal_receipt_cannot_bypass_new_native_artifact(self) -> None:
         self.assertTrue(self.launch("COMMENT").complete)
