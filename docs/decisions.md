@@ -6493,8 +6493,20 @@ the separate owner-manual official Codex Daybreak security review only after val
 transfer to #185/PR #209 or #174/PR #204. The comment is a Kilo-authored transcription
 of Adrian's direct decision, not owner-authored evidence.
 
-**Current preserved batch review states:** #205/#206 #15 remains REQUEST_CHANGES;
-#16 is skipped. #185/#209 #13 returned no structured result after the unauthorized
+**Owner amendment (2026-10-22T22:21:05Z; Issue #205 comment #18480):** Supersede the
+unused #18 Daybreak reservation and authorize maximum20 for #205/PR206 only. Preserve
+#15 and #17 REQUEST_CHANGES; skip #16 and #18 without reclassification or execution.
+#19 is ordinary after correction/validation/frozen refs; #20 is the owner-manual
+official Codex Daybreak gate after valid #19 APPROVE on identical refs. No #21/reset.
+Effective review-model override for all starts is `GPT-6.1 Sol`, provider `openai`,
+variant `high`; do not substitute GPT-6 Luna, Highspeed or a workspace/provider
+fallback. The model catalog resolution is `GPT-6.1 Sol` / `openai` / `high`. This is a
+direct owner override of #18444's main-model default, and does not alter the product
+selector. The comment is a Kilo-authored transcription of Adrian's direct instructions.
+
+**Current preserved batch review states:** #205/#206 #15 and #17 remain
+REQUEST_CHANGES; #16 and #18 are skipped. #19 is the next ordinary review, #20
+Daybreak only after valid #19. #185/#209 #13 returned no structured result after the unauthorized
 Highspeed route and remains failed/unverified; #14 is ineligible and no #15 is
 authorized. #174/#204 #19 returned no verdict per Issue #174 comment #18387, so its
 conditional #20 security gate is also ineligible. These issue-local states do not

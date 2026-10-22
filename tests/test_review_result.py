@@ -655,6 +655,19 @@ class ReviewResultTests(unittest.TestCase):
             self.fail("valid Agent Manager findings must produce a result object")
         self.assertEqual(validated["findings"], [finding])
 
+    def test_agent_manager_ux_impact_uses_full_opaque_text_screen(self) -> None:
+        context = Context(CONTEXT.head, CONTEXT.base, 19, "synthetic-model", "manager-session")
+        response = agent_manager_result("APPROVE")
+        response["ux_impact"] = "UX impact: none " + "UNLISTED_OPAQUE_IDENTIFIER_0123456789abcdef"
+
+        diagnostic, validated = inspect_agent_manager_result(
+            encode(response), context, "c" * 40, TextPolicy(), session_completed=True
+        )
+        self.assertEqual(diagnostic.code, Code.UNSAFE)
+        self.assertFalse(diagnostic.complete)
+        self.assertIsNone(diagnostic.actual_verdict)
+        self.assertIsNone(validated)
+
     def test_agent_manager_missing_completion_or_stale_merge_base_holds(self) -> None:
         context = Context(CONTEXT.head, CONTEXT.base, 15, "synthetic-model", "manager-session")
         response = encode(agent_manager_result("APPROVE"))

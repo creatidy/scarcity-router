@@ -398,7 +398,7 @@ def inspect_agent_manager_result(
         if not isinstance(ux_impact, str) or not ux_impact.strip():
             raise Rejected(Stage.SCHEMA, Code.TYPE)
         policy.check_identity(reviewed_merge_base, SHA.pattern)
-        policy.check_identity(ux_impact)
+        policy.check(ux_impact, context)
 
         common = {key: obj[key] for key in FIELDS}
         common_diagnostic, common_result = inspect(encode(cast(Json, common)), context, policy)

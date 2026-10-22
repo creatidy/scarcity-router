@@ -135,10 +135,11 @@ Issue comments before reservation and never transferable:
 - #185/PR #209: maximum14. Preserve #1-11; #12 remains reserved/unconsumed, not
   reclassified. #13 ordinary; #14 owner-manual Daybreak only after valid #13 APPROVE;
   no #15. Canonical Issue #185 comment #18355.
-- #205/PR #206: maximum18. Preserve #1-15, including #15 REQUEST_CHANGES. The
-  unused #16 Daybreak reservation is explicitly superseded/skipped, not reclassified
-  or executed. #17 is ordinary; #18 is owner-manual Daybreak only after valid #17
-  APPROVE on identical refs; no #19. Canonical Issue #205 comments #18436/#18444.
+- #205/PR #206: maximum20. Preserve #1-17, including #15 and #17 REQUEST_CHANGES.
+  The unused #16 and #18 Daybreak reservations are explicitly superseded/skipped, not
+  reclassified or executed. #19 is ordinary; #20 is owner-manual Daybreak only after
+  valid #19 APPROVE on identical refs; no #21. Canonical Issue #205 comments
+  #18436/#18444/#18480.
 - #174/PR #204: maximum20. Preserve #1-18. #19 was consumed with no verdict and is
   failed/unverified (Issue #174 comment #18387); do not retry. The #20 Daybreak
   condition is unsatisfied and #20 is ineligible; no #21. Keep parked. Canonical
@@ -151,18 +152,17 @@ valid #13 APPROVE; no #15 is authorized. Preserve the RCA in Issue #185 comments
 disposition.
 
 Historical #205/PR #206 authority is preserved, not erased: comments #16179/#16250
-authorized the earlier ceiling12; #16611 set ceiling15; #18351 set ceiling16 and
-preserved #1-14. The direct owner amendment #18436 now sets maximum18 only for
-#205/PR #206: #15 REQUEST_CHANGES remains unchanged, #16 is explicitly skipped without
-reclassification or execution, #17 is the next ordinary review and #18 is owner-manual
-Daybreak only after valid #17 approval. Comment #18444 binds ordinary review to the
-exact main model by default and prohibits Highspeed/default-provider fallback. No
-#19/reset/transfer. The direct 2026-10-22 owner instruction is limited to this issue
-and explicitly selected batch; it reopens no other delivery. #174 remains parked:
-comment #18387 records #19 as no-verdict/failed-unverified, so #20 cannot be dispatched.
+authorized the earlier ceiling12; #16611 set ceiling15; #18351 set ceiling16; #18436
+set ceiling18. The direct owner amendment #18480 now sets maximum20 only for #205/PR
+#206. Preserve #15/#17 REQUEST_CHANGES, skip unused #16/#18 without reclassification or
+execution, #19 is the next ordinary review and #20 owner-manual Daybreak only after
+valid #19 approval. No #21/reset/transfer. The direct model instruction selects
+GPT-6.1 Sol/OpenAI/high for review starts; Highspeed and silent fallback are forbidden.
+It does not extend another delivery. #174 remains parked: comment #18387 records #19
+as no-verdict/failed-unverified, so #20 cannot be dispatched.
 Comment #16611 separately authorized #205 parking if it cannot close all gates within
-the then-current ceiling; #18436 supersedes only that numeric ceiling. If #205 cannot
-close within18, preserve the issue/PR open and unmerged at STOP_REVISE, retaining the
+the then-current ceiling; #18436/#18480 supersede only that numeric ceiling. If #205 cannot
+close within20, preserve the issue/PR open and unmerged at STOP_REVISE, retaining the
 old invocation's terminal state, every ordinal and recovery history. Only THEN may a
 distinctly NEW, separately owner-authorized `/loop` invocation use a fresh full
 canonical queue; never silently skip or restart a parked delivery. This is not a

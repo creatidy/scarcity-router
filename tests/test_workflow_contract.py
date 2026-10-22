@@ -169,8 +169,11 @@ class WorkflowContractTests(unittest.TestCase):
                 if len(reservations) >= 12 and isinstance(canonical_exception, dict):
                     reservations[11]["outcome"] = "UNSAFE_TEXT"
                 if (len(reservations) >= 15 and isinstance(canonical_exception, dict)
-                        and cast(dict[str, object], canonical_exception).get("comment") == 18436):
+                        and cast(dict[str, object], canonical_exception).get("comment") in (18436, 18480)):
                     reservations[14]["outcome"] = "REQUEST_CHANGES"
+                if (len(reservations) >= 17 and isinstance(canonical_exception, dict)
+                        and cast(dict[str, object], canonical_exception).get("comment") == 18480):
+                    reservations[16]["outcome"] = "REQUEST_CHANGES"
                 if reservations and ordinary_current and (not isinstance(canonical_exception, dict) or len(reservations) > 12):
                     latest_review = next(
                         record for record in reversed(reservations)
@@ -216,24 +219,26 @@ class WorkflowContractTests(unittest.TestCase):
                     issue205_sources = (
                         {"issue": 205, "pr": 206, "comment": 16611, "ceiling": 15},
                         {"issue": 205, "pr": 206, "comment": 18436, "ceiling": 18,
-                         "skipped_ordinal": 16},
+                         "skipped_ordinals": (16,)},
+                        {"issue": 205, "pr": 206, "comment": 18480, "ceiling": 20,
+                         "skipped_ordinals": (16, 18)},
                     )
                     matching = next(
                         (source for source in issue205_sources
                          if set(attested) == set(source)
-                         and all(type(attested[key]) is int and attested[key] == value
+                         and all(type(attested[key]) is type(value) and attested[key] == value
                                  for key, value in source.items())),
                         None,
                     )
                     if matching is None:
                         return "BLOCKED"
-                    bound = matching["ceiling"]
-                    skipped_ordinal = matching.get("skipped_ordinal")
-                    if (skipped_ordinal is None and skipped_ordinals) or (
-                        skipped_ordinal is not None
-                        and skipped_ordinals != (skipped_ordinal,)
-                    ):
+                    bound_value = matching.get("ceiling")
+                    authorized_skips = matching.get("skipped_ordinals", ())
+                    if (type(bound_value) is not int or not isinstance(authorized_skips, tuple)
+                            or any(type(ordinal) is not int for ordinal in authorized_skips)
+                            or skipped_ordinals != authorized_skips):
                         return "BLOCKED"
+                    bound = bound_value
                 else:
                     return "BLOCKED"
                 if skipped_ordinals and not isinstance(canonical_exception, dict):
@@ -375,63 +380,71 @@ class WorkflowContractTests(unittest.TestCase):
             for recovery in ("ambiguous", "missing", "gap", "duplicate", "bool_ordinal", "float_ordinal"):
                 self.assertEqual(assess(12, 15, canonical_exception=authority, recovery=recovery), "BLOCKED")
 
-            # #18436 preserves #1-15, skips unused #16, then allocates #17 ordinary
-            # and #18 owner-manual security; the superseded #18351 cap cannot be reused.
+            # #18480 preserves consumed history, skips #16/#18 and allocates #19
+            # ordinary followed by #20 owner-manual security.
             current_authority = {
-                "issue": 205, "pr": 206, "comment": 18436, "ceiling": 18,
-                "skipped_ordinal": 16,
+                "issue": 205, "pr": 206, "comment": 18480, "ceiling": 20,
+                "skipped_ordinals": (16, 18),
             }
             superseded_authority = {
-                "issue": 205, "pr": 206, "comment": 18351, "ceiling": 16,
+                "issue": 205, "pr": 206, "comment": 18436, "ceiling": 18,
+                "skipped_ordinals": (16,),
             }
-            self.assertEqual(assess(16, 16, canonical_exception=superseded_authority), "BLOCKED")
-            self.assertEqual(assess(15, 18, canonical_exception=current_authority), "BLOCKED")
-            self.assertEqual(assess(16, 18, canonical_exception=current_authority), "BLOCKED")
             self.assertEqual(
-                assess(16, 18, canonical_exception=current_authority,
-                       skipped_ordinals=(16,)),
+                assess(18, 20, canonical_exception=superseded_authority,
+                       skipped_ordinals=(16, 18)),
+                "BLOCKED",
+            )
+            self.assertEqual(assess(18, 20, canonical_exception=current_authority), "BLOCKED")
+            self.assertEqual(
+                assess(18, 20, canonical_exception=current_authority,
+                       skipped_ordinals=(16, 18)),
                 "PASS",
             )
             new_pair = cast(dict[str, object], json.loads(ledger.read_text()))
             self.assertEqual(new_pair["prospective_roles"], ["ordinary", "restricted"])
-            self.assertEqual(new_pair["prospective_ordinals"], [17, 18])
+            self.assertEqual(new_pair["prospective_ordinals"], [19, 20])
             current_history = cast(list[dict[str, object]], new_pair["reservations"])
-            self.assertEqual(len(current_history), 16)
+            self.assertEqual(len(current_history), 18)
             self.assertEqual(current_history[14]["outcome"], "REQUEST_CHANGES")
             self.assertEqual(current_history[15]["outcome"], "OWNER_AUTHORIZED_SKIP")
+            self.assertEqual(current_history[16]["outcome"], "REQUEST_CHANGES")
+            self.assertEqual(current_history[17]["outcome"], "OWNER_AUTHORIZED_SKIP")
             self.assertEqual(
-                assess(17, 18, canonical_exception=current_authority,
-                       skipped_ordinals=(16,)),
+                assess(19, 20, canonical_exception=current_authority,
+                       skipped_ordinals=(16, 18)),
                 "STOP_REVISE",
             )
             self.assertEqual(
-                assess(17, 18, canonical_exception=current_authority,
-                       skipped_ordinals=(16,), patch_objects=False,
+                assess(19, 20, canonical_exception=current_authority,
+                       skipped_ordinals=(16, 18), patch_objects=False,
                        ordinary_current=True),
                 "PASS",
             )
             current_security = cast(dict[str, object], json.loads(ledger.read_text()))
             self.assertEqual(current_security["prospective_roles"], ["restricted"])
-            self.assertEqual(current_security["prospective_ordinals"], [18])
+            self.assertEqual(current_security["prospective_ordinals"], [20])
             current_reservations = cast(list[dict[str, object]], current_security["reservations"])
-            self.assertEqual(len(current_reservations), 17)
+            self.assertEqual(len(current_reservations), 19)
             self.assertEqual(current_reservations[15]["outcome"], "OWNER_AUTHORIZED_SKIP")
-            self.assertEqual(current_reservations[16]["outcome"], "APPROVE")
+            self.assertEqual(current_reservations[16]["outcome"], "REQUEST_CHANGES")
+            self.assertEqual(current_reservations[17]["outcome"], "OWNER_AUTHORIZED_SKIP")
+            self.assertEqual(current_reservations[18]["outcome"], "APPROVE")
             self.assertEqual(
-                assess(17, 18, canonical_exception=current_authority,
-                       skipped_ordinals=(16,), patch_objects=False,
+                assess(19, 20, canonical_exception=current_authority,
+                       skipped_ordinals=(16, 18), patch_objects=False,
                        ordinary_current=True, restricted_stale=True),
                 "PASS",
             )
             self.assertEqual(
-                assess(17, 18, canonical_exception=current_authority,
-                       skipped_ordinals=(16,), patch_objects=False,
+                assess(19, 20, canonical_exception=current_authority,
+                       skipped_ordinals=(16, 18), patch_objects=False,
                        ordinary_current=True, restricted_current=True),
                 "PASS",
             )
             self.assertEqual(
-                assess(19, 18, canonical_exception=current_authority,
-                       skipped_ordinals=(16,)),
+                assess(21, 20, canonical_exception=current_authority,
+                       skipped_ordinals=(16, 18)),
                 "BLOCKED",
             )
         contract = " ".join(section.split())
@@ -440,12 +453,13 @@ class WorkflowContractTests(unittest.TestCase):
                             "never authorize a ceiling", "Missing or ambiguous canonical ordinal history is BLOCKED",
                              "before any remediation or reservation", "finite direct-owner exception already integrated",
                              "contiguous unique ordinals", "ordinary-before-restricted order",
-                             "Historical #205/PR #206 authority is preserved, not erased",
-                             "Comment #16611 separately authorized #205 parking", "#18351 set ceiling16",
-                             "#205/PR #206: maximum18", "Preserve #1-15", "#16 is explicitly skipped",
-                             "#17 is the next ordinary review", "#18 is owner-manual Daybreak", "no #19",
-                             "The direct 2026-10-22 owner instruction is limited to this issue",
-                             "it reopens no other delivery", "No #19/reset/transfer",
+                              "Historical #205/PR #206 authority is preserved, not erased",
+                              "Comment #16611 separately authorized #205 parking", "#18351 set ceiling16",
+                              "#205/PR #206: maximum20", "Preserve #1-17",
+                              "The unused #16 and #18 Daybreak reservations are explicitly superseded/skipped",
+                              "#19 is ordinary", "#20 is owner-manual Daybreak", "no #21",
+                              "The direct model instruction selects GPT-6.1 Sol/OpenAI/high",
+                              "It does not extend another delivery", "No #21/reset/transfer",
                             "No source fixture or ledger claim supplies owner authority",
                             "Capacity alone is not approval/currentness",
                             "nonpositive ordinary verdict at the last ordinary slot",

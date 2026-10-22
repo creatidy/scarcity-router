@@ -206,11 +206,12 @@ An ordinary visible Agent Manager reviewer uses the exact provider-qualified mod
 selected by the main implementation session by default. The primary resolves that
 identity from its active session and explicitly binds it in the Agent Manager task's
 `model` field, with the same provider and any known reasoning variant; do not delegate
-selection to a workspace default or provider router. Adrian may explicitly choose
-another permitted model/provider/variant for one specific review. Highspeed models
-are not authorized by the current owner instruction and are not an implicit or
-ordinary override choice. A future direct owner instruction is required to lift that
-prohibition. If the main identity or explicit override cannot be resolved/bound, or
+selection to a workspace default or provider router. The current direct owner override
+#18480 selects `GPT-6.1 Sol` / `openai` / `high` for all review starts until superseded;
+bind that exact identity explicitly. Adrian may explicitly choose another permitted
+model/provider/variant for a specific review. Highspeed models remain unauthorized and
+are not an implicit or ordinary override choice. A future direct owner instruction is
+required to lift that prohibition. If the active identity or explicit override cannot be resolved/bound, or
 the native session reports a mismatch/provider error, stop without sending review
 content, retrying or substituting. A task's requested model is not proof of runtime
 identity; record `REQUESTED`, `DISPATCH_VERIFIED`, `RUNTIME_VERIFIED`,

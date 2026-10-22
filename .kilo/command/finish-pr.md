@@ -36,12 +36,13 @@ must not invoke another model, start a session or delegate to a hidden reviewer.
  5. Under the direct D-077 owner amendment, start one fresh read-only ordinary Kilo
     reviewer using a single initial `agent_manager` local-session prompt and the
     selectable `pr-reviewer-standalone` agent. Include the complete Git diff and exact
-    issue criteria in that prompt. Resolve the current primary's exact provider-
-    qualified model and pass it explicitly as `model`, with the same provider and
-    known reasoning variant. Only Adrian may explicitly select another permitted
-    identity for this review. Highspeed models and automatic provider fallback are not
-    authorized. On model mismatch or provider error, stop without retrying or
-    substitution. Retain the Agent Manager reply ID/session identity. Do not use Task,
+     issue criteria in that prompt. The base default is the current primary's exact
+     provider-qualified model. The current owner override #18480 selects `GPT-6.1 Sol` /
+     `openai` / `high` for all review starts until superseded; pass those values
+     explicitly as `model`, `provider` and `variant`. Only Adrian may override this for
+     a specific review with another exact permitted identity. Highspeed is not
+     authorized. On model mismatch or provider error, stop without retry/substitution.
+     Retain the Agent Manager reply ID/session identity. Do not use Task,
     shell/Python/HTTP model launchers, background model jobs or generated wrappers.
     Daybreak remains owner-manual through official Codex only.
   6. Retrieve the structured reviewer JSON directly through the native Agent Manager

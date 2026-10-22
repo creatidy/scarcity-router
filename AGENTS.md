@@ -73,12 +73,13 @@ Independent review takes place in a separate fresh USER-VISIBLE Kilo or official
 Codex session. Under the direct 2026-10-22 owner amendment in D-077, the sole
 primary `/loop` or authorized `/finish-pr` context may start an ordinary Kilo
 review session through Agent Manager using the read-only `pr-reviewer-standalone`
-agent. Bind the exact provider-qualified model selected by the current primary
-session, plus its provider and known reasoning variant; never rely on a workspace
-default. Only Adrian may explicitly choose another permitted identity for that
-review. Highspeed models and automatic provider fallback are not currently
-authorized. On unresolved identity, mismatch or dispatch error, stop without
-retrying or sending review content. The orchestrator supplies exact refs, complete
+agent. The base default is the exact provider-qualified model selected by the current
+primary, never a workspace default. Current direct owner override #18480 selects
+`GPT-6.1 Sol` / `openai` / `high` for all review starts until superseded; bind that
+model/provider/variant explicitly. Only Adrian may explicitly override it for a
+specific review with another permitted identity. Highspeed models and automatic
+provider fallback are not authorized. On unresolved identity, mismatch or dispatch
+error, stop without retrying or sending review content. The orchestrator supplies exact refs, complete
 compact diff, acceptance and scope, then retrieves the structured result from the
 native Agent Manager/Kilo session without owner copy/paste and records minimal
 provenance canonically. The reviewer

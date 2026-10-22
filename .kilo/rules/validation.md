@@ -31,9 +31,10 @@ it never authorizes a hidden model call.
 - Independent review is a fresh separate read-only USER-VISIBLE Kilo/Codex session.
   Under D-077's direct owner amendment, the sole authorized primary may start ordinary
   Kilo review through a single initial Agent Manager prompt using
-  `pr-reviewer-standalone`; explicitly bind the exact provider-qualified model selected
-  by the current primary, plus its provider and known reasoning variant. Adrian may
-  explicitly select another permitted identity per review; Highspeed is not currently
+  `pr-reviewer-standalone`; the base default is the exact provider-qualified model
+  selected by the current primary. The current owner override #18480 sets `GPT-6.1 Sol`
+  / `openai` / `high` for all review starts; explicitly bind those values. Adrian may
+  explicitly select another permitted identity per review; Highspeed is not
   authorized. Never rely on a workspace default, provider fallback or silent
   substitution. If the exact requested identity cannot be resolved, do not dispatch
   review content. Include exact refs, complete compact diff and acceptance, then
