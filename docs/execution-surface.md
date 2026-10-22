@@ -108,7 +108,7 @@ live inference, deployment, workspace or credential access.
 
 ## Harness compatibility contract (D-056)
 
-### Executable Recommendation (D-077, #174)
+### Executable Recommendation (D-078, #174)
 
 Contract-first producer freeze under #174; installed consumer acceptance remains
 open. The optional gateway
@@ -617,7 +617,7 @@ strictness:
   `xhigh`, `max`, `ultra` (the runtime-reported GPT-6-generation efforts
   entered additively with D-053).
 - `execution_requirements` is the opt-in closed versioned context defined by
-  D-077 above. It requires an exact pin and preserves quality, structural demands,
+  D-078 above. It requires an exact pin and preserves quality, structural demands,
   profile expansion/version and expected nullable effort. It is never a grant,
   approval assertion, prompt or provider metadata; ordinary clients may omit it.
 
