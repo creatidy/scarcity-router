@@ -1005,6 +1005,10 @@ class ServerStore:
     def migrate(self) -> int:
         """Apply a bounded, ordered migration set atomically and idempotently."""
         with self._lock:
+            # An already-current store needs no write lock. In particular, an
+            # empty write transaction must not disrupt another store's reader.
+            if self.schema_version() == STORE_SCHEMA_VERSION:
+                return STORE_SCHEMA_VERSION
             try:
                 _ = self._connection.execute("BEGIN IMMEDIATE")
                 applied = self.applied_migration_versions()

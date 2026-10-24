@@ -420,11 +420,9 @@ connection.close()
                 assert count is not None
                 self.assertEqual(1, count[0])
 
-                # Close a second ServerStore open while the first still owns
-                # a SQLite read transaction. The no-migration seam isolates
-                # constructor success; the following test exercises the
-                # production migration-failure path.
-                second = ServerStore.open(directory, migrate=False)
+                # The already-current production open must not release the
+                # first connection's active rollback-journal read lock.
+                second = ServerStore.open(directory)
                 second.close()
 
                 writer = self._start_external_writer(first.path)
@@ -442,7 +440,10 @@ connection.close()
     def test_failed_second_open_keeps_write_lock_until_first_commit(self) -> None:
         with tempfile.TemporaryDirectory() as parent:
             directory = Path(parent) / "server"
-            first = ServerStore.open(directory)
+            fixture = OwnedSchemaRecoveryTests()
+            path = fixture.seed(parent, 1)
+            before = fixture.records(path)
+            first = ServerStore.open(directory, migrate=False)
             writer: subprocess.Popen[str] | None = None
             try:
                 _ = _store_connection(first).execute("BEGIN IMMEDIATE")
@@ -465,6 +466,84 @@ connection.close()
                 self.assertEqual("READY", cast(str, writer.stdout.readline()).strip())
                 self._wait_for_external_line(writer, "BLOCKED")
                 self._finish_external_writer(writer, first)
+            finally:
+                if writer is not None:
+                    self._stop_external_writer(writer)
+                first.close()
+
+            self._assert_both_provider_secrets_survived(directory)
+            after = fixture.records(path)
+            self.assertEqual(before[0], after[0])
+            self.assertCountEqual(
+                [*before[1], ("first", "first-secret", T0), ("external", "external-secret", T1)],
+                after[1],
+            )
+            self.assertEqual(before[2:], after[2:])
+
+    def test_failed_wal_second_open_preserves_writer_and_committed_records(self) -> None:
+        with tempfile.TemporaryDirectory() as parent:
+            directory = Path(parent) / "server"
+            first = ServerStore.open(directory)
+            writer: subprocess.Popen[str] | None = None
+            try:
+                first.set_provider_secret(provider_id="committed", secret="retained-secret", at=T0)
+                connection = _store_connection(first)
+                self.assertEqual(("wal",), tuple(cast(sqlite3.Row, connection.execute("PRAGMA journal_mode=WAL").fetchone())))
+                _ = connection.execute("BEGIN IMMEDIATE")
+                _ = connection.execute(
+                    "INSERT INTO provider_secrets VALUES (?, ?, ?)",
+                    ("first", "first-secret", T0),
+                )
+
+                # A live WAL transaction prevents the production opener from
+                # switching to DELETE; refusal must neither checkpoint nor
+                # release the first connection's write lock.
+                with self.assertRaises(ServerStoreError):
+                    _ = ServerStore.open(directory)
+                self.assertTrue(connection.in_transaction)
+                self.assertEqual(("wal",), tuple(cast(sqlite3.Row, connection.execute("PRAGMA journal_mode").fetchone())))
+                writer = self._start_external_writer(first.path)
+                self._wait_for_external_line(writer, "READY")
+                self._wait_for_external_line(writer, "BLOCKED")
+                self._finish_external_writer(writer, first)
+            finally:
+                if writer is not None:
+                    self._stop_external_writer(writer)
+                first.close()
+
+            self._assert_both_provider_secrets_survived(directory)
+            reopened = ServerStore.open(directory)
+            try:
+                self.assertEqual("retained-secret", reopened.get_provider_secret("committed"))
+            finally:
+                reopened.close()
+
+    def test_wal_reader_survives_failed_open_and_external_writer_commit(self) -> None:
+        with tempfile.TemporaryDirectory() as parent:
+            directory = Path(parent) / "server"
+            first = ServerStore.open(directory)
+            writer: subprocess.Popen[str] | None = None
+            try:
+                first.set_provider_secret(provider_id="first", secret="first-secret", at=T0)
+                connection = _store_connection(first)
+                self.assertEqual(("wal",), tuple(cast(sqlite3.Row, connection.execute("PRAGMA journal_mode=WAL").fetchone())))
+                _ = connection.execute("BEGIN")
+                self.assertEqual(1, connection.execute("SELECT COUNT(*) FROM provider_secrets").fetchone()[0])
+                with self.assertRaises(ServerStoreError):
+                    _ = ServerStore.open(directory)
+
+                # Unlike rollback mode, a WAL reader must allow an external
+                # commit while preserving its original snapshot until COMMIT.
+                writer = self._start_external_writer(first.path)
+                self._wait_for_external_line(writer, "READY")
+                self._wait_for_external_line(writer, "COMMITTED")
+                self.assertEqual(0, writer.wait(timeout=10))
+                assert writer.stderr is not None
+                self.assertEqual("", cast(str, writer.stderr.read()))
+                self.assertTrue(connection.in_transaction)
+                self.assertEqual(1, connection.execute("SELECT COUNT(*) FROM provider_secrets").fetchone()[0])
+                _ = connection.execute("COMMIT")
+                self.assertEqual(2, connection.execute("SELECT COUNT(*) FROM provider_secrets").fetchone()[0])
             finally:
                 if writer is not None:
                     self._stop_external_writer(writer)
@@ -676,6 +755,9 @@ s.ServerStore.open(Path(sys.argv[1]))
 class OwnedSchemaRecoveryTests(unittest.TestCase):
     def seed(self, parent: str, version: int) -> Path:
         return self._seed(parent, version)
+
+    def records(self, path: Path) -> tuple[list[tuple[object, ...]], ...]:
+        return self._records(path)
 
     def crash(self, path: Path) -> Path:
         return self._crash(path)
