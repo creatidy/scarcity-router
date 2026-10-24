@@ -467,6 +467,13 @@ class ServerStore:
                             existing.descriptors.append(fd)
 
     def _cleanup_failed_open(self) -> None:
+        if self._close_finalizer is not None:
+            # Guard teardown can fail after registration. The finalizer owns
+            # its captured lease and must consume it exactly once, even on GC.
+            _ = self._close_finalizer()
+            self._lease_key = None
+            self._database_fd = None
+            return
         connection = getattr(self, "_connection", None)
         if isinstance(connection, sqlite3.Connection):
             try:

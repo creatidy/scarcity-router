@@ -6,6 +6,7 @@ Deterministic: injected timestamps, temporary directories, no network.
 
 from __future__ import annotations
 
+import gc
 import sqlite3
 import os
 import json
@@ -16,7 +17,10 @@ import sys
 import stat
 import tempfile
 import unittest
+import weakref
+from collections.abc import Callable, Generator
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import AbstractContextManager, contextmanager
 from pathlib import Path
 from typing import BinaryIO, cast
 from unittest import mock
@@ -479,6 +483,78 @@ connection.close()
                 after[1],
             )
             self.assertEqual(before[2:], after[2:])
+
+    def test_guard_exit_failure_finalizes_constructor_lease_exactly_once(self) -> None:
+        guard = cast(
+            Callable[[ServerStore, Path, os.stat_result | None], AbstractContextManager[os.stat_result | None]],
+            getattr(ServerStore, "_recovery_guard"),
+        )
+        cleanup = cast(Callable[[ServerStore], None], getattr(ServerStore, "_cleanup_failed_open"))
+        for failure in (RuntimeError, OSError, KeyboardInterrupt):
+            with self.subTest(failure=failure.__name__), tempfile.TemporaryDirectory() as parent:
+                fixture = OwnedSchemaRecoveryTests()
+                path = fixture.seed(parent, 2)
+                before = fixture.records(path)
+                first = ServerStore.open(path.parent)
+                failed: list[weakref.ReferenceType[ServerStore]] = []
+                before_cleanup: list[bool] = []
+                after_cleanup: list[bool] = []
+
+                @contextmanager
+                def interrupted_guard(
+                    store: ServerStore, path: Path, expected: os.stat_result | None,
+                ) -> Generator[os.stat_result | None, None, None]:
+                    with guard(store, path, expected) as checked:
+                        yield checked
+                    raise failure("synthetic guard teardown")
+
+                def record_cleanup(store: ServerStore) -> None:
+                    finalizer = cast("weakref.finalize[..., object] | None", getattr(store, "_close_finalizer"))
+                    assert finalizer is not None
+                    failed.append(weakref.ref(store))
+                    before_cleanup.append(finalizer.alive)
+                    cleanup(store)
+                    after_cleanup.append(finalizer.alive)
+
+                writer: subprocess.Popen[str] | None = None
+                try:
+                    connection = _store_connection(first)
+                    _ = connection.execute("BEGIN IMMEDIATE")
+                    _ = connection.execute(
+                        "INSERT INTO provider_secrets VALUES (?, ?, ?)",
+                        ("first", "first-secret", T0),
+                    )
+                    expected_error = ServerStoreError if failure is OSError else failure
+                    message = "filesystem access is unavailable" if failure is OSError else "synthetic guard teardown"
+                    with mock.patch.object(ServerStore, "_recovery_guard", interrupted_guard), \
+                            mock.patch.object(ServerStore, "_cleanup_failed_open", record_cleanup):
+                        with self.assertRaisesRegex(expected_error, message):
+                            _ = ServerStore.open(path.parent)
+                    _ = gc.collect()
+                    self.assertEqual([True], before_cleanup)
+                    self.assertEqual(1, len(failed))
+                    self.assertIsNone(failed[0]())
+                    self.assertTrue(connection.in_transaction)
+                    writer = self._start_external_writer(path)
+                    self._wait_for_external_line(writer, "READY")
+                    self._wait_for_external_line(writer, "BLOCKED")
+                    self.assertEqual([False], after_cleanup)
+                    references = cast(Callable[[], int], getattr(first, "_database_lease_references"))
+                    self.assertEqual(1, references())
+                    self._finish_external_writer(writer, first)
+                finally:
+                    if writer is not None:
+                        self._stop_external_writer(writer)
+                    first.close()
+
+                self._assert_both_provider_secrets_survived(path.parent)
+                after = fixture.records(path)
+                self.assertEqual(before[0], after[0])
+                self.assertCountEqual(
+                    [*before[1], ("first", "first-secret", T0), ("external", "external-secret", T1)],
+                    after[1],
+                )
+                self.assertEqual(before[2:], after[2:])
 
     def test_failed_wal_second_open_preserves_writer_and_committed_records(self) -> None:
         with tempfile.TemporaryDirectory() as parent:
