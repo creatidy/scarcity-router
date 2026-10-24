@@ -1,6 +1,6 @@
 ---
 description: Independent read-only whole-PR review returning a frozen JSON task result
-mode: primary
+mode: all
 permission:
   "*": deny
   read:

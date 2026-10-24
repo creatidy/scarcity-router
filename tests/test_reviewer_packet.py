@@ -2315,7 +2315,7 @@ class ReviewerPacketTests(unittest.TestCase):
             profile = PROFILE.read_text(encoding="utf-8")
             frontmatter = profile.split("---", 2)[1]
             self.assertFalse((ROOT / ".kilo/agents/pr-reviewer-standalone.md").exists())
-            self.assertIn("mode: primary", frontmatter)
+            self.assertIn("mode: all", frontmatter)
             self.assertIn('"*": deny', frontmatter)
             self.assertIn('"*": allow', frontmatter)
             self.assertIn('".git/**": deny', frontmatter)

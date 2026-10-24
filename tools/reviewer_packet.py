@@ -1488,8 +1488,8 @@ def _profile_parts(profile_path: Path) -> tuple[bytes, str, str]:
     if len(parts) != 3 or parts[0].strip():
         raise PacketError("canonical reviewer profile frontmatter is malformed")
     frontmatter = parts[1]
-    if not re.search(r"(?m)^mode:\s*primary\s*$", frontmatter):
-        raise PacketError("standalone reviewer mode must be primary")
+    if not re.search(r"(?m)^mode:\s*(?:primary|all)\s*$", frontmatter):
+        raise PacketError("reviewer must be selectable as an Agent Manager primary")
     if not re.search(r"(?m)^permission:\s*\n\s+\"\*\":\s*deny\s*$", frontmatter):
         raise PacketError("standalone reviewer static permissions must deny all tools")
     read_block = re.search(

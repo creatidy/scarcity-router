@@ -721,7 +721,7 @@ class WorkflowContractTests(unittest.TestCase):
         profile = text(".kilo/agents/pr-reviewer.md")
         frontmatter = profile.split("---", 2)[1]
         for requirement in (
-            "mode: primary", '"*": deny', '"*": allow', '"**/.env*": deny',
+            "mode: all", '"*": deny', '"*": allow', '"**/.env*": deny',
             '"**/.task_progress.md": deny', '"**/.git/**": deny',
             '"**/.kilo/agent-manager.json.*.tmp": deny', "external_directory: deny",
         ):
