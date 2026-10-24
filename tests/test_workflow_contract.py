@@ -456,8 +456,9 @@ class WorkflowContractTests(unittest.TestCase):
 
     def test_stop_boundary_and_repository_safety(self) -> None:
         loop = text(".kilo/command/loop.md")
-        self.assertIn("explicit visible-review handoff with its exact pending gate", loop)
-        self.assertIn("Never replace that handoff with QUEUE_EMPTY, approval or a hidden launcher", loop)
+        self.assertIn("Ordinary reviewer sessions and result collection are autonomous", loop)
+        self.assertIn("genuine unsupported native session/result capability", loop)
+        self.assertNotIn("explicit visible-review handoff with its exact pending gate", loop)
         self.assertIn("READY_FOR_OWNER_SECURITY_REVIEW is a terminal handoff", loop)
         self.assertIn("Stop before MERGE, issue closure or SELECT", loop)
         self.assertIn("maximum 20", loop)
@@ -556,7 +557,7 @@ class WorkflowContractTests(unittest.TestCase):
             "BLOCKED requires exhausted authorized technical paths/budget",
             "Class-B decisions instead require STOP_AND_ASK / OWNER_DECISION_NEEDED with all five decision fields",
             "Do not ask an artificial question for an external non-decision blocker",
-            "A required user-visible review start is an explicit pending-gate handoff",
+            "If native Kilo session/result capability is genuinely unavailable after bounded",
             "Preserve mandatory full validation",
         ):
             self.assertIn(requirement, recovery)
@@ -571,15 +572,61 @@ class WorkflowContractTests(unittest.TestCase):
             content = text(path)
             with self.subTest(path=path):
                 self.assertIn("visible", content.lower())
-                self.assertRegex(content.lower(), r"hand ?off")
                 self.assertNotRegex(content, r"\.review-evidence-\d+/")
                 self.assertNotIn("run-owner-review.sh", content)
                 self.assertNotIn("standalone_run_argv", content)
         finish = text(".kilo/command/finish-pr.md")
-        self.assertIn("user explicitly selects the model", finish.lower())
+        self.assertIn("native Agent Manager", finish)
+        self.assertIn("do not require the owner to start the session", finish.lower())
+        self.assertIn("do not ask the owner to copy or relay prompts/results", finish.lower())
         self.assertIn("No persistent `.review-evidence-*`", finish)
         self.assertIn("not original owner authority", finish)
         self.assertIn("No ordinary #212 Kilo", text(".kilo/rules/validation.md"))
+
+    def test_independent_review_is_conversational_and_native(self) -> None:
+        agents = text("AGENTS.md")
+        contract = agents.split("## Independent Review — Conversational Separation", 1)[1]
+        contract = contract.split("## Bounded review lifecycle", 1)[0]
+        for requirement in (
+            "fresh, separate reviewer conversation",
+            "separation of conversational state and judgment",
+            "The reviewer MAY use the same repository",
+            "A separate worktree, checkout, container, sandbox",
+            "NOT required solely for reviewer independence",
+            "Do not transfer the implementation conversation",
+            "The reviewer remains read-only and reviews the exact intended source revision",
+            "MUST be handled autonomously through supported native Kilo session functionality",
+            "never require owner prompt or response relay",
+            "MUST NOT be interpreted as a requirement to create a managed worktree",
+            "The native Kilo session start is permitted and user-visible",
+        ):
+            with self.subTest(requirement=requirement):
+                self.assertIn(requirement, contract)
+
+        loop = text(".kilo/command/loop.md")
+        finish = text(".kilo/command/finish-pr.md")
+        reviewer = text(".kilo/agents/pr-reviewer-standalone.md")
+        self.assertIn("native Kilo Agent Manager", loop)
+        self.assertIn("kilo_local_recall", loop)
+        self.assertIn("native Agent Manager", finish)
+        self.assertIn("without owner copy/paste", reviewer)
+        self.assertIn('"*": deny', reviewer)
+        self.assertIn('"*": allow', reviewer)
+        self.assertIn('"**/.env*": deny', reviewer)
+        self.assertIn("external_directory: deny", reviewer)
+
+        for path in (
+            "AGENTS.md", ".kilo/command/loop.md", ".kilo/command/review-pr.md",
+            ".kilo/command/finish-pr.md", ".kilo/command/implement-issue.md",
+            ".kilo/rules/10-task-system.md", ".kilo/rules/35-technical-recovery.md",
+            ".kilo/rules/40-llm-operating-policy.md", ".kilo/rules/validation.md",
+            "docs/llm-operating-policy.md",
+        ):
+            content = text(path).lower()
+            with self.subTest(path=path):
+                self.assertNotIn("the user explicitly opens a fresh", content)
+                self.assertNotIn("the user selects/starts the model", content)
+                self.assertNotIn("user explicitly selects the model and starts", content)
 
     def test_development_validator_has_no_harness_or_inference_execution_path(self) -> None:
         source = (ROOT / "tools/reviewer_packet.py").read_text()
@@ -625,14 +672,19 @@ class WorkflowContractTests(unittest.TestCase):
         # Product adapters intentionally remain outside this development-script scope.
         self.assertTrue((ROOT / "scarcity_router").is_dir())
 
-    def test_visible_profile_requires_user_read_approval_and_no_write_or_external_tools(self) -> None:
+    def test_visible_profile_allows_workspace_reads_without_write_or_external_tools(self) -> None:
         profile = text(".kilo/agents/pr-reviewer-standalone.md")
         frontmatter = profile.split("---", 2)[1]
-        for requirement in ("mode: primary", '"*": deny', "read: ask", "external_directory: deny"):
+        for requirement in (
+            "mode: primary", '"*": deny', "read:", '"*": allow',
+            '"**/.env*": deny', "external_directory: deny",
+        ):
             self.assertIn(requirement, frontmatter)
         self.assertNotRegex(frontmatter, r"\b(?:bash|edit|task):\s*allow")
-        for requirement in ("CURRENT fresh user-visible", "source Reads approved by the user",
-                            "Do not grant yourself permissions", "No desired verdict", "UX"):
+        for requirement in (
+            "NEW fresh user-visible", "source reads in the current repository workspace",
+            "Never read credentials or environment files", "No desired verdict", "UX",
+        ):
             self.assertIn(requirement, profile)
         self.assertIn("not a review execution path", text(".kilo/agents/pr-reviewer.md"))
 

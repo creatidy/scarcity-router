@@ -1492,10 +1492,25 @@ def _profile_parts(profile_path: Path) -> tuple[bytes, str, str]:
         raise PacketError("standalone reviewer mode must be primary")
     if not re.search(r"(?m)^permission:\s*\n\s+\"\*\":\s*deny\s*$", frontmatter):
         raise PacketError("standalone reviewer static permissions must deny all tools")
-    if not re.search(r"(?m)^\s+read:\s*(?:deny|ask)\s*$", frontmatter):
-        raise PacketError("reviewer Read must require explicit source approval, never a static allow")
-    if re.search(r"(?m)^\s+[^#\n]+:\s*allow\s*$", frontmatter):
-        raise PacketError("standalone reviewer frontmatter contains a static allow")
+    read_rules = re.search(
+        r"(?m)^  read:\s*\n(?P<rules>(?: {4}[^\n]*(?:\n|$))*)",
+        frontmatter,
+    )
+    if read_rules is None or not re.search(
+        r'(?m)^ {4}"\*":\s*allow\s*$', read_rules.group("rules")
+    ):
+        raise PacketError("reviewer Read must allow workspace source reads without approval")
+    if not re.search(
+        r'(?m)^ {4}"\*\*/\.env\*":\s*deny\s*$', read_rules.group("rules")
+    ):
+        raise PacketError("reviewer Read must deny environment files")
+    in_read_rules = False
+    for line in frontmatter.splitlines():
+        indentation = len(line) - len(line.lstrip(" "))
+        if indentation == 2:
+            in_read_rules = line.strip() == "read:"
+        if re.search(r":\s*allow\s*$", line) and not in_read_rules:
+            raise PacketError("standalone reviewer frontmatter contains an allow outside Read")
     description = re.search(r"(?m)^description:\s*(.+?)\s*$", frontmatter)
     if description is None:
         raise PacketError("canonical reviewer description is missing")
