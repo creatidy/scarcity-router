@@ -1508,6 +1508,10 @@ def _profile_parts(profile_path: Path) -> tuple[bytes, str, str]:
         '    "**/.git/**": deny',
         '    ".kilo/agent-manager.json.*.tmp": deny',
         '    "**/.kilo/agent-manager.json.*.tmp": deny',
+        '    "**/.config/kilo/**": deny',
+        '    "**/.local/share/kilo/**": deny',
+        '    "**/.kilocode/**": deny',
+        '    "**/tmp/kilo/**": deny',
     ):
         if rule not in read_block.group("rules"):
             raise PacketError("reviewer Read boundary lacks an approved sensitive-path rule")

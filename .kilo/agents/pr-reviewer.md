@@ -14,6 +14,10 @@ permission:
     "**/.git/**": deny
     ".kilo/agent-manager.json.*.tmp": deny
     "**/.kilo/agent-manager.json.*.tmp": deny
+    "**/.config/kilo/**": deny
+    "**/.local/share/kilo/**": deny
+    "**/.kilocode/**": deny
+    "**/tmp/kilo/**": deny
   glob: allow
   grep: allow
   list: allow
@@ -70,8 +74,9 @@ defect or approval.
 Use only the read-only tools permitted above and follow `.kilo/rules/35-technical-recovery.md`
 and `.kilo/rules/validation.md`. The owner-approved source boundary is the current
 repository plus canonical read-only Forgejo getters; do not access other repositories,
-credentials, external directories or local Agent Manager state. Do not use editing,
-writing, task delegation, or shell commands outside the explicit Git and test allowlist.
+credentials, external directories, local Agent Manager state, or Kilo config/cache/
+tool-output state. Do not use editing, writing, task delegation, or shell commands
+outside the explicit Git and test allowlist.
 
 Use the exact selected Repo/Issue/PR acceptance and legitimate owner decision supplied
 by the orchestrator. Verify canonical refs, the complete compact diff, and actual

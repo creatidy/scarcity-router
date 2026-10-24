@@ -2320,6 +2320,10 @@ class ReviewerPacketTests(unittest.TestCase):
             self.assertIn('"*": allow', frontmatter)
             self.assertIn('".git/**": deny', frontmatter)
             self.assertIn('"**/.env*": deny', frontmatter)
+            self.assertIn('"**/.config/kilo/**": deny', frontmatter)
+            self.assertIn('"**/.local/share/kilo/**": deny', frontmatter)
+            self.assertIn('"**/.kilocode/**": deny', frontmatter)
+            self.assertIn('"**/tmp/kilo/**": deny', frontmatter)
             self.assertIn("external_directory: deny", frontmatter)
             self.assertIn("bash:", frontmatter)
 

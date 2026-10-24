@@ -625,6 +625,10 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn('"**/.task_progress.md": deny', reviewer)
         self.assertIn('"**/.git/**": deny', reviewer)
         self.assertIn('"**/.kilo/agent-manager.json.*.tmp": deny', reviewer)
+        self.assertIn('"**/.config/kilo/**": deny', reviewer)
+        self.assertIn('"**/.local/share/kilo/**": deny', reviewer)
+        self.assertIn('"**/.kilocode/**": deny', reviewer)
+        self.assertIn('"**/tmp/kilo/**": deny', reviewer)
         self.assertIn("external_directory: deny", reviewer)
         self.assertIn("glob: allow", reviewer)
         self.assertIn("grep: allow", reviewer)
@@ -727,7 +731,10 @@ class WorkflowContractTests(unittest.TestCase):
             "NEW fresh user-visible",
             "Use only the read-only tools permitted above",
             "owner-approved source boundary",
-            "do not access other repositories, credentials, external directories or local Agent Manager state",
+            "do not access other repositories, credentials, external directories",
+            "local Agent Manager state",
+            "config/cache/",
+            "tool-output state",
             "No desired verdict", "UX",
         ):
             self.assertIn(requirement.lower(), profile.lower())
