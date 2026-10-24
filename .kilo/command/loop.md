@@ -18,10 +18,13 @@ was separately accepted, and merge121ee3f/#212 closure are verified. No #20 reus
 ## Invocation and Safety
 
 Use exactly one designated delivery checkout and ordinary issue branches. Only one context may
-mutate it at a time; no programmatic model/subagent start is permitted. Temporary worktrees and
-evidence checkouts are allowed under `.kilo/rules/35-technical-recovery.md`, not parallel
-implementation. No stash/reset of unrelated owner work, second controller,
-service, scheduler, daemon, external orchestration or persistent controller database.
+mutate it at a time. An authorized `/loop` may start a fresh ordinary reviewer session through
+native Kilo Agent Manager; this is visible session management, not hidden inference. Do not
+start review models through scripts, subprocesses, Task/subagents, background jobs or HTTP.
+Temporary worktrees/evidence checkouts are optional technical mechanisms under
+`.kilo/rules/35-technical-recovery.md`, never an independence prerequisite or parallel
+implementation. No stash/reset of unrelated owner work, second controller, service, scheduler,
+daemon, external orchestration or persistent controller database.
 Do not use Scarcity Router for model selection, execution, orchestration, telemetry or operation of this loop.
 No mutation outside BioMedical-IT/scarcity-router:
 Model Intelligence, Kernel, Console, creatidy-onprem and other repositories are out of scope.
@@ -220,16 +223,20 @@ Routine safe reversible coding choices are autonomous, not owner questions.
 
 Use `.kilo/command/finish-pr.md` in this same primary context for authorized scoped
 remediation, validation and normal Git/Forgejo delivery. The implementation context
-does not self-approve, start reviewers, call models through scripts/subprocesses/
-HTTP/Task or create a receipt hierarchy. Prepare exact current Repo/Issue/PR refs,
-acceptance and complete compact diff/changed-source instructions directly.
+does not self-review. It prepares exact current Repo/Issue/PR refs, acceptance and
+complete compact diff/changed-source instructions, then starts a fresh separate
+read-only reviewer through native Kilo session management using the existing primary
+`.kilo/agents/pr-reviewer.md` role. The prompt contains only
+review scope, acceptance, exact refs, relevant contracts and source instructions;
+never implementation history, reasoning or desired verdict.
 
-Independent review is a separate fresh read-only USER-VISIBLE Kilo or official
-Codex session. The user explicitly selects the model and starts it. If this step
-cannot be performed through an authorized visible harness, return a concise
-handoff naming the exact pending acceptance gate and frozen refs. It neither skips
-review nor establishes repository-wide QUEUE_EMPTY or absence of other eligible work.
-No hidden launcher, generated owner script or alternative runner is permitted.
+Use the caller's existing repository/checkout when safe. A separate reviewer worktree
+is not required; freeze the exact source and make no edits during review. Collect the
+reviewer's final result through native session communication or exact-session retrieval
+such as `kilo_local_recall`; do not ask the owner to relay prompts or responses. If the
+native session/result capability itself fails, apply bounded technical recovery and
+report only the exact unresolved gate. No hidden launcher, generated owner script or
+alternative runner is permitted.
 
 Default maximum 10 includes initial/COMMENT/invalidated/retry attempts. Only verified
 finite canonical owner exceptions apply; unintegrated D-069A grants none. Keep
@@ -251,8 +258,8 @@ bodies. Require exact refs, authentic independent identity/scope/source/context,
 material findings/limitations and UX assessment. HEAD/base change invalidates
 approval. Serialize phases; no source edits/switches during an active review.
 Diagnose genuine findings/uncertainty/infrastructure separately, remediate within
-accepted scope/budget and hand off the next authorized visible review. Preserve
-failed/COMMENT history; at the bound actionable defects yield STOP_REVISE.
+accepted scope/budget and start the next authorized fresh reviewer session natively.
+Preserve failed/COMMENT history; at the bound actionable defects yield STOP_REVISE.
 
 ## Security Review
 
@@ -326,9 +333,11 @@ again with a fresh canonical queue, not a PR-derived backlog.
 
 ## Terminal Reporting
 
-Report the legitimate queue/decision/revision/blocker outcome, or an explicit
-visible-review handoff with its exact pending gate. Never replace that handoff with
-QUEUE_EMPTY, approval or a hidden launcher. Existing security handoffs may report
+Report the legitimate queue/decision/revision/blocker outcome. Ordinary reviewer
+sessions and result collection are autonomous; do not report a routine owner-mediated
+review handoff. A genuine unsupported native session/result capability is reported
+only after bounded recovery, with its exact pending gate. Never call it QUEUE_EMPTY,
+approval or bypass it with a hidden launcher. Existing security handoffs may report
 READY_FOR_OWNER_SECURITY_REVIEW; #212's combined handoff is descriptive only.
 READY_FOR_OWNER_SECURITY_REVIEW is a terminal handoff after ordinary approval,
 validation and reservation of the exact owner-manual ordinal. Stop before MERGE,

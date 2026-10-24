@@ -15,18 +15,22 @@ No automatic Daybreak, hidden launcher, skipped review or generic identity weake
 - Route by role and task fit, not prestige.
 - Use the least scarce fully capable model; capability deficits are never
   compensated by availability or strength elsewhere.
-- Use a distinct reviewer session for consequential review.
-- All development/review model selection and session starts are explicit and
-  user-visible in Kilo or official Codex. No scripts/subprocesses, Task/delegation,
-  background/HTTP inference or generated model-launch wrapper. Prepare direct
-  source/ref instructions and hand off the pending gate instead of hiding execution.
+- Use a fresh distinct reviewer conversation for consequential review. Under an
+  authorized `/loop` or `/finish-pr`, the orchestrator may start this ordinary Kilo
+  session through native Agent Manager; it is user-visible and does not require the
+  owner to start it or relay results. Model identity follows applicable policy and
+  must not be silently substituted.
+- No scripts/subprocesses, Task/subagent dispatch, background/HTTP inference or
+  generated model-launch wrapper. The owner-manual Daybreak/Codex security review
+  remains separate and is never started automatically.
 - No persistent local review-evidence folders or replacement receipt hierarchy.
   Use Git/canonical records/native harness references; offline fixtures use cleaned
   OS temporary directories. This does not alter authorized Router product inference.
-- PR delivery review uses a fresh user-visible read-only Kilo/Codex session,
-  never programmatic dispatch. Require actual session identity, explicit selected
-  model, source permissions and genuine native execution/context provenance;
-  do not claim OS isolation or backend identity from dispatch metadata.
+- PR delivery review uses a fresh user-visible read-only Kilo session through native
+  session management. Require actual session identity, model, source permissions
+  and genuine native execution/context provenance; do not claim filesystem isolation
+  or backend identity from dispatch metadata. A separate worktree is optional only
+  for a demonstrated technical need.
 - LLM output is not evidence. Keep evidence preparation separate from expert
   scientific or methodological adjudication.
 - Follow D-068's ownership and Agreed/Verified/Proposed/To-prove distinction;
@@ -40,8 +44,10 @@ No automatic Daybreak, hidden launcher, skipped review or generic identity weake
   identical failures.
 - Command delivery follows `.kilo/rules/35-technical-recovery.md`: infrastructure
   failure is not an implementation finding or owner decision. Use bounded authorized
-  deterministic environment recovery; reviewer starts remain an explicit visible
-  user action. Preserve ordinals and restricted gates, no hidden failover.
+  deterministic environment recovery. Authorized `/loop` and `/finish-pr`
+  orchestrators start ordinary fresh user-visible Kilo reviewer sessions; the owner
+  need not start or relay them. Preserve ordinals and restricted gates; no hidden
+  failover.
 - Completed PASS gates, adjudication, remediation, translation and validation
   remain completed unless source changes materially or a concrete regression is
   identified.

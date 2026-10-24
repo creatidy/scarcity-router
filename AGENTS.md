@@ -69,13 +69,13 @@ Commands: `/implement-issue <number|URL|unambiguous title>`,
 A plain `Implement issue #N` follows the implementation workflow. Standalone
 implementation requires owner selection. `/review-pr` is read-only; `/finish-pr`
 authorizes only the selected PR's accepted-scope remediation, never merging.
-Independent review takes place in a separate fresh USER-VISIBLE Kilo or official
-Codex session. The user explicitly selects the model and starts the session;
-implementation self-review and resumed reviewer context are not independent.
-Never start development/review models through scripts, subprocesses, Task/subagents,
-background jobs, HTTP inference or generated wrappers. No silent substitution or
-fallback. The implementation agent may prepare direct instructions/source refs,
-code, test and use Git, but hands off any model/session start to the user.
+Ordinary Kilo review uses a separate fresh USER-VISIBLE reviewer session, started
+autonomously by an authorized `/loop` or `/finish-pr` orchestrator through native
+Kilo session management. User visibility does not require the owner to start the
+session or relay its result. Read `Independent Review — Conversational Separation`
+below. This does not authorize hidden inference through scripts, subprocesses,
+Task/subagents, background jobs, HTTP or generated wrappers; no silent substitution
+or fallback is permitted. The owner-manual Daybreak/Codex gate remains separate.
 
 Only an explicit owner `/loop` delegates autonomous selection, approved canonical
 PR merge into `develop`, and completed-issue closure. Its primary invocation
@@ -120,10 +120,11 @@ scope.
 
 Commands and agents are loaded from `.kilo/command/*` and `.kilo/agents/*` by the
 Kilo workspace runtime. Adding files does not guarantee dynamic availability;
-a workspace reload may be required. Missing visible harness support requires a concise
-handoff naming the pending gate, never a hidden model launcher or permission for
-implementation self-review, native Task fallback, weakened gates or
-external orchestration.
+a workspace reload may be required. Ordinary review uses the native Kilo session
+path described below. Only a genuinely unsupported native session/result capability
+after bounded recovery is a pending gate; never use a hidden model launcher, permission
+for implementation self-review, native Task fallback, weakened gates or external
+orchestration.
 
 ## Product boundary
 
@@ -221,6 +222,50 @@ policy merely because they were true during one implementation. Record such
 facts as task/issue/PR evidence unless the owner explicitly declares them a
 durable product or deployment contract.
 
+## Independent Review — Conversational Separation
+
+Independent review requires a fresh, separate reviewer conversation without the
+implementation agent's conversational context. Independence means separation of
+conversational state and judgment, not separation of filesystems or execution
+environments.
+
+The reviewer MAY use the same repository, working directory or existing checkout,
+Git object database, development tools and runtime. A separate worktree, checkout,
+container, sandbox, custom permission profile, duplicated source tree or dedicated
+infrastructure is NOT required solely for reviewer independence. Use one only for a
+specific demonstrated technical necessity, such as concurrent source mutation; do
+not introduce it merely to create independence.
+
+Give the reviewer only the task and scope, acceptance criteria, PR and exact source
+references, relevant architecture/interface contracts, and source/test access
+instructions. Do not transfer the implementation conversation, implementation
+reasoning, private deliberations or a desired verdict. The fresh reviewer independently
+assesses correctness, regressions, security where applicable, maintainability and
+practical UX.
+
+The reviewer remains read-only and reviews the exact intended source revision. The
+implementation agent must not mutate the reviewed source during review. It may use
+the same checkout while the source is frozen; the exact reviewed HEAD/base and current
+canonical state remain mandatory.
+
+For an owner-authorized `/loop` or selected `/finish-pr`, ordinary review-session
+creation, concise prompt delivery, verdict collection and remediation handoff MUST
+be handled autonomously through supported native Kilo session functionality. Use a
+fresh user-visible session and collect its native result; never require owner prompt
+or response relay. Do not substitute the implementation conversation or a resumed
+implementation session for the independent reviewer.
+
+If an Agent Manager worktree limitation exists, it MUST NOT be interpreted as a
+requirement to create a managed worktree. Use a supported normal-session path and
+existing repository access wherever possible. Report a blocker only for a real
+unsupported session/result capability after the bounded recovery rules below.
+
+Never use hidden model launchers, HTTP inference, scripts, subprocesses, Task/subagent
+dispatch or generated wrappers. The native Kilo session start is permitted and
+user-visible; it is not a hidden model invocation. Review independence does not
+require a different model family, though an appropriate different model may be
+selected when useful under the applicable model policy.
+
 ## Bounded review lifecycle
 
 Multi-model work is bounded by default. Before workers or reviewers start, freeze
@@ -260,9 +305,11 @@ continues through merge, integrated acceptance, closure and SELECT. Genuine owne
 decisions stop the whole loop with STOP_AND_ASK; remaining actionable findings
 at the bound yield STOP_REVISE. Infrastructure failures require diagnosed bounded
 technical recovery before BLOCKED, with failed/COMMENT ordinals preserved.
-If a required review cannot be performed through an authorized visible harness,
-return an explicit handoff with the exact pending gate. Do not start a hidden model,
-skip acceptance, or equate that handoff with repository-wide QUEUE_EMPTY.
+Authorized `/loop` and `/finish-pr` use native Kilo session management for ordinary
+review creation and result collection. If that native session/result capability itself
+is unsupported after bounded recovery, report the exact pending gate. Do not require
+a separate worktree, skip acceptance, or equate a technical blocker with
+repository-wide QUEUE_EMPTY.
 
 General non-delivery work retains the descriptive `model-policy.json` defaults
 (one initial review, one remediation, narrow verification, 120-minute budget and

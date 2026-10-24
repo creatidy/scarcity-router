@@ -28,11 +28,14 @@ it never authorizes a hidden model call.
   Use actual Git objects and complete compact diff/changed-source regions with
   useful context. No LLM summaries or silent hunk omission. Additional unchanged
   context is a material reviewer judgment, not blanket full-file bureaucracy.
-- Independent review is a fresh separate read-only USER-VISIBLE Kilo/Codex session.
-  The user selects/starts the model explicitly. No programmatic launcher, Task,
-  subprocess, background/HTTP inference or generated owner wrapper. If a visible
-  mechanism is unavailable, hand off the exact gate rather than bypass it or
-  declare the repository has no eligible work.
+- Independent review is a fresh separate read-only USER-VISIBLE Kilo session.
+  Authorized `/loop` and `/finish-pr` orchestrators start and collect it through
+  native Kilo session management; do not require the owner to start it or relay
+  results. A separate worktree is not required. No Task/subagent, subprocess,
+  background/HTTP inference or generated wrapper may launch a model. If the native
+  session/result capability is genuinely unavailable after bounded recovery, report
+  the exact gate rather than bypassing it or declaring the repository has no eligible
+  work.
 - Preserve source integrity, scoped permissions, no credentials/unapproved context,
   actual model/execution identity, terminal/native-session provenance and exact
   currentness. Do not infer backend identity from self-report/UI labels. Tests,

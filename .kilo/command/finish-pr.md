@@ -1,5 +1,5 @@
 ---
-description: Remediate one selected PR and hand off outstanding gates to a user-visible reviewer
+description: Remediate one selected PR and coordinate native independent review
 ---
 
 Finish only the owner-selected Forgejo PR: $ARGUMENTS
@@ -7,8 +7,9 @@ Finish only the owner-selected Forgejo PR: $ARGUMENTS
 Read AGENTS.md and `.kilo/rules/35-technical-recovery.md`. Fetch the exact canonical Repo/PR/linked Issue and
 directly linked owner decisions through Forgejo MCP; verify IDs, URLs, authors,
 acceptance and currentness. Never select unrelated work. The implementation agent
-may code, test, use Git and recover routine execution problems autonomously, but
-must not invoke another model, start a session or delegate to a hidden reviewer.
+may code, test, use Git and recover routine execution problems autonomously. For an
+ordinary review, it starts a fresh user-visible Kilo reviewer through native session
+management; it does not self-review or invoke hidden inference.
 
 1. Fetch canonical develop and the existing PR branch. Verify exact HEAD/base/
    merge-base, ancestry and status in the designated checkout. Preserve unrelated
@@ -33,17 +34,22 @@ must not invoke another model, start a session or delegate to a hidden reviewer.
    context, validation and exact pending gate. Use actual Git objects and canonical
    records, not duplicated source trees, receipt hierarchies or large transcripts.
    Optional deeper source inspection is the reviewer's material judgment.
-5. The USER explicitly selects the model and starts a separate fresh user-visible
-   Kilo or official Codex session with read-only source access. Never programmatically
-   start it: no script/subprocess, batch model CLI, HTTP inference, Task/subagent,
-   background model job or generated convenience wrapper. No persistent
-   `.review-evidence-*` folders or renamed equivalent are created or required.
-   Deterministic offline fixtures may use cleaned OS temporary directories only.
-6. Hand off the instructions/source references in the visible harness. Do not pass
-   implementation reasoning, previous reviewer conclusions, credentials or a desired
-   verdict. If the next step cannot be performed through an authorized visible
-   harness, return an explicit handoff naming the pending acceptance gate. This
-   does not skip review or establish that the repository has no eligible work.
+5. Start a fresh separate, user-visible ordinary Kilo reviewer session through the
+   native Agent Manager using the existing primary `.kilo/agents/pr-reviewer.md` role.
+   This is authorized workflow orchestration, not a hidden model
+   launcher. Do not require the owner to start the session. Use the existing checkout
+   when safe; a separate worktree/checkout is not an independence requirement. The
+   implementation agent freezes the exact source until review completes. Never use
+   scripts/subprocesses, batch model CLI, HTTP inference, Task/subagent, background
+   model jobs or generated wrappers. No persistent `.review-evidence-*` folders or
+   renamed equivalent are created or required.
+6. Give the reviewer only task/scope, acceptance, exact PR/HEAD/base/merge-base refs,
+   relevant contracts and source access instructions. Do not pass implementation
+   conversation/history, reasoning, private deliberations, prior desired conclusions,
+   credentials or a preferred verdict. Collect the final result through native Kilo
+   session communication or exact-session retrieval; do not ask the owner to copy or
+   relay prompts/results. If that native capability itself is unsupported, recover
+   within the technical budget and name the exact remaining gate; do not skip review.
 7. Record actual invocation ordinal, selected model/harness, native session reference
    when available, exact reviewed refs, verdict, material findings/limitations and
    explicit UX assessment minimally in canonical records. Reserve only an imminent

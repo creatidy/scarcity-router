@@ -1,9 +1,12 @@
 """Offline consistency guards for command text, not proof of runtime execution."""
 
 import ast
+import json
 import re
 import unittest
+from fnmatch import fnmatchcase
 from pathlib import Path
+from typing import cast
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -456,8 +459,9 @@ class WorkflowContractTests(unittest.TestCase):
 
     def test_stop_boundary_and_repository_safety(self) -> None:
         loop = text(".kilo/command/loop.md")
-        self.assertIn("explicit visible-review handoff with its exact pending gate", loop)
-        self.assertIn("Never replace that handoff with QUEUE_EMPTY, approval or a hidden launcher", loop)
+        self.assertIn("Ordinary reviewer sessions and result collection are autonomous", loop)
+        self.assertIn("genuine unsupported native session/result capability", loop)
+        self.assertNotIn("explicit visible-review handoff with its exact pending gate", loop)
         self.assertIn("READY_FOR_OWNER_SECURITY_REVIEW is a terminal handoff", loop)
         self.assertIn("Stop before MERGE, issue closure or SELECT", loop)
         self.assertIn("maximum 20", loop)
@@ -556,7 +560,7 @@ class WorkflowContractTests(unittest.TestCase):
             "BLOCKED requires exhausted authorized technical paths/budget",
             "Class-B decisions instead require STOP_AND_ASK / OWNER_DECISION_NEEDED with all five decision fields",
             "Do not ask an artificial question for an external non-decision blocker",
-            "A required user-visible review start is an explicit pending-gate handoff",
+            "If native Kilo session/result capability is genuinely unavailable after bounded",
             "Preserve mandatory full validation",
         ):
             self.assertIn(requirement, recovery)
@@ -571,15 +575,106 @@ class WorkflowContractTests(unittest.TestCase):
             content = text(path)
             with self.subTest(path=path):
                 self.assertIn("visible", content.lower())
-                self.assertRegex(content.lower(), r"hand ?off")
                 self.assertNotRegex(content, r"\.review-evidence-\d+/")
                 self.assertNotIn("run-owner-review.sh", content)
                 self.assertNotIn("standalone_run_argv", content)
         finish = text(".kilo/command/finish-pr.md")
-        self.assertIn("user explicitly selects the model", finish.lower())
+        self.assertIn("native Agent Manager", finish)
+        self.assertIn("do not require the owner to start the session", finish.lower())
+        self.assertIn("do not ask the owner to copy or relay prompts/results", finish.lower())
         self.assertIn("No persistent `.review-evidence-*`", finish)
         self.assertIn("not original owner authority", finish)
         self.assertIn("No ordinary #212 Kilo", text(".kilo/rules/validation.md"))
+
+    def test_independent_review_is_conversational_and_native(self) -> None:
+        agents = text("AGENTS.md")
+        contract = agents.split("## Independent Review — Conversational Separation", 1)[1]
+        contract = contract.split("## Bounded review lifecycle", 1)[0]
+        for requirement in (
+            "fresh, separate reviewer conversation",
+            "separation of conversational state and judgment",
+            "The reviewer MAY use the same repository",
+            "A separate worktree, checkout, container, sandbox",
+            "NOT required solely for reviewer independence",
+            "Do not transfer the implementation conversation",
+            "The reviewer remains read-only and reviews the exact intended source revision",
+            "MUST be handled autonomously through supported native Kilo session functionality",
+            "never require owner prompt or response relay",
+            "MUST NOT be interpreted as a requirement to create a managed worktree",
+            "The native Kilo session start is permitted and user-visible",
+        ):
+            with self.subTest(requirement=requirement):
+                self.assertIn(requirement, contract)
+
+        loop = text(".kilo/command/loop.md")
+        finish = text(".kilo/command/finish-pr.md")
+        review = text(".kilo/command/review-pr.md").lower()
+        reviewer = text(".kilo/agents/pr-reviewer.md")
+        llm_policy = text(".kilo/rules/40-llm-operating-policy.md").lower()
+        recovery = text(".kilo/rules/35-technical-recovery.md").lower()
+        self.assertIn("native Kilo Agent Manager", loop)
+        self.assertIn("kilo_local_recall", loop)
+        self.assertIn("native Agent Manager", finish)
+        self.assertIn("orchestrator verifies canonical repo/pr/linked issue", review)
+        self.assertIn("inspect the complete diff and intended source", review)
+        self.assertIn("read-only git/forgejo getters", review)
+        self.assertIn("no separate worktree is required", review)
+        self.assertIn("the owner need not start or relay them", llm_policy)
+        self.assertNotIn("reviewer starts remain an explicit visible user action", llm_policy)
+        self.assertIn("Verify canonical refs, the complete compact diff, and actual", reviewer)
+        self.assertIn('"*": deny', reviewer)
+        self.assertIn('"*": allow', reviewer)
+        self.assertIn('"**/.env*": deny', reviewer)
+        self.assertIn('"**/.task_progress.md": deny', reviewer)
+        self.assertIn('"**/.git/**": deny', reviewer)
+        self.assertIn('"**/.kilo/agent-manager.json.*.tmp": deny', reviewer)
+        self.assertIn('"**/.config/kilo/**": deny', reviewer)
+        self.assertIn('"**/.local/share/kilo/**": deny', reviewer)
+        self.assertIn('"**/.kilocode/**": deny', reviewer)
+        self.assertIn('"**/tmp/kilo/**": deny', reviewer)
+        self.assertIn("external_directory: deny", reviewer)
+        self.assertIn("glob: allow", reviewer)
+        self.assertIn("grep: allow", reviewer)
+        self.assertIn("list: allow", reviewer)
+        self.assertIn("semantic_search: allow", reviewer)
+        self.assertIn('"forgejo-mcp_get_*": allow', reviewer)
+        self.assertIn('"forgejo-mcp_list_*": allow', reviewer)
+        self.assertIn('"forgejo-mcp_search_*": allow', reviewer)
+        for tool in ("edit", "write", "apply_patch", "task"):
+            with self.subTest(tool=tool):
+                self.assertIn(f"{tool}: deny", reviewer)
+        for rule in (
+            '"*": deny', '"*--output*": deny', '"*--ext-diff*": deny',
+            '"*--textconv*": deny', '"*>*": deny', '"*;*": deny',
+            '"*|*": deny', '"*&*": deny',
+        ):
+            self.assertIn(rule, reviewer)
+        self.assertIn('"git ls-remote https://forgejo.creatidy.com/BioMedical-IT/scarcity-router refs/heads/develop refs/heads/*": allow', reviewer)
+        self.assertIn('"git ls-remote * -*": deny', reviewer)
+        self.assertNotIn('"forgejo-mcp_create_', reviewer)
+        self.assertNotIn('"forgejo-mcp_update_', reviewer)
+        self.assertNotIn('"forgejo-mcp_delete_', reviewer)
+        self.assertNotIn(
+            "a required user-visible review start is an explicit pending-gate handoff",
+            recovery,
+        )
+        self.assertIn(
+            "only a genuinely unsupported native kilo session/result capability after bounded recovery",
+            recovery,
+        )
+
+        for path in (
+            "AGENTS.md", ".kilo/command/loop.md", ".kilo/command/review-pr.md",
+            ".kilo/command/finish-pr.md", ".kilo/command/implement-issue.md",
+            ".kilo/rules/10-task-system.md", ".kilo/rules/35-technical-recovery.md",
+            ".kilo/rules/40-llm-operating-policy.md", ".kilo/rules/validation.md",
+            "docs/llm-operating-policy.md",
+        ):
+            content = text(path).lower()
+            with self.subTest(path=path):
+                self.assertNotIn("the user explicitly opens a fresh", content)
+                self.assertNotIn("the user selects/starts the model", content)
+                self.assertNotIn("user explicitly selects the model and starts", content)
 
     def test_development_validator_has_no_harness_or_inference_execution_path(self) -> None:
         source = (ROOT / "tools/reviewer_packet.py").read_text()
@@ -625,16 +720,65 @@ class WorkflowContractTests(unittest.TestCase):
         # Product adapters intentionally remain outside this development-script scope.
         self.assertTrue((ROOT / "scarcity_router").is_dir())
 
-    def test_visible_profile_requires_user_read_approval_and_no_write_or_external_tools(self) -> None:
-        profile = text(".kilo/agents/pr-reviewer-standalone.md")
+    def test_visible_profile_uses_read_only_native_tool_allowlist(self) -> None:
+        profile = text(".kilo/agents/pr-reviewer.md")
         frontmatter = profile.split("---", 2)[1]
-        for requirement in ("mode: primary", '"*": deny', "read: ask", "external_directory: deny"):
+        for requirement in (
+            "mode: all", '"*": deny', '"*": allow', '"**/.env*": deny',
+            '"**/.task_progress.md": deny', '"**/.git/**": deny',
+            '"**/.kilo/agent-manager.json.*.tmp": deny', "external_directory: deny",
+        ):
             self.assertIn(requirement, frontmatter)
         self.assertNotRegex(frontmatter, r"\b(?:bash|edit|task):\s*allow")
-        for requirement in ("CURRENT fresh user-visible", "source Reads approved by the user",
-                            "Do not grant yourself permissions", "No desired verdict", "UX"):
-            self.assertIn(requirement, profile)
-        self.assertIn("not a review execution path", text(".kilo/agents/pr-reviewer.md"))
+        for requirement in (
+            "NEW fresh user-visible",
+            "Use only the read-only tools permitted above",
+            "owner-approved source boundary",
+            "do not access other repositories, credentials, external directories",
+            "local Agent Manager state",
+            "config/cache/",
+            "tool-output state",
+            "No desired verdict", "UX",
+        ):
+            self.assertIn(requirement.lower(), profile.lower())
+
+    def test_reviewer_git_reads_exclude_filesystem_and_sensitive_paths(self) -> None:
+        # Offline last-match wildcard checks, not proof of live Kilo enforcement.
+        profile = (ROOT / ".kilo/agents/pr-reviewer.md").read_text()
+        bash = profile.split("  bash:\n", 1)[1].split("---", 1)[0]
+        rules = [
+            (cast(str, json.loads(match[1])), match[2])
+            for match in re.finditer(r'^    (".*"): (allow|deny)$', bash, re.M)
+        ]
+        self.assertNotIn(("git diff *", "allow"), rules)
+        base, head = "1" * 40, "2" * 40
+        for command, expected in (
+            (f"git diff --merge-base {base} {head}", "allow"),
+            (f"git diff --merge-base {base} {head} -- AGENTS.md", "allow"),
+            (f"git diff --merge-base {base} {head} --stat", "allow"),
+            (f"git show {head}:.kilo/agents/pr-reviewer.md", "allow"),
+            ("git diff --check", "allow"),
+            ("git diff --no-index -- AGENTS.md AGENTS.md", "deny"),
+            ("git diff -- AGENTS.md /synthetic/outside-source", "deny"),
+            ("git diff --no-index -- .env AGENTS.md", "deny"),
+            ("git diff --no-index -- .task_progress.md AGENTS.md", "deny"),
+            ("git diff --no-index -- .kilo/agent-manager.json AGENTS.md", "deny"),
+            (f"git diff --merge-base {base} {head} --no-index AGENTS.md AGENTS.md", "deny"),
+            (f"git diff --merge-base {base} {head} -- .env", "deny"),
+            (f"git show {head}:.env", "deny"),
+            (f"git show {head}:nested/.env.local", "deny"),
+            (f"git show {head}:.task_progress.md", "deny"),
+            (f"git show {head}:.kilo/agent-manager.json", "deny"),
+            (f"git show {head}:.kilo/agent-manager.json.synthetic.tmp", "deny"),
+            (f"git show {head}:.git/config", "deny"),
+            (f"git diff --merge-base {base} {head} --output=/synthetic/output", "deny"),
+        ):
+            with self.subTest(command=command):
+                decision = next(
+                    (action for pattern, action in reversed(rules) if fnmatchcase(command, pattern)),
+                    "deny",
+                )
+                self.assertEqual(decision, expected)
 
     def test_canonical_history_is_attributed_and_final_combined_slot_is_unchanged(self) -> None:
         decisions = text("docs/decisions.md")
