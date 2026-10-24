@@ -250,6 +250,9 @@ class _FakeContinuationAdapter:
         return True
 
 
+FakeContinuationAdapter = _FakeContinuationAdapter
+
+
 def _application_with_continuation(
     registry: ContinuationRegistry,
     adapter: _FakeContinuationAdapter,

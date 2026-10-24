@@ -144,6 +144,10 @@ class WorkerBridgedAdapter:
         self._suspended_lock: threading.Lock = threading.Lock()
         self._suspended: dict[str, SuspensionHandle] = {}
 
+    @property
+    def registered_resource_ids(self) -> tuple[str, ...]:
+        return tuple(sorted(self._resource_adapter_map))
+
     # ── The M03 adapter entry point ──────────────────────────────────
 
     def execute(self, call: AdapterCall, context: ExecutionContext) -> AdapterResult:

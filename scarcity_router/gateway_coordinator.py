@@ -66,7 +66,9 @@ import threading
 import uuid
 from dataclasses import dataclass, replace
 from collections.abc import Callable, Mapping
+import copy
 from datetime import datetime, timedelta, timezone
+from typing import cast
 
 from .capacity import CapacitySnapshot
 from .eligibility import ExecutionEligibility
@@ -149,6 +151,7 @@ from .resource_state import (
 )
 from .gateway_validation import v_instance, v_int, v_safe_id
 from .execution_assurance import ExecutionAssurance, receive_execution_assurance, source_call_facts
+from .executable_contract import ExecutableRequirements, executable_error, merge_binding, parse_executable_request
 from .routing_core import (
     AdministratorConstraints,
     AdmissionDecision,
@@ -159,6 +162,8 @@ from .routing_core import (
     RequestBinding,
     RouteDecision,
     RouteRequest,
+    executable_quality_requirement,
+    public_route_document,
     RouteTarget,
     _lookup_cell,  # pyright: ignore[reportPrivateUsage] -- the M02 matrix lookup is the single authority; reimplementing it here would fork D-043 compatibility semantics
     _authorization_failure_codes,  # pyright: ignore[reportPrivateUsage] -- the M02 authorization stage is the single authority; forking it for the continuation recheck would fork D-042 semantics
@@ -656,6 +661,7 @@ class GatewayApplication:
         client_key_directory: ClientKeyDirectory | None = None,
         client_authorizations: Mapping[str, ClientAuthorization] | None = None,
         authority_source: Callable[[str], tuple[ResourceRegistry, AdministratorConstraints, ClientAuthorization, AdapterRegistry]] | None = None,
+        application_source: Callable[[], GatewayApplication] | None = None,
         clock: Callable[[], datetime] | None = None,
         request_id_factory: RequestFactory | None = None,
         continuations: ContinuationRegistry | None = None,
@@ -721,6 +727,8 @@ class GatewayApplication:
             client_authorizations
         )
         self.authority_source: Callable[[str], tuple[ResourceRegistry, AdministratorConstraints, ClientAuthorization, AdapterRegistry]] | None = authority_source
+        self.application_source: Callable[[], GatewayApplication] | None = application_source
+        self._admission_authority: tuple[ResourceRegistry, AdministratorConstraints, ClientAuthorization, AdapterRegistry] | None = None
         if source_call_fact_sink is not None and not callable(getattr(source_call_fact_sink, "__call__", None)):
             raise ValueError("source_call_fact_sink must be callable")
         self.source_call_fact_sink: Callable[[dict[str, object]], None] | None = (
@@ -808,6 +816,29 @@ class GatewayApplication:
 
     # ── The lifecycle ────────────────────────────────────────────────────
 
+    def _published_executable_view(self, client_id: str) -> GatewayApplication:
+        if self.application_source is None:
+            return self
+        try:
+            application = self.application_source()
+            _ = v_instance(application, GatewayApplication, "published_gateway_application")
+            directory = application.client_key_directory
+            if directory is not None and client_id not in directory.client_ids:
+                raise GatewayError.permission("the inference client's authority has been revoked", code="unauthorized_target")
+            grants = application.client_authorizations
+            grant = ClientAuthorization() if grants is None else grants.get(client_id, ClientAuthorization())
+            # A transient admission view shares every published artifact/runtime
+            # handle. Final dispatch still invokes the original live authority seam.
+            view = copy.copy(application)
+            view.application_source = None
+            view._admission_authority = (application.registry, application.admin_constraints, grant, application.adapters)
+            return view
+        except GatewayError:
+            raise
+        except Exception:
+            raise GatewayError.api("the published executable admission view is unavailable",
+                                   code="state_unavailable", http_status=503) from None
+
     def execute(
         self,
         *,
@@ -828,6 +859,10 @@ class GatewayApplication:
         already announced on a stream; it must be a safe identifier and is
         otherwise generated here.
         """
+        if request.execution_requirements is not None:
+            view = self._published_executable_view(client_id)
+            if view is not self:
+                return view.execute(client_id=client_id, request=request, emit_chunk=emit_chunk, request_id=request_id)
         started = self._now()
         resolved_request_id = (
             request_id if request_id is not None else _request_id(self.request_id_factory)
@@ -1050,6 +1085,17 @@ class GatewayApplication:
                 "a continuation must repeat the original reasoning effort",
                 code="continuation_mismatch",
                 param="reasoning_effort",
+            )
+        requirements_digest = None if request.execution_requirements is None else request.execution_requirements.fingerprint()
+        if requirements_digest != record.execution_requirements_digest:
+            raise GatewayError.invalid_request(
+                "a continuation must retain its original executable requirements",
+                code="continuation_mismatch", param="execution_requirements",
+            )
+        if request.execution_requirements is not None and request.capabilities.requested_output_tokens != record.execution_output_ceiling:
+            raise GatewayError.invalid_request(
+                "an executable continuation must retain its original output control",
+                code="continuation_mismatch", param="max_completion_tokens",
             )
         request_tools_fp = tools_fingerprint(request.tools)
         if request_tools_fp != record.tools_fingerprint and request.tools:
@@ -1331,6 +1377,8 @@ class GatewayApplication:
                 client_id=state.client_id,
                 model_echo=request.model,
                 reasoning_effort=request.reasoning_effort,
+                execution_requirements_digest=(None if request.execution_requirements is None else request.execution_requirements.fingerprint()),
+                execution_output_ceiling=(request.capabilities.requested_output_tokens if request.execution_requirements is not None else None),
                 tools_fingerprint=tools_fingerprint(request.tools),
                 tool_choice_json=canonical_json_text(request.tool_choice),
                 prefix_fingerprint=message_fingerprint(request.messages),
@@ -1522,18 +1570,93 @@ class GatewayApplication:
                 param="max_completion_tokens",
             )
 
-    def _admit(
+    def select_executable(self, *, client_id: str, document: object) -> dict[str, object]:
+        """Select without inference, concurrency reservation or Attempt ownership."""
+        view = self._published_executable_view(client_id)
+        if view is not self:
+            return view.select_executable(client_id=client_id, document=document)
+        model, requirement, demands = parse_executable_request(document)
+        if self.client_key_directory is not None:
+            pending: list[object] = [model, requirement.to_dict(), demands.to_dict()]
+            while pending:
+                value = pending.pop()
+                if isinstance(value, dict):
+                    pending.extend(cast(dict[str, object], value).values())
+                elif isinstance(value, list):
+                    pending.extend(cast(list[object], value))
+                elif isinstance(value, str) and self.client_key_directory.authenticate(value) is not None:
+                    raise executable_error()
+        resolved = resolve_model_string(model, self.aliases, self.catalog)
+        caps = RequestCapabilities(
+            requires_tool_calls=demands.requires_tool_calls, requires_tool_results=False,
+            requires_roles_history=False, requires_structured_output=demands.requires_structured_output,
+            requires_streaming=demands.requires_streaming,
+            requires_reasoning_controls=demands.requires_reasoning_controls,
+            estimated_input_tokens=demands.minimum_input_context_tokens,
+            requested_output_tokens=demands.maximum_output_tokens,
+        )
+        self._enforce_request_limits(caps)
+        started = self._now()
+        state = _LifecycleState(request_id="route", client_id=client_id, started_at=canonical_instant(started))
+        query = ChatCompletionRequest(model, (), caps.requires_streaming, False, caps)
+        route = self._routing_request(started=started, request=query, resolved=resolved, state=state, selecting=True)
+        try:
+            route = replace(route, task_requirement=requirement, request=merge_binding(demands, route.request),
+                            require_catalog_effort=True)
+        except (ValueError, SelectionContractError):
+            raise executable_error() from None
+        self._enforce_executable_limits(route, caps)
+        decision = route_request(route)
+        execution: dict[str, object] | None = None
+        if decision.target is not None:
+            pin = PinnedTarget.from_route_target(decision.target, decision_id=decision.decision_id)
+            model_pin = f"{PIN_PREFIX}{pin.resource_id}/{pin.model.provider}/{pin.model.model}/{pin.model.variant}"
+            if pin.decision_id is not None:
+                model_pin += f"@{pin.decision_id}"
+            if parse_pinned_reference(model_pin) != pin:
+                raise executable_error()
+            binding = replace(route.request, pinned_target=pin)
+            profile = route.routing_profile
+            selected = decision.selection.selected
+            assert selected is not None
+            context = ExecutableRequirements(
+                executable_quality_requirement(route), binding,
+                route.profile_policy_version if profile is not None else None,
+                route.profiles.resolve(profile.profile_id) if profile is not None else None,
+                reasoning_effort=selected.reasoning_effort,
+            )
+            execution = {"model": model_pin, "reasoning_effort": selected.reasoning_effort,
+                         "execution_requirements": context.to_dict()}
+        public_route = public_route_document(decision, route)
+        return {"schema_version": 1, "route": public_route, "execution": execution}
+
+    def _enforce_executable_limits(self, route: RouteRequest, caps: RequestCapabilities) -> None:
+        self._enforce_request_limits(replace(caps, estimated_input_tokens=route.request.minimum_input_context_tokens))
+        floor = executable_quality_requirement(route).hard_constraints.minimum_output_tokens
+        if floor is not None and floor > self.limits.max_output_tokens:
+            raise GatewayError.invalid_request("the retained output requirement exceeds the gateway allowance",
+                code="output_limit_exceeded", param="execution_requirements")
+
+    def _routing_request(
         self,
         *,
         started: datetime,
         request: ChatCompletionRequest,
         resolved: ResolvedModel,
         state: _LifecycleState,
-    ) -> None:
-        """Admission: exactly one routing-core call, or a typed rejection."""
+        selecting: bool = False,
+    ) -> RouteRequest:
+        """The same current authority/state/structural inputs for selection and admission."""
         now_ts = canonical_instant(started)
+        current = selecting or request.execution_requirements is not None
+        if current:
+            registry, administrator, client_grant, adapters = (
+                self._admission_authority if self._admission_authority is not None else self._current_authority(state.client_id))
+        else:
+            registry, administrator, adapters = self.registry, self.admin_constraints, self.adapters
+            client_grant = self._client_grant(state.client_id)
         try:
-            registry_snapshot = self.registry.registry_snapshot(now=now_ts)
+            registry_snapshot = registry.registry_snapshot(now=now_ts)
             capacity_snapshots, eligibility_reports = self.capacity_source(now_ts)
         except (CapacityValidationError, ValueError):
             raise GatewayError.api(
@@ -1543,13 +1666,12 @@ class GatewayApplication:
             ) from None
         state.registry_revision = registry_snapshot.revision
         state.registry_generated_at = registry_snapshot.generated_at
-        explicit_model = None
+        explicit_model = resolved.explicit_model if resolved.kind == LOGICAL_KIND else None
         explicit_variant = None
         admission_catalog = self.catalog
         candidate_identities = None
-        if resolved.kind == LOGICAL_KIND:
+        if resolved.kind == LOGICAL_KIND and not selecting:
             # D-071: narrow by catalog effort before the authoritative core.
-            explicit_model = resolved.explicit_model
             admission_catalog = _resolve_logical_effort(
                 resolved, request.reasoning_effort, self.catalog
             )
@@ -1573,6 +1695,13 @@ class GatewayApplication:
             pinned_target=resolved.pinned_target,
         )
         routing_profile = resolved.profile
+        executable = request.execution_requirements
+        if executable is not None and executable.binding.profile_alias is not None:
+            routing_profile = self.aliases.resolve(executable.binding.profile_alias)
+            if routing_profile is None:
+                raise executable_error()
+            state.routing_profile = routing_profile.profile_id
+            state.routing_policy_version = self.profile_policy_version
         continuation_capable: frozenset[str] | None = None
         if self.continuation_capability_source is not None:
             try:
@@ -1582,7 +1711,6 @@ class GatewayApplication:
                 # excludes worker_bridged candidates for tool requests.
                 continuation_capable = None
         try:
-            client_grant = self._client_grant(state.client_id)
             state.strict_no_payg = client_grant.strict_no_payg
             request_obj = RouteRequest(
                 catalog=self.catalog,
@@ -1593,9 +1721,9 @@ class GatewayApplication:
                 capacity_snapshots=capacity_snapshots,
                 eligibility_reports=eligibility_reports,
                 compatibility_cells=self.compatibility_cells,
-                admin_constraints=self.admin_constraints,
+                admin_constraints=administrator,
                 client_authorization=client_grant,
-                execution_assurances=_execution_assurances(registry_snapshot.entries, self.adapters, client_grant.strict_no_payg),
+                execution_assurances=_execution_assurances(registry_snapshot.entries, adapters, client_grant.strict_no_payg),
                 routing_profile=routing_profile,
                 request=binding,
                 profile_policy_version=(
@@ -1603,6 +1731,8 @@ class GatewayApplication:
                 ),
                 continuation_capable_resource_ids=continuation_capable,
                 candidate_identities=candidate_identities,
+                available_adapter_resource_ids=(frozenset(entry.identity.resource_id for entry in registry_snapshot.entries
+                    if adapters.supports_resource(entry.identity)) if current else None),
             )
         except (CapacityValidationError, SelectionContractError, ValueError):
             raise GatewayError.api(
@@ -1610,12 +1740,24 @@ class GatewayApplication:
                 code="invalid_state",
                 http_status=500,
             ) from None
+        if executable is not None:
+            request_obj = executable.bind(request_obj)
+            self._enforce_executable_limits(request_obj, caps)
+        return request_obj
+
+    def _admit(
+        self, *, started: datetime, request: ChatCompletionRequest,
+        resolved: ResolvedModel, state: _LifecycleState,
+    ) -> None:
+        """One core admission/selection call, never ranking a preserved pin."""
+        request_obj = self._routing_request(started=started, request=request, resolved=resolved, state=state)
+        registry_snapshot = request_obj.registry_snapshot
         if resolved.pinned_target is not None:
             admission = admit_pinned_target(
                 request_obj, pinned_target=resolved.pinned_target
             )
             if not admission.approved:
-                raise _admission_rejection(admission)
+                raise _admission_rejection(admission, retained_requirements=request.execution_requirements is not None)
             assert admission.target is not None
             state.decision_id = admission.bound_decision_id
             state.target = admission.target
@@ -2225,7 +2367,7 @@ def _no_eligible_target_error(decision: RouteDecision) -> GatewayError:
     )
 
 
-def _admission_rejection(admission: AdmissionDecision) -> GatewayError:
+def _admission_rejection(admission: AdmissionDecision, *, retained_requirements: bool = False) -> GatewayError:
     """Map an admission rejection to its explicit execution-surface error."""
     codes = set(admission.reason_codes)
     strict_codes = sorted(code for code in codes if code.startswith("no_payg_"))
@@ -2315,6 +2457,17 @@ def _admission_rejection(admission: AdmissionDecision) -> GatewayError:
                 else "output_limit_unknown"
             ),
         )
+    if retained_requirements and ("hard_constraint_failed" in codes or "capability_failed" in codes):
+        return GatewayError.invalid_request(
+            "the pinned target no longer meets the retained task requirements",
+            code="capability_failed" if "capability_failed" in codes else "hard_constraint_failed",
+        )
+    if "adapter_unavailable" in codes:
+        return GatewayError.api("the exact target's current adapter is unavailable",
+                                code="adapter_unavailable", http_status=503)
+    if "worker_continuation_unavailable" in codes:
+        return GatewayError.api("the exact worker cannot currently preserve client-tool continuation",
+                                code="worker_continuation_unavailable", http_status=503)
     return GatewayError.api(
         "the pinned target was rejected at admission",
         code="admission_rejected",

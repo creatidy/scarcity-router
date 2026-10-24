@@ -2123,6 +2123,7 @@ class ControlPlane:
             client_key_directory=directory,
             client_authorizations=self._config.client_authorizations,
             authority_source=self._current_execution_authority,
+            application_source=self.current_application,
             clock=self._clock,
             continuations=self._continuations,
             continuation_capability_source=self._continuation_capable_resources,

@@ -381,7 +381,12 @@ class PlanLaneRoutingAcceptanceTests(ZcodeComposedWorld):
         workspace = Path(tempfile.mkdtemp(prefix="scarcity-router-zcode-repo-")) / "repo"
         self.addCleanup(lambda: _rmtree(workspace.parent))
         _ = _make_git_repo(workspace)
-        worker = self.start_zcode_worker({}, workspace)
+        # This case tests typed request rejection, not inventory expiry. Keep
+        # the fixture's freshness window comfortably above its report cadence
+        # so full-suite scheduling cannot turn the expected 400 into 503.
+        worker = self.start_zcode_worker(
+            {}, workspace, inventory_ttl_seconds=30.0
+        )
         worker.start()
         try:
             self.wait_for_lane()

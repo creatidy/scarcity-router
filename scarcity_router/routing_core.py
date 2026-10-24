@@ -132,7 +132,7 @@ import json
 import re
 import unicodedata
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import ClassVar, TypeVar, cast
 
@@ -213,6 +213,8 @@ TARGET_EXCLUSION_REASON_CODES: frozenset[str] = frozenset({
     "resource_never_observed",
     "resource_unhealthy",
     "execution_ineligible",
+    "worker_continuation_unavailable",
+    "adapter_unavailable",
     # compatibility
     "compatibility_unsupported",
     "compatibility_unknown",
@@ -241,6 +243,7 @@ _STAGE_REASONS: dict[str, frozenset[str]] = {
         # D-062 (review round 2, finding 3): the owning worker's live
         # session cannot carry the client-tool continuation.
         "worker_continuation_unavailable",
+        "adapter_unavailable",
     }),
     "compatibility": frozenset({
         "compatibility_unsupported",
@@ -1683,6 +1686,8 @@ def _evaluate_resource(
     continuation_capable_resource_ids: frozenset[str] | None = None,
     configured_reasoning_required: bool = False,
     execution_assurances: tuple[ExecutionAssurance, ...] = (),
+    require_catalog_effort: bool = False,
+    available_adapter_resource_ids: frozenset[str] | None = None,
 ) -> _ResourceGate:
     """Run the frozen gate pipeline for one resource.
 
@@ -1715,6 +1720,8 @@ def _evaluate_resource(
             promotion_sources=promotion_sources,
         )
     availability_codes = list(availability_failure_codes(entry, eligibility_reports))
+    if available_adapter_resource_ids is not None and entry.identity.resource_id not in available_adapter_resource_ids:
+        availability_codes.append("adapter_unavailable")
     if request.requires_tool_calls and entry.identity.channel == "worker_bridged":
         # D-062 (review round 2, finding 3): the client-tool round trip
         # needs the owning worker's LIVE protocol-v3 negotiation. This is
@@ -1728,7 +1735,7 @@ def _evaluate_resource(
             or entry.identity.resource_id not in continuation_capable_resource_ids
         ):
             availability_codes.append("worker_continuation_unavailable")
-    availability_codes = tuple(availability_codes)
+    availability_codes = tuple(sorted(availability_codes))
     if availability_codes:
         report = next(
             (
@@ -1769,6 +1776,26 @@ def _evaluate_resource(
             compatibility_value=first_value,
             promotion_sources=promotion_sources,
         )
+    if require_catalog_effort:
+        usable: list[ModelIdentity] = []
+        effort_failure: tuple[tuple[str, ...], str | None, str | None] | None = None
+        for identity in bound:
+            candidate = next(item for item in catalog.entries if item.identity == identity)
+            failure = _compatibility_failure(
+                entry, request, cells, requirement, *_request_output_context(request, entry, catalog),
+                configured_reasoning_required=candidate.reasoning_effort is not None,
+            )
+            if not failure[0]:
+                usable.append(identity)
+            elif effort_failure is None:
+                effort_failure = failure
+        if not usable:
+            assert effort_failure is not None
+            return _ResourceGate(entry=entry, bound_identities=bound, qualified=False,
+                stage="compatibility", reason_codes=effort_failure[0],
+                compatibility_feature=effort_failure[1], compatibility_value=effort_failure[2],
+                promotion_sources=promotion_sources)
+        bound = tuple(usable)
     return _ResourceGate(
         entry=entry,
         bound_identities=bound,
@@ -2335,6 +2362,8 @@ class RouteRequest:
     routing_profile: ClientRoutingProfile | None = None
     request: RequestBinding = field(default_factory=RequestBinding)
     profile_policy_version: int | None = None
+    require_catalog_effort: bool = False
+    available_adapter_resource_ids: frozenset[str] | None = None
     #: D-062 (review round 2, finding 3): the LIVE worker-continuation
     #: capability of ``worker_bridged`` resources — the resource ids whose
     #: owning worker session has negotiated protocol version 3 right now.
@@ -2356,6 +2385,7 @@ class RouteRequest:
 
     def __post_init__(self) -> None:
         _ = _v_instance_of(self.catalog, ModelCatalog, "route_request.catalog")
+        _ = _v_bool(self.require_catalog_effort, "route_request.require_catalog_effort")
         for assurance in self.execution_assurances:
             _ = _v_instance_of(assurance, ExecutionAssurance, "route_request.execution_assurances")
         if self.task_requirement is not None:
@@ -2704,6 +2734,57 @@ def _no_solution_decision(
     )
 
 
+def executable_quality_requirement(request: RouteRequest) -> TaskRequirement:
+    """Retain genuine quality floors, not the demand derived from a generation cap."""
+    quality = replace(request, request=replace(request.request, maximum_output_tokens=None))
+    return _resolve_requirement(quality)[0]
+
+
+def public_route_document(decision: RouteDecision, request: RouteRequest) -> dict[str, object]:
+    """Project through effective authorization independently of first failing gate."""
+    effective = _effective_authorization(request.admin_constraints, request.client_authorization, request.routing_profile)
+    visible = tuple(entry for entry in request.registry_snapshot.entries if not _authorization_failure_codes(
+        entry, effective, execution_assurances=request.execution_assurances, assessed_at=request.evaluated_at))
+    visible_ids = {entry.identity.resource_id for entry in visible}
+    visible_identities = tuple(
+        identity
+        for entry in visible
+        for identity in _bind_identities(entry, request.catalog)
+    )
+    visible_keys = {_identity_key(identity) for identity in visible_identities}
+    document = decision.to_dict()
+    document["unroutable_identities"] = [
+        identity.to_dict() for identity in decision.unroutable_identities
+        if _identity_key(identity) in visible_keys
+    ]
+    selection = decision.selection.to_dict()
+    selection["preference_order"] = [
+        identity.to_dict() for identity in decision.selection.preference_order
+        if _identity_key(identity) in visible_keys
+    ]
+    for field, rules, expired_rule_ids in (
+        ("expired_happy_hour_rules", request.policy.resource_policy.happy_hours, decision.selection.expired_happy_hour_rules),
+        ("expired_blackout_rules", request.policy.resource_policy.blackouts, decision.selection.expired_blackout_rules),
+    ):
+        if field in selection:
+            visible_rule_ids = {
+                rule.rule_id for rule in rules
+                if any(rule.target.matches(identity) for identity in visible_identities)
+            }
+            selection[field] = [rule_id for rule_id in expired_rule_ids if rule_id in visible_rule_ids]
+    document["selection"] = selection
+    document["target_exclusions"] = [
+        exclusion.to_dict() if exclusion.resource_id in visible_ids else
+        {"resource_id": "restricted", "stage": exclusion.stage, "reason_codes": list(exclusion.reason_codes)}
+        for exclusion in decision.target_exclusions
+    ]
+    expired: set[str] = set()
+    for entry in visible:
+        expired.update(_promotion_preference(entry, request.evaluated_at)[1])
+    document["expired_promotions"] = sorted(expired)
+    return document
+
+
 def route_request(request: RouteRequest) -> RouteDecision:
     """The authoritative deterministic route decision for executable targets.
 
@@ -2751,6 +2832,8 @@ def route_request(request: RouteRequest) -> RouteDecision:
                     for candidate in request.catalog.entries
                 ),
                 execution_assurances=request.execution_assurances,
+                require_catalog_effort=request.require_catalog_effort,
+                available_adapter_resource_ids=request.available_adapter_resource_ids,
             )
             for entry in request.registry_snapshot.entries
         ),
@@ -2989,12 +3072,13 @@ def admit_pinned_target(
         request.evaluated_at,
         request.continuation_capable_resource_ids,
         execution_assurances=request.execution_assurances,
+        available_adapter_resource_ids=request.available_adapter_resource_ids,
     )
     if not gate.qualified or not gate.bound_identities:
         return AdmissionDecision(
             resource_id=resource_id,
             approved=False,
-            reason_codes=("admission_rejected", *gate.reason_codes),
+            reason_codes=tuple(sorted(("admission_rejected", *gate.reason_codes))),
             exclusion=_target_exclusion(gate),
             bound_decision_id=decision_id,
         )

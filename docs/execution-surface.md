@@ -108,6 +108,146 @@ live inference, deployment, workspace or credential access.
 
 ## Harness compatibility contract (D-056)
 
+### Executable Recommendation (D-079, #174)
+
+Contract-first producer freeze under #174; installed consumer acceptance remains
+open. The optional gateway
+adds authenticated `POST /v1/route`, not a recommendation v1 mode or another service.
+It uses the same inference-client bearer key and current administrator/client
+grants as execution. Request version, route-decision schema, recommendation schema,
+catalog content and policy versions are independent.
+
+The closed request has exactly `schema_version: 1`, `model` (existing alias/logical
+model/pin spelling), `requirement` (complete existing TaskRequirement) and `binding`
+(existing RequestBinding structural/identity demands). Ordinary task meaning can
+be prepared with #175's local interpreter; Router does not authenticate Kernel
+approval or invent minima from text. Missing quality, unsupported/contradictory
+constraints, booleans as versions and unknown fields refuse without inference.
+The operation reuses current configured artifacts, policy, compatibility and
+quota-free readiness observation. No model-call probe, quota reservation, dispatch,
+client-supplied grant or caller-selected provider origin is permitted.
+Selection captures one current authority tuple (registry, administrator rules,
+client grant and adapters), not a mixture with an older application's authority.
+The same snapshot determines target eligibility and public disclosure. Unavailable
+authority refuses with `state_unavailable`; a removed adapter is an availability
+refusal (`adapter_unavailable`) on this new opt-in surface. Legacy route inputs
+have no adapter-channel intersection and their existing behavior remains unchanged.
+Exact admission of retained context uses that same current-authority mechanism,
+including the current entry's health/capability/effective-limit facts, not an older
+application's cached entry. After task/profile/structural merging, the retained
+known input-context demand must also fit the gateway allowance at selection and
+execution; checking only the small outgoing message estimate is insufficient.
+The genuine task/profile output floor likewise intersects the current gateway
+output allowance even when no generation cap was requested. This is a separate
+requirement check, never a synthesized generation ceiling.
+The composed publisher supplies the complete current application, including
+catalog/calibration, profiles/version, aliases, compatibility, policy and gateway
+limits. An operation takes a transient read-only view sharing that publication's
+runtime handles, not a second inventory or service. Admission uses its coherent
+authority inputs; final dispatch still performs the existing live revocation check.
+Failure to obtain the publication refuses without an old-application fallback.
+The authenticated HTTP ingress also rejects its transient bearer appearing inside
+reflected demand strings, including embedded tags. Credentials are not retained,
+logged or placed in refusal messages; no durable plaintext credential store is added.
+
+The version-1 executable envelope contains `route`, the actual existing RouteDecision,
+and `execution`, null on no solution, otherwise a ready-to-use exact `model` pin,
+catalog `reasoning_effort` (including distinct null/none/plan semantics), and complete
+`execution_requirements`. It is not a new ranking DTO. Typed route refusals preserve
+the layer; unsupported physical observation cannot become a verified assertion.
+Resource disclosure is checked independently against the same effective core
+authorization, even when binding failed before the authorization gate. Denied
+identities become `restricted`, private detail and denied promotion provenance
+are omitted, and the actual refusal layer/reason codes remain.
+This is the authenticated public projection of the actual core decision, not an
+additional ranking or a way to inventory resources denied to the client.
+The pin is produced/verified through existing serialization/parser semantics,
+including optional `@decision_id` provenance, not a newly invented spelling.
+
+`execution_requirements` is an opt-in closed version-1 context containing the
+complete resolved `requirement`, structural `binding`, `profile_policy_version`
+and `profile_expansion` (the latter two explicitly null when no profile is used),
+and mandatory `reasoning_effort` including an explicit null expectation. Missing
+effort is not null. The exact current catalog configuration must match this
+retained value; null-to-configured calibration drift refuses before dispatch,
+including variant-qualified HTTP and native worker targets. A retained null keeps
+deliberate omission of the native control, not adoption of a later default.
+It is an additional demand, not an approval, grant, publisher attestation or
+reservation. It must accompany an exact `sr-pin:` model on Chat Completions;
+alias/logical substitution refuses. The pinned identity must agree with retained
+binding. Current profile version AND content, actual message/tool/stream/output
+controls, current grants/resource state/capabilities and hard quality requirements
+are rechecked; no ranking or fallback occurs. A numeric output requirement is a
+capability floor, not a generation cap; submitted output ceilings remain actual
+execution controls and cannot be silently lost. Context is never forwarded as
+prompt, provider metadata or a tool instruction.
+The retained quality includes genuine task/profile output floors, not the extra
+capacity demand derived from a generation ceiling. A smaller execution ceiling is
+permitted only when it does not contradict a genuine floor. Selection checks the
+controls needed for each candidate's promised catalog effort before competition;
+an effort-less configuration is not forced to acquire reasoning controls.
+An incoming pin's old/absent decision reference is audit provenance, not target
+identity. A newly issued route decision may update that reference while preserving
+all resource/provider/model/variant dimensions; the prepared response/context/final
+outbound pin then agree exactly.
+For a suspended native turn using executable context, the actual initial output
+control is retained separately from its maximum permitted ceiling. Continuation
+must resend that actual control unchanged: the existing result-delivery protocol
+cannot apply a newly narrowed cap to the running turn. Such changes refuse before
+tool-result delivery, including a formerly non-binding cap narrowed to a binding
+one. Legacy context-free continuation behavior is unchanged; no turn is silently
+restarted or relabelled to apply a new control.
+
+A narrow consumer helper consumes the actual serialized envelope and its retained
+expected request, checks identity/effort/decision consistency and prepares an ordinary
+Chat Completions payload with the pin/context. It rejects missing/malformed/lost/
+changed pins or requirements on that path, without requiring manual copying or
+new recurring configuration. Any promised non-null effort is explicitly carried;
+an adapter lacking its evidenced mapping refuses rather than drops it. Existing
+generic clients and frozen recommendation CLI/REST/MCP are unchanged.
+
+**Proof limit:** a stateless server cannot identify the original Attempt if a
+harness strips its context, even if the historically valid pin remains, or strips
+both context and pin and sends an otherwise valid ordinary request.
+That harness path is unsupported/unaccepted for a pinned Attempt; it is not an
+automatic new Attempt or universal gateway loss-detection guarantee. The exact
+inspected Kernel #51 recommendation adapter is not an installed executable consumer.
+Kernel #52 owns that binding; no modifications to Kernel are part of this delivery.
+Synthetic dispatch preservation cannot satisfy REAL_HARNESS_IDENTITY_ACCEPTANCE.
+
+Consumer entry point is
+`scarcity_router.executable_client.prepare_executable_completion(response,
+expected_request=request, completion=chat_body)`. Retain the original request
+and producer response in Kernel's immutable Attempt evidence. It performs
+no semantic approval: retain #175's original approved declaration, its digest,
+interpretation version, inspected producer revision and used profile expansion
+in Kernel's evidence before transmission. The demand/context is not that receipt.
+The helper performs
+no network calls or execution and returns the ordinary outgoing body; it validates
+the complete received frame against the retained request before adding the exact
+pin, effort and context. A non-null output ceiling is copied into the actual
+generation control when absent; conflicting/larger controls refuse. A supported
+consumer checks the resulting body at its dispatch boundary, rather than treating
+generic metadata or a model echo as preservation proof.
+The same helper's `require_bound=True` validates the final serialized outbound
+body against the retained artifacts: lost pin/context/effort or output control
+refuses without insertion, repair, ranking or relabelling as a new Attempt. Default
+preparation accepts an unbound chat body; an already-bound partial body refuses.
+This validation belongs in the supported consumer adapter, not a manual operator
+step. An arbitrary unvalidated harness is not thereby supported or accepted.
+
+Separately authorized end-to-end recipe: record exact Router/Kernel/harness versions
+and scoped authorization; prepare an approved supported requirement; consume the
+serialized executable envelope automatically; persist its pin, complete context,
+decision and original approved meaning before Attempt dispatch; demonstrate the
+actual outbound request retains them and admission rechecks current authority;
+compare exact dispatch evidence with independently observed identity where available.
+Exercise lost pin/context, changed effort/profile, revoked grant, stale resource,
+unavailable model, incompatible tools/protocol, restart and ambiguous dispatch
+without retry/substitution. Record UNKNOWN physical identity/usage honestly.
+Inference, workspace/tool effects, service deployment and financial acceptance
+remain separately authorized; no such receipt is delivered by an offline fixture.
+
 This surface is the first protocol adapter over Scarcity Router's
 harness-independent semantic execution contract. Compatibility is defined
 SEMANTICALLY — what any conforming harness may rely on — never as a list of
@@ -451,7 +591,8 @@ allowlist of the fields execution surface v1 defines:
 model, messages, stream, stream_options, tools, tool_choice,
 response_format, reasoning_effort, reasoning, thinking, enable_thinking,
 max_completion_tokens, max_tokens, temperature, top_p, stop, seed,
-frequency_penalty, presence_penalty, parallel_tool_calls, user, metadata
+frequency_penalty, presence_penalty, parallel_tool_calls, user, metadata,
+execution_requirements
 ```
 
 Anything else is rejected as `unknown_parameter` — the surface never
@@ -475,6 +616,10 @@ strictness:
 - `reasoning_effort` accepts `none`, `minimal`, `low`, `medium`, `high`,
   `xhigh`, `max`, `ultra` (the runtime-reported GPT-6-generation efforts
   entered additively with D-053).
+- `execution_requirements` is the opt-in closed versioned context defined by
+  D-079 above. It requires an exact pin and preserves quality, structural demands,
+  profile expansion/version and expected nullable effort. It is never a grant,
+  approval assertion, prompt or provider metadata; ordinary clients may omit it.
 
 ### Reasoning-dialect normalization (#135)
 
