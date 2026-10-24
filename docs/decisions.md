@@ -6494,3 +6494,25 @@ adapter is removed merely to eliminate orchestration. See the actual Git source/
   The owner-manual Daybreak-through-Codex security gate is unchanged and is never
   started automatically. Text tests establish instruction consistency, not proof
   that a live session workflow was exercised.
+
+### U-015 - Claude subscription automation terms and source freshness
+
+- **Status:** Open, bounded offline investigation under #214 (2026-10-24).
+- **Source conflict:** The official Claude-plan Agent SDK support article allows
+  Pro/Max subscription usage and describes shared limits, while the official
+  Claude Code legal/compliance page restricts third-party OAuth use unless
+  expressly permitted. SDK availability is not an exemption or legal ruling.
+  The dated source URLs/package pins are in `poc-evidence.md`; do not silently
+  choose the permissive reading.
+- **Freshness gap:** Statusline quota fields have no original observation time
+  and may be delivered again by timers. Hook/file-read time is not a provider
+  refresh. Auth status/percentages do not prove model applicability, complete-path
+  no-PAYG, cancellation or settlement.
+- **Containment:** Only a pure, unregistered partial parser with synthetic tests;
+  no acquisition, OAuth extraction, subscription execution, new tool/workspace
+  permission, provider/public-enum activation or claimed healthy quota. Accepted
+  D-078 and the manual security-review gate are unchanged.
+- **Evidence needed:** Clarify the exact official permission scope and validate
+  an allowed read-only source with original observation/freshness, auth/plan/reset/
+  model and whole-call tool/billing/limits/cancellation evidence. Until then those
+  paths remain unsupported and account-backed acceptance is explicitly DEFERRED.

@@ -137,6 +137,13 @@ There is deliberately no `account` field. Account identifiers are not needed to
 interpret one snapshot and increase correlation and disclosure risk. They must
 not be smuggled into `provider`, `source`, `plan`, diagnostics or metadata.
 
+Issue #214's unregistered offline `anthropic`/`claude_code_statusline` projection
+uses these existing v3 shapes only. It always reports `unknown`, uses
+`resource: unknown` with no model scope/plan, and is not a new supported provider
+in the selector's frozen vocabulary. Conditional synthetic percentages establish
+neither a live source nor usable subscription capacity/billing control. See the
+dated Claude evidence and U-015; no schema/enum change is made.
+
 ## Provider Status
 
 `status` describes the collection/source result, not a scarcity label and not a

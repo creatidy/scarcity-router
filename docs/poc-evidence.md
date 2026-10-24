@@ -435,6 +435,51 @@ The working mechanisms did not require browser-cookie inspection or a model
 prompt. No actual credential value belongs in this repository, its history,
 fixtures, logs or documentation.
 
+### Claude Offline Feasibility (2026-10-24, #214)
+
+**Scope:** Public docs/package metadata and synthetic fixtures only; no account,
+credential store, installed CLI, model call, purchase or provider-setting change.
+Official public npm registry metadata checked 2026-10-24 pins observed releases:
+
+| Package | Version | SHA-512 SRI |
+| --- | --- | --- |
+| `@anthropic-ai/claude-code` | `2.1.310` | `sha512-EySpBwaocdU1nc9r7JH+GOlnMsbXc764d3HX7NL8fr7qqdxz2MiXI9hqf/rzeE/XgU23HHFltIqhb+Fq6G1CVw==` |
+| `@anthropic-ai/claude-agent-sdk` | `0.3.310` | `sha512-fo+sr+9Ks73P001f6XKRQlyzfIBAJMgXArLUkH5Tu98NikRDZeGtFQVj23d5/hj2ijpFgzffrr4fHywY9qUkoQ==` |
+
+Neither package was installed/executed/adopted as a dependency. Mutable docs were
+retrieved on this date, not falsely attributed to an immutable package ABI.
+
+| Official source (retrieved 2026-10-24) | Finding | Disposition |
+| --- | --- | --- |
+| [Claude-plan SDK support](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan) | Says Pro/Max can use the SDK and share plan limits through managed auth | Candidate only, not proof of a permitted Router inference-only/billing path |
+| [Legal/compliance](https://code.claude.com/docs/en/legal-and-compliance) | Restricts third-party OAuth subscription use unless expressly permitted | Conflict with an unqualified permissive SDK reading remains U-015; no token extraction/execution |
+| [Statusline](https://code.claude.com/docs/en/statusline.md) | `rate_limits.five_hour`/`seven_day`: used-oriented numeric `used_percentage`, Unix-second `resets_at`; null/missing possible; separate `spend_limit` | Partial parser only; not token units, model scope, entitlement or remaining credits |
+| Same statusline contract | No original quota timestamp; repeated/timer delivery is not a provider read; session/context token/cost fields are distinct | No production freshness/acquisition claim; file mtime/hook time cannot refresh quota |
+| [CLI reference](https://code.claude.com/docs/en/cli-reference.md) | Non-prompt `auth status` distinguishes `claude.ai`, OAuth, API and third-party methods; model/effort/stream flags exist | No command run; labels/flags do not verify account, model/backend or billing |
+| [Headless](https://code.claude.com/docs/en/headless.md) | `--bare` skips hooks/config/MCP but also subscription OAuth/keychain login; normal print mode loads project/user machinery | Neither API-key bare mode nor an ordinary coding process is silently substituted |
+| CLI reference | `--max-budget-usd` is an estimate and can overshoot; fallback/helpers/tools are separate | Not hard no-PAYG, settlement, exhaustive usage or no-hidden-call proof |
+
+| Surface | Identity/auth and I/O | Tools/lifecycle and supported boundary |
+| --- | --- | --- |
+| Native CLI/print | Managed auth, JSON/stream/model/effort flags documented; actual serving identity, plan/no-paid mode and enforced input/output caps unverified | Hooks/MCP/native tools may load; bare mode changes auth. No coding workspace/process grant; interrupt/cleanup/settlement unverified |
+| Agent SDK | Pinned version/support article exist; account/model/rate-limit APIs do not override conflicting terms or prove total billing/hidden calls | No SDK dependency/adapter/helper adopted; stream/tool/interrupt mapping needs a separate evidenced contract |
+| MCP/app-server-style bridge | Protocol availability is not subscription permission, original quota freshness or model/billing assurance | Unsupported; no renamed whole-agent wrapper or new native permissions |
+| Statusline projection | Validated period/used orientation/reset units only; plan, quota units/scope and original observation provenance unknown | Pure zero-I/O partial parser, never healthy/selectable; synthetic fixture is not an account capture |
+
+`tests/fixtures/claude-statusline/known-windows.json` is entirely synthetic.
+Fractional percentages are withheld rather than rounded into v3; unknown buckets/
+shape drift fail closed. Missing/stale/future/reset-crossed observations never
+manufacture healthy quota. Known reset facts may remain partial while unproven
+percentages are withheld. Account/session/path/auth/cost/raw text is not emitted
+or logged; parser output grants no authority.
+
+**Offline acceptance:** deterministic projection/refusal/serialization/no-echo/
+no-I/O tests, with existing provider/public contracts unchanged.
+**Live acceptance: DEFERRED:** permitted source, real plan/shared/model windows,
+auth expiry, moving resets, original freshness/latency, billing/overflow/control,
+enforced caps, hidden tools/calls, stream/interrupt/cleanup and serving identity
+need separately authorized evidence. None is inferred from offline fixtures.
+
 ## ASSUMED / NOT YET VALIDATED
 
 - The OpenAI app-server fields and method will remain compatible with a future
