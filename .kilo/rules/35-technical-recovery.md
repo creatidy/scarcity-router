@@ -11,6 +11,13 @@ This shared development-workflow contract applies to implementation, validation,
 review and remediation. It does not authorize product changes, persistent services,
 new dependencies, paid/live inference, external effects or broader access.
 
+Ordinary independent review is a fresh-conversation requirement, not a separate
+filesystem requirement. Authorized `/loop` and `/finish-pr` workflows start a new
+user-visible Kilo reviewer through native session management and collect its result
+without owner relay. The reviewer may use the existing repository/checkout while the
+source is frozen; do not create a worktree, container or sandbox solely for reviewer
+independence.
+
 ## Classify Before Escalating
 
 For `/loop`, first apply `.kilo/command/loop.md` post-selection eligibility
@@ -97,26 +104,29 @@ validation process/results, inspect live state and recover durable logs/exit sta
 before a diagnosed rerun; never launch duplicate validation processes or claim an
 unobserved PASS. A lost process record is an evidence gap, not a terminal contract.
 
-Available mechanisms, where applicable:
+Available mechanisms, where applicable, are optional engineering remedies for a
+demonstrated technical need; none is an independence prerequisite for review:
 
 - Construct an explicit sanitized child environment, synthetic HOME, cache and temp
   directories; install only the repository's locked/approved development dependencies.
 - Use an ephemeral Docker/container environment when lighter isolation is insufficient.
   Docker is an execution mechanism, not product dependency adoption. No persistent
   service, privileged container, Docker socket mount or security weakening is implied.
-- Prepare a temporary worktree/checkout at the frozen revision, preserving unrelated
-  owner work. Use one designated delivery checkout and one mutator; auxiliary review
-  and public-source checkouts are evidence-only, not parallel implementation controllers.
-  Parent never edits or switches any reviewed checkout while its reviewer is active.
+- Prepare a temporary worktree/checkout only for a demonstrated need such as
+  concurrent source mutation, preserving unrelated owner work. Use one designated
+  delivery checkout and one mutator; auxiliary checkouts are evidence-only, not
+  parallel implementation controllers. Parent never edits or switches any reviewed
+  checkout while its reviewer is active. A reviewer may use the same frozen checkout.
 - Mount the repository read-only where mutation is unnecessary, only required paths,
   and separate writable synthetic scratch paths. Do not mount host credential directories.
 - Split independent source inspection from safe test execution when they need different
   environments, or reproduce a claim with a smaller synthetic/offline proof. Preserve
   mandatory full validation and explicitly open any real-environment acceptance gap.
-- Prepare a concise user-visible reviewer handoff after diagnosing harness limitations.
-  Preserve frozen PR scope, model-bound gates, read-only access and independence.
-  The user selects/starts the next model; recovery never authorizes scripts,
-  subprocesses, Task/delegation, background/HTTP inference or a hidden substitute.
+- If native Kilo session/result capability is genuinely unavailable after bounded
+  recovery, prepare a concise visible handoff naming that exact pending gate. Preserve
+  frozen PR scope, model-bound gates, read-only access and conversational independence.
+  This is not a routine owner-start/result-relay requirement. Recovery never authorizes
+  scripts, subprocesses, Task/delegation, background/HTTP inference or a hidden substitute.
 
 ## Secret-Safe Environments
 
@@ -130,14 +140,22 @@ Keep authenticated platform operations outside test sandboxes. If unauthorized r
 credentials are genuinely necessary, record the specific evidence gap; do not ask for
 them unless required for the selected acceptance and subject to an owner decision.
 
-## Visible Review Handoffs
+## Native Review Sessions
 
-Verify actual Git objects and canonical Repo/Issue/PR/owner authority. Provide concise
-frozen refs, acceptance and source instructions directly to a fresh user-visible
-read-only Kilo/Codex reviewer. The user selects the model and starts the session;
-technical recovery may not spawn another model, generate a wrapper or hide it in a
-background/HTTP/Task call. If no authorized visible mechanism can perform the next
-step, hand off that exact pending gate without skipping it or claiming QUEUE_EMPTY.
+For an authorized ordinary review, verify actual Git objects and canonical
+Repo/Issue/PR/owner authority, then start a fresh user-visible Kilo reviewer through
+native session management. Provide only the task/scope, acceptance, exact frozen refs,
+relevant contracts and source instructions; do not pass the implementation
+conversation, reasoning, private deliberations or a desired verdict. Use the existing
+checkout when safe. A separate reviewer worktree is not an independence requirement.
+
+Keep the source frozen for the full review. Collect the final reviewer result through
+native session communication or exact-session retrieval; do not require the owner to
+copy prompts or responses. This native Kilo session start is permitted and visible;
+no script, subprocess, Task/subagent, background inference, HTTP call or wrapper may
+launch a model. If the native session/result capability itself is unsupported, apply
+bounded technical recovery and report the exact pending gate without skipping review
+or claiming QUEUE_EMPTY.
 
 Use native harness records and minimal canonical ordinals/outcomes/provenance, not
 persistent local receipts, copied source/transcripts or reconstructed evidence trees.
@@ -174,10 +192,12 @@ BLOCKED requires exhausted authorized technical paths/budget or an external cond
 the agent cannot change with any authorized workaround. Class-B decisions instead
 require STOP_AND_ASK / OWNER_DECISION_NEEDED with all five decision fields above.
 State the exact missing capability/dependency, attempted paths, remaining evidence gap
-and consumed budget. A reviewer lacking tools is insufficient while a suitable clean
-environment or a user-authorized visible reviewer path remains. Do not ask an
-artificial question for an external non-decision blocker. STOP_REVISE remains the
-review-bound disposition for actionable defects, not a technical environment failure.
+and consumed budget. A reviewer lacking a separate worktree is not a blocker when the
+existing repository and source tools can inspect the frozen revision. A genuine
+unsupported native session/result capability is classified and recovered under the
+same bounded rule. Do not ask an artificial question for an external non-decision
+blocker. STOP_REVISE remains the review-bound disposition for actionable defects,
+not a technical environment failure.
 
 Continue implementation -> validation -> independent review -> ordinary remediation
 -> fresh validation/review until exact independent APPROVE with acceptance satisfied,

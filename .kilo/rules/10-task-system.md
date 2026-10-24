@@ -73,11 +73,13 @@ was separately accepted, and merge121ee3f/#212 closure are verified. No #20 reus
   not automatic closing keywords. Report issue/PR, base/head SHAs, validation and
   genuine blockers; READY_FOR_REVIEW means implemented and verified, not approved.
 - `/finish-pr` selects an existing PR and authorizes only its linked issue's
-  accepted-scope remediation. The user explicitly selects a model and opens a fresh
-  visible Kilo/Codex read-only reviewer. Never programmatically start that session,
-  delegate to a model, generate a launcher, or require a local receipt hierarchy.
-  If the next gate needs a visible harness, return an explicit handoff, not hidden
-  execution, skipped acceptance or a repository-wide QUEUE_EMPTY claim.
+  accepted-scope remediation. Ordinary independent review uses a fresh separate
+  user-visible Kilo session, started and collected autonomously by the authorized
+  orchestrator through native Kilo session management. Do not require the owner to
+  start the session or relay its result. Never use a hidden launcher, Task/subagent,
+  HTTP inference or a local receipt hierarchy. If the native session/result capability
+  itself is genuinely unsupported, use bounded recovery and report that exact gate;
+  never skip acceptance or call it repository-wide QUEUE_EMPTY.
   Default to at most 10 whole-PR review invocations per issue delivery, including
   initial, COMMENT and retries. The sole separate direct-owner supersession is for
   #212/PR #213: maximum20 and consumed #1-19 are preserved. The final direct
