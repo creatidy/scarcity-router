@@ -1,15 +1,12 @@
 """Offline consistency guards for command text, not proof of runtime execution."""
 
 import ast
-import re
-import hashlib
 import json
-import tempfile
+import re
 import unittest
+from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import cast
-
-import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -55,461 +52,6 @@ def dependency_assessments() -> dict[str, tuple[str, str, str]]:
 
 
 class WorkflowContractTests(unittest.TestCase):
-    def test_acceptance_only_context_preserves_exact_provenance_and_excludes_history(self) -> None:
-        contract = text(".kilo/rules/35-technical-recovery.md").split(
-            "## Reviewer Context and Result Capture", 1)[1].split("## Terminal Contracts", 1)[0]
-        for requirement in (
-            "Start with neutral canonical issue/PR links and exact frozen base/HEAD/merge-base",
-            "complete canonical issue body", "full original text/context of applicable owner decisions",
-            "canonical URL, object/comment ID, author, timestamp, retrieval path and content digest",
-            "Local sources also carry the exact Git revision/path", "No blanket comment history",
-            "previous reviews/findings, implementer summaries", "Missing decision provenance is an evidence gap",
-            "post-Agent-Manager tool routes/arguments against the manifest", "self-report alone does not close it",
-            "supported no-tools reviewer execution needs a complete source packet",
-            "`forgejo-mcp_get_repo` verifies the canonical owner/repository before other scoped getters",
-        ):
-            self.assertIn(requirement, contract)
-        # A synthetic parent packet checks exact text and route auditing. This is
-        # not proof that Kilo dispatch/runtime permission enforcement performed it.
-        owner_text = "Original owner decision.\nFull constraints, not an implementer summary."
-        packet = {
-            "first_metadata": {"issue": "https://forgejo.example/issues/7", "pr": "https://forgejo.example/pulls/8",
-                               "base": "a" * 40, "head": "b" * 40, "merge_base": "a" * 40},
-            "owner_decision": {"id": 9, "author": "synthetic-owner", "timestamp": "2026-10-10T00:00:00Z",
-                               "body": owner_text, "sha256": hashlib.sha256(owner_text.encode()).hexdigest()},
-        }
-        self.assertEqual(packet["owner_decision"]["body"], owner_text)
-        self.assertEqual(packet["owner_decision"]["sha256"], hashlib.sha256(owner_text.encode()).hexdigest())
-        self.assertNotIn("verdict", packet["first_metadata"])
-        manifest = (("forgejo-mcp_get_repo", ("synthetic-owner", "synthetic-repo")),
-                    ("forgejo-mcp_get_issue_by_index", 7), ("forgejo-mcp_get_pull_request_by_index", 8),
-                    ("forgejo-mcp_get_issue_comment", 9))
-        self.assertIn(("forgejo-mcp_get_repo", ("synthetic-owner", "synthetic-repo")), manifest)
-        self.assertNotIn(("forgejo-mcp_get_repo", ("synthetic-owner", "other-repo")), manifest)
-        self.assertIn(("forgejo-mcp_get_issue_comment", 9), manifest)
-        self.assertNotIn(("forgejo-mcp_get_issue_comment", 10), manifest)
-        self.assertNotIn(("forgejo-mcp_list_issue_comments", 7), manifest)
-        for path in ("review-pr", "finish-pr", "loop"):
-            self.assertIn("reviewer-context-and-result-capture", text(f".kilo/command/{path}.md"))
-
-    def test_reviewer_is_visible_agent_manager_session_with_read_only_permissions(self) -> None:
-        profile = (ROOT / ".kilo/agents/pr-reviewer-standalone.md").read_text()
-        raw = profile.split("---", 2)[1]
-        profile_text = " ".join(profile.split())
-        frontmatter = cast(dict[str, object], yaml.safe_load(raw))
-        permissions = cast(dict[str, object], frontmatter["permission"])
-        self.assertEqual(frontmatter["mode"], "primary")
-        self.assertEqual(permissions["*"], "deny")
-        self.assertEqual(permissions["read"], "ask")
-        self.assertEqual(permissions["external_directory"], "deny")
-        self.assertNotEqual(permissions.get("bash"), "allow")
-        self.assertNotEqual(permissions.get("edit"), "allow")
-        self.assertNotEqual(permissions.get("task"), "allow")
-        for requirement in (
-            "in a fresh user-visible Kilo session started by the single primary orchestrator",
-            "Agent Manager", "provider-qualified model selected by the main session",
-            "Highspeed models", "do not review,", "replyTo",
-            "No desired verdict", "UX impact", "read-only PR reviewer",
-        ):
-            self.assertIn(requirement, profile_text)
-        self.assertIn("not a review execution path", text(".kilo/agents/pr-reviewer.md"))
-
-    def test_synthetic_prospective_capacity_counts_all_exact_object_gates(self) -> None:
-        section = (ROOT / ".kilo/rules/35-technical-recovery.md").read_text().split(
-            "## Prospective Review Capacity", 1)[1].split("No blind retries", 1)[0]
-        rows: dict[str, tuple[tuple[str, ...], int]] = {}
-        for line in section.splitlines():
-            if not line.startswith("| "):
-                continue
-            cells = [cell.strip() for cell in line.strip("|").split("|")]
-            if cells[0] in ("Round State", "---"):
-                continue
-            self.assertEqual(len(cells), 3)
-            self.assertNotIn(cells[0], rows)
-            rows[cells[0]] = (() if cells[1] == "none" else tuple(cells[1].split(",")), int(cells[2]))
-        self.assertEqual(rows, {
-            "security_patch_or_both_missing": (("ordinary", "restricted"), 2),
-            "ordinary_patch_or_missing": (("ordinary",), 1),
-            "stable_ordinary_approved": (("restricted",), 1),
-            "stable_restricted_approved": (("ordinary",), 1),
-            "stable_all_approved": ((), 0),
-        })
-        # Read a persisted synthetic ledger for each case, applying the published
-        # math/table only. No live reservation, authority or runtime enforcement.
-        with tempfile.TemporaryDirectory() as directory:
-            # This is an ephemeral synthetic model of ordinal arithmetic, not a
-            # repository-local review ledger or a source of owner authority.
-            ledger = Path(directory) / "synthetic-capacity.json"
-
-            def assess(used: object, ceiling: object = 10, *, canonical_exception: object = False,
-                       patch_objects: bool = True, security: bool = True,
-                       ordinary_current: bool = False, restricted_current: bool = False,
-                       ordinary_stale: bool = False, restricted_stale: bool = False, base_stale: bool = False,
-                       ordinary_audited: bool = True, ordinary_empty: bool = True,
-                       restricted_audited: bool = True, restricted_empty: bool = True,
-                       recovery: str = "intact",
-                       skipped_ordinals: tuple[int, ...] = ()) -> str:
-                reservations: list[dict[str, object]] = (
-                    [
-                        {
-                            "ordinal": ordinal,
-                            "outcome": (
-                                "OWNER_AUTHORIZED_SKIP"
-                                if ordinal in skipped_ordinals
-                                else ("COMMENT", "FAILED", "POLICY_VIOLATION")[ordinal % 3]
-                            ),
-                        }
-                        for ordinal in range(1, used + 1)
-                    ]
-                    if type(used) is int and used >= 0
-                    else []
-                )
-                if len(reservations) >= 10:
-                    reservations[9]["outcome"] = "REQUEST_CHANGES"
-                if len(reservations) >= 12 and isinstance(canonical_exception, dict):
-                    reservations[11]["outcome"] = "UNSAFE_TEXT"
-                if (len(reservations) >= 15 and isinstance(canonical_exception, dict)
-                        and cast(dict[str, object], canonical_exception).get("comment") in (18436, 18480)):
-                    reservations[14]["outcome"] = "REQUEST_CHANGES"
-                if (len(reservations) >= 17 and isinstance(canonical_exception, dict)
-                        and cast(dict[str, object], canonical_exception).get("comment") == 18480):
-                    reservations[16]["outcome"] = "REQUEST_CHANGES"
-                if reservations and ordinary_current and (not isinstance(canonical_exception, dict) or len(reservations) > 12):
-                    latest_review = next(
-                        record for record in reversed(reservations)
-                        if record["ordinal"] not in skipped_ordinals
-                    )
-                    latest_review["outcome"] = "APPROVE"
-                if reservations and recovery in ("gap", "duplicate", "bool_ordinal", "float_ordinal"):
-                    reservations[-1]["ordinal"] = {
-                        "gap": 100, "duplicate": 1, "bool_ordinal": True, "float_ordinal": 9.0,
-                    }[recovery]
-                _ = ledger.write_text(json.dumps({"used": used, "reservations": reservations,
-                                                  "claimed_ceiling": ceiling,
-                                                  "head": "a" * 40, "base": "b" * 40,
-                                                  "ordinary_head": ("c" if ordinary_stale else "a") * 40
-                                                  if ordinary_current else None,
-                                                  "ordinary_base": ("c" if base_stale else "b") * 40
-                                                  if ordinary_current else None,
-                                                  "ordinary_verdict": "APPROVE" if ordinary_current else "REQUEST_CHANGES",
-                                                  "ordinary_findings": [] if ordinary_empty else ["synthetic finding"],
-                                                  "ordinary_audited": ordinary_audited,
-                                                  "restricted_head": ("c" if restricted_stale else "a") * 40
-                                                  if restricted_current else None,
-                                                  "restricted_base": ("c" if base_stale else "b") * 40
-                                                  if restricted_current else None,
-                                                  "restricted_verdict": "APPROVE" if restricted_current else "UNSAFE_TEXT",
-                                                  "restricted_findings": [] if restricted_empty else ["synthetic finding"],
-                                                  "restricted_audited": restricted_audited}))
-                if recovery == "missing":
-                    ledger.unlink()
-                try:
-                    persisted = cast(dict[str, object], json.loads(ledger.read_text()))
-                except FileNotFoundError:
-                    return "BLOCKED"
-                count = persisted["used"]
-                # Authority here is a synthetic independently attested input,
-                # never obtained from this ledger or a live platform operation.
-                if canonical_exception is True:
-                    bound = 12  # Preserved historical 16179/16250 fixture.
-                elif canonical_exception is False:
-                    bound = 10
-                elif isinstance(canonical_exception, dict):
-                    attested = cast(dict[str, object], canonical_exception)
-                    issue205_sources = (
-                        {"issue": 205, "pr": 206, "comment": 16611, "ceiling": 15},
-                        {"issue": 205, "pr": 206, "comment": 18436, "ceiling": 18,
-                         "skipped_ordinals": (16,)},
-                        {"issue": 205, "pr": 206, "comment": 18480, "ceiling": 20,
-                         "skipped_ordinals": (16, 18)},
-                    )
-                    matching = next(
-                        (source for source in issue205_sources
-                         if set(attested) == set(source)
-                         and all(type(attested[key]) is type(value) and attested[key] == value
-                                 for key, value in source.items())),
-                        None,
-                    )
-                    if matching is None:
-                        return "BLOCKED"
-                    bound_value = matching.get("ceiling")
-                    authorized_skips = matching.get("skipped_ordinals", ())
-                    if (type(bound_value) is not int or not isinstance(authorized_skips, tuple)
-                            or any(type(ordinal) is not int for ordinal in authorized_skips)
-                            or skipped_ordinals != authorized_skips):
-                        return "BLOCKED"
-                    bound = bound_value
-                else:
-                    return "BLOCKED"
-                if skipped_ordinals and not isinstance(canonical_exception, dict):
-                    return "BLOCKED"
-                if (recovery == "ambiguous" or type(count) is not int or count < 0
-                        or type(persisted["claimed_ceiling"]) is not int or persisted["claimed_ceiling"] < 1
-                        or canonical_exception is not False and persisted["claimed_ceiling"] != bound):
-                    return "BLOCKED"
-                records = cast(list[dict[str, object]], persisted["reservations"])
-                if (any(type(record["ordinal"]) is not int for record in records)
-                        or [record["ordinal"] for record in records] != list(range(1, count + 1)) or count > bound):
-                    return "BLOCKED"
-                ordinary = (persisted["ordinary_head"] == persisted["head"]
-                            and persisted["ordinary_base"] == persisted["base"] and not patch_objects
-                            and persisted["ordinary_verdict"] == "APPROVE"
-                            and persisted["ordinary_audited"] is True and persisted["ordinary_findings"] == [])
-                restricted = (persisted["restricted_head"] == persisted["head"]
-                              and persisted["restricted_base"] == persisted["base"] and not patch_objects
-                              and persisted["restricted_verdict"] == "APPROVE"
-                              and persisted["restricted_audited"] is True and persisted["restricted_findings"] == [])
-                state = ("stable_all_approved" if ordinary and (restricted or not security)
-                         else "ordinary_patch_or_missing" if not security
-                         else "stable_ordinary_approved" if ordinary
-                         else "stable_restricted_approved" if restricted
-                         else "security_patch_or_both_missing")
-                roles, needed = rows[state]
-                self.assertEqual(len(roles), needed)
-                if bound - count < needed or needed and count + 1 > bound:
-                    return "STOP_REVISE"
-                # Prospective roles are dependency-ordered, not fixed ordinal
-                # allocations. Restricted dispatch still awaits ordinary approval.
-                self.assertTrue(not security or ordinary or roles[0:1] == ("ordinary",))
-                persisted["prospective_roles"] = list(roles)
-                persisted["prospective_ordinals"] = list(range(count + 1, count + needed + 1))
-                _ = ledger.write_text(json.dumps(persisted))
-                return "PASS"
-
-            self.assertEqual(assess(9), "STOP_REVISE")
-            self.assertEqual(assess(9, 12, canonical_exception=True), "PASS")
-            self.assertEqual(assess(9, 12), "STOP_REVISE")  # Ledger is not authority.
-            self.assertEqual(assess(10, 12, canonical_exception=True), "PASS")
-            regression = cast(dict[str, object], json.loads(ledger.read_text()))
-            self.assertEqual(cast(list[dict[str, object]], regression["reservations"])[9]["outcome"], "REQUEST_CHANGES")
-            self.assertEqual(regression["prospective_roles"], ["ordinary", "restricted"])
-            self.assertEqual(regression["prospective_ordinals"], [11, 12])
-            self.assertEqual(assess(11, 12, canonical_exception=True), "STOP_REVISE")
-            self.assertEqual(assess(11, 12, canonical_exception=True, patch_objects=False,
-                                    ordinary_current=True), "PASS")
-            regression = cast(dict[str, object], json.loads(ledger.read_text()))
-            self.assertEqual(regression["prospective_roles"], ["restricted"])
-            self.assertEqual(regression["prospective_ordinals"], [12])
-            self.assertEqual(cast(list[dict[str, object]], regression["reservations"])[10]["outcome"], "APPROVE")
-            for audited, empty in ((False, True), (True, False)):
-                self.assertEqual(assess(11, 12, canonical_exception=True, patch_objects=False,
-                                        ordinary_current=True, ordinary_audited=audited,
-                                        ordinary_empty=empty), "STOP_REVISE")
-            self.assertEqual(assess(12, 12, canonical_exception=True, patch_objects=False,
-                                    ordinary_current=True), "STOP_REVISE")
-            self.assertEqual(assess(12, 12, canonical_exception=True, patch_objects=False,
-                                    ordinary_current=True, restricted_current=True), "PASS")
-            self.assertEqual(assess(9, patch_objects=False, restricted_current=True), "PASS")
-            self.assertEqual(assess(11, 12, canonical_exception=True, patch_objects=False,
-                                    ordinary_current=True, ordinary_stale=True), "STOP_REVISE")
-            self.assertEqual(assess(10, patch_objects=False, ordinary_current=True, restricted_current=True), "PASS")
-            self.assertEqual(assess(10, patch_objects=False, ordinary_current=True,
-                                    restricted_current=True, base_stale=True), "STOP_REVISE")
-            self.assertEqual(assess(9, security=False), "PASS")
-            self.assertEqual(assess(10, security=False), "STOP_REVISE")
-            self.assertEqual(assess(11), "BLOCKED")
-            for invalid in (None, True, 9.0, -1):
-                self.assertEqual(assess(invalid), "BLOCKED")
-            for invalid in (True, 12.0, 0, -1):
-                self.assertEqual(assess(9, invalid, canonical_exception=True), "BLOCKED")
-            for recovery in ("ambiguous", "missing", "gap", "duplicate", "bool_ordinal", "float_ordinal"):
-                self.assertEqual(assess(9, recovery=recovery), "BLOCKED")
-
-            # Comment16611 changes future capacity, not historical results. A
-            # stale base and a source patch both require two newly current gates.
-            authority = {"issue": 205, "pr": 206, "comment": 16611, "ceiling": 15}
-            for patch in (False, True):
-                self.assertEqual(assess(12, 15, canonical_exception=authority, patch_objects=patch,
-                                        ordinary_current=True, restricted_current=True, base_stale=True), "PASS")
-                reconciled = cast(dict[str, object], json.loads(ledger.read_text()))
-                self.assertEqual(reconciled["prospective_roles"], ["ordinary", "restricted"])
-                self.assertEqual(reconciled["prospective_ordinals"], [13, 14])
-                history = cast(list[dict[str, object]], reconciled["reservations"])
-                self.assertEqual(len(history), 12)
-                self.assertEqual(history[9]["outcome"], "REQUEST_CHANGES")
-                self.assertEqual(history[11]["outcome"], "UNSAFE_TEXT")
-            self.assertEqual(assess(12, 15), "BLOCKED")  # A claimed15 is not authority.
-            self.assertEqual(assess(12, 15, canonical_exception=True), "BLOCKED")  # Old authority cannot extend.
-            self.assertEqual(assess(13, 15, canonical_exception=authority), "PASS")
-            contingency = cast(dict[str, object], json.loads(ledger.read_text()))
-            self.assertEqual(contingency["prospective_roles"], ["ordinary", "restricted"])
-            self.assertEqual(contingency["prospective_ordinals"], [14, 15])
-            self.assertEqual(cast(list[dict[str, object]], contingency["reservations"])[:12], history)
-            self.assertEqual(assess(13, 15, canonical_exception=authority, patch_objects=False,
-                                    ordinary_current=True), "PASS")
-            next_security = cast(dict[str, object], json.loads(ledger.read_text()))
-            self.assertEqual(next_security["prospective_roles"], ["restricted"])
-            self.assertEqual(next_security["prospective_ordinals"], [14])
-            self.assertEqual(cast(list[dict[str, object]], next_security["reservations"])[:12], history)
-            self.assertEqual(assess(14, 15, canonical_exception=authority), "STOP_REVISE")
-            self.assertEqual(assess(14, 15, canonical_exception=authority, patch_objects=False,
-                                    ordinary_current=True), "PASS")
-            final_security = cast(dict[str, object], json.loads(ledger.read_text()))
-            self.assertEqual(final_security["prospective_roles"], ["restricted"])
-            self.assertEqual(final_security["prospective_ordinals"], [15])
-            self.assertEqual(cast(list[dict[str, object]], final_security["reservations"])[:12], history)
-            for stale, stale_base, audited, empty in ((True, False, True, True), (False, True, True, True),
-                                                      (False, False, False, True), (False, False, True, False)):
-                self.assertEqual(assess(14, 15, canonical_exception=authority, patch_objects=False,
-                                        ordinary_current=True, ordinary_stale=stale, base_stale=stale_base,
-                                        ordinary_audited=audited, ordinary_empty=empty), "STOP_REVISE")
-            self.assertEqual(assess(15, 15, canonical_exception=authority, patch_objects=False,
-                                    ordinary_current=True, restricted_current=True), "PASS")
-            closed = cast(dict[str, object], json.loads(ledger.read_text()))
-            self.assertEqual(closed["prospective_roles"], [])
-            self.assertEqual(closed["prospective_ordinals"], [])
-            self.assertEqual(cast(list[dict[str, object]], closed["reservations"])[:12], history)
-            self.assertEqual(assess(15, 15, canonical_exception=authority, patch_objects=False,
-                                    ordinary_current=True), "STOP_REVISE")
-            for stale, stale_base, audited, empty in ((True, False, True, True), (False, True, True, True),
-                                                      (False, False, False, True), (False, False, True, False)):
-                self.assertEqual(assess(15, 15, canonical_exception=authority, patch_objects=False,
-                                        ordinary_current=True, restricted_current=True,
-                                        restricted_stale=stale, base_stale=stale_base,
-                                        restricted_audited=audited, restricted_empty=empty), "STOP_REVISE")
-            self.assertEqual(assess(16, 15, canonical_exception=authority), "BLOCKED")
-            self.assertEqual(assess(15, 16, canonical_exception=authority, patch_objects=False,
-                                    ordinary_current=True, restricted_current=True), "BLOCKED")
-            for field, invalid in (("issue", 174), ("pr", 204), ("comment", 16250),
-                                   ("ceiling", 16), ("ceiling", True), ("ceiling", 15.0)):
-                self.assertEqual(assess(12, 15, canonical_exception={**authority, field: invalid}), "BLOCKED")
-            for malformed in (None, 1, {}, {"ceiling": 15}, {**authority, "unattested": True}):
-                self.assertEqual(assess(12, 15, canonical_exception=malformed), "BLOCKED")
-            for invalid in (None, True, 12.0, -1):
-                self.assertEqual(assess(invalid, 15, canonical_exception=authority), "BLOCKED")
-            for recovery in ("ambiguous", "missing", "gap", "duplicate", "bool_ordinal", "float_ordinal"):
-                self.assertEqual(assess(12, 15, canonical_exception=authority, recovery=recovery), "BLOCKED")
-
-            # #18480 preserves consumed history, skips #16/#18 and allocates #19
-            # ordinary followed by #20 owner-manual security.
-            current_authority = {
-                "issue": 205, "pr": 206, "comment": 18480, "ceiling": 20,
-                "skipped_ordinals": (16, 18),
-            }
-            superseded_authority = {
-                "issue": 205, "pr": 206, "comment": 18436, "ceiling": 18,
-                "skipped_ordinals": (16,),
-            }
-            self.assertEqual(
-                assess(18, 20, canonical_exception=superseded_authority,
-                       skipped_ordinals=(16, 18)),
-                "BLOCKED",
-            )
-            self.assertEqual(assess(18, 20, canonical_exception=current_authority), "BLOCKED")
-            self.assertEqual(
-                assess(18, 20, canonical_exception=current_authority,
-                       skipped_ordinals=(16, 18)),
-                "PASS",
-            )
-            new_pair = cast(dict[str, object], json.loads(ledger.read_text()))
-            self.assertEqual(new_pair["prospective_roles"], ["ordinary", "restricted"])
-            self.assertEqual(new_pair["prospective_ordinals"], [19, 20])
-            current_history = cast(list[dict[str, object]], new_pair["reservations"])
-            self.assertEqual(len(current_history), 18)
-            self.assertEqual(current_history[14]["outcome"], "REQUEST_CHANGES")
-            self.assertEqual(current_history[15]["outcome"], "OWNER_AUTHORIZED_SKIP")
-            self.assertEqual(current_history[16]["outcome"], "REQUEST_CHANGES")
-            self.assertEqual(current_history[17]["outcome"], "OWNER_AUTHORIZED_SKIP")
-            self.assertEqual(
-                assess(19, 20, canonical_exception=current_authority,
-                       skipped_ordinals=(16, 18)),
-                "STOP_REVISE",
-            )
-            self.assertEqual(
-                assess(19, 20, canonical_exception=current_authority,
-                       skipped_ordinals=(16, 18), patch_objects=False,
-                       ordinary_current=True),
-                "PASS",
-            )
-            current_security = cast(dict[str, object], json.loads(ledger.read_text()))
-            self.assertEqual(current_security["prospective_roles"], ["restricted"])
-            self.assertEqual(current_security["prospective_ordinals"], [20])
-            current_reservations = cast(list[dict[str, object]], current_security["reservations"])
-            self.assertEqual(len(current_reservations), 19)
-            self.assertEqual(current_reservations[15]["outcome"], "OWNER_AUTHORIZED_SKIP")
-            self.assertEqual(current_reservations[16]["outcome"], "REQUEST_CHANGES")
-            self.assertEqual(current_reservations[17]["outcome"], "OWNER_AUTHORIZED_SKIP")
-            self.assertEqual(current_reservations[18]["outcome"], "APPROVE")
-            self.assertEqual(
-                assess(19, 20, canonical_exception=current_authority,
-                       skipped_ordinals=(16, 18), patch_objects=False,
-                       ordinary_current=True, restricted_stale=True),
-                "PASS",
-            )
-            self.assertEqual(
-                assess(19, 20, canonical_exception=current_authority,
-                       skipped_ordinals=(16, 18), patch_objects=False,
-                       ordinary_current=True, restricted_current=True),
-                "PASS",
-            )
-            self.assertEqual(
-                assess(21, 20, canonical_exception=current_authority,
-                       skipped_ordinals=(16, 18)),
-                "BLOCKED",
-            )
-        contract = " ".join(section.split())
-        for requirement in ("canonical Issue/PR comments and legitimate native session records",
-                            "Local notes and temporary synthetic fixtures may assist diagnosis",
-                            "never authorize a ceiling", "Missing or ambiguous canonical ordinal history is BLOCKED",
-                             "before any remediation or reservation", "finite direct-owner exception already integrated",
-                             "contiguous unique ordinals", "ordinary-before-restricted order",
-                              "Historical #205/PR #206 authority is preserved, not erased",
-                              "Comment #16611 separately authorized #205 parking", "#18351 set ceiling16",
-                              "#205/PR #206: maximum20", "Preserve #1-17",
-                              "The unused #16 and #18 Daybreak reservations are explicitly superseded/skipped",
-                              "#19 is ordinary", "#20 is owner-manual Daybreak", "no #21",
-                              "The direct model instruction selects GPT-6.1 Sol/OpenAI/high",
-                              "It does not extend another delivery", "No #21/reset/transfer",
-                            "No source fixture or ledger claim supplies owner authority",
-                            "Capacity alone is not approval/currentness",
-                            "nonpositive ordinary verdict at the last ordinary slot",
-                            "cannot be converted into security approval or a retry"):
-            self.assertIn(requirement, contract)
-        for command in ("loop", "finish-pr"):
-            self.assertIn("#prospective-review-capacity", text(f".kilo/command/{command}.md"))
-
-    def test_issue205_parking_requires_terminal_history_and_distinct_owner_authorized_loop(self) -> None:
-        capacity = text(".kilo/rules/35-technical-recovery.md").split(
-            "## Prospective Review Capacity", 1)[1].split("No blind retries", 1)[0]
-        for requirement in (
-            "Comment #16611 separately authorized #205 parking",
-            "preserve the issue/PR open and unmerged at STOP_REVISE",
-            "old invocation's terminal state, every ordinal and recovery history",
-            "Only THEN", "distinctly NEW, separately owner-authorized `/loop` invocation",
-            "fresh full canonical queue", "not a silent skip inside the terminated invocation",
-            "not a global parking exception and not restart authority for parked #174 or #205",
-            "After successful integration", "No source fixture or ledger claim supplies owner authority",
-        ):
-            self.assertIn(requirement, capacity)
-        loop = text(".kilo/command/loop.md")
-        self.assertIn("current direct owner instruction is a distinct new loop", loop)
-        self.assertIn("selecting exactly #185,", loop)
-        self.assertIn("issue-local review-budget or", loop)
-        self.assertIn("continues other independently eligible PRs in that same batch", loop)
-        self.assertIn("STOP_REVISE", loop)
-        finish = text(".kilo/command/finish-pr.md")
-        self.assertIn("STOP_REVISE", finish)
-        self.assertIn("open and unmerged", finish)
-
-    def test_result_capture_recovery_never_closes_approval_or_identity_gate(self) -> None:
-        contract = text(".kilo/rules/35-technical-recovery.md")
-        for requirement in (
-            "Status 0 means complete capture of ANY verdict, not APPROVE",
-            "Schema 0/process 0/model self-report never close a review gate",
-            "Native `--output-schema` requests generation format, not local validation",
-            "If and only if the native final-message file is missing",
-            "last completed final-agent JSONL message from a successful completed turn",
-            "native-file safety/schema rejection cannot be bypassed by JSONL fallback",
-            "Preserve the typed reason, size/hash, known-field types/missing fields and observed mode",
-            "Public long-token exceptions require exact parent-attested Git-tracked paths/pins",
-            "Never infer the subtype/verdict of historically discarded output",
-            "A claim without exit remains uncertain, not launch permission",
-            "parent continues authorized work in the same primary",
-            "It never normalizes permissions", "environment values or credential material enter receipts",
-            "Synthetic backend capture cases do not prove paid/live model identity",
-        ):
-            self.assertIn(requirement, contract)
-
     def test_full_queue_dependency_recovery_is_loop_only_not_standalone_authority(self) -> None:
         for path in (".kilo/rules/10-task-system.md", ".kilo/rules/35-technical-recovery.md"):
             with self.subTest(path=path):
@@ -917,8 +459,9 @@ class WorkflowContractTests(unittest.TestCase):
 
     def test_stop_boundary_and_repository_safety(self) -> None:
         loop = text(".kilo/command/loop.md")
-        self.assertIn("explicit visible-review handoff with its exact pending gate", loop)
-        self.assertIn("Never replace that handoff with QUEUE_EMPTY, approval or a hidden launcher", loop)
+        self.assertIn("Ordinary reviewer sessions and result collection are autonomous", loop)
+        self.assertIn("genuine unsupported native session/result capability", loop)
+        self.assertNotIn("explicit visible-review handoff with its exact pending gate", loop)
         self.assertIn("READY_FOR_OWNER_SECURITY_REVIEW is a terminal handoff", loop)
         self.assertIn("Stop before MERGE, issue closure or SELECT", loop)
         self.assertIn("maximum 20", loop)
@@ -926,12 +469,10 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("ONE manually opened official Codex", loop)
         self.assertIn("not approval or a new global loop status", loop)
         self.assertIn("no #21", loop)
-        self.assertIn("STOP_AND_ASK normally stops the ENTIRE invocation", loop)
-        self.assertIn("never skip a selected issue and continue another", loop)
-        self.assertIn("narrow exception for the explicitly selected batch #185/#205/#174", loop)
-        self.assertIn("issue-local review-budget or owner-manual Daybreak gate", loop)
+        self.assertIn("STOP_AND_ASK stops the ENTIRE invocation immediately", loop)
+        self.assertIn("never skip the selected issue and continue another", loop)
         for boundary in (
-            "architecture/product direction",
+            "architecture/ product direction",
             "material public-contract changes",
             "business/product GO/STOP",
             "security/privacy expansion",
@@ -1019,9 +560,7 @@ class WorkflowContractTests(unittest.TestCase):
             "BLOCKED requires exhausted authorized technical paths/budget",
             "Class-B decisions instead require STOP_AND_ASK / OWNER_DECISION_NEEDED with all five decision fields",
             "Do not ask an artificial question for an external non-decision blocker",
-            "Under the direct D-077 owner amendment",
-            "fresh ordinary Kilo reviewer through Agent Manager",
-            "preserve the attempted ordinal",
+            "If native Kilo session/result capability is genuinely unavailable after bounded",
             "Preserve mandatory full validation",
         ):
             self.assertIn(requirement, recovery)
@@ -1036,35 +575,106 @@ class WorkflowContractTests(unittest.TestCase):
             content = text(path)
             with self.subTest(path=path):
                 self.assertIn("visible", content.lower())
-                self.assertRegex(content.lower(), r"hand ?off")
                 self.assertNotRegex(content, r"\.review-evidence-\d+/")
                 self.assertNotIn("run-owner-review.sh", content)
                 self.assertNotIn("standalone_run_argv", content)
         finish = text(".kilo/command/finish-pr.md")
-        self.assertIn("Agent Manager", finish)
-        self.assertIn("single initial `agent_manager` local-session prompt", finish)
-        self.assertIn("do not require owner copy/paste", finish)
+        self.assertIn("native Agent Manager", finish)
+        self.assertIn("do not require the owner to start the session", finish.lower())
+        self.assertIn("do not ask the owner to copy or relay prompts/results", finish.lower())
         self.assertIn("No persistent `.review-evidence-*`", finish)
         self.assertIn("not original owner authority", finish)
         self.assertIn("No ordinary #212 Kilo", text(".kilo/rules/validation.md"))
 
-    def test_agent_manager_request_changes_handoff_is_primary_local(self) -> None:
+    def test_independent_review_is_conversational_and_native(self) -> None:
+        agents = text("AGENTS.md")
+        contract = agents.split("## Independent Review — Conversational Separation", 1)[1]
+        contract = contract.split("## Bounded review lifecycle", 1)[0]
+        for requirement in (
+            "fresh, separate reviewer conversation",
+            "separation of conversational state and judgment",
+            "The reviewer MAY use the same repository",
+            "A separate worktree, checkout, container, sandbox",
+            "NOT required solely for reviewer independence",
+            "Do not transfer the implementation conversation",
+            "The reviewer remains read-only and reviews the exact intended source revision",
+            "MUST be handled autonomously through supported native Kilo session functionality",
+            "never require owner prompt or response relay",
+            "MUST NOT be interpreted as a requirement to create a managed worktree",
+            "The native Kilo session start is permitted and user-visible",
+        ):
+            with self.subTest(requirement=requirement):
+                self.assertIn(requirement, contract)
+
         loop = text(".kilo/command/loop.md")
         finish = text(".kilo/command/finish-pr.md")
-        reviewer = text(".kilo/agents/pr-reviewer-standalone.md")
-        for content in (loop, finish):
-            self.assertIn("agent_manager", content)
-            self.assertIn("kilo_local_recall", content)
-            self.assertIn("REQUEST_CHANGES", content)
-            self.assertIn("same primary", content)
-        self.assertIn("Never copy/paste reviewer output through the owner", loop)
-        self.assertIn("do not require owner copy/paste", finish)
-        self.assertIn("replyTo", reviewer)
-        self.assertIn("REQUEST_CHANGES", text("tools/review_result.py"))
-        self.assertIn("agent_manager_handoff_action", text("tools/review_result.py"))
-        self.assertIn("not an implementation subagent", loop)
-        handoff = loop.split("Agent Manager ordinary-review handoff", 1)[1].split("##", 1)[0]
-        self.assertIn("visible session uses no scripts, subprocesses, Task", handoff)
+        review = text(".kilo/command/review-pr.md").lower()
+        reviewer = text(".kilo/agents/pr-reviewer.md")
+        llm_policy = text(".kilo/rules/40-llm-operating-policy.md").lower()
+        recovery = text(".kilo/rules/35-technical-recovery.md").lower()
+        self.assertIn("native Kilo Agent Manager", loop)
+        self.assertIn("kilo_local_recall", loop)
+        self.assertIn("native Agent Manager", finish)
+        self.assertIn("orchestrator verifies canonical repo/pr/linked issue", review)
+        self.assertIn("inspect the complete diff and intended source", review)
+        self.assertIn("read-only git/forgejo getters", review)
+        self.assertIn("no separate worktree is required", review)
+        self.assertIn("the owner need not start or relay them", llm_policy)
+        self.assertNotIn("reviewer starts remain an explicit visible user action", llm_policy)
+        self.assertIn("Verify canonical refs, the complete compact diff, and actual", reviewer)
+        self.assertIn('"*": deny', reviewer)
+        self.assertIn('"*": allow', reviewer)
+        self.assertIn('"**/.env*": deny', reviewer)
+        self.assertIn('"**/.task_progress.md": deny', reviewer)
+        self.assertIn('"**/.git/**": deny', reviewer)
+        self.assertIn('"**/.kilo/agent-manager.json.*.tmp": deny', reviewer)
+        self.assertIn('"**/.config/kilo/**": deny', reviewer)
+        self.assertIn('"**/.local/share/kilo/**": deny', reviewer)
+        self.assertIn('"**/.kilocode/**": deny', reviewer)
+        self.assertIn('"**/tmp/kilo/**": deny', reviewer)
+        self.assertIn("external_directory: deny", reviewer)
+        self.assertIn("glob: allow", reviewer)
+        self.assertIn("grep: allow", reviewer)
+        self.assertIn("list: allow", reviewer)
+        self.assertIn("semantic_search: allow", reviewer)
+        self.assertIn('"forgejo-mcp_get_*": allow', reviewer)
+        self.assertIn('"forgejo-mcp_list_*": allow', reviewer)
+        self.assertIn('"forgejo-mcp_search_*": allow', reviewer)
+        for tool in ("edit", "write", "apply_patch", "task"):
+            with self.subTest(tool=tool):
+                self.assertIn(f"{tool}: deny", reviewer)
+        for rule in (
+            '"*": deny', '"*--output*": deny', '"*--ext-diff*": deny',
+            '"*--textconv*": deny', '"*>*": deny', '"*;*": deny',
+            '"*|*": deny', '"*&*": deny',
+        ):
+            self.assertIn(rule, reviewer)
+        self.assertIn('"git ls-remote https://forgejo.creatidy.com/BioMedical-IT/scarcity-router refs/heads/develop refs/heads/*": allow', reviewer)
+        self.assertIn('"git ls-remote * -*": deny', reviewer)
+        self.assertNotIn('"forgejo-mcp_create_', reviewer)
+        self.assertNotIn('"forgejo-mcp_update_', reviewer)
+        self.assertNotIn('"forgejo-mcp_delete_', reviewer)
+        self.assertNotIn(
+            "a required user-visible review start is an explicit pending-gate handoff",
+            recovery,
+        )
+        self.assertIn(
+            "only a genuinely unsupported native kilo session/result capability after bounded recovery",
+            recovery,
+        )
+
+        for path in (
+            "AGENTS.md", ".kilo/command/loop.md", ".kilo/command/review-pr.md",
+            ".kilo/command/finish-pr.md", ".kilo/command/implement-issue.md",
+            ".kilo/rules/10-task-system.md", ".kilo/rules/35-technical-recovery.md",
+            ".kilo/rules/40-llm-operating-policy.md", ".kilo/rules/validation.md",
+            "docs/llm-operating-policy.md",
+        ):
+            content = text(path).lower()
+            with self.subTest(path=path):
+                self.assertNotIn("the user explicitly opens a fresh", content)
+                self.assertNotIn("the user selects/starts the model", content)
+                self.assertNotIn("user explicitly selects the model and starts", content)
 
     def test_development_validator_has_no_harness_or_inference_execution_path(self) -> None:
         source = (ROOT / "tools/reviewer_packet.py").read_text()
@@ -1110,16 +720,65 @@ class WorkflowContractTests(unittest.TestCase):
         # Product adapters intentionally remain outside this development-script scope.
         self.assertTrue((ROOT / "scarcity_router").is_dir())
 
-    def test_visible_profile_requires_user_read_approval_and_no_write_or_external_tools(self) -> None:
-        profile = text(".kilo/agents/pr-reviewer-standalone.md")
+    def test_visible_profile_uses_read_only_native_tool_allowlist(self) -> None:
+        profile = text(".kilo/agents/pr-reviewer.md")
         frontmatter = profile.split("---", 2)[1]
-        for requirement in ("mode: primary", '"*": deny', "read: ask", "external_directory: deny"):
+        for requirement in (
+            "mode: all", '"*": deny', '"*": allow', '"**/.env*": deny',
+            '"**/.task_progress.md": deny', '"**/.git/**": deny',
+            '"**/.kilo/agent-manager.json.*.tmp": deny', "external_directory: deny",
+        ):
             self.assertIn(requirement, frontmatter)
         self.assertNotRegex(frontmatter, r"\b(?:bash|edit|task):\s*allow")
-        for requirement in ("fresh user-visible Kilo session", "source Reads approved by the user",
-                            "Do not grant yourself permissions", "No desired verdict", "UX"):
-            self.assertIn(requirement, profile)
-        self.assertIn("not a review execution path", text(".kilo/agents/pr-reviewer.md"))
+        for requirement in (
+            "NEW fresh user-visible",
+            "Use only the read-only tools permitted above",
+            "owner-approved source boundary",
+            "do not access other repositories, credentials, external directories",
+            "local Agent Manager state",
+            "config/cache/",
+            "tool-output state",
+            "No desired verdict", "UX",
+        ):
+            self.assertIn(requirement.lower(), profile.lower())
+
+    def test_reviewer_git_reads_exclude_filesystem_and_sensitive_paths(self) -> None:
+        # Offline last-match wildcard checks, not proof of live Kilo enforcement.
+        profile = (ROOT / ".kilo/agents/pr-reviewer.md").read_text()
+        bash = profile.split("  bash:\n", 1)[1].split("---", 1)[0]
+        rules = [
+            (cast(str, json.loads(match[1])), match[2])
+            for match in re.finditer(r'^    (".*"): (allow|deny)$', bash, re.M)
+        ]
+        self.assertNotIn(("git diff *", "allow"), rules)
+        base, head = "1" * 40, "2" * 40
+        for command, expected in (
+            (f"git diff --merge-base {base} {head}", "allow"),
+            (f"git diff --merge-base {base} {head} -- AGENTS.md", "allow"),
+            (f"git diff --merge-base {base} {head} --stat", "allow"),
+            (f"git show {head}:.kilo/agents/pr-reviewer.md", "allow"),
+            ("git diff --check", "allow"),
+            ("git diff --no-index -- AGENTS.md AGENTS.md", "deny"),
+            ("git diff -- AGENTS.md /synthetic/outside-source", "deny"),
+            ("git diff --no-index -- .env AGENTS.md", "deny"),
+            ("git diff --no-index -- .task_progress.md AGENTS.md", "deny"),
+            ("git diff --no-index -- .kilo/agent-manager.json AGENTS.md", "deny"),
+            (f"git diff --merge-base {base} {head} --no-index AGENTS.md AGENTS.md", "deny"),
+            (f"git diff --merge-base {base} {head} -- .env", "deny"),
+            (f"git show {head}:.env", "deny"),
+            (f"git show {head}:nested/.env.local", "deny"),
+            (f"git show {head}:.task_progress.md", "deny"),
+            (f"git show {head}:.kilo/agent-manager.json", "deny"),
+            (f"git show {head}:.kilo/agent-manager.json.synthetic.tmp", "deny"),
+            (f"git show {head}:.git/config", "deny"),
+            (f"git diff --merge-base {base} {head} --output=/synthetic/output", "deny"),
+        ):
+            with self.subTest(command=command):
+                decision = next(
+                    (action for pattern, action in reversed(rules) if fnmatchcase(command, pattern)),
+                    "deny",
+                )
+                self.assertEqual(decision, expected)
 
     def test_canonical_history_is_attributed_and_final_combined_slot_is_unchanged(self) -> None:
         decisions = text("docs/decisions.md")

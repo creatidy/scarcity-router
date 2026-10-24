@@ -1,63 +1,55 @@
 ---
-description: Remediate one selected PR and hand off outstanding gates to a user-visible reviewer
+description: Remediate one selected PR and coordinate native independent review
 ---
 
 Finish only the owner-selected Forgejo PR: $ARGUMENTS
 
-Read AGENTS.md and `.kilo/rules/35-technical-recovery.md#reviewer-context-and-result-capture`.
-Fetch the exact canonical Repo/PR/linked Issue and
+Read AGENTS.md and `.kilo/rules/35-technical-recovery.md`. Fetch the exact canonical Repo/PR/linked Issue and
 directly linked owner decisions through Forgejo MCP; verify IDs, URLs, authors,
 acceptance and currentness. Never select unrelated work. The implementation agent
-may code, test, use Git and recover routine execution problems autonomously, but
-must not invoke another model, start a session or delegate to a hidden reviewer.
+may code, test, use Git and recover routine execution problems autonomously. For an
+ordinary review, it starts a fresh user-visible Kilo reviewer through native session
+management; it does not self-review or invoke hidden inference.
 
 1. Fetch canonical develop and the existing PR branch. Verify exact HEAD/base/
    merge-base, ancestry and status in the designated checkout. Preserve unrelated
    work; no stash/reset, history rewrite, synchronization merge or replacement PR.
- 2. Recover minimal review ordinals/outcomes from canonical Issue/PR records and
-    existing decision documentation; native Kilo/Codex session references may be
+2. Recover minimal review ordinals/outcomes from canonical Issue/PR records and
+   existing decision documentation; native Kilo/Codex session references may be
    used where actually available. Default maximum ten, with only verified finite
    owner exceptions under D-069/D-077. For other deliveries a D-069A exception must
    already be integrated into freshly fetched develop and verified for its finite
    original owner scope; unintegrated D-069A has no authority. Reentry does not reset history. Agent-authored
-    comments are transcriptions, not original owner authority. Missing original
-    authority is not repaired by a local hash or an agent-written receipt.
-    Check `.kilo/rules/35-technical-recovery.md#prospective-review-capacity` before
-    remediation or reserving any review ordinal.
+   comments are transcriptions, not original owner authority. Missing original
+   authority is not repaired by a local hash or an agent-written receipt.
 3. Understand/reproduce genuine accepted-scope findings, apply the smallest fix
    and meaningful deterministic tests. Follow bounded secret-safe recovery; ask
    only genuine owner-controlled decisions. Run `uv sync --only-dev`, focused
    checks, `make check`, `uv run basedpyright`, `make package-check` where relevant,
    and working/staged whitespace checks. Inspect the complete intended/base delta,
    commit explicit files under the owner identity and push the same PR normally.
- 4. Freeze exact Repo/Issue/PR identities, HEAD/base/merge-base, review authorization,
-    acceptance, validation and complete canonical compact diff. Reserve the next
-    ordinal minimally and canonically before the imminent review dispatch.
- 5. Under the direct D-077 owner amendment, start one fresh read-only ordinary Kilo
-    reviewer using a single initial `agent_manager` local-session prompt and the
-    selectable `pr-reviewer-standalone` agent. Include the complete Git diff and exact
-     issue criteria in that prompt. The base default is the current primary's exact
-     provider-qualified model. The current owner override #18480 selects `GPT-6.1 Sol` /
-     `openai` / `high` for all review starts until superseded; pass those values
-     explicitly as `model`, `provider` and `variant`. Only Adrian may override this for
-     a specific review with another exact permitted identity. Highspeed is not
-     authorized. On model mismatch or provider error, stop without retry/substitution.
-     Retain the Agent Manager reply ID/session identity. Do not use Task,
-    shell/Python/HTTP model launchers, background model jobs or generated wrappers.
-    Daybreak remains owner-manual through official Codex only.
-  6. Retrieve the structured reviewer JSON directly through the native Agent Manager
-     `replyTo` channel; if that reply is absent after the session completes, use
-     `kilo_local_recall` on that exact session. Validate schema and exact refs, then
-     validate it using the pure `inspect_agent_manager_result` and
-     `agent_manager_handoff_action` helpers in the existing `tools/review_result.py`;
-     record the minimal outcome/session provenance canonically. Route actionable
-     `REQUEST_CHANGES` directly back into this same primary implementation context;
-     do not require owner copy/paste. `APPROVE` advances only to the next authorized
-     gate. No persistent `.review-evidence-*` folder, source duplicate, receipt
-    hierarchy or transcript archive is required; OS temporary space is transient.
-    If the visible Manager result path fails, preserve the attempted ordinal and
-    diagnose it rather than silently starting a second session or using a hidden
-    launcher.
+4. If independent review is pending, prepare concise instructions directly: exact
+   Issue/PR acceptance and legitimate owner-decision references, frozen HEAD/base/
+   merge-base, complete canonical compact Git diff and changed regions with useful
+   context, validation and exact pending gate. Use actual Git objects and canonical
+   records, not duplicated source trees, receipt hierarchies or large transcripts.
+   Optional deeper source inspection is the reviewer's material judgment.
+5. Start a fresh separate, user-visible ordinary Kilo reviewer session through the
+   native Agent Manager using the existing primary `.kilo/agents/pr-reviewer.md` role.
+   This is authorized workflow orchestration, not a hidden model
+   launcher. Do not require the owner to start the session. Use the existing checkout
+   when safe; a separate worktree/checkout is not an independence requirement. The
+   implementation agent freezes the exact source until review completes. Never use
+   scripts/subprocesses, batch model CLI, HTTP inference, Task/subagent, background
+   model jobs or generated wrappers. No persistent `.review-evidence-*` folders or
+   renamed equivalent are created or required.
+6. Give the reviewer only task/scope, acceptance, exact PR/HEAD/base/merge-base refs,
+   relevant contracts and source access instructions. Do not pass implementation
+   conversation/history, reasoning, private deliberations, prior desired conclusions,
+   credentials or a preferred verdict. Collect the final result through native Kilo
+   session communication or exact-session retrieval; do not ask the owner to copy or
+   relay prompts/results. If that native capability itself is unsupported, recover
+   within the technical budget and name the exact remaining gate; do not skip review.
 7. Record actual invocation ordinal, selected model/harness, native session reference
    when available, exact reviewed refs, verdict, material findings/limitations and
    explicit UX assessment minimally in canonical records. Reserve only an imminent
@@ -66,16 +58,13 @@ must not invoke another model, start a session or delegate to a hidden reviewer.
    source integrity, no unauthorized access/context and no unresolved blocking
    finding. Exit0, labels, self-report or tests alone are not approval. Any HEAD/base
    change invalidates approval; do not edit source during an active review.
- 8. COMMENT/REQUEST_CHANGES consume an actual attempt. Distinguish substantive
-    defects, uncertainty and infrastructure failure; do not manufacture blockers
-    from optional unread unchanged lines or style preferences. Remediate only within
-    accepted scope and before dispatching a new whole-PR review. After diagnosed
-    remediation and required validation, continue automatically with one fresh
-    Agent Manager reviewer only if every remaining ordinary/restricted role fits
-    within the verified cap. A changed HEAD gets no inherited verdict; never repeat
-    the same failed operation without a concrete changed condition. No model fallback
-     or ceiling extension. At the bound preserve history and keep the PR open and
-     unmerged; report STOP_REVISE for actionable defects or the exact owner-only gate.
+8. COMMENT/REQUEST_CHANGES consume an actual attempt. Distinguish substantive
+   defects, uncertainty and infrastructure failure; do not manufacture blockers
+   from optional unread unchanged lines or style preferences. Remediate only when
+   authorized and a subsequent independent gate can still be satisfied, or when
+   the owner explicitly grants remediation-only/combined acceptance. No automatic
+   model fallback, review retry or ceiling extension. At the bound report STOP_REVISE
+   for actionable defects; report genuine external/decision blockers honestly.
 
 ## Security And #212 Exception
 

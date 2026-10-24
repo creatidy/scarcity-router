@@ -5882,11 +5882,14 @@ neither is a new live check of the current deployment.
   security; #20 is manual security only, never ordinary. No #21. This direct
   supersession is not derived from D-069A and does not change the default ten elsewhere.
 - **Preserved model:** The primary invocation context is the sole orchestrator,
-  using one normal checkout/one mutator, no worktrees/alternate checkouts or
-  stash/reset of owner work. The excluded `.task_progress.md` ledger persists
+  using one normal delivery checkout/one mutator, no stash/reset of owner work.
+  D-078 clarifies that a fresh conversationally independent reviewer may use that
+  same checkout; separate filesystem/worktree isolation is not required. The excluded
+  `.task_progress.md` ledger persists
   pre-dispatch ordinals across phase/finish/task/model/session changes; no review
   above ten by default except the exact #212 supersession recorded below. Fresh
-  isolated read-only reviewers inspect the complete frozen PR. Selection
+  conversationally independent read-only reviewers inspect the complete frozen PR;
+  reviewer permissions preserve read-only scope, not OS isolation. Selection
   pages all current open canonical issues, filters only exact case-insensitive
   invalid/wontfix/duplicate, verifies explicit gates and orders by explicit
   priority/required ordering/created_at/issue number. Issues, not PRs, select work.
@@ -5900,7 +5903,7 @@ neither is a new live check of the current deployment.
   scheduler/service/daemon or Router dependency. Adapt only repository identity,
   product/architecture context and existing validation (`uv sync --only-dev`,
   `make check`, `uv run basedpyright`, `git diff --check`); reviewer permissions
-  preserve isolation and use available repository checks, not MI-only Ruff.
+  preserve read-only scope and use available repository checks, not MI-only Ruff.
 - **Unchanged:** Runtime product architecture/ownership/security, generic
   non-delivery governance, catalog/model policy/profiles/ratings, frozen public
   contracts and licensing. The scoped command override takes precedence over
@@ -6339,16 +6342,18 @@ neither is a new live check of the current deployment.
 
 ### D-077 - Transparent visible review and the #212 acceptance history
 
-- **Current owner decision (2026-10-20T18:58:08Z):** All development/review model
-  selection and session starts must be explicit and USER-VISIBLE inside Kilo or
-  official Codex. The implementation agent may code, test, use Git and perform
-  bounded technical recovery, but cannot start another model through scripts,
-  subprocesses, Task/delegation, background jobs, Make/CI/hooks or HTTP inference.
-  Do not generate a convenience owner launcher or reproduce it under another name.
-  This changes development workflow, not the Router product's authorized inference.
+- **Current owner decision (2026-10-20T18:58:08Z), as superseded by D-078:**
+  Development/review model identity and execution must remain explicitly
+  USER-VISIBLE inside Kilo or official Codex. D-078 supersedes personal owner
+  initiation for ordinary Kilo reviews: an authorized orchestrator may start a fresh
+  visible Kilo session natively. The implementation agent may not start another
+  model through scripts, subprocesses, Task/delegation, background jobs, Make/CI/hooks
+  or HTTP inference. Do not generate a convenience owner launcher or reproduce it
+  under another name. This changes development workflow, not Router product inference.
 - **Review:** Prepare concise acceptance/source instructions and exact frozen
-  HEAD/base/merge-base directly. The user opens a fresh independent read-only
-  harness session and chooses its model. Use actual Git objects, complete compact
+  HEAD/base/merge-base directly. Ordinary Kilo reviews use D-078's native fresh
+  reviewer session and automatic result collection; no owner prompt/result relay is
+  required. Use actual Git objects, complete compact
   diff/changed regions and necessary context, canonical Forgejo records and native
   harness references. Keep source integrity, scoped permissions, no credentials/
   unapproved context, actual identity/provenance and explicit UX assessment. A
@@ -6441,77 +6446,6 @@ positive pinned PermissionDeniedError representation and request/rule/path bindi
 not permissive denial keywords or canary blacklists. No security validation or product
 adapter is removed merely to eliminate orchestration. See the actual Git source/tests.
 
-**Owner amendment (2026-10-22): Agent Manager ordinary-review handoff.** Under an
-explicit owner-authorized `/loop` or `/finish-pr`, the sole primary orchestrator may
-create a fresh, visible, separately accountable ordinary Kilo review session through
-Agent Manager using `pr-reviewer-standalone`. The session inherits the exact primary
-model/reasoning selection unless the owner explicitly selects another; no fallback or
-silent substitution is permitted. This supersedes only the prior manual start/prompt/
-result relay for ordinary Kilo review. It does not change independence, scoped read
-permissions, exact-HEAD approval, finite budgets, Daybreak security boundaries or
-`/loop`-only merge authority. The primary supplies the canonical refs, acceptance,
-complete compact diff and changed-path scope automatically, without implementation
-reasoning, previous findings, credentials or a desired verdict. A completed structured
-result returns through the native Agent Manager request/reply channel or is retrieved
-from that exact completed session with Kilo local recall, then minimally recorded
-canonically and routed to the same implementation context. No Task/subagent, model
-CLI, subprocess launcher, HTTP inference, second orchestrator, persistent receipt
-store, or evidence directory is created. Daybreak remains an owner-manual official
-Codex action and is never auto-started. Provenance/source: direct owner instruction
-in the current Kilo primary session, canonically referenced by Issue #205 comment
-#18386; the comment is a Kilo-authored transcription, not owner-authored evidence.
-
-For the explicit 2026-10-22 owner-selected batch of PRs #209/#206/#204, a review-bound
-or owner-manual gate is issue-local: preserve that PR's open state, exact counters and
-pending role, and continue other independently eligible PRs in the same authorized
-batch. This exception is limited to that enumerated batch; it does not add ordinals,
-transfer review authority, bypass a predecessor, or permit merging an unaccepted PR.
-Other genuine owner-only architecture/security/product decisions retain normal
-STOP_AND_ASK semantics.
-
-**Owner amendment (2026-10-22T15:53:36Z; Issue #205 comment #18444):** Ordinary
-visible Agent Manager review defaults to the exact provider-qualified model selected
-by the main implementation session, including its provider and known reasoning
-variant. The primary explicitly binds that identity in the task request rather than
-relying on a workspace default or implicit provider routing. Adrian may explicitly
-select another permitted model for one review. Highspeed models have never been
-authorized and are not an implicit or ordinary override choice; a future direct owner
-instruction would be required to lift that prohibition. An unresolved identity,
-mismatch, provider-plan error or retrying session is a stop condition: do not send
-review content, retry or substitute. This development-review rule does not alter the
-Router product selector, catalog or authorized product inference. This supersedes
-D-077's earlier inherited-default wording. The comment is a Kilo-authored
-transcription; the direct source is Adrian's current primary-session instruction.
-
-**Owner amendment (2026-10-22T16:49:02Z; Issue #205 comment #18436):** Maximum18
-applies only to Issue #205/PR #206. Preserve #1-15 and the #15 REQUEST_CHANGES
-outcome. The unused #16 conditional Daybreak reservation is explicitly superseded and
-skipped without reclassification, execution or history reset. #17 is the next ordinary
-independent review after scoped correction, validation and a frozen exact HEAD; #18 is
-the separate owner-manual official Codex Daybreak security review only after valid
-#17 APPROVE on the same refs. No #19 or higher. This cap/role sequence does not
-transfer to #185/PR #209 or #174/PR #204. The comment is a Kilo-authored transcription
-of Adrian's direct decision, not owner-authored evidence.
-
-**Owner amendment (2026-10-22T22:21:05Z; Issue #205 comment #18480):** Supersede the
-unused #18 Daybreak reservation and authorize maximum20 for #205/PR206 only. Preserve
-#15 and #17 REQUEST_CHANGES; skip #16 and #18 without reclassification or execution.
-#19 is ordinary after correction/validation/frozen refs; #20 is the owner-manual
-official Codex Daybreak gate after valid #19 APPROVE on identical refs. No #21/reset.
-Effective review-model override for all starts is `GPT-6.1 Sol`, provider `openai`,
-variant `high`; do not substitute GPT-6 Luna, Highspeed or a workspace/provider
-fallback. The model catalog resolution is `GPT-6.1 Sol` / `openai` / `high`. This is a
-direct owner override of #18444's main-model default, and does not alter the product
-selector. The comment is a Kilo-authored transcription of Adrian's direct instructions.
-
-**Current preserved batch review states:** #205/#206 #15 and #17 remain
-REQUEST_CHANGES; #16 and #18 are skipped. #19 is the next ordinary review, #20
-Daybreak only after valid #19. #185/#209 #13 returned no structured result after the unauthorized
-Highspeed route and remains failed/unverified; #14 is ineligible and no #15 is
-authorized. #174/#204 #19 returned no verdict per Issue #174 comment #18387, so its
-conditional #20 security gate is also ineligible. These issue-local states do not
-authorize retries, role changes, transfers or resets.
-
 ### U-014 - Native coding backend versus Kernel-owned workspace lifecycle
 
 - **Status:** Direction settled by D-073; replacement/retirement evidence remains
@@ -6533,3 +6467,30 @@ authorize retries, role changes, transfers or resets.
   and separately authorized live proof when necessary. #180 must conclude
   feasibility, an evidenced adaptation or an exact owner decision; it is not
   permission to run a real task or alter permissions now.
+
+### D-078 - Conversational independence for ordinary Kilo review
+
+- **Status:** Accepted direct owner decision, 2026-10-23.
+- **Authority:** Adrian's direct instruction authorizes this narrow correction to
+  repository development workflow only; it does not change Scarcity Router product
+  architecture or runtime authority.
+- **Conflict resolved:** D-069, D-077 and their command/rule mirrors required the
+  owner to start ordinary independent-review sessions and treated separate reviewer
+  worktrees/checkouts as an expected mechanism. Supersede only those requirements
+  for ordinary Kilo review. An owner-authorized `/loop` or selected `/finish-pr`
+  autonomously starts a fresh user-visible Kilo reviewer through native session
+  management, provides only review scope/acceptance/exact refs/contracts/source
+  instructions, and collects the native result without owner relay.
+- **Independence and source integrity:** Independence is conversational separation
+  from implementation history, not execution-environment separation. The reviewer
+  may use the same repository, checkout, Git objects, tools and runtime. A separate
+  worktree/container/sandbox is optional only for a demonstrated technical need.
+  Review remains read-only at exact frozen refs; implementation does not mutate source
+  during review. No implementation reasoning, private deliberations or desired verdict
+  are provided to the reviewer.
+- **Preserved:** Fresh-session identity, finite review ordinals/ceilings, exact
+  currentness, acceptance, read-only behavior, no self-review, no hidden model
+  invocation/wrapper, no silent substitution, and `/loop`-only merge authority remain.
+  The owner-manual Daybreak-through-Codex security gate is unchanged and is never
+  started automatically. Text tests establish instruction consistency, not proof
+  that a live session workflow was exercised.

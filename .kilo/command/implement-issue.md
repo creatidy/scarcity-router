@@ -37,12 +37,12 @@ the decision/blocker contract before returning control to the owner.
 6. Create/reuse one Forgejo MCP PR targeting develop with `Refs #N`, scope, acceptance
    evidence, exact base/head SHAs, checks/results and limitations. Keep issue open.
 7. Post a concise issue update with PR and validation. Continue through
-   `/finish-pr` on that PR until implementation/validation is complete or a genuine
-   terminal condition. When independent review is pending, hand off exact refs,
-   acceptance/source instructions and the pending gate. The user explicitly opens
-   a fresh visible Kilo/Codex reviewer and selects its model; never launch a model
-   through scripts/subprocesses/Task/HTTP or generate a wrapper. No persistent
-   review-evidence folder or substitute receipt hierarchy is required. The implementation
-   context is not an independent reviewer. Standalone implementation never merges;
+    `/finish-pr` on that PR until implementation/validation is complete or a genuine
+    terminal condition. Standalone implementation leaves the PR open at READY_FOR_REVIEW;
+    an authorized `/finish-pr` or `/loop` starts the required fresh user-visible Kilo
+    reviewer autonomously through native session management. Never self-review or launch a
+    model through scripts/subprocesses/Task/HTTP or a generated wrapper. No persistent
+    review-evidence folder or substitute receipt hierarchy is required. The implementation
+    context is not an independent reviewer. Standalone implementation never merges;
    only the explicit `/loop` orchestrator may proceed after exact approval through
    loop.md's merge/completion gates. Never auto-merge, touch main, release or deploy.

@@ -15,32 +15,22 @@ No automatic Daybreak, hidden launcher, skipped review or generic identity weake
 - Route by role and task fit, not prestige.
 - Use the least scarce fully capable model; capability deficits are never
   compensated by availability or strength elsewhere.
-- Use a distinct reviewer session for consequential review.
-- For ordinary Agent Manager review, the base default is the exact provider-qualified
-  model selected by the current primary. The active direct owner override #18480 sets
-  `GPT-6.1 Sol` / `openai` / `high` for all review starts until superseded. Adrian may
-  explicitly choose another permitted identity per review. Highspeed and automatic
-  workspace/provider fallback are not authorized. An unresolved identity, mismatch or
-  provider error is a stop condition, never authority to retry or substitute.
-- Development model selection/starts remain explicit and user-visible. For ordinary
-  PR review only, the direct D-077 owner amendment permits the sole authorized primary
-  `/loop` or `/finish-pr` context to start a fresh visible Kilo Agent Manager session
-  using the read-only `pr-reviewer-standalone` agent. The task explicitly binds the
-  active owner-selected `GPT-6.1 Sol`/`openai`/`high` identity; only an explicit
-  per-review Adrian override may change it. Never rely on workspace defaults, implicit
-  provider routing or fallback. The primary
-  supplies exact refs, acceptance and complete compact Git diff, and retrieves the
-  structured native result without owner
-  copy/paste. No scripts/subprocesses, Task/delegation, background/HTTP inference or
-  generated model launcher; no self-review or second orchestrator.
+- Use a fresh distinct reviewer conversation for consequential review. Under an
+  authorized `/loop` or `/finish-pr`, the orchestrator may start this ordinary Kilo
+  session through native Agent Manager; it is user-visible and does not require the
+  owner to start it or relay results. Model identity follows applicable policy and
+  must not be silently substituted.
+- No scripts/subprocesses, Task/subagent dispatch, background/HTTP inference or
+  generated model-launch wrapper. The owner-manual Daybreak/Codex security review
+  remains separate and is never started automatically.
 - No persistent local review-evidence folders or replacement receipt hierarchy.
   Use Git/canonical records/native harness references; offline fixtures use cleaned
   OS temporary directories. This does not alter authorized Router product inference.
-- PR delivery review uses a fresh separate user-visible read-only Kilo/Codex session.
-  Ordinary Kilo sessions may be started by the authorized primary through Agent
-  Manager under D-077; preserve actual session/model identity, source permissions and
-  native context provenance, never infer OS isolation or backend identity from
-  dispatch metadata. Official security Daybreak remains manually started by Adrian.
+- PR delivery review uses a fresh user-visible read-only Kilo session through native
+  session management. Require actual session identity, model, source permissions
+  and genuine native execution/context provenance; do not claim filesystem isolation
+  or backend identity from dispatch metadata. A separate worktree is optional only
+  for a demonstrated technical need.
 - LLM output is not evidence. Keep evidence preparation separate from expert
   scientific or methodological adjudication.
 - Follow D-068's ownership and Agreed/Verified/Proposed/To-prove distinction;
@@ -54,9 +44,10 @@ No automatic Daybreak, hidden launcher, skipped review or generic identity weake
   identical failures.
 - Command delivery follows `.kilo/rules/35-technical-recovery.md`: infrastructure
   failure is not an implementation finding or owner decision. Use bounded authorized
-  deterministic environment recovery; ordinary review uses the visible Agent Manager
-  path only under the direct owner amendment. Preserve ordinals and restricted gates,
-  with no hidden failover or automatic Daybreak.
+  deterministic environment recovery. Authorized `/loop` and `/finish-pr`
+  orchestrators start ordinary fresh user-visible Kilo reviewer sessions; the owner
+  need not start or relay them. Preserve ordinals and restricted gates; no hidden
+  failover.
 - Completed PASS gates, adjudication, remediation, translation and validation
   remain completed unless source changes materially or a concrete regression is
   identified.

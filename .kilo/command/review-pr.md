@@ -1,28 +1,30 @@
 ---
-description: Read-only independent review in a fresh user-visible Kilo or Codex session
+description: Read-only independent review in a fresh user-visible Kilo session
 ---
 
 Review the selected canonical Forgejo PR: $ARGUMENTS
 
-Read `.kilo/rules/35-technical-recovery.md#reviewer-context-and-result-capture` and
-its reviewer-result recovery section. This command is instructions for the CURRENT
-fresh read-only reviewer session; it does not start another session. Under
-the direct D-077 owner amendment, the single primary may start this ordinary Kilo
-review through one fresh user-visible Agent Manager session with the
-`pr-reviewer-standalone` agent. If this is still the implementation context, do not
-self-review: prepare exact source/diff and use that supported Agent Manager path or
-report its precise technical failure. No Task/subagent, shell/Python/HTTP model
-launcher, background model call, generated wrapper or silent model substitution is
-allowed.
+Read `.kilo/rules/35-technical-recovery.md`, `.kilo/agents/pr-reviewer.md`, and the `Independent Review —
+Conversational Separation` section in `AGENTS.md`. These are instructions for a fresh,
+separate reviewer session. An authorized `/loop` or `/finish-pr` orchestrator starts
+ordinary Kilo review through native Agent Manager; user visibility does not require
+the owner to start the session. The reviewer must not be the implementation context
+or a resumed implementation conversation. Do not use Task, shell/Python/HTTP launchers,
+background inference, generated wrappers or silent model substitution.
 
-Verify canonical Repo/PR/linked Issue, exact acceptance/legitimate owner authority,
-HEAD/base/merge-base and a clean safe source checkout. Use actual Git objects,
-canonical records and native session references, not local receipt folders. Access
-only authorized source, never credentials, parent conversations or unrelated work.
+The orchestrator verifies canonical Repo/PR/linked Issue, legitimate owner authority,
+and exact HEAD/base/merge-base against Git objects before dispatch. It supplies those
+refs, acceptance, relevant contracts and changed paths. The reviewer independently
+uses the read-only Git/Forgejo getters allowed by `.kilo/agents/pr-reviewer.md` to
+inspect the complete diff and intended source. The same checkout and Git object
+database may be used; no separate worktree is required. Do not request owner approval
+for routine reads. If source or authority evidence remains materially incomplete,
+report the exact limitation. Use canonical records and native session references, not
+local receipt folders. Access only authorized source, never credentials, implementation
+conversations or unrelated work.
 Do not write source/platform state, run untrusted code with ambient secrets, commit,
 push, publish a formal review, merge or change permissions. If required source or
-safe access is unavailable, report the exact limitation and pending-gate handoff
-rather than bypass it.
+safe access is unavailable, report the exact limitation rather than bypass it.
 
 Inspect the COMPLETE PR's actual changes: every canonical compact diff hunk,
 added/modified/deleted regions and sufficient immediate/dependency context. A
@@ -40,13 +42,12 @@ Actual source/identity/context integrity and unresolved material uncertainty rem
 blocking; optional unread lines or absence of reviewer-run tests alone do not.
 
 Return exact reviewed refs, verdict APPROVE/REQUEST_CHANGES/COMMENT, material
-findings, limitations, checks actually performed and UX impact as the required
-structured JSON. When this is an Agent Manager peer request, send the same JSON to
-the original primary using the native `replyTo` request ID; otherwise return it in
-the visible session for native local recall. Never infer approval from tests, status
-labels or exit0. The primary records only minimal native session reference/outcome
-metadata canonically, never a large transcript. Any HEAD/base change invalidates
-approval.
+findings, limitations, checks actually performed and UX impact as the final result
+of this reviewer session. The orchestrator collects it through native session
+communication/retrieval; the owner must not relay it. Never infer approval from tests,
+status labels or exit0. Record only minimal native session reference/outcome metadata
+canonically; do not copy a large transcript into the repository. Any HEAD/base change
+invalidates approval.
 
 Default ten and finite integrated D-069A owner exceptions remain for other deliveries;
 unintegrated D-069A grants none. For #212/PR #213, no further ordinary Kilo review is authorized. #1-19 stay consumed;

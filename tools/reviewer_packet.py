@@ -757,7 +757,7 @@ def changed_source_ranges(
 
 def _verify_profile_git_binding(profile: Path, source_root: Path, expected_head: str) -> str:
     source_root = source_root.resolve()
-    expected_path = source_root / ".kilo/agents/pr-reviewer-standalone.md"
+    expected_path = source_root / ".kilo/agents/pr-reviewer.md"
     if (source_root.is_symlink() or not source_root.is_dir()
             or profile.resolve() != expected_path.resolve()):
         raise PacketError("standalone profile source must be the tracked profile in the exact checkout")
@@ -765,7 +765,7 @@ def _verify_profile_git_binding(profile: Path, source_root: Path, expected_head:
         raise PacketError("standalone profile source checkout HEAD differs from the frozen packet")
     if _git(source_root, "status", "--porcelain"):
         raise PacketError("standalone profile source checkout is not clean")
-    source = _git(source_root, "show", f"{expected_head}:.kilo/agents/pr-reviewer-standalone.md")
+    source = _git(source_root, "show", f"{expected_head}:.kilo/agents/pr-reviewer.md")
     if source != profile.read_bytes():
         raise PacketError("standalone reviewer profile bytes differ from the frozen Git blob")
     return sha256(source)
@@ -1488,14 +1488,54 @@ def _profile_parts(profile_path: Path) -> tuple[bytes, str, str]:
     if len(parts) != 3 or parts[0].strip():
         raise PacketError("canonical reviewer profile frontmatter is malformed")
     frontmatter = parts[1]
-    if not re.search(r"(?m)^mode:\s*primary\s*$", frontmatter):
-        raise PacketError("standalone reviewer mode must be primary")
+    if not re.search(r"(?m)^mode:\s*(?:primary|all)\s*$", frontmatter):
+        raise PacketError("reviewer must be selectable as an Agent Manager primary")
     if not re.search(r"(?m)^permission:\s*\n\s+\"\*\":\s*deny\s*$", frontmatter):
         raise PacketError("standalone reviewer static permissions must deny all tools")
-    if not re.search(r"(?m)^\s+read:\s*(?:deny|ask)\s*$", frontmatter):
-        raise PacketError("reviewer Read must require explicit source approval, never a static allow")
-    if re.search(r"(?m)^\s+[^#\n]+:\s*allow\s*$", frontmatter):
-        raise PacketError("standalone reviewer frontmatter contains a static allow")
+    read_block = re.search(
+        r"(?m)^  read:\s*\n(?P<rules>(?: {4}[^\n]*(?:\n|$))*)", frontmatter
+    )
+    if read_block is None:
+        raise PacketError("reviewer Read must have an explicit workspace allowlist")
+    for rule in (
+        '    "*": allow',
+        '    "*.env*": deny',
+        '    "**/.env*": deny',
+        '    "*.task_progress.md": deny',
+        '    "**/.task_progress.md": deny',
+        '    ".git": deny',
+        '    ".git/**": deny',
+        '    "**/.git/**": deny',
+        '    ".kilo/agent-manager.json": deny',
+        '    "**/.kilo/agent-manager.json": deny',
+        '    ".kilo/agent-manager.json.*.tmp": deny',
+        '    "**/.kilo/agent-manager.json.*.tmp": deny',
+        '    "**/.config/kilo/**": deny',
+        '    "**/.local/share/kilo/**": deny',
+        '    "**/.kilocode/**": deny',
+        '    "**/tmp/kilo/**": deny',
+    ):
+        if rule not in read_block.group("rules"):
+            raise PacketError("reviewer Read boundary lacks an approved sensitive-path rule")
+    for tool in ("edit", "write", "apply_patch", "task", "external_directory"):
+        if not re.search(rf"(?m)^  {tool}:\s*deny\s*$", frontmatter):
+            raise PacketError(f"reviewer must deny {tool}")
+    for rule in (
+        "  glob: allow", "  grep: allow", "  list: allow", "  semantic_search: allow",
+        '  "forgejo-mcp_get_*": allow', '  "forgejo-mcp_list_*": allow',
+        '  "forgejo-mcp_search_*": allow', '  bash:\n    "*": deny',
+        '    "git diff --merge-base *": allow', '    "*--no-index*": deny',
+        '    "*.env*": deny', '    "*.task_progress.md*": deny',
+        '    "*agent-manager.json*": deny', '    "*.git/*": deny',
+        '    "git diff --check": allow', '    "*--output*": deny',
+        '    "*--ext-diff*": deny', '    "*--textconv*": deny',
+        '    "*>*": deny', '    "*<*": deny', '    "*|*": deny',
+        '    "*;*": deny', '    "*&*": deny',
+    ):
+        if rule not in frontmatter:
+            raise PacketError("reviewer read-only tool allowlist is incomplete")
+    if '    "git diff *": allow' in frontmatter:
+        raise PacketError("reviewer must not allow unrestricted filesystem diffs")
     description = re.search(r"(?m)^description:\s*(.+?)\s*$", frontmatter)
     if description is None:
         raise PacketError("canonical reviewer description is missing")
@@ -1507,7 +1547,7 @@ def _verify_overlay_files(runtime: RuntimeWorkspace) -> None:
     if not root.is_dir() or root.is_symlink() or stat.S_IMODE(root.stat().st_mode) != 0o555:
         raise PacketError("per-run Kilo config directory is missing, linked or writable")
     expected = {
-        ".gitignore", "kilo.json", "agents", "agents/pr-reviewer-standalone.md"
+        ".gitignore", "kilo.json", "agents", "agents/pr-reviewer.md"
     }
     actual = {path.relative_to(root).as_posix() for path in root.rglob("*")}
     if actual != expected:
@@ -1517,7 +1557,7 @@ def _verify_overlay_files(runtime: RuntimeWorkspace) -> None:
             or stat.S_IMODE(agents.stat().st_mode) != 0o555):
         raise PacketError("per-run Kilo agents directory is missing, linked or writable")
     expected_hashes = {
-        "agents/pr-reviewer-standalone.md": runtime.overlay_profile_sha256,
+        "agents/pr-reviewer.md": runtime.overlay_profile_sha256,
         "kilo.json": runtime.overlay_config_sha256,
     }
     for relative, expected_sha in expected_hashes.items():
@@ -1537,7 +1577,7 @@ def _verify_overlay_files(runtime: RuntimeWorkspace) -> None:
         _verify_profile_git_binding(
             runtime.canonical_profile, runtime.profile_source_root, runtime.inspection.head
         )
-    profile_path = root / "agents/pr-reviewer-standalone.md"
+    profile_path = root / "agents/pr-reviewer.md"
     profile_text = profile_path.read_text(encoding="utf-8")
     profile_parts = profile_text.split("---", 2)
     packet_paths = tuple(path.removeprefix("packet/") for path in runtime.allowed_paths)
@@ -1634,7 +1674,7 @@ def prepare_standalone_environment(
             raise PacketError("review workspace and Kilo config must be outside the source checkout")
     profile_bytes, _, prompt = _profile_parts(canonical_profile)
     if source_root is not None:
-        canonical_profile_relative = ".kilo/agents/pr-reviewer-standalone.md"
+        canonical_profile_relative = ".kilo/agents/pr-reviewer.md"
         frozen_profile = _git(source_root, "show", f"{inspection.head}:{canonical_profile_relative}")
         if profile_bytes != frozen_profile:
             raise PacketError("effective reviewer source file differs from frozen HEAD")
@@ -1731,7 +1771,7 @@ def prepare_standalone_environment(
     agents.mkdir(mode=0o700)
     (overlay / ".gitignore").write_text("# per-run Kilo reviewer configuration\n", encoding="utf-8")
     os.chmod(overlay / ".gitignore", 0o444)
-    overlay_profile = agents / "pr-reviewer-standalone.md"
+    overlay_profile = agents / "pr-reviewer.md"
     overlay_profile.write_bytes(per_run_profile)
     os.chmod(overlay_profile, 0o444)
     overlay_config = overlay / "kilo.json"
@@ -1827,7 +1867,7 @@ def verify_effective_standalone_agent(
     canonical_profile: Path,
 ) -> dict[str, Any]:
     """Check the Kilo v7.8.8 standalone primary profile and exact Read rules."""
-    if reviewer.get("name") != "pr-reviewer-standalone":
+    if reviewer.get("name") != "pr-reviewer":
         raise PacketError("effective Kilo reviewer identity mismatch or default-agent fallback")
     resolved_mode = _string(reviewer.get("mode"), "resolved reviewer mode")
     if resolved_mode not in {"primary", "all"}:
@@ -1879,7 +1919,7 @@ def verify_effective_standalone_agent(
     source_sha = sha256(canonical_profile.read_bytes())
     prompt_sha = sha256(prompt.encode())
     overlay_profile_sha = sha256(
-        (overlay.profile_config / "agents/pr-reviewer-standalone.md").read_bytes()
+        (overlay.profile_config / "agents/pr-reviewer.md").read_bytes()
     )
     if (source_sha != overlay.canonical_profile_sha256
             or overlay_profile_sha != overlay.overlay_profile_sha256
@@ -1887,7 +1927,7 @@ def verify_effective_standalone_agent(
         raise PacketError("per-run reviewer prompt/profile does not match the canonical source and overlay")
     return {
         "status": "EFFECTIVE_STANDALONE_PERMISSION_PASS",
-        "reviewer_agent": "pr-reviewer-standalone",
+        "reviewer_agent": "pr-reviewer",
         "reviewer_profile_mode": "primary",
         "reviewer_resolved_mode": resolved_mode,
         "reviewer_effective_tools": ["read"],
@@ -2446,7 +2486,7 @@ def summarize_failed_standalone_session(
         })
     final_summary: dict[str, object] = {"parsed": False}
     try:
-        final_text = _final_assistant_text(session, "pr-reviewer-standalone")
+        final_text = _final_assistant_text(session, "pr-reviewer")
         final_result = _object(
             _strict_json_loads(final_text, "failed standalone final response"),
             "failed standalone final response",
@@ -2510,7 +2550,7 @@ def audit_standalone_session(
     _verify_overlay_files(runtime)
     _verify_probe_inventory(runtime)
     info = _object(session.get("info"), "standalone session info")
-    agent_name = "pr-reviewer-standalone"
+    agent_name = "pr-reviewer"
     session_id = _string(info.get("id"), "standalone session id")
     if info.get("agent") != agent_name:
         raise PacketError("Kilo selected a fallback or different standalone reviewer identity")

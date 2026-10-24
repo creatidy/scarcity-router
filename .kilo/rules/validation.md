@@ -28,21 +28,14 @@ it never authorizes a hidden model call.
   Use actual Git objects and complete compact diff/changed-source regions with
   useful context. No LLM summaries or silent hunk omission. Additional unchanged
   context is a material reviewer judgment, not blanket full-file bureaucracy.
-- Independent review is a fresh separate read-only USER-VISIBLE Kilo/Codex session.
-  Under D-077's direct owner amendment, the sole authorized primary may start ordinary
-  Kilo review through a single initial Agent Manager prompt using
-  `pr-reviewer-standalone`; the base default is the exact provider-qualified model
-  selected by the current primary. The current owner override #18480 sets `GPT-6.1 Sol`
-  / `openai` / `high` for all review starts; explicitly bind those values. Adrian may
-  explicitly select another permitted identity per review; Highspeed is not
-  authorized. Never rely on a workspace default, provider fallback or silent
-  substitution. If the exact requested identity cannot be resolved, do not dispatch
-  review content. Include exact refs, complete compact diff and acceptance, then
-  retrieve the structured native result without owner copy/paste.
-  No programmatic hidden launcher, Task/subagent, model subprocess, background/HTTP
-  inference or generated wrapper. Daybreak remains owner-manual through official
-  Codex. If the visible Manager result path fails, preserve the attempted ordinal and
-  report its exact failure instead of bypassing the gate or claiming no eligible work.
+- Independent review is a fresh separate read-only USER-VISIBLE Kilo session.
+  Authorized `/loop` and `/finish-pr` orchestrators start and collect it through
+  native Kilo session management; do not require the owner to start it or relay
+  results. A separate worktree is not required. No Task/subagent, subprocess,
+  background/HTTP inference or generated wrapper may launch a model. If the native
+  session/result capability is genuinely unavailable after bounded recovery, report
+  the exact gate rather than bypassing it or declaring the repository has no eligible
+  work.
 - Preserve source integrity, scoped permissions, no credentials/unapproved context,
   actual model/execution identity, terminal/native-session provenance and exact
   currentness. Do not infer backend identity from self-report/UI labels. Tests,

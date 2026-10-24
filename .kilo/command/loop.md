@@ -18,10 +18,13 @@ was separately accepted, and merge121ee3f/#212 closure are verified. No #20 reus
 ## Invocation and Safety
 
 Use exactly one designated delivery checkout and ordinary issue branches. Only one context may
-mutate it at a time; no programmatic model/subagent start is permitted. Temporary worktrees and
-evidence checkouts are allowed under `.kilo/rules/35-technical-recovery.md`, not parallel
-implementation. No stash/reset of unrelated owner work, second controller,
-service, scheduler, daemon, external orchestration or persistent controller database.
+mutate it at a time. An authorized `/loop` may start a fresh ordinary reviewer session through
+native Kilo Agent Manager; this is visible session management, not hidden inference. Do not
+start review models through scripts, subprocesses, Task/subagents, background jobs or HTTP.
+Temporary worktrees/evidence checkouts are optional technical mechanisms under
+`.kilo/rules/35-technical-recovery.md`, never an independence prerequisite or parallel
+implementation. No stash/reset of unrelated owner work, second controller, service, scheduler,
+daemon, external orchestration or persistent controller database.
 Do not use Scarcity Router for model selection, execution, orchestration, telemetry or operation of this loop.
 No mutation outside BioMedical-IT/scarcity-router:
 Model Intelligence, Kernel, Console, creatidy-onprem and other repositories are out of scope.
@@ -64,10 +67,8 @@ records (not PRs). Apply these steps in order:
    unmet explicit prerequisites/gates and issues waiting for an unresolved owner
    decision. Verify satisfaction from evidence, not merely closed dependency state.
    Do not invent dependencies from similar prose. Historical STOP_REVISE is not
-   restart authority; absent a fresh direct owner selection it is ineligible. The
-   current direct owner instruction is a distinct new loop selecting exactly #185,
-   #205 and #174; it preserves their histories/caps and grants no restart to any
-   other stopped delivery. An open unrelated PR never supplies such a decision.
+   restart authority; without an explicit owner restart decision it is ineligible.
+   An open unrelated PR never supplies such a decision.
 3. Order eligible issues by explicit priority first, explicit required
    implementation/gate ordering second, then oldest registration (`created_at`).
    Use only a declared comparable priority/rank (for example accepted P1 before
@@ -221,64 +222,23 @@ Routine safe reversible coding choices are autonomous, not owner questions.
 ## FINISH
 
 Use `.kilo/command/finish-pr.md` in this same primary context for authorized scoped
-remediation, validation and normal Git/Forgejo delivery. Follow
-`.kilo/rules/35-technical-recovery.md#reviewer-context-and-result-capture` when
-preparing an ordinary review. The implementation context
-does not self-approve, call models through scripts/subprocesses/HTTP/Task or create a
-receipt hierarchy. Prepare exact current Repo/Issue/PR refs, acceptance and complete
-compact diff/changed-source instructions directly.
+remediation, validation and normal Git/Forgejo delivery. The implementation context
+does not self-review. It prepares exact current Repo/Issue/PR refs, acceptance and
+complete compact diff/changed-source instructions, then starts a fresh separate
+read-only reviewer through native Kilo session management using the existing primary
+`.kilo/agents/pr-reviewer.md` role. The prompt contains only
+review scope, acceptance, exact refs, relevant contracts and source instructions;
+never implementation history, reasoning or desired verdict.
 
-### Agent Manager ordinary-review handoff
+Use the caller's existing repository/checkout when safe. A separate reviewer worktree
+is not required; freeze the exact source and make no edits during review. Collect the
+reviewer's final result through native session communication or exact-session retrieval
+such as `kilo_local_recall`; do not ask the owner to relay prompts or responses. If the
+native session/result capability itself fails, apply bounded technical recovery and
+report only the exact unresolved gate. No hidden launcher, generated owner script or
+alternative runner is permitted.
 
-Under the direct owner amendment to D-077, after exact-currentness, validation,
-owner-scope and full-budget preflight, the single primary starts one fresh,
-user-visible, read-only ordinary Kilo reviewer through the supported Agent Manager
-tool. Use `mode: local`, the selectable `pr-reviewer-standalone` agent and an initial
-prompt in the start request; do not prepare an empty session then send a second whole-
-PR prompt. The base default is the current primary's exact provider-qualified model.
-The current owner override #18480 selects `GPT-6.1 Sol` / `openai` / `high` for all
-review starts until superseded; pass those values explicitly in the task's `model`,
-`provider` and `variant` fields. Only Adrian may override this for a specific review
-with another exact permitted identity. Highspeed is not authorized. Never rely on an
-Agent Manager workspace default, provider fallback or silent substitution. If the
-identity cannot be resolved or dispatch reports a mismatch/provider error, stop
-without retrying or sending review content; preserve the ordinal. This is a separate
-review context, not an implementation subagent or second controller.
-
-The initial prompt is constructed automatically from Forgejo's selected issue/PR
-acceptance and the actual Git objects. Include Repo/Issue/PR identities, frozen
-HEAD/base/merge-base, exact changed-path list and the complete compact
-`git diff --binary --full-index --no-ext-diff --no-renames --unified=3` output. Do not
-include implementation reasoning, earlier findings, desired verdicts, credentials,
-or owner/session transcripts. The read-only reviewer receives the actual source
-changes in this prompt; scoped source Reads remain permission-checked if more context
-is materially needed. The visible session uses no scripts, subprocesses, Task,
-HTTP inference or generated wrapper.
-
-After starting, retain the exact Agent Manager session ID and pending reply request
-ID. The reviewer returns its structured JSON directly with the native `replyTo`
-channel when provided; if the native session completes without a reply, the primary
-retrieves that exact completed session through `kilo_local_recall`. Never copy/paste
-reviewer output through the owner. Validate schema, exact reviewed refs and result
-identity with the pure `inspect_agent_manager_result` and
-`agent_manager_handoff_action` helpers in the existing `tools/review_result.py`; do
-not create a local receipt. Record minimal outcome/session provenance canonically. A
-structured `REQUEST_CHANGES` with actionable findings returns to this same primary
-implementation context for authorized remediation and validation; it does not reset
-or spend a new ordinal until an actual whole-PR dispatch. `APPROVE` advances only to the next
-permitted gate. Failed/incomplete/COMMENT attempts are preserved; do not issue another
-full-PR prompt in the same session or retry blindly.
-
-Agent Manager ordinary reviews do not start or substitute owner-only security review.
-Security-critical Daybreak remains an owner-manual official Codex action after all
-required ordinary/validation gates; no Kilo session, Task, script or background model
-may start it. If the Agent Manager path cannot return a complete result, retain the
-consumed attempt and open exact infrastructure gap instead of silently reverting to
-manual prompt/result relay or an unapproved launcher.
-
-Before remediation or any review reservation, apply
-`.kilo/rules/35-technical-recovery.md#prospective-review-capacity`. Default maximum 10
-includes initial/COMMENT/invalidated/retry attempts. Only verified
+Default maximum 10 includes initial/COMMENT/invalidated/retry attempts. Only verified
 finite canonical owner exceptions apply; unintegrated D-069A grants none. Keep
 minimal actual ordinals/outcomes/refs canonically; no local directory or progress
 file is an eligibility/review/merge prerequisite. Never reset counts or manufacture
@@ -298,8 +258,8 @@ bodies. Require exact refs, authentic independent identity/scope/source/context,
 material findings/limitations and UX assessment. HEAD/base change invalidates
 approval. Serialize phases; no source edits/switches during an active review.
 Diagnose genuine findings/uncertainty/infrastructure separately, remediate within
-accepted scope/budget and hand off the next authorized visible review. Preserve
-failed/COMMENT history; at the bound actionable defects yield STOP_REVISE.
+accepted scope/budget and start the next authorized fresh reviewer session natively.
+Preserve failed/COMMENT history; at the bound actionable defects yield STOP_REVISE.
 
 ## Security Review
 
@@ -373,9 +333,11 @@ again with a fresh canonical queue, not a PR-derived backlog.
 
 ## Terminal Reporting
 
-Report the legitimate queue/decision/revision/blocker outcome, or an explicit
-visible-review handoff with its exact pending gate. Never replace that handoff with
-QUEUE_EMPTY, approval or a hidden launcher. Existing security handoffs may report
+Report the legitimate queue/decision/revision/blocker outcome. Ordinary reviewer
+sessions and result collection are autonomous; do not report a routine owner-mediated
+review handoff. A genuine unsupported native session/result capability is reported
+only after bounded recovery, with its exact pending gate. Never call it QUEUE_EMPTY,
+approval or bypass it with a hidden launcher. Existing security handoffs may report
 READY_FOR_OWNER_SECURITY_REVIEW; #212's combined handoff is descriptive only.
 READY_FOR_OWNER_SECURITY_REVIEW is a terminal handoff after ordinary approval,
 validation and reservation of the exact owner-manual ordinal. Stop before MERGE,
@@ -395,14 +357,9 @@ the fresh repository-scoped queue observation, backward-traced predecessors,
 producer revisions and each remaining condition's owner/evidence/stage/action.
 Distinguish exact-label exclusions, verified gates and UNVERIFIED missing checks.
 
-STOP_AND_ASK normally stops the ENTIRE invocation; never skip a selected issue and
-continue another. The direct 2026-10-22 owner amendment in D-077 is a narrow exception
-for the explicitly selected batch #185/#205/#174: an issue-local review-budget or
-owner-manual Daybreak gate may leave that PR open/unmerged with exact history intact
-while the primary continues other independently eligible PRs in that same batch.
-This does not add/transfer ordinals, bypass dependencies or acceptance, select other
-work, or permit a gated merge. Genuine undecided architecture/product direction,
-material public-contract changes, business/product GO/STOP,
+STOP_AND_ASK stops the ENTIRE invocation immediately; never skip the selected issue
+and continue another. Ask the owner using `question` for genuine undecided architecture/
+product direction, material public-contract changes, business/product GO/STOP,
 security/privacy expansion, licensing/redistribution acceptance, meaningful new
 financial cost, external credentials/access, destructive/irreversible operations,
 incompatible acceptance, material scope expansion or explicitly owner-reserved

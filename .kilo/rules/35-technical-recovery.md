@@ -11,6 +11,13 @@ This shared development-workflow contract applies to implementation, validation,
 review and remediation. It does not authorize product changes, persistent services,
 new dependencies, paid/live inference, external effects or broader access.
 
+Ordinary independent review is a fresh-conversation requirement, not a separate
+filesystem requirement. Authorized `/loop` and `/finish-pr` workflows start a new
+user-visible Kilo reviewer through native session management and collect its result
+without owner relay. The reviewer may use the existing repository/checkout while the
+source is frozen; do not create a worktree, container or sandbox solely for reviewer
+independence.
+
 ## Classify Before Escalating
 
 For `/loop`, first apply `.kilo/command/loop.md` post-selection eligibility
@@ -83,109 +90,6 @@ dispatch beyond the effective ceiling or patch without capacity for fresh review
 Budget exhaustion is a finite stop, not permission to weaken a gate or invent an owner
 decision.
 
-## Reviewer Context and Result Capture
-
-Start with neutral canonical issue/PR links and exact frozen base/HEAD/merge-base.
-The primary obtains the complete canonical issue body and full original text/context
-of applicable owner decisions from their actual source: canonical URL, object/comment
-ID, author, timestamp, retrieval path and content digest. Local sources also carry the
-exact Git revision/path. No blanket comment history, previous reviews/findings,
-implementer summaries, parent conversation, credentials or unrelated context are
-included. `forgejo-mcp_get_repo` verifies the canonical owner/repository before other
-scoped getters. Missing decision provenance is an evidence gap; self-report alone does
-not close it. The primary audits post-Agent-Manager tool routes/arguments against the
-manifest and exact frozen refs. A supported no-tools reviewer execution needs a
-complete source packet: acceptance, full compact diff and exact current refs.
-
-## Reviewer Result Capture and Recovery
-
-Status 0 means complete capture of ANY verdict, not APPROVE. Schema 0/process 0/model
-self-report never close a review gate. Native `--output-schema` requests generation
-format, not local validation. If and only if the native final-message file is missing,
-recover the last completed final-agent JSONL message from a successful completed turn;
-native-file safety/schema rejection cannot be bypassed by JSONL fallback. Preserve the
-typed reason, size/hash, known-field types/missing fields and observed mode. Public
-long-token exceptions require exact parent-attested Git-tracked paths/pins. Never infer
-the subtype/verdict of historically discarded output. A claim without exit remains
-uncertain, not launch permission. The parent continues authorized work in the same
-primary after validated `REQUEST_CHANGES`; no manual owner relay or new result store is
-introduced. Agent Manager reply/local-recall transport remains native and visible; the
-optional `tools/review_result.py` capture adapter is not a model launcher and must not
-be used to start reviewer sessions. It never normalizes permissions. No prompt/argv/
-environment values or credential material enter receipts. Synthetic backend capture
-cases do not prove paid/live model identity.
-
-## Prospective Review Capacity
-
-Recover consumed ordinals and actual outcomes from canonical Issue/PR comments and
-legitimate native session records at the exact current refs. Local notes and temporary
-synthetic fixtures may assist diagnosis, but never authorize a ceiling, replace
-missing source provenance, or gate eligibility. Require contiguous unique ordinals,
-exact repository/issue/PR scope and a finite direct-owner exception already integrated
-under D-069A; otherwise default to ten and fail closed. Missing or ambiguous canonical
-ordinal history is BLOCKED, never zero. Check it before any remediation or reservation;
-a local ledger or test fixture is not authority. Derive roles from currently missing
-approval gates, preserving chronological counters and ordinary-before-restricted order;
-roles are not immutable ordinal assignments unless the direct owner source explicitly
-scopes them.
-
-Current separately owner-authorized issue-local ceilings, reverified from canonical
-Issue comments before reservation and never transferable:
-
-- #185/PR #209: maximum14. Preserve #1-11; #12 remains reserved/unconsumed, not
-  reclassified. #13 ordinary; #14 owner-manual Daybreak only after valid #13 APPROVE;
-  no #15. Canonical Issue #185 comment #18355.
-- #205/PR #206: maximum20. Preserve #1-17, including #15 and #17 REQUEST_CHANGES.
-  The unused #16 and #18 Daybreak reservations are explicitly superseded/skipped, not
-  reclassified or executed. #19 is ordinary; #20 is owner-manual Daybreak only after
-  valid #19 APPROVE on identical refs; no #21. Canonical Issue #205 comments
-  #18436/#18444/#18480.
-- #174/PR #204: maximum20. Preserve #1-18. #19 was consumed with no verdict and is
-  failed/unverified (Issue #174 comment #18387); do not retry. The #20 Daybreak
-  condition is unsatisfied and #20 is ineligible; no #21. Keep parked. Canonical
-  Issue #174 comments #17189/#18387.
-
-Current #185/PR #209 state: #13 was dispatched but returned no structured result;
-it is failed/unverified, not an approval. #14 is ineligible because it requires a
-valid #13 APPROVE; no #15 is authorized. Preserve the RCA in Issue #185 comments
-#18428/#18433 and do not retry or start another model session pending direct owner
-disposition.
-
-Historical #205/PR #206 authority is preserved, not erased: comments #16179/#16250
-authorized the earlier ceiling12; #16611 set ceiling15; #18351 set ceiling16; #18436
-set ceiling18. The direct owner amendment #18480 now sets maximum20 only for #205/PR
-#206. Preserve #15/#17 REQUEST_CHANGES, skip unused #16/#18 without reclassification or
-execution, #19 is the next ordinary review and #20 owner-manual Daybreak only after
-valid #19 approval. No #21/reset/transfer. The direct model instruction selects
-GPT-6.1 Sol/OpenAI/high for review starts; Highspeed and silent fallback are forbidden.
-It does not extend another delivery. #174 remains parked: comment #18387 records #19
-as no-verdict/failed-unverified, so #20 cannot be dispatched.
-Comment #16611 separately authorized #205 parking if it cannot close all gates within
-the then-current ceiling; #18436/#18480 supersede only that numeric ceiling. If #205 cannot
-close within20, preserve the issue/PR open and unmerged at STOP_REVISE, retaining the
-old invocation's terminal state, every ordinal and recovery history. Only THEN may a
-distinctly NEW, separately owner-authorized `/loop` invocation use a fresh full
-canonical queue; never silently skip or restart a parked delivery. This is not a
-silent skip inside the terminated invocation, not a global parking exception and not
-restart authority for parked #174 or #205.
-After successful integration, normal `/loop` selection may continue after acceptance
-and closure. No source fixture or ledger claim supplies owner authority.
-
-| Round State | Roles | Minimum Slots |
-| --- | --- | ---: |
-| security_patch_or_both_missing | ordinary,restricted | 2 |
-| ordinary_patch_or_missing | ordinary | 1 |
-| stable_ordinary_approved | restricted | 1 |
-| stable_restricted_approved | ordinary | 1 |
-| stable_all_approved | none | 0 |
-
-When both security-critical approvals are missing, capacity must cover two fresh
-ordinary/restricted roles. A stable current ordinary approval needs one restricted
-role; a stable current restricted approval needs one ordinary role; both exact current
-approvals need zero. Any changed HEAD/base invalidates both roles. Capacity alone is
-not approval/currentness. A nonpositive ordinary verdict at the last ordinary slot
-cannot be converted into security approval or a retry.
-
 No blind retries means never repeat a failed operation with the same relevant
 inputs and environment. It does not mean stop after one failed approach. A corrected
 configuration already within authority, clean environment/container, exact source
@@ -200,37 +104,29 @@ validation process/results, inspect live state and recover durable logs/exit sta
 before a diagnosed rerun; never launch duplicate validation processes or claim an
 unobserved PASS. A lost process record is an evidence gap, not a terminal contract.
 
-Available mechanisms, where applicable:
+Available mechanisms, where applicable, are optional engineering remedies for a
+demonstrated technical need; none is an independence prerequisite for review:
 
 - Construct an explicit sanitized child environment, synthetic HOME, cache and temp
   directories; install only the repository's locked/approved development dependencies.
 - Use an ephemeral Docker/container environment when lighter isolation is insufficient.
   Docker is an execution mechanism, not product dependency adoption. No persistent
   service, privileged container, Docker socket mount or security weakening is implied.
-- Prepare a temporary worktree/checkout at the frozen revision, preserving unrelated
-  owner work. Use one designated delivery checkout and one mutator; auxiliary review
-  and public-source checkouts are evidence-only, not parallel implementation controllers.
-  Parent never edits or switches any reviewed checkout while its reviewer is active.
+- Prepare a temporary worktree/checkout only for a demonstrated need such as
+  concurrent source mutation, preserving unrelated owner work. Use one designated
+  delivery checkout and one mutator; auxiliary checkouts are evidence-only, not
+  parallel implementation controllers. Parent never edits or switches any reviewed
+  checkout while its reviewer is active. A reviewer may use the same frozen checkout.
 - Mount the repository read-only where mutation is unnecessary, only required paths,
   and separate writable synthetic scratch paths. Do not mount host credential directories.
 - Split independent source inspection from safe test execution when they need different
   environments, or reproduce a claim with a smaller synthetic/offline proof. Preserve
   mandatory full validation and explicitly open any real-environment acceptance gap.
-- Under the direct D-077 owner amendment, the single authorized primary may start a
-  fresh ordinary Kilo reviewer through Agent Manager after exact refs, accepted scope,
-  validation, current owner authority and enough remaining budget are verified and
-  recorded. Bind the exact provider-qualified model selected by the main primary,
-  including its provider and known reasoning variant, in the Agent Manager task's
-  `model` request. Only an explicit per-review owner override may select another
-  permitted identity. Highspeed models, workspace-default selection and provider
-  fallback are not authorized. If the exact model cannot be bound, stop before
-  dispatch. Use one initial prompt with the complete compact diff and
-  `pr-reviewer-standalone`; it is a separate read-only visible session, not a
-  Task/subagent or second controller. A model mismatch/provider error is terminal for
-  that ordinal; stop the session and do not send status/retry prompts to a `retrying`
-  session. Preserve the exact failure; no fallback. This is not authority for
-  scripts/subprocesses, background/HTTP inference or a generated launcher. Daybreak
-  remains owner-manual through official Codex.
+- If native Kilo session/result capability is genuinely unavailable after bounded
+  recovery, prepare a concise visible handoff naming that exact pending gate. Preserve
+  frozen PR scope, model-bound gates, read-only access and conversational independence.
+  This is not a routine owner-start/result-relay requirement. Recovery never authorizes
+  scripts, subprocesses, Task/delegation, background/HTTP inference or a hidden substitute.
 
 ## Secret-Safe Environments
 
@@ -244,20 +140,22 @@ Keep authenticated platform operations outside test sandboxes. If unauthorized r
 credentials are genuinely necessary, record the specific evidence gap; do not ask for
 them unless required for the selected acceptance and subject to an owner decision.
 
-## Visible Review Handoffs
+## Native Review Sessions
 
-Verify actual Git objects and canonical Repo/Issue/PR/owner authority. The authorized
-primary creates one fresh visible Agent Manager ordinary-review session with the
-exact frozen refs, complete compact Git diff, changed paths and acceptance. Do not
-include implementation reasoning, previous findings, credentials or a desired
-verdict. After completion, retrieve the structured JSON from the native replyTo
-channel or exact session via Kilo local recall; validate exact refs and record
-minimal native provenance canonically. `REQUEST_CHANGES` returns to the same primary
-implementation context; no owner copy/paste relay is required. Agent Manager starts
-ordinary reviewers only; no Daybreak. Do not use Task/subprocess/HTTP or a hidden
-substitute. If the native session cannot return a complete result, preserve the
-attempted ordinal and hand off that exact failure without skipping review or claiming
-QUEUE_EMPTY.
+For an authorized ordinary review, verify actual Git objects and canonical
+Repo/Issue/PR/owner authority, then start a fresh user-visible Kilo reviewer through
+native session management. Provide only the task/scope, acceptance, exact frozen refs,
+relevant contracts and source instructions; do not pass the implementation
+conversation, reasoning, private deliberations or a desired verdict. Use the existing
+checkout when safe. A separate reviewer worktree is not an independence requirement.
+
+Keep the source frozen for the full review. Collect the final reviewer result through
+native session communication or exact-session retrieval; do not require the owner to
+copy prompts or responses. This native Kilo session start is permitted and visible;
+no script, subprocess, Task/subagent, background inference, HTTP call or wrapper may
+launch a model. If the native session/result capability itself is unsupported, apply
+bounded technical recovery and report the exact pending gate without skipping review
+or claiming QUEUE_EMPTY.
 
 Use native harness records and minimal canonical ordinals/outcomes/provenance, not
 persistent local receipts, copied source/transcripts or reconstructed evidence trees.
@@ -294,13 +192,17 @@ BLOCKED requires exhausted authorized technical paths/budget or an external cond
 the agent cannot change with any authorized workaround. Class-B decisions instead
 require STOP_AND_ASK / OWNER_DECISION_NEEDED with all five decision fields above.
 State the exact missing capability/dependency, attempted paths, remaining evidence gap
-and consumed budget. A reviewer lacking tools is insufficient while a suitable clean
-environment or a user-authorized visible reviewer path remains. Do not ask an
-artificial question for an external non-decision blocker. STOP_REVISE remains the
-review-bound disposition for actionable defects, not a technical environment failure.
+and consumed budget. A reviewer lacking a separate worktree is not a blocker when the
+existing repository and source tools can inspect the frozen revision. A genuine
+unsupported native session/result capability is classified and recovered under the
+same bounded rule. Do not ask an artificial question for an external non-decision
+blocker. STOP_REVISE remains the review-bound disposition for actionable defects,
+not a technical environment failure.
 
 Continue implementation -> validation -> independent review -> ordinary remediation
 -> fresh validation/review until exact independent APPROVE with acceptance satisfied,
 genuine budget exhaustion, an external condition with no authorized workaround or a
-class-B decision. A required user-visible review start is an explicit pending-gate
-handoff, not authorization for a hidden model or an artificial infrastructure question.
+class-B decision. Only a genuinely unsupported native Kilo session/result capability
+after bounded recovery remains a review handoff gate. Ordinary user-visible reviewer
+starts are handled by the authorized orchestrator; do not require owner initiation or
+an artificial infrastructure question. This never authorizes hidden model execution.
