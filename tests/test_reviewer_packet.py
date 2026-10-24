@@ -2317,9 +2317,7 @@ class ReviewerPacketTests(unittest.TestCase):
             self.assertIn("mode: subagent", legacy)
             self.assertIn("mode: primary", standalone)
             self.assertIn("not a review execution path", legacy)
-            frontmatter = standalone.split("---", 2)[1]
-            self.assertIn('"*": allow', frontmatter)
-            self.assertIn('"**/.env*": deny', frontmatter)
+            self.assertIn("read: ask", standalone.split("---", 2)[1])
 
 
 

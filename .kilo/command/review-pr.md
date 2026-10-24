@@ -12,12 +12,16 @@ the owner to start the session. The reviewer must not be the implementation cont
 or a resumed implementation conversation. Do not use Task, shell/Python/HTTP launchers,
 background inference, generated wrappers or silent model substitution.
 
-Verify canonical Repo/PR/linked Issue, exact acceptance/legitimate owner authority,
-HEAD/base/merge-base and the intended source. The reviewer may use the same checkout
-and Git object database; a separate worktree is not required. Use actual source,
-canonical records and native session references, not local receipt folders. Access
-only authorized source, never credentials, implementation conversations or unrelated
-work.
+The orchestrator verifies canonical Repo/PR/linked Issue, legitimate owner authority,
+and exact HEAD/base/merge-base against Git objects before dispatch. It supplies those
+refs, the complete compact diff and relevant source context directly. Independently
+assess that source against acceptance and contracts. The reviewer may use the same
+checkout and Git object database, but does not require Git or Forgejo tools; a separate
+worktree is not required. Do not request owner approval for routine reads or Git access.
+If supplied source is materially incomplete or inconsistent with the intended revision,
+report that exact limitation. Use canonical records and native session references, not
+local receipt folders. Access only authorized source, never credentials, implementation
+conversations or unrelated work.
 Do not write source/platform state, run untrusted code with ambient secrets, commit,
 push, publish a formal review, merge or change permissions. If required source or
 safe access is unavailable, report the exact limitation rather than bypass it.

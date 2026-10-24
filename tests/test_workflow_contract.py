@@ -605,18 +605,32 @@ class WorkflowContractTests(unittest.TestCase):
 
         loop = text(".kilo/command/loop.md")
         finish = text(".kilo/command/finish-pr.md")
+        review = text(".kilo/command/review-pr.md").lower()
         reviewer = text(".kilo/agents/pr-reviewer-standalone.md")
         llm_policy = text(".kilo/rules/40-llm-operating-policy.md").lower()
+        recovery = text(".kilo/rules/35-technical-recovery.md").lower()
         self.assertIn("native Kilo Agent Manager", loop)
         self.assertIn("kilo_local_recall", loop)
         self.assertIn("native Agent Manager", finish)
+        self.assertIn("orchestrator verifies canonical repo/pr/linked issue", review)
+        self.assertIn("complete compact diff and relevant source context", review)
+        self.assertIn("does not require git or forgejo tools", review)
         self.assertIn("the owner need not start or relay them", llm_policy)
         self.assertNotIn("reviewer starts remain an explicit visible user action", llm_policy)
-        self.assertIn("without owner copy/paste", reviewer)
+        self.assertIn("complete compact diff and necessary changed-source/test context", reviewer)
+        self.assertIn("Do not request approval for routine reads", reviewer)
         self.assertIn('"*": deny', reviewer)
-        self.assertIn('"*": allow', reviewer)
-        self.assertIn('"**/.env*": deny', reviewer)
+        self.assertIn("read: ask", reviewer)
+        self.assertNotIn('"*": allow', reviewer)
         self.assertIn("external_directory: deny", reviewer)
+        self.assertNotIn(
+            "a required user-visible review start is an explicit pending-gate handoff",
+            recovery,
+        )
+        self.assertIn(
+            "only a genuinely unsupported native kilo session/result capability after bounded recovery",
+            recovery,
+        )
 
         for path in (
             "AGENTS.md", ".kilo/command/loop.md", ".kilo/command/review-pr.md",
@@ -675,17 +689,18 @@ class WorkflowContractTests(unittest.TestCase):
         # Product adapters intentionally remain outside this development-script scope.
         self.assertTrue((ROOT / "scarcity_router").is_dir())
 
-    def test_visible_profile_allows_workspace_reads_without_write_or_external_tools(self) -> None:
+    def test_visible_profile_keeps_reads_ask_gated_without_write_or_external_tools(self) -> None:
         profile = text(".kilo/agents/pr-reviewer-standalone.md")
         frontmatter = profile.split("---", 2)[1]
         for requirement in (
-            "mode: primary", '"*": deny', "read:", '"*": allow',
-            '"**/.env*": deny', "external_directory: deny",
+            "mode: primary", '"*": deny', "read: ask", "external_directory: deny",
         ):
             self.assertIn(requirement, frontmatter)
         self.assertNotRegex(frontmatter, r"\b(?:bash|edit|task):\s*allow")
         for requirement in (
-            "NEW fresh user-visible", "source reads in the current repository workspace",
+            "NEW fresh user-visible",
+            "complete compact diff and necessary changed-source/test context",
+            "Do not request approval for routine reads",
             "Never read credentials or environment files", "No desired verdict", "UX",
         ):
             self.assertIn(requirement, profile)

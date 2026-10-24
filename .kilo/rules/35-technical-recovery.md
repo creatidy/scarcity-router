@@ -202,5 +202,7 @@ not a technical environment failure.
 Continue implementation -> validation -> independent review -> ordinary remediation
 -> fresh validation/review until exact independent APPROVE with acceptance satisfied,
 genuine budget exhaustion, an external condition with no authorized workaround or a
-class-B decision. A required user-visible review start is an explicit pending-gate
-handoff, not authorization for a hidden model or an artificial infrastructure question.
+class-B decision. Only a genuinely unsupported native Kilo session/result capability
+after bounded recovery remains a review handoff gate. Ordinary user-visible reviewer
+starts are handled by the authorized orchestrator; do not require owner initiation or
+an artificial infrastructure question. This never authorizes hidden model execution.
