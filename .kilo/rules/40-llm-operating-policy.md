@@ -44,8 +44,10 @@ No automatic Daybreak, hidden launcher, skipped review or generic identity weake
   identical failures.
 - Command delivery follows `.kilo/rules/35-technical-recovery.md`: infrastructure
   failure is not an implementation finding or owner decision. Use bounded authorized
-  deterministic environment recovery; reviewer starts remain an explicit visible
-  user action. Preserve ordinals and restricted gates, no hidden failover.
+  deterministic environment recovery. Authorized `/loop` and `/finish-pr`
+  orchestrators start ordinary fresh user-visible Kilo reviewer sessions; the owner
+  need not start or relay them. Preserve ordinals and restricted gates; no hidden
+  failover.
 - Completed PASS gates, adjudication, remediation, translation and validation
   remain completed unless source changes materially or a concrete regression is
   identified.
