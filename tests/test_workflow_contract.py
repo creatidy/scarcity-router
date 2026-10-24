@@ -1,9 +1,12 @@
 """Offline consistency guards for command text, not proof of runtime execution."""
 
 import ast
+import json
 import re
 import unittest
+from fnmatch import fnmatchcase
 from pathlib import Path
+from typing import cast
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -738,6 +741,44 @@ class WorkflowContractTests(unittest.TestCase):
             "No desired verdict", "UX",
         ):
             self.assertIn(requirement.lower(), profile.lower())
+
+    def test_reviewer_git_reads_exclude_filesystem_and_sensitive_paths(self) -> None:
+        # Offline last-match wildcard checks, not proof of live Kilo enforcement.
+        profile = (ROOT / ".kilo/agents/pr-reviewer.md").read_text()
+        bash = profile.split("  bash:\n", 1)[1].split("---", 1)[0]
+        rules = [
+            (cast(str, json.loads(match[1])), match[2])
+            for match in re.finditer(r'^    (".*"): (allow|deny)$', bash, re.M)
+        ]
+        self.assertNotIn(("git diff *", "allow"), rules)
+        base, head = "1" * 40, "2" * 40
+        for command, expected in (
+            (f"git diff --merge-base {base} {head}", "allow"),
+            (f"git diff --merge-base {base} {head} -- AGENTS.md", "allow"),
+            (f"git diff --merge-base {base} {head} --stat", "allow"),
+            (f"git show {head}:.kilo/agents/pr-reviewer.md", "allow"),
+            ("git diff --check", "allow"),
+            ("git diff --no-index -- AGENTS.md AGENTS.md", "deny"),
+            ("git diff -- AGENTS.md /synthetic/outside-source", "deny"),
+            ("git diff --no-index -- .env AGENTS.md", "deny"),
+            ("git diff --no-index -- .task_progress.md AGENTS.md", "deny"),
+            ("git diff --no-index -- .kilo/agent-manager.json AGENTS.md", "deny"),
+            (f"git diff --merge-base {base} {head} --no-index AGENTS.md AGENTS.md", "deny"),
+            (f"git diff --merge-base {base} {head} -- .env", "deny"),
+            (f"git show {head}:.env", "deny"),
+            (f"git show {head}:nested/.env.local", "deny"),
+            (f"git show {head}:.task_progress.md", "deny"),
+            (f"git show {head}:.kilo/agent-manager.json", "deny"),
+            (f"git show {head}:.kilo/agent-manager.json.synthetic.tmp", "deny"),
+            (f"git show {head}:.git/config", "deny"),
+            (f"git diff --merge-base {base} {head} --output=/synthetic/output", "deny"),
+        ):
+            with self.subTest(command=command):
+                decision = next(
+                    (action for pattern, action in reversed(rules) if fnmatchcase(command, pattern)),
+                    "deny",
+                )
+                self.assertEqual(decision, expected)
 
     def test_canonical_history_is_attributed_and_final_combined_slot_is_unchanged(self) -> None:
         decisions = text("docs/decisions.md")

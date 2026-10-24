@@ -12,6 +12,8 @@ permission:
     ".git": deny
     ".git/**": deny
     "**/.git/**": deny
+    ".kilo/agent-manager.json": deny
+    "**/.kilo/agent-manager.json": deny
     ".kilo/agent-manager.json.*.tmp": deny
     "**/.kilo/agent-manager.json.*.tmp": deny
     "**/.config/kilo/**": deny
@@ -38,7 +40,7 @@ permission:
     "git merge-base *": allow
     "git log *": allow
     "git show *": allow
-    "git diff *": allow
+    "git diff --merge-base *": allow
     "git ls-tree *": allow
     "git ls-remote https://forgejo.creatidy.com/BioMedical-IT/scarcity-router refs/heads/develop refs/heads/*": allow
     "git ls-remote https://forgejo.creatidy.com/BioMedical-IT/scarcity-router.git refs/heads/develop refs/heads/*": allow
@@ -47,6 +49,11 @@ permission:
     "python3 -m unittest discover -s tests -v": allow
     "python3 -m unittest discover -s tests *": allow
     "git diff --check": allow
+    "*--no-index*": deny
+    "*.env*": deny
+    "*.task_progress.md*": deny
+    "*agent-manager.json*": deny
+    "*.git/*": deny
     "*--output*": deny
     "*--ext-diff*": deny
     "*--textconv*": deny
@@ -77,6 +84,10 @@ repository plus canonical read-only Forgejo getters; do not access other reposit
 credentials, external directories, local Agent Manager state, or Kilo config/cache/
 tool-output state. Do not use editing, writing, task delegation, or shell commands
 outside the explicit Git and test allowlist.
+
+For frozen-object comparisons use `git diff --merge-base <base> <head> -- <path>`.
+Filesystem/no-index comparisons and sensitive-path reads through Git are denied;
+use only the supplied frozen objects and approved source paths.
 
 Use the exact selected Repo/Issue/PR acceptance and legitimate owner decision supplied
 by the orchestrator. Verify canonical refs, the complete compact diff, and actual

@@ -1506,6 +1506,8 @@ def _profile_parts(profile_path: Path) -> tuple[bytes, str, str]:
         '    ".git": deny',
         '    ".git/**": deny',
         '    "**/.git/**": deny',
+        '    ".kilo/agent-manager.json": deny',
+        '    "**/.kilo/agent-manager.json": deny',
         '    ".kilo/agent-manager.json.*.tmp": deny',
         '    "**/.kilo/agent-manager.json.*.tmp": deny',
         '    "**/.config/kilo/**": deny',
@@ -1522,6 +1524,9 @@ def _profile_parts(profile_path: Path) -> tuple[bytes, str, str]:
         "  glob: allow", "  grep: allow", "  list: allow", "  semantic_search: allow",
         '  "forgejo-mcp_get_*": allow', '  "forgejo-mcp_list_*": allow',
         '  "forgejo-mcp_search_*": allow', '  bash:\n    "*": deny',
+        '    "git diff --merge-base *": allow', '    "*--no-index*": deny',
+        '    "*.env*": deny', '    "*.task_progress.md*": deny',
+        '    "*agent-manager.json*": deny', '    "*.git/*": deny',
         '    "git diff --check": allow', '    "*--output*": deny',
         '    "*--ext-diff*": deny', '    "*--textconv*": deny',
         '    "*>*": deny', '    "*<*": deny', '    "*|*": deny',
@@ -1529,6 +1534,8 @@ def _profile_parts(profile_path: Path) -> tuple[bytes, str, str]:
     ):
         if rule not in frontmatter:
             raise PacketError("reviewer read-only tool allowlist is incomplete")
+    if '    "git diff *": allow' in frontmatter:
+        raise PacketError("reviewer must not allow unrestricted filesystem diffs")
     description = re.search(r"(?m)^description:\s*(.+?)\s*$", frontmatter)
     if description is None:
         raise PacketError("canonical reviewer description is missing")
