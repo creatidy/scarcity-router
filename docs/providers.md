@@ -25,6 +25,31 @@ retry the read once. It must:
 Collector failures are isolated. `status` should still report a healthy source
 when another source is `auth_required`, `schema_changed` or `unknown`.
 
+## Claude Offline Boundary (#214, 2026-10-24)
+
+Claude Pro/Max is the highest-priority later subscription-provider investigation,
+not a supported routable provider. The pinned evidence and compatibility matrix
+are in [`poc-evidence.md`](poc-evidence.md#claude-offline-feasibility-2026-10-24-214).
+Conflicting official subscription/OAuth terms remain unresolved (U-015).
+
+Only `providers.claude_statusline.parse_claude_statusline` is added: a pure,
+unregistered partial v3 projection of documented five-hour/seven-day fields.
+It always reports `unknown`, with unknown quota units/model scope and no plan or
+billing assertion. It reads no clock, environment, filesystem, credentials or
+network, launches no process/prompt, and installs no statusline hook. Missing,
+stale, future or unproven original quota timestamps withhold percentage pairs;
+fractional percentages are not rounded into v3 integers. Official statusline JSON
+has no original quota timestamp: a timer, cached file read or hook delivery is not
+new quota-observation evidence and must not supply `observed_at`.
+
+No Claude collector, configured source, model/catalog rating, public provider-enum
+addition, status-command change or execution adapter is enabled. CLI, SDK and MCP
+surfaces do not become inference-only/no-PAYG merely by existing. No API-key,
+credits/overflow fallback, workspace access or hidden helper is authorized.
+Existing OpenAI/Z.ai behavior is unchanged. Account-backed auth/plan/reset/model,
+freshness/latency/billing and cancellation proof is **DEFERRED**, not passed; #214
+stays open for that separately authorized acceptance.
+
 ## OpenAI Through Codex App-Server
 
 The proven mechanism launches a locally available `codex app-server`, speaks
