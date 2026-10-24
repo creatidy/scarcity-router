@@ -45,7 +45,7 @@ from tools.reviewer_packet import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PROFILE = ROOT / ".kilo/agents/pr-reviewer-standalone.md"
+PROFILE = ROOT / ".kilo/agents/pr-reviewer.md"
 BASE = "1" * 40
 HEAD = "2" * 40
 MERGE_BASE = BASE
@@ -969,7 +969,7 @@ class ReviewerPacketTests(unittest.TestCase):
                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 check=True, text=True,
             )
-            profile_path = repository / ".kilo/agents/pr-reviewer-standalone.md"
+            profile_path = repository / ".kilo/agents/pr-reviewer.md"
             _ = profile_path.parent.mkdir(parents=True)
             _ = profile_path.write_bytes(PROFILE.read_bytes())
             _ = (repository / "tests").mkdir()
@@ -1018,7 +1018,7 @@ class ReviewerPacketTests(unittest.TestCase):
             binding["ranges"] = [[1, 2]]
             _ = manifest_path.write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
 
-            self.assertNotIn(".kilo/agents/pr-reviewer-standalone.md", source_bindings)
+            self.assertNotIn(".kilo/agents/pr-reviewer.md", source_bindings)
             runtime = prepare_standalone_environment(
                 packet,
                 manifest_path,
@@ -1414,7 +1414,7 @@ class ReviewerPacketTests(unittest.TestCase):
                 _ = _validate_packet(packet, manifest_path, source_root=ROOT, external_source_roots=roots)
 
         with tempfile.TemporaryDirectory() as temporary:
-            changed = (".kilo/agents/pr-reviewer-standalone.md",)
+            changed = (".kilo/agents/pr-reviewer.md",)
             packet, manifest_path = _make_standalone_preflight_packet(
                 Path(temporary), changed_paths=changed, head=HEAD, base=BASE, merge_base=MERGE_BASE
             )
@@ -1545,7 +1545,7 @@ class ReviewerPacketTests(unittest.TestCase):
 
     def test_synthetic_preflight_fixture_has_the_complete_standalone_packet_inventory(self) -> None:
         changed = (
-            ".kilo/agents/pr-reviewer-standalone.md",
+            ".kilo/agents/pr-reviewer.md",
             "tests/test_reviewer_packet.py",
             "tools/reviewer_packet.py",
         )
@@ -1567,7 +1567,7 @@ class ReviewerPacketTests(unittest.TestCase):
 
     def test_synthetic_packet_builder_uses_the_production_file_plan_without_real_content(self) -> None:
         changed = tuple(sorted((
-            ".kilo/agents/pr-reviewer-standalone.md",
+            ".kilo/agents/pr-reviewer.md",
             "tests/test_reviewer_packet.py",
             "tools/reviewer_packet.py",
         )))
@@ -2072,7 +2072,7 @@ class ReviewerPacketTests(unittest.TestCase):
             {"permission": "external_directory", "pattern": "*", "action": "deny"},
         ]
         return {
-            "name": "pr-reviewer-standalone",
+            "name": "pr-reviewer",
             "mode": "primary",
             "tools": {"read": True, "bash": False, "task": False, "mcp": False},
             "permission": rules,
@@ -2086,7 +2086,7 @@ class ReviewerPacketTests(unittest.TestCase):
         if denied:
             permission = "read" if runtime.probe_labels[path] == "symlink_to_packet" else "external_directory"
             rule = {"permission": permission, "pattern": "*", "action": "deny"}
-            approval: dict[str, object] = {"source": "agent", "agent": "pr-reviewer-standalone", "rule": rule}
+            approval: dict[str, object] = {"source": "agent", "agent": "pr-reviewer", "rule": rule}
             if permission == "external_directory":
                 approval.update({"outsideWorkspace": True, "outsideWorkspacePath": str((runtime.workspace / path).resolve())})
             return {
@@ -2129,7 +2129,7 @@ class ReviewerPacketTests(unittest.TestCase):
                 "input": {"filePath": path},
                 "output": rendered,
                 "metadata": {"approval": {
-                    "agent": "pr-reviewer-standalone",
+                    "agent": "pr-reviewer",
                     "rule": {
                         "permission": "read",
                         "pattern": permission_pattern or path,
@@ -2225,7 +2225,7 @@ class ReviewerPacketTests(unittest.TestCase):
         session: dict[str, object] = {
             "info": {
                 "id": "ses_standalone_fixture",
-                "agent": "pr-reviewer-standalone",
+                "agent": "pr-reviewer",
                 "parentID": None,
                 "projectID": "global",
                 "directory": str(runtime.workspace),
@@ -2236,15 +2236,15 @@ class ReviewerPacketTests(unittest.TestCase):
             },
             "messages": [
                 {"info": {"role": "user", "id": "msg_user", "time": {"created": 1},
-                          "agent": "pr-reviewer-standalone",
+                          "agent": "pr-reviewer",
                           "model": {"providerID": expected_model["provider_id"],
                                     "modelID": expected_model["model_id"], "variant": expected_model["variant"]}},
                  "parts": [{"type": "text", "text": f'"{prompt}"'}]},
-                {"info": {"role": "assistant", "agent": "pr-reviewer-standalone", "id": "msg_reads",
+                {"info": {"role": "assistant", "agent": "pr-reviewer", "id": "msg_reads",
                           "providerID": expected_model["provider_id"], "modelID": expected_model["model_id"],
                           "variant": expected_model["variant"],
                           "parentID": "msg_user", "time": {"created": 10, "completed": 20}}, "parts": parts},
-                {"info": {"role": "assistant", "agent": "pr-reviewer-standalone", "finish": "stop",
+                {"info": {"role": "assistant", "agent": "pr-reviewer", "finish": "stop",
                           "providerID": expected_model["provider_id"], "modelID": expected_model["model_id"],
                           "variant": expected_model["variant"],
                           "id": "msg_final", "parentID": "msg_user", "time": {"created": 30, "completed": 40}},
@@ -2259,7 +2259,7 @@ class ReviewerPacketTests(unittest.TestCase):
             _, _, runtime = self._prepare_standalone(root, preflight=True)
             resolved = self._debug_standalone(runtime)
             checked = verify_effective_standalone_agent(resolved, runtime, PROFILE)
-            self.assertEqual(checked["reviewer_agent"], "pr-reviewer-standalone")
+            self.assertEqual(checked["reviewer_agent"], "pr-reviewer")
             self.assertEqual(checked["reviewer_profile_mode"], "primary")
             self.assertIn(checked["reviewer_resolved_mode"], {"primary", "all"})
             self.assertEqual(checked["reviewer_effective_tools"], ["read"])
@@ -2312,12 +2312,16 @@ class ReviewerPacketTests(unittest.TestCase):
             with self.assertRaisesRegex(PacketError, "unindexed packet path"):
                 _ = verify_effective_standalone_agent(unindexed, runtime, PROFILE)
 
-            legacy = (ROOT / ".kilo/agents/pr-reviewer.md").read_text(encoding="utf-8")
-            standalone = PROFILE.read_text(encoding="utf-8")
-            self.assertIn("mode: subagent", legacy)
-            self.assertIn("mode: primary", standalone)
-            self.assertIn("not a review execution path", legacy)
-            self.assertIn("read: ask", standalone.split("---", 2)[1])
+            profile = PROFILE.read_text(encoding="utf-8")
+            frontmatter = profile.split("---", 2)[1]
+            self.assertFalse((ROOT / ".kilo/agents/pr-reviewer-standalone.md").exists())
+            self.assertIn("mode: primary", frontmatter)
+            self.assertIn('"*": deny', frontmatter)
+            self.assertIn('"*": allow', frontmatter)
+            self.assertIn('".git/**": deny', frontmatter)
+            self.assertIn('"**/.env*": deny', frontmatter)
+            self.assertIn("external_directory: deny", frontmatter)
+            self.assertIn("bash:", frontmatter)
 
 
 
@@ -2365,7 +2369,7 @@ class ReviewerPacketTests(unittest.TestCase):
                 "symlink_to_packet", "symlink_to_outside",
             })
             self.assertEqual(_load_object(runtime.kilo_config_content), {})
-            profile_copy = runtime.profile_config / "agents/pr-reviewer-standalone.md"
+            profile_copy = runtime.profile_config / "agents/pr-reviewer.md"
             profile_text = profile_copy.read_text(encoding="utf-8")
             frontmatter = profile_text.split("---", 2)[1]
             self.assertIn("mode: primary", frontmatter)
@@ -2398,7 +2402,7 @@ class ReviewerPacketTests(unittest.TestCase):
                 preflight=True,
             )
             self.assertEqual(result["status"], "STANDALONE_PREFLIGHT_TRACE_PASS")
-            self.assertEqual(result["reviewer_agent"], "pr-reviewer-standalone")
+            self.assertEqual(result["reviewer_agent"], "pr-reviewer")
             self.assertEqual(result["reviewer_parent_session"], None)
             self.assertEqual(result["reviewer_tools"], ["read"])
             self.assertEqual(result["allowed_file_count"], len(runtime.allowed_paths))

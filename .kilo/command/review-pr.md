@@ -4,7 +4,7 @@ description: Read-only independent review in a fresh user-visible Kilo session
 
 Review the selected canonical Forgejo PR: $ARGUMENTS
 
-Read `.kilo/rules/35-technical-recovery.md` and the `Independent Review —
+Read `.kilo/rules/35-technical-recovery.md`, `.kilo/agents/pr-reviewer.md`, and the `Independent Review —
 Conversational Separation` section in `AGENTS.md`. These are instructions for a fresh,
 separate reviewer session. An authorized `/loop` or `/finish-pr` orchestrator starts
 ordinary Kilo review through native Agent Manager; user visibility does not require
@@ -14,12 +14,12 @@ background inference, generated wrappers or silent model substitution.
 
 The orchestrator verifies canonical Repo/PR/linked Issue, legitimate owner authority,
 and exact HEAD/base/merge-base against Git objects before dispatch. It supplies those
-refs, the complete compact diff and relevant source context directly. Independently
-assess that source against acceptance and contracts. The reviewer may use the same
-checkout and Git object database, but does not require Git or Forgejo tools; a separate
-worktree is not required. Do not request owner approval for routine reads or Git access.
-If supplied source is materially incomplete or inconsistent with the intended revision,
-report that exact limitation. Use canonical records and native session references, not
+refs, acceptance, relevant contracts and changed paths. The reviewer independently
+uses the read-only Git/Forgejo getters allowed by `.kilo/agents/pr-reviewer.md` to
+inspect the complete diff and intended source. The same checkout and Git object
+database may be used; no separate worktree is required. Do not request owner approval
+for routine reads. If source or authority evidence remains materially incomplete,
+report the exact limitation. Use canonical records and native session references, not
 local receipt folders. Access only authorized source, never credentials, implementation
 conversations or unrelated work.
 Do not write source/platform state, run untrusted code with ambient secrets, commit,

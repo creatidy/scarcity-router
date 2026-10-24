@@ -225,7 +225,8 @@ Use `.kilo/command/finish-pr.md` in this same primary context for authorized sco
 remediation, validation and normal Git/Forgejo delivery. The implementation context
 does not self-review. It prepares exact current Repo/Issue/PR refs, acceptance and
 complete compact diff/changed-source instructions, then starts a fresh separate
-read-only reviewer through native Kilo session management. The prompt contains only
+read-only reviewer through native Kilo session management using the existing primary
+`.kilo/agents/pr-reviewer.md` role. The prompt contains only
 review scope, acceptance, exact refs, relevant contracts and source instructions;
 never implementation history, reasoning or desired verdict.
 

@@ -35,7 +35,8 @@ management; it does not self-review or invoke hidden inference.
    records, not duplicated source trees, receipt hierarchies or large transcripts.
    Optional deeper source inspection is the reviewer's material judgment.
 5. Start a fresh separate, user-visible ordinary Kilo reviewer session through the
-   native Agent Manager. This is authorized workflow orchestration, not a hidden model
+   native Agent Manager using the existing primary `.kilo/agents/pr-reviewer.md` role.
+   This is authorized workflow orchestration, not a hidden model
    launcher. Do not require the owner to start the session. Use the existing checkout
    when safe; a separate worktree/checkout is not an independence requirement. The
    implementation agent freezes the exact source until review completes. Never use
