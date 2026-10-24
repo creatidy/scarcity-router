@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 import unittest
 from dataclasses import replace
 from datetime import timedelta
@@ -71,6 +72,15 @@ def serialized_identities(value: object) -> set[tuple[str, str, str]]:
 
 
 class ExecutableContractTests(unittest.TestCase):
+    def test_producer_decision_does_not_reuse_accepted_review_numbers(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        decisions = (root / "docs/decisions.md").read_text()
+        numbers = re.findall(r"^### (D-\d{3}) - ", decisions, re.MULTILINE)
+        self.assertEqual(len(numbers), len(set(numbers)))
+        self.assertIn("### D-079 - Additive executable recommendation and retained requirements", decisions)
+        surface = (root / "docs/execution-surface.md").read_text()
+        self.assertIn("### Executable Recommendation (D-079, #174)", surface)
+
     def test_denied_provider_or_all_resources_have_no_public_identities(self) -> None:
         for grant in (ClientAuthorization(allowed_providers=()),
                       ClientAuthorization(blocked_resource_ids=("openai-http", "zai-http"))):

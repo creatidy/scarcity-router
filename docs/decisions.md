@@ -6441,13 +6441,14 @@ positive pinned PermissionDeniedError representation and request/rule/path bindi
 not permissive denial keywords or canary blacklists. No security validation or product
 adapter is removed merely to eliminate orchestration. See the actual Git source/tests.
 
-### D-078 - Additive executable recommendation and retained requirements
+### D-079 - Additive executable recommendation and retained requirements
 
-- **Numbering conflict and resolution:** PR #204 recorded this #174 contract as
-  D-077 at its branch head. Current develop assigned D-077 to the #212 review
-  workflow, so the unchanged #174 producer decision is numbered D-078 here. The
-  renumbering resolves the document collision; it does not alter contract semantics
-  or grant additional authority.
+- **Numbering conflict and resolution:** PR #204 originally recorded this #174
+  contract as D-077, then D-078. Integrated develop reserves D-077 for the #212
+  review history and D-078 for #216's governing conversational-review contract.
+  The unchanged, still-unintegrated #174 producer decision is therefore D-079.
+  Neither accepted review decision is reopened; this renumbering changes no
+  executable contract semantics or authority.
 - **Status:** Accepted producer contract within #174's explicit selected scope;
   exact independent conformance/security reviews required before integration.
   Installed consumer/harness acceptance remains open, not implied by this decision.
