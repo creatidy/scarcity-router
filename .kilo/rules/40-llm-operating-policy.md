@@ -2,9 +2,17 @@
 
 Follow the full policy in [`docs/llm-operating-policy.md`](../../docs/llm-operating-policy.md).
 
+D-081: every consequential PR requires ordinary independent correctness review
+including applicable security assessment. Security-critical work receives rigorous
+review by a sufficiently capable model; P0/P1, material security findings and
+data-integrity risks block integration, never deferred to the final audit.
+Daybreak is not a PR merge gate. It is reserved for one final comprehensive frozen
+project release-candidate audit before production release, not a development gate.
+No routine owner handoff or automatic Daybreak is authorized. D-078 is unchanged.
+
 ## Router Owner-Manual Codex Amendment (D-069A)
 
-For Scarcity Router's owner-manual security review only, the accepted owner decision
+Historical assurance, not a new PR handoff: for Scarcity Router's owner-manual security review only, the accepted owner decision
 permits `RUNTIME_UNOBSERVABLE` solely when the official Codex path cannot independently
 expose backend identity. Official binary/provenance, requested-model dispatch, native
 session/turn/input/output, context/tool audit, exact refs and a structured APPROVE with
@@ -21,8 +29,8 @@ No automatic Daybreak, hidden launcher, skipped review or generic identity weake
   owner to start it or relay results. Model identity follows applicable policy and
   must not be silently substituted.
 - No scripts/subprocesses, Task/subagent dispatch, background/HTTP inference or
-  generated model-launch wrapper. The owner-manual Daybreak/Codex security review
-  remains separate and is never started automatically.
+  generated model-launch wrapper. The final project-level Daybreak audit remains a
+  separate future release gate and is never started automatically by this workflow.
 - No persistent local review-evidence folders or replacement receipt hierarchy.
   Use Git/canonical records/native harness references; offline fixtures use cleaned
   OS temporary directories. This does not alter authorized Router product inference.

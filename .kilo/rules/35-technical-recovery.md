@@ -7,6 +7,14 @@ is complete, all #1-20 are consumed, #20 approval is only at1dcb4a0, cleanupcddc
 was separately accepted, and merge121ee3f/#212 closure are verified. No #20 reuse,
 #21 or transfer. Other deliveries retain their own verified scopes and gates.
 
+D-081: ordinary independent correctness review includes applicable security
+assessment, with rigorous sufficiently capable review for security-critical work.
+Material security findings and data-integrity risks block merge, not deferred fixes.
+Daybreak is not a PR merge gate. Its final comprehensive frozen-candidate audit is
+a production-release gate, not a development prerequisite or routine owner handoff.
+Unavailable future audit access does not block ordinary-accepted PR integration.
+Preserve historical outcomes and PR #209's owner pause/unresolved SQLite finding.
+
 This shared development-workflow contract applies to implementation, validation,
 review and remediation. It does not authorize product changes, persistent services,
 new dependencies, paid/live inference, external effects or broader access.
@@ -71,18 +79,9 @@ Keep minimal attempts/time across reentry, phases and sessions canonically;
 local notes are optional, not a gate. Renaming an obstacle or reviewer does not
 reset its budget. Every whole-PR
 review dispatch, including failed/COMMENT attempts and failover, also consumes the
-next reserved ordinal. The default effective ceiling is 10. The sole separate
-direct-owner supersession is #212/PR #213: the final D-077 amendment records maximum
-20, consumed #1-19 unchanged. The final `2026-10-20T06:26:22Z` exception permits
-the P1 correction/validation and #20 owner-manual combined correctness/security
-Daybreak without ordinary APPROVE, for this delivery only. No more ordinary Kilo,
-#21, blind retry or counter reset. If the combined result is nonpositive/incomplete/
-unverified, preserve it and stop for the owner. The current owner reaffirms the
-exception while retiring local files/scripts. Verify legitimate native owner
-source/current reaffirmation, not deleted local paths or transcriptions, and
-canonical scope/currentness before each reservation; this is not D-069A and cannot
-transfer. For other deliveries,
-only a finite D-069A exception verified against the direct owner source and exact
+next reserved ordinal. The default effective ceiling is 10. The completed #212/PR
+#213 maximum20/all-consumed history remains under D-077, not a pending review or
+transferable allocation. Only a finite D-069A exception verified against the direct owner source and exact
 canonical Repo/Issue/linked-PR scope, with D-069A already integrated into freshly
 fetched `develop`, can raise the cap. Missing/stale/ambiguous authority leaves the
 default 10 effective. Never
@@ -162,8 +161,8 @@ persistent local receipts, copied source/transcripts or reconstructed evidence t
 Historical deleted files are unavailable; historical hashes/transcriptions do not
 recreate their original bytes or grant authority. Recover legitimate native owner
 records or obtain direct owner confirmation only when authority is truly unresolved.
-For #212 the current owner explicitly reaffirms pending/unconsumed #20 combined
-Daybreak and forbids scripts; use D-077/Issue #212 history, not deleted paths.
+For completed #212 use D-077/current root status and canonical history, not deleted
+paths or a new pending/unconsumed #20 claim.
 
 For public-source access failure, try an alternative available read path, then fetch/clone the exact public revision
 in safe temporary space when authorized; preserve pin, origin and provenance.

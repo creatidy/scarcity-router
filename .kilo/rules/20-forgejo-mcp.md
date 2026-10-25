@@ -18,12 +18,15 @@
 - Implementation commits/pushes use normal Git under Adrian's Git identity:
   `Adrian Tkacz <adrian.tkacz@creatidy.com>`, Forgejo user `adrian.tkacz`.
   `forgejo-mcp` handles platform operations, not implementation authorship.
-  Independent review uses a separate fresh read-only USER-VISIBLE Kilo or official
-  Codex session, selected and started explicitly by the user, not scripts/Task or
-  hidden processes. Use actual frozen Git source, canonical acceptance and native
+  Ordinary independent review uses a separate fresh read-only USER-VISIBLE Kilo
+  session, started natively by the authorized `/loop` or `/finish-pr` orchestrator
+  under D-078, not scripts/Task or hidden processes. D-081's final project audit is
+  a separate release gate, not a per-PR owner-start requirement.
+  Use actual frozen Git source, canonical acceptance and native
   harness records; no persistent packet/receipt directory is required. Forgejo
   review publication is optional, not orchestration state or an acceptance gate.
-  The reviewer cannot call Forgejo MCP. Never author/commit implementation as forgejo-mcp,
+  The reviewer may use only its existing read-only getters, never Forgejo writes.
+  Never author/commit implementation as forgejo-mcp,
   Kilo, a bot/service identity or the reviewer identity.
 - Before the first commit on an implementation branch, verify
   `git config user.name` and `git config user.email` resolve to the expected owner identity;

@@ -538,8 +538,9 @@ JSON and safe errors, retaining no second persistent input or raw diagnostics.
 Actual fake-source cancellation/loss/unknown-usage tests prove only the declared
 transport/core boundary. Native settlement, hidden calls, complete task cost,
 source identity and real consumer acceptance stay unknown where not evidenced.
-D-080/#181's independent ordinary and owner-manual security gates still apply;
-the #174/#185-specific exception is not reused here.
+D-081 retains D-080/#181's ordinary independent correctness/security acceptance
+and supersedes its per-PR Daybreak requirement with the final project release audit;
+historical outcomes and the #174/#185-specific exception are not rewritten or reused.
 
 Post-initial-review corrections retain the same subset contract: JSON-schema
 envelopes validate actual required name/object-schema and optional types before

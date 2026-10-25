@@ -20,6 +20,34 @@ unauthorized substitution is FAIL, other evidence gaps keep the gate open. No sc
 no automatic Daybreak, generic identity-policy change, or skipped security review. See
 D-069A and `docs/llm-operating-policy.md` for the complete contract.
 
+## Security Review — Continuous PR Security and Final Project Audit
+
+D-081 records Adrian's direct owner decision of 2026-10-25T18:46:24Z for Scarcity
+Router only, effective immediately. It supersedes prospective mandatory per-PR
+Daybreak gates in D-053 and related decisions, issue criteria and workflow mirrors;
+historical reviews, findings and consumed ordinals are not rewritten. The older
+allocations/provenance above are historical, not a new per-PR security handoff.
+
+- Every consequential PR requires independent correctness review including applicable
+  security assessment. Security-critical changes require rigorous ordinary independent
+  review by a sufficiently capable model at the complete frozen PR HEAD/base.
+- P0/P1 defects, unresolved material security findings and data-integrity risks block merge.
+  Fix and independently verify them before integration, never defer them to the final audit.
+- Daybreak is not a PR merge gate. Individual PRs do not wait for Daybreak merely
+  because they are security-sensitive. With all ordinary acceptance gates satisfied,
+  the authorized `/loop` continues through Forgejo integration into `develop` without
+  another routine owner confirmation. D-078 conversational independence is unchanged.
+- Daybreak is reserved for one final comprehensive project-level audit of a frozen
+  release candidate before the first production release. This is a release acceptance
+  gate, not an implementation or `develop` integration prerequisite. Audit findings
+  must be corrected and verified before release; a changed candidate needs current
+  audit acceptance. Scope, future access/provenance verification and official sources
+  are in `docs/llm-operating-policy.md#final-release-candidate-audit`.
+- No Daybreak invocation, access provisioning, release, deployment or promotion to
+  `main` is authorized here. No deprecated alias is a future reviewer requirement.
+  PR #209's owner pause and unresolved SQLite transition race remain intact; this
+  timing change neither resumes that delivery nor waives its correctness finding.
+
 ## Mission and priority
 
 Build a small service that recommends which available subscription-backed AI
@@ -75,7 +103,7 @@ Kilo session management. User visibility does not require the owner to start the
 session or relay its result. Read `Independent Review — Conversational Separation`
 below. This does not authorize hidden inference through scripts, subprocesses,
 Task/subagents, background jobs, HTTP or generated wrappers; no silent substitution
-or fallback is permitted. The owner-manual Daybreak/Codex gate remains separate.
+or fallback is permitted. D-081's final project audit remains a separate release gate.
 
 Only an explicit owner `/loop` delegates autonomous selection, approved canonical
 PR merge into `develop`, and completed-issue closure. Its primary invocation
@@ -275,19 +303,10 @@ issue delivery defaults to 10 whole-PR review invocations, including initial,
 COMMENT, invalidated reviews and corrected retries. D-069A permits a greater finite
 maximum only for one exact canonical issue/linked PR after the primary verifies the
 direct owner source, canonical repository/issue/PR identities, maximum and scope,
-and verifies D-069A is already integrated in the freshly fetched `develop`. The
-sole direct supersession is Adrian's one-time owner amendment for issue #212/PR #213,
-recorded in D-077 and the canonical issue: maximum20, consumed #1-19 preserved.
-Adrian's `2026-10-20T06:26:22Z` final exception permits only the verified P1 fix,
-validation and one owner-manual combined implementation/security Daybreak at #20.
-No more ordinary Kilo review, #21, reset, transfer or automatic extension. For this
-delivery only, valid combined approval can satisfy both remaining gates without
-historical ordinary APPROVE. The owner reaffirmed this on 2026-10-20T18:58:08Z
-while retiring local evidence folders and all model-launch wrappers. Use D-077,
-canonical Issue/PR history and legitimate native owner/session records; historical
-file hashes do not imply current local availability or create authority.
-This is not D-069A and cannot transfer to another delivery. No other delivery may use
-an exception present only in its own branch/PR. Absent, stale, ambiguous or
+and verifies D-069A is already integrated in the freshly fetched `develop`.
+The completed #212/PR #213 maximum20 exception and all consumed outcomes remain
+history under D-077 and the current notice above, never transferable authority.
+No delivery may use an exception present only in its own branch/PR. Absent, stale, ambiguous or
 mismatched authority uses the default 10 and fails closed. `/finish-pr` and `/loop`
 record minimal ordinals/outcomes/refs canonically before an imminent authorized
 visible review or owner handoff. Local progress notes are optional and not an
@@ -326,22 +345,6 @@ repeated manual work, understandable state). A material UX regression is
 `CHANGES_REQUESTED` even when the implementation is technically correct — see
 [`docs/llm-operating-policy.md`](docs/llm-operating-policy.md).
 
-**Security-critical work carries an additional independent
-`gpt-daybreak-blue-latest` review gate** when the work is explicitly
-classified `security_critical`. Adrian personally invokes the official direct
-Codex user interface after required validation and ordinary independent review at a stable
-exact PR base/HEAD, before completion or merge. The implementation agent must never
-launch Codex or Daybreak automatically or route this gate through Kilo. It is not a
-pre-implementation eligibility gate. Kilo discovery failure does not imply
-`SECURITY_REVIEW_UNAVAILABLE`; only failure of the authorized direct Codex path after
-bounded technical recovery can establish that limitation. Before handoff, reserve the
-next owner-manual ordinal against exact frozen refs. Record the exact HEAD/base,
-reviewer identity, execution path, findings/verdict and verified provenance; any
-HEAD/base change invalidates security approval. The gate stays open at the human
-decision point if required access is genuinely unavailable; no substitute model may
-close it. This reviewer-path rule is Router-specific — see
-[`docs/llm-operating-policy.md`](docs/llm-operating-policy.md).
-
 The detailed operating policy is
 [`docs/llm-operating-policy.md`](docs/llm-operating-policy.md), and its
 machine-readable companion is [`model-policy.json`](model-policy.json).
@@ -350,19 +353,6 @@ engineering obstacles separately from owner decisions and attempting bounded
 secret-safe recovery automatically. Record changed conditions, consumed budgets
 and the STOP_AND_ASK/BLOCKED contracts before escalation; owner attention is not
 a substitute for ordinary execution diagnosis.
-
-For #212/PR #213 only, the later D-077 combined-acceptance exception supersedes the
-ordinary-APPROVE-before-Daybreak prerequisite above, not security identity/provenance,
-exact currentness or `/loop`-only integration. After correction/validation reserve #20
-as pending owner-manual combined review and report `READY_FOR_OWNER_COMBINED_REVIEW`
-(owner handoff label only, not a new global status or approval). Positive result must
-explicitly approve BOTH implementation and security. COMMENT/REQUEST_CHANGES,
-incomplete/unverified or security-only approval stops for Adrian; no automatic retry.
-The current transparent workflow reports `CLEAN_WORKFLOW_READY_FOR_OWNER_COMBINED_REVIEW`
-as a descriptive handoff only. Adrian manually opens official Codex on the NEW exact
-HEAD, visibly selects `gpt-daybreak-blue-latest` and starts the combined review.
-No launch script or retired local evidence directory is required; #20 remains
-reserved/unconsumed until the actual invocation. Historical #1-19 remain unchanged.
 
 ## Validation gate
 

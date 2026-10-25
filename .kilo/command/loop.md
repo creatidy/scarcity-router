@@ -244,14 +244,9 @@ minimal actual ordinals/outcomes/refs canonically; no local directory or progres
 file is an eligibility/review/merge prerequisite. Never reset counts or manufacture
 an APPROVE from tests, hashes, labels or a missing historical source.
 
-For #212/PR #213, maximum 20/#1-19 histories are unchanged, including #19
-REQUEST_CHANGES/audit PASS. #20 stays reserved/unconsumed for Adrian's ONE manually
-opened official Codex `gpt-daybreak-blue-latest` combined implementation AND security
-review on the NEW exact HEAD. The current 2026-10-20T18:58:08Z owner instruction
-retires local review folders/wrappers and reaffirms this exception. D-077 and Issue
-#212 comment #18011 preserve attributed metadata; transcriptions are not owner
-source. No more ordinary Kilo, no #21, reset or automatic Daybreak. The descriptive
-combined handoff is not approval or a new global loop status.
+The completed #212/PR #213 history remains under D-077 and the current notice above;
+it supplies no pending review or transferable exception. Preserve actual outcomes,
+not obsolete handoff instructions or agent transcriptions as owner source.
 
 Review the complete actual changes plus useful context, not unrelated unchanged
 bodies. Require exact refs, authentic independent identity/scope/source/context,
@@ -263,20 +258,19 @@ Preserve failed/COMMENT history; at the bound actionable defects yield STOP_REVI
 
 ## Security Review
 
-Security-critical Daybreak remains owner-manual in official Codex, visibly selected
-as `gpt-daybreak-blue-latest`, never Kilo, script, subprocess, generated wrapper or
-background job. It is not a pre-implementation eligibility gate; Kilo discovery failure
-does not imply `SECURITY_REVIEW_UNAVAILABLE`. No fallback reviewer is permitted.
-After generic ordinary approval/validation at exact current refs, hand off the
-pending manual-security gate and stop before merge/closure/selection.
+D-081: every consequential PR requires ordinary independent correctness review
+including applicable security assessment. Security-critical changes require rigorous
+review by a sufficiently capable model of the complete frozen PR and material threat
+boundaries. P0/P1 defects, unresolved material security findings and data-integrity
+risks block merge; correct and independently verify them, never defer them to release.
 
-Verify actual official execution/model, native session/turn and independent context/
-tool provenance; do not infer backend identity. Any HEAD/base change invalidates
-security approval; security approval covers those same exact objects. For #212 only,
-the owner combined exception permits #20 without historical ordinary APPROVE but
-requires explicit verified BOTH implementation/security approval and complete material
-scope. A security-only/nonpositive/incomplete/unverified result does not pass and
-stops for Adrian. Tests or a prepared handoff never close either gate.
+Daybreak is not a PR merge gate. It is reserved for the final comprehensive audit
+of a frozen project release candidate before first production release, under
+`docs/llm-operating-policy.md#final-release-candidate-audit`. Continue to MERGE without a routine owner confirmation
+when all ordinary acceptance gates pass, including security-critical work. No per-PR
+manual ordinal or Daybreak handoff is required. Daybreak availability cannot terminate ordinary PR delivery.
+PR #209's owner pause and unresolved SQLite finding remain in force; this policy
+does not resume or waive them. No Daybreak invocation, release or deployment is authorized.
 
 ## MERGE
 
@@ -299,7 +293,7 @@ For nonexcluded issues, changed authority/acceptance/gates/disposition still
 invalidates continuation; stop with evidence rather than merge. Otherwise
 re-fetch canonical PR metadata and current canonical develop through normal Git;
 verify approved HEAD/base exactly match current remote and local frozen objects,
-and, when security-critical, security approval covers those same exact objects.
+and ordinary correctness/security acceptance covers those same exact objects.
 Require empty findings, clean checkout, successful required `make check`, open/unmerged
 PR and target develop. A changed HEAD/base invalidates APPROVE: return to FINISH with
 the SAME counter (or terminate at the bound); never merge stale approval.
@@ -337,13 +331,11 @@ Report the legitimate queue/decision/revision/blocker outcome. Ordinary reviewer
 sessions and result collection are autonomous; do not report a routine owner-mediated
 review handoff. A genuine unsupported native session/result capability is reported
 only after bounded recovery, with its exact pending gate. Never call it QUEUE_EMPTY,
-approval or bypass it with a hidden launcher. Existing security handoffs may report
-READY_FOR_OWNER_SECURITY_REVIEW; #212's combined handoff is descriptive only.
-READY_FOR_OWNER_SECURITY_REVIEW is a terminal handoff after ordinary approval,
-validation and reservation of the exact owner-manual ordinal. Stop before MERGE,
-issue closure or SELECT; report the frozen refs and wait for Adrian's official Codex
-result. Resume only on explicit owner continuation after independently validating that
-result against the same current Issue/PR/HEAD/base. Never launch Daybreak from Kilo.
+approval or bypass it with a hidden launcher. D-081 removes the routine per-PR
+owner-manual security handoff; ordinary approval/validation proceeds to MERGE and
+COMPLETE under this invocation's authority. Historical handoff records stay historical.
+The final project audit is a future release gate, not a loop terminal state or
+implementation prerequisite. Never launch Daybreak from this workflow.
 Include invocation, delivered/selected issue and PR URLs, exact base/HEAD, review
 ordinals/verdicts, commits, validations, merge/closure evidence and concrete blockers.
 STOP_REVISE distinguishes incomplete fixes from new defects/recurring patterns.

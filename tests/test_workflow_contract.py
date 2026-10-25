@@ -168,25 +168,85 @@ class WorkflowContractTests(unittest.TestCase):
                 self.assertIn("read-only", contract)
                 self.assertIn("acceptance/retirement stage", contract)
 
-    def test_daybreak_uses_direct_codex_after_ordinary_review_not_issue_discovery(self) -> None:
-        for path in ("AGENTS.md", "docs/llm-operating-policy.md", ".kilo/command/loop.md",
-                     ".kilo/command/finish-pr.md"):
+    def test_continuous_security_review_replaces_per_pr_daybreak_gates(self) -> None:
+        for path in (
+            "AGENTS.md", "docs/llm-operating-policy.md", "docs/security.md",
+            ".kilo/command/loop.md", ".kilo/command/finish-pr.md", ".kilo/command/review-pr.md",
+            ".kilo/agents/pr-reviewer.md", ".kilo/rules/10-task-system.md",
+            ".kilo/rules/35-technical-recovery.md", ".kilo/rules/40-llm-operating-policy.md",
+            ".kilo/rules/validation.md",
+        ):
             with self.subTest(path=path):
                 contract = text(path)
-                self.assertIn("gpt-daybreak-blue-latest", contract)
-                self.assertIn("Codex", contract)
-                self.assertIn("not a pre-implementation eligibility gate", contract)
-                self.assertIn("does not imply `SECURITY_REVIEW_UNAVAILABLE`", contract)
-                self.assertIn("HEAD/base change", contract)
+                self.assertIn("D-081", contract)
+                self.assertIn("independent", contract.lower())
+                self.assertIn("security", contract.lower())
+                self.assertIn("release", contract.lower())
+                self.assertIn("not a PR merge gate", contract)
+                self.assertNotIn("pending manual-security gate and stop before merge", contract)
+                self.assertNotIn("READY_FOR_OWNER_SECURITY_REVIEW is a terminal handoff", contract)
+                self.assertNotIn("ordinary approval alone cannot close it", contract)
+        agents = text("AGENTS.md")
+        self.assertIn("Security Review — Continuous PR Security and Final Project Audit", agents)
+        self.assertIn("P0/P1 defects, unresolved material security findings and data-integrity risks block merge", agents)
         policy = text("docs/llm-operating-policy.md")
-        self.assertIn("directly through Codex", policy)
-        self.assertIn("never through Kilo discovery or reviewer dispatch", policy)
-        self.assertIn("no fallback reviewer is permitted", policy)
-        self.assertIn("after authorized bounded technical recovery", policy)
+        self.assertIn("sufficiently capable model", policy)
+        self.assertIn("never deferred to the final audit", policy)
         loop = text(".kilo/command/loop.md")
         self.assertLess(loop.index("## FINISH"), loop.index("## Security Review"))
         self.assertLess(loop.index("## Security Review"), loop.index("## MERGE"))
-        self.assertIn("security approval covers those same exact objects", loop)
+        self.assertIn("ordinary correctness/security acceptance covers those same exact objects", loop)
+        self.assertIn("Continue to MERGE without a routine owner confirmation", loop)
+
+    def test_final_daybreak_audit_is_one_frozen_candidate_release_gate(self) -> None:
+        policy = text("docs/llm-operating-policy.md")
+        audit = policy.split("### Final Release-Candidate Audit", 1)[1].split("## Evidence work", 1)[0]
+        for requirement in (
+            "before the first production release", "one frozen release-candidate revision",
+            "complete integrated product", "Authentication, credentials and authorization",
+            "Provider routing and exact execution identity", "Gateway protocol boundaries and tool handling",
+            "SQLite persistence, migrations and concurrency", "Worker and native-agent execution boundaries",
+            "Secrets, logs and diagnostics", "Network exposure and TLS",
+            "Recovery, failure handling and data integrity", "Significant security findings from prior PR reviews",
+            "Relevant integration and deployment assumptions", "corrected and verified before release",
+            "changed candidate cannot reuse stale audit approval", "not an automatic CI check",
+            "No Daybreak execution, credentials, provisioning, release, deployment or promotion to main",
+        ):
+            with self.subTest(requirement=requirement):
+                self.assertIn(requirement, audit)
+        release = text("docs/release-engineering.md")
+        self.assertIn("D-081", release)
+        self.assertIn("before the first production release", release.lower())
+        self.assertIn("not enforced by the existing release workflow", release)
+
+    def test_daybreak_access_is_future_verified_not_deprecated_alias_or_router_support(self) -> None:
+        policy = text("docs/llm-operating-policy.md")
+        audit = policy.split("### Final Release-Candidate Audit", 1)[1].split("## Evidence work", 1)[0]
+        for requirement in (
+            "2026-10-25", "https://developers.openai.com/api/docs/guides/daybreak",
+            "https://developers.openai.com/api/docs/models/gpt-daybreak-blue-latest.md",
+            "deprecated", "`access_programs.cyber`", "organization approval", "project",
+            "model-specific", "actual available model, program, access level and execution mechanism",
+            "Codex subscription does not establish Daybreak API access",
+            "selected program is not effective security-review acceptance",
+            "bounded `/v1/responses` subset does not support `access_programs`",
+            "do not hardcode a future reviewer alias", "RUNTIME_UNOBSERVABLE",
+        ):
+            with self.subTest(requirement=requirement):
+                self.assertIn(requirement, audit)
+
+    def test_security_timing_supersession_preserves_history_pause_and_product_scope(self) -> None:
+        decisions = text("docs/decisions.md")
+        decision = decisions.split("### D-081 - Continuous PR security and final project audit", 1)[1]
+        for requirement in (
+            "2026-10-25T18:46:24Z", "ses_e8b9d5991ffeHiYz2c7oRH9BA2", "#219",
+            "D-053 point 9", "D-078", "Do not propagate", "retrospectively rewrite historical", "#6", "UNCONSUMED",
+            "#209", "owner-paused", "SQLite transition race", "not deferred", "17-18",
+            "No product, catalog, model-selection, provider-routing or review-infrastructure change",
+        ):
+            with self.subTest(requirement=requirement):
+                self.assertIn(requirement, decision)
+        self.assertIn("D-081 supersedes prospective per-PR Daybreak requirements", decisions.split("### D-001", 1)[0])
 
     def test_pre_delivery_gates_refresh_queue_without_terminating_or_resetting_history(self) -> None:
         transitions = eligibility_transitions()
@@ -246,7 +306,7 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("generic agent workflow frameworks", agents)
         policy = text("docs/llm-operating-policy.md")
         self.assertIn("portable `model-policy.json` artifact remains descriptive and unchanged", policy)
-        self.assertIn("Security-critical work retains its additional independent restricted review gate", policy)
+        self.assertIn("Security-critical work retains rigorous ordinary independent security assessment", policy)
         validation = text(".kilo/rules/validation.md")
         for command in ("uv sync --only-dev", "make check", "uv run basedpyright", "git diff --check"):
             self.assertIn(command, validation)
@@ -462,13 +522,10 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("Ordinary reviewer sessions and result collection are autonomous", loop)
         self.assertIn("genuine unsupported native session/result capability", loop)
         self.assertNotIn("explicit visible-review handoff with its exact pending gate", loop)
-        self.assertIn("READY_FOR_OWNER_SECURITY_REVIEW is a terminal handoff", loop)
-        self.assertIn("Stop before MERGE, issue closure or SELECT", loop)
-        self.assertIn("maximum 20", loop)
-        self.assertIn("#1-19 histories are unchanged", loop)
-        self.assertIn("ONE manually opened official Codex", loop)
-        self.assertIn("not approval or a new global loop status", loop)
-        self.assertIn("no #21", loop)
+        self.assertIn("Daybreak availability cannot terminate ordinary PR delivery", loop)
+        self.assertIn("#212/PR #213 is complete", loop)
+        self.assertIn("all #1-20 are consumed", loop)
+        self.assertIn("No #20 reuse, #21 or transfer", loop)
         self.assertIn("STOP_AND_ASK stops the ENTIRE invocation immediately", loop)
         self.assertIn("never skip the selected issue and continue another", loop)
         for boundary in (
@@ -584,7 +641,7 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("do not ask the owner to copy or relay prompts/results", finish.lower())
         self.assertIn("No persistent `.review-evidence-*`", finish)
         self.assertIn("not original owner authority", finish)
-        self.assertIn("No ordinary #212 Kilo", text(".kilo/rules/validation.md"))
+        self.assertIn("#212/PR #213 is complete", text(".kilo/rules/validation.md"))
 
     def test_independent_review_is_conversational_and_native(self) -> None:
         agents = text("AGENTS.md")

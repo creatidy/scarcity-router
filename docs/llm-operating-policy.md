@@ -19,6 +19,11 @@ Never infer `RUNTIME_VERIFIED` from UI/configuration/self-report. Mismatch/subst
 is FAIL; other missing proof keeps the gate open. No automatic Daybreak, skipped review,
 generic identity weakening, or cross-delivery transfer.
 
+The allocation and Codex-path records above are historical assurance, not
+prospective PR gates. D-081 supersedes their mandatory per-PR Daybreak timing and
+fixed future reviewer path; it does not upgrade historical provenance or relax
+identity honesty. The current security/release contract is below.
+
 ## Purpose
 
 This document is the authoritative human-readable policy for multi-model work
@@ -179,18 +184,12 @@ identity/scope/results without claiming OS isolation or backend identity from
 UI/self-report. Credentials remain outside context. Only a genuinely unsupported
 native session/result capability after bounded recovery leaves an exact pending gate.
 A default maximum of 10 invocations per issue delivery
-includes initial, COMMENT, invalidated reviews and corrected retries. The sole separate
-direct-owner supersession is for #212/PR #213: the final D-077 amendment records maximum
-20, with consumed #1-19 preserved. The final `2026-10-20T06:26:22Z` owner exception
-permits only P1 correction/validation then #20 owner-manual combined implementation/
-security Daybreak without prior ordinary APPROVE, exclusively for this delivery.
-No more ordinary Kilo reviews or #21. The 2026-10-20T18:58:08Z owner cleanup decision
-reaffirms this exception on the NEW exact HEAD and retires old local files/launchers.
-Use legitimate native owner records and canonical D-077/Issue history, never an agent
-transcription as original evidence or an old hash as proof of local availability.
-Verify source and canonical
-scope/currentness before each reservation; this is not D-069A and cannot transfer. For every other
-delivery, D-069A permits a greater finite maximum only after the primary verifies the
+includes initial, COMMENT, invalidated reviews and corrected retries. The completed
+#212/PR #213 maximum20 exception and consumed #1-20 remain historical under D-077,
+not a pending handoff or transferable allocation. Use legitimate native owner
+records, never an agent transcription as original evidence or an old hash as proof
+of local availability. Verify source and canonical scope/currentness before each
+reservation. D-069A permits a greater finite maximum only after the primary verifies the
 direct owner source, exact canonical repository/issue/linked-PR identity, scope and
 cap, and confirms the policy is already integrated in freshly fetched `develop`. An
 unmerged branch cannot authorize its own exception; stale, missing or mismatched
@@ -200,9 +199,8 @@ Reentry/phase/
 process/model/session changes never reset them. Every HEAD/base change requires a new
 counted review. Missing or ambiguous recovery is BLOCKED. Implementation never
 self-approves or resumes a reviewer. Standalone review is read-only. Standalone
-finish returns `READY_TO_MERGE` only when all ordinary gates pass; security-critical
-work instead returns `READY_FOR_OWNER_SECURITY_REVIEW` after reserving its manual
-gate. It never merges. Only an explicit owner `/loop` may proceed through
+finish returns `READY_TO_MERGE` only when all ordinary correctness/security gates
+pass, including security-critical work. It never merges. Only an explicit owner `/loop` may proceed through
 canonical Forgejo PR merge into develop, verified integrated acceptance and issue
 closure, then fresh selection. Review independence does not expand scope.
 
@@ -222,50 +220,86 @@ understand current system state. A material UX regression is
 is deliberately not a bureaucracy: no separate UX review phase or UX checklist
 artifact is required beyond the explicit review-result field.
 
-## Security-critical review gate (D-053 point 9, #122)
+## Continuous PR Security and Final Project Audit (D-081)
 
-Work explicitly classified `security_critical` requires an INDEPENDENT
-`gpt-daybreak-blue-latest` review before the platform claims completion of
-that workflow. The gate is a durable contract of Program Execution Mode:
+Adrian's direct owner decision of 2026-10-25T18:46:24Z applies immediately to
+Scarcity Router repository development only. It supersedes D-053 point 9's
+mandatory per-PR Daybreak requirement and related prospective gates, including
+fixed alias/direct-Codex handoffs. It does not rewrite historical review results,
+consumed ordinals or other projects' policies. D-078 is unchanged.
 
-```text
-security_critical -> independent Daybreak Blue review required
-```
+Every consequential PR requires independent correctness review including
+applicable security assessment. Security-critical changes require rigorous ordinary
+independent review using a sufficiently capable model, covering the complete frozen
+PR and material threat boundaries, not merely its last correction. P0/P1 defects,
+unresolved material security findings and data-integrity risks block merge and are
+never deferred to the final audit. Exact approval, empty findings, honest limitations,
+validation, currentness, source integrity and UX assessment remain mandatory.
 
-Discipline:
+Daybreak is not a PR merge gate. Individual security-sensitive PRs do not wait for
+Daybreak. The authorized `/loop` integrates ordinary-accepted current PRs into
+`develop` without another routine owner confirmation. Standalone finish still
+cannot merge. PR #209 remains owner-paused with its unresolved review16 SQLite
+transition race; the policy neither resumes it nor waives that finding.
 
-- For Scarcity Router repository delivery, invoke `gpt-daybreak-blue-latest`
-  **directly through Codex**, never through Kilo discovery or reviewer dispatch.
-  This is a mandatory **pre-completion / pre-merge gate**, not a pre-implementation
-  eligibility gate. Kilo model discovery
-  failure does not imply `SECURITY_REVIEW_UNAVAILABLE`.
-- After required validation and ordinary independent whole-PR review pass with
-  no further implementation changes pending, freeze exact PR base and HEAD.
-  The fresh independent Codex reviewer inspects the complete frozen PR and
-  relevant security/authority context, without prior findings or desired verdict.
-  Use read-only execution and preserve credential boundaries. Persist exact
-  reviewed base/HEAD, identity `gpt-daybreak-blue-latest`, Codex execution path,
-  security findings and final verdict. Any HEAD/base change invalidates approval
-  and requires a fresh security review; ordinary approval alone cannot close it.
-- Classify `SECURITY_REVIEW_UNAVAILABLE` only when the required direct Codex path
-  cannot be exercised after authorized bounded technical recovery. Diagnose
-  routine environment/tool problems automatically under the shared recovery rule,
-  never ask the owner to operate an available authorized path. New restricted
-  access/authority remains owner-controlled; no fallback reviewer is permitted.
-  Do not propagate this repository-specific path rule to other repositories.
-- Daybreak Blue (`gpt-daybreak-blue-latest`) is a RESTRICTED security-review
-  capability: discovery in some runtime's inventory never proves execution
-  authorization, restricted models are never general-routed, and there is NO
-  silent fallback from a required Daybreak review to an ordinary model.
-- The review is independent — routing one primary request through Daybreak is
-  NOT a review. Scarcity Router stays a routing/execution system; the
-  multi-stage review itself lives OUTSIDE the Routing Core as a human-owned
-  process. The router's honest duty is restricted-access representation and
-  audit correctness, not orchestration.
-- If the required access cannot be exercised, the record states
-  `SECURITY_REVIEW_UNAVAILABLE` and the gate remains OPEN/FAILED — final
-  completion pauses at that external/human gate. Substituting another model
-  and claiming the gate passed is forbidden.
+### Final Release-Candidate Audit
+
+At the end of development, before the first production release, require one
+comprehensive independent project-level Daybreak audit of one frozen release-candidate revision.
+It covers the complete integrated product, not a collection of PR approvals:
+
+- Authentication, credentials and authorization.
+- Provider routing and exact execution identity.
+- Gateway protocol boundaries and tool handling.
+- SQLite persistence, migrations and concurrency.
+- Worker and native-agent execution boundaries.
+- Secrets, logs and diagnostics.
+- Network exposure and TLS.
+- Recovery, failure handling and data integrity.
+- Significant security findings from prior PR reviews, including their remediation.
+- Relevant integration and deployment assumptions, with unproved live/platform scope explicit.
+
+Record the exact candidate SHA, reviewed scope, current threat/deployment assumptions,
+actual reviewer/program/execution provenance, verdict, findings and limitations in
+canonical release evidence. Audit findings must be corrected and verified before release;
+a changed candidate cannot reuse stale audit approval. Re-freeze the corrected
+candidate and obtain verification covering corrections and affected integrated
+security properties before accepting that final revision. Ordinary PR reviews
+cannot substitute for the project audit. Missing access, incomplete coverage or
+unresolved findings leave the release gate open, not ordinary development blocked.
+This is a documented human-controlled release acceptance gate, not an automatic CI check.
+
+Official evidence checked 2026-10-25:
+
+- [Daybreak guide](https://developers.openai.com/api/docs/guides/daybreak) documents
+  `access_programs.cyber` on the upstream Responses API. The prerequisites are
+  organization approval, project setup and access to both the program and model.
+  Program values and eligibility are model-specific; a request selects within approved
+  access, never grants it. Check actual response/program/model evidence where available.
+  The guide's current Markdown distinguishes Blue request treatment from required
+  approval: GPT-6.1 Sol/Astra use `daybreak_blue` but require Red approval and project access.
+  This is dated evidence, not a fixed future model assignment.
+- The [older model page](https://developers.openai.com/api/docs/models/gpt-daybreak-blue-latest)'s
+  [Markdown representation](https://developers.openai.com/api/docs/models/gpt-daybreak-blue-latest.md)
+  explicitly marks the alias deprecated and directs users to an available current cyber model.
+  At audit time determine the actual available model, program, access level and execution mechanism
+  from then-current official evidence and authorized account/project access; do not hardcode a future reviewer alias.
+- A Codex subscription does not establish Daybreak API access, and program enablement
+  for this account is not verified. A selected program is not effective security-review acceptance:
+  require actual complete review and verified remediation, not a dispatch flag or successful request.
+- Router's bounded `/v1/responses` subset does not support `access_programs` and is
+  not equivalent to all upstream Responses parameters or an audit execution path.
+  This policy adds no parameter passthrough, provider routing or orchestration.
+
+Preserve authentic independent context/tool/execution provenance and distinguish
+requested, dispatched and observable runtime identity. Never infer `RUNTIME_VERIFIED`
+from a UI, selected program or model self-report. Historical Router-only Codex
+`RUNTIME_UNOBSERVABLE` acceptance is not generic approval for a future mechanism;
+document its actual observability and any genuine unresolved assurance requirement.
+No automatic Daybreak or silent substitute may close this release gate.
+No Daybreak execution, credentials, provisioning, release, deployment or promotion to main
+is authorized by D-081; the release owner verifies access and authorizes that future
+audit separately. No new audit framework, receipt hierarchy or recurring PR handoff is required.
 
 ## Evidence work
 
@@ -417,23 +451,10 @@ pinned conversion drops most errored assistant messages, retains meaningful
 `MessageAbortedError` messages and clears compacted tool results. Qualifying later
 rereads restore coverage. Preserve terminal/model/context/permission checks and
 fail closed when visibility is genuinely unverifiable, without reconstructing a
-new context engine. D-077's `2026-10-19T20:49:07Z` owner mandate authorizes only this
-remediation and coverage simplification for #212/PR #213, not another review or
-budget extension. The later `2026-10-19T22:41:20Z` direct owner max20 amendment
-supersedes that earlier invocation restriction, not the compact/security contract:
-#1-15 were preserved, #16-19 were the remaining ordinary allocation and #20 manual
-security. The final `2026-10-20T06:26:22Z` D-077 exception now preserves consumed
-#1-19, forbids further ordinary Kilo review and uses #20 as ONE owner-manual combined
-acceptance review. This consciously waives the ordinary-APPROVE prerequisite only
-for #212/PR #213, not the source/security/identity/currentness guarantees. Require
-the full PR, explicit implementation AND security approval, no unresolved blocking
-findings, verified official Codex/Daybreak provenance and independent context/tool
-audit. Security-only approval, nonpositive/incomplete/unverified results do not pass.
-Report `READY_FOR_OWNER_COMBINED_REVIEW` only as this owner handoff label, not a
-global state or acceptance; reserve pending #20 after validation, never invoke it
-automatically or consume it through tests. Default ten elsewhere and `/loop`-only
-integration remain; no #21, transfer or authority from unintegrated D-069A.
-The later cleanup policy prohibits any more scripted/invisible development model
+new context engine. The completed D-077/#212 review history remains in the decision
+log and canonical records; no historical outcome or budget is reset. Default ten
+elsewhere and `/loop`-only integration remain; no transfer or authority from
+unintegrated D-069A. The cleanup policy prohibits scripted/invisible development model
 execution, including synthetic preflight model calls. Offline synthetic responses,
 Git/hash/static/build tools remain allowed. No `.review-evidence-*` directory or
 replacement hierarchy may be created or required. Historical source bytes removed
@@ -552,7 +573,8 @@ selection, execution, orchestration, telemetry or operation of this loop.
 No second controller, daemon, scheduler or database is authorized. D-070 permits
 bounded temporary worktrees/evidence checkouts, one designated delivery checkout and
 one mutator, preserving unrelated work and exact frozen read-only review.
-Security-critical work retains its additional independent restricted review gate.
+Security-critical work retains rigorous ordinary independent security assessment;
+D-081 moves the comprehensive Daybreak audit to the final production-release gate.
 
 ## Failure handling
 

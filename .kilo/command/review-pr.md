@@ -41,6 +41,14 @@ endless marginal search. Assess UX explicitly (`none` or concrete consequences).
 Actual source/identity/context integrity and unresolved material uncertainty remain
 blocking; optional unread lines or absence of reviewer-run tests alone do not.
 
+D-081: ordinary independent correctness review includes applicable security assessment;
+security-critical changes require rigorous complete-PR assessment by a sufficiently
+capable model. P0/P1, unresolved material security findings and data-integrity risks
+block integration, never deferred to the final audit. Daybreak is not a PR merge gate;
+its final project-level frozen-candidate audit is a production-release gate under
+`docs/llm-operating-policy.md#final-release-candidate-audit`, not a second mandatory
+PR reviewer. Do not invoke it. D-078 conversational independence remains unchanged.
+
 Return exact reviewed refs, verdict APPROVE/REQUEST_CHANGES/COMMENT, material
 findings, limitations, checks actually performed and UX impact as the final result
 of this reviewer session. The orchestrator collects it through native session
@@ -49,13 +57,8 @@ status labels or exit0. Record only minimal native session reference/outcome met
 canonically; do not copy a large transcript into the repository. Any HEAD/base change
 invalidates approval.
 
-Default ten and finite integrated D-069A owner exceptions remain for other deliveries;
-unintegrated D-069A grants none. For #212/PR #213, no further ordinary Kilo review is authorized. #1-19 stay consumed;
-#20 remains reserved/unconsumed for Adrian's ONE manually opened official Codex
-`gpt-daybreak-blue-latest` combined full-PR correctness AND security review. Verify
-the original direct owner decision/current reaffirmation via the native owner
-conversation and canonical acceptance/D-077; Issue #212 comment #18011 is an agent
-metadata transcription, not owner-authored evidence. No deleted local source is
-required or claimed available. Both explicit approvals and verified execution/
-context/currentness are required; a security-only or incomplete/unverified/nonpositive
-result stops for Adrian. No script, automatic invocation, #21, merge or issue closure.
+Default ten and finite integrated D-069A owner exceptions remain; unintegrated
+D-069A grants none. #212/PR #213 is complete with all #1-20 consumed, no #20 reuse,
+#21 or transfer. Preserve canonical history/D-077 rather than obsolete handoffs.
+PR #209 remains owner-paused with its unresolved SQLite risk. This read-only command
+never resumes that delivery, merges, closes issues, releases or deploys.

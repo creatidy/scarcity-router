@@ -7,6 +7,15 @@ is complete, all #1-20 are consumed, #20 approval is only at1dcb4a0, cleanupcddc
 was separately accepted, and merge121ee3f/#212 closure are verified. No #20 reuse,
 #21 or transfer. Other deliveries retain their own verified scopes and gates.
 
+D-081: independent correctness review includes applicable security assessment;
+security-critical PRs require rigorous review by a sufficiently capable model.
+P0/P1, unresolved material security findings and data-integrity risks block merge.
+Daybreak is not a PR merge gate; its final frozen-candidate project audit is a
+production-release gate, not an implementation/develop integration prerequisite.
+Under the authorized `/loop`, ordinary-accepted current PRs integrate without
+routine owner confirmation. Historical per-PR gates are superseded, not historical
+outcomes or owner pauses; PR #209's unresolved SQLite risk remains paused.
+
 - Outside an explicit owner `/loop`, start implementation only when Adrian selects one Forgejo issue by
   number, URL or unambiguous title. Fetch the actual issue via MCP before planning
   or editing. If the selection is ambiguous, clarify; never infer work from order,
@@ -81,18 +90,9 @@ was separately accepted, and merge121ee3f/#212 closure are verified. No #20 reus
   itself is genuinely unsupported, use bounded recovery and report that exact gate;
   never skip acceptance or call it repository-wide QUEUE_EMPTY.
   Default to at most 10 whole-PR review invocations per issue delivery, including
-  initial, COMMENT and retries. The sole separate direct-owner supersession is for
-  #212/PR #213: maximum20 and consumed #1-19 are preserved. The final direct
-  `2026-10-20T06:26:22Z` D-077 exception permits P1 correction/validation then #20
-  owner-manual combined implementation/security Daybreak without prior ordinary
-  APPROVE; no more ordinary Kilo reviews or #21. Both gates need explicit verified
-  combined approval, not a security-only result. The 2026-10-20T18:58:08Z owner
-  instruction preserves this exception but retires local receipts/launchers and
-  requires the NEW exact HEAD in the owner's visible Codex. Verify legitimate
-  native owner authority and
-  canonical issue/PR scope/currentness before each reservation; this is not D-069A
-  and does not transfer. Any other larger finite
-  maximum requires D-069A authority: verify its direct owner source, exact canonical
+  initial, COMMENT and retries. The completed #212/PR #213 maximum20 exception and
+  all #1-20 consumed outcomes remain history under D-077, not pending authority.
+  A larger finite maximum requires D-069A authority: verify its direct owner source, exact canonical
   repository/issue/linked-PR identity, maximum and scope before reservation, and
   confirm D-069A is already integrated in freshly fetched `develop`. A branch cannot
   use its own unintegrated rule. Otherwise the effective ceiling remains 10. Persist
