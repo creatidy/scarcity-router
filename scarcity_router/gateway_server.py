@@ -2,7 +2,8 @@
 
 This is the NEW, distinct server component that terminates the
 OpenAI-compatible execution surface v1 (``GET /v1/models``,
-``POST /v1/chat/completions`` with SSE). It is deliberately NOT the
+``POST /v1/chat/completions`` with SSE), plus D-080's separately versioned
+stateless ``POST /v1/responses`` subset. It is deliberately NOT the
 loopback REST adapter of :mod:`scarcity_router.server`, which stays
 byte-identical and frozen (D-030/D-045): the two components share no
 listener, no error vocabulary and no security boundary.
@@ -80,7 +81,7 @@ from collections.abc import Mapping
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Protocol, cast, override
+from typing import Protocol, cast, final, override
 
 from .config import resolve_default_selector_policy
 from .gateway_adapters import (
@@ -92,11 +93,13 @@ from .gateway_adapters import (
     AdapterStreamChunk,
     ClientDisconnectedError,
     CompletionOutcome,
+    OutputRejectedError,
 )
 from .gateway_contracts import (
     EXECUTION_SURFACE_VERSION,
     ClientKeyDirectory,
     GatewayError,
+    hash_client_key,
     GatewayLimits,
 )
 from .gateway_coordinator import GatewayApplication, exposed_logical_models
@@ -108,6 +111,7 @@ from .gateway_openai import (
     models_list_payload,
     parse_chat_completion_request,
 )
+from .gateway_responses import ResponsesRequest, ResponsesStreamEvents, parse_responses_request, response_payload
 from .selector import neutral_selector_policy
 from .resource_state import ResourceRegistry
 from .routing_core import AdministratorConstraints
@@ -263,6 +267,8 @@ class GatewayRequestHandler(BaseHTTPRequestHandler):
     close_connection: bool = True
 
     _sse_committed: bool = False
+    _responses_surface: bool = False
+    _responses_stream: _ResponsesStreamState | None = None
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
 
@@ -331,6 +337,8 @@ class GatewayRequestHandler(BaseHTTPRequestHandler):
         self._dispatch("OPTIONS")
 
     def _dispatch(self, method: str) -> None:
+        self._responses_surface = self.path.split("?", 1)[0].split("#", 1)[0] == "/v1/responses"
+        self._responses_stream = None
         try:
             self._require_single_host()
             control = self._control_plane()
@@ -349,16 +357,16 @@ class GatewayRequestHandler(BaseHTTPRequestHandler):
             if method == "POST" and path == "/v1/chat/completions":
                 self._route_chat_completions(client_id)
                 return
+            if method == "POST" and path == "/v1/responses":
+                self._route_responses(client_id)
+                return
             if method == "POST" and path == "/v1/route":
                 control = self._control_plane()
                 if control is not None:
                     control.prepare_execution_admission()
                 application = self._application()
                 document = self._read_json_object(application.limits.max_request_body_bytes)
-                bearer = self._bearer_key()
-                if bearer and bearer in json.dumps(document, ensure_ascii=False):
-                    raise GatewayError.invalid_request("credentials cannot be retained as executable demand data",
-                                                       code="execution_requirements_invalid")
+                self._refuse_credential_input(document)
                 self._send_json(HTTPStatus.OK, application.select_executable(client_id=client_id, document=document))
                 return
             if method in ("GET", "POST", "HEAD"):
@@ -369,6 +377,9 @@ class GatewayRequestHandler(BaseHTTPRequestHandler):
             self._send_empty(HTTPStatus.METHOD_NOT_ALLOWED)
         except GatewayError as exc:
             self._send_gateway_error(exc)
+        except OutputRejectedError as exc:
+            self._send_gateway_error(exc.error)
+            self.close_connection = True
         except ClientDisconnectedError:
             self.close_connection = True
         except Exception:
@@ -434,6 +445,35 @@ class GatewayRequestHandler(BaseHTTPRequestHandler):
 
     # ── Operations ────────────────────────────────────────────────────────
 
+    def _refuse_credential_input(self, document: Mapping[str, object]) -> None:
+        # Match decoded strings, including keys: JSON escaping must not let a
+        # quoted/backslashed credential become retained or reflected metadata.
+        bearer = self._bearer_key()
+        directory = self._application().client_key_directory
+        # Non-authentication lookup over one directory snapshot: no principal
+        # is granted, no plaintext retained, no per-leaf scan of every client.
+        known_hashes: frozenset[str] = frozenset(directory.hash_for(client_id) for client_id in directory.client_ids) if directory is not None else frozenset()
+        pending: list[object] = [document]
+        while pending:
+            item = pending.pop()
+            if isinstance(item, str):
+                credential = bearer in item
+                if not credential and 0 < len(item) <= 4096:
+                    try:
+                        credential = hash_client_key(item) in known_hashes
+                    except ValueError:
+                        pass  # Not usable key material; the wire parser rejects it.
+                if credential:
+                    raise GatewayError.invalid_request(
+                        "credentials cannot be retained as executable demand data", code="execution_requirements_invalid",
+                    )
+            if isinstance(item, Mapping):
+                mapping = cast(Mapping[object, object], item)
+                pending.extend(mapping.keys())
+                pending.extend(mapping.values())
+            elif isinstance(item, list):
+                pending.extend(cast(list[object], item))
+
     def _route_models(self) -> None:
         application = self._application()
         payload = models_list_payload(
@@ -455,6 +495,32 @@ class GatewayRequestHandler(BaseHTTPRequestHandler):
             self._run_streaming(application, client_id, request)
         else:
             self._run_nonstreaming(application, client_id, request)
+
+    def _route_responses(self, client_id: str) -> None:
+        application = self._application()
+        document = self._read_json_object(application.limits.max_request_body_bytes)
+        self._refuse_credential_input(document)
+        request = parse_responses_request(document)
+        control = self._control_plane()
+        if control is not None:
+            control.prepare_execution_admission()
+        application = self._application()
+        if request.canonical.stream:
+            state = _ResponsesStreamState(handler=self, request=request)
+            self._responses_stream = state
+            outcome: CompletionOutcome | None = None
+            try:
+                outcome = application.execute(
+                    client_id=client_id, request=request.canonical,
+                    request_id=state.request_id, emit_chunk=state.emit,
+                )
+            finally:
+                state.finish(outcome)
+        else:
+            outcome = application.execute(
+                client_id=client_id, request=request.canonical, request_id=f"resp-{uuid.uuid4().hex}",
+            )
+            self._send_json(HTTPStatus.OK, response_payload(request, outcome))
 
     def _run_nonstreaming(
         self,
@@ -607,13 +673,17 @@ class GatewayRequestHandler(BaseHTTPRequestHandler):
 
     # ── Response writing ──────────────────────────────────────────────────
 
-    def _send_json(self, status: HTTPStatus, payload: Mapping[str, object]) -> None:
+    def _send_json(
+        self, status: HTTPStatus, payload: Mapping[str, object], *, retryable: bool | None = None,
+    ) -> None:
         encoded = json.dumps(
             payload, sort_keys=True, allow_nan=False, separators=(",", ":")
         ).encode("utf-8")
         self.send_response(status.value)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(encoded)))
+        if retryable is not None:
+            self.send_header("x-should-retry", "true" if retryable else "false")
         self.end_headers()
         _ = self.wfile.write(encoded)
 
@@ -624,6 +694,14 @@ class GatewayRequestHandler(BaseHTTPRequestHandler):
 
     def _send_gateway_error(self, exc: GatewayError) -> None:
         payload = exc.to_payload()
+        if self._responses_surface:
+            self.close_connection = True
+            if self._sse_committed and self._responses_stream is not None:
+                try:
+                    self._responses_stream.fail(exc)
+                except (OSError, ClientDisconnectedError):
+                    pass
+                return
         if self._sse_committed:
             # The stream already started; report the failure in-band and
             # close. The error payload names nothing about request content.
@@ -639,7 +717,7 @@ class GatewayRequestHandler(BaseHTTPRequestHandler):
             self.close_connection = True
             return
         try:
-            self._send_json(HTTPStatus(exc.http_status), payload)
+            self._send_json(HTTPStatus(exc.http_status), payload, retryable=False if self._responses_surface else None)
         except (BrokenPipeError, ConnectionResetError, OSError):
             self.close_connection = True
 
@@ -821,6 +899,64 @@ class _StreamState:
             self._handler.wfile.flush()
         except (BrokenPipeError, ConnectionResetError, OSError):
             self._handler.close_connection = True
+
+
+@final
+class _ResponsesStreamState(_StreamState):
+    """Responses framing over the same HTTP disconnect/cancellation seam."""
+
+    def __init__(self, *, handler: GatewayRequestHandler, request: ResponsesRequest) -> None:
+        super().__init__(handler=handler, request=request.canonical)
+        self.request_id = f"resp-{uuid.uuid4().hex}"
+        self._events: ResponsesStreamEvents = ResponsesStreamEvents(
+            request, response_id=self.request_id, created=self._created,
+        )
+
+    def _write_events(self, events: tuple[dict[str, object], ...]) -> None:
+        if not events:
+            return
+        if not self._started:
+            self._handler.send_response(HTTPStatus.OK)
+            self._handler.send_header("Content-Type", "text/event-stream")
+            self._handler.send_header("Cache-Control", "no-cache")
+            self._handler.send_header("Connection", "close")
+            self._handler.end_headers()
+            self._handler.close_connection = True
+            self._handler.mark_sse_committed()
+            self._started = True
+        for event in events:
+            self._write_frame(event)
+
+    @override
+    def emit(self, chunk: AdapterStreamChunk) -> None:
+        if self._client_gone():
+            raise ClientDisconnectedError()
+        try:
+            events = self._events.push(chunk)
+        except GatewayError as exc:
+            raise OutputRejectedError(exc) from None
+        self._write_events(events)
+
+    @override
+    def finish(self, outcome: CompletionOutcome | None = None) -> None:
+        try:
+            events = self._events.finish(outcome)
+        except GatewayError as exc:
+            raise OutputRejectedError(exc) from None
+        self._write_events(events)
+
+    def fail(self, error: GatewayError) -> None:
+        self._write_events(self._events.fail(error))
+
+    @override
+    def _write_frame(self, payload: Mapping[str, object]) -> None:
+        data = json.dumps(payload, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode("utf-8")
+        kind = str(payload["type"]).encode("ascii")
+        try:
+            _ = self._handler.wfile.write(b"event: " + kind + b"\ndata: " + data + b"\n\n")
+            self._handler.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError) as exc:
+            raise ClientDisconnectedError() from exc
 
 
 # ── Server construction and entry point ───────────────────────────────────────

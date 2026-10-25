@@ -42,10 +42,130 @@ the tool-loop executor; client tools return to it. The integrated D-063
 workspace-editing ZCode lane is a preserved, explicit ownership conflict
 (U-014/#180), not target inference-only conformance.
 
-This implemented ingress is Chat Completions. Responses is accepted future
-direction under D-056, with actual subset/compatibility work registered in
-#181; Anthropic Messages is not an implemented ingress. Protocol naming
-alone proves neither compatibility nor a complete tool loop.
+The Chat Completions wire contract remains unchanged. D-080/#181 adds the
+separately versioned bounded stateless Responses subset described below; it does
+not advertise a general native Responses backend or arbitrary harness compatibility.
+Anthropic Messages remains an unimplemented ingress. Protocol naming alone proves neither
+compatibility nor a complete tool loop.
+
+### Responses Surface 1 (D-080, #181)
+
+`POST /v1/responses` uses the same authenticated optional gateway listener,
+TLS/Host/loop guards, admission, source adapters, continuation registry and audit.
+No recommendation-only REST prompt proxy, separate service, selector or SDK
+dependency is added. `responses_surface_version: 1` in `x_scarcity_router` is
+independent of the unchanged Chat execution-surface, worker and machine versions.
+Pinned source/semantic proof and the exact compatibility evidence level are in
+[`poc-evidence.md`](poc-evidence.md#responses-subset-source-proof-2026-10-25-181).
+
+The request is closed: `model`, `input` and explicit `store: false` are required.
+Missing/true store is refused, not silently changed from the upstream default.
+There is no response storage/retrieval, `previous_response_id`, conversation,
+background job, truncation, hosted tool or server-owned history. The caller sends
+complete explicit input. A string is the documented user-message shorthand;
+ordered explicit system/developer/user/assistant roles are preserved. Only a
+single text part is supported; multiple parts, modalities, nonempty annotations,
+non-null phase and reasoning-state replay refuse rather than flatten or relabel meaning.
+
+The presented credential is checked against decoded strings/keys, including
+escaped or embedded forms. Exact other configured key material is recognized
+through one hash-only directory snapshot and refuses before dispatch; no plaintext
+key inventory, authentication-policy change or generic secret classifier is added.
+
+Function declarations require explicit object parameters and boolean strictness;
+optional descriptions are strings or null. The gateway never executes them.
+Flat declarations/choices map to the current
+semantic function structures. Native Codex dynamic tools have no evidenced
+strict-schema control: `strict:true` refuses before thread/turn creation, for both
+Responses and Chat clients, instead of the previous silent native downgrade.
+`strict:false` and legacy omitted strictness retain their native continuation path;
+HTTP mappings retain the explicit control for a capable source. This is not new
+local schema evaluation or a guarantee for an unevidenced provider.
+Real function-call/result pairs preserve order,
+arguments and `call_id`; missing/duplicate/orphaned results refuse, never receive
+guessed IDs, arguments or tool names. A required function needs a declaration;
+a forced name must identify a declared function, or the request refuses before
+dispatch. Concrete message/item IDs are validated non-authority annotations,
+not stored lookups or aliases for call IDs. Existing
+native continuation tokens remain unchanged and client-scoped. Opaque reasoning
+is returned distinctly as `reasoning_text`, not a fabricated summary; its replay
+remains unsupported as in D-064. A client echoing unsupported reasoning/phase or
+requiring native encrypted history is not declared compatible.
+
+Supported controls are `max_output_tokens` (the actual semantic output ceiling),
+existing `reasoning.effort`, `temperature`, `top_p`, client function choices and
+parallel permission, bounded metadata and text/json_object/json_schema formats.
+Omitted parallel permission stays a wire default, not an injected mandatory
+backend generation parameter; native serial tool continuation remains available.
+An explicitly supplied parallel control remains explicit and a source unable to
+represent it refuses before its turn starts. JSON-schema envelopes require a
+bounded valid name and object schema, with typed optional strict/description;
+the codec does not implement a new JSON-schema evaluator or resolve references.
+Unimplemented or malformed fields refuse before inference. Current source feature
+and control limitations still refuse through the same core before dispatch; the
+codec does not promote UNKNOWN channel cells, fabricate enforceable limits or
+turn native coding tools into client tools. `tools` reports client declarations,
+not whole-backend tool isolation or a no-hidden-calls guarantee.
+
+The internal binding protocol remains the existing canonical semantic execution
+protocol. A Responses wire wrapper does not rewrite a retained binding's protocol
+or satisfy a hard native-Responses requirement by pretending a different channel
+exists. Exact D-079 requirements/pins/effort go unchanged to current admission.
+`prepare_executable_response` reuses the D-079 preparation checks so callers do not
+manually copy model/context/effort; initial preparation omits those bound fields,
+final `require_bound=True` validation refuses any lost/changed field without repair.
+It returns the complete HTTP JSON document, not SDK keyword arguments (the
+`execution_requirements` extension must not disappear during a harness transform).
+Kernel still owns immutable Attempt binding and installed-consumer acceptance.
+
+`stream: true` uses typed Responses SSE events with monotone sequence numbers,
+stable item/call IDs, distinct text/reasoning/function facts and actual terminal
+outcomes. It is not Chat JSON renamed or a stream ending in fabricated success.
+Normalized complete function arguments are emitted as actual complete deltas;
+incomplete/cancelled calls never get an arguments-done trigger. An observed
+producer finish may precede its buffered complete calls; only compatible tool
+facts and usage follow that marker, and success still waits for the actual outcome.
+An exact observed prefix may receive a known final suffix, but conflicting output,
+duplicates, unrepresentable UTF-8 or output bounds fail explicitly.
+Known final text/reasoning suffixes are split at the unchanged normalized delta
+bound (1 Mi characters); a whole result does not become invalid just because its
+source did not supply incremental chunks. Unicode/content and event order remain.
+The surface bounds output to 16 Mi characters, 128 function items and one million
+normalized chunks rather
+than truncating. `stream_options.include_obfuscation` is a wire-only boolean,
+default true, not a routing/billing/identity assurance.
+
+Source/mapping failure and cancellation send a typed error, not a successful
+terminal Response. During streaming dispatch, output rejection uses existing
+cooperative cancellation with a distinct `response_mapping_failed` audit reason,
+not a false client-disconnect claim. Post-outcome non-stream wire refusal does not
+undo an already consumed call. Supported channels' cancellation/worker-loss/
+settlement limits remain; no
+rollback or no-consumption promise is inferred. Responses errors include
+`x-should-retry: false` (honored by the pinned SDK source) to avoid an automatic
+retry after possibly consumed work. Other clients must not blindly retry an
+ambiguous call; use a newly authorized Attempt. No internal fallback is added.
+SDK callers should set `max_retries=0`: a timeout/disconnect before response
+headers cannot be made safe by an error header the client never received.
+
+Standard `usage` is null: the current semantic accounting does not prove all
+required cached/cache-write/reasoning detail fields. Existing actual
+provider-reported/estimated/unknown accounting remains in `x_scarcity_router`,
+separate from unlabeled observed stream aggregates. Never synthesize zero detail
+or actual paid cost. Output `model` is still the requested echo, not independent
+physical identity; phase and native reasoning summary/encrypted state are not
+invented. A length finish is incomplete without guessing its precise cause.
+
+Example request (configured model/alias, same existing authenticated listener):
+
+```json
+{"model":"configured-model","input":"hello","store":false,"stream":false}
+```
+
+This is a bounded wire contract, not passed live Kernel/Codex/SDK/account testing.
+Unsupported cases and live consumer/source-version cells remain explicit in the
+matrix. #181 is security_critical; its normal independent review and owner-manual
+Daybreak gate are unchanged by the #174/#185-only exception.
 
 The public `sr-pin:<resource_id>/<provider>/<model>/<variant>` and optional
 `@<decision_id>` go through exact `admit_pinned_target`, which rechecks
@@ -472,8 +592,9 @@ configuration export represents.
   boundary.
 - Path sets are disjoint: machine-interface v1 is exactly
   `/healthz`, `/v1/status`, `/v1/select`, `/v1/simulate` on the loopback
-  REST adapter; the execution surface is exactly `GET /v1/models` and
-  `POST /v1/chat/completions` on the authenticated execution server.
+  REST adapter; the authenticated execution server owns `GET /v1/models`,
+  `POST /v1/chat/completions`, D-079's `POST /v1/route` and D-080's bounded
+  `POST /v1/responses` subset.
   Because the path sets are disjoint, one listener process MAY serve both
   in server deployments (D-045); what never mixes is the contracts'
   semantics -- versions, error vocabularies and security boundaries stay
@@ -805,9 +926,10 @@ implementation (D-041 leaves the embedded store to M09 if needed).
 
 ## Explicitly deferred sub-scopes
 
-- `/v1/responses` (Responses API): a later explicit sub-scope with a
-  documented supported subset; a fake surface that silently drops
-  unsupported semantics is forbidden (D-043).
+- Responses semantics outside D-080's bounded stateless subset, including stored
+  responses, previous-response/conversation lookup, hosted tools, multimodal or
+  multipart history, phase and encrypted/native reasoning replay. Silent loss or
+  a claim of universal Responses compatibility remains forbidden (D-043).
 - `n > 1` per-choice sampling; `logprobs`/`top_logprobs`/`logit_bias`;
   multimodal content parts; provider-passthrough parameters beyond the
   allowlist above.

@@ -1086,6 +1086,9 @@ def build_dynamic_tools(tools: Sequence[Mapping[str, object]]) -> MappedDynamicT
         if not isinstance(function, Mapping):
             raise CodexIneligible("tool_declaration_unsupported")
         function_map = cast("Mapping[str, object]", function)
+        # Native dynamicTools has no evidenced strict-schema enforcement.
+        if function_map.get("strict") is True:
+            raise CodexIneligible("tool_declaration_unsupported")
         name = function_map.get("name")
         if not isinstance(name, str) or not name or len(name) > 256:
             raise CodexIneligible("tool_declaration_unsupported")

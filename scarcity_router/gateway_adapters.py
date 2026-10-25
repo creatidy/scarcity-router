@@ -58,7 +58,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
-from .gateway_contracts import UsageAccounting, UsageTokens
+from .gateway_contracts import GatewayError, UsageAccounting, UsageTokens
 from .gateway_validation import (
     v_bool,
     v_canonical_ts,
@@ -108,6 +108,7 @@ CHUNK_REASONING_DELTA = "reasoning_delta"
 CHUNK_TOOL_CALL = "tool_call"
 CHUNK_FINISH = "finish"
 CHUNK_USAGE = "usage"
+MAX_STREAM_DELTA_CHARS = 1_048_576
 
 CHUNK_KINDS: frozenset[str] = frozenset({
     CHUNK_TEXT_DELTA,
@@ -363,9 +364,9 @@ class AdapterStreamChunk:
     def __post_init__(self) -> None:
         _ = v_enum(self.kind, CHUNK_KINDS, "adapter_stream_chunk.kind")
         if self.kind == CHUNK_TEXT_DELTA:
-            _ = v_text(self.text, "adapter_stream_chunk.text", max_len=1_048_576)
+            _ = v_text(self.text, "adapter_stream_chunk.text", max_len=MAX_STREAM_DELTA_CHARS)
         elif self.kind == CHUNK_REASONING_DELTA:
-            _ = v_text(self.text, "adapter_stream_chunk.text", max_len=1_048_576)
+            _ = v_text(self.text, "adapter_stream_chunk.text", max_len=MAX_STREAM_DELTA_CHARS)
         elif self.kind == CHUNK_TOOL_CALL:
             _ = v_instance(
                 self.tool_call, AdapterToolCall, "adapter_stream_chunk.tool_call"
@@ -584,6 +585,19 @@ class ClientDisconnectedError(Exception):
     """
 
 
+class OutputRejectedError(ClientDisconnectedError):
+    """A wire consumer cannot represent more output and cancels execution.
+
+    It shares the existing cancellation propagation, not the claim that a real
+    client disconnected. The coordinator records a distinct failed-delivery
+    reason, and the transport renders the safe protocol error without retry.
+    """
+
+    def __init__(self, error: "GatewayError") -> None:
+        super().__init__("output delivery refused")
+        self.error: GatewayError = error
+
+
 class ContinuationLostError(Exception):
     """The suspended execution is gone before its tool result reached it.
 
@@ -722,6 +736,8 @@ __all__ = [
     "ContinuationLostError",
     "ExecutionContext",
     "ExecutionAdapter",
+    "OutputRejectedError",
+    "MAX_STREAM_DELTA_CHARS",
     "SuspensionHandle",
     "ToolSuspension",
 ]

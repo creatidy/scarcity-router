@@ -25,9 +25,9 @@ Strictness rules (frozen here):
   (both is an error), matching the upstream convention;
 - content parts (multimodal arrays) are rejected in v1: text content
   only;
-- the Responses API (``/v1/responses``) is NOT implemented and is never
-  faked; it is a later explicit sub-scope with a documented supported
-  subset (D-043).
+- this module remains Chat Completions only. The separately versioned D-080
+  Responses codec validates its bounded subset before using this shared
+  semantic normalization; unknown/native semantics are never faked or dropped.
 
 Capability inference (D-042/D-043): request STRUCTURE yields
 compatibility requirements, never ranking inputs and never an LLM request

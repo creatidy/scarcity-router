@@ -6577,3 +6577,54 @@ adapter is removed merely to eliminate orchestration. See the actual Git source/
   an allowed read-only source with original observation/freshness, auth/plan/reset/
   model and whole-call tool/billing/limits/cancellation evidence. Until then those
   paths remain unsupported and account-backed acceptance is explicitly DEFERRED.
+
+### D-080 - Bounded stateless Responses ingress over shared gateway semantics
+
+- **Status:** Selected contract within #181's owner-authorized D-056 scope;
+  implementation/conformance and independent security acceptance are still
+  required. This is not installed-harness or live-provider acceptance.
+- **Evidence:** Official openai-python 3.37.0 at
+  `718aee979a9c334d37302aeff21cee6cbff4d43c`, generated Responses input/output/event
+  types; LiteLLM 1.108.0 at `dddbaa803d6e9fcc862ea7a5412f771cb1ae040e`, selected
+  response/completion transformations and negative tests. Both selected source
+  licenses are MIT; no foreign code is copied, adopted as a dependency or executed.
+- **ADOPT before BUILD:** Whole LiteLLM/runtime and direct translator port are
+  rejected: selected helpers repair missing calls/arguments, drop unsupported
+  controls, maintain response-session state and manufacture missing usage as zero.
+  Those semantics conflict with Router ownership/refusal/unknown guarantees.
+  Reuse owned semantic DTOs, strict validators, coordinator, adapters and existing
+  continuation/cancellation. Original wire-only code is the bounded remainder.
+- **Decision:** Add authenticated `POST /v1/responses` to the existing optional
+  gateway. Its independent `responses_surface_version` starts at 1; frozen Chat,
+  machine, worker, policy and package versions are not collapsed or replaced.
+  Require explicit `store: false`; no response store, retrieval, background job,
+  conversation or previous-response lookup is introduced. Full explicit input is
+  the only supported state representation.
+- **Supported semantics:** Documented user-text shorthand or explicit ordered
+  roles/single text parts, real function calls/results with unchanged call IDs,
+  existing reasoning effort and output ceilings, supported structured formats and
+  generation controls. Preserve exact D-079 context/pins through the same semantic
+  admission; the backend binding protocol is not silently rewritten to compensate
+  for a mismatch. No second selection or HTTP Chat proxy. New wire items/events
+  represent the actual semantic outcome, including distinct opaque reasoning text,
+  functions, incomplete/error states and honest accounting.
+- **Refusal boundary:** Hosted tools, multimodal/multipart input, non-null phase,
+  instructions role ambiguity, native reasoning summary/encrypted-state replay,
+  server-managed continuation and unimplemented fields refuse before inference.
+  No flattening, invented missing call, lossy downlevel or inference about model
+  identity/quality/billing is allowed. Concrete item IDs are validated non-authority
+  annotations, never lookups or aliases for function call IDs. Existing native
+  continuation IDs stay opaque and use the current coordinator, not a new harness.
+- **Usage/output:** Responses' required cache/reasoning token details are not
+  evidenced by current aggregate accounting. Standard `usage` therefore stays
+  null; known provider-reported/estimated aggregates and scope stay explicit in
+  `x_scarcity_router`. No zero details, fabricated summary/phase or terminal
+  success on a failed/ambiguous stream. Unsupported replay refuses rather than
+  discarding opaque reasoning.
+- **Compatibility/security:** Existing Chat/recommendation behavior and authority
+  remain. Per-feature/source/version cells distinguish synthetic source-shaped
+  proof from UNKNOWN live consumers; no universal OpenAI-compatible or Anthropic
+  Messages claim. This authenticated execution ingress is security_critical:
+  ordinary independent acceptance and the existing owner-manual Daybreak gate
+  remain required for #181; #174/#185 exceptions do not transfer. Live/physical/
+  billing/installed Kernel acceptance remains separately authorized and tracked.
