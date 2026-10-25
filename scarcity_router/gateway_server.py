@@ -99,6 +99,7 @@ from .gateway_contracts import (
     EXECUTION_SURFACE_VERSION,
     ClientKeyDirectory,
     GatewayError,
+    hash_client_key,
     GatewayLimits,
 )
 from .gateway_coordinator import GatewayApplication, exposed_logical_models
@@ -448,13 +449,24 @@ class GatewayRequestHandler(BaseHTTPRequestHandler):
         # Match decoded strings, including keys: JSON escaping must not let a
         # quoted/backslashed credential become retained or reflected metadata.
         bearer = self._bearer_key()
+        directory = self._application().client_key_directory
+        # Non-authentication lookup over one directory snapshot: no principal
+        # is granted, no plaintext retained, no per-leaf scan of every client.
+        known_hashes: frozenset[str] = frozenset(directory.hash_for(client_id) for client_id in directory.client_ids) if directory is not None else frozenset()
         pending: list[object] = [document]
         while pending:
             item = pending.pop()
-            if isinstance(item, str) and bearer in item:
-                raise GatewayError.invalid_request(
-                    "credentials cannot be retained as executable demand data", code="execution_requirements_invalid",
-                )
+            if isinstance(item, str):
+                credential = bearer in item
+                if not credential and 0 < len(item) <= 4096:
+                    try:
+                        credential = hash_client_key(item) in known_hashes
+                    except ValueError:
+                        pass  # Not usable key material; the wire parser rejects it.
+                if credential:
+                    raise GatewayError.invalid_request(
+                        "credentials cannot be retained as executable demand data", code="execution_requirements_invalid",
+                    )
             if isinstance(item, Mapping):
                 mapping = cast(Mapping[object, object], item)
                 pending.extend(mapping.keys())

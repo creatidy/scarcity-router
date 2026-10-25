@@ -67,6 +67,11 @@ ordered explicit system/developer/user/assistant roles are preserved. Only a
 single text part is supported; multiple parts, modalities, nonempty annotations,
 non-null phase and reasoning-state replay refuse rather than flatten or relabel meaning.
 
+The presented credential is checked against decoded strings/keys, including
+escaped or embedded forms. Exact other configured key material is recognized
+through one hash-only directory snapshot and refuses before dispatch; no plaintext
+key inventory, authentication-policy change or generic secret classifier is added.
+
 Function declarations require explicit object parameters and boolean strictness;
 the gateway never executes them. Flat declarations/choices map to the current
 semantic function structures. Real function-call/result pairs preserve order,
@@ -81,6 +86,12 @@ requiring native encrypted history is not declared compatible.
 Supported controls are `max_output_tokens` (the actual semantic output ceiling),
 existing `reasoning.effort`, `temperature`, `top_p`, client function choices and
 parallel permission, bounded metadata and text/json_object/json_schema formats.
+Omitted parallel permission stays a wire default, not an injected mandatory
+backend generation parameter; native serial tool continuation remains available.
+An explicitly supplied parallel control remains explicit and a source unable to
+represent it refuses before its turn starts. JSON-schema envelopes require a
+bounded valid name and object schema, with typed optional strict/description;
+the codec does not implement a new JSON-schema evaluator or resolve references.
 Unimplemented or malformed fields refuse before inference. Current source feature
 and control limitations still refuse through the same core before dispatch; the
 codec does not promote UNKNOWN channel cells, fabricate enforceable limits or
@@ -104,8 +115,12 @@ outcomes. It is not Chat JSON renamed or a stream ending in fabricated success.
 Normalized complete function arguments are emitted as actual complete deltas;
 incomplete/cancelled calls never get an arguments-done trigger. An exact observed
 prefix may receive a known final suffix, but conflicting output, duplicates,
-unrepresentable UTF-8 or output bounds fail explicitly. The surface bounds output
-to 16 Mi characters, 128 function items and one million normalized chunks rather
+unrepresentable UTF-8 or output bounds fail explicitly.
+Known final text/reasoning suffixes are split at the unchanged normalized delta
+bound (1 Mi characters); a whole result does not become invalid just because its
+source did not supply incremental chunks. Unicode/content and event order remain.
+The surface bounds output to 16 Mi characters, 128 function items and one million
+normalized chunks rather
 than truncating. `stream_options.include_obfuscation` is a wire-only boolean,
 default true, not a routing/billing/identity assurance.
 

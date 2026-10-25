@@ -23,6 +23,8 @@ from scarcity_router.routing_core import RequestBinding
 from scarcity_router.selection_types import CapabilityMinima, HardConstraints, TaskRequirement
 from tests.gateway_fixtures import CLIENT_ID, CLIENT_KEY, ScriptedAdapter, ambiguous_failure_behavior, audit_records, echo_behavior, tool_call_behavior
 from tests.test_gateway_server import ServerHarness, as_dict, as_list
+from tests.test_e2e_codex_acceptance import CodexComposedTlsWorld, chatgpt_scenario
+from tests.m10_codex_fixtures import PIN_MODEL, PROMPT, RESOURCE_ID, trace_events, trace_methods
 
 CANARY = "SYNTHETIC-RESPONSES-NOT-A-CREDENTIAL"
 FUNCTION: dict[str, object] = {"type": "function", "name": "read", "parameters": {"type": "object"}, "strict": False}
@@ -127,6 +129,42 @@ class ResponsesCodecTests(unittest.TestCase):
             with self.subTest(kind=kind):
                 request = parse_responses_request(document(text={"format": {"type": kind}}))
                 self.assertEqual({"type": kind}, request.canonical.response_format)
+
+    def test_malformed_json_schema_envelopes_refuse_locally(self) -> None:
+        cases: tuple[dict[str, object], ...] = (
+            {"type": "json_schema"}, {"type": "json_schema", "name": "answer"},
+            {"type": "json_schema", "schema": {}},
+            {"type": "json_schema", "name": "bad name", "schema": {}},
+            {"type": "json_schema", "name": "x" * 65, "schema": {}},
+            {"type": "json_schema", "name": "answer", "schema": []},
+            {"type": "json_schema", "name": "answer", "schema": True},
+            {"type": "json_schema", "name": "answer", "schema": {}, "strict": 1},
+            {"type": "json_schema", "name": "answer", "schema": {}, "strict": "false"},
+            {"type": "json_schema", "name": "answer", "schema": {}, "description": [CANARY]},
+        )
+        for shape in cases:
+            with self.subTest(), self.assertRaises(GatewayError):
+                _ = parse_responses_request(document(text={"format": shape}))
+
+    def test_large_final_suffixes_are_framed_without_losing_text_or_reasoning(self) -> None:
+        limit = 1_048_576
+        for kind in ("text", "reasoning"):
+            for prefix in ("", "known-prefix"):
+                with self.subTest(kind=kind, prefix=prefix):
+                    request = parse_responses_request(document(stream=True, stream_options={"include_obfuscation": False}))
+                    stream = ResponsesStreamEvents(request, response_id="resp-test", created=1)
+                    emitted: list[dict[str, object]] = []
+                    if prefix:
+                        emitted.extend(stream.push(AdapterStreamChunk(CHUNK_TEXT_DELTA if kind == "text" else CHUNK_REASONING_DELTA, text=prefix)))
+                    final_text = prefix + ("x" if kind == "text" else "\U00010400") * (limit + 1)
+                    message = AdapterMessage("assistant", content=final_text) if kind == "text" else AdapterMessage("assistant", reasoning=final_text)
+                    emitted.extend(stream.finish(outcome(message=message)))
+                    event_kind = "response.output_text.delta" if kind == "text" else "response.reasoning_text.delta"
+                    deltas = [cast(str, item["delta"]) for item in emitted if item["type"] == event_kind]
+                    self.assertEqual(final_text, "".join(deltas))
+                    self.assertTrue(all(len(delta) <= limit for delta in deltas))
+                    self.assertEqual(list(range(len(emitted))), [item["sequence_number"] for item in emitted])
+                    self.assertEqual("response.completed", emitted[-1]["type"])
 
     def test_duplicate_or_incomplete_history_is_not_repaired(self) -> None:
         call: dict[str, object] = {"type": "function_call", "call_id": "x", "name": "read", "arguments": "{}"}
@@ -260,6 +298,37 @@ class ResponsesHTTPTests(ServerHarness):
         self.assertEqual("false", response.getheader("x-should-retry"))
         self.assertNotIn(CANARY.encode(), response.read())
         self.assertEqual([], adapter.dispatches)
+
+    def test_malformed_structured_requirement_never_dispatches(self) -> None:
+        adapter = ScriptedAdapter()
+        port = self.make_server(adapters=[adapter])
+        shapes: tuple[dict[str, object], ...] = (
+            {"type": "json_schema"}, {"type": "json_schema", "name": "answer", "schema": []},
+            {"type": "json_schema", "name": "answer", "schema": {}, "strict": "yes"},
+        )
+        for shape in shapes:
+            with self.subTest(shape=shape):
+                response = self.post_responses(port, document(text={"format": shape}))
+                self.assertEqual(400, response.status, response.read())
+                self.assertEqual([], adapter.dispatches)
+
+    def test_other_configured_credential_is_not_retained_or_sent_to_a_model(self) -> None:
+        adapter = ScriptedAdapter()
+        port = self.make_server(adapters=[adapter])
+        other = "SYNTHETIC-OTHER-CLIENT-KEY-NOT-REAL"
+        self.application.client_key_directory = ClientKeyDirectory.from_secrets({CLIENT_ID: CLIENT_KEY, "client-b": other})
+        for data in (document(metadata={"trace": other}), document(metadata={other: "value"}),
+                     document(tools=[{**FUNCTION, "description": other}])):
+            with self.subTest():
+                response = self.post_responses(port, data)
+                wire = response.read()
+                self.assertEqual(400, response.status)
+                self.assertNotIn(other.encode(), wire)
+                self.assertEqual([], adapter.dispatches)
+        public = self.post_responses(port, document(metadata={"trace": "unconfigured-public-label"}))
+        self.assertEqual(200, public.status)
+        _ = public.read()
+        self.assertEqual(1, adapter.dispatch_count)
 
     def test_stream_uses_typed_events_not_chat_frames_or_done(self) -> None:
         port = self.make_server()
@@ -399,6 +468,78 @@ class ResponsesHTTPTests(ServerHarness):
         self.assertEqual("ambiguous_execution_state", as_dict(payload["error"])["code"])
         self.assertEqual("false", response.getheader("x-should-retry"))
         self.assertEqual(1, adapter.dispatch_count)
+
+
+class ResponsesNativeContinuationTests(CodexComposedTlsWorld):
+    def _roundtrip(self, *, stream: bool) -> None:
+        name = "synthetic_lookup"
+        worker = self.start_codex_worker(chatgpt_scenario(turn={
+            "dynamicTool": name, "deltas": ["Checking "], "postDeltas": ["Done."],
+            "usage": {"last": {"inputTokens": 11, "outputTokens": 7}},
+        }))
+        self.configure_codex_resource(worker.worker_id)
+        worker.start()
+        try:
+            _ = self.wait_for_observation(RESOURCE_ID)
+            tool: dict[str, object] = {"type": "function", "name": name,
+                                       "parameters": {"type": "object", "properties": {}}, "strict": False}
+
+            def send(history: object) -> dict[str, object]:
+                status, payload, _headers = self.exchange(
+                    "POST", "/v1/responses", {"model": PIN_MODEL, "input": history, "tools": [tool],
+                                              "store": False, "stream": stream},
+                    headers={"Authorization": f"Bearer {self.client_key}"}, timeout=60,
+                )
+                self.assertEqual(200, status, payload)
+                if not stream:
+                    return as_dict(payload)
+                frames = [as_dict(cast(object, json.loads(line[6:]))) for line in str(payload).splitlines() if line.startswith("data: ")]
+                self.assertNotIn("[DONE]", str(payload))
+                self.assertEqual("response.completed", frames[-1]["type"])
+                return as_dict(frames[-1]["response"])
+
+            first = send(PROMPT)
+            outputs = as_list(first["output"])
+            call = next(as_dict(item) for item in outputs if as_dict(item)["type"] == "function_call")
+            self.assertTrue(cast(str, call["call_id"]).startswith("srct-"))
+            history: list[object] = [{"role": "user", "content": PROMPT}, *outputs,
+                                     {"type": "function_call_output", "call_id": call["call_id"], "output": "TOOL-RESULT"}]
+            second = send(history)
+            messages = [as_dict(item) for item in as_list(second["output"]) if as_dict(item)["type"] == "message"]
+            self.assertEqual("Done.", as_dict(as_list(messages[-1]["content"])[0])["text"])
+            methods = trace_methods(worker.trace_path)
+            self.assertEqual(1, methods.count("thread/start"))
+            self.assertEqual(1, methods.count("turn/start"))
+            answers = trace_events(worker.trace_path, "tool_call_answer")
+            self.assertEqual(1, len(answers))
+            self.assertEqual("call-synthetic-1", answers[0]["callId"])
+        finally:
+            worker.stop()
+
+    def test_actual_worker_codex_default_function_continuation(self) -> None:
+        self._roundtrip(stream=False)
+
+    def test_actual_worker_codex_default_streamed_function_continuation(self) -> None:
+        self._roundtrip(stream=True)
+
+    def test_explicit_unsupported_native_parallel_controls_do_not_start_a_turn(self) -> None:
+        worker = self.start_codex_worker(chatgpt_scenario())
+        self.configure_codex_resource(worker.worker_id)
+        worker.start()
+        try:
+            _ = self.wait_for_observation(RESOURCE_ID)
+            for permission in (False, True):
+                with self.subTest(permission=permission):
+                    status, payload, _headers = self.exchange(
+                        "POST", "/v1/responses", {"model": PIN_MODEL, "input": PROMPT, "store": False,
+                                                  "tools": [FUNCTION], "parallel_tool_calls": permission},
+                        headers={"Authorization": f"Bearer {self.client_key}"}, timeout=60,
+                    )
+                    self.assertEqual(502, status, payload)
+                    self.assertEqual("backend_failure", as_dict(as_dict(payload)["error"])["code"])
+            self.assertEqual(0, trace_methods(worker.trace_path).count("turn/start"))
+        finally:
+            worker.stop()
 
 
 if __name__ == "__main__":

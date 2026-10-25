@@ -516,6 +516,8 @@ Kernel lifecycle rules. Reuse owned semantic code, not its permissive repairs.
 | Official SDK3.37.0 request/output/event source -> owned fixture JSON | PARTIAL, source matched | Exact supported wire members/types inspected and exercised with original producer-shaped fixtures; SDK runtime not installed/executed, so runtime integration remains UNKNOWN |
 | Explicit roles/single text, complete functions/results/call IDs, effort, actual ceiling and structured format -> shared semantics | PASS, synthetic supported subset | Preserve all representable fields/order; no guessed tool lineage, flattening, effort-from-variant or bound-context repair |
 | Normalized text/opaque reasoning/functions/finish/error -> Responses SSE events | PASS, synthetic supported subset | Real sequence/item identity and actual terminal outcome; reasoning_text not guessed summary, incomplete/cancelled function arguments not marked done; disconnect/mapping failure uses existing cancellation |
+| Existing composed worker protocol4 / real Codex adapter / shared fake App Server -> default Responses client functions | PASS, deterministic fake backend only | Verified-TLS real coordinator/worker/adapter path, suspension and opaque call_id/result delivery, one thread/start and turn/start through both JSON and SSE legs; not a real Codex/account or physical-model receipt |
+| Explicit parallel generation control -> current native Codex adapter | UNSUPPORTED, before turn | Explicit controls are retained and refused with zero turn/start; an omitted wire permission does not inject this control or block the supported serial continuation path |
 | Actual accounting -> full standard ResponseUsage | PARTIAL | Aggregate facts/source retained; cache/cache-write/reasoning detail absent in IR, so usage=null, never manufactured zero/paid cost |
 | SDK3.37.0 `_base_client.py:936-959` retry behavior | PARTIAL, source matched | Explicit x-should-retry:false is honored before 408/409/429/5xx retries in source; other clients/live runtime unknown, no universal retry suppression promise |
 | Stored response/conversation/previous ID/background, hosted tools, phase, multimodal/multipart, native reasoning replay or unimplemented parameters | UNSUPPORTED | Typed refusal before inference, not a fake successful Chat conversion or invented state |
@@ -536,6 +538,14 @@ transport/core boundary. Native settlement, hidden calls, complete task cost,
 source identity and real consumer acceptance stay unknown where not evidenced.
 D-080/#181's independent ordinary and owner-manual security gates still apply;
 the #174/#185-specific exception is not reused here.
+
+Post-initial-review corrections retain the same subset contract: JSON-schema
+envelopes validate actual required name/object-schema and optional types before
+dispatch, not through provider failure; large known final text/reasoning suffixes
+are split into bounded deltas without losing content or defeating aggregate caps.
+Configured-key reflection tests use only conspicuously synthetic keys and confirm
+rejection in metadata names/values/tool descriptions before any adapter call;
+unconfigured public labels remain valid. No actual credential was inspected.
 
 ## ASSUMED / NOT YET VALIDATED
 

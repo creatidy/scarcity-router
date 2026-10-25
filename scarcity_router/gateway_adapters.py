@@ -108,6 +108,7 @@ CHUNK_REASONING_DELTA = "reasoning_delta"
 CHUNK_TOOL_CALL = "tool_call"
 CHUNK_FINISH = "finish"
 CHUNK_USAGE = "usage"
+MAX_STREAM_DELTA_CHARS = 1_048_576
 
 CHUNK_KINDS: frozenset[str] = frozenset({
     CHUNK_TEXT_DELTA,
@@ -363,9 +364,9 @@ class AdapterStreamChunk:
     def __post_init__(self) -> None:
         _ = v_enum(self.kind, CHUNK_KINDS, "adapter_stream_chunk.kind")
         if self.kind == CHUNK_TEXT_DELTA:
-            _ = v_text(self.text, "adapter_stream_chunk.text", max_len=1_048_576)
+            _ = v_text(self.text, "adapter_stream_chunk.text", max_len=MAX_STREAM_DELTA_CHARS)
         elif self.kind == CHUNK_REASONING_DELTA:
-            _ = v_text(self.text, "adapter_stream_chunk.text", max_len=1_048_576)
+            _ = v_text(self.text, "adapter_stream_chunk.text", max_len=MAX_STREAM_DELTA_CHARS)
         elif self.kind == CHUNK_TOOL_CALL:
             _ = v_instance(
                 self.tool_call, AdapterToolCall, "adapter_stream_chunk.tool_call"
@@ -736,6 +737,7 @@ __all__ = [
     "ExecutionContext",
     "ExecutionAdapter",
     "OutputRejectedError",
+    "MAX_STREAM_DELTA_CHARS",
     "SuspensionHandle",
     "ToolSuspension",
 ]

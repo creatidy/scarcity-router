@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 import secrets
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -17,6 +18,7 @@ from typing import cast, final
 from .gateway_adapters import (
     CHUNK_FINISH, CHUNK_REASONING_DELTA, CHUNK_TEXT_DELTA, CHUNK_TOOL_CALL, CHUNK_USAGE,
     AdapterStreamChunk, AdapterToolCall, CompletionOutcome, FINISH_CANCELLED, FINISH_LENGTH, FINISH_STOP, FINISH_TOOL_CALLS,
+    MAX_STREAM_DELTA_CHARS,
 )
 from .gateway_contracts import GatewayError
 from .gateway_openai import ChatCompletionRequest, MAX_MESSAGES, MAX_TOOLS, parse_chat_completion_request
@@ -202,7 +204,10 @@ def _parse(value: object) -> tuple[ResponsesRequest, dict[str, object]]:
     parallel = document.get("parallel_tool_calls", True)
     if type(parallel) is not bool:
         raise _invalid("parallel_tool_calls")
-    if tools or "parallel_tool_calls" in document:
+    # The wire default permits parallel calls; it does not require a serial
+    # backend to enforce an otherwise absent generation control. Explicit
+    # controls remain explicit so unsupported sources refuse before inference.
+    if "parallel_tool_calls" in document:
         canonical["parallel_tool_calls"] = parallel
     choice = document.get("tool_choice", "auto")
     wire_choice: object
@@ -223,6 +228,19 @@ def _parse(value: object) -> tuple[ResponsesRequest, dict[str, object]]:
         text = _object(document["text"], {"format"}, {"format"}, "text")
         text_format = _object(text["format"], {"type", "name", "schema", "strict", "description"}, {"type"}, "text")
         if text_format["type"] == "json_schema":
+            text_format = _object(text_format, {"type", "name", "schema", "strict", "description"}, {"type", "name", "schema"}, "text")
+            name = _text(text_format["name"], "text", limit=64)
+            if re.fullmatch(r"[A-Za-z0-9_-]+", name) is None:
+                raise _invalid("text")
+            try:
+                _ = v_str_object_mapping(text_format["schema"], "text")
+            except ValueError:
+                raise _invalid("text") from None
+            strict = text_format.get("strict")
+            if strict is not None and type(strict) is not bool:
+                raise _invalid("text")
+            if "description" in text_format:
+                _ = _text(text_format["description"], "text", limit=65_536, empty=True)
             canonical["response_format"] = {"type": "json_schema", "json_schema": {key: item for key, item in text_format.items() if key != "type"}}
         elif text_format["type"] in ("text", "json_object") and set(text_format) == {"type"}:
             canonical["response_format"] = dict(text_format)
@@ -462,24 +480,27 @@ class ResponsesStreamEvents:
         events.append(self._event("response.content_part.added", output_index=index, item_id=item["id"], content_index=0, part=part))
         return index
 
+    def _delta(self, kind: str, text: str, events: list[dict[str, object]]) -> None:
+        _output_text(text)
+        self._reserve(len(text))
+        index = self._part(kind, events)
+        part_kind = "output_text" if kind == "text" else "reasoning_text"
+        self._text[kind].append(text)
+        fields: dict[str, object] = {
+            "output_index": index, "item_id": self.output[index]["id"], "content_index": 0, "delta": text,
+        }
+        if kind == "text":
+            fields["logprobs"] = []
+        events.append(self._event(f"response.{part_kind}.delta", **fields))
+
     def push(self, chunk: AdapterStreamChunk) -> tuple[dict[str, object], ...]:
         if self._done or (self._finish_reason is not None and chunk.kind != CHUNK_USAGE):
             raise self._error()
         events = self._begin()
         if chunk.kind in (CHUNK_TEXT_DELTA, CHUNK_REASONING_DELTA):
             assert chunk.text is not None
-            _output_text(chunk.text)
-            self._reserve(len(chunk.text))
             kind = "text" if chunk.kind == CHUNK_TEXT_DELTA else "reasoning"
-            index = self._part(kind, events)
-            part_kind = "output_text" if kind == "text" else "reasoning_text"
-            self._text[kind].append(chunk.text)
-            fields: dict[str, object] = {
-                "output_index": index, "item_id": self.output[index]["id"], "content_index": 0, "delta": chunk.text,
-            }
-            if kind == "text":
-                fields["logprobs"] = []
-            events.append(self._event(f"response.{part_kind}.delta", **fields))
+            self._delta(kind, chunk.text, events)
         elif chunk.kind == CHUNK_TOOL_CALL:
             assert chunk.tool_call is not None
             call = chunk.tool_call
@@ -527,8 +548,8 @@ class ResponsesStreamEvents:
                 if not final and kind not in self._parts:
                     _ = self._part(kind, events)
                 elif len(final) > len(observed):
-                    chunk = AdapterStreamChunk(CHUNK_REASONING_DELTA if kind == "reasoning" else CHUNK_TEXT_DELTA, text=final[len(observed):])
-                    events.extend(self.push(chunk))
+                    for start in range(len(observed), len(final), MAX_STREAM_DELTA_CHARS):
+                        self._delta(kind, final[start:start + MAX_STREAM_DELTA_CHARS], events)
         final_tools = outcome.message.tool_calls
         if tuple(self._tools) != final_tools[:len(self._tools)]:
             raise self._error()
