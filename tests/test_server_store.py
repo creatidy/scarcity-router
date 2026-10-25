@@ -7,6 +7,7 @@ Deterministic: injected timestamps, temporary directories, no network.
 from __future__ import annotations
 
 import gc
+import hashlib
 import sqlite3
 import os
 import json
@@ -826,6 +827,180 @@ s.ServerStore.open(Path(sys.argv[1]))
                 with self.assertRaisesRegex(ServerStoreError, "unsafe"):
                     _ = ServerStore.open(path.parent)
             self.assertTrue(before == path.read_bytes(), "foreign lock changed source")
+
+
+class StoreTransitionTests(unittest.TestCase):
+    _UPGRADE: str = """
+import hashlib, json, os, sqlite3, sys
+from pathlib import Path
+path = Path(sys.argv[1])
+c = sqlite3.connect(path, timeout=0, isolation_level=None)
+try:
+    c.execute('BEGIN IMMEDIATE')
+    c.execute("INSERT INTO provider_secrets VALUES ('upgrade', 'committed', 'fixture')")
+    c.execute("INSERT INTO schema_migrations VALUES (3, 'fixture')")
+    c.execute('COMMIT')
+except sqlite3.OperationalError as error:
+    if (error.sqlite_errorcode & 255) != sqlite3.SQLITE_BUSY:
+        raise
+    if c.in_transaction:
+        c.rollback()
+    c.close()
+    print(json.dumps({'committed': False}), flush=True)
+    sys.exit(0)
+if sys.argv[2] == 'hot':
+    c.execute('PRAGMA cache_size=1')
+    c.execute('BEGIN IMMEDIATE')
+    c.execute("UPDATE audit_records SET payload=?", ('unfinished' * 1024,))
+files = [Path(str(path) + suffix) for suffix in ('', '-wal', '-journal')]
+print(json.dumps({'committed': True, 'digests': [
+    hashlib.sha256(p.read_bytes()).hexdigest() if p.exists() else None for p in files
+]}), flush=True)
+os._exit(0)
+"""
+
+    def test_external_upgrade_after_preflight_preserves_refused_state_and_commits(self) -> None:
+        self._assert_external_upgrade_transition(after_validation=1)
+
+    def test_external_upgrade_after_writable_validation_preserves_refused_state_and_commits(self) -> None:
+        self._assert_external_upgrade_transition(after_validation=2)
+
+    def _assert_external_upgrade_transition(self, *, after_validation: int) -> None:
+        inspect = ServerStore.applied_migration_versions
+        for journal in ("wal", "hot"):
+            for version in (1, 2):
+                for migrate in (False, True):
+                    with self.subTest(journal=journal, version=version, migrate=migrate), tempfile.TemporaryDirectory() as root:
+                        fixture = OwnedSchemaRecoveryTests()
+                        path = fixture.seed(root, version)
+                        before = fixture.records(path)
+                        if journal == "wal":
+                            connection = sqlite3.connect(path)
+                            try:
+                                self.assertEqual(("wal",), connection.execute("PRAGMA journal_mode=WAL").fetchone())
+                            finally:
+                                connection.close()
+                        transition: dict[str, object] = {}
+                        validations = 0
+
+                        def after_preflight(store: ServerStore) -> tuple[int, ...]:
+                            nonlocal validations
+                            result = inspect(store)
+                            validations += 1
+                            if validations == after_validation:
+                                # A synchronous process completion is the barrier:
+                                # no writable-open step runs before the upgrade ends.
+                                child = subprocess.run(
+                                    [sys.executable, "-c", self._UPGRADE, str(path), journal],
+                                    env={"PATH": os.defpath, "HOME": root, "TMPDIR": root},
+                                    capture_output=True, text=True, check=True, timeout=10,
+                                )
+                                transition.update(cast("dict[str, object]", json.loads(child.stdout)))
+                            return result
+
+                        refused = False
+                        with mock.patch.object(ServerStore, "applied_migration_versions", after_preflight):
+                            try:
+                                store = ServerStore.open(path.parent, migrate=migrate)
+                            except ServerStoreError:
+                                refused = True
+                            else:
+                                store.close()
+                        self.assertIn("committed", transition)
+                        if transition["committed"]:
+                            self.assertTrue(refused, "a committed future schema must refuse")
+                            files = tuple(Path(str(path) + suffix) for suffix in ("", "-wal", "-journal"))
+                            actual = [hashlib.sha256(p.read_bytes()).hexdigest() if p.exists() else None for p in files]
+                            self.assertEqual(transition["digests"], actual, "refusal changed the external upgrade's recovery artifacts")
+                        # Only after byte-preservation assertions may this test's
+                        # newer SQLite client perform recovery/checkpointing.
+                        connection = sqlite3.connect(path)
+                        try:
+                            self.assertIsNotNone(cast("tuple[int] | None", connection.execute("SELECT COUNT(*) FROM sqlite_schema").fetchone()))
+                        finally:
+                            connection.close()
+                        after = fixture.records(path)
+                        self.assertEqual(before[0], after[0])
+                        expected_secrets = [*before[1]]
+                        if transition["committed"]:
+                            expected_secrets.append(("upgrade", "committed", "fixture"))
+                        self.assertCountEqual(expected_secrets, after[1])
+                        self.assertEqual(before[2:], after[2:])
+
+    def test_hot_recovery_excludes_external_upgrade_and_revalidates_after_unlock(self) -> None:
+        inspect = ServerStore.applied_migration_versions
+        lock = cast(
+            Callable[[ServerStore, Path], AbstractContextManager[None]],
+            getattr(ServerStore, "_interrupted_store_lock"),
+        )
+        with tempfile.TemporaryDirectory() as root:
+            fixture = OwnedSchemaRecoveryTests()
+            path = fixture.seed(root, 2)
+            before = fixture.records(path)
+            _ = fixture.crash(path)
+            attempts: list[dict[str, object]] = []
+
+            def upgrade() -> dict[str, object]:
+                child = subprocess.run(
+                    [sys.executable, "-c", self._UPGRADE, str(path), "hot"],
+                    env={"PATH": os.defpath, "HOME": root, "TMPDIR": root},
+                    capture_output=True, text=True, check=True, timeout=10,
+                )
+                return cast("dict[str, object]", json.loads(child.stdout))
+
+            def after_validation(store: ServerStore) -> tuple[int, ...]:
+                result = inspect(store)
+                attempts.append(upgrade())
+                self.assertFalse(attempts[-1]["committed"], "hot recovery lost source exclusion")
+                return result
+
+            @contextmanager
+            def after_unlock(store: ServerStore, entry: Path) -> Generator[None, None, None]:
+                with lock(store, entry):
+                    yield
+                attempts.append(upgrade())
+                self.assertTrue(attempts[-1]["committed"], "recovery source lock leaked")
+
+            with mock.patch.object(ServerStore, "applied_migration_versions", after_validation), \
+                    mock.patch.object(ServerStore, "_interrupted_store_lock", after_unlock):
+                with self.assertRaises(ServerStoreError):
+                    _ = ServerStore.open(path.parent)
+            self.assertEqual([False, False, True], [attempt["committed"] for attempt in attempts])
+            files = tuple(Path(str(path) + suffix) for suffix in ("", "-wal", "-journal"))
+            self.assertEqual(attempts[-1]["digests"], [
+                hashlib.sha256(p.read_bytes()).hexdigest() if p.exists() else None for p in files
+            ])
+            connection = sqlite3.connect(path)
+            try:
+                self.assertIsNotNone(cast("tuple[int] | None", connection.execute("SELECT COUNT(*) FROM sqlite_schema").fetchone()))
+            finally:
+                connection.close()
+            after = fixture.records(path)
+            self.assertEqual(before[0], after[0])
+            self.assertCountEqual([*before[1], ("upgrade", "committed", "fixture")], after[1])
+            self.assertEqual(before[2:], after[2:])
+
+    def test_interrupted_hot_inspection_releases_locks_and_retains_source(self) -> None:
+        inspect = ServerStore.applied_migration_versions
+        for failure in (RuntimeError, KeyboardInterrupt):
+            with self.subTest(failure=failure.__name__), tempfile.TemporaryDirectory() as root:
+                fixture = OwnedSchemaRecoveryTests()
+                path = fixture.seed(root, 2)
+                records = fixture.records(path)
+                journal = fixture.crash(path)
+                before = path.read_bytes(), journal.read_bytes()
+
+                def interrupted(store: ServerStore) -> tuple[int, ...]:
+                    _ = inspect(store)
+                    raise failure("synthetic interruption after candidate validation")
+
+                with mock.patch.object(ServerStore, "applied_migration_versions", interrupted):
+                    with self.assertRaises(failure):
+                        _ = ServerStore.open(path.parent)
+                self.assertEqual(before, (path.read_bytes(), journal.read_bytes()))
+                store = ServerStore.open(path.parent)
+                store.close()
+                self.assertEqual(records, fixture.records(path))
 
 
 class OwnedSchemaRecoveryTests(unittest.TestCase):

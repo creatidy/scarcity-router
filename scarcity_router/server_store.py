@@ -310,6 +310,9 @@ class ServerStore:
     _close_finalizer: weakref.finalize[..., ServerStore] | None
 
     def __init__(self, path: Path) -> None:
+        self._initialize(path, migrate=False)
+
+    def _initialize(self, path: Path, *, migrate: bool) -> None:
         self._path = path
         self._lock = threading.RLock()
         self._lease_key = None
@@ -331,7 +334,7 @@ class ServerStore:
                 self._lease_key = lease_key
                 self._database_fd = fd
                 _ = self._check_store_entry(path, expected)
-                self._connection = self._open_store(path, expected, fd)
+                self._connection = self._open_store(path, expected, fd, migrate=migrate)
                 self._close_finalizer = weakref.finalize(
                     self,
                     _close_connection_and_release_lease,
@@ -407,7 +410,7 @@ class ServerStore:
                     return key, lease.fd, opened
 
             flags = getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
-            flags |= os.O_RDONLY if expected is not None else os.O_RDWR | os.O_CREAT | os.O_EXCL
+            flags |= os.O_RDWR if expected is not None else os.O_RDWR | os.O_CREAT | os.O_EXCL
             fd = os.open(path, flags, 0o600)
             registered = False
             opened: os.stat_result | None = None
@@ -493,7 +496,7 @@ class ServerStore:
             lease = _DATABASE_DESCRIPTOR_LEASES.get(self._lease_key)
             return lease.references if lease is not None else 0
 
-    def _open_store(self, path: Path, expected: os.stat_result, fd: int) -> sqlite3.Connection:
+    def _open_store(self, path: Path, expected: os.stat_result, fd: int, *, migrate: bool) -> sqlite3.Connection:
         parent = path.parent
         # sqlite3 opens filenames, not validated descriptors. The raw
         # validation descriptor is leased across all managed connections to
@@ -501,39 +504,72 @@ class ServerStore:
         _ = self._check_store_entry(path, expected)
         # Closing the last writable WAL reader can checkpoint even on a
         # refusal. Inspect stores read-only first, including WAL.
+        preflight: sqlite3.Connection | None = None
         try:
-            self._connection = sqlite3.connect(
-                path.as_uri() + "?mode=ro", uri=True,
-                check_same_thread=False, isolation_level=None,
-            )
-        except sqlite3.Error:
-            raise ServerStoreError(
-                "server store migration metadata is invalid or unreadable; refusing repair"
-            ) from None
-        self._connection.row_factory = sqlite3.Row
-        try:
+            for attempt in range(2):
+                preflight = sqlite3.connect(
+                    path.as_uri() + "?mode=ro", uri=True,
+                    check_same_thread=False, isolation_level=None,
+                )
+                self._connection = preflight
+                preflight.row_factory = sqlite3.Row
+                _ = self._check_store_entry(path, expected)
+                _ = preflight.execute("BEGIN")
+                try:
+                    _ = self.applied_migration_versions()
+                except _HotRollbackRequired:
+                    preflight.close()
+                    preflight = None
+                    if attempt:
+                        raise ServerStoreError("server store changed during recovery; retry") from None
+                    self._inspect_interrupted_store(path)
+                else:
+                    break
+
             _ = self._check_store_entry(path, expected)
-            try:
-                _ = self.applied_migration_versions()
-            except _HotRollbackRequired:
-                self._connection.close()
-                self._inspect_interrupted_store(path)
-        finally:
-            self._connection.close()
-        _ = self._check_store_entry(path, expected)
-        try:
             self._connection = sqlite3.connect(
                 str(path), check_same_thread=False, isolation_level=None
             )
-        except sqlite3.Error as exc:
-            raise ServerStoreError(f"server store is not usable: {exc}") from None
-        try:
+            # A WAL writer can commit despite the preflight snapshot. Refusal
+            # must not checkpoint its newer state when this connection closes.
+            _ = self._connection.setconfig(sqlite3.SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, True)
+            _ = self._connection.execute("PRAGMA synchronous=FULL")
+            _ = self._connection.execute("PRAGMA foreign_keys=ON")
             _ = self._check_store_entry(path, expected)
             self._connection.row_factory = sqlite3.Row
-            # Inspect before changing permissions or persistent journal mode.
-            # Supported old stores still migrate; invalid history and future
-            # stores refuse even through the raw test seam.
-            _ = self.applied_migration_versions()
+            _ = self._connection.execute("BEGIN")
+            applied = self.applied_migration_versions()
+            # Rollback readers overlap without a lock-free recovery interval.
+            # Close SQLite handles, never the leased raw descriptor, here.
+            assert preflight is not None
+            preflight.close()
+            preflight = None
+
+            journal = _fetch_row(self._connection, "PRAGMA journal_mode")
+            assert journal is not None
+            if journal[0] == "wal":
+                # Journal-mode conversion cannot run inside a transaction.
+                # Promote the validated snapshot first; BUSY_SNAPSHOT refuses
+                # concurrent upgrades. EXCLUSIVE retains SQLite's locks across
+                # COMMIT until conversion and final schema acceptance finish.
+                _ = self._connection.execute("PRAGMA locking_mode=EXCLUSIVE")
+                if applied:
+                    _ = self._connection.execute("UPDATE schema_migrations SET version=version WHERE 0")
+                else:
+                    value = _fetch_row(self._connection, "PRAGMA user_version")
+                    assert value is not None
+                    _ = self._connection.execute(f"PRAGMA user_version={cast(int, value[0])}")
+                _ = self._connection.execute("COMMIT")
+                _ = self._connection.execute("PRAGMA journal_mode=DELETE")
+                _ = self._connection.execute("BEGIN")
+                applied = self.applied_migration_versions()
+
+            if migrate:
+                try:
+                    self._apply_pending_migrations(applied)
+                except sqlite3.Error:
+                    raise ServerStoreError("server store migration failed; original state retained") from None
+                _ = self.require_current_schema()
             _ = self._check_store_entry(path, expected)
             _ = os.chmod(parent, 0o700)
             if os.name != "nt":
@@ -541,15 +577,18 @@ class ServerStore:
             else:
                 os.chmod(path, 0o600)
             _ = self._check_store_entry(path, expected)
-            _ = self._connection.execute("PRAGMA journal_mode=DELETE")
-            _ = self._connection.execute("PRAGMA synchronous=FULL")
-            _ = self._connection.execute("PRAGMA foreign_keys=ON")
-        except ServerStoreError:
-            self._connection.close()
+            _ = self._connection.execute("PRAGMA locking_mode=NORMAL")
+            _ = self._connection.execute("COMMIT")
+        except BaseException as exc:
+            connection = getattr(self, "_connection", None)
+            if isinstance(connection, sqlite3.Connection):
+                connection.close()
+            if isinstance(exc, (sqlite3.Error, OSError)):
+                raise ServerStoreError("server store is not usable; retry after concurrent access finishes") from None
             raise
-        except (sqlite3.Error, OSError) as exc:
-            self._connection.close()
-            raise ServerStoreError(f"server store is not usable: {exc}") from None
+        finally:
+            if preflight is not None:
+                preflight.close()
         return self._connection
 
     # ── Lifecycle and schema ──────────────────────────────────────────────
@@ -565,14 +604,8 @@ class ServerStore:
         un-migrated file opens raw — the migration-test seam; every other
         use of an un-migrated store raises on first statement.
         """
-        store = cls(canonical_store_path(data_dir))
-        try:
-            if migrate:
-                _ = store.migrate()
-                _ = store.require_current_schema()
-        except ServerStoreError:
-            store.close()
-            raise
+        store = cls.__new__(cls)
+        store._initialize(canonical_store_path(data_dir), migrate=migrate)
         return store
 
     def close(self) -> None:
@@ -769,6 +802,46 @@ class ServerStore:
         finally:
             os.close(target_fd)
 
+    @contextmanager
+    def _interrupted_store_lock(self, path: Path) -> Generator[None, None, None]:
+        """Exclude SQLite access while authorizing and performing hot rollback.
+
+        The recovery guard excludes other managed opens, and the sole lease
+        excludes existing managed connections. Lock SQLite's full SHARED range
+        as well, so ordinary external SQLite clients cannot change the source.
+        Never lock RESERVED: that would make SQLite misidentify a hot journal.
+        """
+        fd = self._database_fd
+        if fd is None or self._database_lease_references() != 1:
+            raise ServerStoreError("server store recovery refused while another store connection is open")
+        _ = self._check_store_entry(path, os.fstat(fd))
+        position = os.lseek(fd, 0, os.SEEK_CUR)
+        locked = False
+        try:
+            if os.name == "nt":
+                import msvcrt
+                _ = os.lseek(fd, 0x40000002, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 510)
+            else:
+                import fcntl
+                fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB, 510, 0x40000002)
+            locked = True
+            yield
+        except OSError:
+            raise ServerStoreError("server store recovery source is busy; retry after concurrent access finishes") from None
+        finally:
+            try:
+                if locked:
+                    if os.name == "nt":
+                        import msvcrt
+                        _ = os.lseek(fd, 0x40000002, os.SEEK_SET)
+                        msvcrt.locking(fd, msvcrt.LK_UNLCK, 510)
+                    else:
+                        import fcntl
+                        fcntl.lockf(fd, fcntl.LOCK_UN, 510, 0x40000002)
+            finally:
+                _ = os.lseek(fd, position, os.SEEK_SET)
+
     def _inspect_interrupted_store(self, path: Path) -> None:
         """Authorize normal SQLite rollback only from a validated private copy."""
         try:
@@ -782,7 +855,7 @@ class ServerStore:
             parent_info = path.parent.lstat()
             if not stat.S_ISDIR(parent_info.st_mode):
                 raise ServerStoreError("server store recovery requires an owned directory")
-            with self._recovery_slot(path) as directory:
+            with self._interrupted_store_lock(path), self._recovery_slot(path) as directory:
                 if directory.stat().st_uid != parent_info.st_uid:
                     raise ServerStoreError("server store recovery ownership is invalid")
 
@@ -837,6 +910,22 @@ class ServerStore:
                     self._connection.close()
                 if before != {source: identity(source) for source in sources}:
                     raise ServerStoreError("server store changed during recovery inspection; retry")
+                # The source is excluded and the recovered copy is supported.
+                # Normal SQLite locking on a second connection would release
+                # this process-owned bridge lock. This short-lived rollback
+                # connection therefore uses the already-held exclusion instead.
+                self._connection = sqlite3.connect(
+                    path.as_uri() + "?mode=rw&nolock=1", uri=True, isolation_level=None,
+                )
+                _ = self._connection.setconfig(sqlite3.SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, True)
+                _ = self._connection.execute("PRAGMA synchronous=FULL")
+                self._connection.row_factory = sqlite3.Row
+                try:
+                    _ = self.applied_migration_versions()
+                finally:
+                    self._connection.close()
+                # No validation decision crosses lock release: _open_store
+                # restarts normal read-only preflight after this bootstrap.
         except (sqlite3.Error, OSError):
             raise ServerStoreError("server store interrupted-transaction inspection failed safely") from None
 
@@ -1019,13 +1108,7 @@ class ServerStore:
             try:
                 _ = self._connection.execute("BEGIN IMMEDIATE")
                 applied = self.applied_migration_versions()
-                for version, statements in MIGRATIONS[len(applied):]:
-                    for statement in statements:
-                        _ = self._connection.execute(statement)
-                    _ = self._connection.execute(
-                        "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
-                        (version, self._now_for_migrations()),
-                    )
+                self._apply_pending_migrations(applied)
                 _ = self._connection.execute("COMMIT")
             except (sqlite3.Error, ServerStoreError) as exc:
                 if self._connection.in_transaction:
@@ -1036,6 +1119,15 @@ class ServerStore:
                     "server store migration failed; original state retained"
                 ) from None
             return self.schema_version()
+
+    def _apply_pending_migrations(self, applied: tuple[int, ...]) -> None:
+        for version, statements in MIGRATIONS[len(applied):]:
+            for statement in statements:
+                _ = self._connection.execute(statement)
+            _ = self._connection.execute(
+                "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
+                (version, self._now_for_migrations()),
+            )
 
     @staticmethod
     def _now_for_migrations() -> str:
