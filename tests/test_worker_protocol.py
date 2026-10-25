@@ -1,4 +1,4 @@
-"""Worker protocol v1 tests (M05): framing, negotiation, strict parsing.
+"""Worker protocol v1-v4 tests (M05): framing, negotiation, strict parsing.
 
 Deterministic: no sockets, no threads, no wall clock. Covers bounded
 framing, strict JSON parsing, the closed message vocabulary (including
@@ -26,6 +26,8 @@ from scarcity_router.worker_protocol import (
     ERR_PROTOCOL_VERSION,
     ERR_UNKNOWN_MESSAGE,
     MAX_FRAME_BYTES,
+    SERVER_SUPPORTED_PROTOCOL_VERSIONS,
+    WORKER_PROTOCOL_VERSION,
     MSG_HELLO,
     MSG_STATE_REPORT,
     AttemptInterruptedMessage,
@@ -145,6 +147,19 @@ class FramingTests(unittest.TestCase):
 
 
 class NegotiationTests(unittest.TestCase):
+    def test_current_server_accepts_every_supported_old_worker_not_unknown_major(self) -> None:
+        self.assertEqual((4, 3, 2, 1), SERVER_SUPPORTED_PROTOCOL_VERSIONS)
+        for version in SERVER_SUPPORTED_PROTOCOL_VERSIONS:
+            with self.subTest(version=version):
+                self.assertEqual(version, negotiate_version(SERVER_SUPPORTED_PROTOCOL_VERSIONS, (version,)))
+        with self.assertRaises(WorkerProtocolError) as caught:
+            _ = negotiate_version(SERVER_SUPPORTED_PROTOCOL_VERSIONS, (WORKER_PROTOCOL_VERSION + 1,))
+        self.assertEqual(ERR_PROTOCOL_VERSION, caught.exception.code)
+        for old in (1, 2, 3):
+            with self.subTest(old_server=old):
+                with self.assertRaises(WorkerProtocolError):
+                    _ = negotiate_version((old,), (WORKER_PROTOCOL_VERSION,))
+
     def test_common_version_is_selected(self) -> None:
         self.assertEqual(2, negotiate_version((1, 2), (2, 1)))
 

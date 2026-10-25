@@ -18,6 +18,7 @@ import unittest
 from datetime import date, datetime, time, timezone
 from pathlib import Path
 from typing import cast
+from unittest import mock
 from zoneinfo import ZoneInfo
 
 from collections.abc import Callable
@@ -564,6 +565,47 @@ class ArtifactFailureTests(unittest.TestCase):
         path = Path(tmp) / name
         _ = path.write_text(content, encoding="utf-8")
         return str(path)
+
+    def test_policy_declared_shape_is_exact_and_legacy_projection_is_preserved(self) -> None:
+        document = cast("dict[str, object]", json.loads(POLICY_PATH.read_text(encoding="utf-8")))
+        expected_profiles, expected_version = load_model_policy(POLICY_PATH)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "policy.json"
+            for version in (True, 1.0, "1", None, 0, 2, "SYNTHETIC-SECRET"):
+                with self.subTest(version=version):
+                    document["schema_version"] = version
+                    _ = path.write_text(json.dumps(document), encoding="utf-8")
+                    with self.assertRaises(SelectionContractValidationError) as caught:
+                        _ = load_model_policy(path)
+                    self.assertIn("upgrade", str(caught.exception))
+                    self.assertNotIn("SYNTHETIC-SECRET", str(caught.exception))
+            del document["schema_version"]
+            document["additive_descriptive_metadata"] = {"note": "not selector authority"}
+            _ = path.write_text(json.dumps(document), encoding="utf-8")
+            profiles, version = load_model_policy(path)
+            self.assertEqual(expected_version, version)
+            self.assertEqual(expected_profiles.to_dict(), profiles.to_dict())
+            document["schema_version"] = 1
+            document["policy_version"] = expected_version + 1
+            _ = path.write_text(json.dumps(document), encoding="utf-8")
+            profiles, version = load_model_policy(path)
+            self.assertEqual(expected_version + 1, version)
+            self.assertEqual(expected_profiles.to_dict(), profiles.to_dict())
+
+    def test_unsupported_policy_shape_refuses_before_capacity_collection(self) -> None:
+        document = cast("dict[str, object]", json.loads(POLICY_PATH.read_text(encoding="utf-8")))
+        document["schema_version"] = 2
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "policy.json"
+            _ = path.write_text(json.dumps(document), encoding="utf-8")
+            with mock.patch("scarcity_router.selection_app.collect_status") as collect:
+                code, out, err = _run([
+                    "select", "--profile", "routine_coding", "--catalog", str(CATALOG_PATH),
+                    "--model-policy", str(path),
+                ])
+            collect.assert_not_called()
+            self.assertEqual((1, ""), (code, out))
+            self.assertIn("upgrade", err)
 
     def test_malformed_catalog(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

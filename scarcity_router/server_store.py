@@ -45,12 +45,19 @@ from __future__ import annotations
 
 import json
 import os
+import errno
+import re
+import shutil
 import sqlite3
+import stat
+import time
 import threading
-from collections.abc import Mapping
+import weakref
+from contextlib import contextmanager
+from collections.abc import Generator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
+from typing import Callable, cast
 
 from .gateway_validation import v_safe_id, v_str
 
@@ -60,9 +67,58 @@ STORE_FILE_NAME = "server-state.sqlite3"
 DATA_DIR_NAME = "scarcity-router"
 SERVER_DATA_DIR_NAME = "server"
 
+
+@dataclass(slots=True)
+class _DatabaseDescriptorLease:
+    """Keep a raw validation descriptor open while SQLite connections live."""
+
+    descriptors: list[int]
+    references: int
+
+    @property
+    def fd(self) -> int:
+        return self.descriptors[0]
+
+
+_DATABASE_DESCRIPTOR_LEASES_LOCK = threading.RLock()
+_DATABASE_DESCRIPTOR_LEASES: dict[tuple[int, int], _DatabaseDescriptorLease] = {}
+
+
+def _release_database_descriptor_lease(key: tuple[int, int]) -> None:
+    """Close validation descriptors only after every store connection closes.
+
+    POSIX record locks are process-owned. Closing any descriptor for an inode
+    can release locks held by a different SQLite connection in this process,
+    so the validation descriptor must share the managed connection lifetime.
+    """
+    with _DATABASE_DESCRIPTOR_LEASES_LOCK:
+        lease = _DATABASE_DESCRIPTOR_LEASES.get(key)
+        if lease is None:
+            return
+        lease.references -= 1
+        if lease.references < 0:
+            raise RuntimeError("server store descriptor lease underflow")
+        if lease.references:
+            return
+        for fd in lease.descriptors:
+            try:
+                os.close(fd)
+            except OSError:
+                # The descriptor is no longer associated with a live SQLite
+                # connection. A close error must not release another lease.
+                pass
+        del _DATABASE_DESCRIPTOR_LEASES[key]
+
+
+def _close_connection_and_release_lease(
+    connection: sqlite3.Connection, key: tuple[int, int]
+) -> None:
+    connection.close()
+    _release_database_descriptor_lease(key)
+
 # Each migration is (version, statements). Versions are applied in order
-# inside one transaction each; the recorded version advances only when the
-# whole migration succeeded (crash-safe by construction).
+# inside one transaction for the pending set; the recorded versions advance
+# only when the whole upgrade succeeded (crash-safe by construction).
 #
 # Version 2 (M04/M05/M09 integration): the superseded M09-side
 # ``worker_pairings`` table is DROPPED. M09 built an administration-facing
@@ -160,10 +216,42 @@ MIGRATIONS: tuple[tuple[int, tuple[str, ...]], ...] = (
 )
 
 _AUDIT_HARD_CAP = 100_000
+_RECOVERY_SLOT = ".store-recovery-candidate"
+_RECOVERY_CLAIM = ".store-recovery.claim"
+_RECOVERY_NEXT = ".store-recovery.claim-next"
+_RECOVERY_GUARD = ".store-recovery.lock"
+_RECOVERY_MAGIC = b"scarcity-router recovery claim\n"
 
 
 class ServerStoreError(ValueError):
     """Raised for store-level failures (unreadable file, bad migration state)."""
+
+
+class _HotRollbackRequired(ServerStoreError):
+    """Private signal for SQLite's precise read-only rollback condition."""
+
+
+def _ascii_lower(text: str) -> str:
+    return text.translate(str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"))
+
+
+def _schema_tokens(sql: str) -> tuple[str, ...]:
+    """Compare the owned DDL, ignoring formatting but preserving literals."""
+    tokens = cast("list[str]", re.findall(r"'(?:''|[^'])*'|\"(?:\"\"|[^\"])*\"|`(?:``|[^`])*`|\[[^\]]*\]|--[^\n]*|/\*.*?\*/|\w+|[^\s]", sql, re.DOTALL))
+    normalized: list[str] = []
+    for token in tokens:
+        if token.startswith(("--", "/*")):
+            continue
+        if token.startswith("'"):
+            normalized.append(token)
+            continue
+        if len(token) >= 2 and token[0] in ('"', "`") and token[-1] == token[0]:
+            delimiter = token[0]
+            token = token[1:-1].replace(delimiter * 2, delimiter)
+        elif token.startswith("[") and token.endswith("]"):
+            token = token[1:-1]
+        normalized.append(_ascii_lower(token))
+    return tuple(normalized)
 
 
 @dataclass(frozen=True)
@@ -216,28 +304,292 @@ class ServerStore:
     _path: Path
     _lock: threading.RLock
     _connection: sqlite3.Connection
+    _parent_info: os.stat_result
+    _lease_key: tuple[int, int] | None
+    _database_fd: int | None
+    _close_finalizer: weakref.finalize[..., ServerStore] | None
 
     def __init__(self, path: Path) -> None:
+        self._initialize(path, migrate=False)
+
+    def _initialize(self, path: Path, *, migrate: bool) -> None:
         self._path = path
         self._lock = threading.RLock()
-        parent = path.parent
-        parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        _ = os.chmod(parent, 0o700)
+        self._lease_key = None
+        self._database_fd = None
+        self._close_finalizer = None
         try:
+            path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            # Directory aliases are supported; the final database entry is not
+            # resolved, so a file link cannot redirect inspection or chmod.
+            path = path.parent.resolve() / path.name
+            parent_info = self._store_info(path.parent, directory=True)
+            assert parent_info is not None
+            self._parent_info = parent_info
+            expected = self._store_info(path)
+            _ = self._check_store_entry(path, expected)
+            with self._recovery_guard(path, expected) as expected:
+                _ = self._check_store_entry(path, expected)
+                lease_key, fd, expected = self._acquire_database_descriptor(path, expected)
+                self._lease_key = lease_key
+                self._database_fd = fd
+                _ = self._check_store_entry(path, expected)
+                self._connection = self._open_store(path, expected, fd, migrate=migrate)
+                self._close_finalizer = weakref.finalize(
+                    self,
+                    _close_connection_and_release_lease,
+                    self._connection,
+                    lease_key,
+                )
+        except OSError:
+            self._cleanup_failed_open()
+            raise ServerStoreError("server store filesystem access is unavailable; refusing access") from None
+        except BaseException:
+            self._cleanup_failed_open()
+            raise
+
+    def _store_info(self, path: Path, *, directory: bool = False) -> os.stat_result | None:
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            if directory:
+                raise
+            return None
+        reparse = cast(int, getattr(info, "st_file_attributes", 0)) & cast(int, getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0))
+        valid_type = stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode)
+        owner = os.geteuid() if os.name != "nt" else path.parent.stat().st_uid
+        if reparse or not valid_type or info.st_uid != owner or (not directory and info.st_nlink != 1):
+            raise ServerStoreError("unsafe server store entry; administrator inspection required")
+        return info
+
+    def _check_store_entry(self, path: Path, expected: os.stat_result | None) -> os.stat_result | None:
+        parent = self._store_info(path.parent, directory=True)
+        if parent is None or not os.path.samestat(parent, self._parent_info):
+            raise ServerStoreError("server store directory identity changed; refusing access")
+        current = self._store_info(path)
+        if (current is None) != (expected is None) or (
+            current is not None and expected is not None and not os.path.samestat(current, expected)
+        ):
+            raise ServerStoreError("server store entry identity changed; refusing access")
+        # SQLite can modify existing sidecars even during a read-only open.
+        for suffix in ("-journal", "-wal", "-shm"):
+            _ = self._store_info(path.with_name(path.name + suffix))
+        return current
+
+    def _acquire_database_descriptor(
+        self, path: Path, expected: os.stat_result | None
+    ) -> tuple[tuple[int, int], int, os.stat_result]:
+        """Acquire a per-inode descriptor lease without closing live-store fds.
+
+        POSIX record locks are process-owned; closing any descriptor for a
+        database inode can release locks held by a different SQLite
+        connection in this process. Reuse the existing descriptor for the
+        inode and defer its close until the last ``ServerStore`` connection
+        has closed.
+        """
+        with _DATABASE_DESCRIPTOR_LEASES_LOCK:
+            if expected is not None:
+                key = (expected.st_dev, expected.st_ino)
+                lease = _DATABASE_DESCRIPTOR_LEASES.get(key)
+                if lease is not None:
+                    opened = os.fstat(lease.fd)
+                    if (
+                        not os.path.samestat(opened, expected)
+                        or not stat.S_ISREG(opened.st_mode)
+                        or opened.st_nlink != 1
+                    ):
+                        raise ServerStoreError(
+                            "server store entry identity changed; refusing access"
+                        )
+                    current = self._check_store_entry(path, expected)
+                    if current is None or not os.path.samestat(opened, current):
+                        raise ServerStoreError(
+                            "server store entry identity changed; refusing access"
+                        )
+                    lease.references += 1
+                    return key, lease.fd, opened
+
+            flags = getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+            flags |= os.O_RDWR if expected is not None else os.O_RDWR | os.O_CREAT | os.O_EXCL
+            fd = os.open(path, flags, 0o600)
+            registered = False
+            opened: os.stat_result | None = None
+            try:
+                opened = os.fstat(fd)
+                if expected is None:
+                    expected = opened
+                if (
+                    not os.path.samestat(opened, expected)
+                    or not stat.S_ISREG(opened.st_mode)
+                    or opened.st_nlink != 1
+                ):
+                    raise ServerStoreError(
+                        "server store entry identity changed; refusing access"
+                    )
+                current = self._check_store_entry(path, expected)
+                if current is None or not os.path.samestat(opened, current):
+                    raise ServerStoreError(
+                        "server store entry identity changed; refusing access"
+                    )
+
+                key = (opened.st_dev, opened.st_ino)
+                existing = _DATABASE_DESCRIPTOR_LEASES.get(key)
+                if existing is not None:
+                    existing_info = os.fstat(existing.fd)
+                    if not os.path.samestat(existing_info, opened):
+                        raise ServerStoreError(
+                            "server store descriptor lease identity changed"
+                        )
+                    # A path replacement raced the initial stat. Do not close
+                    # this descriptor while another managed SQLite connection
+                    # may hold process-scoped locks on its inode.
+                    existing.descriptors.append(fd)
+                    existing.references += 1
+                    registered = True
+                    return key, existing.fd, opened
+
+                _DATABASE_DESCRIPTOR_LEASES[key] = _DatabaseDescriptorLease(
+                    descriptors=[fd], references=1
+                )
+                registered = True
+                return key, fd, opened
+            finally:
+                if not registered:
+                    if opened is None:
+                        os.close(fd)
+                    else:
+                        # If validation failed after a raced replacement, keep
+                        # the descriptor attached to any existing lease rather
+                        # than closing an inode another store still uses.
+                        existing = _DATABASE_DESCRIPTOR_LEASES.get(
+                            (opened.st_dev, opened.st_ino)
+                        )
+                        if existing is None:
+                            os.close(fd)
+                        else:
+                            existing.descriptors.append(fd)
+
+    def _cleanup_failed_open(self) -> None:
+        if self._close_finalizer is not None:
+            # Guard teardown can fail after registration. The finalizer owns
+            # its captured lease and must consume it exactly once, even on GC.
+            _ = self._close_finalizer()
+            self._lease_key = None
+            self._database_fd = None
+            return
+        connection = getattr(self, "_connection", None)
+        if isinstance(connection, sqlite3.Connection):
+            try:
+                connection.close()
+            except sqlite3.Error:
+                # Keep the descriptor lease pinned if SQLite did not close.
+                return
+        if self._lease_key is not None:
+            _release_database_descriptor_lease(self._lease_key)
+            self._lease_key = None
+            self._database_fd = None
+
+    def _database_lease_references(self) -> int:
+        if self._lease_key is None:
+            return 0
+        with _DATABASE_DESCRIPTOR_LEASES_LOCK:
+            lease = _DATABASE_DESCRIPTOR_LEASES.get(self._lease_key)
+            return lease.references if lease is not None else 0
+
+    def _open_store(self, path: Path, expected: os.stat_result, fd: int, *, migrate: bool) -> sqlite3.Connection:
+        parent = path.parent
+        # sqlite3 opens filenames, not validated descriptors. The raw
+        # validation descriptor is leased across all managed connections to
+        # this inode because an independent close can release their POSIX locks.
+        _ = self._check_store_entry(path, expected)
+        # Closing the last writable WAL reader can checkpoint even on a
+        # refusal. Inspect stores read-only first, including WAL.
+        preflight: sqlite3.Connection | None = None
+        try:
+            for attempt in range(2):
+                preflight = sqlite3.connect(
+                    path.as_uri() + "?mode=ro", uri=True,
+                    check_same_thread=False, isolation_level=None,
+                )
+                self._connection = preflight
+                preflight.row_factory = sqlite3.Row
+                _ = self._check_store_entry(path, expected)
+                _ = preflight.execute("BEGIN")
+                try:
+                    _ = self.applied_migration_versions()
+                except _HotRollbackRequired:
+                    preflight.close()
+                    preflight = None
+                    if attempt:
+                        raise ServerStoreError("server store changed during recovery; retry") from None
+                    self._inspect_interrupted_store(path)
+                else:
+                    break
+
+            _ = self._check_store_entry(path, expected)
             self._connection = sqlite3.connect(
                 str(path), check_same_thread=False, isolation_level=None
             )
-        except sqlite3.Error as exc:
-            raise ServerStoreError(f"server store is not usable: {exc}") from None
-        try:
-            os.chmod(path, 0o600)
-            _ = self._connection.execute("PRAGMA journal_mode=DELETE")
+            # A WAL writer can commit despite the preflight snapshot. Refusal
+            # must not checkpoint its newer state when this connection closes.
+            _ = self._connection.setconfig(sqlite3.SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, True)
             _ = self._connection.execute("PRAGMA synchronous=FULL")
             _ = self._connection.execute("PRAGMA foreign_keys=ON")
+            _ = self._check_store_entry(path, expected)
             self._connection.row_factory = sqlite3.Row
-        except (sqlite3.Error, OSError) as exc:
-            self._connection.close()
-            raise ServerStoreError(f"server store is not usable: {exc}") from None
+            _ = self._connection.execute("BEGIN")
+            applied = self.applied_migration_versions()
+            # Rollback readers overlap without a lock-free recovery interval.
+            # Close SQLite handles, never the leased raw descriptor, here.
+            assert preflight is not None
+            preflight.close()
+            preflight = None
+
+            journal = _fetch_row(self._connection, "PRAGMA journal_mode")
+            assert journal is not None
+            if journal[0] == "wal":
+                # Journal-mode conversion cannot run inside a transaction.
+                # Promote the validated snapshot first; BUSY_SNAPSHOT refuses
+                # concurrent upgrades. EXCLUSIVE retains SQLite's locks across
+                # COMMIT until conversion and final schema acceptance finish.
+                _ = self._connection.execute("PRAGMA locking_mode=EXCLUSIVE")
+                if applied:
+                    _ = self._connection.execute("UPDATE schema_migrations SET version=version WHERE 0")
+                else:
+                    value = _fetch_row(self._connection, "PRAGMA user_version")
+                    assert value is not None
+                    _ = self._connection.execute(f"PRAGMA user_version={cast(int, value[0])}")
+                _ = self._connection.execute("COMMIT")
+                _ = self._connection.execute("PRAGMA journal_mode=DELETE")
+                _ = self._connection.execute("BEGIN")
+                applied = self.applied_migration_versions()
+
+            if migrate:
+                try:
+                    self._apply_pending_migrations(applied)
+                except sqlite3.Error:
+                    raise ServerStoreError("server store migration failed; original state retained") from None
+                _ = self.require_current_schema()
+            _ = self._check_store_entry(path, expected)
+            _ = os.chmod(parent, 0o700)
+            if os.name != "nt":
+                os.fchmod(fd, 0o600)
+            else:
+                os.chmod(path, 0o600)
+            _ = self._check_store_entry(path, expected)
+            _ = self._connection.execute("PRAGMA locking_mode=NORMAL")
+            _ = self._connection.execute("COMMIT")
+        except BaseException as exc:
+            connection = getattr(self, "_connection", None)
+            if isinstance(connection, sqlite3.Connection):
+                connection.close()
+            if isinstance(exc, (sqlite3.Error, OSError)):
+                raise ServerStoreError("server store is not usable; retry after concurrent access finishes") from None
+            raise
+        finally:
+            if preflight is not None:
+                preflight.close()
+        return self._connection
 
     # ── Lifecycle and schema ──────────────────────────────────────────────
 
@@ -252,14 +604,17 @@ class ServerStore:
         un-migrated file opens raw — the migration-test seam; every other
         use of an un-migrated store raises on first statement.
         """
-        store = cls(canonical_store_path(data_dir))
-        if migrate:
-            _ = store.migrate()
+        store = cls.__new__(cls)
+        store._initialize(canonical_store_path(data_dir), migrate=migrate)
         return store
 
     def close(self) -> None:
         with self._lock:
-            self._connection.close()
+            finalizer = self._close_finalizer
+            if finalizer is not None and finalizer.alive:
+                # The finalizer closes SQLite first, then releases the shared
+                # raw descriptor lease. Never reverse that ownership order.
+                _ = finalizer()
 
     @property
     def path(self) -> Path:
@@ -267,54 +622,512 @@ class ServerStore:
 
     def schema_version(self) -> int:
         """The applied schema version (0 for an un-migrated store)."""
-        with self._lock:
-            try:
-                row = _fetch_row(self._connection,
-                    "SELECT MAX(version) AS version FROM schema_migrations"
-                )
-            except sqlite3.Error:
-                return 0
-            if row is None:
-                return 0
-            raw = cast("int | None", row["version"])
-            return int(raw) if raw is not None else 0
+        versions = self.applied_migration_versions()
+        return versions[-1] if versions else 0
 
     def applied_migration_versions(self) -> tuple[int, ...]:
-        """The ordered migration versions recorded in the store."""
+        """Read and validate history; only an empty new database has version 0."""
         with self._lock:
+            began_read = False
             try:
-                rows = _fetch_rows(self._connection,
-                    "SELECT version FROM schema_migrations ORDER BY version"
+                if not self._connection.in_transaction:
+                    _ = self._connection.execute("BEGIN")
+                    began_read = True
+                objects = _fetch_rows(self._connection,
+                    "SELECT name, type, tbl_name, sql FROM sqlite_schema"
                 )
-            except sqlite3.Error:
-                return ()
-        return tuple(int(cast(int, row["version"])) for row in rows)
+                metadata = tuple(row for row in objects if _ascii_lower(cast(str, row["name"])) == "schema_migrations")
+                if not metadata and not objects:
+                    return ()
+                if len(metadata) != 1 or metadata[0]["type"] != "table" or type(cast(object, metadata[0]["sql"])) is not str:
+                    raise ServerStoreError(
+                        "server store migration metadata is invalid; refusing repair"
+                    )
+                if _schema_tokens(cast(str, metadata[0]["sql"])) != _schema_tokens(MIGRATIONS[0][1][0]):
+                    raise ServerStoreError("server store migration metadata is invalid; refusing repair")
+                columns = _fetch_rows(self._connection, "PRAGMA table_info(schema_migrations)")
+                if tuple((_ascii_lower(cast(str, row["name"])), _ascii_lower(cast(str, row["type"])), row["notnull"], row["pk"]) for row in columns) != (
+                    ("version", "integer", 0, 1), ("applied_at", "text", 1, 0),
+                ):
+                    raise ServerStoreError(
+                        "server store migration metadata is invalid; refusing repair"
+                    )
+                rows = _fetch_rows(self._connection,
+                    "SELECT version, applied_at FROM schema_migrations ORDER BY version"
+                )
+                versions: list[int] = []
+                for row in rows:
+                    raw = cast(object, row["version"])
+                    if type(raw) is not int or raw < 1 or type(cast(object, row["applied_at"])) is not str:
+                        raise ServerStoreError(
+                            "server store migration metadata is invalid; refusing repair"
+                        )
+                    versions.append(raw)
+                if versions and versions[-1] > STORE_SCHEMA_VERSION:
+                    raise ServerStoreError(
+                        "server store schema is newer than this program understands; refusing to read a future store"
+                    )
+                applied = tuple(versions)
+                expected = tuple(version for version, _ in MIGRATIONS)
+                if not applied or applied != expected[:len(applied)]:
+                    raise ServerStoreError(
+                        "server store migration history is invalid; refusing repair"
+                    )
+                self._validate_owned_schema(applied[-1], objects)
+                return applied
+            except sqlite3.Error as exc:
+                if getattr(exc, "sqlite_errorcode", None) == sqlite3.SQLITE_READONLY_ROLLBACK:
+                    raise _HotRollbackRequired(
+                        "server store requires validated interrupted-transaction recovery"
+                    ) from None
+                raise ServerStoreError(
+                    "server store migration metadata is invalid or unreadable; refusing repair"
+                ) from None
+            finally:
+                if began_read:
+                    _ = self._connection.execute("ROLLBACK")
+
+    def _validate_owned_schema(self, version: int, objects: list[sqlite3.Row]) -> None:
+        # Only trusted migration SQL runs here, in memory. Actual definitions
+        # are compared, never executed; triggers/views cannot authorize writes.
+        reference = sqlite3.connect(":memory:")
+        reference.row_factory = sqlite3.Row
+        try:
+            for number, statements in MIGRATIONS:
+                if number > version:
+                    break
+                for statement in statements:
+                    _ = reference.execute(statement)
+            expected = _fetch_rows(reference,
+                "SELECT name, type, tbl_name, sql FROM sqlite_schema"
+            )
+
+            def definition(row: sqlite3.Row) -> tuple[object, ...]:
+                sql = cast(object, row["sql"])
+                if sql is not None and not isinstance(sql, str):
+                    raise ServerStoreError("server store owned schema is invalid; refusing repair")
+                return (_ascii_lower(cast(str, row["tbl_name"])),
+                        _schema_tokens(sql) if isinstance(sql, str) else None)
+
+            # Generated names are admitted only when this reference creates
+            # that exact object; a reserved-looking prefix grants no exemption.
+            wanted = {(_ascii_lower(cast(str, row["name"])), cast(str, row["type"])):
+                      definition(row) for row in expected}
+            actual = {(_ascii_lower(cast(str, row["name"])), cast(str, row["type"])):
+                      definition(row) for row in objects}
+            if actual != wanted:
+                raise ServerStoreError("server store owned schema is invalid; refusing repair")
+
+            def compiled_rows(connection: sqlite3.Connection, pragma: str, name: str,
+                              fields: tuple[str, ...], folded: frozenset[str]) -> tuple[tuple[object, ...], ...]:
+                quoted = '"' + name.replace('"', '""') + '"'
+                rows = _fetch_rows(connection, f"PRAGMA {pragma}({quoted})")
+                return tuple(tuple(
+                    _ascii_lower(cast(str, row[field]))
+                    if field in folded and isinstance(cast(object, row[field]), str)
+                    else cast(object, row[field]) for field in fields
+                ) for row in rows)
+
+            def compiled_table(connection: sqlite3.Connection, name: str) -> tuple[object, ...]:
+                columns = compiled_rows(connection, "table_xinfo", name,
+                                        ("cid", "name", "type", "notnull", "dflt_value", "pk", "hidden"),
+                                        frozenset({"name", "type"}))
+                foreign_keys = compiled_rows(connection, "foreign_key_list", name,
+                                             ("id", "seq", "table", "from", "to", "on_update", "on_delete", "match"),
+                                             frozenset({"table", "from", "to", "on_update", "on_delete", "match"}))
+                quoted = '"' + name.replace('"', '""') + '"'
+                indexes: list[tuple[object, ...]] = []
+                for row in _fetch_rows(connection, f"PRAGMA index_list({quoted})"):
+                    parts = compiled_rows(connection, "index_xinfo", cast(str, row["name"]),
+                                          ("seqno", "cid", "name", "desc", "coll", "key"),
+                                          frozenset({"name", "coll"}))
+                    indexes.append((cast(object, row["unique"]), cast(object, row["origin"]),
+                                    cast(object, row["partial"]), parts))
+                return columns, foreign_keys, tuple(sorted(indexes, key=repr))
+
+            # Quoted keywords can be type words rather than constraints. Use
+            # SQLite's compiled structure, not lexical equivalence, for these.
+            for row in expected:
+                if row["type"] == "table":
+                    name = cast(str, row["name"])
+                    if compiled_table(self._connection, name) != compiled_table(reference, name):
+                        raise ServerStoreError("server store owned schema is invalid; refusing repair")
+        finally:
+            reference.close()
+
+    def _copy_database_from_lease(
+        self, target: Path, expected: tuple[int, ...]
+    ) -> None:
+        """Copy the main file without opening or closing another DB fd."""
+        fd = self._database_fd
+        if fd is None:
+            raise ServerStoreError("server store recovery descriptor is unavailable")
+        info = os.fstat(fd)
+        opened = (
+            info.st_dev,
+            info.st_ino,
+            info.st_mode,
+            info.st_uid,
+            info.st_nlink,
+            info.st_size,
+            info.st_mtime_ns,
+            info.st_ctime_ns,
+        )
+        if opened != expected:
+            raise ServerStoreError("server store changed during recovery inspection; retry")
+
+        target_fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            with os.fdopen(target_fd, "wb", closefd=False) as writer:
+                # This descriptor is shared by the live store lease. Read it
+                # in place; opening/closing another fd for the DB inode could
+                # release process-owned POSIX locks held by SQLite.
+                with _DATABASE_DESCRIPTOR_LEASES_LOCK:
+                    position = os.lseek(fd, 0, os.SEEK_CUR)
+                    try:
+                        _ = os.lseek(fd, 0, os.SEEK_SET)
+                        remaining = info.st_size
+                        while remaining:
+                            chunk = os.read(fd, min(1024 * 1024, remaining))
+                            if not chunk:
+                                raise ServerStoreError(
+                                    "server store changed during recovery inspection; retry"
+                                )
+                            _ = writer.write(chunk)
+                            remaining -= len(chunk)
+                    finally:
+                        _ = os.lseek(fd, position, os.SEEK_SET)
+                writer.flush()
+                os.fsync(writer.fileno())
+        finally:
+            os.close(target_fd)
+
+    @contextmanager
+    def _interrupted_store_lock(self, path: Path) -> Generator[None, None, None]:
+        """Exclude SQLite access while authorizing and performing hot rollback.
+
+        The recovery guard excludes other managed opens, and the sole lease
+        excludes existing managed connections. Lock SQLite's full SHARED range
+        as well, so ordinary external SQLite clients cannot change the source.
+        Never lock RESERVED: that would make SQLite misidentify a hot journal.
+        """
+        fd = self._database_fd
+        if fd is None or self._database_lease_references() != 1:
+            raise ServerStoreError("server store recovery refused while another store connection is open")
+        _ = self._check_store_entry(path, os.fstat(fd))
+        position = os.lseek(fd, 0, os.SEEK_CUR)
+        locked = False
+        try:
+            if os.name == "nt":
+                import msvcrt
+                _ = os.lseek(fd, 0x40000002, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 510)
+            else:
+                import fcntl
+                fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB, 510, 0x40000002)
+            locked = True
+            yield
+        except OSError:
+            raise ServerStoreError("server store recovery source is busy; retry after concurrent access finishes") from None
+        finally:
+            try:
+                if locked:
+                    if os.name == "nt":
+                        import msvcrt
+                        _ = os.lseek(fd, 0x40000002, os.SEEK_SET)
+                        msvcrt.locking(fd, msvcrt.LK_UNLCK, 510)
+                    else:
+                        import fcntl
+                        fcntl.lockf(fd, fcntl.LOCK_UN, 510, 0x40000002)
+            finally:
+                _ = os.lseek(fd, position, os.SEEK_SET)
+
+    def _inspect_interrupted_store(self, path: Path) -> None:
+        """Authorize normal SQLite rollback only from a validated private copy."""
+        try:
+            # A recovery copy is only safe when this opener owns the sole
+            # ServerStore lease. Another live connection may be in a write
+            # transaction; do not inspect or snapshot its database in place.
+            if self._database_lease_references() != 1:
+                raise ServerStoreError(
+                    "server store recovery refused while another store connection is open"
+                )
+            parent_info = path.parent.lstat()
+            if not stat.S_ISDIR(parent_info.st_mode):
+                raise ServerStoreError("server store recovery requires an owned directory")
+            with self._interrupted_store_lock(path), self._recovery_slot(path) as directory:
+                if directory.stat().st_uid != parent_info.st_uid:
+                    raise ServerStoreError("server store recovery ownership is invalid")
+
+                def identity(source: Path) -> tuple[int, ...] | None:
+                    try:
+                        info = source.lstat()
+                    except FileNotFoundError:
+                        return None
+                    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != parent_info.st_uid:
+                        raise ServerStoreError("server store recovery file ownership is invalid")
+                    return (info.st_dev, info.st_ino, info.st_mode, info.st_uid,
+                            info.st_nlink, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+                sources = (path, Path(str(path) + "-journal"), Path(str(path) + "-wal"))
+                before = {source: identity(source) for source in sources}
+                if before[path] is None or before[sources[1]] is None:
+                    raise ServerStoreError("server store changed during recovery inspection; retry")
+                for source, stamp in before.items():
+                    if stamp is None:
+                        continue
+                    target = directory / source.name
+                    if source == path:
+                        self._copy_database_from_lease(target, stamp)
+                        continue
+                    fd = os.open(source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+                    with os.fdopen(fd, "rb") as reader:
+                        info = os.fstat(reader.fileno())
+                        opened = (info.st_dev, info.st_ino, info.st_mode, info.st_uid,
+                                  info.st_nlink, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+                        if opened != stamp:
+                            raise ServerStoreError("server store changed during recovery inspection; retry")
+                        if source == sources[1]:
+                            # Owned single-database writes never use a super-journal.
+                            magic = bytes.fromhex("d9d505f920a163d7")
+                            if reader.read(8) != magic or info.st_size <= 512:
+                                raise ServerStoreError("server store recovery journal is invalid")
+                            _ = reader.seek(-8, os.SEEK_END)
+                            if reader.read(8) == magic:
+                                raise ServerStoreError("server store recovery journal is unsupported")
+                            _ = reader.seek(0)
+                        output = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                        with os.fdopen(output, "wb") as writer:
+                            shutil.copyfileobj(reader, writer)
+                if before != {source: identity(source) for source in sources}:
+                    raise ServerStoreError("server store changed during recovery inspection; retry")
+                candidate = directory / path.name
+                self._connection = sqlite3.connect(str(candidate), isolation_level=None)
+                self._connection.row_factory = sqlite3.Row
+                try:
+                    _ = self.applied_migration_versions()
+                finally:
+                    self._connection.close()
+                if before != {source: identity(source) for source in sources}:
+                    raise ServerStoreError("server store changed during recovery inspection; retry")
+                # The source is excluded and the recovered copy is supported.
+                # Normal SQLite locking on a second connection would release
+                # this process-owned bridge lock. This short-lived rollback
+                # connection therefore uses the already-held exclusion instead.
+                self._connection = sqlite3.connect(
+                    path.as_uri() + "?mode=rw&nolock=1", uri=True, isolation_level=None,
+                )
+                _ = self._connection.setconfig(sqlite3.SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, True)
+                _ = self._connection.execute("PRAGMA synchronous=FULL")
+                self._connection.row_factory = sqlite3.Row
+                try:
+                    _ = self.applied_migration_versions()
+                finally:
+                    self._connection.close()
+                # No validation decision crosses lock release: _open_store
+                # restarts normal read-only preflight after this bootstrap.
+        except (sqlite3.Error, OSError):
+            raise ServerStoreError("server store interrupted-transaction inspection failed safely") from None
+
+    def _recovery_info(self, path: Path, *, directory: bool = False) -> os.stat_result:
+        info = path.lstat()
+        reparse = cast(int, getattr(info, "st_file_attributes", 0)) & cast(int, getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0))
+        valid_type = stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode)
+        mode = 0o700 if directory else 0o600
+        if reparse or not valid_type or info.st_uid != path.parent.stat().st_uid or (not directory and info.st_nlink != 1):
+            raise ServerStoreError("unsafe recovery artifact; administrator inspection required")
+        if os.name != "nt" and stat.S_IMODE(info.st_mode) != mode:
+            raise ServerStoreError("unsafe recovery artifact permissions; administrator inspection required")
+        return info
+
+    @staticmethod
+    def _sync_recovery_directory(directory: Path) -> None:
+        if os.name != "nt":
+            fd = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+
+    @contextmanager
+    def _recovery_guard(self, path: Path, expected: os.stat_result | None) -> Generator[os.stat_result | None, None, None]:
+        guard = path.parent / _RECOVERY_GUARD
+        fd: int | None = None
+        locked = False
+        try:
+            parent = path.parent.lstat()
+            if not stat.S_ISDIR(parent.st_mode) or cast(int, getattr(parent, "st_file_attributes", 0)) & cast(int, getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)):
+                raise ServerStoreError("unsafe recovery directory; administrator inspection required")
+            flags = os.O_RDWR | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+            try:
+                fd = os.open(guard, flags | os.O_CREAT | os.O_EXCL, 0o600)
+            except FileExistsError:
+                _ = self._recovery_info(guard)
+                fd = os.open(guard, flags)
+            guard_info = self._recovery_info(guard)
+            opened = os.fstat(fd)
+            if (opened.st_dev, opened.st_ino, opened.st_uid, opened.st_mode, opened.st_nlink) != (guard_info.st_dev, guard_info.st_ino, guard_info.st_uid, guard_info.st_mode, guard_info.st_nlink):
+                raise ServerStoreError("recovery lock identity changed; retry")
+            deadline = time.monotonic() + 5
+            while True:
+                try:
+                    if os.name == "nt":
+                        import msvcrt
+                        _ = os.lseek(fd, 0, os.SEEK_SET)
+                        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                    else:
+                        import fcntl
+                        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    locked = True
+                    break
+                except OSError as exc:
+                    if exc.errno not in (errno.EACCES, errno.EAGAIN):
+                        raise
+                    if time.monotonic() >= deadline:
+                        raise ServerStoreError("recovery inspection is active; retry after it finishes") from None
+                    time.sleep(0.01)
+            # Another guarded opener may have created a previously absent file.
+            if expected is None:
+                expected = self._store_info(path)
+            _ = self._check_store_entry(path, expected)
+            _ = os.lseek(fd, 0, os.SEEK_SET)
+            marker = os.read(fd, 2)
+            if marker not in (b"", b"\0"):
+                raise ServerStoreError("unknown recovery lock; administrator inspection required")
+            if not marker:
+                _ = os.lseek(fd, 0, os.SEEK_SET)
+                _ = os.write(fd, b"\0")
+                os.fsync(fd)
+                self._sync_recovery_directory(path.parent)
+            _ = self._check_store_entry(path, expected)
+            self._reclaim_recovery_slot(path)
+            if any(entry.name != _RECOVERY_SLOT for entry in path.parent.glob(".store-recovery-*")):
+                raise ServerStoreError("unattested recovery artifact; administrator inspection required")
+            yield expected
+        except OSError:
+            raise ServerStoreError("recovery lifecycle unavailable; source retained") from None
+        finally:
+            if fd is not None:
+                try:
+                    if locked:
+                        if os.name == "nt":
+                            import msvcrt
+                            _ = os.lseek(fd, 0, os.SEEK_SET)
+                            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+                        else:
+                            import fcntl
+                            fcntl.flock(fd, fcntl.LOCK_UN)
+                finally:
+                    os.close(fd)
+
+    def _write_recovery_claim(self, path: Path, payload: bytes) -> None:
+        stage = path.parent / _RECOVERY_NEXT
+        claim = path.parent / _RECOVERY_CLAIM
+        fd = os.open(stage, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        with os.fdopen(fd, "wb") as writer:
+            _ = writer.write(payload)
+            writer.flush()
+            os.fsync(writer.fileno())
+        if os.name == "nt":
+            import ctypes
+            library = cast(object, ctypes.WinDLL("kernel32", use_last_error=True))
+            move = cast(object, getattr(library, "MoveFileExW"))
+            setattr(move, "argtypes", [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_ulong])
+            setattr(move, "restype", ctypes.c_int)
+            if not cast(Callable[[str, str, int], int], move)(str(stage), str(claim), 1 | 8):
+                raise ServerStoreError("recovery claim publication failed; source retained")
+        else:
+            os.replace(stage, claim)
+        self._sync_recovery_directory(path.parent)
+
+    def _reclaim_recovery_slot(self, path: Path) -> None:
+        slot = path.parent / _RECOVERY_SLOT
+        claim = path.parent / _RECOVERY_CLAIM
+        stage = path.parent / _RECOVERY_NEXT
+        planned = _RECOVERY_MAGIC + b"P\n"
+        owned = _RECOVERY_MAGIC + b"O\n"
+        if stage.exists() or stage.is_symlink():
+            stage_info = self._recovery_info(stage)
+            if stage_info.st_size > len(owned) + 32:
+                raise ServerStoreError("unknown recovery claim; administrator inspection required")
+            partial = stage.read_bytes()
+            if not (planned.startswith(partial) or owned.startswith(partial) or (partial.startswith(owned) and len(partial) <= len(owned) + 32)):
+                raise ServerStoreError("unknown recovery claim; administrator inspection required")
+            stage.unlink()
+        if not claim.exists() and not claim.is_symlink():
+            if slot.exists() or slot.is_symlink():
+                raise ServerStoreError("unattested recovery slot; administrator inspection required")
+            return
+        claim_info = self._recovery_info(claim)
+        if claim_info.st_size > len(owned) + 32:
+            raise ServerStoreError("unknown recovery claim; administrator inspection required")
+        payload = claim.read_bytes()
+        if payload != planned and not (payload.startswith(owned) and len(payload) == len(owned) + 32):
+            raise ServerStoreError("unknown recovery claim; administrator inspection required")
+        if slot.exists() or slot.is_symlink():
+            info = self._recovery_info(slot, directory=True)
+            if payload != planned and payload[len(owned):] != info.st_dev.to_bytes(16, "big") + info.st_ino.to_bytes(16, "big"):
+                raise ServerStoreError("recovery slot identity changed; administrator inspection required")
+            entries: list[Path] = []
+            for entry in slot.iterdir():
+                entries.append(entry)
+                if len(entries) > 4:
+                    raise ServerStoreError("unattested recovery contents; administrator inspection required")
+            allowed = {path.name + suffix for suffix in ("", "-journal", "-wal", "-shm")}
+            if (payload == planned and entries) or any(entry.name not in allowed for entry in entries):
+                raise ServerStoreError("unattested recovery contents; administrator inspection required")
+            for entry in entries:
+                _ = self._recovery_info(entry)
+            for entry in entries:
+                entry.unlink()
+            slot.rmdir()
+            self._sync_recovery_directory(path.parent)
+        claim.unlink()
+        self._sync_recovery_directory(path.parent)
+
+    @contextmanager
+    def _recovery_slot(self, path: Path) -> Generator[Path, None, None]:
+        slot = path.parent / _RECOVERY_SLOT
+        self._write_recovery_claim(path, _RECOVERY_MAGIC + b"P\n")
+        slot.mkdir(mode=0o700)
+        info = self._recovery_info(slot, directory=True)
+        self._sync_recovery_directory(path.parent)
+        self._write_recovery_claim(path, _RECOVERY_MAGIC + b"O\n" + info.st_dev.to_bytes(16, "big") + info.st_ino.to_bytes(16, "big"))
+        try:
+            yield slot
+        finally:
+            self._reclaim_recovery_slot(path)
 
     def migrate(self) -> int:
-        """Apply pending migrations; returns the resulting schema version."""
+        """Apply a bounded, ordered migration set atomically and idempotently."""
         with self._lock:
-            applied = self.schema_version()
-            for version, statements in MIGRATIONS:
-                if version <= applied:
-                    continue
-                self._apply_migration(version, statements)
+            # An already-current store needs no write lock. In particular, an
+            # empty write transaction must not disrupt another store's reader.
+            if self.schema_version() == STORE_SCHEMA_VERSION:
+                return STORE_SCHEMA_VERSION
+            try:
+                _ = self._connection.execute("BEGIN IMMEDIATE")
+                applied = self.applied_migration_versions()
+                self._apply_pending_migrations(applied)
+                _ = self._connection.execute("COMMIT")
+            except (sqlite3.Error, ServerStoreError) as exc:
+                if self._connection.in_transaction:
+                    _ = self._connection.execute("ROLLBACK")
+                if isinstance(exc, ServerStoreError):
+                    raise
+                raise ServerStoreError(
+                    "server store migration failed; original state retained"
+                ) from None
             return self.schema_version()
 
-    def _apply_migration(self, version: int, statements: tuple[str, ...]) -> None:
-        try:
-            _ = self._connection.execute("BEGIN IMMEDIATE")
+    def _apply_pending_migrations(self, applied: tuple[int, ...]) -> None:
+        for version, statements in MIGRATIONS[len(applied):]:
             for statement in statements:
                 _ = self._connection.execute(statement)
             _ = self._connection.execute(
                 "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
                 (version, self._now_for_migrations()),
             )
-            _ = self._connection.execute("COMMIT")
-        except sqlite3.Error as exc:
-            _ = self._connection.execute("ROLLBACK")
-            raise ServerStoreError(
-                f"server store migration to version {version} failed: {exc}"
-            ) from None
 
     @staticmethod
     def _now_for_migrations() -> str:

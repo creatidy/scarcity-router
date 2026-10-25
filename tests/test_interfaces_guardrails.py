@@ -1113,6 +1113,14 @@ class _ControlStubHandler(BaseHTTPRequestHandler):
         if server.behavior == "wrong_envelope":
             self._json(200, {"schema_version": 2, "snapshots": []})
             return
+        if server.behavior in ("boolean_envelope", "float_envelope", "string_envelope"):
+            version: object = {
+                "boolean_envelope": True,
+                "float_envelope": 1.0,
+                "string_envelope": "SYNTHETIC-SECRET",
+            }[server.behavior]
+            self._json(200, {"schema_version": version, "snapshots": []})
+            return
         if server.behavior == "missing_document":
             self._json(200, {"schema_version": 1})
             return
@@ -1123,10 +1131,10 @@ class _ControlStubHandler(BaseHTTPRequestHandler):
         observation = collect_status(
             collectors=application.collectors, clock=application.clock
         )
-        self._json(
-            200,
-            status_envelope(observation.snapshots, observation.eligibility),
-        )
+        envelope = status_envelope(observation.snapshots, observation.eligibility)
+        if server.behavior == "additive_envelope":
+            envelope["compatible_metadata"] = {"revision": "synthetic"}
+        self._json(200, envelope)
 
     def _select(self, server: _ControlStubHTTPServer, body: bytes) -> None:
         application = server.application
@@ -1433,14 +1441,27 @@ class RemoteBridgeTests(GuardrailTestCase):
             "corrupt",
             "duplicate_keys",
             "wrong_envelope",
+            "boolean_envelope",
+            "float_envelope",
+            "string_envelope",
             "missing_document",
         ):
             with self.subTest(behavior=behavior):
                 server = self._serve()
                 server.behavior = behavior
                 client = self._client(server)
-                with self.assertRaises(RemoteBridgeError):
+                with self.assertRaises(RemoteBridgeError) as caught:
                     _ = client.status()
+                self.assertNotIn("SYNTHETIC-SECRET", str(caught.exception))
+
+    def test_compatible_response_addition_is_retained_not_dropped(self) -> None:
+        server = self._serve()
+        client = self._client(server)
+        original = client.status()
+        server.behavior = "additive_envelope"
+        extended = client.status()
+        self.assertEqual({"revision": "synthetic"}, extended.pop("compatible_metadata"))
+        self.assertEqual(original, extended)
 
     def test_invalid_request_documents_fail_before_any_network_exchange(
         self,
@@ -1541,7 +1562,13 @@ class NoExecutionAndNoIdeMutationTests(GuardrailTestCase):
         - ``worker_service.py`` — the #138 generated systemd user unit,
           written atomically into the invoking user's own
           ``~/.config/systemd/user/`` (``0o644``; no secret material by
-          construction — negative-scanned by ``tests/test_worker_service.py``).
+           construction — negative-scanned by ``tests/test_worker_service.py``).
+        - Only ``ServerStore._inspect_interrupted_store`` and its
+          ``_recovery_guard``/``_write_recovery_claim`` lifecycle in
+          ``server_store.py`` — #185's D-044-private, short-lived SQLite
+          recovery candidate. Owned-source validation, modes, refusal and
+          cleanup are behavior-tested in ``tests/test_server_store.py``;
+          every other explicit write in that module remains prohibited.
 
         This is the structural guarantee behind "Scarcity Router does not
         automatically modify a user's global IDE configuration".
@@ -1558,6 +1585,19 @@ class NoExecutionAndNoIdeMutationTests(GuardrailTestCase):
         write_flag_markers = ("WRONLY", "RDWR", "CREAT", "TRUNC", "APPEND")
         for path in sorted(package_dir.rglob("*.py")):
             tree = ast.parse(path.read_text(encoding="utf-8"))
+            recovery_calls: set[int] = set()
+            if path.name == "server_store.py":
+                for definition in tree.body:
+                    if isinstance(definition, ast.ClassDef) and definition.name == "ServerStore":
+                        for member in definition.body:
+                            if isinstance(member, ast.FunctionDef) and member.name in {
+                                "_acquire_database_descriptor",
+                                "_copy_database_from_lease",
+                                "_inspect_interrupted_store",
+                                "_recovery_guard",
+                                "_write_recovery_claim",
+                            }:
+                                recovery_calls.update(id(call) for call in ast.walk(member) if isinstance(call, ast.Call))
             for node in ast.walk(tree):
                 if not isinstance(node, ast.Call):
                     continue
@@ -1567,12 +1607,13 @@ class NoExecutionAndNoIdeMutationTests(GuardrailTestCase):
                     if isinstance(func, ast.Attribute)
                     else (func.id if isinstance(func, ast.Name) else "")
                 )
+                bounded_write = path.name in provisioning_modules or id(node) in recovery_calls
                 if (
                     name in write_call_names
-                    and path.name not in provisioning_modules
+                    and not bounded_write
                 ):
                     offenders.append(f"{path.name}: {name} call")
-                if name == "open" and path.name not in provisioning_modules:
+                if name == "open" and not bounded_write:
                     mode = _mode_argument(node)
                     if mode is not None and any(marker in mode for marker in "wax+"):
                         offenders.append(f"{path.name}: write-mode open")

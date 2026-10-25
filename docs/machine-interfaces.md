@@ -586,13 +586,204 @@ MCP` for representative scenarios.
 
 Separate contracts carry separate versions; they are never collapsed:
 
-| Version | Meaning | Value |
+| Family | Current Value | Authority and Supported Reader Boundary | Executable Evidence (`tests/`) |
+| --- | --- | --- | --- |
+| `CapacitySnapshot.schema_version` | `3` | [capacity.py](../scarcity_router/capacity.py), `SCHEMA_VERSION`; v3 only, not a v1/v2 capacity migration | `test_capacity.py`: old/future schema, exact types, missing semantics, closed vocabulary |
+| `ExecutionEligibility.schema_version` | `1` | [eligibility.py](../scarcity_router/eligibility.py), `ELIGIBILITY_SCHEMA_VERSION`; v1 only | `test_eligibility.py`: round-trip, enum/unknown-key/version refusal |
+| `Machine envelope` | `1` | [machine_api.py](../scarcity_router/machine_api.py), `ENVELOPE_SCHEMA_VERSION`; REST `/v1/`, MCP, remote recommendation | `test_interfaces_guardrails.py`: direct/CLI/REST/MCP/remote parity, additive eligibility, integer-only envelope/missing document refusal |
+| `catalog_version` | `5` | [model-catalog.json](../model-catalog.json), [ModelCatalog](../scarcity_router/selection_types.py); positive integer CONTENT/calibration generation, no separate schema field | `test_model_calibration.py`, `test_selection_types.py`, `test_model_contracts.py`: provenance/override round-trip; content increment is not recalibration |
+| `policy_version` | `9` | [model-policy.json](../model-policy.json), [load_model_policy](../scarcity_router/selection_app.py); positive integer CONTENT/calibration generation | `test_model_policy.py`, `test_model_calibration.py`, `test_selection_app.py`: profile expansion and decision provenance |
+| `Model policy schema` | `1` | [selection_app.py](../scarcity_router/selection_app.py), `MODEL_POLICY_SCHEMA_VERSION`; declared integer 1 only; bounded legacy projection below | `test_selection_app.py`: future/bool/float/string/null refusal, compatible descriptive additions |
+| `Track registry schema` | `1` | [model_tracks.py](../scarcity_router/model_tracks.py), `TRACK_REGISTRY_SCHEMA_VERSION`; reviewed dated floors, no content counter | `test_model_contracts.py`, `test_execution_sources.py`: strict shape, floor provenance, restricted tracks, generation upgrades |
+| `Execution surface` | `1` | [gateway_contracts.py](../scarcity_router/gateway_contracts.py), `EXECUTION_SURFACE_VERSION`; independent Chat Completions ingress | `test_gateway_contracts.py`, `test_gateway_server.py`: request/error/pin semantics, cancellation/tools |
+| `RouteDecision.schema_version` | `1` | [routing_core.py](../scarcity_router/routing_core.py), `ROUTE_DECISION_SCHEMA_VERSION`; executable core decision with D-079 public projection, not the frozen recommendation-only envelope | `test_routing_core.py`, `test_kernel_requirements.py`: exact pins, authorization, no substitution/profile drift |
+| `ResourceStateSnapshot.schema_version` | `1` | [resource_state.py](../scarcity_router/resource_state.py), `RESOURCE_STATE_SCHEMA_VERSION`; observation only | `test_resource_state.py`: version/enums/required fields/future observation refusal |
+| `RegistrySnapshot.schema_version` | `1` | [resource_state.py](../scarcity_router/resource_state.py), `REGISTRY_SCHEMA_VERSION`; evaluated server read model | `test_resource_state.py`: current/future snapshot versions |
+| `WorkerStateReport.schema_version` | `1` | [resource_state.py](../scarcity_router/resource_state.py), `WORKER_REPORT_SCHEMA_VERSION`; authenticated grant intersection | `test_resource_state.py`: atomic report rejection; reports cannot redefine registrations |
+| `ModelInventoryReport.schema_version` | `1` | [model_inventory.py](../scarcity_router/model_inventory.py), `MODEL_INVENTORY_SCHEMA_VERSION`; protocol v2+ carrier, bounded closed shapes | `test_model_contracts.py`, `test_worker_sources.py`: source/auth enums, unknown keys/missing identities |
+| `Worker protocol` | `4` | [worker_protocol.py](../scarcity_router/worker_protocol.py), `WORKER_PROTOCOL_VERSION`; server `(4, 3, 2, 1)`, current worker `(4,)` | `test_worker_protocol.py`, `test_worker_sources.py`, `test_reasoning_output_semantics.py`, `test_worker_bridged_adapter.py`: old/current negotiation, tool/reasoning downlevel refusal, interruption/cancellation |
+| `Server configuration schema` | `2` | [server_config.py](../scarcity_router/server_config.py), `CONFIG_SCHEMA_VERSION`; read 1/2, write 2; nonempty sources require 2 | `test_server_config.py`, `test_execution_sources.py`, `test_worker_zcode_adapter.py`: v1 projection, source kinds, future/type/field refusal |
+| `Server store schema` | `2` | [server_store.py](../scarcity_router/server_store.py), `STORE_SCHEMA_VERSION`, `MIGRATIONS`; ordered 0/1 to 2, no reverse migration | `test_server_store.py`, `test_program_integration.py`, `test_m09_server.py`: rollback/idempotence/concurrent open, retained state, future startup refusal |
+| `Worker identity store schema` | `1` | [worker_identity_store.py](../scarcity_router/worker_identity_store.py), `WORKER_IDENTITY_STORE_SCHEMA_VERSION`; independent pairing store, v1 only | `test_worker_identity_store.py`: identity/revocation/permissions and version refusal |
+| `Worker local store schema` | `1` | [worker_local_store.py](../scarcity_router/worker_local_store.py), `WORKER_LOCAL_STORE_SCHEMA_VERSION`; independent device state, v1 only | `test_worker_local_store.py`: persistence/allowlist/permissions and version refusal |
+| `Worker local settings schema` | `1` | [worker_setup.py](../scarcity_router/worker_setup.py), `WORKER_LOCAL_SETTINGS_SCHEMA_VERSION`; v1 only, closed settings | `test_worker_first_run.py`: malformed/future settings refusal, shared first-run path |
+| `AuditRecord.schema_version` | `1` | [gateway_audit.py](../scarcity_router/gateway_audit.py), `AUDIT_SCHEMA_VERSION`; metadata, not physical-model attestation | `test_gateway_contracts.py`, `test_e2e_acceptance.py`: round-trip/privacy, bounded retention |
+| `Package release` | `0.1.0` | [get_version](../scarcity_router/__init__.py), [release engineering](release-engineering.md); SemVer distribution, not protocol/schema/calibration | `test_release_workflow.py`, `tools/package_check.py`: metadata/resources/isolated installed surfaces |
+
+`test_model_contracts.VersionMatrixTests` checks these values against actual
+constants/loaders, not a second version registry. Listing a test is not a claim
+that its current run passed. The #185 evidence baseline is Router
+`79795ec99960c442901f729804569138d85a902d`; delivery evidence records the exact
+tested HEAD, full-gate/package receipts and independent UX/security review.
+No universal version, future ABI, adapter or endpoint is introduced.
+
+Other current separately owned formats have literal version 1:
+[KernelRequirementInterpretation](../scarcity_router/kernel_requirements.py)
+(`interpretation_version`, local non-authorizing projection),
+[ExecutionAssurance/source_call_facts](../scarcity_router/execution_assurance.py)
+(trusted in-process facts, not public worker grants),
+[DiagnosticsReport](../scarcity_router/diagnostics.py) and the
+[control API export](../scarcity_router/control_api.py). Owned tests are
+`test_kernel_requirements.py`, `test_execution_assurance.py`, `test_diagnostics.py`
+and `test_control_api.py`. Nested requirements, selector/user policies, simulation,
+capability evidence/overrides, sources, pins and adapter calls have the owning
+parser's grammar, not extra invented counters. Adapter implementation versions
+and vendor runtime minimum/tested versions remain distinct in
+`openai_http_adapter.py`, `worker_bridged_adapter.py`, `codex_worker_evidence.py`,
+`zcode_worker_evidence.py` and their compatibility matrices. Runtime minimum or
+adapter version is not an installed/live receipt.
+
+The composed producer now also includes D-079/#174, integrated at Router
+`c38c8ae5390e27b9bfb9ae210b76d6efa89a2d36`: executable selection request/response
+documents have literal version 1, and the retained
+`ExecutableRequirements.schema_version` independently has literal version 1.
+Their authorities at that exact producer revision are
+[executable_contract.py](https://forgejo.creatidy.com/BioMedical-IT/scarcity-router/src/commit/c38c8ae5390e27b9bfb9ae210b76d6efa89a2d36/scarcity_router/executable_contract.py),
+[executable_client.py](https://forgejo.creatidy.com/BioMedical-IT/scarcity-router/src/commit/c38c8ae5390e27b9bfb9ae210b76d6efa89a2d36/scarcity_router/executable_client.py) and
+`GatewayApplication.select_executable`; `test_executable_contract.py` covers the
+actual closed parsers, future/type refusal, helper preservation and exact admission.
+These values do not derive from the machine envelope, worker protocol or package
+version. Retained context is a demand, not authorization, availability or a receipt.
+Existing context-free clients remain supported. Installed Kernel/harness and live
+identity acceptance are still separate from this published producer contract.
+A v1 Chat Completions endpoint alone does not establish D-079 support: the new
+context requires a matching producer/consumer and must never be stripped to retry
+against an older endpoint or otherwise silently downleveled.
+
+### Projection and Upgrade Authority
+
+The local catalog, calibrated policy and reviewed tracks remain the single
+working bootstrap (D-025/D-053). Source runs resolve root-authoritative files;
+installed runs resolve wheel resources independent of working directory. Explicit
+overrides win. Packaging maps those same files, never a second public truth.
+Omitted model-policy `schema_version` keeps the concretely shipped minimal
+user-artifact projection: required positive `policy_version`, `task_profiles[].id`
+and complete `calibrated_requirement`, plus existing strictly pinned evaluation
+profiles. An explicit unsupported declaration never selects that legacy form.
+Descriptive additions are not selector authority. Catalog/track parsers remain
+closed; compatibility is per parser, not permission to ignore all new fields.
+
+Content generations can advance without changing shape. They do not authorize
+altering ratings, human overrides, calibrated minima, reviewed floors or evidence.
+Catalog round-trips retain base assessment/evidence and separate human override;
+profile decisions retain catalog/policy generation. Cached Kernel interpretations
+retain expansion/digest and refuse changed profile content/version. Reconstructing
+a historical decision needs exact input artifacts, evaluation instant and policy,
+not version numbers alone. Existing blackout/happy-hour expiry and unknown capacity
+semantics remain. MI conflict/freshness/calibration migration is not admitted;
+#176 must retain actual utilized cuts, conflicts, expiry and local override authority
+before replacing bootstrap. Publication time is not freshness or an authority winner.
+
+Server configuration reads known v1 documents without sources and writes v2 without
+dropping providers, aliases, grants or limits; source kinds stay closed/validated.
+SQLite migration does not itself rewrite the configuration document. The 0/1-to-2
+pending migration set is one `BEGIN IMMEDIATE` transaction: failed DDL/bookkeeping
+rolls back, concurrent opens recheck history under that lock, reopen is idempotent.
+Future stores refuse before persistent journal-mode/permission changes, control
+composition, configuration writes or listener startup. Invalid/gapped history
+refuses, never repairs. D-044 private permissions/credential boundaries remain.
+Worker stores retain their independent version refusal, not server migrations.
+
+The server validates version-specific owned table definitions, including keys,
+constraints and migration targets, against its actual migration producers;
+unexpected triggers/views or missing/incompatible tables cannot authorize a
+migration. Formatting, exact identifier quoting and ASCII keyword/name case are
+not new versions; delimiter-bearing and Unicode-confusable names are not aliases.
+SQLite-compiled column names/types, nullability, defaults, primary keys, indexes
+(including uniqueness and collation), and foreign keys must also match the same
+trusted migration reference. Quoted constraint keywords used as declared type
+words do not constitute an equivalent owned schema.
+The comparison enumerates the complete `sqlite_schema`: reserved-looking names
+are not exempt. Only exact generated objects present in the trusted migration
+reference (including owning table, NULL SQL and compiled structure) are admitted;
+unknown `sqlite_*` triggers, views, tables, indexes or statistics are refused.
+The preflight reads a consistent schema/history snapshot. Ordinary read-only
+errors never authorize recovery. For SQLite's exact `SQLITE_READONLY_ROLLBACK`
+condition, a protected short-lived candidate is recovered and validated first;
+only supported candidates authorize SQLite's normal rollback on the original.
+Unknown/invalid hot stores retain their original DB/journal bytes. This is bounded
+single-store crash recovery, not a repair/downgrade engine or a new operator step.
+The one candidate slot is durably claimed before copying and serialized by a
+portable private advisory lock. Startup reclaims only attested stale state, even
+when the original is now cold or refuses a future schema; it never deletes an
+active inspector or guesses ownership of unknown artifacts. The persistent lock
+is non-secret metadata, not another credential store.
+
+No downgrade/reverse migration exists. v2 retires only superseded `worker_pairings`;
+those hashes cannot become M05 salted identities (D-049). Unrelated configuration,
+admin/client/provider state and audit survive. Retained audit/pins are historical
+metadata, not live availability/authority; retirement never substitutes a target.
+Audit still expires by configured age/count, so indefinite replay is not promised.
+If rollback is required, retain a consistent protected backup before upgrade and
+restore only with its matching program/schema and accepted security procedure.
+Never edit markers or strip unknown fields to run an older executable.
+
+Normal steps are unchanged: install/upgrade the public wheel or checkout tool,
+restart the composed server first, then upgraded workers/services. Current server
+accepts old v1/v2/v3 workers; v4 workers cannot connect to an old-only server.
+Inventory requires v2, client-tool continuation v3+, reasoning preservation v4;
+unsupported semantics fail before send/dispatch rather than dropping effort,
+tools, reasoning or provenance. Ambiguous interrupted execution is not replayed.
+Existing service install/restart/uninstall and first-run provisioning remain the
+[README](../README.md#updates-and-uninstall) path; no private onprem checkout,
+conversion utility, daemon or recurring manual step is added. `make package-check`
+is the installed-package gate, not a release/deploy claim.
+
+### Cross-Product Evidence and Gates
+
+Exact public source cuts below are structural evidence, not vendored code/data,
+dependency adoption, permanent ABI approval or installed consumer acceptance:
+
+| Producer / Consumer | Frozen Structural Evidence | Admitted Combination / Remaining Gate |
 | --- | --- | --- |
-| `CapacitySnapshot.schema_version` | Capacity contract (`docs/capacity-model.md`) | `3` |
-| `ExecutionEligibility.schema_version` | Execution-eligibility contract (D-039, `scarcity_router/eligibility.py`) | `1` |
-| REST path prefix `/v1/` + envelope `schema_version` | Machine-interface contract (this document) | `1` |
-| `catalog_version` | Model catalog content version | `2` (current artifact) |
-| `policy_version` | Model policy/profile content version | `6` (current artifact) |
+| MI publication | MI `3a241701851eeaed2fbc0cd4b8a1e9417bb0f02d`, `src` tree `1f83d2fe835aa43e7ac569e2c047606c8ce5d712`, publication document blob `ef2b83bb6342ff94c86af229047da40d4820783e`; inspected same source at `938f4160493359f9795c3bda081b065afac96b16` | `publication.py`: framing integer 1, external exact-byte digest; `contract.py`: closed working payload `/1` and `/2`; `utilization.py`: `mi.utilization-working/1`; `producer.py`: retained atomic `/1` import to `/2`, history/scope refusal. MI #13 comment15114/#15 comment15692 accept only this bounded producer. Router does NOT admit either raw payload today. |
+| Kernel recommendation | Kernel `fa7fd5da97f47834e1c071f8fa1057b10430e4a4`, `src` tree `ae78704c3146dc4749b081206d6e5b9a20bb22a1`; inspected same source at `73e3af45c911aa9ae8c26b97bf0ec9f452063f10`, `adapters/scarcity_router.py` | Existing `/v1/select` consumer validates exact envelope/identity/effort and retains opaque decision provenance. Its producer pin is Router `5c48d51f1eb1f11424a5100eb2ccf20a6cba4581`. Recommendation-only, not executable route/full harness/outcome import. |
+| Router local Kernel interpreter | [kernel_requirements.py](../scarcity_router/kernel_requirements.py), schema evidence Kernel `a9a65006cc8cc5b5e4468746a18ff51daf742e6b` | Declaration v1 ordinary markers, digest/profile expansion/local exact-admission tests implemented; original subject/approval stays Kernel-owned. No public operation is inferred. |
+
+Canonical-to-staged correspondence concerns source only; newer upstream tests/docs
+differ. No upstream test execution or current installed proof follows from tree
+equality. Boundaries are at
+[MI #13](https://forgejo.creatidy.com/Creatidy/model-intelligence/issues/13#issuecomment-15114),
+[MI #15](https://forgejo.creatidy.com/Creatidy/model-intelligence/issues/15#issuecomment-15692)
+and [Kernel #11](https://forgejo.creatidy.com/Creatidy/creatidy-kernel/issues/11).
+
+| To-Prove Contract | Owner / Evidence Needed Before Activation or Acceptance |
+| --- | --- |
+| Installed executable selection/requirement-to-pin consumption | Router #174 producer D-079 and its exact positive/negative helper fixtures are integrated at `c38c8ae5390e27b9bfb9ae210b76d6efa89a2d36`; Kernel #52 and #181 still own the separately authorized installed/real-harness identity receipt. Frozen recommendation-only output is not that executable route. |
+| MI consumption/bootstrap/override migration | Router #176 + MI #19 + Kernel #55: admitted framing/payload/scope/freshness mapping, retained actual-use cut/context, conflict/expiry/calibration/override reconstruction, installed upgrade/refusal receipts. Producer acceptance is not private admission. |
+| Router state/events | Router #183 + Console: audience/grants, cursor/gap/reconnect/freshness semantics, exact producer-consumer proof. Admin reads are not an agreed Console stream. |
+| Complete outcome/native-lane retirement | Kernel #58 + Router #177/#199: complete accepted outcome producer, equivalent installed Kernel-controlled path and explicit retirement authority. Thin export/discovery is not migration acceptance. |
+
+These named gates implement unresolved-producer evidence discipline, not fictional
+proof of future transitions. They remain required backlog work; #185 neither defines
+their ABI nor deletes their requirements.
+
+### Acceptance Evidence Map
+
+This covers all six #185 criteria, not only the newly corrected refusal seams.
+Executed commands/results belong to the exact-revision delivery receipt; full
+validation, package checks and independent reviews remain mandatory gates.
+
+| Criterion | Local Conformance Evidence | Qualified Boundary |
+| --- | --- | --- |
+| 1. Independent tested matrix | `test_model_contracts.VersionMatrixTests`, calibration/policy tests, interface parity | Current values come from owning producers; package/adapter/harness versions are not schema/content versions. |
+| 2. Old/current/additive/negative/lossy combinations | Interface guardrails, capacity/eligibility/resource/model parsers, config/worker negotiation, reasoning-output/tool/cancellation suites | Additions are accepted only where promised; closed shapes refuse. No unsupported old capacity shape or lossy worker transport is guessed. |
+| 3. Bootstrap/config/override authority and reconstruction | `test_config.py`, `test_selection_types.py` human-override round-trips, `test_model_calibration.py`, `test_execution_sources.py`, `test_resource_policy.py`, `test_kernel_requirements.py`; synthetic MI frame non-admission | Root artifacts stay authoritative; content/provenance/expiry are preserved, not automatically recalibrated. Future MI replacement remains #176's explicit gate. |
+| 4. Bounded durable migration | `test_server_store.py`, `test_program_integration.MigrationFromSchemaOneTests`, `test_server_config.py`, execution-source/ZCode config suites, worker-store version tests, composed startup refusal | Atomic rollback, idempotence and future refusal preserve state. Reverse migration/unlimited audit retention are not promised. |
+| 5. Public installation/lifecycle/upgrade order | `tools/package_check.py`, `test_config.py`, `test_worker_first_run.py`, `test_worker_service.py`, `test_e2e_acceptance.py`, release-workflow tests | Source/installed resource paths, synthetic first-run/service lifecycle and server-first order; no publication/live platform/private onprem claim. |
+| 6. Exact evidence/full gates/UX/security | Router baseline and pinned producer tree/blob table above; negative fixtures; required `uv sync --only-dev`, `make check`, `uv run basedpyright`, `git diff --check`, `make package-check`; fresh correctness and explicit independent security acceptance at stable base/HEAD under the applicable policy and scoped exception below | Those checks/reviews must have actual delivery receipts before completion. Named unresolved-producer gates are retained, not silently waived or implemented here. |
+
+For these exact #174/#185 deliveries only, the owner's 2026-10-24T21:55:32Z
+decision supersedes the unused manual Daybreak roles with fresh native Kilo
+independent security verification. Original-source provenance, exact scope and
+finite allocations are preserved in [#174's admission](https://forgejo.creatidy.com/BioMedical-IT/scarcity-router/issues/174#issuecomment-18779)
+and [#185's admission](https://forgejo.creatidy.com/BioMedical-IT/scarcity-router/issues/185#issuecomment-18776).
+Actual explicit security approval remains mandatory; tests or generic COMMENT do
+not replace it. This is not a global policy change or a Daybreak invocation through
+Kilo. Other deliveries keep their existing security gates, and D-078's fresh
+read-only conversation, frozen source and automatic native handoff stay unchanged.
+
+### Machine-Interface Evolution
 
 The machine-interface contract includes **both its envelope and the
 serialized domain documents exposed inside it**. `CapacitySnapshot`,

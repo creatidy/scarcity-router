@@ -138,7 +138,7 @@ Version 2 adds ONE optional member and changes nothing else:
 Version 3 adds exactly TWO attempt-scoped messages and changes nothing
 else:
 
-- `execute_tool_call` (worker → server, protocol version 3 sessions
+- `execute_tool_call` (worker → server, protocol version 3 or newer sessions
   only): `{attempt_id, call_id, name, arguments, content?}` — the
   local adapter reached the evidenced D-062 suspension point and the
   backend turn requests a CLIENT-owned tool. `call_id` is the backend's
@@ -151,7 +151,7 @@ else:
   unconsumed is refused with a non-fatal `malformed_message` (a
   sequential tool round after the first was answered is a legitimate
   new suspension on the same attempt).
-- `execute_tool_result` (server → worker, protocol version 3 sessions
+- `execute_tool_result` (server → worker, protocol version 3 or newer sessions
   only): `{attempt_id, call_id, content}` — the harness's tool result
   for that exact call, text only (≤ 4 MiB), delivered at most once.
   The worker answers the held backend request with it so the SAME

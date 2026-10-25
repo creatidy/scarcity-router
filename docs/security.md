@@ -297,6 +297,32 @@ only inside the server's store. Worker-side application credentials stay on
 the worker host whenever possible; Codex authentication remains entirely
 provider-managed (D-018 unchanged).
 
+Necessary SQLite hot-rollback inspection remains inside that same bounded
+server-store purpose: only the database and necessary owned journal/WAL sidecars
+may be copied to a short-lived `0o700` directory with `0o600` files. It is used
+only for the exact read-only rollback condition, never on the normal happy path.
+Source files must be regular, owned and single-linked; symlinks and super-journals
+are not recovery inputs. The source identities/stamps are rechecked before and
+after candidate recovery. The recovered candidate must have supported history
+and the exact owned schema before normal original recovery is permitted.
+Candidate values are never diagnostics or exports. One deterministic candidate
+slot is protected by an ownership/type/link-checked, private, non-secret advisory
+lock (`flock` on POSIX, `msvcrt.locking` on Windows). A planned claim is published
+before directory creation; an atomic, file-synced inode claim is published before
+any credential copy. POSIX publication also syncs the parent directory; Windows
+uses write-through `MoveFileExW`. The lock is released by the OS on abrupt exit.
+Every startup, including cold and future/invalid-store refusal, reclaims attested
+stale candidates while holding that lock. Partial publication and empty planned
+directory states are recoverable; unknown claims, foreign/replaced directories,
+unsafe modes, links and unrecognized contents are refused, not adopted or deleted.
+Candidates are removed on normal success/refusal and reclaimed on the next start
+after a process crash; repeated crashes cannot accumulate candidate slots.
+The remaining lock file contains only a reserved byte, never credentials.
+This adds no permanent backup, extra credential owner,
+network/storage service or authority to repair an unknown store. Concurrent source
+changes produce a safe retry refusal, not an assumed coherent snapshot or a claim
+to control arbitrary cooperating external processes.
+
 ### Admission limits
 
 Enforced before any dispatch: request-body size, context/output size,
