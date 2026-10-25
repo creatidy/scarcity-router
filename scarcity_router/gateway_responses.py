@@ -213,13 +213,15 @@ def _parse(value: object) -> tuple[ResponsesRequest, dict[str, object]]:
     wire_choice: object
     if isinstance(choice, Mapping):
         forced = _object(cast(Mapping[object, object], choice), {"type", "name"}, {"type", "name"}, "tool_choice")
-        if forced["type"] != "function":
+        if forced["type"] != "function" or not any(tool["name"] == forced["name"] for tool in tools):
             raise _invalid("tool_choice")
         canonical["tool_choice"] = {"type": "function", "function": {"name": forced["name"]}}
         wire_choice = dict(forced)
     elif not isinstance(choice, str) or choice not in ("auto", "none", "required"):
         raise _invalid("tool_choice")
     else:
+        if choice == "required" and not tools:
+            raise _invalid("tool_choice")
         wire_choice = choice
         if tools or "tool_choice" in document:
             canonical["tool_choice"] = choice
@@ -494,7 +496,12 @@ class ResponsesStreamEvents:
         events.append(self._event(f"response.{part_kind}.delta", **fields))
 
     def push(self, chunk: AdapterStreamChunk) -> tuple[dict[str, object], ...]:
-        if self._done or (self._finish_reason is not None and chunk.kind != CHUNK_USAGE):
+        # Loopback adapters flush accumulated complete calls after the finish
+        # frame. Only compatible tool facts and usage may follow that marker.
+        if self._done or (
+            self._finish_reason is not None and chunk.kind != CHUNK_USAGE
+            and not (chunk.kind == CHUNK_TOOL_CALL and self._finish_reason in (FINISH_TOOL_CALLS, FINISH_LENGTH, FINISH_CANCELLED))
+        ):
             raise self._error()
         events = self._begin()
         if chunk.kind in (CHUNK_TEXT_DELTA, CHUNK_REASONING_DELTA):

@@ -76,8 +76,10 @@ Function declarations require explicit object parameters and boolean strictness;
 the gateway never executes them. Flat declarations/choices map to the current
 semantic function structures. Real function-call/result pairs preserve order,
 arguments and `call_id`; missing/duplicate/orphaned results refuse, never receive
-guessed IDs, arguments or tool names. Concrete message/item IDs are validated
-non-authority annotations, not stored lookups or aliases for call IDs. Existing
+guessed IDs, arguments or tool names. A required function needs a declaration;
+a forced name must identify a declared function, or the request refuses before
+dispatch. Concrete message/item IDs are validated non-authority annotations,
+not stored lookups or aliases for call IDs. Existing
 native continuation tokens remain unchanged and client-scoped. Opaque reasoning
 is returned distinctly as `reasoning_text`, not a fabricated summary; its replay
 remains unsupported as in D-064. A client echoing unsupported reasoning/phase or
@@ -113,9 +115,11 @@ Kernel still owns immutable Attempt binding and installed-consumer acceptance.
 stable item/call IDs, distinct text/reasoning/function facts and actual terminal
 outcomes. It is not Chat JSON renamed or a stream ending in fabricated success.
 Normalized complete function arguments are emitted as actual complete deltas;
-incomplete/cancelled calls never get an arguments-done trigger. An exact observed
-prefix may receive a known final suffix, but conflicting output, duplicates,
-unrepresentable UTF-8 or output bounds fail explicitly.
+incomplete/cancelled calls never get an arguments-done trigger. An observed
+producer finish may precede its buffered complete calls; only compatible tool
+facts and usage follow that marker, and success still waits for the actual outcome.
+An exact observed prefix may receive a known final suffix, but conflicting output,
+duplicates, unrepresentable UTF-8 or output bounds fail explicitly.
 Known final text/reasoning suffixes are split at the unchanged normalized delta
 bound (1 Mi characters); a whole result does not become invalid just because its
 source did not supply incremental chunks. Unicode/content and event order remain.

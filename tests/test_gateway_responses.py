@@ -19,9 +19,12 @@ from scarcity_router.gateway_adapters import (
 from scarcity_router.gateway_audit import AuditRecord, BoundedAuditTrail
 from scarcity_router.gateway_contracts import ClientKeyDirectory, GatewayError, UsageAccounting, UsageTokens
 from scarcity_router.gateway_responses import ResponsesStreamEvents, parse_responses_request, prepare_executable_response, response_payload
+from scarcity_router.resource_state import ResourceIdentity
 from scarcity_router.routing_core import RequestBinding
-from scarcity_router.selection_types import CapabilityMinima, HardConstraints, TaskRequirement
+from scarcity_router.selection_types import CapabilityMinima, HardConstraints, ModelIdentity, TaskRequirement
+from scarcity_router.worker_local_adapters import LoopbackOllamaAdapter
 from tests.gateway_fixtures import CLIENT_ID, CLIENT_KEY, ScriptedAdapter, ambiguous_failure_behavior, audit_records, echo_behavior, tool_call_behavior
+from tests.openai_http_fixtures import ScriptedProviderServer, completion_frame
 from tests.test_gateway_server import ServerHarness, as_dict, as_list
 from tests.test_e2e_codex_acceptance import CodexComposedTlsWorld, chatgpt_scenario
 from tests.m10_codex_fixtures import PIN_MODEL, PROMPT, RESOURCE_ID, trace_events, trace_methods
@@ -117,6 +120,19 @@ class ResponsesCodecTests(unittest.TestCase):
         self.assertEqual({"type": "function", "function": {"name": "read"}}, request.canonical.tool_choice)
         self.assertEqual(False, (request.canonical.generation_params or {})["parallel_tool_calls"])
         self.assertEqual([FUNCTION], [dict(item) for item in request.tools])
+
+    def test_impossible_tool_choices_refuse_before_execution(self) -> None:
+        for declarations in ([], [FUNCTION]):
+            choices: list[object] = [{"type": "function", "name": CANARY}]
+            if not declarations:
+                choices.append("required")
+            for choice in choices:
+                with self.subTest(tools=declarations, choice=choice):
+                    with self.assertRaises(GatewayError) as caught:
+                        _ = parse_responses_request(document(tools=declarations, tool_choice=choice))
+                    self.assertEqual(400, caught.exception.http_status)
+                    self.assertEqual("tool_choice", caught.exception.param)
+                    self.assertNotIn(CANARY, json.dumps(caught.exception.to_payload()))
 
     def test_wire_effort_spellings_are_not_collapsed_or_guessed(self) -> None:
         for effort in ("none", "minimal", "low", "medium", "high", "xhigh", "max"):
@@ -248,6 +264,71 @@ class ResponsesCodecTests(unittest.TestCase):
         self.assertNotIn("response.function_call_arguments.done", [item["type"] for item in final])
         self.assertEqual("response.incomplete", final[-1]["type"])
 
+    def test_actual_loopback_adapter_delayed_tools_preserve_terminal_framing(self) -> None:
+        provider = ScriptedProviderServer()
+        provider.start()
+        self.addCleanup(provider.stop)
+        fragments: list[dict[str, object]] = [
+            {"index": 0, "id": "original-call", "type": "function", "function": {"name": "read", "arguments": '{"q":'}},
+            {"index": 0, "type": "function", "function": {"arguments": '"synthetic"}'}},
+        ]
+        frames: list[dict[str, object]] = []
+        for fragment in fragments:
+            frame = completion_frame()
+            as_dict(as_list(frame["choices"])[0])["delta"] = {"tool_calls": [fragment]}
+            frames.append(frame)
+        frames.append(completion_frame(finish_reason="tool_calls"))
+        provider.enqueue_stream(frames)
+        resource = ResourceIdentity(resource_id="ollama-local", channel="worker_bridged", provider="ollama", model="local", entitlement="local_ungated")
+        adapter = LoopbackOllamaAdapter(resource=resource, port=provider.port)
+        request = parse_responses_request(document(stream=True, tools=[FUNCTION]))
+        stream = ResponsesStreamEvents(request, response_id="resp-test", created=1)
+        emitted: list[dict[str, object]] = []
+        chunks: list[str] = []
+
+        def emit(chunk: AdapterStreamChunk) -> None:
+            chunks.append(chunk.kind)
+            emitted.extend(stream.push(chunk))
+
+        result = adapter.invoke(
+            AdapterCall(resource=resource, model=ModelIdentity(provider="openai", model="local", variant="max"),
+                        messages=(AdapterMessage("user", content="hello"),), stream=True,
+                        tools=request.canonical.tools, tool_choice=request.canonical.tool_choice),
+            cancel_event=threading.Event(), deadline="2030-01-01T00:00:00.000Z", emit=emit,
+        )
+        self.assertEqual("completed", result.status)
+        self.assertEqual([CHUNK_FINISH, CHUNK_TOOL_CALL], chunks)
+        assert result.message is not None and result.finish_reason is not None
+        emitted.extend(stream.finish(outcome(message=result.message, finish_reason=result.finish_reason)))
+        self.assertEqual("response.completed", emitted[-1]["type"])
+        self.assertEqual(list(range(len(emitted))), [item["sequence_number"] for item in emitted])
+        call = as_dict(as_list(as_dict(emitted[-1]["response"])["output"])[0])
+        self.assertEqual(("original-call", "read", '{"q":"synthetic"}'), (call["call_id"], call["name"], call["arguments"]))
+        done = next(item for item in emitted if item["type"] == "response.function_call_arguments.done")
+        self.assertEqual(call["arguments"], done["arguments"])
+        self.assertEqual(1, provider.request_count)
+
+    def test_delayed_tools_do_not_allow_late_text_duplicate_finish_or_false_success(self) -> None:
+        request = parse_responses_request(document(stream=True, tools=[FUNCTION]))
+        call = AdapterToolCall("original-call", "read", "{}")
+        for reason in ("tool_calls", "length", "cancelled"):
+            stream = ResponsesStreamEvents(request, response_id="resp-test", created=1)
+            _ = stream.push(AdapterStreamChunk(CHUNK_FINISH, finish_reason=reason))
+            _ = stream.push(AdapterStreamChunk(CHUNK_TOOL_CALL, tool_call=call))
+            for chunk in (AdapterStreamChunk(CHUNK_TEXT_DELTA, text="late"), AdapterStreamChunk(CHUNK_REASONING_DELTA, text="late"),
+                          AdapterStreamChunk(CHUNK_FINISH, finish_reason=reason)):
+                with self.subTest(reason=reason, kind=chunk.kind), self.assertRaises(GatewayError):
+                    _ = stream.push(chunk)
+            final = stream.finish(outcome(message=AdapterMessage("assistant", tool_calls=(call,)), finish_reason=reason))
+            terminal = "response.completed" if reason == "tool_calls" else "response.incomplete" if reason == "length" else "error"
+            self.assertEqual(terminal, final[-1]["type"])
+            if reason != "tool_calls":
+                self.assertNotIn("response.function_call_arguments.done", [item["type"] for item in final])
+        invalid = ResponsesStreamEvents(request, response_id="resp-test", created=1)
+        _ = invalid.push(AdapterStreamChunk(CHUNK_FINISH, finish_reason="stop"))
+        with self.assertRaises(GatewayError):
+            _ = invalid.push(AdapterStreamChunk(CHUNK_TOOL_CALL, tool_call=call))
+
     def test_chunkless_empty_output_and_obfuscation_options_are_explicit(self) -> None:
         request = parse_responses_request(document(stream=True))
         stream = ResponsesStreamEvents(request, response_id="resp-test", created=1)
@@ -311,6 +392,19 @@ class ResponsesHTTPTests(ServerHarness):
                 response = self.post_responses(port, document(text={"format": shape}))
                 self.assertEqual(400, response.status, response.read())
                 self.assertEqual([], adapter.dispatches)
+
+    def test_impossible_tool_choices_never_dispatch_json_or_sse(self) -> None:
+        adapter = ScriptedAdapter()
+        port = self.make_server(adapters=[adapter])
+        for stream in (False, True):
+            for tools, choice in (([], "required"), ([], {"type": "function", "name": CANARY}),
+                                  ([FUNCTION], {"type": "function", "name": CANARY})):
+                with self.subTest(stream=stream, tools=tools, choice=choice):
+                    response = self.post_responses(port, document(stream=stream, tools=tools, tool_choice=choice))
+                    wire = response.read()
+                    self.assertEqual(400, response.status, wire)
+                    self.assertNotIn(CANARY.encode(), wire)
+                    self.assertEqual([], adapter.dispatches)
 
     def test_other_configured_credential_is_not_retained_or_sent_to_a_model(self) -> None:
         adapter = ScriptedAdapter()
@@ -537,6 +631,26 @@ class ResponsesNativeContinuationTests(CodexComposedTlsWorld):
                     )
                     self.assertEqual(502, status, payload)
                     self.assertEqual("backend_failure", as_dict(as_dict(payload)["error"])["code"])
+            self.assertEqual(0, trace_methods(worker.trace_path).count("turn/start"))
+        finally:
+            worker.stop()
+
+    def test_impossible_tool_choices_do_not_start_a_native_turn(self) -> None:
+        worker = self.start_codex_worker(chatgpt_scenario())
+        self.configure_codex_resource(worker.worker_id)
+        worker.start()
+        try:
+            _ = self.wait_for_observation(RESOURCE_ID)
+            for stream in (False, True):
+                for tools, choice in (([], "required"), ([], {"type": "function", "name": CANARY}),
+                                      ([FUNCTION], {"type": "function", "name": CANARY})):
+                    with self.subTest(stream=stream, tools=tools, choice=choice):
+                        status, payload, _headers = self.exchange(
+                            "POST", "/v1/responses", {"model": PIN_MODEL, "input": PROMPT, "store": False,
+                                                      "tools": tools, "tool_choice": choice, "stream": stream},
+                            headers={"Authorization": f"Bearer {self.client_key}"}, timeout=60,
+                        )
+                        self.assertEqual(400, status, payload)
             self.assertEqual(0, trace_methods(worker.trace_path).count("turn/start"))
         finally:
             worker.stop()
