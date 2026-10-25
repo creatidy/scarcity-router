@@ -73,7 +73,8 @@ through one hash-only directory snapshot and refuses before dispatch; no plainte
 key inventory, authentication-policy change or generic secret classifier is added.
 
 Function declarations require explicit object parameters and boolean strictness;
-the gateway never executes them. Flat declarations/choices map to the current
+optional descriptions are strings or null. The gateway never executes them.
+Flat declarations/choices map to the current
 semantic function structures. Native Codex dynamic tools have no evidenced
 strict-schema control: `strict:true` refuses before thread/turn creation, for both
 Responses and Chat clients, instead of the previous silent native downgrade.

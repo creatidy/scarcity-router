@@ -156,6 +156,21 @@ class ResponsesCodecTests(unittest.TestCase):
                     self.assertEqual("tool_choice", caught.exception.param)
                     self.assertNotIn(CANARY, json.dumps(caught.exception.to_payload()))
 
+    def test_function_description_requires_string_null_or_omission(self) -> None:
+        for description in ({"unexpected": CANARY}, [CANARY], 1, 0.5, True, False):
+            with self.subTest(description=description):
+                with self.assertRaises(GatewayError) as caught:
+                    _ = parse_responses_request(document(tools=[{**FUNCTION, "description": description}]))
+                self.assertEqual(400, caught.exception.http_status)
+                self.assertEqual("tools", caught.exception.param)
+                self.assertNotIn(CANARY, json.dumps(caught.exception.to_payload()))
+        for function in (FUNCTION, {**FUNCTION, "description": None}, {**FUNCTION, "description": "synthetic function"}):
+            request = parse_responses_request(document(tools=[function]))
+            self.assertEqual(function, dict(request.tools[0]))
+            canonical = as_dict(request.canonical.tools[0]["function"])
+            self.assertEqual("description" in function, "description" in canonical)
+            self.assertEqual(function.get("description"), canonical.get("description"))
+
     def test_wire_effort_spellings_are_not_collapsed_or_guessed(self) -> None:
         for effort in ("none", "minimal", "low", "medium", "high", "xhigh", "max"):
             with self.subTest(effort=effort):
@@ -427,6 +442,28 @@ class ResponsesHTTPTests(ServerHarness):
                     self.assertEqual(400, response.status, wire)
                     self.assertNotIn(CANARY.encode(), wire)
                     self.assertEqual([], adapter.dispatches)
+
+    def test_function_description_validation_precedes_json_or_sse_dispatch(self) -> None:
+        adapter = ScriptedAdapter()
+        port = self.make_server(adapters=[adapter])
+        for stream in (False, True):
+            for description in ({"unexpected": CANARY}, [CANARY], 1, 0.5, True, False):
+                with self.subTest(stream=stream, description=description):
+                    response = self.post_responses(port, document(stream=stream, tools=[{**FUNCTION, "description": description}]))
+                    wire = response.read()
+                    self.assertEqual(400, response.status)
+                    self.assertNotIn(CANARY.encode(), wire)
+                    self.assertEqual([], adapter.dispatches)
+        for stream in (False, True):
+            for function in (FUNCTION, {**FUNCTION, "description": None}, {**FUNCTION, "description": "synthetic function"}):
+                with self.subTest(stream=stream, function=function):
+                    response = self.post_responses(port, document(stream=stream, tools=[function]))
+                    _ = response.read()
+                    self.assertEqual(200, response.status)
+                    canonical = as_dict(adapter.dispatches[-1].tools[0]["function"])
+                    self.assertEqual("description" in function, "description" in canonical)
+                    self.assertEqual(function.get("description"), canonical.get("description"))
+        self.assertEqual(6, len(adapter.dispatches))
 
     def test_other_configured_credential_is_not_retained_or_sent_to_a_model(self) -> None:
         adapter = ScriptedAdapter()

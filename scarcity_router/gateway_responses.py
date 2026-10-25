@@ -198,6 +198,9 @@ def _parse(value: object) -> tuple[ResponsesRequest, dict[str, object]]:
                 raise _invalid("tools", "only explicit synchronous client function schemas are supported")
             if not isinstance(tool["parameters"], Mapping):
                 raise _invalid("tools")
+            description = tool.get("description")
+            if description is not None and not isinstance(description, str):
+                raise _invalid("tools")
             tools.append(dict(tool))
             converted.append({"type": "function", "function": {key: item for key, item in tool.items() if key != "type"}})
         canonical["tools"] = converted
