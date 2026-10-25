@@ -42,10 +42,10 @@ the tool-loop executor; client tools return to it. The integrated D-063
 workspace-editing ZCode lane is a preserved, explicit ownership conflict
 (U-014/#180), not target inference-only conformance.
 
-Chat Completions remains unchanged. D-080/#181 adds the separately versioned
-bounded stateless Responses subset described below; it does not advertise a
-general native Responses backend or arbitrary harness compatibility. Anthropic
-Messages remains an unimplemented ingress. Protocol naming alone proves neither
+The Chat Completions wire contract remains unchanged. D-080/#181 adds the
+separately versioned bounded stateless Responses subset described below; it does
+not advertise a general native Responses backend or arbitrary harness compatibility.
+Anthropic Messages remains an unimplemented ingress. Protocol naming alone proves neither
 compatibility nor a complete tool loop.
 
 ### Responses Surface 1 (D-080, #181)
@@ -74,7 +74,13 @@ key inventory, authentication-policy change or generic secret classifier is adde
 
 Function declarations require explicit object parameters and boolean strictness;
 the gateway never executes them. Flat declarations/choices map to the current
-semantic function structures. Real function-call/result pairs preserve order,
+semantic function structures. Native Codex dynamic tools have no evidenced
+strict-schema control: `strict:true` refuses before thread/turn creation, for both
+Responses and Chat clients, instead of the previous silent native downgrade.
+`strict:false` and legacy omitted strictness retain their native continuation path;
+HTTP mappings retain the explicit control for a capable source. This is not new
+local schema evaluation or a guarantee for an unevidenced provider.
+Real function-call/result pairs preserve order,
 arguments and `call_id`; missing/duplicate/orphaned results refuse, never receive
 guessed IDs, arguments or tool names. A required function needs a declaration;
 a forced name must identify a declared function, or the request refuses before

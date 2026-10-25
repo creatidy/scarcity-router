@@ -19,10 +19,13 @@ from scarcity_router.gateway_adapters import (
 from scarcity_router.gateway_audit import AuditRecord, BoundedAuditTrail
 from scarcity_router.gateway_contracts import ClientKeyDirectory, GatewayError, UsageAccounting, UsageTokens
 from scarcity_router.gateway_responses import ResponsesStreamEvents, parse_responses_request, prepare_executable_response, response_payload
+from scarcity_router.providers.openai_http_core import build_chat_completion_request
+from scarcity_router.providers.openai_http_presets import OPENAI_API_PRESET
 from scarcity_router.resource_state import ResourceIdentity
 from scarcity_router.routing_core import RequestBinding
 from scarcity_router.selection_types import CapabilityMinima, HardConstraints, ModelIdentity, TaskRequirement
 from scarcity_router.worker_local_adapters import LoopbackOllamaAdapter
+from scarcity_router.worker_codex_adapter import CodexIneligible, build_dynamic_tools
 from tests.gateway_fixtures import CLIENT_ID, CLIENT_KEY, ScriptedAdapter, ambiguous_failure_behavior, audit_records, echo_behavior, tool_call_behavior
 from tests.openai_http_fixtures import ScriptedProviderServer, completion_frame
 from tests.test_gateway_server import ServerHarness, as_dict, as_list
@@ -120,6 +123,25 @@ class ResponsesCodecTests(unittest.TestCase):
         self.assertEqual({"type": "function", "function": {"name": "read"}}, request.canonical.tool_choice)
         self.assertEqual(False, (request.canonical.generation_params or {})["parallel_tool_calls"])
         self.assertEqual([FUNCTION], [dict(item) for item in request.tools])
+
+    def test_native_strict_function_schema_refuses_without_weakening_http(self) -> None:
+        request = parse_responses_request(document(tools=[{**FUNCTION, "strict": True}]))
+        with self.assertRaises(CodexIneligible):
+            _ = build_dynamic_tools(request.canonical.tools)
+        resource = ResourceIdentity(resource_id="http-source", channel="server_direct_http", provider="openai", model="local", entitlement="payg_metered")
+        call = AdapterCall(resource=resource, model=ModelIdentity(provider="openai", model="local", variant="high"),
+                           messages=(AdapterMessage("user", content="hello"),), tools=request.canonical.tools)
+        wire = build_chat_completion_request(call, OPENAI_API_PRESET.policy)
+        self.assertIs(True, as_dict(as_dict(as_list(wire["tools"])[0])["function"])["strict"])
+        for strict in (False, None):
+            function = dict(as_dict(as_dict(as_list(wire["tools"])[0])["function"]))
+            if strict is None:
+                del function["strict"]
+            else:
+                function["strict"] = strict
+            mapped = build_dynamic_tools([{"type": "function", "function": function}])
+            self.assertEqual(frozenset({"read"}), mapped.names)
+            self.assertEqual(FUNCTION["parameters"], mapped.declarations[0]["parameters"])
 
     def test_impossible_tool_choices_refuse_before_execution(self) -> None:
         for declarations in ([], [FUNCTION]):
@@ -652,6 +674,33 @@ class ResponsesNativeContinuationTests(CodexComposedTlsWorld):
                         )
                         self.assertEqual(400, status, payload)
             self.assertEqual(0, trace_methods(worker.trace_path).count("turn/start"))
+        finally:
+            worker.stop()
+
+    def test_strict_function_demand_refuses_before_native_thread_or_turn(self) -> None:
+        worker = self.start_codex_worker(chatgpt_scenario())
+        self.configure_codex_resource(worker.worker_id)
+        worker.start()
+        try:
+            _ = self.wait_for_observation(RESOURCE_ID)
+            for stream in (False, True):
+                bodies: tuple[tuple[str, dict[str, object]], ...] = (
+                    ("/v1/responses", {"model": PIN_MODEL, "input": PROMPT, "store": False, "stream": stream,
+                                       "tools": [{**FUNCTION, "strict": True}]}),
+                    ("/v1/chat/completions", {"model": PIN_MODEL, "messages": [{"role": "user", "content": PROMPT}],
+                                              "stream": stream, "tools": [{"type": "function", "function": {
+                                                  key: value for key, value in {**FUNCTION, "strict": True}.items() if key != "type"}}]}),
+                )
+                for path, body in bodies:
+                    with self.subTest(stream=stream, path=path):
+                        status, payload, _headers = self.exchange(
+                            "POST", path, body, headers={"Authorization": f"Bearer {self.client_key}"}, timeout=60,
+                        )
+                        self.assertEqual(502, status, payload)
+                        self.assertEqual("backend_failure", as_dict(as_dict(payload)["error"])["code"])
+            methods = trace_methods(worker.trace_path)
+            self.assertNotIn("thread/start", methods)
+            self.assertNotIn("turn/start", methods)
         finally:
             worker.stop()
 
