@@ -86,6 +86,7 @@ from .gateway_adapters import (
     AdapterToolCall,
     CallObservation,
     ClientDisconnectedError,
+    OutputRejectedError,
     CompletionOutcome,
     ContinuationCapableAdapter,
     ContinuationBindingAdapter,
@@ -894,10 +895,14 @@ class GatewayApplication:
                 )
             self._write_audit(state, RESULT_COMPLETED, ("completed",))
             return outcome
-        except ClientDisconnectedError:
+        except ClientDisconnectedError as exc:
             if state.context is not None:
                 state.context.cancel_event.set()
-            self._write_audit(state, RESULT_CANCELLED, ("client_disconnected",))
+            rejected = isinstance(exc, OutputRejectedError)
+            self._write_audit(
+                state, RESULT_FAILED if rejected else RESULT_CANCELLED,
+                ("response_mapping_failed" if rejected else "client_disconnected",),
+            )
             raise
         except AdapterTimeoutError:
             self._write_audit(

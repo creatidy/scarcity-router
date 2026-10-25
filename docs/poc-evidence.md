@@ -480,6 +480,63 @@ auth expiry, moving resets, original freshness/latency, billing/overflow/control
 enforced caps, hidden tools/calls, stream/interrupt/cleanup and serving identity
 need separately authorized evidence. None is inferred from offline fixtures.
 
+### Responses Subset Source Proof (2026-10-25, #181)
+
+This is source-shaped/synthetic protocol evidence, not an installed SDK/harness,
+live account, source capability, physical identity, billing or deployment receipt.
+No external package was installed/imported/executed or adopted as a dependency.
+No real prompt, credential or private export was used. Exact Router/test HEAD and
+module/test blobs belong to this delivery's canonical review/validation record;
+`responses_surface_version: 1` identifies this independent bounded wire contract.
+
+| Source | Exact version/revision | Selected evidence |
+| --- | --- | --- |
+| Official `openai/openai-python` | 3.37.0, `718aee979a9c334d37302aeff21cee6cbff4d43c` | Generated `types/responses/response_create_params.py`, `response_input_param.py`, `response.py`, reasoning/text/function/output/content/error event types, `_models.py` and `_base_client.py` |
+| Selected `BerriAI/litellm` code | 1.108.0, `dddbaa803d6e9fcc862ea7a5412f771cb1ae040e` | `responses/litellm_completion_transformation/{transformation,streaming_iterator,session_handler}.py`; function-result/reasoning-preservation/stream negative tests |
+| Existing Router semantics | baseline `c38c8ae5390e27b9bfb9ae210b76d6efa89a2d36`, D-079 and D-064 | Canonical message/tool/capability request, current single coordinator/registry/admission/continuation/adapter/audit primitives; no new ranker or harness actor |
+
+Selected base license blobs: OpenAI
+`cbb5bb26e40dd13a02c7874298f70b9d68bab57e` (MIT), LiteLLM
+`3bfef5bae9b48c334acf426d5b7f21bc1913aab9` (MIT; enterprise code not selected).
+No foreign implementation is copied or substantially adapted: field-level wire
+facts are mapped by original code through owned validators. Apache-2.0 remains.
+
+**ADOPT before BUILD:** whole LiteLLM/runtime/dependency is unnecessary and rejected.
+The selected translator's `_ensure_tool_results_have_corresponding_tool_calls` /
+`_reconstruct_tool_call_from_tools` repair absent lineage with inferred calls and
+empty arguments (1735-1814); `transform_chat_completion_response_to_responses_api_response`
+uses zero missing token/cache/reasoning counts (3610-3699); developer-to-system,
+drop-parameter, summary and stored-session helpers have provider/lifecycle semantics
+not owned by this gateway. Direct port would violate strict refusal/role/unknown/
+Kernel lifecycle rules. Reuse owned semantic code, not its permissive repairs.
+
+| Exact combination / dimension | Cell | Evidence and consequence |
+| --- | --- | --- |
+| Owned stdlib HTTP fixture -> Responses surface1 -> `synthetic-http` 1.2.3 / synthetic `glm-5.3 high` or `gpt-5.6-luna` fixture catalog | PASS, synthetic only | Real loopback JSON/SSE/auth/admission/adapter/audit path and bounded codec tests; no live model/provider claim |
+| Official SDK3.37.0 request/output/event source -> owned fixture JSON | PARTIAL, source matched | Exact supported wire members/types inspected and exercised with original producer-shaped fixtures; SDK runtime not installed/executed, so runtime integration remains UNKNOWN |
+| Explicit roles/single text, complete functions/results/call IDs, effort, actual ceiling and structured format -> shared semantics | PASS, synthetic supported subset | Preserve all representable fields/order; no guessed tool lineage, flattening, effort-from-variant or bound-context repair |
+| Normalized text/opaque reasoning/functions/finish/error -> Responses SSE events | PASS, synthetic supported subset | Real sequence/item identity and actual terminal outcome; reasoning_text not guessed summary, incomplete/cancelled function arguments not marked done; disconnect/mapping failure uses existing cancellation |
+| Actual accounting -> full standard ResponseUsage | PARTIAL | Aggregate facts/source retained; cache/cache-write/reasoning detail absent in IR, so usage=null, never manufactured zero/paid cost |
+| SDK3.37.0 `_base_client.py:936-959` retry behavior | PARTIAL, source matched | Explicit x-should-retry:false is honored before 408/409/429/5xx retries in source; other clients/live runtime unknown, no universal retry suppression promise |
+| Stored response/conversation/previous ID/background, hosted tools, phase, multimodal/multipart, native reasoning replay or unimplemented parameters | UNSUPPORTED | Typed refusal before inference, not a fake successful Chat conversion or invented state |
+| Old worker/channel with missing tools/results/reasoning/limits support | Existing PARTIAL/UNSUPPORTED/UNKNOWN cells preserved | Normalization does not promote channel capability; current core refuses required unsupported features before dispatch |
+| Installed Kernel/Codex/generic harness and actual source/backend/physical model versions | UNKNOWN | Requires separately authorized exact-version real-harness receipts; source-shaped tests are not that proof |
+| Anthropic Messages ingress | UNSUPPORTED | No Messages listener/parser/compatibility promise introduced; #214's passive statusline parser is not subscription execution |
+
+Notable source constraints: current official assistant phase must survive follow-up
+for relevant models, but current owned IR has no phase; non-null phase refuses.
+Opaque reasoning output has a distinct official `reasoning_text` content/event
+shape; no native summary/encrypted-state/replay inference is made. Tool argument
+completion is not tool execution. Responses' default stored state is not silently
+changed: callers must explicitly request store=false. The parser uses finite UTF-8
+JSON and safe errors, retaining no second persistent input or raw diagnostics.
+
+Actual fake-source cancellation/loss/unknown-usage tests prove only the declared
+transport/core boundary. Native settlement, hidden calls, complete task cost,
+source identity and real consumer acceptance stay unknown where not evidenced.
+D-080/#181's independent ordinary and owner-manual security gates still apply;
+the #174/#185-specific exception is not reused here.
+
 ## ASSUMED / NOT YET VALIDATED
 
 - The OpenAI app-server fields and method will remain compatible with a future
