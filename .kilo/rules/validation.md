@@ -53,17 +53,18 @@ it never authorizes a hidden model call.
 
 ## Security And Delivery
 
-- Daybreak is manually selected/opened by Adrian in official Codex, never a script
-  or Kilo call. It is not a pre-implementation eligibility gate; Kilo discovery
-  failure does not imply `SECURITY_REVIEW_UNAVAILABLE`. Preserve real provenance
-  and model-bound gates, no fallback reviewer or automatic retry.
-- Exact #212/PR #213 combined exception (owner 2026-10-20T06:26:22Z, reaffirmed
-  18:58:08Z): #1-19 consumed outcomes stay, including #19 REQUEST_CHANGES/audit PASS;
-  #20 reserved/unconsumed for ONE full implementation AND security review in the
-  owner's visible Codex on the NEW HEAD. Both explicit verified approvals, complete
-  material scope and no unresolved blockers are required. Security-only/nonpositive/
-  incomplete/unverified results stop for Adrian. Default ten elsewhere; no #21.
-- `CLEAN_WORKFLOW_READY_FOR_OWNER_COMBINED_REVIEW` is descriptive handoff, not
-  acceptance or READY_TO_MERGE. No ordinary #212 Kilo review or #20 consumption
-  during cleanup/tests. Only actual acceptance/currentness plus explicit applicable
-  `/loop` authority permits merge/closure. Never main, release or deployment.
+- D-081 requires ordinary independent correctness review including applicable
+  security assessment of the complete frozen PR. Security-critical changes receive
+  rigorous sufficiently capable review; P0/P1, unresolved material security findings
+  and data-integrity risks block integration and must be corrected/independently verified.
+- Daybreak is not a PR merge gate. The final comprehensive frozen release-candidate
+  audit is a production-release acceptance gate, not an implementation/develop
+  integration prerequisite. No routine per-PR manual-security reservation/handoff.
+  Audit scope and future access verification: `docs/llm-operating-policy.md#final-release-candidate-audit`.
+  No Daybreak run, provisioning, credentials or production action is authorized.
+- #212/PR #213 is complete, all #1-20 consumed, no #20 reuse/#21/transfer. Preserve
+  canonical history and D-077, not obsolete pending handoffs. PR #209 remains owner-paused
+  with its unresolved SQLite transition race; it is neither waived nor deferred.
+- Only actual ordinary acceptance/currentness plus explicit applicable `/loop`
+  authority permits merge/closure, without another routine owner confirmation.
+  Never main, release or deployment.

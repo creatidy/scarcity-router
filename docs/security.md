@@ -41,7 +41,7 @@ Fixed-backend positive fixtures only certify their inspected synthetic path.
 No new financial/credit/reset/overflow authority, network scope, credentials,
 workspace manager, provider reservation or paid-source downgrade is implied.
 See the [assurance/fact boundary](architecture.md#strict-non-paid-admission-d-076)
-and mandatory exact-object ordinary plus direct-Codex Daybreak delivery gates.
+and D-081's mandatory exact-object ordinary independent correctness/security review.
 
 ## Creatidy Ownership and Staged Native-Agent Boundary
 
@@ -77,9 +77,14 @@ lease. No new general sandbox or concurrent Kernel editor is authorized.
 Future native inference support must evidence its own controls; absence of
 client tools or changing `edit` to `build` cannot establish it. See the
 [authority/negative matrix](architecture.md#tools-and-staged-native-agent-migration).
-Security-critical delivery requires ordinary independent review plus exact-base/
-HEAD Daybreak review directly through Codex before completion/merge under
-`docs/llm-operating-policy.md`; this is not an implementation eligibility gate.
+Under D-081, security-critical delivery requires rigorous ordinary independent
+correctness/security review by a sufficiently capable model at exact frozen PR refs.
+P0/P1, unresolved material security findings and data-integrity risks block integration;
+they cannot be deferred to the final audit. Daybreak is not a PR merge gate.
+The final comprehensive frozen release-candidate project audit before production
+release is a separate acceptance gate, not an implementation/develop prerequisite;
+see [the final-audit contract](llm-operating-policy.md#final-release-candidate-audit).
+No Daybreak execution, access provisioning or release is authorized here.
 
 MI receives public knowledge only, never private quota, prompts or credentials.
 Console consumes authorized Router state/commands, not its database; reuse

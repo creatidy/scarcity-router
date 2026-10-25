@@ -37,7 +37,8 @@ until publication. A new recurring manual step needs evidenced justification.
 The statuses below describe artifact availability, not D-068's evidence/
 decision statuses. A configured workflow is not a successful run, publication
 or live platform proof. Owner-controlled release/tag/signing/deploy authority
-is unchanged; ordinary agents only open Forgejo PRs, never publish or merge.
+is unchanged; ordinary agents open Forgejo PRs, and only the owner's authorized
+`/loop` may integrate accepted current PRs into `develop`. It never publishes.
 
 ## Status legend
 
@@ -180,6 +181,22 @@ convention that every PR shows a green `check` run. `main` promotion policy is
 deliberately out of scope for this document's automation: promotion is a
 manual, human-controlled action.
 
+## Final Project Security Audit (D-081)
+
+Before the first production release, the release owner requires one comprehensive
+independent Daybreak audit of the complete integrated product at one frozen
+release-candidate SHA, under [the final-audit contract](llm-operating-policy.md#final-release-candidate-audit).
+Audit findings must be corrected and verified on the final candidate before release;
+a changed candidate needs current audit acceptance. Verify the then-available model,
+program, account/project approval and execution mechanism from current official evidence,
+not a deprecated alias, Codex subscription or Router's bounded Responses support.
+
+This is a documented human-controlled release acceptance gate, not enforced by the existing release workflow.
+It is not an implementation or develop integration prerequisite. Ordinary PR security
+review and material-defect merge blockers remain mandatory; a future audit never
+waives them. No Daybreak run, credentials, provisioning, main promotion, release or
+deployment is authorized by this policy correction.
+
 ## Release and versioning contract
 
 **Implemented now** (the contract and its enforcement). Releases are rare,
@@ -213,7 +230,8 @@ Additionally frozen:
 - arbitrary development commits are never released;
 - tags are intentional human actions on `main` only.
 
-Release procedure (human): promote the reviewed `develop` state to `main`,
+Release procedure (human): satisfy D-081's final audit on the exact candidate before
+the first production release, then promote the reviewed `develop` state to `main`,
 set `__version__` through the normal PR flow beforehand, then create the
 annotated tag `vX.Y.Z` on the intended `main` commit and push it. Everything
 after that is the workflow's job — or a fail-closed refusal.

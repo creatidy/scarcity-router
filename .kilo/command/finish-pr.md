@@ -66,31 +66,24 @@ management; it does not self-review or invoke hidden inference.
    model fallback, review retry or ceiling extension. At the bound report STOP_REVISE
    for actionable defects; report genuine external/decision blockers honestly.
 
-## Security And #212 Exception
+## Security And Delivery
 
-Security-critical Daybreak is owner-manual through official Codex, selected visibly
-as `gpt-daybreak-blue-latest`, never through Kilo or a script. It is not a
-pre-implementation eligibility gate; Kilo discovery failure does not imply
-`SECURITY_REVIEW_UNAVAILABLE`. The implementation agent does not invoke it.
-Preserve exact refs, official execution/model provenance and independent context/tool
-checks; never infer backend identity. Use the existing Router owner-manual identity
-contract, including explicit owner acceptance for a permitted unobservable runtime.
+D-081: every consequential PR requires ordinary independent correctness review
+including applicable security assessment. Security-critical changes require rigorous
+review by a sufficiently capable model of the complete frozen PR. P0/P1 defects,
+unresolved material security findings and data-integrity risks block integration;
+correct and independently verify them, never defer them to the final audit.
 
-For #212/PR #213 only, the direct 2026-10-20T06:26:22Z combined exception remains:
-consumed #1-19 (including #19 REQUEST_CHANGES/audit PASS), maximum20, #20 reserved
-but unconsumed for ONE owner-manual complete implementation AND security review.
-No more ordinary Kilo, #21/reset/automatic extension. The owner reaffirmed this on
-2026-10-20T18:58:08Z while retiring all local review directories and launchers.
-Canonical history/provenance: Issue #212 comment #18011 and D-077. Historical
-source files have been removed by owner decision; those records do not pretend
-the bytes remain available or turn agent transcriptions into owner-authored evidence.
-The current direct owner instruction/native conversation supplies the reaffirmation.
+Daybreak is not a PR merge gate. Its final comprehensive frozen release-candidate
+audit is a production-release acceptance gate, not an implementation or develop
+integration prerequisite. Follow `docs/llm-operating-policy.md#final-release-candidate-audit`;
+do not invoke Daybreak or reserve routine per-PR manual-security ordinals.
+Ordinary exact correctness/security APPROVE, empty findings, validation and currentness
+yield READY_TO_MERGE, including security-critical PRs. Standalone finish never merges;
+only an explicit applicable `/loop` can later merge/close after all acceptance gates.
+No further routine owner confirmation is required inside that authorized loop.
 
-Provide the NEW exact HEAD and direct review instructions; Adrian manually opens
-official Codex and selects Daybreak. No local packet/history reconstruction is a
-prerequisite. Require explicit verified approval of BOTH correctness and security,
-complete material PR scope and no unresolved blockers. A security-only, nonpositive,
-incomplete or unverified result is preserved and stops for Adrian. No actual review
-is consumed by deterministic checks. A descriptive owner handoff is not acceptance
-or READY_TO_MERGE; only an explicit applicable `/loop` can later merge/close after
-actual combined acceptance and fresh currentness. Never deploy/release/promote main.
+#212/PR #213 is complete, all #1-20 consumed; retain D-077/current root notice and
+canonical history, no #20 reuse or transfer. PR #209 remains owner-paused with its
+unresolved SQLite finding; this timing change neither resumes nor waives it.
+Never deploy/release/promote main or infer backend identity from a dispatch label.

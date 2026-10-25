@@ -6,6 +6,18 @@ direction was chosen. Dates use UTC.
 
 ## Accepted decisions
 
+## Current Security-Review Timing (D-081, 2026-10-25)
+
+D-081 supersedes prospective per-PR Daybreak requirements in D-053 point 9 and
+related decisions below (including D-069/D-069A, D-070, D-073, D-076 through
+D-080), issue criteria and command/rule mirrors for Scarcity Router only. Ordinary
+independent correctness/security review remains mandatory; material security and
+data-integrity findings block merge. Daybreak is a final comprehensive frozen-RC
+production-release gate, not a PR merge or implementation prerequisite. Earlier
+allocations, manual-path requirements and review outcomes remain historical,
+not new handoffs; they confer no reused ordinals or generic identity exception.
+PR #209 remains owner-paused with its unresolved SQLite transition race.
+
 ## Current D-069A And #212 Amendment (2026-10-20)
 
 This amendment supersedes conflicting later historical status in D-069A and D-077
@@ -6628,3 +6640,64 @@ adapter is removed merely to eliminate orchestration. See the actual Git source/
   ordinary independent acceptance and the existing owner-manual Daybreak gate
   remain required for #181; #174/#185 exceptions do not transfer. Live/physical/
   billing/installed Kernel acceptance remains separately authorized and tracked.
+
+### D-081 - Continuous PR security and final project audit
+
+- **Status and authority:** Accepted, effective immediately by Adrian's direct
+  USER decision at 2026-10-25T18:46:24Z in native Kilo session
+  `ses_e8b9d5991ffeHiYz2c7oRH9BA2`, titled "Scarcity Router - Owner Decision:
+  Project-Level Security Audit and Autonomous PR Delivery". Canonical attributed
+  evidence: [PR #218 comment18858](https://forgejo.creatidy.com/BioMedical-IT/scarcity-router/pulls/218#issuecomment-18858)
+  and [policy issue #219](https://forgejo.creatidy.com/BioMedical-IT/scarcity-router/issues/219).
+  These records transcribe the direct owner source; they are not independent
+  owner-authored originals or reconstructed historical files.
+- **Conflict resolved:** Supersede D-053 point 9 and all related prospective
+  mandatory per-PR Daybreak gates in this repository's decisions, issue acceptance
+  criteria and workflow mirrors. Ordinary-accepted security-sensitive PRs no longer
+  wait for a manual Daybreak review/ordinal or routine owner confirmation. Do not
+  propagate this decision to other projects or retrospectively rewrite historical
+  reviews, findings, consumed ordinals or completed acceptance evidence.
+- **Continuous security:** Every consequential PR requires independent correctness
+  review including applicable security assessment. Security-critical changes need
+  rigorous ordinary independent review by a sufficiently capable model of the
+  complete frozen PR. P0/P1 defects, unresolved material security findings and
+  data-integrity risks block merge, must be corrected and independently verified,
+  and are not deferred to the final audit. D-078 conversational independence,
+  read-only fresh sessions, source integrity, exact currentness, validation, UX
+  review and finite review ceilings remain unchanged.
+- **Delivery authority:** The owner's existing `/loop` continues autonomously
+  through supported Forgejo PR integration into `develop` after all ordinary
+  acceptance gates pass. Standalone finish/review does not gain merge authority.
+  No product, catalog, model-selection, provider-routing or review-infrastructure change
+  is implied. No main promotion, release, deployment, cross-project mutation,
+  Daybreak execution, credentials or access provisioning is authorized.
+- **Final release gate:** Require one comprehensive independent Daybreak audit at
+  the end of development on one frozen release candidate before first production
+  release. It covers the complete integrated product and relevant assumptions;
+  findings must be corrected and verified against the final candidate before
+  release. Changed candidates require current audit acceptance. The minimal scope,
+  provenance and future access checks are authoritative in
+  [the final-audit contract](llm-operating-policy.md#final-release-candidate-audit),
+  linked from release engineering, not a new audit framework or automatic CI gate.
+- **Current official evidence (2026-10-25):** The Daybreak guide documents upstream
+  Responses `access_programs.cyber`, separate organization/project/program/model
+  approval and model-specific eligibility. The older model page's Markdown marks
+  `gpt-daybreak-blue-latest` deprecated. Re-verify the actually available model,
+  program, access level and authorized mechanism at audit time. Existing Codex
+  subscriptions and a selected program prove neither API access nor effective
+  audit acceptance; Router's bounded Responses subset is not arbitrary upstream
+  passthrough. No future alias, Codex path or account enablement is assumed.
+- **#218 disposition:** Native ordinary #5 at HEAD `bc7bc40647b5284f3c2f22081d384679d28ac4a8`
+  over base `c38c8ae5390e27b9bfb9ae210b76d6efa89a2d36` was retrieved and assessed
+  as adequate complete-PR correctness/security/UX APPROVE with no findings or
+  limitations. #1-4 outcomes and consumed #5 remain history; #6's unused manual
+  reservation is SUPERSEDED / UNCONSUMED, not Daybreak approval. No #6-8 invocation
+  was needed; the owner's conditional ordinary security/correction allocation
+  remains bounded at maximum8 for this PR only. Merge
+  `8799899ea22c3c131cfbb8953d8461a9cb3ec9df` retains the exact reviewed tree.
+  #181 closed only for accepted Router implementation; installed/live/provider/
+  physical-identity acceptance remains separately open (issue comment18869).
+- **#209 preservation:** PR #209 / issue #185 remains owner-paused at
+  `12e54397c58377a2ee8ab5cb7c7f311dfd31bdb7`. Review16's unresolved SQLite transition race,
+  all consumed history, maximum18 and unused17-18 are preserved. No silent restart,
+  waiver, deferral or integration is authorized; unrelated eligible work continues.

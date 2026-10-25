@@ -128,7 +128,10 @@ session/model/context and current source before acceptance, keeping minimal cano
 metadata rather than large local copies. Provider-family/reasoning defaults remain
 descriptive unless the owner explicitly chooses otherwise; every selection is visible.
 
-For #212/PR #213 no ordinary Kilo review remains authorized. The owner manually
-opens official Codex and selects gpt-daybreak-blue-latest for reserved/unconsumed #20
-combined full-PR implementation AND security acceptance. Neither security-only
-approval nor a handoff closes both gates; no script, automatic invocation or #21.
+D-081 makes applicable security assessment part of ordinary independent PR review.
+Security-critical changes require rigorous complete-PR review by a sufficiently
+capable model; unresolved material security findings and data-integrity risks block
+integration, never deferred to the final audit. Daybreak is not a PR merge gate;
+the comprehensive frozen-candidate project audit is a future production-release gate.
+Do not invoke it or change D-078's conversational separation or this read-only role.
+#212/PR #213 is complete, all #1-20 consumed; no #20 reuse, #21 or transfer.

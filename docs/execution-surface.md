@@ -164,8 +164,10 @@ Example request (configured model/alias, same existing authenticated listener):
 
 This is a bounded wire contract, not passed live Kernel/Codex/SDK/account testing.
 Unsupported cases and live consumer/source-version cells remain explicit in the
-matrix. #181 is security_critical; its normal independent review and owner-manual
-Daybreak gate are unchanged by the #174/#185-only exception.
+matrix. #181 is security_critical; D-081 requires rigorous ordinary independent
+correctness/security review. The prior per-PR Daybreak requirement is superseded
+by the [final project release audit](llm-operating-policy.md#final-release-candidate-audit),
+not by transferring the historical #174/#185-only exception or waiving findings.
 
 The public `sr-pin:<resource_id>/<provider>/<model>/<variant>` and optional
 `@<decision_id>` go through exact `admit_pinned_target`, which rechecks
