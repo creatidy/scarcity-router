@@ -788,6 +788,8 @@ parsed as effort. Public input/output token allowances with explicit basis/unit
 can appear as **public facts**, not executable ceilings. Unsupported semantics,
 unknown/future/stale freshness, conflicts, revocation and unknown rights produce
 distinct non-positive annotations. Source-provided prose is never rendered.
+Restoration requires a public, non-future, explicitly fresh retraction observation;
+an inadmissible retraction cannot erase the retained revocation's withholding.
 Bootstrap properties, ratings, identities, quota and private policy remain unchanged.
 This explanation-only data use is implemented, not a claim of active MI routing.
 

@@ -218,6 +218,48 @@ class MIConsumerTests(unittest.TestCase):
             with self.subTest(subject=subject):
                 self.assertIn("MI unknown", self.label(changed))
 
+    def test_only_admissible_retractions_restore_withdrawn_public_facts(self) -> None:
+        initial = public()
+        original = initial.evidence.observations[0]
+        report = replace(original, observation_id="restoration-report")
+        revocation = SourceNotice(
+            "withdrawn", original.observation_id, frozenset({"statement:owned-claim"}),
+            T - timedelta(hours=2), "revocation", True,
+        )
+        retraction = SourceNotice(
+            "restored", report.observation_id, revocation.targets,
+            T - timedelta(hours=1), "retraction", None, revocation.notice_id,
+        )
+
+        def publication(observation: Observation) -> PublicEvidence:
+            return replace(
+                initial,
+                evidence=initial.evidence.extend(observations=(observation,)),
+                revisions=(*initial.revisions, (observation.observation_id, "owned-revision")),
+                notices=(revocation, retraction),
+            )
+
+        self.assertIn("public input 4096 tokens", self.label(publication(report)))
+        for inadmissible in (
+            replace(report, retrieved_at=T + DAY),
+            replace(report, observed_at=T + DAY),
+            replace(report, published_at=T + DAY),
+            replace(report, fresh_until=T),
+            replace(report, fresh_until=None),
+            replace(report, distribution="unknown"),
+        ):
+            with self.subTest(report=inadmissible):
+                self.assertIn("MI critical withdrawal", self.label(publication(inadmissible)))
+
+        # A pending correction does not rewrite earlier decisions or history.
+        future = replace(publication(report), notices=(revocation, replace(retraction, effective_from=T + DAY)))
+        owner = consumer(future)
+        before = self.decision(owner)
+        self.assertIn("MI critical withdrawal", self.label(future))
+        assert before.mi_use is not None and before.mi_use.cut is not None
+        self.assertEqual(future.notices, before.mi_use.cut.public.notices)
+        _ = selection_envelope(before)
+
     def test_unsupported_native_semantics_never_convert_to_positive_fact(self) -> None:
         initial = public()
         claim = initial.evidence.claims[0]

@@ -144,10 +144,30 @@ def explained_catalog(
     public = cut.public
     view = effective_at(public.evidence, at)
     conflicted = {identity for conflict in view.conflicts for identity in conflict.claim_ids}
-    notices = public.active_notices(at)
+    observed = {item.observation_id: item for item in public.evidence.observations}
+    # The producer's effective-time notice view deliberately does not grant
+    # consumer admission. Inadmissible restoration must not erase its predecessor.
+    admissible_notices = tuple(
+        notice for notice in public.notices
+        if notice.effective_from <= at
+        and (
+            notice.action == "revocation"
+            or (
+                (origin := observed[notice.observation_id]).distribution == "public"
+                and origin.retrieved_at <= at
+                and (origin.observed_at is None or origin.observed_at <= at)
+                and (origin.published_at is None or origin.published_at <= at)
+                and origin.fresh_until is not None and not origin.stale(at)
+            )
+        )
+    )
+    replaced_notices = {notice.revises for notice in admissible_notices}
+    notices = tuple(
+        notice for notice in admissible_notices
+        if notice.action == "revocation" and notice.notice_id not in replaced_notices
+    )
     withdrawn = {target for notice in notices for target in notice.targets}
     critical = {target for notice in notices if notice.reported_critical is True for target in notice.targets}
-    observed = {item.observation_id: item for item in public.evidence.observations}
     frame = decode_cut(
         cut.data, cut.reference, supported_payload_schemas=PUBLIC_PAYLOAD_SCHEMAS,
         max_bytes=len(cut.data),
