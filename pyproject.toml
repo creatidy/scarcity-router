@@ -26,6 +26,9 @@ dynamic = ["version"]
 # a core dependency — the core package stays standard-library + mcp only,
 # and the PyInstaller Windows build bundles the extra.
 [project.optional-dependencies]
+mi = [
+    "model-intelligence @ git+https://forgejo.creatidy.com/Creatidy/model-intelligence.git@d65891668b7e79f7b666c021f02a1b4bf8c4ca9c",
+]
 tray = [
     "pystray>=0.19,<1",
     "Pillow>=10,<13",
@@ -44,6 +47,9 @@ scarcity-router-worker = "scarcity_router.worker_client:main"
 # from there instead of committing a second copy in this file.
 [tool.hatch.version]
 path = "scarcity_router/__init__.py"
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["scarcity_router"]
@@ -76,6 +82,7 @@ include = [
 
 [dependency-groups]
 dev = [
+    "model-intelligence @ git+https://forgejo.creatidy.com/Creatidy/model-intelligence.git@d65891668b7e79f7b666c021f02a1b4bf8c4ca9c",
     "basedpyright>=1.0.0",
     "mcp>=2,<3",
     # M10 (issue #95): test-only real-TLS acceptance certificates. Never a

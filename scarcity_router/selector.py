@@ -63,7 +63,10 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import IntEnum
-from typing import ClassVar, TypeVar, cast
+from typing import TYPE_CHECKING, ClassVar, TypeVar, cast
+
+if TYPE_CHECKING:
+    from .mi_consumer import MIUse
 
 from .capacity import CapacitySnapshot
 from .eligibility import ExecutionEligibility
@@ -1557,6 +1560,8 @@ class SelectionDecision:
     # eligibility input (a non-blocking rule is simply not evaluated);
     # explanation-only provenance; serialized only when non-empty.
     expired_blackout_rules: tuple[str, ...] = ()
+    # Optional local immutable receipt; the accepted extension lives in the envelope.
+    mi_use: MIUse | None = None
 
     _SELECTED_CODES: ClassVar[frozenset[str]] = frozenset({
         "selected_balanced",

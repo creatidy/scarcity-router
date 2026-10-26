@@ -6701,3 +6701,43 @@ adapter is removed merely to eliminate orchestration. See the actual Git source/
   `12e54397c58377a2ee8ab5cb7c7f311dfd31bdb7`. Review16's unresolved SQLite transition race,
   all consumed history, maximum18 and unused17-18 are preserved. No silent restart,
   waiver, deferral or integration is authorized; unrelated eligible work continues.
+
+## D-082: Bounded MI Consumer, Separate Activation Policy (#176, 2026-10-26)
+
+**Accepted implementation scope:** Adrian's direct 2026-10-26T00:01:13Z directive
+resumes #176 after merged #181/#185. The dependency order is MI publication ->
+Router consumer -> MI #19 installed acceptance; Kernel #55 is a separate downstream
+utilized-reference consumer. Their acceptance is not an implementation prerequisite.
+The owner authorizes bounded initially non-disruptive consumer implementation,
+deterministic tests, independent review and `/loop` integration, not automatic
+calibration or broader live activation. Canonical issue history records the directive.
+
+Implement explicit-input explanation-only use of the exact-pinned MI public
+publication/validation/projection/utilization package. Freeze the cut and full
+evaluation context before selection; use applicable supported public facts in the
+actual explanation path; retain exact result/context/manifest bytes and emit the
+accepted utilization reference. Preserve the existing catalog, ratings, hard
+properties, local policy, entitlement and execution-identity boundaries. Do not add
+a second catalog, evidence database or producer. No default network/configuration
+activation is implied. See the [consumer contract](machine-interfaces.md#explicit-mi-consumer-176).
+
+**Proposed, NOT accepted active-admission policy:** approve one explicit opt-in
+policy for exact independently trusted publication references, `/1` or `/2` versions,
+fixed scope/source membership and reviewed full model/channel/configuration/effort
+associations. Require explicit fresh-at-evaluation evidence for any positive new
+use; unknown freshness is not fresh. Retain conflict alternatives without a silent
+winner. A reported critical revocation withholds its targeted public facts for new
+decisions immediately, even when the reporting observation is stale, pending owner
+adjudication; it neither silently disables unrelated routes nor grants publisher
+authority over private admission. Retractions must follow retained notice history.
+No entitlement/billing inference, quality-rating changes, automatic calibration or
+bootstrap replacement. Reject incompatible/malformed/failed publications without
+changing local bootstrap or private policy. Retained old cuts support historical
+replay only; new decisions recheck applicability/freshness/withdrawal and never
+retroactively relabel old decisions. Activation beyond the explicit library path
+needs acceptance of this exact policy and separately verified deployment inputs.
+
+MI #19 still requires installed producer-to-Router operation with real immutable
+utilization binding and retained artifacts at exact integrated revisions. Passing
+Router component tests does not pass that acceptance or Kernel #55. No MI/Kernel
+mutation, model inference, Daybreak, release or deployment is authorized here.

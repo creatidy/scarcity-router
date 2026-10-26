@@ -316,6 +316,11 @@ wheels = [
 ]
 
 [[package]]
+name = "model-intelligence"
+version = "0.1.0"
+source = { git = "https://forgejo.creatidy.com/Creatidy/model-intelligence.git?rev=d65891668b7e79f7b666c021f02a1b4bf8c4ca9c#d65891668b7e79f7b666c021f02a1b4bf8c4ca9c" }
+
+[[package]]
 name = "nodejs-wheel-binaries"
 version = "24.19.0"
 source = { registry = "https://pypi.org/simple" }
@@ -797,6 +802,9 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+mi = [
+    { name = "model-intelligence" },
+]
 tray = [
     { name = "pillow" },
     { name = "pystray" },
@@ -806,6 +814,7 @@ tray = [
 dev = [
     { name = "basedpyright" },
     { name = "mcp" },
+    { name = "model-intelligence" },
     { name = "pyyaml" },
     { name = "trustme" },
 ]
@@ -813,15 +822,17 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "mcp", specifier = ">=2,<3" },
+    { name = "model-intelligence", marker = "extra == 'mi'", git = "https://forgejo.creatidy.com/Creatidy/model-intelligence.git?rev=d65891668b7e79f7b666c021f02a1b4bf8c4ca9c" },
     { name = "pillow", marker = "extra == 'tray'", specifier = ">=10,<13" },
     { name = "pystray", marker = "extra == 'tray'", specifier = ">=0.19,<1" },
 ]
-provides-extras = ["tray"]
+provides-extras = ["mi", "tray"]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "basedpyright", specifier = ">=1.0.0" },
     { name = "mcp", specifier = ">=2,<3" },
+    { name = "model-intelligence", git = "https://forgejo.creatidy.com/Creatidy/model-intelligence.git?rev=d65891668b7e79f7b666c021f02a1b4bf8c4ca9c" },
     { name = "pyyaml", specifier = ">=6,<7" },
     { name = "trustme", specifier = ">=1,<2" },
 ]

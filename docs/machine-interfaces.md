@@ -758,6 +758,63 @@ These named gates implement unresolved-producer evidence discipline, not fiction
 proof of future transitions. They remain required backlog work; #185 neither defines
 their ABI nor deletes their requirements.
 
+### Explicit MI Consumer (#176)
+
+The optional `mi` extra reuses Model Intelligence's Apache-2.0 package at canonical
+revision `d65891668b7e79f7b666c021f02a1b4bf8c4ca9c`, not a second decoder, catalog,
+calibration system or producer. Its public contract is
+[PUBLICATION_CONTRACT.md](https://forgejo.creatidy.com/Creatidy/model-intelligence/src/commit/d65891668b7e79f7b666c021f02a1b4bf8c4ca9c/PUBLICATION_CONTRACT.md).
+No default CLI/REST/MCP configuration, network refresh or active-route admission
+is enabled. Normal installations do not need this extra. Install an explicitly
+selected checkout with `uv tool install '/path/to/checkout[mi]'` when the optional
+library consumer is required; the dependency remains exact-pinned to Forgejo.
+
+An authorized library caller constructs `mi_consumer.MIConsumer` with an independently
+trusted `Applicability`, positive byte bound and explicit `ModelBinding` associations.
+`load(path, expected_cut_reference)` bounds the read; `adopt(bytes, reference)` uses
+the producer's frame/digest, closed `/1` or `/2` grammar, member/source coverage and
+retained-history validators before atomically replacing the in-memory input slot.
+The input slot is not an admission decision. Failed reads/updates leave it intact;
+there is no polling, credential access or hidden fallback. A changed scope or
+rewritten/lost history refuses. Rollback uses a separately retained receipt for
+historical replay, not an automatic downgrade or a freshness renewal.
+
+Pass `mi_consumer=consumer` to the existing `selection_app.select_from_inputs` seam.
+It captures the immutable cut before collectors or evaluation can refresh the slot,
+projects evidence through MI's `effective_at`, and feeds bounded public native-limit
+annotations into the actual selector's catalog display metadata. Exact bound model,
+channel, configuration and known independent effort must agree; variant is never
+parsed as effort. Public input/output token allowances with explicit basis/unit
+can appear as **public facts**, not executable ceilings. Unsupported semantics,
+unknown/future/stale freshness, conflicts, revocation and unknown rights produce
+distinct non-positive annotations. Source-provided prose is never rendered.
+Retained future-only knowledge is reported as future, not absent; a future successor
+does not displace a current effective fact. Unknown values and unsupported native
+semantics are separate dispositions.
+Restoration requires a public, non-future, explicitly fresh retraction observation;
+an inadmissible retraction cannot erase the retained revocation's withholding.
+Bootstrap properties, ratings, identities, quota and private policy remain unchanged.
+This explanation-only data use is implemented, not a claim of active MI routing.
+
+Before `select_model` executes, the application freezes exact requirement/profile,
+bootstrap/evaluated catalog, policy, bindings, capacity/eligibility/replenishment and
+full evaluation instant as local context bytes. `decision.mi_use` retains the cut's
+original bytes/reference, context, exact result bytes, utilization manifest and
+EvidenceRef. `machine_api.selection_envelope` emits the accepted additive
+`mi_utilization` reference beside `decision`, checking the bound result/context with
+MI's own `decode_decision_utilization`. Without this explicit library input the
+existing envelope is byte-shape compatible. A refresh during evaluation cannot
+relabel the prior decision; microsecond instants remain distinct in the manifest.
+The caller must retain the complete `mi_use` artifacts with the decision in its
+existing local evidence store for durable replay, not just the reference. Private
+context/publication bytes are not added to the response or uploaded to MI.
+
+Tests in `test_mi_consumer.py` exercise the actual producer codec, shared selector,
+mid-collection refresh and immutable envelope binding. They are deterministic
+component conformance, not MI #19 installed acceptance or Kernel #55 adoption.
+MI #19 follows Router #176; it is not a prerequisite for this component. Broader
+admission/automatic calibration/bootstrap replacement remain disabled (D-082).
+
 ### Acceptance Evidence Map
 
 This covers all six #185 criteria, not only the newly corrected refusal seams.

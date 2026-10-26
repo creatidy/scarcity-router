@@ -222,7 +222,7 @@ def inspect_wheel() -> None:
         parser.read_string(entry_points)
         sections = {section: dict(parser.items(section)) for section in parser.sections()}
         _check(sections == EXPECTED_ENTRY_POINTS, f"wheel entry points mismatch: {sections}")
-        # The optional Windows tray extra (M10) is metadata only: the core
+        # The optional tray and exact-pinned MI extras are metadata only: the core
         # wheel's runtime dependency set is still exactly mcp — the extra's
         # packages are extra-conditional Requires-Dist entries, never core.
         extra_requires = sorted(
@@ -242,9 +242,13 @@ def inspect_wheel() -> None:
         )
         joined_conditionals = "\n".join(conditional).lower()
         _check(
-            len(conditional) == 2
+            len(conditional) == 3
             and "pystray" in joined_conditionals
-            and "pillow" in joined_conditionals,
+            and "pillow" in joined_conditionals
+            and (
+                "model-intelligence @ git+https://forgejo.creatidy.com/Creatidy/"
+                "model-intelligence.git@d65891668b7e79f7b666c021f02a1b4bf8c4ca9c"
+            ).lower() in joined_conditionals,
             f"unexpected conditional extra dependencies: {conditional}",
         )
     print("PASS wheel contents and metadata verified")
