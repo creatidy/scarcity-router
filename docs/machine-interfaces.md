@@ -812,8 +812,69 @@ context/publication bytes are not added to the response or uploaded to MI.
 Tests in `test_mi_consumer.py` exercise the actual producer codec, shared selector,
 mid-collection refresh and immutable envelope binding. They are deterministic
 component conformance, not MI #19 installed acceptance or Kernel #55 adoption.
-MI #19 follows Router #176; it is not a prerequisite for this component. Broader
-admission/automatic calibration/bootstrap replacement remain disabled (D-082).
+MI #19 followed Router #176 and is now closed for installed explicit-input
+interoperability, not real-source positive admission. Automatic calibration and
+bootstrap replacement remain disabled.
+
+### Opt-In MI Admission (#222)
+
+D-082 was explicitly owner-approved on 2026-10-26T22:57:22Z for implementation and
+independent validation, NOT production activation. Existing default calls and the
+explanation-only path are unchanged. No service, catalog or calibration layer is added.
+
+After `MIConsumer.load/adopt` has validated a publication, the caller can explicitly
+capture `admission = consumer.admission(independently_trusted_reference, evaluated_at=instant)` and pass
+`mi_admission=admission` to `selection_app.select_from_inputs` or `RouteRequest`.
+Explanation and active inputs are mutually exclusive at the application seam.
+The immutable snapshot does not follow later refreshes or auto-approve a new cut.
+It is bound to that exact evaluation instant; reuse at a different instant refuses.
+Capture a current snapshot for every new decision; retain an old one only for replay.
+Every new evaluation rechecks reference equality, exact reviewed applicability,
+freshness, conflicts and withdrawal. Retaining an old snapshot for replay is not
+an exemption from freshness or evidence of the producer's latest state. Use a new
+explicitly trusted snapshot for new decisions after a known revocation; do not
+reuse a historical snapshot as a current producer feed. There is no default network
+refresh or latest-cut discovery/production configuration in this delivery.
+
+Supported advertised integral input/output allowances in tokens **intersect** known
+bootstrap hard ceilings. They cannot raise ceilings, fill unknown hard properties,
+change quality ratings or establish entitlement, quota, billing or actual execution
+identity. Missing/untrusted/unsupported/non-fresh/conflicting/withdrawn required
+evidence excludes the explicitly bound identity through existing `policy_blocked`
+selection or `resource_blocked` authorization gates. Unbound bootstrap identities
+keep their original authority. Executable resources additionally require the exact
+reviewed public channel and supported effort controls; existing authorization,
+compatibility, capacity and exact-pin admission still apply. Pins never re-rank.
+
+The route/admission wrapper freezes all authoritative inputs and MI binding/policy
+before the existing core runs. `RouteDecision.mi_use` and `AdmissionDecision.mi_use`
+retain the original cut/context/result/manifest. Their `mi_use.envelope(result.to_dict())`
+uses the accepted utilization contract and checks the complete result binding;
+raw `to_dict()` remains backwards compatible, so library callers must retain/emit
+the envelope rather than discard that optional receipt. Selection continues to use
+`machine_api.selection_envelope`. No existing gateway wire input grants clients the
+ability to configure this Router-owned policy.
+
+**Actual source investigation, 2026-10-26T22:59:29Z:** the existing MI adapter at the
+accepted pin successfully fetched all three original models.dev files at
+`f014f106dd414d575de2d0160d91267e2e7cb119`, plus current official plan/campaign/API/cohort
+documents. Pricing exceeded its declared 2620-byte bound; a separate bounded
+diagnostic retrieval then returned HTTP 500. No incomplete generation was normalized
+or published. Exact URLs/content digests and observed failures are in #222. No
+synthetic payload is substituted for real-source acceptance.
+
+Even a previously valid complete Z.ai cut has a null overall channel,
+adapter-level rather than native configuration, model subjects without explicit
+native configuration/effort, and observations without `fresh_until`. Its published
+native meanings are not automatically input/output allowances. Thus **no current
+real Z.ai/models.dev facts are positively admitted** by this conservative policy.
+The MI producer/curator can independently review changed source size/schema and
+produce a complete compatible generation; the relevant source/curator must then
+supply evidenced exact applicability and an explicit freshness basis, with Router
+review of its exact association/meaning. None requires MI to wait for more Router
+code, or Router to invent freshness/effort from aliases or retrieval time. The
+controlled tests prove actual selection, routing and admission behavior, not live
+provider or production acceptance.
 
 ### Acceptance Evidence Map
 

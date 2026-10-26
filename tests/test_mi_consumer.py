@@ -25,7 +25,7 @@ from model_intelligence.utilization import decode_decision_utilization
 
 from scarcity_router.capacity import CapacitySnapshot, CapacityWindow
 from scarcity_router.machine_api import selection_envelope
-from scarcity_router.mi_consumer import MIConsumer, ModelBinding, canonical, explained_catalog
+from scarcity_router.mi_consumer import MIAdmission, MIConsumer, ModelBinding, canonical, explained_catalog
 from scarcity_router.selection_app import load_configured_artifacts, select_from_inputs
 from scarcity_router.selection_types import TaskRequirement
 from scarcity_router.status import StatusCollectors
@@ -93,12 +93,13 @@ def collectors() -> StatusCollectors:
 
 
 class MIConsumerTests(unittest.TestCase):
-    def decision(self, owner: MIConsumer | None, *, at: datetime = T, dependencies: StatusCollectors | None = None):
+    def decision(self, owner: MIConsumer | None, *, at: datetime = T, dependencies: StatusCollectors | None = None, admission: MIAdmission | None = None, requirement: TaskRequirement | None = None):
         return select_from_inputs(
             catalog=CATALOG, profiles=PROFILES, profile_policy_version=POLICY_VERSION,
-            profile_id=None, requirement=TaskRequirement.from_dict({"task_level": "L0", "capability_minima": {}, "hard_constraints": {}}),
+            profile_id=None, requirement=requirement or TaskRequirement.from_dict({"task_level": "L0", "capability_minima": {}, "hard_constraints": {}}),
             tightening=None, policy=None, collectors=dependencies or collectors(), clock=lambda: at,
             mi_consumer=owner,
+            mi_admission=admission,
         )
 
     def label(self, value: PublicEvidence, *, at: datetime = T) -> str:

@@ -1217,6 +1217,7 @@ def _evaluate_candidate(
     replenishment_states: Sequence[ReplenishmentState],
     evaluated_at: datetime,
     eligibility_reports: Sequence[ExecutionEligibility] = (),
+    policy_blocked_identities: frozenset[ModelIdentity] | None = None,
 ) -> CandidateEvaluation:
     """Run the frozen candidate pipeline for one catalog entry.
 
@@ -1259,6 +1260,12 @@ def _evaluate_candidate(
             ),
         )
 
+    if identity in (policy_blocked_identities or ()):
+        return CandidateEvaluation(
+            identity=identity, display_name=entry.display_name,
+            reasoning_effort=entry.reasoning_effort, eligible=False,
+            exclusion_stage="policy_blackout", reason_codes=("policy_blocked",),
+        )
     blackout = resource_policy.evaluate_blackouts(identity, evaluated_at)
     if blackout.blocked:
         return CandidateEvaluation(
@@ -1806,6 +1813,7 @@ def select_model(
     eligibility_reports: Sequence[ExecutionEligibility] = (),
     profile_id: str | None = None,
     profile_policy_version: int | None = None,
+    policy_blocked_identities: frozenset[ModelIdentity] | None = None,
 ) -> SelectionDecision:
     """The authoritative deterministic ``balanced`` selector.
 
@@ -1824,6 +1832,11 @@ def select_model(
     _ = _v_instance_of(catalog, ModelCatalog, "select_model.catalog")
     _ = _v_instance_of(requirement, TaskRequirement, "select_model.requirement")
     _ = _v_instance_of(policy, SelectorPolicy, "select_model.policy")
+    if policy_blocked_identities is not None:
+        if type(policy_blocked_identities) is not frozenset:
+            raise SelectionContractValidationError("select_model.policy_blocked_identities: expected frozenset")
+        for identity in policy_blocked_identities:
+            _ = _v_instance_of(identity, ModelIdentity, "select_model.policy_blocked_identities.identity")
 
     snapshot_by_provider: dict[str, CapacitySnapshot] = {}
     for snapshot in snapshots:
@@ -1888,6 +1901,7 @@ def select_model(
             state_list,
             evaluated_at,
             eligibility_reports=eligibility_list,
+            policy_blocked_identities=policy_blocked_identities,
         )
         for entry in entries
     ]
