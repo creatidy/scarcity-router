@@ -265,12 +265,29 @@ class MIConsumerTests(unittest.TestCase):
         claim = initial.evidence.claims[0]
         assert isinstance(claim, ModelClaim)
         for value in (
-            replace(LIMIT, amount=None), replace(LIMIT, amount=Decimal("1.5")),
+            replace(LIMIT, amount=Decimal("1.5")),
             replace(LIMIT, amount=Decimal("1e1000000")), replace(LIMIT, amount=Decimal(0)),
-            replace(LIMIT, unit="characters"), replace(LIMIT, assertion="unknown"),
+            replace(LIMIT, unit="characters"),
         ):
-            self.assertIn("MI unknown or unsupported", self.label(replace(initial, evidence=replace(initial.evidence, claims=(replace(claim, payload=value),)))))
-        self.assertIn("MI unknown", self.label(replace(initial, evidence=replace(initial.evidence, claims=(replace(claim, payload=replace(LIMIT, meaning="total-context-window")),)))))
+            self.assertIn("MI unsupported", self.label(replace(initial, evidence=replace(initial.evidence, claims=(replace(claim, payload=value),)))))
+        self.assertIn("MI unsupported", self.label(replace(initial, evidence=replace(initial.evidence, claims=(replace(claim, payload=replace(LIMIT, meaning="total-context-window")),)))))
+        for value in (replace(LIMIT, amount=None), replace(LIMIT, unit=None), replace(LIMIT, assertion="unknown"), replace(LIMIT, basis=None)):
+            self.assertIn("MI unknown]", self.label(replace(initial, evidence=replace(initial.evidence, claims=(replace(claim, payload=value),)))))
+
+    def test_future_only_current_future_successor_and_absent_are_distinct(self) -> None:
+        initial = public()
+        claim = initial.evidence.claims[0]
+        assert isinstance(claim, ModelClaim)
+        future_only = replace(initial, evidence=replace(initial.evidence, claims=(replace(claim, effective_from=T + DAY),)))
+        self.assertIn("MI future]", self.label(future_only))
+        self.assertNotIn("4096", self.label(future_only))
+        absent = replace(initial, evidence=replace(initial.evidence, claims=()))
+        self.assertIn("MI unknown]", self.label(absent))
+        updated = replace(initial, evidence=initial.evidence.extend(claims=(
+            replace(claim, claim_id="future", revises=claim.claim_id, effective_from=T + DAY, payload=replace(LIMIT, amount=Decimal(8192))),
+        )))
+        self.assertIn("public input 4096 tokens", self.label(updated))
+        self.assertNotIn("8192", self.label(updated))
 
     def test_rejected_updates_leave_existing_cut_and_receipt_unchanged(self) -> None:
         initial = public()

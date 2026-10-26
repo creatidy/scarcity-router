@@ -21,7 +21,7 @@ from model_intelligence.contract import (
     PublicEvidence,
     decode_public_evidence,
 )
-from model_intelligence.evidence import Model, NativeLimit, instant
+from model_intelligence.evidence import Model, ModelClaim, NativeLimit, instant
 from model_intelligence.projection import effective_at
 from model_intelligence.publication import CutReference, decode_cut
 from model_intelligence.utilization import decode_decision_utilization, encode_utilization
@@ -180,10 +180,13 @@ def explained_catalog(
             continue
         label = "unsupported"
         if binding.matches(entry, public.applicability):
-            claims = tuple(
+            current_native = tuple(
                 item for item in view.models
                 if item.subject == binding.subject and isinstance(item.payload, NativeLimit)
                 and item.payload.dimension == binding.dimension
+            )
+            claims = tuple(
+                item for item in current_native if isinstance(item.payload, NativeLimit)
                 and item.payload.meaning == binding.meaning
                 and item.payload.basis == binding.basis
             )
@@ -196,7 +199,22 @@ def explained_catalog(
             elif any(item.claim_id in conflicted for item in claims):
                 label = "conflict"
             elif not claims:
-                label = "unknown"
+                if current_native:
+                    label = "unknown" if any(
+                        isinstance(item.payload, NativeLimit) and item.payload.basis is None
+                        for item in current_native
+                    ) else "unsupported"
+                elif any(
+                    isinstance(item, ModelClaim) and item.subject == binding.subject
+                    and isinstance(item.payload, NativeLimit)
+                    and item.payload.dimension == binding.dimension and item.effective_from > at
+                    for item in public.evidence.claims
+                ):
+                    # Retained future knowledge explains absence; it never
+                    # replaces a current effective fact or supplies its value.
+                    label = "future"
+                else:
+                    label = "unknown"
             else:
                 origins = tuple(observed[item.observation_id] for item in claims)
                 if any(
@@ -214,7 +232,9 @@ def explained_catalog(
                     label = "rights unknown"
                 else:
                     values = tuple(item.payload for item in claims if isinstance(item.payload, NativeLimit))
-                    if all(
+                    if any(value.amount is None or value.unit is None or value.assertion == "unknown" for value in values):
+                        label = "unknown"
+                    elif all(
                         value.unit == "tokens"
                         and value.meaning in {"input-allowance", "output-allowance"}
                         and value.assertion != "unknown"
@@ -227,7 +247,7 @@ def explained_catalog(
                         assert amount is not None
                         label = f"public {binding.meaning.split('-')[0]} {int(amount)} tokens"
                     else:
-                        label = "unknown or unsupported"
+                        label = "unsupported"
         # No source-provided prose/identifiers are rendered or treated as authority.
         entries.append(replace(entry, display_name=f"{entry.display_name[:64]} [MI {label}]"))
     return replace(catalog, entries=tuple(entries))

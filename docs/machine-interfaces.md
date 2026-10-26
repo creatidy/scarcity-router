@@ -788,6 +788,9 @@ parsed as effort. Public input/output token allowances with explicit basis/unit
 can appear as **public facts**, not executable ceilings. Unsupported semantics,
 unknown/future/stale freshness, conflicts, revocation and unknown rights produce
 distinct non-positive annotations. Source-provided prose is never rendered.
+Retained future-only knowledge is reported as future, not absent; a future successor
+does not displace a current effective fact. Unknown values and unsupported native
+semantics are separate dispositions.
 Restoration requires a public, non-future, explicitly fresh retraction observation;
 an inadmissible retraction cannot erase the retained revocation's withholding.
 Bootstrap properties, ratings, identities, quota and private policy remain unchanged.
