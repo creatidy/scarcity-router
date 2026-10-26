@@ -35,10 +35,13 @@ from __future__ import annotations
 import importlib.resources
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
+
+if TYPE_CHECKING:
+    from .mi_consumer import MIConsumer
 
 from .errors import (
     ApplicationInputError,
@@ -446,6 +449,7 @@ def select_from_inputs(
     replenishment_states: tuple[ReplenishmentState, ...] = (),
     collectors: StatusCollectors | None = None,
     clock: Clock | None = None,
+    mi_consumer: MIConsumer | None = None,
 ) -> SelectionDecision:
     """Run one selection from typed in-memory inputs — the shared seam.
 
@@ -467,15 +471,41 @@ def select_from_inputs(
         tightening=tightening,
     )
     instant = _current_instant(clock)
+    selected_policy = policy if policy is not None else neutral_selector_policy()
+    # Capture before collectors or evaluation can observe a concurrent refresh.
+    captured = mi_consumer.capture() if mi_consumer is not None else None
+    original_catalog = catalog
+    if captured is not None:
+        from .mi_consumer import explained_catalog
+
+        catalog = explained_catalog(catalog, captured, instant)
 
     def fixed_clock() -> datetime:
         return instant
 
     snapshots = collect_status(collectors=collectors, clock=fixed_clock)
-    return select_model(
+    context: bytes | None = None
+    if captured is not None:
+        from .mi_consumer import canonical
+
+        context = canonical({
+            "mode": "explanation-only/1",
+            "evaluated_at": instant.isoformat(),
+            "bootstrap_catalog": original_catalog.to_dict(),
+            "evaluated_catalog": catalog.to_dict(),
+            "bindings": [asdict(binding) for binding in captured[1]],
+            "requirement": resolved_requirement.to_dict(),
+            "profile_id": resolved_profile_id,
+            "profile_policy_version": profile_policy_version if resolved_profile_id is not None else None,
+            "selector_policy": selected_policy.to_dict(),
+            "snapshots": [item.to_dict() for item in snapshots.snapshots],
+            "eligibility": [item.to_dict() for item in snapshots.eligibility],
+            "replenishment_states": [item.to_dict() for item in replenishment_states],
+        })
+    decision = select_model(
         catalog=catalog,
         requirement=resolved_requirement,
-        policy=policy if policy is not None else neutral_selector_policy(),
+        policy=selected_policy,
         snapshots=snapshots.snapshots,
         evaluated_at=instant,
         replenishment_states=replenishment_states,
@@ -485,6 +515,12 @@ def select_from_inputs(
             profile_policy_version if resolved_profile_id is not None else None
         ),
     )
+    if captured is not None:
+        from .mi_consumer import bind_use
+
+        assert context is not None
+        decision = replace(decision, mi_use=bind_use(decision.to_dict(), captured, at=instant, context=context))
+    return decision
 
 
 def simulate_from_inputs(

@@ -183,6 +183,8 @@ def status_envelope(
 
 def selection_envelope(decision: SelectionDecision) -> dict[str, object]:
     """Build the exact machine-interface v1 selection envelope."""
+    if decision.mi_use is not None:
+        return decision.mi_use.envelope(decision.to_dict())
     return {
         "schema_version": ENVELOPE_SCHEMA_VERSION,
         "decision": decision.to_dict(),
