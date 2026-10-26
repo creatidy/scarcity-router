@@ -6721,8 +6721,12 @@ properties, local policy, entitlement and execution-identity boundaries. Do not 
 a second catalog, evidence database or producer. No default network/configuration
 activation is implied. See the [consumer contract](machine-interfaces.md#explicit-mi-consumer-176).
 
-**Proposed, NOT accepted active-admission policy:** approve one explicit opt-in
-policy for exact independently trusted publication references, `/1` or `/2` versions,
+**Approved active-admission policy:** Adrian explicitly approved this conservative
+policy in the direct owner directive of 2026-10-26T22:57:22Z, recorded in #222.
+The approval authorizes implementation, independent validation and accepted
+integration into `develop`, NOT production activation, release or deployment.
+#176 and MI #19 remain completed; this is a scoped follow-up, not a reopening.
+Use explicit opt-in for exact independently trusted publication references, `/1` or `/2` versions,
 fixed scope/source membership and reviewed full model/channel/configuration/effort
 associations. Require explicit fresh-at-evaluation evidence for any positive new
 use; unknown freshness is not fresh. Retain conflict alternatives without a silent
@@ -6734,10 +6738,16 @@ No entitlement/billing inference, quality-rating changes, automatic calibration 
 bootstrap replacement. Reject incompatible/malformed/failed publications without
 changing local bootstrap or private policy. Retained old cuts support historical
 replay only; new decisions recheck applicability/freshness/withdrawal and never
-retroactively relabel old decisions. Activation beyond the explicit library path
-needs acceptance of this exact policy and separately verified deployment inputs.
+retroactively relabel old decisions. Production activation still requires separate
+authorization and verified deployment inputs; no default setting is enabled here.
+Supported fresh public input/output token allowances may conservatively intersect
+known bootstrap ceilings for explicitly bound identities, not increase them or
+fill unknown bootstrap guarantees. Missing required public evidence blocks only
+those opted-in identities through the existing policy/admission boundaries. Exact
+execution channels and supported independent effort controls must still match;
+public facts cannot bypass administrator/client authorization or compatibility.
 
-MI #19 still requires installed producer-to-Router operation with real immutable
-utilization binding and retained artifacts at exact integrated revisions. Passing
-Router component tests does not pass that acceptance or Kernel #55. No MI/Kernel
-mutation, model inference, Daybreak, release or deployment is authorized here.
+MI #19 is now closed with installed explicit-input interoperability at MI
+`8f572c332db8290b5dad9e03f5b0f960271a8349`; that receipt does not prove real-source
+positive admission or production activation. Kernel #55 adoption remains separate.
+No MI/Kernel mutation, model inference, Daybreak, release or deployment is authorized.

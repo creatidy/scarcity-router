@@ -132,9 +132,12 @@ import json
 import re
 import unicodedata
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
-from typing import ClassVar, TypeVar, cast
+from typing import TYPE_CHECKING, ClassVar, TypeVar, cast
+
+if TYPE_CHECKING:
+    from .mi_consumer import MIAdmission, MIUse
 
 from .capacity import CapacitySnapshot
 from .eligibility import ExecutionEligibility
@@ -1688,6 +1691,8 @@ def _evaluate_resource(
     execution_assurances: tuple[ExecutionAssurance, ...] = (),
     require_catalog_effort: bool = False,
     available_adapter_resource_ids: frozenset[str] | None = None,
+    mi_blocked: frozenset[ModelIdentity] | None = None,
+    mi_effort_required: frozenset[ModelIdentity] | None = None,
 ) -> _ResourceGate:
     """Run the frozen gate pipeline for one resource.
 
@@ -1719,6 +1724,14 @@ def _evaluate_resource(
             reason_codes=authorization_codes,
             promotion_sources=promotion_sources,
         )
+    mi_usable = tuple(identity for identity in bound if identity not in (mi_blocked or ()))
+    if not mi_usable:
+        return _ResourceGate(
+            entry=entry, bound_identities=bound, qualified=False,
+            stage="authorization", reason_codes=("resource_blocked",),
+            promotion_sources=promotion_sources,
+        )
+    bound = mi_usable
     availability_codes = list(availability_failure_codes(entry, eligibility_reports))
     if available_adapter_resource_ids is not None and entry.identity.resource_id not in available_adapter_resource_ids:
         availability_codes.append("adapter_unavailable")
@@ -1776,14 +1789,16 @@ def _evaluate_resource(
             compatibility_value=first_value,
             promotion_sources=promotion_sources,
         )
-    if require_catalog_effort:
+    if require_catalog_effort or any(identity in (mi_effort_required or ()) for identity in bound):
         usable: list[ModelIdentity] = []
         effort_failure: tuple[tuple[str, ...], str | None, str | None] | None = None
         for identity in bound:
             candidate = next(item for item in catalog.entries if item.identity == identity)
             failure = _compatibility_failure(
                 entry, request, cells, requirement, *_request_output_context(request, entry, catalog),
-                configured_reasoning_required=candidate.reasoning_effort is not None,
+                configured_reasoning_required=configured_reasoning_required or (
+                    candidate.reasoning_effort is not None and (require_catalog_effort or identity in (mi_effort_required or ()))
+                ),
             )
             if not failure[0]:
                 usable.append(identity)
@@ -2113,6 +2128,7 @@ class RouteDecision:
     reason_codes: tuple[str, ...] = ()
     decision_id: str | None = None
     schema_version: int = ROUTE_DECISION_SCHEMA_VERSION
+    mi_use: MIUse | None = None
 
     def __post_init__(self) -> None:
         _ = _v_int(
@@ -2257,6 +2273,7 @@ class AdmissionDecision:
     target: RouteTarget | None = None
     exclusion: TargetExclusion | None = None
     bound_decision_id: str | None = None
+    mi_use: MIUse | None = None
 
     def __post_init__(self) -> None:
         _ = _v_safe_id(self.resource_id, "admission_decision.resource_id")
@@ -2382,9 +2399,29 @@ class RouteRequest:
     task_requirement: TaskRequirement | None = None
     #: Internal Router-owned control reception; never client/config/worker proof.
     execution_assurances: tuple[ExecutionAssurance, ...] = ()
+    #: Explicit Router-owned immutable MI input; never client or worker proof.
+    mi_admission: MIAdmission | None = None
+    mi_blocked: frozenset[ModelIdentity] = frozenset()
+    mi_channels: tuple[tuple[ModelIdentity, str | None], ...] = ()
 
     def __post_init__(self) -> None:
         _ = _v_instance_of(self.catalog, ModelCatalog, "route_request.catalog")
+        if self.mi_admission is not None:
+            from .mi_consumer import MIAdmission
+
+            _ = _v_instance_of(self.mi_admission, MIAdmission, "route_request.mi_admission")
+        if type(self.mi_blocked) is not frozenset:
+            raise RouteContractValidationError("route_request.mi_blocked: expected frozenset")
+        for identity in self.mi_blocked:
+            _ = _v_instance_of(identity, ModelIdentity, "route_request.mi_blocked.identity")
+        if type(self.mi_channels) is not tuple:
+            raise RouteContractValidationError("route_request.mi_channels: expected tuple")
+        for association in self.mi_channels:
+            if type(association) is not tuple or len(association) != 2:
+                raise RouteContractValidationError("route_request.mi_channels: expected identity/channel pair")
+            _ = _v_instance_of(association[0], ModelIdentity, "route_request.mi_channels.identity")
+            if association[1] is not None:
+                _ = _v_safe_id(association[1], "route_request.mi_channels.channel")
         _ = _v_bool(self.require_catalog_effort, "route_request.require_catalog_effort")
         for assurance in self.execution_assurances:
             _ = _v_instance_of(assurance, ExecutionAssurance, "route_request.execution_assurances")
@@ -2687,6 +2724,7 @@ def _run_selection(
             if request.routing_profile is not None
             else None
         ),
+        policy_blocked_identities=request.mi_blocked,
     )
 
 
@@ -2785,6 +2823,42 @@ def public_route_document(decision: RouteDecision, request: RouteRequest) -> dic
     return document
 
 
+def _mi_inputs(request: RouteRequest, pin: PinnedTarget | None = None) -> tuple[RouteRequest, bytes]:
+    """Freeze the original authoritative inputs before the existing pure gates."""
+    from .mi_consumer import canonical
+
+    mi = request.mi_admission
+    assert mi is not None
+    catalog, blocked = mi.prepare(request.catalog, request.evaluated_at)
+    context = canonical({
+        "mode": "d082-admission/1",
+        "operation": "admit" if pin is not None else "route",
+        "admission_reference": asdict(mi.expected),
+        "evaluated_at": request.evaluated_at.isoformat(),
+        "bootstrap_catalog": request.catalog.to_dict(), "evaluated_catalog": catalog.to_dict(),
+        "profiles": request.profiles.to_dict(), "profile_policy_version": request.profile_policy_version,
+        "registry": request.registry_snapshot.to_dict(), "policy": request.policy.to_dict(),
+        "capacity": [item.to_dict() for item in request.capacity_snapshots],
+        "replenishment": [item.to_dict() for item in request.replenishment_states],
+        "eligibility": [item.to_dict() for item in request.eligibility_reports],
+        "compatibility": [item.to_dict() for item in request.compatibility_cells],
+        "administrator": request.admin_constraints.to_dict(), "client": request.client_authorization.to_dict(),
+        "routing_profile": request.routing_profile.to_dict() if request.routing_profile is not None else None,
+        "request": request.request.to_dict(), "pin": pin.to_dict() if pin is not None else None,
+        "task_requirement": request.task_requirement.to_dict() if request.task_requirement is not None else None,
+        "require_catalog_effort": request.require_catalog_effort,
+        "available_adapters": sorted(request.available_adapter_resource_ids) if request.available_adapter_resource_ids is not None else None,
+        "continuations": sorted(request.continuation_capable_resource_ids) if request.continuation_capable_resource_ids is not None else None,
+        "candidate_identities": [item.to_dict() for item in request.candidate_identities] if request.candidate_identities is not None else None,
+        "assurances": [asdict(item) for item in request.execution_assurances],
+        "bindings": [asdict(binding) for binding in mi.captured[1]],
+        "blocked": [item.to_dict() for item in sorted(request.mi_blocked | blocked, key=_identity_key)],
+        "channel_constraints": [{"identity": identity.to_dict(), "channel": channel} for identity, channel in request.mi_channels],
+    })
+    return replace(request, catalog=catalog, mi_admission=None, mi_blocked=request.mi_blocked | blocked,
+        mi_channels=(*request.mi_channels, *((binding.identity, binding.subject.channel) for binding in mi.captured[1]))), context
+
+
 def route_request(request: RouteRequest) -> RouteDecision:
     """The authoritative deterministic route decision for executable targets.
 
@@ -2797,6 +2871,12 @@ def route_request(request: RouteRequest) -> RouteDecision:
     over the request's inputs and evaluation instant: identical inputs
     produce identical decisions and identical ``decision_id`` values.
     """
+    if request.mi_admission is not None:
+        from .mi_consumer import bind_use
+
+        effective_request, context = _mi_inputs(request)
+        decision = route_request(effective_request)
+        return replace(decision, mi_use=bind_use(decision.to_dict(), request.mi_admission.captured, at=request.evaluated_at, context=context))
     requirement, profile_id = _resolve_requirement(request)
     effective = _effective_authorization(
         request.admin_constraints,
@@ -2834,6 +2914,8 @@ def route_request(request: RouteRequest) -> RouteDecision:
                 execution_assurances=request.execution_assurances,
                 require_catalog_effort=request.require_catalog_effort,
                 available_adapter_resource_ids=request.available_adapter_resource_ids,
+                mi_blocked=request.mi_blocked | frozenset(identity for identity, channel in request.mi_channels if channel != entry.identity.channel),
+                mi_effort_required=frozenset(identity for identity, _channel in request.mi_channels),
             )
             for entry in request.registry_snapshot.entries
         ),
@@ -3012,6 +3094,12 @@ def admit_pinned_target(
     reach this function: :class:`PinnedTarget` validation rejects it at
     construction.
     """
+    if request.mi_admission is not None:
+        from .mi_consumer import bind_use
+
+        effective_request, context = _mi_inputs(request, pinned_target)
+        decision = admit_pinned_target(effective_request, pinned_target=pinned_target)
+        return replace(decision, mi_use=bind_use(decision.to_dict(), request.mi_admission.captured, at=request.evaluated_at, context=context))
     _ = _v_instance_of(
         pinned_target, PinnedTarget, "admit_pinned_target.pinned_target"
     )
@@ -3073,6 +3161,8 @@ def admit_pinned_target(
         request.continuation_capable_resource_ids,
         execution_assurances=request.execution_assurances,
         available_adapter_resource_ids=request.available_adapter_resource_ids,
+        mi_blocked=request.mi_blocked | frozenset(identity for identity, channel in request.mi_channels if channel != entry.identity.channel),
+        mi_effort_required=frozenset(identity for identity, _channel in request.mi_channels),
     )
     if not gate.qualified or not gate.bound_identities:
         return AdmissionDecision(

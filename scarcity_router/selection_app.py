@@ -41,7 +41,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
-    from .mi_consumer import MIConsumer
+    from .mi_consumer import MIAdmission, MIConsumer
 
 from .errors import (
     ApplicationInputError,
@@ -60,6 +60,7 @@ from .selector import (
     tighten_requirement,
 )
 from .selection_types import (
+    ModelIdentity,
     ModelCatalog,
     TaskProfileCatalog,
     TaskProfileDefinition,
@@ -450,6 +451,7 @@ def select_from_inputs(
     collectors: StatusCollectors | None = None,
     clock: Clock | None = None,
     mi_consumer: MIConsumer | None = None,
+    mi_admission: MIAdmission | None = None,
 ) -> SelectionDecision:
     """Run one selection from typed in-memory inputs — the shared seam.
 
@@ -473,9 +475,14 @@ def select_from_inputs(
     instant = _current_instant(clock)
     selected_policy = policy if policy is not None else neutral_selector_policy()
     # Capture before collectors or evaluation can observe a concurrent refresh.
-    captured = mi_consumer.capture() if mi_consumer is not None else None
+    if mi_consumer is not None and mi_admission is not None:
+        raise ApplicationInputError("select: choose MI explanation or explicit admission, not both")
+    captured = mi_admission.captured if mi_admission is not None else mi_consumer.capture() if mi_consumer is not None else None
     original_catalog = catalog
-    if captured is not None:
+    blocked: frozenset[ModelIdentity] = frozenset()
+    if mi_admission is not None:
+        catalog, blocked = mi_admission.prepare(catalog, instant)
+    elif captured is not None:
         from .mi_consumer import explained_catalog
 
         catalog = explained_catalog(catalog, captured, instant)
@@ -489,7 +496,9 @@ def select_from_inputs(
         from .mi_consumer import canonical
 
         context = canonical({
-            "mode": "explanation-only/1",
+            "mode": "d082-admission/1" if mi_admission is not None else "explanation-only/1",
+            "admission_reference": asdict(mi_admission.expected) if mi_admission is not None else None,
+            "mi_blocked": [item.to_dict() for item in sorted(blocked, key=lambda item: (item.provider, item.model, item.variant))],
             "evaluated_at": instant.isoformat(),
             "bootstrap_catalog": original_catalog.to_dict(),
             "evaluated_catalog": catalog.to_dict(),
@@ -514,6 +523,7 @@ def select_from_inputs(
         profile_policy_version=(
             profile_policy_version if resolved_profile_id is not None else None
         ),
+        policy_blocked_identities=blocked,
     )
     if captured is not None:
         from .mi_consumer import bind_use

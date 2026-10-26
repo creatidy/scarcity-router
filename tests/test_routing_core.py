@@ -524,6 +524,11 @@ def _request(
     )
 
 
+# Shared typed world for policy-boundary conformance, not a second route fixture.
+request_fixture = _request
+compatibility_fixture = _pass_cell
+
+
 def _exclusion_by_id(
     decision: RouteDecision,
 ) -> dict[str, TargetExclusion]:

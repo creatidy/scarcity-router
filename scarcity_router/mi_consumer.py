@@ -1,7 +1,7 @@
 """Explicit-input MI consumer, not automatic admission or calibration.
 
 Uses the optional, exact-pinned public MI package's own validators/projection.
-Only explanation metadata is projected; bootstrap properties/ratings are intact.
+Explanation is the default; D-082 admission is a separate exact-reference opt-in.
 No network, producer, credential access, current-pointer polling or disk writes.
 """
 
@@ -13,7 +13,7 @@ from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 from threading import RLock
-from typing import final
+from typing import cast, final
 
 from model_intelligence.contract import (
     Applicability,
@@ -29,7 +29,12 @@ from model_intelligence.utilization import decode_decision_utilization, encode_u
 from .selection_types import EvidenceRef, ModelCatalog, ModelCatalogEntry, ModelIdentity
 
 def canonical(value: object) -> bytes:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+    def encode_set(item: object) -> list[str]:
+        if isinstance(item, frozenset) and all(isinstance(value, str) for value in item):
+            return sorted(cast(frozenset[str], item))
+        raise TypeError("mi_context_not_serializable")
+
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False, default=encode_set).encode()
 
 
 @dataclass(frozen=True)
@@ -125,11 +130,17 @@ class MIConsumer:
         with self._lock:
             return self._current, self._bindings
 
+    def admission(self, expected: CutReference, *, evaluated_at: datetime) -> MIAdmission:
+        """Opt in one independently trusted cut, never follow a mutable pointer."""
+        return MIAdmission(self.capture(), expected, instant(evaluated_at))
+
 
 def explained_catalog(
     catalog: ModelCatalog,
     captured: tuple[FrozenCut | None, tuple[ModelBinding, ...]],
     at: datetime,
+    *,
+    _admitted_limits: dict[ModelIdentity, tuple[str, int]] | None = None,
 ) -> ModelCatalog:
     """Use public evidence BEFORE selection, without changing selection authority.
 
@@ -246,11 +257,52 @@ def explained_catalog(
                         amount = values[0].amount
                         assert amount is not None
                         label = f"public {binding.meaning.split('-')[0]} {int(amount)} tokens"
+                        if _admitted_limits is not None:
+                            _admitted_limits[entry.identity] = (binding.meaning, int(amount))
                     else:
                         label = "unsupported"
         # No source-provided prose/identifiers are rendered or treated as authority.
         entries.append(replace(entry, display_name=f"{entry.display_name[:64]} [MI {label}]"))
     return replace(catalog, entries=tuple(entries))
+
+
+@dataclass(frozen=True)
+class MIAdmission:
+    """Immutable explicit opt-in for one reviewed cut and its existing bindings.
+
+    Re-evaluate at every decision instant. Retention alone is not new-use
+    authorization; a different captured cut cannot satisfy this exact reference.
+    Public limits only intersect known bootstrap limits, never fill unknowns.
+    """
+
+    captured: tuple[FrozenCut | None, tuple[ModelBinding, ...]]
+    expected: CutReference
+    evaluated_at: datetime
+
+    def prepare(self, catalog: ModelCatalog, at: datetime) -> tuple[ModelCatalog, frozenset[ModelIdentity]]:
+        if instant(at) != self.evaluated_at:
+            raise ValueError("mi_evaluation_instant_mismatch")
+        values: dict[ModelIdentity, tuple[str, int]] = {}
+        projected = explained_catalog(catalog, self.captured, at, _admitted_limits=values)
+        cut, bindings = self.captured
+        trusted = cut is not None and cut.reference == self.expected
+        bound = {binding.identity for binding in bindings}
+        blocked = bound - set(values) if trusted else bound
+        entries: list[ModelCatalogEntry] = []
+        for entry in projected.entries:
+            if trusted and entry.identity in values:
+                meaning, amount = values[entry.identity]
+                previous = entry.hard_properties.input_context_tokens if meaning == "input-allowance" else entry.hard_properties.output_tokens
+                if previous is None:
+                    blocked.add(entry.identity)
+                    entry = replace(entry, display_name=f"{entry.display_name[:64]} [MI bootstrap limit unknown]")
+                else:
+                    properties = replace(entry.hard_properties, input_context_tokens=min(previous, amount)) if meaning == "input-allowance" else replace(entry.hard_properties, output_tokens=min(previous, amount))
+                    entry = replace(entry, hard_properties=properties)
+            if entry.identity in blocked and not trusted:
+                entry = replace(entry, display_name=f"{entry.display_name[:64]} [MI untrusted cut]")
+            entries.append(entry)
+        return replace(projected, entries=tuple(entries)), frozenset(blocked)
 
 
 @dataclass(frozen=True)
