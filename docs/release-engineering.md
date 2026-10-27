@@ -23,7 +23,9 @@ platforms available. #185 owns Router's compatibility/migration proof with
 Kernel executable consumers and MI artifacts; each producer retains its
 own versions/state, with no global ontology/version or common database.
 #186 owns uncovered GHCR/Windows artifact and public-platform acceptance;
-#139 retains TLS lifecycle and #141 composed install/client execution proof.
+#224 (D-083 successor of excluded #139) retains the transport/TLS lifecycle
+and #227 (D-083 successor of excluded #141) composed install/client
+execution proof — successors, not #186 prerequisites.
 These are known required deliveries, including external decision/access
 gates, not a reason to call distribution complete.
 

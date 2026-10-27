@@ -257,11 +257,14 @@ learning from raw success percentages.
 CLI status usability (#182) does not wait for Console. Snapshot/detail/JSON/
 pipe/CI/unknown/no-color behavior must remain coherent. TUI/watch consumes
 the same contract. Router-owned state/events (#183) must support freshness,
-correlation, deduplication, reconnect and gap detection; traces are not a
-settlement ledger. Meaningful-change notifications deduplicate. Reuse/link
-the existing admin UI (#140); consumers neither read Router SQLite directly
-nor bypass command authorization. #185/#186 own cross-product compatibility
-and uncovered public artifact/platform gates, alongside #139/#141.
+correlation, deduplication, reconnect and gap detection, including the
+producer-state correctness integrated from excluded #140 (D-083); traces are
+not a settlement ledger. Meaningful-change notifications deduplicate.
+Reuse/link the existing admin UI (#226 owns the remaining admin rendering);
+consumers neither read Router SQLite directly nor bypass command
+authorization. #185/#186 own cross-product compatibility and uncovered
+public artifact/platform gates, alongside #224 (transport/TLS) and #227
+(composed acceptance), the D-083 successors of excluded #139/#141.
 
 ### Strict Non-Paid Admission (D-076)
 
@@ -1097,7 +1100,7 @@ Plain HTTP is a SUPPORTED LOCAL TRANSPORT, not an insecure-debug escape
 hatch; HTTPS/TLS remains required for traffic crossing a host trust
 boundary. The authoritative tier policy — loopback (supported, including
 host-network containers), same-host container transport under deployment
-isolation (architecturally permitted, implemented under #139, a property
+isolation (architecturally permitted, implemented under #224, a property
 of the entire composed HTTP listener rather than a per-surface mix, never
 a global non-loopback plaintext listener), cross-host/LAN/VPN/remote (TLS
 required), remote TLS UX (public CA normal, private CA advanced), and the
@@ -1126,7 +1129,7 @@ D-055's `effective_context_limit_tokens` metadata intersection. Accepted
 here and not yet implemented: the effective-limits intersection and its
 model-level aggregation (#136), the client tool round trip on the Codex
 worker source (#137), the same-host container plaintext tier including
-bridge loopback-publish support (implemented under #139), a Responses
+bridge loopback-publish support (implemented under #224), a Responses
 adapter, and Tier 3 harness evidence.
 
 ### Migration plan

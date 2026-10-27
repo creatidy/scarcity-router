@@ -6751,3 +6751,42 @@ MI #19 is now closed with installed explicit-input interoperability at MI
 `8f572c332db8290b5dad9e03f5b0f960271a8349`; that receipt does not prove real-source
 positive admission or production activation. Kernel #55 adoption remains separate.
 No MI/Kernel mutation, model inference, Daybreak, release or deployment is authorized.
+
+## D-083: Owner backlog disposition — re-homing excluded `wontfix` requirements and correcting #183/#186 prerequisites (#228, 2026-10-27)
+
+- **Status:** Accepted 2026-10-27 (direct owner directive 2026-10-27T21:19Z approving
+  the 2026-10-27 read-only reconciliation; delivery issue #228).
+- **Context:** The six historical issues #132, #139, #140, #141, #165 and #166 carry
+  exact `wontfix` labels applied 2026-10-05 with no recorded rationale. A 2026-10-27
+  evidence-based reconciliation against `develop` `4a182affa4775a4a38b47860ad7622a099c56c4a`
+  found accepted requirements still assigned to those excluded issues, and #183/#186
+  declaring prerequisites on excluded issues that `/loop` can never select. This
+  decision records a **prospective correction**; it invents no retrospective reason
+  for the 2026-10-05 labels, and all six issues remain open with their labels,
+  original text and history unchanged.
+- **Re-homing (old issue → new owner, stage, retained invariant):**
+
+  | Excluded issue | Re-homed requirement | New owner | Stage | Retained invariant |
+  | --- | --- | --- | --- | --- |
+  | #139 | D-056 tier-B same-host container transport, persisted/validated CA trust, certificate lifecycle, origin migration | #224 | implementation | No plaintext LAN/WAN; whole-composed-listener exception with proven deployment-boundary enforcement; never `verify=false`/TOFU/bypass; TLS/CSRF/credential separation unweakened |
+  | #140 | Producer-owned resource-state correctness: derived/discovered representation, honest availability/freshness, stable consistent consumer projection | #183 (scope integration) | implementation | No fabricated completeness or availability; durable restart-stable cursors, never manufactured from request-audit sequences or restart-local registry revisions |
+  | #140 | Administrator-facing remainder (derived-resources display, honest counters, state-aware remediation, revoked-worker deletion, limits visibility) | #226 | implementation | Reuse existing UI/control plane; read-only derived resources; §6 client-integration UX already delivered under D-055/D-058 is not duplicated |
+  | #141 | Composed Tier-2/Tier-3 harness and installed integration acceptance | #227 | downstream acceptance | D-056 pt 10 layered evidence; follows component implementations and artifacts; never an upstream prerequisite; live/owner gates stay separately authorized |
+  | #165 | Cancellation/disconnect defects (chunk-branch cancel propagation, SSE header-write translation in Chat Completions and Responses, suspension-emission handling) | #225 (**P1**) | implementation | Ambiguous-outcome contract preserved; no retry of ambiguous execution; no duplicate cancellation effects |
+  | #166 | None (test-infrastructure limitation only) | — | recorded | No successor absent a concrete CI failure or demonstrated product impact |
+  | #132 | None beyond the above (children A–F delivered; program framing superseded by D-056) | — | — | — |
+
+- **Dependency corrections:** native edges #183 → #140, #186 → #139 and #186 → #141
+  were removed as stale or inverted; #227 now depends on #183 and #186, matching the
+  canonical ordering (composed acceptance receives installed proof after component
+  delivery). #183's producer surface includes the state correctness formerly gated on
+  #140; #186's independently executable artifact/build work no longer waits on
+  excluded issues. Current-facing documentation was updated to reference the active
+  owners; historical decision text is not rewritten.
+- **Consequences:** `/loop` selection is no longer frozen by excluded issues; the
+  cancellation defects receive owner-declared P1 priority. This decision authorizes
+  governance changes, successor registration and continued `/loop` delivery — it does
+  NOT authorize production release, deployment, signing, live provider calls,
+  weakened security guarantees or retirement of working functionality. A new
+  read-only consumer identity or exposed network contract under #183 still requires
+  explicit security authorization.
