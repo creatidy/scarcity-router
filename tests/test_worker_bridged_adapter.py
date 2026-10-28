@@ -45,6 +45,8 @@ from scarcity_router.gateway_adapters import (  # noqa: E402
     AdapterTimeoutError,
     ClientDisconnectedError,
     ExecutionContext,
+    SuspensionHandle,
+    ToolSuspension,
 )
 from scarcity_router.gateway_coordinator import GatewayApplication  # noqa: E402
 from scarcity_router.gateway_openai import ChatCompletionRequest  # noqa: E402
@@ -56,9 +58,15 @@ from scarcity_router.worker_bridged_adapter import (
     NowFactory,
     WorkerBridgedAdapter,
 )
-from scarcity_router.worker_endpoint import PendingAttempt, WorkerEndpoint
+from scarcity_router.worker_endpoint import (
+    AttemptOutcome,
+    PendingAttempt,
+    WorkerEndpoint,
+)
 from scarcity_router.worker_identity_store import WorkerIdentityStore  # noqa: E402
 from scarcity_router.worker_protocol import (  # noqa: E402
+    ExecuteChunkMessage,
+    ExecuteToolCallMessage,
     PairResultMessage,
     StateReportAckMessage,
     ExecuteResultMessage,
@@ -757,6 +765,223 @@ def wait_until(predicate: Callable[[], bool], timeout: float = 10.0) -> bool:
             return True
         time.sleep(0.005)
     return predicate()
+
+
+class _CancelSpyAdapter(WorkerBridgedAdapter):
+    """#225 seam: records best-effort cancel notices instead of sending
+    them, so a test can assert exactly whether the worker was told."""
+
+    recorded_cancels: list[tuple[str, str]]
+
+    def __init__(self, endpoint: WorkerEndpoint) -> None:
+        super().__init__(endpoint, resource_adapter_map={RESOURCE_ID: ADAPTER_ID})
+        self.recorded_cancels = []
+
+    @override
+    def _send_cancel_best_effort(self, attempt_id: str, resource_id: str) -> None:
+        self.recorded_cancels.append((attempt_id, resource_id))
+
+    def seed_suspension(self, handle: SuspensionHandle) -> None:
+        with self._suspended_lock:
+            self._suspended[handle.continuation_token] = handle
+
+
+class _SeamCancelAdapter(_CancelSpyAdapter):
+    """Public seam over the protected wait loops: the public dispatch
+    loop cannot reach the #225 windows deterministically (the
+    top-of-loop check consumes any cancel set outside take()), so the
+    deterministic coverage drives the loops directly."""
+
+    def await_outcome(
+        self,
+        *,
+        call: AdapterCall,
+        context: ExecutionContext,
+        pending: PendingAttempt,
+        resource_id: str,
+    ) -> AdapterResult:
+        return self._await_outcome(
+            call=call, context=context, pending=pending, resource_id=resource_id
+        )
+
+    def await_resume(
+        self,
+        handle: SuspensionHandle,
+        pending: PendingAttempt,
+        context: ExecutionContext,
+    ) -> AdapterResult | ToolSuspension:
+        return self._await_resume(handle, pending, context)
+
+
+class _CancelDuringTakePending(PendingAttempt):
+    """#225 path-1 seam: the cancel event is set while take() blocks and
+    a chunk lands in that SAME take() call, so the top-of-loop check
+    never runs. The public dispatch loop cannot reach this window
+    deterministically (any cancel set outside take() is consumed by the
+    top-of-loop check), hence the scripted pending object."""
+
+    _seam_cancel_event: threading.Event
+    _seam_chunk: ExecuteChunkMessage
+    take_calls: int
+
+    def __init__(
+        self, cancel_event: threading.Event, chunk: ExecuteChunkMessage
+    ) -> None:
+        super().__init__("attempt-seam-cancel-chunk")
+        self._seam_cancel_event = cancel_event
+        self._seam_chunk = chunk
+        self.take_calls = 0
+
+    @override
+    def take(
+        self, timeout_seconds: float
+    ) -> tuple[str, ExecuteChunkMessage | ExecuteToolCallMessage | AttemptOutcome | None]:
+        self.take_calls += 1
+        if self.take_calls == 1:
+            return "timeout", None
+        self._seam_cancel_event.set()
+        return "chunk", self._seam_chunk
+
+
+class _SuspensionPending(PendingAttempt):
+    """#225 path-3 seam: one queued suspension whose streamed emission
+    meets a disconnected client."""
+
+    _seam_suspension: ExecuteToolCallMessage
+
+    def __init__(self, suspension: ExecuteToolCallMessage) -> None:
+        super().__init__(suspension.attempt_id)
+        self._seam_suspension = suspension
+
+    @override
+    def take(
+        self, timeout_seconds: float
+    ) -> tuple[str, ExecuteChunkMessage | ExecuteToolCallMessage | AttemptOutcome | None]:
+        return "suspension", self._seam_suspension
+
+
+class AdapterUncoveredCancellationTests(unittest.TestCase):
+    """#225 (successor of excluded #165): deterministic coverage for the
+    cancellation paths outside the proven established-stream path. Every
+    case asserts the worker is told to stop exactly once and the honest
+    outcome is preserved."""
+
+    world: AdapterWorld
+
+    def __init__(self, method_name: str = "runTest") -> None:
+        super().__init__(method_name)
+        self.world = cast("AdapterWorld", object())
+
+    @override
+    def setUp(self) -> None:
+        self.world = AdapterWorld()
+        self.addCleanup(self.world.close)
+
+    def test_chunk_after_in_take_cancel_sends_cancel_before_cancelled_return(self) -> None:
+        adapter = _SeamCancelAdapter(self.world.endpoint)
+        cancel_event = threading.Event()
+        context = make_context(cancel_event=cancel_event)
+        chunk = ExecuteChunkMessage(
+            attempt_id="attempt-seam-cancel-chunk",
+            chunk={"kind": "text_delta", "text": "late"},
+        )
+        result = adapter.await_outcome(
+            call=make_call(),
+            context=context,
+            pending=_CancelDuringTakePending(cancel_event, chunk),
+            resource_id=RESOURCE_ID,
+        )
+        self.assertEqual("cancelled", result.status)
+        self.assertEqual(
+            [("attempt-seam-cancel-chunk", RESOURCE_ID)], adapter.recorded_cancels
+        )
+
+    def test_resume_chunk_after_in_take_cancel_sends_cancel_and_drops_handle(self) -> None:
+        adapter = _SeamCancelAdapter(self.world.endpoint)
+        handle = SuspensionHandle(
+            continuation_token="srct-seam-resume",
+            attempt_id="attempt-seam-resume",
+            resource_id=RESOURCE_ID,
+            call_id="call-seam-1",
+            tool_name="lookup",
+        )
+        adapter.seed_suspension(handle)
+        cancel_event = threading.Event()
+        context = make_context(cancel_event=cancel_event)
+        chunk = ExecuteChunkMessage(
+            attempt_id="attempt-seam-resume",
+            chunk={"kind": "text_delta", "text": "late"},
+        )
+        result = adapter.await_resume(
+            handle, _CancelDuringTakePending(cancel_event, chunk), context
+        )
+        assert isinstance(result, AdapterResult)
+        self.assertEqual("cancelled", result.status)
+        self.assertEqual(
+            [("attempt-seam-resume", RESOURCE_ID)], adapter.recorded_cancels
+        )
+        self.assertIsNone(adapter.suspension_handle("srct-seam-resume"))
+
+    def test_initial_suspension_emission_disconnect_sends_cancel(self) -> None:
+        adapter = _SeamCancelAdapter(self.world.endpoint)
+
+        def emit(_chunk: AdapterStreamChunk) -> None:
+            raise ClientDisconnectedError()
+
+        context = ExecutionContext(
+            request_id="chatcmpl-seam-suspension",
+            deadline="2030-01-01T00:00:00.000Z",
+            emit_chunk=emit,
+            register_continuation=lambda handle, arguments: True,
+        )
+        suspension = ExecuteToolCallMessage(
+            attempt_id="attempt-seam-suspension",
+            call_id="call-seam-2",
+            name="lookup",
+            arguments="{}",
+        )
+        with self.assertRaises(ClientDisconnectedError):
+            _ = adapter.await_outcome(
+                call=make_call(),
+                context=context,
+                pending=_SuspensionPending(suspension),
+                resource_id=RESOURCE_ID,
+            )
+        self.assertEqual(
+            [("attempt-seam-suspension", RESOURCE_ID)], adapter.recorded_cancels
+        )
+
+    def test_sequential_suspension_emission_disconnect_sends_cancel(self) -> None:
+        adapter = _SeamCancelAdapter(self.world.endpoint)
+        handle = SuspensionHandle(
+            continuation_token="srct-seam-seq",
+            attempt_id="attempt-seam-seq",
+            resource_id=RESOURCE_ID,
+            call_id="call-seam-3",
+            tool_name="lookup",
+        )
+        adapter.seed_suspension(handle)
+
+        def emit(_chunk: AdapterStreamChunk) -> None:
+            raise ClientDisconnectedError()
+
+        context = ExecutionContext(
+            request_id="chatcmpl-seam-seq",
+            deadline="2030-01-01T00:00:00.000Z",
+            emit_chunk=emit,
+            register_continuation=lambda handle, arguments: True,
+        )
+        suspension = ExecuteToolCallMessage(
+            attempt_id="attempt-seam-seq",
+            call_id="call-seam-4",
+            name="lookup",
+            arguments="{}",
+        )
+        with self.assertRaises(ClientDisconnectedError):
+            _ = adapter.await_resume(handle, _SuspensionPending(suspension), context)
+        self.assertEqual(
+            [("attempt-seam-seq", RESOURCE_ID)], adapter.recorded_cancels
+        )
 
 
 _ = PendingAttempt

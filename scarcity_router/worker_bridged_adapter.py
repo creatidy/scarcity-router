@@ -211,6 +211,15 @@ class WorkerBridgedAdapter:
             if kind == "chunk":
                 chunk = self._chunk_from(cast(object, payload))
                 if context.cancelled:
+                    # #225: the cancel arrived while take() blocked and this
+                    # chunk landed in the same call, so the top-of-loop check
+                    # never ran -- the worker must still be told exactly once.
+                    if not cancel_sent:
+                        pending.cancel_requested = True
+                        self._send_cancel_best_effort(
+                            pending.attempt_id, resource_id
+                        )
+                        cancel_sent = True
                     return AdapterResult(status="cancelled", calls=())
                 if context.emit_chunk is not None:
                     try:
@@ -263,14 +272,28 @@ class WorkerBridgedAdapter:
                     # tool_call and the explicit tool_calls finish frame
                     # (the stable non-tool path keeps its recorded
                     # no-finish-frame shape).
-                    context.emit_chunk(
-                        AdapterStreamChunk(kind=CHUNK_TOOL_CALL, tool_call=tool_call)
-                    )
-                    context.emit_chunk(
-                        AdapterStreamChunk(
-                            kind=CHUNK_FINISH, finish_reason=FINISH_TOOL_CALLS
+                    try:
+                        context.emit_chunk(
+                            AdapterStreamChunk(
+                                kind=CHUNK_TOOL_CALL, tool_call=tool_call
+                            )
                         )
-                    )
+                        context.emit_chunk(
+                            AdapterStreamChunk(
+                                kind=CHUNK_FINISH, finish_reason=FINISH_TOOL_CALLS
+                            )
+                        )
+                    except ClientDisconnectedError:
+                        # #225: a disconnect during these early emissions
+                        # must reach the worker like the ordinary chunk
+                        # branch -- cancel before the honest rethrow.
+                        if not cancel_sent:
+                            pending.cancel_requested = True
+                            self._send_cancel_best_effort(
+                                pending.attempt_id, resource_id
+                            )
+                            cancel_sent = True
+                        raise
                 message = AdapterMessage(
                     role="assistant",
                     content=suspension.content,
@@ -450,6 +473,14 @@ class WorkerBridgedAdapter:
             if kind == "chunk":
                 chunk = self._chunk_from(cast(object, payload))
                 if context.cancelled:
+                    # #225: same in-take window as the initial leg -- send
+                    # the cancel before the honest cancelled return.
+                    if not cancel_sent:
+                        pending.cancel_requested = True
+                        self._send_cancel_best_effort(
+                            handle.attempt_id, handle.resource_id
+                        )
+                        cancel_sent = True
                     self._drop_suspension(handle.continuation_token)
                     return AdapterResult(status="cancelled", calls=())
                 if context.emit_chunk is not None:
@@ -485,21 +516,33 @@ class WorkerBridgedAdapter:
                         "the gateway cannot continue this client-tool turn"
                     )
                 if context.emit_chunk is not None and not context.cancelled:
-                    context.emit_chunk(
-                        AdapterStreamChunk(
-                            kind=CHUNK_TOOL_CALL,
-                            tool_call=AdapterToolCall(
-                                id=next_handle.continuation_token,
-                                name=suspension.name,
-                                arguments=suspension.arguments,
-                            ),
+                    try:
+                        context.emit_chunk(
+                            AdapterStreamChunk(
+                                kind=CHUNK_TOOL_CALL,
+                                tool_call=AdapterToolCall(
+                                    id=next_handle.continuation_token,
+                                    name=suspension.name,
+                                    arguments=suspension.arguments,
+                                ),
+                            )
                         )
-                    )
-                    context.emit_chunk(
-                        AdapterStreamChunk(
-                            kind=CHUNK_FINISH, finish_reason=FINISH_TOOL_CALLS
+                        context.emit_chunk(
+                            AdapterStreamChunk(
+                                kind=CHUNK_FINISH, finish_reason=FINISH_TOOL_CALLS
+                            )
                         )
-                    )
+                    except ClientDisconnectedError:
+                        # #225: the sequential leg's early emissions get the
+                        # same cancel-before-rethrow as the ordinary chunk
+                        # branch.
+                        if not cancel_sent:
+                            pending.cancel_requested = True
+                            self._send_cancel_best_effort(
+                                handle.attempt_id, handle.resource_id
+                            )
+                            cancel_sent = True
+                        raise
                 return ToolSuspension(
                     continuation_token=next_handle.continuation_token,
                     tool_name=suspension.name,

@@ -772,11 +772,17 @@ class _StreamState:
         self._started = True
         self._handler.mark_sse_committed()
         handler = self._handler
-        handler.send_response(HTTPStatus.OK.value)
-        handler.send_header("Content-Type", "text/event-stream; charset=utf-8")
-        handler.send_header("Cache-Control", "no-cache")
-        handler.send_header("Connection", "close")
-        handler.end_headers()
+        try:
+            handler.send_response(HTTPStatus.OK.value)
+            handler.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            handler.send_header("Cache-Control", "no-cache")
+            handler.send_header("Connection", "close")
+            handler.end_headers()
+        except (BrokenPipeError, ConnectionResetError, OSError) as exc:
+            # #225: a header-write failure is a client disconnect, exactly
+            # like a frame-write failure -- it must reach the coordinator's
+            # cancellation path, not the generic OSError unwind.
+            raise ClientDisconnectedError() from exc
         # OpenAI clients expect the assistant role in the first delta, and
         # every frame of one response shares one created stamp.
         self._write_frame(
@@ -916,11 +922,17 @@ class _ResponsesStreamState(_StreamState):
         if not events:
             return
         if not self._started:
-            self._handler.send_response(HTTPStatus.OK)
-            self._handler.send_header("Content-Type", "text/event-stream")
-            self._handler.send_header("Cache-Control", "no-cache")
-            self._handler.send_header("Connection", "close")
-            self._handler.end_headers()
+            try:
+                self._handler.send_response(HTTPStatus.OK)
+                self._handler.send_header("Content-Type", "text/event-stream")
+                self._handler.send_header("Cache-Control", "no-cache")
+                self._handler.send_header("Connection", "close")
+                self._handler.end_headers()
+            except (BrokenPipeError, ConnectionResetError, OSError) as exc:
+                # #225: same disconnect translation as the Chat Completions
+                # stream -- a failed header write must cancel, not unwind
+                # as a raw OSError.
+                raise ClientDisconnectedError() from exc
             self._handler.close_connection = True
             self._handler.mark_sse_committed()
             self._started = True

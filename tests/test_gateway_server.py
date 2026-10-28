@@ -27,15 +27,22 @@ from scarcity_router.gateway_adapters import (
     AdapterResult,
     AdapterStreamChunk,
     CallObservation,
+    ClientDisconnectedError,
     ExecutionContext,
 )
 from scarcity_router.gateway_contracts import GatewayLimits, hash_client_key
+from scarcity_router.gateway_responses import parse_responses_request
 from scarcity_router.gateway_server import (
     GATEWAY_ORIGIN_HEADER,
     GatewayHTTPServer,
+    GatewayRequestHandler,
     build_parser,
     load_client_key_directory,
     make_gateway_server,
+)
+from scarcity_router.gateway_server import (
+    _ResponsesStreamState as _ResponsesStreamStateBase,  # pyright: ignore[reportPrivateUsage]
+    _StreamState as _ChatStreamStateBase,  # pyright: ignore[reportPrivateUsage]
 )
 from tests.gateway_fixtures import (
     CLIENT_KEY,
@@ -44,6 +51,7 @@ from tests.gateway_fixtures import (
     audit_records,
     chunkless_behavior,
     make_application,
+    parse_chat_request,
     tool_call_behavior,
 )
 
@@ -732,6 +740,63 @@ class StartupBoundaryTests(unittest.TestCase):
     def test_parser_requires_client_keys(self) -> None:
         with self.assertRaises(SystemExit):
             _ = build_parser().parse_args([])
+
+
+class _HeaderWriteFailureHandler(GatewayRequestHandler):
+    """#225 path-2 seam: the SSE header flush fails on a gone client."""
+
+    @override
+    def send_response(self, code: int, message: str | None = None) -> None:
+        raise BrokenPipeError("client disconnected during header emission")
+
+
+class _SeamChatStream(_ChatStreamStateBase):
+    """Public seam over the protected header path for #225 coverage."""
+
+    def begin(self) -> None:
+        self._begin()
+
+
+class _SeamResponsesStream(_ResponsesStreamStateBase):  # pyright: ignore[reportGeneralTypeIssues]
+    """Public seam over the Responses header path for #225 coverage.
+
+    The production class is ``@final``; this test-only subclass changes
+    no behavior and exists only to expose the protected header path
+    deterministically (the public emit path needs a live socket and
+    internal event sequencing to reach it)."""
+
+    def write_events(self, events: tuple[dict[str, object], ...]) -> None:
+        self._write_events(events)
+
+
+def _header_failure_handler() -> GatewayRequestHandler:
+    # BaseHTTPRequestHandler.__init__ needs a live socket pair; the seam
+    # only exercises the header-emission path, which never touches it.
+    return cast(GatewayRequestHandler, object.__new__(_HeaderWriteFailureHandler))
+
+
+class SseHeaderDisconnectTests(unittest.TestCase):
+    """#225 (successor of excluded #165): an SSE header-write failure is
+    a client disconnect and must surface as ClientDisconnectedError so
+    the coordinator's cancellation path engages, for Chat Completions and
+    Responses alike. Previously it escaped the generic unwind as a raw
+    OSError and the worker was never told to stop."""
+
+    def test_chat_completions_header_write_failure_is_client_disconnected(self) -> None:
+        request = parse_chat_request(
+            {"model": "deep-coding", "messages": [{"role": "user", "content": "hi"}]}
+        )
+        state = _SeamChatStream(handler=_header_failure_handler(), request=request)
+        with self.assertRaises(ClientDisconnectedError):
+            state.begin()
+
+    def test_responses_header_write_failure_is_client_disconnected(self) -> None:
+        request = parse_responses_request(
+            {"model": "deep-coding", "input": "hello", "store": False}
+        )
+        state = _SeamResponsesStream(handler=_header_failure_handler(), request=request)
+        with self.assertRaises(ClientDisconnectedError):
+            state.write_events(({"type": "response.created"},))
 
 
 if __name__ == "__main__":
