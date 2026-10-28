@@ -98,14 +98,27 @@ git diff --check
 make package-check    # builds wheel + sdist, inspects contents/metadata,
                       # smoke-installs the wheel into a throwaway uv tool
                       # environment (console scripts, packaged resources, MCP
-                      # discovery, loopback REST healthz)
+                      # discovery, loopback REST healthz), seeds synthetic
+                      # operator state through the installed APIs, replaces
+                      # the wheel in place (uv tool install --force) with
+                      # retention proof, then uninstalls the tool and proves
+                      # the operator state is retained
 ```
 
 `make package-check` (`tools/package_check.py`) validates the distributable
 package, not only the source checkout: missing packaged files, invalid
 metadata, broken entry points, undeclared runtime dependencies and accidental
-dependencies on repository-relative files all fail the job. It contacts no
-provider and never publishes anything.
+dependencies on repository-relative files all fail the job. Its isolated
+lifecycle (issue #186) proves a fresh install, a same-version local-wheel
+replacement (reinstall of the exact same wheel — explicitly NOT an
+old-release→new-release upgrade, of which none can exist before the first
+release) with synthetic user selector policy and server-store configuration
+record retained, and an uninstall that removes the tool while the operator
+state is deliberately retained (no purge). It proves nothing about Windows
+execution, services, global trust stores, signatures or publication. Build
+and install subprocesses run on a deliberate environment allowlist, never a
+wholesale ambient environment. It contacts no provider and never publishes
+anything.
 
 Determinism and supply-chain discipline:
 
