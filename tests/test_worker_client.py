@@ -669,8 +669,10 @@ class ScriptedCliRuntime:
         self._stores: list[CloseCountingStore] = stores or []
         self.closes_when_run_started: int | None = None
 
-    def pair(self, pairing_code: str) -> WorkerLocalIdentity:
-        _ = pairing_code
+    def pair(
+        self, pairing_code: str, *, ca_trust: object = None
+    ) -> WorkerLocalIdentity:
+        _ = pairing_code, ca_trust
         if self._pair_error is not None:
             raise self._pair_error
         assert self._pair_result is not None
@@ -696,17 +698,12 @@ def scripted_runtime_factory(
     run_result: str = "requested",
     run_error: Exception | None = None,
     made: list[ScriptedCliRuntime] | None = None,
-) -> Callable[[WorkerOrigin, WorkerLocalStore, object], ScriptedCliRuntime]:
+) -> Callable[..., ScriptedCliRuntime]:
     """A ``WorkerRuntime`` constructor seam handing out scripted runtimes."""
 
     created: list[ScriptedCliRuntime] = made if made is not None else []
 
-    def factory(
-        origin: WorkerOrigin,
-        store: WorkerLocalStore,
-        local_adapters: object = None,
-    ) -> ScriptedCliRuntime:
-        _ = origin, store, local_adapters
+    def factory(**_kwargs: object) -> ScriptedCliRuntime:
         runtime = ScriptedCliRuntime(
             pair_result=pair_result,
             pair_error=pair_error,

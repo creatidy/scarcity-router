@@ -249,7 +249,43 @@ semantics and changes nothing else:
   the server issues a new per-device credential (`credential_rotated`),
   invalidates the old one immediately, and the worker persists it. The
   administrator seam can also rotate out of band
-  (`WorkerAdminService.rotate_worker_credential`).
+  (`WorkerAdminService.rotate_worker_credential`). Rotation rewrites
+  only the identity row; the local CA trust below is untouched.
+- **Worker-local private CA trust (optional; issue #224 scope 2).**
+  When the server certificate is issued by a private CA, the operator
+  passes `--ca-cert PATH` (worker `pair`/`run`; the packaged Windows
+  `pair`). The file must be a bounded, readable, regular,
+  certificates-only PEM document — binary, oversize, non-regular,
+  corrupt and private-key-bearing files fail closed before any network
+  use, and error messages never echo the path or file content. The
+  CANONICAL absolute path (never the certificate contents) is stored as
+  one bounded, explicitly versioned JSON row in the EXISTING worker
+  store, bound to the exact origin it was paired for; it never applies
+  to a different explicit `--server` target. The trust SUPPLEMENTS the
+  default verified context (platform roots stay loaded;
+  `CERT_REQUIRED` and hostname checking unchanged) — it is not pinning,
+  not TOFU, not a system-trust-store mutation, and no
+  `SSL_CERT_FILE`/environment mechanism exists. Successful pairing
+  persists identity and applicable trust in ONE SQLite transaction, so
+  a consumed pairing code can never leave a mismatched identity/CA
+  pair; `run --ca-cert` persists new trust only AFTER a verified,
+  authenticated session with the paired origin (a failed connect/auth
+  keeps the previous working trust; if the post-auth local write fails,
+  the validated session remains alive and emits a redacted diagnostic
+  rather than claiming persistence; an ephemeral `--server` override
+  targeting another origin never rebinds stored trust). Every
+  (re)connect revalidates the file: removed or changed-to-invalid trust
+  fails closed; a legitimately rotated file reloads. Unpairing
+  (`clear_identity`) removes identity AND trust together.
+  **Compatibility:** the store schema stays version 1 — the record is
+  one additional `worker_state` key older software does not read, and
+  because the CA only ever ADDS trust to the default verified context,
+  old software (or a removed row) behaves exactly as before; ignoring
+  the record cannot bypass verification. The generated systemd user
+  unit consumes the stored trust automatically through the ordinary
+  `run` command (install validates it before writing the unit); the
+  Windows first-run GUI has no CA field, so the first private-CA
+  onboarding is the one explicit CLI step.
 - **Revocation.** `WorkerAdminService.revoke_worker` (M09 seam) revokes
   the identity and closes its live sessions immediately; the next
   connection is rejected with `credential_revoked`.

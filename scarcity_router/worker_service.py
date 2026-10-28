@@ -88,9 +88,16 @@ origin ``run`` would use. No secret enters the unit file, the CLI
 output, or any error message; ``systemctl``/``loginctl`` are the only
 subprocesses, with no credential-bearing arguments.
 
-Custom CA configuration is deliberately absent: child G (#139) persists
-CA trust through the supported worker configuration; unit files never
-carry ad-hoc ``SSL_CERT_FILE`` shell hacks.
+Custom CA trust (issue #224 scope 2, D-083 successor of the excluded
+#139) is WORKER-LOCAL PERSISTED STATE, never unit configuration: the
+origin-bound, validated CA record lives in the worker's private store and
+the generated unit consumes it automatically because its ``run`` command
+reads the store — the unit itself carries no CA material, no CA path and
+no ad-hoc ``SSL_CERT_FILE`` shell hacks. Install validates the stored
+trust BEFORE any unit write or systemctl side effect (a missing or
+invalid CA file refuses installation); ``status``/``restart`` keep the
+no-store discipline and the running worker revalidates the file at every
+(re)connect.
 
 Non-goals (issue #138): Windows service mechanics (the M10 tray remains
 the Windows path), root/system units, our own daemonizing logic, and
@@ -112,6 +119,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import cast
 
+from .worker_ca_trust import effective_stored_ca_path, validate_ca_cert_file
 from .worker_identity_store import canonical_home, open_private_state_dir, open_trusted_worker_directory
 from .worker_local_store import WorkerLocalStore, default_worker_state_dir, zcode_state_home
 
@@ -1272,6 +1280,15 @@ def install_service(
         store = open_store(str(state_dir))
         try:
             identity = store.load_identity()
+            # The stored origin-bound CA trust (issue #224 scope 2):
+            # read here, WITH the identity, so install can validate it
+            # before anything is written. A malformed record fails
+            # closed below through the same typed path.
+            stored_ca = (
+                effective_stored_ca_path(store, identity.server_origin)
+                if identity is not None
+                else None
+            )
         finally:
             store.close()
     finally:
@@ -1284,6 +1301,12 @@ def install_service(
             file=sys.stderr,
         )
         return 2
+    if stored_ca is not None:
+        # The unit's ``run`` consumes the stored trust automatically, so
+        # the service would start against THIS file: validate it now —
+        # before any unit write, daemon-reload or systemctl side effect.
+        # A removed/corrupt/oversize CA file refuses installation.
+        _ = validate_ca_cert_file(stored_ca)
     selection = ServiceSelection.from_arguments(arguments)
     # Daybreak blocker: every filesystem-valued argument resolves ONCE,
     # here, to the canonical absolute path that is both validated and

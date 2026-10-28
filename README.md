@@ -505,9 +505,40 @@ Unsafe directories are never silently repaired, and no group/world-
 writable non-sticky ancestor or symlinked unit-directory chain is
 accepted.
 The normal missing default state/config trees are provisioned privately
-through trusted parents. Custom CA trust is not configured through the unit (see the
-TLS/certificate lifecycle when that ships; unit files never carry
-`SSL_CERT_FILE` workarounds).
+through trusted parents.
+
+**Private CA trust (optional, worker-local).** When the server's
+certificate is issued by a private certificate authority, pass its
+certificates-only PEM file explicitly once at pairing (or on a
+foreground run):
+
+```bash
+scarcity-router-worker pair --server srws://SERVER-HOST:8790 --code CODE \
+  --ca-cert /path/to/server-ca.pem
+```
+
+The file is validated before any network use (regular, size-bounded,
+certificates-only PEM — a private key is never adopted), its canonical
+absolute path is stored origin-bound in the worker's private state
+directory (never the certificate contents), and the trust only ever
+SUPPLEMENTS the normal verified-TLS platform roots — there is no
+certificate pinning, no verification bypass and no `SSL_CERT_FILE`
+environment hack anywhere. The installed service consumes the stored
+trust automatically through the ordinary `run` command (`service
+install` validates it first and refuses to write a unit against a
+missing or invalid CA file). A foreground `run --ca-cert PATH`
+re-validates the file on every (re)connect — a removed or changed file
+fails closed, a legitimately rotated one reloads — and, after a
+verified, authenticated session with the PAIRED origin, persists the
+new trust for later default service use; a failed connect or
+authentication keeps the previous working trust. If the local trust-row
+write itself fails after that validated session, the worker keeps the
+validated session alive and emits a redacted diagnostic; it does not
+claim that the new trust was persisted. Re-pairing with a new
+`--ca-cert` rotates the trust; unpairing clears it. Stored trust never
+applies to a different explicit `--server` target, and the Windows
+first-run GUI has no CA field: the first private-CA onboarding is the
+one explicit CLI step above.
 
 #### Foreground run (debugging)
 

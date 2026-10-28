@@ -63,6 +63,7 @@ from pathlib import Path
 from typing import Protocol, TypeVar, runtime_checkable
 
 from . import worker_setup
+from .worker_ca_trust import WorkerCaTrust, validate_ca_cert_file
 from .worker_client import (
     ConnectFactory,
     WorkerConfigError,
@@ -71,7 +72,10 @@ from .worker_client import (
     WorkerRuntimeError,
     build_local_adapter_registry,
     build_parser,
+    ca_connect_factory,
     open_worker_store,
+    origin_key,
+    resolve_run_trust,
 )
 from .worker_local_store import WorkerLocalStore
 from .worker_protocol import WorkerProtocolError
@@ -781,11 +785,40 @@ def build_runtime(
     never mutated at runtime. A malformed stored document raises the
     typed setup error — the tray surfaces the failure and the settings
     dialog is the recovery path (fail closed, never a guess).
+
+    The tray consumes a stored origin-bound private CA through the SAME
+    shared helpers the CLI ``run`` uses (:func:`resolve_run_trust`'s
+    stored-trust half): no second TLS stack, and the per-(re)connect
+    runtime construction naturally revalidates the CA file (removed or
+    changed trust fails closed, a rotated file reloads).
     """
     settings = load_worker_settings(store)
     arguments = effective_arguments(cli_arguments, settings)
     registry = build_local_adapter_registry(arguments, state_dir)
-    return WorkerRuntime(origin=origin, store=store, local_adapters=registry)
+    ca_argument = cli_arguments.get("ca_cert")
+    explicit_ca = (
+        str(validate_ca_cert_file(ca_argument))
+        if isinstance(ca_argument, str) and ca_argument
+        else None
+    )
+    connect_factory, pending_trust = resolve_run_trust(
+        store, origin, explicit_ca
+    )
+    expected_identity = store.load_identity() if pending_trust is not None else None
+
+    def persist_validated_trust() -> None:
+        if pending_trust is not None:
+            store.save_ca_trust(
+                pending_trust, expected_identity=expected_identity
+            )
+
+    return WorkerRuntime(
+        origin=origin,
+        store=store,
+        local_adapters=registry,
+        connect_factory=connect_factory,
+        session_accepted=persist_validated_trust,
+    )
 
 
 @runtime_checkable
@@ -914,6 +947,20 @@ def _packaged_pair(rest: list[str], *, connect_factory: ConnectFactory | None) -
     store = open_worker_store(state_dir)
     try:
         origin = WorkerOrigin.parse(str(arguments["server"]))
+        # An explicit --ca-cert is honored on the packaged CLI exactly
+        # like the console script (validated BEFORE the network; never
+        # silently ignored). The first-run GUI has no CA field — the
+        # first private-CA onboarding is this one explicit CLI step.
+        ca_argument = arguments.get("ca_cert")
+        ca_trust: WorkerCaTrust | None = None
+        if isinstance(ca_argument, str) and ca_argument:
+            ca_path = validate_ca_cert_file(ca_argument)
+            if connect_factory is None:
+                connect_factory = ca_connect_factory(str(ca_path))
+            ca_trust = WorkerCaTrust(
+                server_origin=origin_key(origin),
+                ca_path=str(ca_path),
+            )
         identity = worker_setup.pair_worker(
             origin,
             str(arguments["code"]),
@@ -922,6 +969,7 @@ def _packaged_pair(rest: list[str], *, connect_factory: ConnectFactory | None) -
                 str(arguments["label"]) if arguments.get("label") else None
             ),
             connect_factory=connect_factory,
+            ca_trust=ca_trust,
         )
     except (
         WorkerConfigError,

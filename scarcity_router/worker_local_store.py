@@ -45,6 +45,12 @@ from datetime import datetime, timezone
 from typing import final, cast
 
 from .gateway_validation import v_safe_id, v_text
+from .worker_ca_trust import (
+    WORKER_CA_TRUST_STORE_KEY,
+    WorkerCaTrust,
+    stored_ca_trust,
+    trust_to_json,
+)
 from .worker_identity_store import ensure_private_tree, open_private_state_dir
 
 WORKER_LOCAL_STORE_SCHEMA_VERSION = 1
@@ -150,6 +156,32 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+class _Transaction:
+    """One explicit ``BEGIN IMMEDIATE`` … ``COMMIT``/``ROLLBACK`` scope.
+
+    The connection runs in autocommit (``isolation_level=None``), so
+    multi-row atomicity — pairing's identity+CA-trust write, unpairing's
+    double delete — is an explicit transaction: any failure inside the
+    scope rolls BOTH writes back, never a half-written pairing.
+    """
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection: sqlite3.Connection = connection
+
+    def __enter__(self) -> None:
+        _ = self._connection.execute("BEGIN IMMEDIATE")
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        _ = exc_type, exc, traceback
+        if exc_type is None:
+            _ = self._connection.execute("COMMIT")
+        else:
+            try:
+                _ = self._connection.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass  # the connection is unusable; the original failure wins
+
+
 class WorkerLocalStore:
     """The worker's bounded local state (identity, origin, allowlist).
 
@@ -209,8 +241,9 @@ class WorkerLocalStore:
 
     # ── Identity (one atomic row) ────────────────────────────────────
 
-    def save_identity(self, identity: WorkerLocalIdentity) -> None:
-        """Persist the paired identity atomically (never half-written)."""
+    @staticmethod
+    def _identity_document(identity: WorkerLocalIdentity) -> str:
+        """Validate one identity and render its stored document."""
         _ = v_safe_id(identity.worker_id, "identity.worker_id")
         _ = v_text(identity.credential, "identity.credential", max_len=512)
         _ = v_text(identity.server_origin, "identity.server_origin", max_len=512)
@@ -219,16 +252,88 @@ class WorkerLocalStore:
             if identity.device_label is None
             else v_safe_id(identity.device_label, "identity.device_label")
         )
-        document = f"{identity.worker_id}\n{identity.credential}\n{identity.server_origin}\n{label or ''}"
-        with self._lock:
-            _ = self._connection.execute(
-                """
-                INSERT INTO worker_state (key, value, updated_at) VALUES (?, ?, ?)
-                ON CONFLICT(key) DO UPDATE SET value = excluded.value,
-                    updated_at = excluded.updated_at
-                """,
-                (WORKER_IDENTITY_KEY, document, _canonical(_utcnow())),
+        return f"{identity.worker_id}\n{identity.credential}\n{identity.server_origin}\n{label or ''}"
+
+    def _write_identity_row(self, document: str) -> None:
+        _ = self._connection.execute(
+            """
+            INSERT INTO worker_state (key, value, updated_at) VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value,
+                updated_at = excluded.updated_at
+            """,
+            (WORKER_IDENTITY_KEY, document, _canonical(_utcnow())),
+        )
+
+    def _write_ca_trust_row(self, document: str) -> None:
+        _ = self._connection.execute(
+            """
+            INSERT INTO worker_state (key, value, updated_at) VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value,
+                updated_at = excluded.updated_at
+            """,
+            (WORKER_CA_TRUST_STORE_KEY, document, _canonical(_utcnow())),
+        )
+
+    def _stored_identity_origin(self) -> str | None:
+        """Read the current identity's origin while the store lock is held."""
+        row = cast(
+            "tuple[object] | None",
+            self._connection.execute(
+                "SELECT value FROM worker_state WHERE key = ?",
+                (WORKER_IDENTITY_KEY,),
+            ).fetchone(),
+        )
+        if row is None:
+            return None
+        parts = str(row[0]).split("\n")
+        if len(parts) != 4:
+            raise ValueError("worker_local_store: the stored identity is malformed")
+        return parts[2]
+
+    def _transaction(self) -> "_Transaction":
+        """One explicit SQLite transaction (pairing-level atomicity)."""
+        return _Transaction(self._connection)
+
+    def save_identity(self, identity: WorkerLocalIdentity) -> None:
+        """Persist the paired identity atomically (never half-written).
+
+        Identity-only by design: credential rotation and ordinary
+        re-pairing must never erase the origin-bound CA trust record
+        (issue #224 scope 2); the trust row has its own writers.
+        """
+        self.save_identity_with_ca(identity, None)
+
+    def save_identity_with_ca(
+        self, identity: WorkerLocalIdentity, ca_trust: WorkerCaTrust | None
+    ) -> None:
+        """Persist identity and applicable CA trust in ONE transaction.
+
+        The pairing write: a consumed pairing code can never leave a
+        mismatched local identity/CA pair on disk — either both land or
+        neither does. ``ca_trust=None`` (pairing without ``--ca-cert``)
+        preserves any existing trust record; passing a record replaces it
+        (the explicit certificate-rotation path).
+        """
+        identity_document = self._identity_document(identity)
+        if ca_trust is not None and ca_trust.server_origin != identity.server_origin:
+            raise ValueError(
+                "worker_local_store: CA trust origin does not match identity origin"
             )
+        ca_document = None if ca_trust is None else trust_to_json(ca_trust)
+        with self._lock:
+            with self._transaction():
+                previous_origin = self._stored_identity_origin()
+                self._write_identity_row(identity_document)
+                if ca_document is not None:
+                    self._write_ca_trust_row(ca_document)
+                elif previous_origin != identity.server_origin:
+                    # A new pairing against another origin must not leave
+                    # the old origin's trust row available for a future
+                    # explicit --server override.
+                    _ = self._connection.execute(
+                        "DELETE FROM worker_state WHERE key = ?",
+                        (WORKER_CA_TRUST_STORE_KEY,),
+                    )
 
     def load_identity(self) -> WorkerLocalIdentity | None:
         """The stored identity, or ``None`` when this device is unpaired."""
@@ -255,18 +360,83 @@ class WorkerLocalStore:
         )
 
     def clear_identity(self) -> None:
-        """Forget the paired identity (unpair/re-register path)."""
+        """Forget the paired identity AND its origin-bound CA trust.
+
+        Unpairing must never leave an orphan trust record behind: a CA
+        remembered for an identity that no longer exists would be silently
+        applied to a future pairing against the same origin. Both rows go
+        in one transaction.
+        """
         with self._lock:
-            _ = self._connection.execute(
-                "DELETE FROM worker_state WHERE key = ?", (WORKER_IDENTITY_KEY,)
-            )
+            with self._transaction():
+                _ = self._connection.execute(
+                    "DELETE FROM worker_state WHERE key = ?", (WORKER_IDENTITY_KEY,)
+                )
+                _ = self._connection.execute(
+                    "DELETE FROM worker_state WHERE key = ?",
+                    (WORKER_CA_TRUST_STORE_KEY,),
+                )
 
     # ── Small configuration values ───────────────────────────────────
+
+    def save_ca_trust(
+        self,
+        trust: WorkerCaTrust,
+        *,
+        expected_identity: WorkerLocalIdentity | None = None,
+    ) -> None:
+        """Persist the CA trust record atomically (one row replacement).
+
+        The foreground-run path after a validated TLS+authenticated
+        session (issue #224 scope 2). Holds the path only — never
+        certificate contents. When ``expected_identity`` is supplied,
+        persistence also fails closed if another pairing/rotation replaced
+        the identity while that session was being authenticated.
+        """
+        document = trust_to_json(trust)
+        with self._lock:
+            with self._transaction():
+                current_origin = self._stored_identity_origin()
+                if current_origin != trust.server_origin:
+                    raise ValueError(
+                        "worker_local_store: CA trust origin does not match "
+                        + "the currently paired identity"
+                    )
+                if expected_identity is not None:
+                    current_row = cast(
+                        "tuple[object] | None",
+                        self._connection.execute(
+                            "SELECT value FROM worker_state WHERE key = ?",
+                            (WORKER_IDENTITY_KEY,),
+                        ).fetchone(),
+                    )
+                    expected_document = self._identity_document(expected_identity)
+                    if current_row is None or str(current_row[0]) != expected_document:
+                        raise ValueError(
+                            "worker_local_store: the paired identity changed "
+                            + "before CA trust persistence"
+                        )
+                self._write_ca_trust_row(document)
+
+    def load_ca_trust(self) -> WorkerCaTrust | None:
+        """The stored CA trust record, or ``None`` when none exists.
+
+        Fails closed on a malformed/unsupported record (see
+        :func:`scarcity_router.worker_ca_trust.stored_ca_trust`).
+        """
+        return stored_ca_trust(self)
 
     def save_value(self, key: str, value: str) -> None:
         checked_key = v_safe_id(key, "worker_state.key")
         if checked_key == "schema_version":
             raise ValueError("worker_local_store: schema_version is reserved")
+        if checked_key == WORKER_CA_TRUST_STORE_KEY:
+            # The trust record is versioned state with atomic writers;
+            # generic key/value writes must not be able to corrupt it.
+            raise ValueError(
+                "worker_local_store: worker_ca_trust is reserved for the "
+                + "pairing/persistence paths"
+            )
         _ = v_text(value, f"worker_state[{key}]", max_len=65536)
         with self._lock:
             _ = self._connection.execute(

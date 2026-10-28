@@ -63,6 +63,12 @@ from .gateway_adapters import AdapterResult, AdapterStreamChunk
 from .gateway_validation import v_safe_id, v_text
 from .model_inventory import ModelInventoryReport, SourceInventory
 from .resource_state import ResourceStateSnapshot, WorkerStateReport
+from .worker_ca_trust import (
+    WorkerCaTrust,
+    effective_stored_ca_path,
+    tls_context_for_worker_ca,
+    validate_ca_cert_file,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - type-only import
     from .gateway_adapters import AdapterMessage
@@ -219,7 +225,10 @@ def tls_context_for_worker() -> ssl.SSLContext:
     """The ONLY TLS client context this program creates.
 
     Verified certificates and hostname checking; no verification bypass
-    option exists (D-044).
+    option exists (D-044). The optional worker-local private CA
+    (:mod:`scarcity_router.worker_ca_trust`) starts from exactly this
+    default and only ADDS one explicit operator-provided CA — never a
+    replacement, never a bypass.
     """
     return ssl.create_default_context()
 
@@ -235,7 +244,9 @@ def tls_context_for_worker() -> ssl.SSLContext:
 SESSION_IO_TIMEOUT_SECONDS = 60.0
 
 
-def default_connect_factory(origin: WorkerOrigin) -> FrameTransport:
+def _connect_with_context(
+    origin: WorkerOrigin, context: ssl.SSLContext | None
+) -> FrameTransport:
     """TCP (+ TLS when the origin requires it) transport for one origin.
 
     The connect phase is bounded by ``create_connection``'s 10 s timeout;
@@ -245,9 +256,9 @@ def default_connect_factory(origin: WorkerOrigin) -> FrameTransport:
     raw = socket.create_connection((origin.host, origin.port), timeout=10.0)
     try:
         if origin.tls:
-            raw = tls_context_for_worker().wrap_socket(
-                raw, server_hostname=origin.host
-            )
+            if context is None:
+                context = tls_context_for_worker()
+            raw = context.wrap_socket(raw, server_hostname=origin.host)
         _ = raw.settimeout(SESSION_IO_TIMEOUT_SECONDS)
         return SocketTransport(raw)
     except BaseException:
@@ -256,6 +267,77 @@ def default_connect_factory(origin: WorkerOrigin) -> FrameTransport:
         except OSError:
             pass
         raise
+
+
+def default_connect_factory(origin: WorkerOrigin) -> FrameTransport:
+    """The platform-default verified transport (the unchanged old path)."""
+    return _connect_with_context(origin, None)
+
+
+def ca_connect_factory(ca_path: str) -> ConnectFactory:
+    """The default verified transport PLUS one explicit private CA.
+
+    The ONE CA-aware connect path, shared by pair/run/tray (no second TLS
+    stack). Every connect REVALIDATES the CA file and builds a fresh
+    context: a CA file removed or changed to something invalid fails
+    closed before any byte reaches the wire (never a cached acceptance),
+    and a legitimately rotated CA file is picked up on the next
+    (re)connect.
+    """
+    persisted_path = ca_path
+
+    def factory(origin: WorkerOrigin) -> FrameTransport:
+        if not origin.tls:
+            raise WorkerConfigError(
+                "--ca-cert requires a verified TLS origin (srws://); "
+                + "private CA trust is never used with plaintext srw://"
+            )
+        context = tls_context_for_worker_ca(persisted_path)
+        return _connect_with_context(origin, context)
+
+    return factory
+
+
+def origin_key(origin: WorkerOrigin) -> str:
+    """The canonical origin string identities and CA trust bind to."""
+    scheme = "srws" if origin.tls else "srw"
+    return f"{scheme}://{origin.host}:{origin.port}"
+
+
+def resolve_run_trust(
+    store: WorkerLocalStore,
+    origin: WorkerOrigin,
+    explicit_ca_path: str | None,
+) -> tuple[ConnectFactory, WorkerCaTrust | None]:
+    """The ``run`` trust decision: (connect factory, pending trust).
+
+    - No explicit flag and no stored trust → the plain default verified
+      factory (EXACTLY the old behavior).
+    - A stored record validated for THIS origin → the CA factory; a
+      record for a different origin is not applicable (never inherited
+      by an unrelated explicit ``--server`` target).
+    - An explicit ``--ca-cert`` overrides the stored trust for this
+      process and becomes the PENDING trust — persisted only after a
+      verified+authenticated session (the runtime's session-accepted
+      hook), and only when this run targets the PAIRED origin: an
+      ephemeral ``--server`` override pointing elsewhere must not rebind
+      stored trust or identity.
+    """
+    if explicit_ca_path is None:
+        key = origin_key(origin)
+        stored_ca = effective_stored_ca_path(store, key)
+        if stored_ca is None:
+            return default_connect_factory, None
+        return ca_connect_factory(stored_ca), None
+    key = origin_key(origin)
+    pending: WorkerCaTrust | None = None
+    stored_identity = store.load_identity()
+    if (
+        stored_identity is not None
+        and stored_identity.server_origin == key
+    ):
+        pending = WorkerCaTrust(server_origin=key, ca_path=explicit_ca_path)
+    return ca_connect_factory(explicit_ca_path), pending
 
 
 # ── The runtime ───────────────────────────────────────────────────────────────
@@ -380,6 +462,7 @@ class WorkerRuntime:
         sleep: Callable[[float], None] = time.sleep,
         clock: Callable[[], datetime] | None = None,
         max_concurrent_adapters: int = DEFAULT_MAX_CONCURRENT_ADAPTERS,
+        session_accepted: Callable[[], None] | None = None,
     ) -> None:
         self._origin: WorkerOrigin = origin
         self._store: WorkerLocalStore = store
@@ -399,6 +482,8 @@ class WorkerRuntime:
             clock if clock is not None else _utcnow
         )
         self._max_concurrent_adapters: int = max_concurrent_adapters
+        self._session_accepted: Callable[[], None] | None = session_accepted
+        self._session_accepted_fired: bool = False
         self._diagnostics: deque[Diagnostic] = deque(maxlen=MAX_DIAGNOSTICS)
         self._interrupted: deque[str] = deque(maxlen=1024)
         self._stop_event: threading.Event = threading.Event()
@@ -477,9 +562,28 @@ class WorkerRuntime:
     def stop_reason(self) -> str:
         return self._stop_reason
 
-    def pair(self, pairing_code: str) -> WorkerLocalIdentity:
-        """One-shot pairing: redeem the code and store the identity."""
+    def pair(
+        self, pairing_code: str, *, ca_trust: WorkerCaTrust | None = None
+    ) -> WorkerLocalIdentity:
+        """One-shot pairing: redeem the code, store identity (and CA trust).
+
+        The identity row and the applicable origin-bound CA trust land in
+        ONE SQLite transaction: a consumed pairing code can never leave a
+        mismatched local identity/CA pair. ``ca_trust=None`` (no
+        ``--ca-cert``) preserves any existing trust record.
+        """
         _ = v_text(pairing_code, "pairing_code", max_len=512)
+        if ca_trust is not None and ca_trust.server_origin != self._origin_key():
+            # Validate local pairing configuration before opening a
+            # transport or sending a one-time code.
+            raise WorkerConfigError(
+                "the CA trust origin does not match the pairing origin"
+            )
+        if ca_trust is not None and not self._origin.tls:
+            raise WorkerConfigError(
+                "--ca-cert requires a verified TLS origin (srws://); "
+                + "private CA trust is never used with plaintext srw://"
+            )
         transport = self._connect_factory(self._origin)
         try:
             writer = FrameWriter(transport)
@@ -509,7 +613,7 @@ class WorkerRuntime:
                 server_origin=self._origin_key(),
                 device_label=self._device_label,
             )
-            self._store.save_identity(identity)
+            self._store.save_identity_with_ca(identity, ca_trust)
             self._note("info", "pairing completed")
             return identity
         finally:
@@ -553,8 +657,7 @@ class WorkerRuntime:
     # ── Internals ────────────────────────────────────────────────────
 
     def _origin_key(self) -> str:
-        scheme = "srws" if self._origin.tls else "srw"
-        return f"{scheme}://{self._origin.host}:{self._origin.port}"
+        return origin_key(self._origin)
 
     def _backoff_or_stop(self, attempt_index: int) -> bool:
         if attempt_index + 1 >= self._reconnect.max_attempts:
@@ -620,6 +723,7 @@ class WorkerRuntime:
                 self._note("error", "unexpected handshake answer")
                 return "retry"
             self._note("info", f"session accepted at protocol v{ack.negotiated_version}")
+            self._fire_session_accepted()
         except (WorkerProtocolError, ConnectionError, TimeoutError, OSError) as exc:
             self._note("warn", f"handshake failed: {type(exc).__name__}")
             return "retry"
@@ -648,6 +752,28 @@ class WorkerRuntime:
         )
         return session.run()
 
+
+    def _fire_session_accepted(self) -> None:
+        """Run the session-accepted hook once, after TLS AND auth passed.
+
+        Issue #224 scope 2: the foreground ``run --ca-cert`` persistence
+        waits for exactly this point — the connection is verified AND the
+        stored credential was accepted — before new trust replaces known
+        working trust. The hook fires at most once per runtime; a failure
+        inside it (for example the trust row not being writable) is a
+        redacted diagnostic, never the death of an already-validated
+        session.
+        """
+        hook = self._session_accepted
+        if hook is None or self._session_accepted_fired:
+            return
+        self._session_accepted_fired = True
+        try:
+            hook()
+        except Exception as exc:  # noqa: BLE001 - persistence must not kill a validated session
+            self._note(
+                "error", f"local CA trust persistence failed: {type(exc).__name__}"
+            )
 
     def _note(self, level: str, message: str) -> None:
         self._diagnostics.append(Diagnostic(at=_canonical_now(), level=level, message=message))
@@ -1253,12 +1379,21 @@ def build_parser() -> argparse.ArgumentParser:
                           help="the one-time pairing code from the administrator")
     _ = pair.add_argument("--label", default=None, metavar="LABEL",
                           help="a short device label (safe id)")
+    _ = pair.add_argument("--ca-cert", default=None, metavar="PATH",
+                          help="trust an additional private CA (certificates-only "
+                               + "PEM file) for THIS server; validated first and "
+                               + "stored origin-bound with the identity")
     _ = pair.add_argument("--state-dir", default=None, metavar="DIR",
                           help="worker state directory (platform default when omitted)")
     run = commands.add_parser("run", help="connect and serve (reconnecting; the foreground debugging form of the service)")
     _ = run.add_argument("--server", default=None, metavar="URL",
                          help="server origin (stored value when omitted)")
     _ = run.add_argument("--label", default=None, metavar="LABEL")
+    _ = run.add_argument("--ca-cert", default=None, metavar="PATH",
+                         help="trust an additional private CA (certificates-only "
+                              + "PEM file) for this run; persisted for later "
+                              + "service use only after a verified, "
+                              + "authenticated session with the paired origin")
     _add_selection_arguments(run)
     login = commands.add_parser(
         "codex-login",
@@ -1567,8 +1702,22 @@ def main(argv: list[str] | None = None) -> int:
             # ``runtime.run()`` to finish.
             if command == "pair":
                 origin = WorkerOrigin.parse(str(arguments["server"]))
-                runtime = WorkerRuntime(origin=origin, store=store)
-                identity = runtime.pair(str(arguments["code"]))
+                # The CA file is validated BEFORE any network use; an
+                # invalid file fails the command with the old identity,
+                # settings and trust untouched.
+                ca_argument = arguments.get("ca_cert")
+                connect_factory: ConnectFactory = default_connect_factory
+                ca_trust: WorkerCaTrust | None = None
+                if isinstance(ca_argument, str) and ca_argument:
+                    ca_path = validate_ca_cert_file(ca_argument)
+                    connect_factory = ca_connect_factory(str(ca_path))
+                    ca_trust = WorkerCaTrust(
+                        server_origin=origin_key(origin), ca_path=str(ca_path)
+                    )
+                runtime = WorkerRuntime(
+                    origin=origin, store=store, connect_factory=connect_factory
+                )
+                identity = runtime.pair(str(arguments["code"]), ca_trust=ca_trust)
                 print(f"paired as {identity.worker_id}; identity stored")
                 return 0
             if command == "codex-login":
@@ -1664,6 +1813,19 @@ def main(argv: list[str] | None = None) -> int:
                         print("worker: not paired; run the pair command first", file=sys.stderr)
                         return 2
                     origin = WorkerOrigin.parse(stored.server_origin)
+                # Validate an explicit CA file BEFORE the state-directory
+                # lock and any network use; an invalid file fails with
+                # every stored state untouched.
+                run_ca_argument = arguments.get("ca_cert")
+                explicit_ca: str | None = None
+                if isinstance(run_ca_argument, str) and run_ca_argument:
+                    explicit_ca = str(validate_ca_cert_file(run_ca_argument))
+                connect_factory, pending_trust = resolve_run_trust(
+                    store, origin, explicit_ca
+                )
+                expected_identity = (
+                    store.load_identity() if pending_trust is not None else None
+                )
                 state_dir = (
                     str(arguments["state_dir"]) if arguments.get("state_dir") else None
                 )
@@ -1683,7 +1845,24 @@ def main(argv: list[str] | None = None) -> int:
                     # directory (issue #138).
                     print(f"worker: {exc}", file=sys.stderr)
                     return 2
-                runtime = WorkerRuntime(origin=origin, store=store, local_adapters=registry)
+
+                def persist_validated_trust() -> None:
+                    # Fired by the runtime ONLY after this run's TLS was
+                    # verified AND the stored credential accepted: known
+                    # working trust is never clobbered by a failed
+                    # connect/auth attempt.
+                    if pending_trust is not None:
+                        store.save_ca_trust(
+                            pending_trust, expected_identity=expected_identity
+                        )
+
+                runtime = WorkerRuntime(
+                    origin=origin,
+                    store=store,
+                    local_adapters=registry,
+                    connect_factory=connect_factory,
+                    session_accepted=persist_validated_trust,
+                )
                 restore_handlers = install_stop_signal_handlers(runtime)
                 try:
                     reason = runtime.run()
@@ -1762,10 +1941,13 @@ __all__ = [
     "WorkerRuntimeError",
     "build_parser",
     "build_local_adapter_registry",
+    "ca_connect_factory",
     "default_connect_factory",
     "install_stop_signal_handlers",
     "main",
     "open_worker_store",
+    "origin_key",
+    "resolve_run_trust",
     "tls_context_for_worker",
 ]
 
