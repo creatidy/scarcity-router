@@ -60,13 +60,17 @@ not automatically relabeled or migrated. See D-073 and the authority matrix in
 Console/CLI consume Router-owned authorized state and forward commands to
 Router; they must not read its SQLite state, carry a copied inventory/ranker
 or bypass administrator/inference-client/worker boundaries. Reuse/link this
-admin UI rather than reproducing its privileged views (#140).
+admin UI rather than reproducing its privileged views (#226 owns the
+remaining admin rendering; producer state is #183 under D-083).
 
 Existing polling/state/export/audit and worker reconnect do not prove a
 Console event contract. #183 owns evidence and any missing producer support
 for freshness, correlation, deduplication, reconnect, history-gap detection,
-resynchronization and meaningful-change notifications; #185 owns compatible
-artifact/version transitions. No new transport/API is accepted here.
+resynchronization and meaningful-change notifications, including the
+producer-state correctness integrated from excluded #140 (D-083); #185 owns
+compatible artifact/version transitions. No new transport/API is accepted
+here. A new read-only consumer identity or exposed network contract requires
+explicit security authorization (D-083).
 Request audit/trace export is diagnostics, not a settlement ledger. CLI
 status UX (#182) is independent of Console delivery and retains JSON/pipe/
 CI/unknown/no-color behavior.

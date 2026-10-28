@@ -17,8 +17,9 @@ was authorized or run. Later continuation/reasoning/ZCode/login/telemetry
 work does not automatically close any original live/platform gate. PR #161
 records a separate historical ZCode sentinel edit, not Kernel integration.
 
-Known unclosed acceptance has actual owners: #139 TLS lifecycle; #141
-composed program/real client and Codex acceptance; #186 public artifacts and
+Known unclosed acceptance has actual owners: #224 transport/TLS lifecycle
+(D-083 successor of excluded #139); #227 composed program/real client and
+Codex acceptance (D-083 successor of excluded #141); #186 public artifacts and
 Windows/platform gates; #174/#175/#179/#180/#181 cross-product route/quality/
 identity/authority/protocol proofs; #185 version/migration conformance. Green
 synthetic tests or a documentary review do not establish READY_FOR_LIVE_TASK,

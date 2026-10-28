@@ -393,11 +393,11 @@ reasoning-dialect layer below is the precedent).
 | Structured output | `response_format` text/`json_object`/`json_schema`, matrix-gated | Implemented |
 | Max output semantics | effective output ceiling = model ∩ channel ∩ administrator allowance; honest, visible, rejection-based; a channel without an output-limit control normalizes away only a non-binding requested limit (audited) and rejects a binding one (`output_limit_unenforceable`) | Implemented (#136/D-058) |
 | Context capability | effective context = model ∩ channel ∩ administrator allowance; UNKNOWN never guessed | Implemented (#136/D-058; D-055 metadata) |
-| Cancellation | propagates to the backend where the channel supports it; client disconnects detected | Implemented |
+| Cancellation | propagates to the backend where the channel supports it; client disconnects detected; residual paths tracked in #225 (P1) | Implemented |
 | Usage | provider-reported vs estimated kept distinct (`usage_source`) | Implemented |
 | Typed errors | closed OpenAI-compatible vocabulary; fail-closed semantics | Implemented |
 | Authentication | one bearer client key per inference identity (D-044) | Implemented |
-| Transport security | loopback plain HTTP supported (incl. host-network containers); same-host container tier accepted, implemented under #139, applies to the whole composed listener; TLS required otherwise (D-056) | Partially implemented |
+| Transport security | loopback plain HTTP supported (incl. host-network containers); same-host container tier accepted, implemented under #224, applies to the whole composed listener; TLS required otherwise (D-056) | Partially implemented |
 
 The client-owned tool lifecycle (D-056):
 
@@ -627,7 +627,7 @@ configuration export represents.
   supported in plaintext — published traffic reaches the container on a
   non-loopback interface, where a plaintext bind is refused — and
   belongs to the accepted container-transport tier, implemented under
-  #139. A non-loopback bind requires explicit TLS (`--tls-certfile`/
+  #224. A non-loopback bind requires explicit TLS (`--tls-certfile`/
   `--tls-keyfile`) and is refused otherwise; there is no plaintext
   non-loopback mode and no `verify=false` anywhere. When the container
   tier lands it will be an explicitly bounded deployment mode applying

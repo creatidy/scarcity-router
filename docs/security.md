@@ -360,9 +360,11 @@ from [`docs/decisions.md`](decisions.md) D-056:
   loopback port (`-p 127.0.0.1:8787:8787`) is NOT currently supported in
   plaintext — the published traffic reaches the container on a
   non-loopback interface, where a plaintext bind is refused — and is part
-  of the accepted container tier in B, implemented under #139.
+  of the accepted container tier in B, implemented under #224 (D-083
+  successor of excluded #139).
 - **B. Same-host container transport — architecturally permitted, NOT
-  implemented; implementation assigned to existing child #139.** Plaintext
+  implemented; implementation assigned to #224 (D-083 successor of
+  excluded #139).** Plaintext
   HTTP between containers on one physical host is permitted only where
   deployment isolation makes the transport host-local and non-routable
   from external networks: a dedicated Docker network, an `internal: true`
@@ -373,7 +375,7 @@ from [`docs/decisions.md`](decisions.md) D-056:
   address INSIDE the container in that explicit mode (today's code refuses
   any non-loopback plaintext bind); what is forbidden is a general/default
   non-loopback plaintext bind with no deployment-boundary enforcement —
-  #139's implementation must prove the deployment remains host-local and
+  #224's implementation must prove the deployment remains host-local and
   fail closed when the bounded mode is not explicitly selected. The tier
   applies to the ENTIRE COMPOSED HTTP LISTENER, never a
   per-surface mix: the server component serves execution,
@@ -398,7 +400,7 @@ from [`docs/decisions.md`](decisions.md) D-056:
   automated renewal (for example
   `https://scarcity-router.creatidy.com:8787`); a private CA is a supported
   advanced option and is never required for ordinary localhost operation
-  (issue #139 implements the lifecycle). Never introduced in any tier:
+  (issue #224 implements the lifecycle). Never introduced in any tier:
   `verify=false`, certificate-verification bypass, trust-on-first-use, or
   silent HTTPS→HTTP fallback; a scheme change is explicit.
 - **E. Worker transport — unchanged.** These tiers govern CLIENT traffic
