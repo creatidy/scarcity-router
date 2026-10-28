@@ -66,7 +66,7 @@ Every capability in this document carries exactly one status:
 | Public releases, downloadable artifacts | GitHub Releases via the mirror | Configured externally (workflow is implemented; requires owner actions to fire) |
 | PyPI publication | Trusted Publishing (OIDC) via the release workflow | Configured externally |
 | Build provenance | Sigstore-backed GitHub artifact attestations | Implemented now |
-| Server OCI images on GHCR | Future publish job in `.github/workflows/release.yml` (the image definition is in-tree, unpublished) | Future contract |
+| Server OCI images on GHCR | `build-server-image` + `publish-ghcr` jobs in `.github/workflows/release.yml` (image built from the committed `Dockerfile`, offline-verified, pushed only on the tag event; `linux/amd64`) | Implemented now (workflow; live GHCR publication is a recorded gate — no image has ever been pushed) |
 | Windows worker package (portable ZIP) | `build-windows-worker` job in `.github/workflows/release.yml` | Implemented now (workflow; live runner acceptance is a recorded gate) |
 | Windows worker MSIX (signed) | MSIX seam in the same job | External gate (`WINDOWS_CODE_SIGNING`) |
 | Custom Linux package repositories (apt/RPM/pacman), second CI platform, other registries | — | Not yet supported (deliberately) |
@@ -250,59 +250,106 @@ run modes in one workflow:
 - **Manual release-candidate preflight** — `workflow_dispatch` from a
   selected branch/commit: it builds and verifies EVERY public artifact
   (wheel, sdist, the Windows worker ZIP on a real Windows runner, the
-  finalized attested bundle, `SHA256SUMS`) and records the candidate
+  linux/amd64 server image with its isolated smoke, the finalized attested
+  bundle, `SHA256SUMS`) and records the candidate
   identity (ref, exact SHA, package version) — and publishes NOTHING: no
-  PyPI upload, no GitHub Release, no tag, no push. The first real execution
-  of the Windows build therefore never has to be the irreversible release
+  PyPI upload, no GitHub Release, no GHCR push, no tag, no push. The first
+  real execution of the Windows build or the image build therefore never
+  has to be the irreversible release
   run. The strict tag/main/version contract is not relaxed for candidates;
   it simply does not apply to a run that never claims to be a release (a
   dispatched run from a tag ref is refused).
 
 Publication ORDERING is fail-safe by construction — every public artifact,
-including the Windows ZIP, is built, verified and finalized into the
-attested bundle BEFORE the GitHub Release is created, and the irreversible
+including the Windows ZIP and the server image, is built and verified
+BEFORE any publication; the GitHub Release and the GHCR image push are both
+tag-event-only and both strictly downstream of the finalized bundle AND the
+verified image; the irreversible
 PyPI publication runs strictly LAST:
 
 ```text
 verify-release-contract        (tag invariants | candidate identity)
-        |                   |
-        v                   v
-      build       build-windows-worker
-        \                   /
-         \                 /
-          v               v
-          finalize-release-bundle
-                    |
-                    v
-          publish-github-release        (tag event only)
-                    |
-                    v
-              publish-pypi               (tag event only)
+        |
+        v
+      build
+      /   \
+     v     v
+build-windows-worker    build-server-image
+        |                    |
+        v                    |
+  finalize-release-bundle    |
+        |                    |
+        +---------+----------+
+                  v
+  [publish-github-release, publish-ghcr]     (tag event only)
+                  |
+                  v
+             publish-pypi               (tag event only, strictly LAST)
 ```
 
-Both publishing jobs carry `if: github.event_name == 'push'`, so a manual
-candidate run stops after finalization and attestation. Six jobs:
+Each publication job requires BOTH the finalized bundle AND the verified
+server image (`build-server-image` joins the two publications directly;
+`finalize-release-bundle` needs only the Python and Windows builds). All
+three publication jobs carry `if: github.event_name == 'push'`, so a manual
+candidate run stops after the builds, finalization and attestation. Eight
+jobs:
 
 | Job | Needs | Permissions | Does |
 | --- | --- | --- | --- |
 | `verify` | — | `contents: read` | tag event: checks out the tag with full history and enforces invariants 1–3; dispatch: records the candidate identity (ref, SHA, version) and refuses a tag ref |
 | `build` | verify | `contents: read`, `id-token: write`, `attestations: write` | builds and smoke-installs the artifacts from the exact commit under run (`make package-check`), writes the PARTIAL `SHA256SUMS` (wheel and sdist entries), verifies the payload set, attests the wheel and the sdist (artifacts whose bytes are final at this stage), and uploads two structurally separated artifacts: `pypi-packages` (only `*.whl`/`*.tar.gz`) and `release-bundle` (distributions plus the partial `SHA256SUMS`) |
 | `build-windows-worker` | build | `contents: read` | on a Windows runner, from the exact commit under run: builds the one-dir PyInstaller worker (`packaging/windows/worker.spec`, a committed source file), stages `scarcity-worker-X.Y.Z-windows-x64.zip` and uploads the `windows-worker` artifact. The MSIX direction is a fail-closed seam behind the owner's signing secret (`EXTERNAL_RELEASE_GATE: WINDOWS_CODE_SIGNING`) |
+| `build-server-image` | build | `contents: read` (no write permission — the publication identity exists only in `publish-ghcr`) | from the exact commit under run: builds the committed `Dockerfile` as one `linux/amd64` image with `org.opencontainers.image.version`/`revision`/`created` labels, verifies the built platform and identity labels offline, smoke-runs the composed server in an isolated container (read-only root filesystem, tmpfs `/tmp`, an ephemeral IN-MEMORY tmpfs `/data` owned by the container's non-root uid/gid 10001 with mode 0700 — a host bind would be runner-owned and unwritable for the server, dropped capabilities, no privilege, no published ports; the only request ever made is `GET /healthz`), then saves the tested image with its SHA-256 checksum and a provenance record (version, revision, platform, image id) into the `server-image` artifact — a same-run intermediate that never enters the GitHub Release asset set or the PyPI payload |
 | `finalize-release-bundle` | build, build-windows-worker | `contents: read`, `id-token: write`, `attestations: write` | the only stage that knows every public payload: completes `SHA256SUMS` (the worker zip entry joins the wheel and the sdist), verifies every entry against the actual bytes (`sha256sum -c`), enforces the exact final asset set, attests the worker zip and the FINAL `SHA256SUMS`, and uploads `release-bundle-final` — the exact asset set the GitHub Release attaches |
-| `publish-github-release` | finalize-release-bundle | `contents: write` | tag event ONLY: downloads `release-bundle-final` and creates the GitHub Release, attaching the wheel, the sdist, the worker zip and `SHA256SUMS` through an explicit asset list |
-| `publish-pypi` | publish-github-release | `id-token: write` (environment `pypi`) | tag event ONLY, and strictly LAST: downloads `pypi-packages`, re-verifies with a guard step that the directory contains only `*.whl`/`*.tar.gz`, and publishes exactly those distributions to PyPI via Trusted Publishing (OIDC). Because it is downstream of `publish-github-release`, the Windows ZIP, the finalized checksums and the GitHub Release must all exist before anything reaches PyPI — a Windows-build failure can never leave a half-published release behind |
+| `publish-github-release` | finalize-release-bundle, build-server-image | `contents: write` | tag event ONLY: downloads `release-bundle-final` and creates the GitHub Release, attaching the wheel, the sdist, the worker zip and `SHA256SUMS` through an explicit asset list |
+| `publish-ghcr` | build-server-image, finalize-release-bundle | `contents: read`, `packages: write` (the ONLY `packages: write` in the workflow) | tag event ONLY, and strictly before PyPI; serialized across releases by a fixed repository-wide job concurrency group (`ghcr-publication`, `cancel-in-progress: false`) so alias decisions never race another release's publisher. Re-checks the event/tag gate inside the step (event is `push`, ref is `refs/tags/vX.Y.Z`), verifies the downloaded image artifact (exactly one tarball, checksum, provenance version/revision/platform against the tag and the commit under run), loads the image and re-verifies its id, identity labels and `linux/amd64` platform — all before any registry contact; then logs in with the run's short-lived token through a dedicated temporary `DOCKER_CONFIG` that is EXPORTED for docker and removed by a trap on success and failure (`--password-stdin`, no credential in logs). ALL remote reads happen before ANY push: absence is accepted ONLY for the exact docker-CLI missing-manifest diagnostic of the exact reference (`no such manifest: <ref>`) — anything else (auth, transport, TLS/certificate noise, an embedded 404 in a URL, a wrong-reference diagnostic) fails closed. Tag semantics: the immutable version tag `X.Y.Z` present with different content REFUSES to retarget a released version and is never re-pushed when identical; each moving alias (`X.Y`, `latest`) is advanced only when missing or when a read-only authenticated pull proves its immutable `org.opencontainers.image.version` label is an OLDER-or-equal strict stable SemVer (equal repairs the alias to the exact tested image); a NEWER stable alias is preserved, so an older-release retry can never regress `X.Y` or `latest`; a cross-line minor alias, a missing/non-stable label, or any pull/auth/network failure fails closed before any push. A green `publish-ghcr` therefore means: immutable version verified against the tested bytes, moving aliases never behind this release — and PyPI never follows either an incomplete or a regressed tag set |
+| `publish-pypi` | publish-github-release, publish-ghcr | `id-token: write` (environment `pypi`) | tag event ONLY, and strictly LAST: downloads `pypi-packages`, re-verifies with a guard step that the directory contains only `*.whl`/`*.tar.gz`, and publishes exactly those distributions to PyPI via Trusted Publishing (OIDC). Because it is downstream of both other publications, the Windows ZIP, the finalized checksums, the GitHub Release and the pushed server image must all exist before anything reaches PyPI — a Windows-build or image failure can never leave a half-published release behind |
 
 Every action is pinned to a full commit SHA with its version in a comment.
-The only credentials used are the run's own short-lived GitHub token and
-OIDC identities — **no long-lived PyPI token exists or may be introduced**.
+The publication paths use only short-lived identities — the run's own
+GitHub token (Release creation, GHCR push) and OIDC (PyPI Trusted
+Publishing, attestations): **no long-lived publication credential — no PyPI
+token, no registry credential, no static publishing secret — exists in the
+release-publication path or may be introduced**. The workflow's only
+configured secrets remain the deliberately optional Windows code-signing
+inputs (`WINDOWS_CODE_SIGNING_PFX`/`WINDOWS_CODE_SIGNING_PASSWORD`), which
+belong to the Windows MSIX seam and its own external gate
+(`EXTERNAL_RELEASE_GATE: WINDOWS_CODE_SIGNING`), not to any publication
+path. The GHCR login uses the run's token via `--password-stdin` inside a
+dedicated temporary `DOCKER_CONFIG` (exported for docker, mode 0700) that a
+trap removes together with the stored credential on success and failure;
+the token is never expanded into a command line, log line or URL.
 
-The two-artifact separation is the structural boundary that keeps release
+Publication-recovery honesty: the ordering above makes BUILD and
+VERIFICATION failures safe by construction — nothing is published unless
+every artifact built and verified. It does not make publication itself
+atomic: a publication job that fails AFTER a predecessor succeeded (registry
+outage, rejected OIDC claim, transient API error) leaves the
+already-published artifacts in place while the rest is missing. Recovery is
+deliberate and safe, never fabricated: inspect which publication steps
+completed before retrying only the failed job with the same verified
+artifacts. GitHub Release creation and PyPI uploads are not promised to be
+idempotent: an existing release or already-uploaded distribution may reject
+a retry and must not be overwritten. The GHCR publisher never re-pushes a
+matching immutable version while repairing only missing or stale moving
+aliases (newer stable aliases are never regressed). A green run means every public
+artifact exists and matches the tag, and the image aliases are
+current-or-newer stable.
+
+The artifact separation is the structural boundary that keeps release
 metadata out of the PyPI publication input: `pypa/gh-action-pypi-publish`
 receives `pypi-packages/` — a directory populated exclusively by the
 `*.whl`/`*.tar.gz` upload globs and re-checked by the guard step before
 twine runs — so checksums, attestations and any future release-metadata
 files cannot reach it without a deliberate change to both the upload globs
-and the guard.
+and the guard. The `server-image` artifact follows the same discipline in
+its own lane: it is consumed only by `publish-ghcr`, carries its own
+checksum and provenance record, and can never enter the GitHub Release
+asset list (an explicit attachment list) or the PyPI payload (whitelisted
+upload globs). The public release `SHA256SUMS` stays exactly three entries
+(wheel, sdist, worker zip); the image tarball's checksum is a separate
+file inside the `server-image` artifact and is never attached to a
+release.
 
 Integrity and provenance (**implemented now**):
 
@@ -314,7 +361,7 @@ Integrity and provenance (**implemented now**):
   anything is attested or attached. It does not contain a hash of
   itself; a downloaded release is verified with `sha256sum -c
   SHA256SUMS` in the directory holding the assets.
-- each artifact receives exactly one Sigstore-backed GitHub artifact
+- each public GitHub Release file receives exactly one Sigstore-backed GitHub artifact
   attestation (`actions/attest-build-provenance`) signed with the
   workflow run's short-lived OIDC identity, covering its FINAL bytes:
   `build` attests the wheel and the sdist; `finalize-release-bundle`
@@ -335,9 +382,13 @@ Integrity and provenance (**implemented now**):
 | `scarcity-worker-X.Y.Z-windows-x64.zip` | release workflow (`build-windows-worker` + `finalize-release-bundle`) | GitHub Release |
 | `SHA256SUMS` (wheel, sdist, worker zip) | release workflow (`build` + `finalize-release-bundle`) | GitHub Release |
 | Sigstore build attestations | release workflow (`build`: wheel + sdist; `finalize-release-bundle`: worker zip + final `SHA256SUMS`) | GitHub attestation store |
+| `ghcr.io/creatidy/scarcity-router:X.Y.Z` server OCI image (`linux/amd64`, tags `X.Y.Z`/`X.Y`/`latest`) | release workflow (`build-server-image` + `publish-ghcr`) | GHCR — never pushed yet; publication awaits the first real release (`EXTERNAL_RELEASE_GATE: LIVE_GHCR_PUBLICATION` in [`docs/m10-acceptance.md`](m10-acceptance.md)) |
 
 No release exists yet: creating this foundation publishes nothing. The first
-actual release is a separate, human decision.
+actual release is a separate, human decision. The `server-image` artifact
+(image tarball + checksum + provenance record) is a same-run intermediate
+consumed only by `publish-ghcr` — it is not a release asset and never
+reaches PyPI.
 
 ### Configured externally (owner gates before the first release)
 
@@ -361,36 +412,93 @@ actual release is a separate, human decision.
    2026-09-21: the repository currently defines zero environments —
    pre-create `pypi` BEFORE the first release, otherwise the first
    tag run auto-creates it without reviewers).
+6. **GHCR package activation**: `publish-ghcr` pushes with the run's own
+   short-lived token (`packages: write`), so no registry secret is
+   configured anywhere — but the first real release must confirm the
+   organization permits the workflow token to create the
+   `ghcr.io/creatidy/scarcity-router` package, and the owner decides the
+   package's public visibility after the first successful push. Record the
+   pushed digest as evidence under `EXTERNAL_RELEASE_GATE:
+   LIVE_GHCR_PUBLICATION` in [`docs/m10-acceptance.md`](m10-acceptance.md).
 
 Until 4 is configured, `publish-pypi` fails closed: PyPI rejects the OIDC
-claim and nothing is uploaded — and by the new ordering this happens AFTER
-the GitHub Release exists, so recovery is simply fixing the Trusted
-Publisher entry and re-running the failed `publish-pypi` job (the same
-final, checksummed bytes are re-published; nothing was partially
-published). That is the designed behavior, not an error to work around.
+claim and nothing reaches PyPI — and by the ordering above this happens
+AFTER the GitHub Release and the GHCR push exist, so the earlier
+publications stay in place. Recovery is simply fixing the Trusted Publisher
+entry and re-running the failed `publish-pypi` job (the same final,
+checksummed bytes are re-published; nothing partially reached PyPI). That
+is the designed behavior, not an error to work around.
 
-### Future contract: GHCR server image
+### GHCR server image
 
-The execution-gateway server's image definition exists in-tree (M10,
-issue #95): the committed `Dockerfile` builds one production OCI image
-from the repository and was built and smoke-verified locally — but **no
-image artifact is published anywhere and no image job is present in the
-workflow**. The publication contract is frozen now:
+The execution-gateway server's image definition is in-tree (M10, issue
+#95): the committed `Dockerfile` builds one production OCI image from the
+repository and was built and smoke-verified locally. The release-workflow
+implementation now exists as code — `build-server-image` builds,
+offline-verifies and smoke-runs the image from the exact commit under run,
+and the tag-gated `publish-ghcr` job pushes it to GHCR — but **no workflow
+run has ever executed these jobs and no image has ever been pushed**:
+publication requires a real `vX.Y.Z` tag release on the GitHub mirror,
+which is a human action that has not happened. The contract stays exactly
+as frozen:
 
 - namespace `ghcr.io/creatidy/scarcity-router`;
 - tags `X.Y.Z`, `X.Y`, and `latest` — where `latest` means the latest stable
-  release and never refers to a `develop` commit;
-- `linux/amd64` and `linux/arm64` when the real image supports and justifies
-  multi-architecture builds;
-- publication uses the workflow run's short-lived GitHub token / OIDC
-  identity; no permanent registry credential;
+  release and never refers to a `develop` commit (only tag runs reach the
+  publisher);
+- `linux/amd64` now; `linux/arm64` only when the real image supports and
+  justifies multi-architecture builds — no arm64 capability is claimed or
+  built today;
+- publication uses the workflow run's short-lived GitHub token
+  (`packages: write` only in `publish-ghcr`, `--password-stdin` into an
+  exported temporary `DOCKER_CONFIG` removed by a trap); no permanent
+  registry credential;
 - the image is built from the exact tagged commit and passes the same
-  verify-before-publish discipline as the Python artifacts.
+  verify-before-publish discipline as the Python artifacts: the built
+  identity labels (version, revision) and platform are verified offline,
+  the composed server is smoke-run isolated (read-only root filesystem,
+  ephemeral in-memory `/data` tmpfs owned by the container's non-root
+  uid/gid 10001, mode 0700, dropped capabilities, no published ports, only
+  `GET /healthz`), and the publisher re-verifies the artifact checksum,
+  provenance and loaded image identity before any registry contact;
+- absence is accepted only for the exact docker-CLI missing-manifest
+  diagnostic of the exact reference; auth, transport, TLS and any other
+  registry failure fails closed (never read as absence);
+- retry semantics, serialized by a repository-wide publication lock (the
+  `ghcr-publication` job concurrency group, `cancel-in-progress: false`):
+  the immutable version tag `X.Y.Z` is pushed only when absent — present
+  with different content refuses to retarget a released version, present
+  with identical content is never re-pushed. Each moving alias (`X.Y`,
+  `latest`) is advanced only when missing, or when a read-only
+  authenticated pull proves its immutable `org.opencontainers.image.version`
+  label is an older-or-equal strict stable SemVer than this release (equal
+  repairs the alias to the exact tested image). A NEWER stable alias is
+  preserved: an older-release retry can never regress `X.Y` or `latest`.
+  A cross-line minor alias (version outside `X.Y.*`), a missing or
+  non-stable label, or any pull/auth/network failure fails closed BEFORE
+  any push. A fully current state is a plain no-op; green status means the
+  immutable version is verified against the tested bytes and the moving
+  aliases are current-or-newer stable — never regressed.
 
-Insertion point: one additional publish job in `.github/workflows/release.yml`
-(`needs: build`, gated on the same verified artifacts), owned by the first
-release / M10-B under this frozen contract. Publishing the image without
-extending this contract first is a contract violation.
+Job order in the release pipeline (all verifications upstream of every
+publication; PyPI irreversible and last):
+`verify → build → {build-windows-worker, build-server-image}`;
+`build-windows-worker → finalize-release-bundle`; each publication job
+(`publish-github-release`, `publish-ghcr`) requires BOTH
+`finalize-release-bundle` AND `build-server-image`; `publish-pypi` requires
+both other publications. See the job table above for the exact needs.
+
+The structural invariants and the guard's runtime behavior are pinned by
+`tests/test_release_workflow.py` and, behaviorally (offline fake-docker
+execution of the extracted publish script), by
+`tests/test_ghcr_publish_guard.py`.
+
+Live status: `EXTERNAL_RELEASE_GATE: LIVE_GHCR_PUBLICATION`
+([`docs/m10-acceptance.md`](m10-acceptance.md)) — the first real
+publication happens only through the owner's first release tag and its
+evidence is recorded there. This unit delivered workflow code and offline
+tests only: no release was invoked, nothing was signed, and no live
+platform acceptance is claimed.
 
 ### Windows worker packages
 
@@ -470,5 +578,11 @@ manually, as done for issue #97. The release graph, event gates and
 publication ordering are additionally pinned by the structural suite
 `tests/test_release_workflow.py` (runs in the normal gate; parses the
 workflow YAML and fails on any change that could let a candidate run
-publish, a PR event publish, or PyPI publish before the finalized bundle
-and the GitHub Release).
+publish, a PR event publish, or PyPI publish before the finalized bundle,
+the GitHub Release and the GHCR push). The GHCR publish guard's runtime
+behavior is additionally executed offline — against a deterministic fake
+`docker` and a synthetic token, with no registry or network — by
+`tests/test_ghcr_publish_guard.py`, which proves the refusal ordering
+(every identity/artifact mismatch refuses before login), the stdin-only
+token delivery, the released-version conflict/idempotency gate and the
+exact pushed tag set.

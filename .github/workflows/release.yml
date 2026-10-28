@@ -8,6 +8,8 @@
 #   1. MANUAL RELEASE-CANDIDATE PREFLIGHT (workflow_dispatch). Build and
 #      verify ONLY, from the exact ref the operator selects: Python
 #      artifacts, the Windows worker ZIP on a real Windows runner, the
+#      linux/amd64 server image (built from the committed Dockerfile,
+#      offline-verified and smoke-run in an isolated container), the
 #      finalized bundle, SHA256SUMS and attestations. The candidate record
 #      (ref, SHA, package version) is printed; nothing is published, no tag
 #      is created, no release exists, and the strict tag/main/version
@@ -22,28 +24,44 @@
 #      exact tagged commit in this same run, and artifacts passing
 #      `make package-check` before any publication. It never publishes from
 #      a pull-request event, and all publication identities are short-lived
-#      OIDC — no long-lived tokens.
+#      — the run's GitHub token (Release creation, GHCR push) and OIDC
+#      (attestations, PyPI). No long-lived tokens.
 #
 # Publication ORDERING is fail-safe by construction: EVERY public artifact —
-# wheel, sdist AND the Windows worker ZIP — must build, pass verification and
-# be finalized into the attested release bundle BEFORE the GitHub Release is
-# created, and PyPI publication (irreversible for a given version) runs LAST,
-# strictly downstream of the GitHub Release. A Windows-build failure can
-# therefore never leave a half-published release behind.
+# wheel, sdist, the Windows worker ZIP AND the server image — must build and
+# pass verification BEFORE any publication. The bundle (with the Windows
+# ZIP) is finalized and attested first; the GitHub Release and the GHCR
+# image push are both tag-event-only and both strictly downstream of the
+# finalized bundle AND the verified image; the irreversible PyPI
+# publication runs LAST, strictly downstream of both. A build or
+# verification failure therefore never publishes anything. That guarantee
+# does NOT extend past the first successful publication: a failure of a
+# publication job itself (registry outage, rejected OIDC claim, transient
+# API error) can leave the ALREADY-published artifacts in place while the
+# rest is missing. Recovery is deliberate and safe: every publication job
+# is idempotent or repair-only (PyPI re-publishes the identical final
+# bytes; the GHCR publisher never re-pushes a matching immutable version,
+# repairs only missing or stale moving aliases, and never regresses newer
+# stable aliases), so re-running the failed job completes the release
+# without fabricating anything.
 #
-# Artifact transfer is structurally separated into three stages: the
-# `pypi-packages` artifact carries only actual Python distributions
-# (*.whl / *.tar.gz) and is the sole directory the PyPI publisher sees;
-# the `release-bundle` artifact carries the distributions plus the
-# partial SHA256SUMS; and the `finalize-release-bundle` job — the only
-# stage that knows every public payload — completes SHA256SUMS (adding
-# the windows worker zip entry), re-verifies every entry against the
-# actual bytes, attests the zip and the FINAL SHA256SUMS, and uploads
-# `release-bundle-final`, the exact asset set the GitHub Release
-# attaches. An attestation therefore always covers the exact bytes a
-# consumer downloads. Release metadata (checksums, future provenance
-# files) cannot enter the PyPI publication input without a deliberate,
-# reviewable change to both the upload globs and the publication guard.
+# Artifact transfer is structurally separated: the `pypi-packages` artifact
+# carries only actual Python distributions (*.whl / *.tar.gz) and is the
+# sole directory the PyPI publisher sees; the `release-bundle` artifact
+# carries the distributions plus the partial SHA256SUMS; the
+# `finalize-release-bundle` job — the only stage that knows every public
+# payload — completes SHA256SUMS (adding the windows worker zip entry),
+# re-verifies every entry against the actual bytes, attests the zip and the
+# FINAL SHA256SUMS, and uploads `release-bundle-final`, the exact asset set
+# the GitHub Release attaches; and the `server-image` artifact carries the
+# tested container image with its own checksum and provenance record — its
+# only consumer is `publish-ghcr`, and it can never enter the GitHub
+# Release asset list (an explicit attachment list) or the PyPI payload
+# (whitelisted upload globs). An attestation therefore always covers the
+# exact bytes a consumer downloads. Release metadata (checksums, future
+# provenance files) cannot enter the PyPI publication input without a
+# deliberate, reviewable change to both the upload globs and the
+# publication guard.
 name: release
 
 on:
@@ -341,6 +359,161 @@ jobs:
           path: dist/scarcity-worker-*-windows-x64.zip
           if-no-files-found: error
 
+  build-server-image:
+    name: build-server-image
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      # Build/verify only: no write permission exists in this job. The GHCR
+      # publication identity (`packages: write`) exists ONLY in the
+      # tag-gated `publish-ghcr` job.
+      contents: read
+    steps:
+      - name: Check out the exact commit under run
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Read the release version from the authoritative source literal
+        run: |
+          VERSION="$(python3 -c '
+          import pathlib
+          import re
+          text = pathlib.Path("scarcity_router/__init__.py").read_text(encoding="utf-8")
+          match = re.search(r"^__version__ = \"([^\"]+)\"$", text, re.MULTILINE)
+          if match is None:
+              raise SystemExit("FAIL: cannot read __version__")
+          print(match.group(1))
+          ')"
+          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+
+      - name: Build the linux/amd64 server image (identity labels from this commit)
+        run: |
+          docker build \
+            --platform linux/amd64 \
+            --label "org.opencontainers.image.version=${VERSION}" \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            --label "org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --tag "ghcr.io/creatidy/scarcity-router:${VERSION}" \
+            .
+
+      - name: Verify the built image identity (fail closed)
+        run: |
+          set -euo pipefail
+          IMAGE_REF="ghcr.io/creatidy/scarcity-router:${VERSION}"
+          PLATFORM="$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "${IMAGE_REF}")"
+          if [ "${PLATFORM}" != "linux/amd64" ]; then
+            echo "FAIL: image platform is ${PLATFORM}, expected linux/amd64" >&2
+            exit 1
+          fi
+          LABELS_JSON="$(docker image inspect --format '{{json .Config.Labels}}' "${IMAGE_REF}")"
+          printf '%s' "${LABELS_JSON}" | LABEL_VERSION_EXPECTED="${VERSION}" LABEL_REVISION_EXPECTED="${GITHUB_SHA}" python3 -c '
+          import json
+          import os
+          import sys
+          labels = json.load(sys.stdin)
+          expected = {
+              "org.opencontainers.image.version": os.environ["LABEL_VERSION_EXPECTED"],
+              "org.opencontainers.image.revision": os.environ["LABEL_REVISION_EXPECTED"],
+          }
+          wrong = {
+              key: labels.get(key)
+              for key, value in expected.items()
+              if labels.get(key) != value
+          }
+          if wrong:
+              raise SystemExit(f"FAIL: image identity labels mismatch: {wrong!r}")
+          '
+
+      # Offline liveness/readiness smoke of the composed server. Isolated by
+      # construction: no published ports (the server keeps its default
+      # loopback bind inside the container), read-only root filesystem plus
+      # tmpfs /tmp, an ephemeral IN-MEMORY /data owned by the container's
+      # non-root identity (uid/gid 10001, mode 0700 — a host bind would be
+      # owned by the runner user and unwritable for the server), no
+      # capabilities, no privilege. The only request the smoke ever makes is
+      # GET /healthz — the one unauthenticated endpoint that invokes no
+      # collector and reads no store.
+      - name: Smoke the composed server in the built image (isolated, /healthz only)
+        env:
+          IMAGE_REF: "ghcr.io/creatidy/scarcity-router:${{ env.VERSION }}"
+        run: |
+          set -euo pipefail
+          SMOKE_CONTAINER="scarcity-router-release-smoke"
+          cleanup() {
+            docker rm -f "${SMOKE_CONTAINER}" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          docker run -d --name "${SMOKE_CONTAINER}" \
+            --read-only \
+            --tmpfs /tmp:rw,noexec,nosuid,size=65536k \
+            --tmpfs /data:rw,noexec,nosuid,nodev,uid=10001,gid=10001,mode=0700 \
+            --cap-drop ALL \
+            --security-opt no-new-privileges \
+            "${IMAGE_REF}" >/dev/null
+          health=""
+          for _ in $(seq 1 60); do
+            health="$(docker inspect --format '{{.State.Health.Status}}' "${SMOKE_CONTAINER}" 2>/dev/null || true)"
+            if [ "${health}" = "healthy" ] || [ "${health}" = "unhealthy" ]; then
+              break
+            fi
+            sleep 2
+          done
+          if [ "${health}" != "healthy" ]; then
+            docker logs "${SMOKE_CONTAINER}" >&2 || true
+            echo "FAIL: server image did not become healthy (status: ${health:-unknown})" >&2
+            exit 1
+          fi
+          status_code="$(docker exec "${SMOKE_CONTAINER}" python -c 'import urllib.request; print(urllib.request.urlopen("http://127.0.0.1:8787/healthz", timeout=4).status)')"
+          if [ "${status_code}" != "200" ]; then
+            echo "FAIL: /healthz answered ${status_code}, expected 200" >&2
+            exit 1
+          fi
+          echo "server image smoke verified: healthy + /healthz 200 (isolated container, ephemeral /data)"
+
+      - name: Save the tested image with checksum and provenance
+        env:
+          IMAGE_REF: "ghcr.io/creatidy/scarcity-router:${{ env.VERSION }}"
+        run: |
+          set -euo pipefail
+          mkdir -p server-image
+          TAR_PATH="server-image/scarcity-router-image-${VERSION}-linux-amd64.tar"
+          docker save --output "${TAR_PATH}" "${IMAGE_REF}"
+          (
+            cd server-image
+            sha256sum "scarcity-router-image-${VERSION}-linux-amd64.tar" \
+              > "scarcity-router-image-${VERSION}-linux-amd64.tar.sha256"
+            sha256sum -c "scarcity-router-image-${VERSION}-linux-amd64.tar.sha256"
+          )
+          IMAGE_ID="$(docker image inspect --format '{{.Id}}' "${IMAGE_REF}")"
+          PROVENANCE_VERSION="${VERSION}" PROVENANCE_REVISION="${GITHUB_SHA}" PROVENANCE_IMAGE_ID="${IMAGE_ID}" \
+            python3 - > server-image/server-image-provenance.json <<'PY'
+          import json
+          import os
+          print(json.dumps({
+              "image": "ghcr.io/creatidy/scarcity-router",
+              "image_id": os.environ["PROVENANCE_IMAGE_ID"],
+              "platform": "linux/amd64",
+              "revision": os.environ["PROVENANCE_REVISION"],
+              "version": os.environ["PROVENANCE_VERSION"],
+          }, indent=2, sort_keys=True))
+          PY
+          # Same-run intermediate only: `publish-ghcr` is the sole consumer,
+          # and none of these files can enter the GitHub Release asset list
+          # or the PyPI payload.
+          ls -l server-image
+
+      - name: Upload the tested server image
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: server-image
+          path: |
+            server-image/scarcity-router-image-*.tar
+            server-image/scarcity-router-image-*.tar.sha256
+            server-image/server-image-provenance.json
+          if-no-files-found: error
+
   finalize-release-bundle:
     name: finalize-release-bundle
     needs: [build, build-windows-worker]
@@ -429,7 +602,11 @@ jobs:
 
   publish-github-release:
     name: publish-github-release
-    needs: [finalize-release-bundle]
+    # First publication of the run: it requires the finalized bundle (which
+    # includes the verified Windows ZIP) AND the built-and-smoke-verified
+    # server image. No build or verification failure can reach this
+    # publication.
+    needs: [finalize-release-bundle, build-server-image]
     # Publication runs ONLY on the deliberate SemVer tag event; a manual
     # release-candidate preflight stops after finalization and attests.
     if: github.event_name == 'push'
@@ -460,13 +637,320 @@ jobs:
             dist/scarcity-worker-*-windows-x64.zip \
             dist/SHA256SUMS
 
+  publish-ghcr:
+    name: publish-ghcr
+    # GHCR publication runs ONLY on the deliberate SemVer tag event, after
+    # the image build + offline smoke AND the finalized bundle (Windows ZIP
+    # included), and strictly before the irreversible PyPI upload. The
+    # publication identity (`packages: write` on the run's short-lived
+    # token) exists ONLY in this job.
+    needs: [build-server-image, finalize-release-bundle]
+    if: github.event_name == 'push'
+    # Repository-wide serialization for GHCR publication ONLY: the moving
+    # alias decisions below (advance vs preserve) must never race another
+    # release's publish-ghcr job. Running publishers are not canceled;
+    # GitHub may replace a pending job, which must then be retried.
+    concurrency:
+      group: ghcr-publication
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write # push the server image to ghcr.io (nothing else)
+    steps:
+      - name: Download the tested server image
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: server-image
+          path: server-image
+
+      - name: Verify the tested image and publish to GHCR (fail closed)
+        env:
+          GHCR_TOKEN: ${{ github.token }} # short-lived run token; never logged
+        run: |
+          set -euo pipefail
+
+          IMAGE_REPOSITORY="ghcr.io/creatidy/scarcity-router"
+          IMAGE_DIR="server-image"
+          EXPECTED_PLATFORM="linux/amd64"
+
+          fail() {
+            echo "FAIL: ${*}" >&2
+            exit 1
+          }
+
+          # ── Runtime event/tag gate: fail closed even if the job-level
+          # gate above ever regressed. Nothing registry-facing happens
+          # before every check below passes.
+          if [ "${GITHUB_EVENT_NAME}" != "push" ]; then
+            fail "publish-ghcr runs only on a tag push, got event '${GITHUB_EVENT_NAME}'"
+          fi
+          case "${GITHUB_REF}" in
+            refs/tags/*) TAG="${GITHUB_REF_NAME}" ;;
+            *) fail "publish-ghcr runs only from a tag ref, got '${GITHUB_REF}'" ;;
+          esac
+          printf '%s' "${TAG}" \
+            | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' \
+            || fail "'${TAG}' is not a supported release tag (expected vX.Y.Z)"
+          EXPECTED_VERSION="${TAG#v}"
+          MINOR_TAG="${EXPECTED_VERSION%.*}"
+          IMAGE_REF="${IMAGE_REPOSITORY}:${EXPECTED_VERSION}"
+
+          # ── Verify the same-run artifact before anything else: exactly
+          # one image tarball, checksum intact, provenance exact.
+          TARBALLS="$(find "${IMAGE_DIR}" -maxdepth 1 -type f -name 'scarcity-router-image-*.tar')"
+          if [ "$(printf '%s' "${TARBALLS}" | grep -c .)" -ne 1 ]; then
+            fail "expected exactly one image tarball in ${IMAGE_DIR}"
+          fi
+          TARBALL="${TARBALLS}"
+          (
+            cd "${IMAGE_DIR}" \
+              && sha256sum -c "$(basename "${TARBALL}").sha256" >/dev/null
+          ) || fail "image tarball checksum mismatch"
+          PROVENANCE="$(python3 - "${IMAGE_DIR}/server-image-provenance.json" <<'PY'
+          import json
+          import sys
+          with open(sys.argv[1], encoding="utf-8") as handle:
+              document = json.load(handle)
+          for field in ("version", "revision", "platform", "image_id"):
+              value = document.get(field)
+              if not isinstance(value, str) or not value:
+                  raise SystemExit(f"provenance field {field!r} missing or not a string")
+          print("\n".join(document[field] for field in ("version", "revision", "platform", "image_id")))
+          PY
+          )" || fail "provenance record unreadable"
+          {
+            read -r PROVENANCE_VERSION
+            read -r PROVENANCE_REVISION
+            read -r PROVENANCE_PLATFORM
+            read -r PROVENANCE_IMAGE_ID
+          } <<< "${PROVENANCE}"
+          if [ "${PROVENANCE_VERSION}" != "${EXPECTED_VERSION}" ]; then
+            fail "provenance version ${PROVENANCE_VERSION} != release tag version ${EXPECTED_VERSION}"
+          fi
+          if [ "${PROVENANCE_REVISION}" != "${GITHUB_SHA}" ]; then
+            fail "image revision ${PROVENANCE_REVISION} != commit under run ${GITHUB_SHA}"
+          fi
+          if [ "${PROVENANCE_PLATFORM}" != "${EXPECTED_PLATFORM}" ]; then
+            fail "provenance platform ${PROVENANCE_PLATFORM} != ${EXPECTED_PLATFORM}"
+          fi
+
+          # ── Load and verify the exact image bytes (all offline): image
+          # id, identity labels and platform must match the validated
+          # provenance and this run's release identity exactly.
+          docker load --input "${TARBALL}" >/dev/null
+          LOCAL_IMAGE_ID="$(docker image inspect --format '{{.Id}}' "${IMAGE_REF}")"
+          if [ -z "${LOCAL_IMAGE_ID}" ]; then
+            fail "loaded image ${IMAGE_REF} has no id"
+          fi
+          if [ "${LOCAL_IMAGE_ID}" != "${PROVENANCE_IMAGE_ID}" ]; then
+            fail "loaded image id ${LOCAL_IMAGE_ID} != provenance image id ${PROVENANCE_IMAGE_ID}"
+          fi
+          LABELS_JSON="$(docker image inspect --format '{{json .Config.Labels}}' "${IMAGE_REF}")"
+          printf '%s' "${LABELS_JSON}" | LABEL_VERSION_EXPECTED="${EXPECTED_VERSION}" LABEL_REVISION_EXPECTED="${GITHUB_SHA}" python3 -c '
+          import json
+          import os
+          import sys
+          labels = json.load(sys.stdin)
+          expected = {
+              "org.opencontainers.image.version": os.environ["LABEL_VERSION_EXPECTED"],
+              "org.opencontainers.image.revision": os.environ["LABEL_REVISION_EXPECTED"],
+          }
+          wrong = {
+              key: labels.get(key)
+              for key, value in expected.items()
+              if labels.get(key) != value
+          }
+          if wrong:
+              raise SystemExit(f"image identity labels mismatch: {wrong!r}")
+          ' || fail "loaded image identity labels do not match the release identity"
+          PLATFORM="$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "${IMAGE_REF}")"
+          if [ "${PLATFORM}" != "${EXPECTED_PLATFORM}" ]; then
+            fail "loaded image platform ${PLATFORM} != ${EXPECTED_PLATFORM}"
+          fi
+
+          # ── Registry session (short-lived run token only, isolated in a
+          # dedicated temporary DOCKER_CONFIG that the trap removes together
+          # with the stored credential; exported so docker actually uses it
+          # and writes nothing outside this directory) — needed for the
+          # released-version conflict gate below, never before every
+          # artifact check passed.
+          DOCKER_CONFIG="$(mktemp -d)"
+          export DOCKER_CONFIG
+          trap 'rm -rf "${DOCKER_CONFIG}"' EXIT
+          printf '%s' "${GHCR_TOKEN}" \
+            | docker login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin >/dev/null \
+            || fail "GHCR login failed (publication identity rejected)"
+
+          # ── Remote manifest state. Absence is accepted ONLY for the exact
+          # missing-manifest diagnostic of the docker CLI for the exact
+          # reference: 'no such manifest: <ref>' (or the bare historical
+          # 'no such manifest' line). Anything else — auth, transport, TLS,
+          # proxy noise, an embedded 404 in a URL, a differently tagged
+          # diagnostic — FAILS CLOSED; a registry failure is never read as
+          # absence.
+          manifest_state() {
+            manifest_ref="${1}"
+            manifest_error_file="$(mktemp)"
+            set +e
+            MANIFEST_JSON="$(docker manifest inspect --verbose "${manifest_ref}" 2>"${manifest_error_file}")"
+            manifest_status=$?
+            set -e
+            if [ "${manifest_status}" -eq 0 ]; then
+              MANIFEST_DIGEST="$(printf '%s' "${MANIFEST_JSON}" | python3 -c '
+          import json
+          import sys
+          document = json.load(sys.stdin)
+          manifest = document.get("SchemaV2Manifest")
+          if not isinstance(manifest, dict):
+              raise SystemExit("unexpected manifest shape (not a single-platform schema2 manifest)")
+          print(manifest["config"]["digest"])
+          ')" || { rm -f "${manifest_error_file}"; fail "could not read the remote manifest for ${manifest_ref}"; }
+              rm -f "${manifest_error_file}"
+              MANIFEST_PRESENT=1
+              return 0
+            fi
+            MANIFEST_STDERR="$(cat "${manifest_error_file}")"
+            rm -f "${manifest_error_file}"
+            if [ "${MANIFEST_STDERR}" = "no such manifest: ${manifest_ref}" ] \
+              || [ "${MANIFEST_STDERR}" = "no such manifest" ]; then
+              MANIFEST_PRESENT=0
+              return 0
+            fi
+            printf '%s\n' "${MANIFEST_STDERR}" >&2 || true
+            fail "registry inspection of ${manifest_ref} failed with an unrecognized diagnostic; refusing to treat it as absence"
+          }
+
+          # ── Moving-alias plan. Under the job's repository-wide
+          # publication lock, each moving alias (X.Y, latest) is decided
+          # BEFORE any push:
+          #   absent                        -> advance (push)
+          #   present, exact tested bytes   -> already correct (skip)
+          #   present, different content    -> pull it (read-only) and read
+          #                                    its immutable version label:
+          #     label is an OLDER-or-equal stable SemVer -> advance/repair
+          #     label is a NEWER stable SemVer           -> preserve
+          #       (an older-release retry never regresses X.Y/latest)
+          #     label missing/non-stable/cross-line-minor, or the pull or
+          #       any auth/network step fails -> FAIL CLOSED before any push
+          # Pulling an alias only creates that alias's local tag; the
+          # candidate image stays bound to the immutable version ref and its
+          # verified image id.
+          plan_moving_alias() {
+            plan_ref="${1}"
+            plan_scope="${2}"
+            manifest_state "${plan_ref}"
+            if [ "${MANIFEST_PRESENT}" -eq 0 ]; then
+              PLAN_PUSH=1
+              return 0
+            fi
+            if [ "${MANIFEST_DIGEST}" = "${LOCAL_IMAGE_ID}" ]; then
+              PLAN_PUSH=0
+              return 0
+            fi
+            pull_error="$(mktemp)"
+            if ! docker pull "${plan_ref}" >/dev/null 2>"${pull_error}"; then
+              cat "${pull_error}" >&2 || true
+              rm -f "${pull_error}"
+              fail "could not verify existing alias ${plan_ref} (pull failed); refusing to decide without proof"
+            fi
+            rm -f "${pull_error}"
+            ALIAS_LABEL_VERSION="$(docker image inspect --format '{{json .Config.Labels}}' "${plan_ref}" \
+              | python3 -c '
+          import json
+          import sys
+          labels = json.load(sys.stdin)
+          print(labels.get("org.opencontainers.image.version", ""))
+          ')"
+            PLAN_DECISION="$(python3 - "${plan_scope}" "${EXPECTED_VERSION}" "${ALIAS_LABEL_VERSION}" <<'PY'
+          import re
+          import sys
+          stable = r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$"
+          scope, ours_raw, alias_raw = sys.argv[1:4]
+          def version(raw):
+              if re.fullmatch(stable, raw) is None:
+                  raise SystemExit(f"invalid or missing stable version label: {raw!r}")
+              return tuple(int(part) for part in raw.split("."))
+          ours = version(ours_raw)
+          alias = version(alias_raw)
+          if scope == "minor" and alias[:2] != ours[:2]:
+              raise SystemExit("minor alias points outside its major.minor scope; refusing to guess")
+          print("preserve" if alias > ours else "push")
+          PY
+          )" || fail "moving alias ${plan_ref} carries unusable metadata; refusing to guess"
+            if [ "${PLAN_DECISION}" = "preserve" ]; then
+              PLAN_PUSH=0
+            else
+              PLAN_PUSH=1
+            fi
+          }
+
+          manifest_state "${IMAGE_REF}"
+          if [ "${MANIFEST_PRESENT}" -eq 1 ]; then
+            if [ "${MANIFEST_DIGEST}" != "${LOCAL_IMAGE_ID}" ]; then
+              fail "refusing to retarget released version ${IMAGE_REF}: remote content ${MANIFEST_DIGEST} != tested image ${LOCAL_IMAGE_ID}"
+            fi
+            PUSH_VERSION=0
+          else
+            PUSH_VERSION=1
+          fi
+
+          plan_moving_alias "${IMAGE_REPOSITORY}:${MINOR_TAG}" "minor"
+          PUSH_MINOR="${PLAN_PUSH}"
+          plan_moving_alias "${IMAGE_REPOSITORY}:latest" "latest"
+          PUSH_LATEST="${PLAN_PUSH}"
+
+          if [ "${PUSH_VERSION}" -eq 0 ] && [ "${PUSH_MINOR}" -eq 0 ] && [ "${PUSH_LATEST}" -eq 0 ]; then
+            {
+              echo "immutable version ${IMAGE_REF} verified (already published with the exact tested bytes) and moving aliases current-or-newer stable; idempotent no-op (nothing pushed)"
+            } | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
+            exit 0
+          fi
+
+          # ── Publish: the immutable version first (only when it is absent),
+          # then the moving tags derived from the VALIDATED version (never
+          # raw event context). `latest` means the latest stable release; it
+          # never refers to a develop commit because only tag runs reach
+          # this step.
+          if [ "${PUSH_VERSION}" -eq 1 ]; then
+            docker push "${IMAGE_REF}" >/dev/null
+          fi
+          if [ "${PUSH_MINOR}" -eq 1 ]; then
+            docker tag "${IMAGE_REF}" "${IMAGE_REPOSITORY}:${MINOR_TAG}"
+            docker push "${IMAGE_REPOSITORY}:${MINOR_TAG}" >/dev/null
+          fi
+          if [ "${PUSH_LATEST}" -eq 1 ]; then
+            docker tag "${IMAGE_REF}" "${IMAGE_REPOSITORY}:latest"
+            docker push "${IMAGE_REPOSITORY}:latest" >/dev/null
+          fi
+          PUSHED_IDENTITY="$(docker image inspect --format '{{if .RepoDigests}}{{index .RepoDigests 0}}{{else}}{{.Id}}{{end}}' "${IMAGE_REF}")"
+          PUSHED_TAGS=""
+          if [ "${PUSH_VERSION}" -eq 1 ]; then
+            PUSHED_TAGS="${IMAGE_REPOSITORY}:${EXPECTED_VERSION}"
+          fi
+          if [ "${PUSH_MINOR}" -eq 1 ]; then
+            PUSHED_TAGS="${PUSHED_TAGS:+${PUSHED_TAGS} }${IMAGE_REPOSITORY}:${MINOR_TAG}"
+          fi
+          if [ "${PUSH_LATEST}" -eq 1 ]; then
+            PUSHED_TAGS="${PUSHED_TAGS:+${PUSHED_TAGS} }${IMAGE_REPOSITORY}:latest"
+          fi
+          {
+            echo "pushed ghcr image identity (this run): ${PUSHED_IDENTITY}"
+            echo "pushed tags: ${PUSHED_TAGS}"
+          } | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
+
   publish-pypi:
     name: publish-pypi
     # IRREVERSIBLE step, therefore LAST: PyPI publication runs only after
     # the Windows worker ZIP has built, the release bundle has been
-    # finalized and verified, and the GitHub Release has been created — a
-    # partial public release can never happen.
-    needs: [publish-github-release]
+    # finalized and verified, the GitHub Release has been created AND the
+    # verified server image has been pushed to GHCR — so no build or
+    # verification failure can leave anything half-published, and PyPI
+    # never runs on an incomplete image tag set. A failure of a publication
+    # job itself is recovered by idempotent re-runs: PyPI re-publishes the
+    # identical final bytes.
+    needs: [publish-github-release, publish-ghcr]
     # External gate (owner action, docs/release-engineering.md): the PyPI
     # project must list this repository/workflow/environment as a Trusted
     # Publisher, and the `pypi` environment should carry required reviewers.

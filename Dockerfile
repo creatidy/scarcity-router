@@ -22,10 +22,12 @@
 #   docker run --rm --network host -v scarcity-router-data:/data scarcity-router
 #   # then open http://127.0.0.1:8787/admin and complete onboarding
 #
-# The image is not published to any registry yet. The GHCR publication
-# contract (ghcr.io/creatidy/scarcity-router, tags X.Y.Z / X.Y / latest)
-# is frozen in docs/release-engineering.md and stays a recorded future
-# contract until its release-workflow job lands.
+# The image is not published to any registry yet: the release workflow's
+# build-server-image job (linux/amd64) builds and offline-verifies this
+# image, and — only on a real vX.Y.Z tag release — the publish-ghcr job
+# pushes it to ghcr.io/creatidy/scarcity-router with tags X.Y.Z / X.Y /
+# latest (contract frozen in docs/release-engineering.md). No release
+# exists yet, so nothing has been pushed.
 
 # ── Stage 1: build the wheel from the exact source ───────────────────────────
 FROM python:3.12-slim AS build
