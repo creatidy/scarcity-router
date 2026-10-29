@@ -107,6 +107,7 @@ from .resource_state import (
     ResourceHealth,
     ResourceRegistration,
     ResourceRegistry,
+    RegistrySnapshot,
     ResourceStateSnapshot,
     WorkerStateReport,
 )
@@ -121,7 +122,7 @@ from .routing_core import (
 )
 from .config import resolve_default_selector_policy
 from .selector import SelectorPolicy, neutral_selector_policy
-from .simulation import SimulationResult, apply_capacity_overrides
+from .simulation import CapacityPercentageOverride, SimulationResult
 from .selection_app import (
     DEFAULT_CATALOG_PATH,
     DEFAULT_MODEL_POLICY_PATH,
@@ -880,6 +881,10 @@ class ControlPlane:
         try:
             if path == MACHINE_SELECT_PATH:
                 parsed = parse_selection_document(document)
+                if parsed.replenishment_states:
+                    raise ControlHTTPError.invalid_request(
+                        "provider-only replenishment observations cannot be associated with an exact source"
+                    )
                 if parsed.profile_id is not None and not profiles.definitions:
                     raise ControlHTTPError.invalid_request(
                         "legacy task profiles are unsupported; provide an explicit requirement"
@@ -893,6 +898,10 @@ class ControlPlane:
                 self._send_json(handler, HTTPStatus.OK, envelope)
                 return
             parsed, overrides = parse_simulation_document(document)
+            if parsed.replenishment_states or overrides.replenishment_states:
+                raise ControlHTTPError.invalid_request(
+                    "provider-only replenishment observations cannot be associated with an exact source"
+                )
             if parsed.profile_id is not None and not profiles.definitions:
                 raise ControlHTTPError.invalid_request(
                     "legacy task profiles are unsupported; provide an explicit requirement"
@@ -900,11 +909,14 @@ class ControlPlane:
             if self.current_application().catalog.entries:
                 route_input = self._machine_route_request(parsed, client_id)
                 baseline = route_request(route_input)
+                baseline_public = public_route_document(baseline, route_input)
                 simulated_at = overrides.evaluated_at or route_input.evaluated_at
-                simulated_registry = route_input.registry_snapshot
+                simulated_registry = self._simulate_source_capacity(
+                    route_input, route_input.registry_snapshot, overrides.capacity_percentages, baseline_public
+                )
                 if simulated_at != route_input.evaluated_at:
                     scratch = ResourceRegistry()
-                    for entry in route_input.registry_snapshot.entries:
+                    for entry in simulated_registry.entries:
                         scratch.register(ResourceRegistration(
                             identity=entry.identity, freshness_ttl_seconds=entry.freshness_ttl_seconds,
                             poll_interval_seconds=entry.poll_interval_seconds,
@@ -918,10 +930,8 @@ class ControlPlane:
                     )
                 changed_input = replace(
                     route_input,
-                    evaluated_at=simulated_at, registry_snapshot=simulated_registry,
-                    capacity_snapshots=apply_capacity_overrides(
-                        route_input.capacity_snapshots, overrides.capacity_percentages
-                    ) if overrides.capacity_percentages else route_input.capacity_snapshots,
+                    evaluated_at=simulated_at,
+                    registry_snapshot=simulated_registry,
                     policy=overrides.selector_policy or route_input.policy,
                     replenishment_states=(overrides.replenishment_states
                                           if overrides.replenishment_states is not None
@@ -931,7 +941,6 @@ class ControlPlane:
                 result = SimulationResult(baseline.selection, simulated.selection, overrides)
                 envelope = simulation_envelope(result)
                 result_document = cast("dict[str, object]", envelope["result"])
-                baseline_public = public_route_document(baseline, route_input)
                 simulated_public = public_route_document(simulated, changed_input)
                 result_document["baseline"] = baseline_public["selection"]
                 result_document["simulated"] = simulated_public["selection"]
@@ -967,15 +976,14 @@ class ControlPlane:
             explicit_requirement=parsed.requirement, tightening=parsed.tightening,
         )
         evaluated_at = self._clock()
-        observations = collect_status(collectors=self._collectors, clock=lambda: evaluated_at)
         snapshot = application.registry.registry_snapshot(now=format_utc(evaluated_at))
         grants = application.client_authorizations
         grant = ClientAuthorization() if grants is None else grants.get(client_id, ClientAuthorization())
         return RouteRequest(
             catalog=application.catalog, profiles=application.profiles,
             registry_snapshot=snapshot, policy=parsed.policy or self._default_policy(),
-            evaluated_at=evaluated_at, capacity_snapshots=observations.snapshots,
-            eligibility_reports=observations.eligibility,
+            evaluated_at=evaluated_at, capacity_snapshots=(),
+            eligibility_reports=(),
             replenishment_states=parsed.replenishment_states,
             compatibility_cells=application.compatibility_cells,
             admin_constraints=application.admin_constraints,
@@ -987,6 +995,71 @@ class ControlPlane:
                 if application.adapters.supports_resource(entry.identity)
             ),
         )
+
+    @staticmethod
+    def _simulate_source_capacity(
+        request: RouteRequest, snapshot: RegistrySnapshot,
+        overrides: tuple[CapacityPercentageOverride, ...], visible_route: dict[str, object],
+    ) -> RegistrySnapshot:
+        """Override one already-observed authorized resource window, never host telemetry."""
+        if not overrides:
+            return snapshot
+        visible: set[str] = set()
+        target = visible_route.get("target")
+        if isinstance(target, dict):
+            resource = cast("dict[str, object]", target).get("resource")
+            if isinstance(resource, dict) and isinstance(cast("dict[str, object]", resource).get("resource_id"), str):
+                visible.add(cast(str, cast("dict[str, object]", resource)["resource_id"]))
+        for member in ("target_alternatives", "target_exclusions"):
+            items = visible_route.get(member, [])
+            if not isinstance(items, list):
+                continue
+            for raw in cast("list[object]", items):
+                if not isinstance(raw, dict):
+                    continue
+                item = cast("dict[str, object]", raw)
+                resource = item.get("resource")
+                resource_id = (cast("dict[str, object]", resource).get("resource_id")
+                               if isinstance(resource, dict) else item.get("resource_id"))
+                if isinstance(resource_id, str) and resource_id != "restricted":
+                    visible.add(resource_id)
+        bindings = {(resource_id, scope.provider, scope.scope_id)
+                    for entry in request.catalog.entries
+                    for resource_id, scopes in entry.resource_capacity_bindings for scope in scopes}
+        entries = list(snapshot.entries)
+        changed: set[tuple[str, int]] = set()
+        for override in overrides:
+            matches: list[tuple[int, int]] = []
+            for index, entry in enumerate(entries):
+                observation = entry.observation
+                if (entry.identity.resource_id not in visible or entry.freshness != "fresh" or observation is None
+                        or observation.health.status != "ok" or
+                        (entry.identity.resource_id, override.provider, override.scope_id) not in bindings):
+                    continue
+                for fact_index, fact in enumerate(observation.quota_facts):
+                    window = fact.window
+                    if (fact.observation_class == "provider_telemetry" and window.scope_id == override.scope_id
+                            and window.resource == override.resource and window.kind == override.kind
+                            and (override.window_id is None or window.window_id == override.window_id)):
+                        matches.append((index, fact_index))
+            if len(matches) != 1:
+                raise ControlHTTPError.invalid_request("capacity override must identify exactly one authorized resource window")
+            index, fact_index = matches[0]
+            entry = entries[index]
+            observation = entry.observation
+            assert observation is not None
+            fact = observation.quota_facts[fact_index]
+            if (fact.window.used_percent is None or fact.window.remaining_percent is None
+                    or (entry.identity.resource_id, fact_index) in changed):
+                raise ControlHTTPError.invalid_request("capacity override requires one known, not previously overridden window")
+            changed.add((entry.identity.resource_id, fact_index))
+            facts = list(observation.quota_facts)
+            facts[fact_index] = replace(fact, window=replace(
+                fact.window, remaining_percent=override.remaining_percent,
+                used_percent=100 - override.remaining_percent,
+            ))
+            entries[index] = replace(entry, observation=replace(observation, quota_facts=tuple(facts)))
+        return replace(snapshot, entries=tuple(entries))
 
     def _default_policy(self) -> SelectorPolicy:
         """The D-036 server default policy, else the documented neutral."""
@@ -1364,7 +1437,7 @@ class ControlPlane:
             raise ControlHTTPError.not_found("unknown source")
         raw = document.get("allowed_models")
         if (not {"allowed_models"} <= set(document)
-                or set(document) - {"allowed_models", "capacity_scope_ids", "context_evidence"}
+                or set(document) - {"allowed_models", "capacity_scope_ids", "context_evidence", "auto_adopt"}
                 or not isinstance(raw, list)):
             raise ControlHTTPError.invalid_request(
                 "provide allowed_models as an array of exact discovered model IDs"
@@ -1377,6 +1450,10 @@ class ControlPlane:
         updated = source.to_dict()
         _ = updated.pop("allowed_tracks", None)
         updated["allowed_models"] = raw_models
+        if "auto_adopt" in document:
+            if not isinstance(document["auto_adopt"], bool):
+                raise ControlHTTPError.invalid_request("auto_adopt must be a boolean")
+            updated["auto_adopt"] = document["auto_adopt"]
         if "capacity_scope_ids" in document:
             scope_values = document["capacity_scope_ids"]
             if not isinstance(scope_values, list):
@@ -1395,13 +1472,14 @@ class ControlPlane:
             )))
         except (ValueError, ServerConfigError):
             raise ControlHTTPError.invalid_request(
-                "invalid source policy; use unique granted model IDs, sorted scopes, "
+                "invalid source policy; use unique model IDs, sorted scopes, "
                 + "and valid exact-model context evidence"
             ) from None
 
     def sources_view(self) -> list[dict[str, object]]:
         """The read-only source view (D-053 point 10): no raw payloads."""
         views = {view["source_id"]: view for view in self._source_registry.source_view()}
+        connected_workers = {state.worker_id for state in self._worker_endpoint.worker_connection_state() if state.connected}
         out: list[dict[str, object]] = []
         for source in self._config.sources:
             live = views.get(source.source_id, {})
@@ -1416,7 +1494,7 @@ class ControlPlane:
                     "capacity_scope_ids": list(source.capacity_scope_ids),
                     "context_evidence": [item.to_dict() for item in source.context_evidence],
                     "legacy_track_policy": bool(source.allowed_tracks),
-                    "connected": bool(live.get("connected")),
+                    "connected": source.worker_id in connected_workers,
                     "source_authenticated": live.get(
                         "source_authenticated", "unverified"
                     ),

@@ -13,6 +13,9 @@ import http.client
 import re
 import unittest
 import urllib.parse
+from dataclasses import replace
+
+from scarcity_router.model_inventory import DiscoveredModel, ModelInventoryReport, SourceInventory
 
 from tests.server_fixtures import (
     FAKE_ADMIN_PASSWORD,
@@ -293,6 +296,64 @@ class UiMutationFlowTests(ServerHarness):
         self.assertEqual(303, status)
         status, html, _headers = _get(self.port, "/admin/sources", cookie)
         self.assertIn("No execution sources configured", html)
+
+    def test_source_grants_and_context_attestation_are_explicit_and_preserved(self) -> None:
+        cookie, csrf = self._session()
+        worker_id = self._pair_worker(cookie, csrf, "Synthetic worker")
+        status, _, _ = _form(self.port, "/admin/sources/add", {
+            "csrf": csrf, "label": "Synthetic source", "worker_id": worker_id,
+        }, cookie)
+        self.assertEqual(303, status)
+        source = self.plane.configuration.sources[0]
+        legacy = replace(source, allowed_tracks=("openai/old-track",))
+        self.plane._save_config(replace(self.plane.configuration, sources=(legacy,)))  # pyright: ignore[reportPrivateUsage]
+        self.plane._apply_source_inventory(ModelInventoryReport(worker_id=worker_id, sources=(  # pyright: ignore[reportPrivateUsage]
+            SourceInventory(source_id=source.source_id, adapter_id=f"codex:{source.source_id}",
+                            kind="codex_subscription", observed_at="2026-09-16T12:00:00.000Z",
+                            auth_state="authenticated", runtime_name="codex", runtime_version="1.2.3",
+                            models=(DiscoveredModel("synthetic-model", ("high",)),)),
+        )))
+        status, html, _ = _get(self.port, "/admin/sources", cookie)
+        self.assertEqual(200, status)
+        self.assertIn("Legacy track policy is inactive", html)
+        self.assertIn("Allow model", html)
+        self.assertIn("legacy track policy", html.lower())
+        status, _, _ = _get(self.port, "/admin/sources/policy", cookie)
+        self.assertEqual(405, status)
+        grant = {"csrf": csrf, "source_id": source.source_id, "action": "grant", "model": "synthetic-model"}
+        status, _, _ = _form(self.port, "/admin/sources/policy", grant, cookie)
+        self.assertEqual(400, status)
+        self.assertEqual(("openai/old-track",), self.plane.configuration.sources[0].allowed_tracks)
+        status, _, _ = _form(self.port, "/admin/sources/policy", {**grant, "csrf": "wrong", "ack_legacy": "yes"}, cookie)
+        self.assertEqual(403, status)
+        status, _, _ = _form(self.port, "/admin/sources/policy", {**grant, "ack_legacy": "yes"}, cookie)
+        self.assertEqual(303, status)
+        current = self.plane.configuration.sources[0]
+        self.assertEqual(("synthetic-model",), current.allowed_models)
+        self.assertEqual((), current.allowed_tracks)
+        status, html, _ = _get(self.port, "/admin/sources", cookie)
+        self.assertIn("Context evidence for high", html)
+        self.assertIn("awaiting inventory refresh", html)
+        self.assertNotIn("model not allowed", html)
+        context = {"csrf": csrf, "source_id": source.source_id, "model": "synthetic-model", "variant": "high",
+                   "runtime_version": "1.2.3", "input_tokens": "4096", "evidence_ref": "local:synthetic-ui",
+                   "verified_at": "2026-09-16T11:00:00.000Z", "valid_until": "2026-10-16T11:00:00.000Z"}
+        status, _, _ = _form(self.port, "/admin/sources/context", {**context, "runtime_version": "9.9.9"}, cookie)
+        self.assertEqual(400, status)
+        status, _, _ = _form(self.port, "/admin/sources/context", context, cookie)
+        self.assertEqual(303, status)
+        self.assertEqual("local:synthetic-ui", self.plane.configuration.sources[0].context_evidence[0].evidence_ref)
+        status, _, _ = _form(self.port, "/admin/sources/policy", {**grant, "action": "revoke"}, cookie)
+        self.assertEqual(303, status)
+        self.assertEqual((), self.plane.configuration.sources[0].allowed_models)
+        self.assertEqual(1, len(self.plane.configuration.sources[0].context_evidence))
+        status, html, _ = _get(self.port, "/admin/sources", cookie)
+        self.assertIn("Dormant attestations", html)
+        status, _, _ = _form(self.port, "/admin/sources/context", {
+            "csrf": csrf, "source_id": source.source_id, "model": "synthetic-model", "variant": "high", "action": "remove",
+        }, cookie)
+        self.assertEqual(303, status)
+        self.assertEqual((), self.plane.configuration.sources[0].context_evidence)
 
     def test_worker_pairing_shows_code_once(self) -> None:
         import threading

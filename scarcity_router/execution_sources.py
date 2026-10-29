@@ -584,6 +584,9 @@ class SourceRegistry:
                 for model in inventory.models:
                     decision = _decision_for(state.decisions, model.slug)
                     reason = _current_exclusion(state.config, model.slug)
+                    if (reason is None and decision is not None and decision.reason in
+                            ("model_not_allowed", "legacy_track_policy", "adoption_disabled")):
+                        reason = "awaiting_inventory_refresh"
                     effective_state = (
                         "discovered" if reason is not None else _state_for(state, model.slug)
                     )
@@ -614,7 +617,6 @@ class SourceRegistry:
                     "runtime_name": inventory.runtime_name if inventory is not None else None,
                     "runtime_version": inventory.runtime_version if inventory is not None else None,
                     "observed_at": inventory.observed_at if inventory is not None else None,
-                    "runtime_version": inventory.runtime_version if inventory is not None else None,
                     "models": models,
                     "routable": routable,
                     "restricted": restricted,

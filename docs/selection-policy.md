@@ -17,9 +17,16 @@ provenance remain in [decisions.md](decisions.md).
   provide its exact identity and capabilities. Discovery, authorization,
   adapter support, account entitlement and quota are distinct facts.
 - An administrator may explicitly bind provider telemetry scopes to all
-  granted models of a source and account. A missing binding is unknown, not
-  free, unlimited or shared capacity. Each resource's binding is evaluated
-  separately, including when several resources name the same model.
+  granted models of a source and account. Router uses only provider telemetry
+  reported in that resource's own fresh worker observation; server-local
+  provider telemetry and account eligibility are not attributed to a different
+  worker. A missing binding or observation is unknown, not free, unlimited or
+  shared capacity. Each resource is evaluated separately, including when
+  several resources name the same model. Source health and strict non-paid
+  execution-assurance gates still apply to the exact resource.
+- Provider-only replenishment observations cannot identify a worker account;
+  the composed runtime interface explicitly refuses them until a source-scoped
+  contract exists. No reset or benefit is redeemed automatically.
 - An administrator may attest an exact source/model/effort context bound using a
   non-secret `local:` evidence handle, the observed runtime version and a
   bounded verification interval. Router records that it is administrator
@@ -98,8 +105,10 @@ exact `allowed_models` through the source model-policy operation. User state is
 not automatically deleted or converted to invented evidence.
 
 The authenticated server evaluates simulation overrides against a frozen copy
-of source state through the same routing core. A hypothetical evaluation time
-recomputes resource freshness without mutating the live registry. Standalone
+of source state through the same routing core. A percentage override must match
+exactly one existing, known and authorized resource window; ambiguous source
+matches fail rather than changing multiple accounts. A hypothetical evaluation
+time recomputes resource freshness without mutating the live registry. Standalone
 CLI, REST and MCP processes without execution-source configuration return an
 honest empty inventory. See [machine-interfaces.md](machine-interfaces.md) for
 versioned wire contracts and [control-surface.md](control-surface.md) for

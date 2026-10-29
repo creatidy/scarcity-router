@@ -363,6 +363,68 @@ SOL = (DiscoveredModel("gpt-6-sol", ("high", "max")),)
 class LogicalResolutionTests(DerivedHarness):
     """Bare logical ids route to the EXACT identity — never substituted."""
 
+    def test_pinned_manual_resource_does_not_inherit_another_sources_effort(self) -> None:
+        registry, catalog = derived_world(SOL)
+        identity = ResourceIdentity(resource_id="manual-resource", channel="worker_bridged",
+                                    provider="openai", model="gpt-6-sol", variant="high",
+                                    entitlement="subscription_included")
+        registration = ResourceRegistration(identity=identity, freshness_ttl_seconds=7200,
+                                             poll_interval_seconds=1800,
+                                             capabilities=ExecutionCapabilities(context_limit_tokens=4096))
+        registry.register(registration)
+        _ = registry.apply_snapshot(_healthy_snapshot(identity))
+        application = make_derived_application(registry, catalog)
+        _ = self.make_derived_server(application)
+        adapter = application.adapters.resolve("worker_bridged")
+        assert isinstance(adapter, ScriptedAdapter)
+        _ = application.execute(client_id=CLIENT_ID, request=parse_chat_request({
+            "model": "sr-pin:manual-resource/openai/gpt-6-sol/high",
+            "messages": [{"role": "user", "content": "hello"}],
+        }))
+        self.assertIsNone(adapter.dispatches[-1].reasoning_effort)
+        record = audit_records(application)[-1]
+        assert record.executed_target is not None
+        self.assertIsNone(record.executed_target.reasoning_effort)
+
+    def test_remote_source_does_not_query_unrelated_server_collector(self) -> None:
+        registry, catalog = derived_world(SOL)
+        application = make_derived_application(registry, catalog)
+        _ = self.make_derived_server(application)
+        def unrelated(_now: str) -> tuple[tuple[CapacitySnapshot, ...], tuple[ExecutionEligibility, ...]]:
+            raise RuntimeError("unrelated server-local account is unavailable")
+        application.capacity_source = unrelated
+        _ = application.execute(client_id=CLIENT_ID, request=parse_chat_request({
+            "model": "sr-pin:personal-openai:gpt-6-sol:high/openai/gpt-6-sol/high",
+            "messages": [{"role": "user", "content": "hello"}],
+        }))
+        record = audit_records(application)[-1]
+        assert record.executed_target is not None
+        self.assertEqual("high", record.executed_target.reasoning_effort)
+
+    def test_selected_manual_alternative_never_inherits_discovered_effort(self) -> None:
+        registry, catalog = derived_world((DiscoveredModel("gpt-6-sol", ("high",)),))
+        identity = ResourceIdentity(resource_id="a-manual", channel="worker_bridged", provider="openai",
+                                    model="gpt-6-sol", variant="high", entitlement="subscription_included")
+        registry.register(ResourceRegistration(identity=identity, freshness_ttl_seconds=7200,
+                                               poll_interval_seconds=1800,
+                                               capabilities=ExecutionCapabilities(context_limit_tokens=4096)))
+        _ = registry.apply_snapshot(_healthy_snapshot(identity))
+        application = make_derived_application(registry, catalog)
+        application.client_authorizations = {
+            CLIENT_ID: ClientAuthorization(blocked_resource_ids=("personal-openai:gpt-6-sol:high",))
+        }
+        _ = self.make_derived_server(application)
+        adapter = application.adapters.resolve("worker_bridged")
+        assert isinstance(adapter, ScriptedAdapter)
+        _ = application.execute(client_id=CLIENT_ID, request=parse_chat_request({
+            "model": "gpt-6-sol", "messages": [{"role": "user", "content": "hello"}],
+        }))
+        self.assertEqual("a-manual", adapter.dispatches[-1].resource.resource_id)
+        self.assertIsNone(adapter.dispatches[-1].reasoning_effort)
+        record = audit_records(application)[-1]
+        assert record.executed_target is not None
+        self.assertIsNone(record.executed_target.reasoning_effort)
+
     def test_bare_logical_model_routes_to_the_exact_identity(self) -> None:
         registry, catalog = derived_world(SOL)
         port = self.make_derived_server(make_derived_application(registry, catalog))

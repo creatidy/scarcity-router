@@ -1886,6 +1886,25 @@ def select_model(
         )
         for entry in entries
     ]
+    return assemble_evaluations(
+        catalog=catalog, requirement=requirement, policy=policy, evaluated_at=evaluated_at,
+        evaluations=tuple(evaluations), profile_id=profile_id,
+        profile_policy_version=profile_policy_version,
+    )
+
+
+def assemble_evaluations(
+    *, catalog: ModelCatalog, requirement: TaskRequirement, policy: SelectorPolicy,
+    evaluated_at: datetime, evaluations: tuple[CandidateEvaluation, ...],
+    profile_id: str | None, profile_policy_version: int | None,
+) -> SelectionDecision:
+    """Assemble independently evaluated candidates using the selector's ordering."""
+    entries = sorted(catalog.entries, key=lambda entry: _identity_key(entry.identity))
+    if {_identity_key(entry.identity) for entry in entries} != {
+        _identity_key(item.identity) for item in evaluations
+    } or len(entries) != len(evaluations):
+        raise SelectionContractValidationError("candidate evaluations must match the catalog identities")
+    evaluations = tuple(sorted(evaluations, key=lambda item: _identity_key(item.identity)))
     eligible = [evaluation for evaluation in evaluations if evaluation.eligible]
     effort_by_identity = {entry.identity: entry.reasoning_effort for entry in entries}
     ranked = sorted(

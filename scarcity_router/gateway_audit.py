@@ -98,12 +98,15 @@ class ExecutedTarget:
     context_evidence_verified_at: str | None = None
     context_evidence_valid_until: str | None = None
     context_limit_tokens: int | None = None
+    reasoning_effort: str | None = None
 
     def __post_init__(self) -> None:
         _ = v_safe_id(self.resource_id, "executed_target.resource_id")
         _ = v_safe_id(self.provider, "executed_target.provider")
         _ = v_safe_id(self.model, "executed_target.model")
         _ = v_safe_id(self.variant, "executed_target.variant")
+        if self.reasoning_effort is not None:
+            _ = v_safe_id(self.reasoning_effort, "executed_target.reasoning_effort")
         evidence = (self.context_evidence_ref, self.context_evidence_runtime_version,
                     self.context_evidence_verified_at, self.context_evidence_valid_until, self.context_limit_tokens)
         if any(item is not None for item in evidence):
@@ -122,7 +125,7 @@ class ExecutedTarget:
         dd = exact_shape(
             d,
             ("resource_id", "provider", "model", "variant"),
-            ("context_evidence",),
+            ("context_evidence", "reasoning_effort"),
             "executed_target",
         )
         evidence = dd.get("context_evidence")
@@ -140,6 +143,7 @@ class ExecutedTarget:
             context_evidence_verified_at=v_canonical_ts(detail["verified_at"], "context_evidence.verified_at") if detail is not None else None,
             context_evidence_valid_until=v_canonical_ts(detail["valid_until"], "context_evidence.valid_until") if detail is not None else None,
             context_limit_tokens=v_int(detail["input_tokens"], "context_evidence.input_tokens", lo=1) if detail is not None else None,
+            reasoning_effort=v_safe_id(dd["reasoning_effort"], "executed_target.reasoning_effort") if "reasoning_effort" in dd else None,
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -155,6 +159,8 @@ class ExecutedTarget:
                                        "verified_at": self.context_evidence_verified_at,
                                        "valid_until": self.context_evidence_valid_until,
                                        "input_tokens": self.context_limit_tokens}
+        if self.reasoning_effort is not None:
+            out["reasoning_effort"] = self.reasoning_effort
         return out
 
 
@@ -252,7 +258,7 @@ class AuditRecord:
             )
         _ = v_int(self.call_count, "audit_record.call_count", lo=0)
         _ = v_int(self.schema_version, "audit_record.schema_version", lo=1)
-        expected_schema = 2 if self.selected_target is not None and self.selected_target.context_evidence_ref is not None else AUDIT_SCHEMA_VERSION
+        expected_schema = 2 if self.selected_target is not None and (self.selected_target.context_evidence_ref is not None or self.selected_target.reasoning_effort is not None) else AUDIT_SCHEMA_VERSION
         if self.schema_version != expected_schema:
             raise ValueError(
                 f"audit_record.schema_version: expected {expected_schema}, "

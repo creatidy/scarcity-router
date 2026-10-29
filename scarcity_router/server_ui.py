@@ -52,7 +52,8 @@ body { font-family: system-ui, sans-serif; margin: 0; background: #f6f7f9;
 header { background: #24354d; color: #fff; padding: 0.7rem 1.2rem;
          display: flex; gap: 1.2rem; align-items: baseline; flex-wrap: wrap; }
 header .brand { font-weight: 700; letter-spacing: 0.02em; }
-nav a { color: #cfe0f5; text-decoration: none; margin-right: 0.9rem; }
+nav { display: flex; flex-wrap: wrap; gap: 0.35rem 0.9rem; min-width: 0; max-width: 100%; }
+nav a { color: #cfe0f5; text-decoration: none; white-space: nowrap; }
 nav a:hover { text-decoration: underline; }
 main { max-width: 60rem; margin: 1.2rem auto; padding: 0 1rem; }
 h1 { font-size: 1.3rem; } h2 { font-size: 1.1rem; margin-top: 1.6rem; }
@@ -84,6 +85,16 @@ button.secondary { background: #64748b; }
 .muted { color: #5b6675; font-size: 0.88rem; }
 .once { background: #fff8e6; border: 1px solid #e5d28a; padding: 0.7rem 1rem;
         margin-bottom: 1rem; }
+@media (max-width: 40rem) {
+  .source-table, .source-table tbody, .source-table tr, .source-table td {
+    display: block; width: 100%; box-sizing: border-box;
+  }
+  .source-table tr:first-child { display: none; }
+  .source-table tr { border-bottom: 1px solid #d7dde6; }
+  .source-table td { border-bottom: 0; }
+  .source-table code { overflow-wrap: anywhere; }
+  .source-table input { max-width: 100%; box-sizing: border-box; }
+}
 @media (prefers-color-scheme: dark) {
   body { background: #141a22; color: #e4e9f0; }
   table, fieldset, pre { background: #1d2530; border-color: #33404f; }
@@ -149,6 +160,8 @@ def _route(
         "/admin/workers": _workers,
         "/admin/sources": _sources,
         "/admin/sources/add": _sources_add,
+        "/admin/sources/policy": _sources_policy,
+        "/admin/sources/context": _sources_context,
         "/admin/sources/delete": _sources_delete,
         "/admin/diagnostics": _diagnostics,
         "/admin/client-config": _client_config,
@@ -1063,12 +1076,90 @@ def _sources(
         connected = bool(source.get("connected"))
         auth = str(source.get("source_authenticated", "unverified"))
         models = cast("list[dict[str, object]]", source.get("detected_models") or [])
-        model_lines = "".join(
-            "<li>"
-            + _esc(str(model.get("slug")))
-            + f' <span class="muted">{_esc(str(model.get("state")))}</span></li>'
-            for model in models
-        )
+        source_id = str(source.get("source_id"))
+        allowed = cast("list[str]", source.get("allowed_models") or [])
+        evidence = cast("list[dict[str, object]]", source.get("context_evidence") or [])
+        legacy = bool(source.get("legacy_track_policy"))
+        runtime = source.get("runtime_version")
+        detected = {str(model.get("slug")): model for model in models}
+        model_lines = ""
+        for slug in sorted(set(detected) | set(allowed)):
+            model = detected.get(slug, {})
+            is_allowed = slug in allowed
+            state = str(model.get("state") or "not currently reported")
+            reason = str(model.get("reason") or "")
+            model_lines += (
+                "<li><strong>" + _esc(slug) + "</strong> "
+                + f'<span class="muted">{_esc(state)}'
+                + (f" · {_esc(reason.replace('_', ' '))}" if reason else "") + "</span> "
+                + '<form class="inline" method="post" action="/admin/sources/policy">'
+                + f'<input type="hidden" name="csrf" value="{_esc(csrf)}">'
+                + f'<input type="hidden" name="source_id" value="{_esc(source_id)}">'
+                + f'<input type="hidden" name="model" value="{_esc(slug)}">'
+                + f'<input type="hidden" name="action" value="{"revoke" if is_allowed else "grant"}">'
+                + ('<label><input type="checkbox" name="ack_legacy" value="yes" required> '
+                   + 'Replace legacy track policy with exact grants</label> ' if legacy else "")
+                + f'<button class="secondary" type="submit">{"Revoke model" if is_allowed else "Allow model"}</button></form>'
+            )
+            efforts = cast("list[str]", model.get("reasoning_efforts") or [])
+            if model and not efforts and source.get("kind") == "zcode_subscription":
+                efforts = ["plan"]
+            if is_allowed and isinstance(runtime, str):
+                for variant in efforts:
+                    existing = next((item for item in evidence if item.get("model") == slug and item.get("variant") == variant), None)
+                    model_lines += (
+                        f'<details><summary>Context evidence for {_esc(variant)}</summary>'
+                        + (f'<p class="muted">Current: {_esc(str(existing.get("evidence_ref")))}; '
+                           + f'valid until {_esc(str(existing.get("valid_until")))}; '
+                           + f'runtime {_esc(str(existing.get("runtime_version")))}.</p>' if existing else "")
+                        + '<p>Use only evidence you verified for this exact model, effort and runtime. '
+                        + 'This is an administrator attestation, not independent Router verification.</p>'
+                        + '<form method="post" action="/admin/sources/context">'
+                        + f'<input type="hidden" name="csrf" value="{_esc(csrf)}">'
+                        + f'<input type="hidden" name="source_id" value="{_esc(source_id)}">'
+                        + f'<input type="hidden" name="model" value="{_esc(slug)}">'
+                        + f'<input type="hidden" name="variant" value="{_esc(variant)}">'
+                        + f'<input type="hidden" name="runtime_version" value="{_esc(runtime)}">'
+                        + f'<p>Observed runtime: <code>{_esc(runtime)}</code></p>'
+                        + '<label>Input context tokens <input name="input_tokens" type="number" min="1" required></label> '
+                        + '<label>Non-secret evidence handle <input name="evidence_ref" placeholder="local:verified-source" required></label> '
+                        + '<label>Verified at (UTC) <input name="verified_at" placeholder="2026-09-15T12:00:00.000Z" required></label> '
+                        + '<label>Valid until (UTC, maximum 365 days) <input name="valid_until" placeholder="2026-10-15T12:00:00.000Z" required></label> '
+                        + ('<label><input type="checkbox" name="ack_legacy" value="yes" required> Replace legacy track policy with exact grants</label> ' if legacy else "")
+                        + '<button type="submit">Save context attestation</button></form>'
+                        + (('<form method="post" action="/admin/sources/context">'
+                            + f'<input type="hidden" name="csrf" value="{_esc(csrf)}">'
+                            + f'<input type="hidden" name="source_id" value="{_esc(source_id)}">'
+                            + f'<input type="hidden" name="model" value="{_esc(slug)}">'
+                            + f'<input type="hidden" name="variant" value="{_esc(variant)}">'
+                            + '<input type="hidden" name="action" value="remove">'
+                            + ('<label><input type="checkbox" name="ack_legacy" value="yes" required> Replace legacy track policy with exact grants</label> ' if legacy else "")
+                            + '<button class="secondary" type="submit">Remove attestation</button></form>') if existing else "")
+                        + '</details>'
+                    )
+            model_lines += "</li>"
+        dormant = ""
+        for item in evidence:
+            slug, variant = str(item.get("model")), str(item.get("variant"))
+            model = detected.get(slug, {})
+            efforts = cast("list[str]", model.get("reasoning_efforts") or [])
+            if model and not efforts and source.get("kind") == "zcode_subscription":
+                efforts = ["plan"]
+            if slug in allowed and variant in efforts and isinstance(runtime, str):
+                continue
+            dormant += (
+                f'<li>{_esc(slug)} / {_esc(variant)}: {_esc(str(item.get("evidence_ref")))} '
+                + '<form class="inline" method="post" action="/admin/sources/context">'
+                + f'<input type="hidden" name="csrf" value="{_esc(csrf)}">'
+                + f'<input type="hidden" name="source_id" value="{_esc(source_id)}">'
+                + f'<input type="hidden" name="model" value="{_esc(slug)}">'
+                + f'<input type="hidden" name="variant" value="{_esc(variant)}">'
+                + '<input type="hidden" name="action" value="remove">'
+                + ('<label><input type="checkbox" name="ack_legacy" value="yes" required> Replace legacy track policy with exact grants</label> ' if legacy else "")
+                + '<button class="secondary" type="submit">Remove attestation</button></form></li>'
+            )
+        if dormant:
+            model_lines += '<li><details><summary>Dormant attestations</summary><p>These do not grant model access.</p><ul>' + dormant + '</ul></details></li>'
         counts = (
             f"{_esc(str(source.get('routable', 0)))} routable &middot; "
             + f"{_esc(str(source.get('restricted', 0)))} restricted &middot; "
@@ -1079,7 +1170,7 @@ def _sources(
             + f"<td><strong>{_esc(str(source.get('label')))}</strong><br>"
             + f"<span class=\"muted\"><code>{_esc(str(source.get('source_id')))}</code></span></td>"
             + f"<td>{'connected' if connected else 'not connected'} &middot; "
-            + f"source auth: {_esc(auth)}<br>"
+            + f"last reported source auth: {_esc(auth)}<br>"
             + f"<span class=\"muted\">on the worker host (SSH) run once: "
             + f"<code>{_esc(str(source.get('login_command')))}</code> — a device "
             + f"code prints; complete it in any browser — then install the "
@@ -1089,10 +1180,26 @@ def _sources(
             + f"<code>{_esc(str(source.get('run_command')))}</code></span></td>"
             + (
                 f"<td><ul>{model_lines}</ul><p class=\"muted\">{counts}</p></td>"
-                if models
+                if model_lines
                 else f"<td class=\"muted\">{counts}</td>"
             )
             + "<td>"
+            + ('<p class="error">Legacy track policy is inactive. Explicitly allow models to migrate.</p>' if legacy else "")
+            + ('<p class="muted">Automatic adoption is disabled.</p>' if not source.get("auto_adopt") else "")
+            + '<form method="post" action="/admin/sources/policy">'
+            + f'<input type="hidden" name="csrf" value="{_esc(csrf)}">'
+            + f'<input type="hidden" name="source_id" value="{_esc(source_id)}">'
+            + f'<input type="hidden" name="action" value="{"disable" if source.get("auto_adopt") else "enable"}">'
+            + ('<label><input type="checkbox" name="ack_legacy" value="yes" required> Replace legacy track policy with exact grants</label> ' if legacy else "")
+            + f'<button class="secondary" type="submit">{"Disable adoption" if source.get("auto_adopt") else "Enable adoption"}</button></form>'
+            + '<details><summary>Capacity scopes</summary><p>Only bind scopes verified to belong to this source account. '
+            + 'Leave empty when applicability is unknown.</p><form method="post" action="/admin/sources/policy">'
+            + f'<input type="hidden" name="csrf" value="{_esc(csrf)}">'
+            + f'<input type="hidden" name="source_id" value="{_esc(source_id)}">'
+            + '<input type="hidden" name="action" value="scopes">'
+            + f'<label>Scopes (comma separated) <input name="scopes" value="{_esc(", ".join(cast("list[str]", source.get("capacity_scope_ids") or [])))}"></label>'
+            + ('<label><input type="checkbox" name="ack_legacy" value="yes" required> Replace legacy track policy with exact grants</label> ' if legacy else "")
+            + '<button class="secondary" type="submit">Save capacity scopes</button></form></details>'
             + "<form class=\"inline\" method=\"post\" action=\"/admin/sources/delete\">"
             + f"<input type=\"hidden\" name=\"csrf\" value=\"{_esc(csrf)}\">"
             + f"<input type=\"hidden\" name=\"source_id\" value=\"{_esc(str(source.get('source_id')))}\">"
@@ -1110,10 +1217,10 @@ def _sources(
     )
     body = (
         "<div class=\"notice\">A source is one authenticated execution account. "
-        + "Scarcity Router discovers its models automatically — you never "
-        + "configure a model slug here. \"source auth\" is the PROVIDER "
+        + "Discovery does not grant access. Explicitly allow each detected model, "
+        + "then attest its context bound from evidence you verified. \"source auth\" is the PROVIDER "
         + "account sign-in; the worker pairing is shown on the Workers page.</div>"
-        + "<table><tr><th>Source</th><th>State</th><th>Detected models</th><th></th></tr>"
+        + '<table class="source-table"><tr><th>Source</th><th>State</th><th>Detected models</th><th></th></tr>'
         + rows
         + "</table>"
         + "<h2>Add a Codex source</h2>"
@@ -1128,7 +1235,7 @@ def _sources(
         + "<p class=\"muted\">After adding, run BOTH printed commands once on the "
         + "worker host over SSH: the login prints a device code to complete in "
         + "any browser (no browser needed on the host), then run the worker "
-        + "with the source flag — the models appear here automatically.</p>"
+        + "with the source flag — detected models appear here for explicit approval.</p>"
         + "</div>"
     )
     plane.send_html(handler, 200, _page(plane, handler, "Sources", body))
@@ -1169,6 +1276,98 @@ def _sources_add(
                 "worker_id": worker_id,
             }
         )
+    except ControlHTTPError as exc:
+        _render_banner_page(plane, handler, "Sources", "/admin/sources", exc.message, error=True, status=exc.status)
+        return
+    _redirect(plane, handler, "/admin/sources")
+
+
+def _sources_policy(
+    plane: "ControlPlane", method: str, handler: "GatewayRequestHandler"
+) -> None:
+    if method != "POST":
+        plane.send_html(handler, 405, _error_page(plane, handler, "method not allowed"))
+        return
+    try:
+        _ = plane.require_admin_session(handler, mutating=True)
+        form = plane.read_form(handler)
+        source = plane.configuration.source_by_id(form.get("source_id", ""))
+        if source is None:
+            raise ControlHTTPError.invalid_request("Unknown source; refresh the Sources page")
+        if source.allowed_tracks and form.get("ack_legacy") != "yes":
+            raise ControlHTTPError.invalid_request("Confirm replacement of the inactive legacy track policy")
+        action = form.get("action", "")
+        models = set(source.allowed_models)
+        document: dict[str, object] = {"allowed_models": sorted(models)}
+        if action in ("grant", "revoke"):
+            model = form.get("model", "")
+            view = next((item for item in plane.sources_view() if item["source_id"] == source.source_id), None)
+            detected = cast("list[dict[str, object]]", view.get("detected_models") or []) if view is not None else []
+            if model not in models and not any(item.get("slug") == model for item in detected):
+                raise ControlHTTPError.invalid_request("Model is not currently detected or granted; refresh the Sources page")
+            if action == "grant":
+                models.add(model)
+            else:
+                models.discard(model)
+            document["allowed_models"] = sorted(models)
+        elif action in ("enable", "disable"):
+            document["auto_adopt"] = action == "enable"
+        elif action == "scopes":
+            document["capacity_scope_ids"] = sorted(part.strip() for part in form.get("scopes", "").split(",") if part.strip())
+        else:
+            raise ControlHTTPError.invalid_request("Unknown source policy action")
+        plane.service_set_source_model_policy(source.source_id, document)
+    except ControlHTTPError as exc:
+        _render_banner_page(plane, handler, "Sources", "/admin/sources", exc.message, error=True, status=exc.status)
+        return
+    _redirect(plane, handler, "/admin/sources")
+
+
+def _sources_context(
+    plane: "ControlPlane", method: str, handler: "GatewayRequestHandler"
+) -> None:
+    if method != "POST":
+        plane.send_html(handler, 405, _error_page(plane, handler, "method not allowed"))
+        return
+    try:
+        _ = plane.require_admin_session(handler, mutating=True)
+        form = plane.read_form(handler)
+        source = plane.configuration.source_by_id(form.get("source_id", ""))
+        if source is None:
+            raise ControlHTTPError.invalid_request("Unknown source; refresh the Sources page")
+        if source.allowed_tracks and form.get("ack_legacy") != "yes":
+            raise ControlHTTPError.invalid_request("Confirm replacement of the inactive legacy track policy")
+        model, variant = form.get("model", ""), form.get("variant", "")
+        if form.get("action") == "remove":
+            evidence = [item.to_dict() for item in source.context_evidence if (item.model, item.variant) != (model, variant)]
+            if len(evidence) == len(source.context_evidence):
+                raise ControlHTTPError.invalid_request("Context attestation no longer exists; refresh the Sources page")
+            plane.service_set_source_model_policy(source.source_id, {
+                "allowed_models": list(source.allowed_models), "context_evidence": evidence,
+            })
+            _redirect(plane, handler, "/admin/sources")
+            return
+        view = next((item for item in plane.sources_view() if item["source_id"] == source.source_id), None)
+        detected = cast("list[dict[str, object]]", view.get("detected_models") or []) if view is not None else []
+        discovered = next((item for item in detected if item.get("slug") == model), None)
+        efforts = cast("list[str]", discovered.get("reasoning_efforts") or []) if discovered is not None else []
+        if discovered is not None and not efforts and source.kind == "zcode_subscription":
+            efforts = ["plan"]
+        if (model not in source.allowed_models or variant not in efforts or view is None
+                or not isinstance(view.get("runtime_version"), str)
+                or form.get("runtime_version") != view.get("runtime_version")):
+            raise ControlHTTPError.invalid_request("The allowed model, effort or runtime changed; refresh the Sources page")
+        try:
+            input_tokens = int(form.get("input_tokens", ""))
+        except ValueError:
+            raise ControlHTTPError.invalid_request("Input context tokens must be a positive integer") from None
+        evidence = [item.to_dict() for item in source.context_evidence if (item.model, item.variant) != (model, variant)]
+        evidence.append({"model": model, "variant": variant, "runtime_version": view["runtime_version"],
+                         "input_tokens": input_tokens, "evidence_ref": form.get("evidence_ref", ""),
+                         "verified_at": form.get("verified_at", ""), "valid_until": form.get("valid_until", "")})
+        plane.service_set_source_model_policy(source.source_id, {
+            "allowed_models": list(source.allowed_models), "context_evidence": evidence,
+        })
     except ControlHTTPError as exc:
         _render_banner_page(plane, handler, "Sources", "/admin/sources", exc.message, error=True, status=exc.status)
         return

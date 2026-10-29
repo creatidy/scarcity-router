@@ -30,7 +30,8 @@ from scarcity_router.gateway_contracts import GatewayError
 from scarcity_router.routing_core import AdministratorConstraints, ClientAuthorization, ClientRoutingProfile
 from scarcity_router.execution_sources import SourceRegistry
 from scarcity_router.model_inventory import DiscoveredModel, ModelInventoryReport, SourceInventory
-from scarcity_router.resource_state import ResourceHealth, ResourceRegistry, ResourceStateSnapshot, WorkerStateReport
+from scarcity_router.resource_state import QuotaFact, ResourceHealth, ResourceRegistry, ResourceStateSnapshot, WorkerStateReport
+from scarcity_router.capacity import CapacityWindow
 from scarcity_router.selection_types import ModelCatalog
 from scarcity_router.machine_api import (
     ENVELOPE_SCHEMA_VERSION,
@@ -284,6 +285,17 @@ class MachineEndpointTests(ServerHarness):
         self.assertEqual("invalid_request", error["code"])
         self.assertIn("explicit requirement", cast(str, error["message"]))
 
+    def test_unscoped_replenishment_is_refused_actionably(self) -> None:
+        self.onboard()
+        status, payload, _headers = self.exchange("POST", "/v1/select", {
+            "requirement": {"task_level": "L0", "capability_minima": {}, "hard_constraints": {}},
+            "replenishment_states": [{"provider": "openai", "kind": "rate_limit_reset",
+                                      "available_count": 1, "details_known": True,
+                                      "retrieved_at": "2026-09-16T12:00:00.000Z"}],
+        }, headers={"Authorization": f"Bearer {self.client_key}"}, with_session=False)
+        self.assertEqual(400, status)
+        self.assertIn("exact source", json.dumps(payload))
+
 
 class RemoteBridgeParityTests(ServerHarness):
     """remote.py against the REAL server: bearer auth + v1 envelopes."""
@@ -339,6 +351,7 @@ class RemoteBridgeParityTests(ServerHarness):
         sources = SourceRegistry()
         sources.sync_configuration((SourceConfig(
             "owned", "codex_subscription", "Owned", "worker-1", allowed_models=("synthetic-model",),
+            capacity_scope_ids=("codex",),
         ),))
         _ = sources.apply_inventory(ModelInventoryReport(worker_id="worker-1", sources=(SourceInventory(
             source_id="owned", adapter_id="codex:owned", kind="codex_subscription",
@@ -351,6 +364,10 @@ class RemoteBridgeParityTests(ServerHarness):
         registry.apply_snapshot(ResourceStateSnapshot(
             schema_version=1, identity=registration.identity,
             observed_at="2026-09-16T12:00:00.000Z", health=ResourceHealth(status="ok"),
+            quota_facts=(QuotaFact("provider_telemetry", CapacityWindow(
+                resource="tokens", kind="five_hour", scope_id="codex", duration_seconds=18000,
+                used_percent=20, remaining_percent=80,
+            )),),
         ))
         application = copy.copy(self.plane.current_application())
         application.catalog = sources.derived_catalog_entries(ModelCatalog(None, None, ()))
@@ -358,22 +375,51 @@ class RemoteBridgeParityTests(ServerHarness):
         application.client_authorizations = None
         document: dict[str, object] = {"requirement": {"task_level": "L0", "capability_minima": {}, "hard_constraints": {}}}
         with patch.object(self.plane, "current_application", return_value=application), \
-             patch.object(application.adapters, "supports_resource", return_value=True):
+             patch.object(application.adapters, "supports_resource", return_value=True), \
+             patch("scarcity_router.control_api.collect_status", side_effect=RuntimeError("unrelated host collector")):
             selection = self._client().select(document)
             simulation = self._client().simulate({**document, "overrides": {}})
             selected = cast("dict[str, object]", selection["decision"])["selected"]
             self.assertIsNotNone(selected)
             simulated = cast("dict[str, object]", simulation["result"])
             self.assertEqual(selected, cast("dict[str, object]", simulated["baseline"])["selected"])
+            exhausted = self._client().simulate({**document, "overrides": {"capacity_percentages": [{
+                "provider": "openai", "scope_id": "codex", "resource": "tokens",
+                "kind": "five_hour", "remaining_percent": 0,
+            }]}})
+            exhausted_result = cast("dict[str, object]", exhausted["result"])
+            self.assertIsNone(cast("dict[str, object]", exhausted_result["simulated"])["selected"])
             future = self._client().simulate({**document, "overrides": {
                 "evaluated_at": "2026-09-17T12:00:00.000Z",
             }})
             future_result = cast("dict[str, object]", future["result"])
             self.assertIsNone(cast("dict[str, object]", future_result["simulated"])["selected"])
             self.assertIsNotNone(cast("dict[str, object]", self._client().select(document)["decision"])["selected"])
+            second_identity = replace(registration.identity, resource_id="other:synthetic-model:high")
+            second = replace(registration, identity=second_identity)
+            registry.register(second)
+            first_observation = next(entry.observation for entry in registry.registry_snapshot(
+                now="2026-09-16T12:00:00.000Z").entries if entry.identity.resource_id == registration.identity.resource_id)
+            assert first_observation is not None
+            registry.apply_snapshot(replace(first_observation, identity=second_identity))
+            model_entry = application.catalog.entries[0]
+            original_binding = model_entry.resource_capacity_bindings[0][1]
+            application.catalog = replace(application.catalog, entries=(replace(
+                model_entry,
+                capacity_binding_resources=tuple(sorted((registration.identity.resource_id, second_identity.resource_id))),
+                resource_capacity_bindings=tuple(sorted(((registration.identity.resource_id, original_binding),
+                                                         (second_identity.resource_id, original_binding)))),
+            ),))
+            with self.assertRaises(RemoteBridgeError):
+                _ = self._client().simulate({**document, "overrides": {"capacity_percentages": [{
+                    "provider": "openai", "scope_id": "codex", "resource": "tokens",
+                    "kind": "five_hour", "remaining_percent": 0,
+                }]}})
             application.client_authorizations = {self.client_id: ClientAuthorization(blocked_resource_ids=(registration.identity.resource_id,))}
-            denied = self._client().select(document)
-            self.assertIsNone(cast("dict[str, object]", denied["decision"])["selected"])
+            allowed = self._client().select(document)
+            public_route = cast("dict[str, object]", allowed["route"])
+            target = cast("dict[str, object]", public_route["target"])
+            self.assertEqual(second_identity.resource_id, cast("dict[str, object]", target["resource"])["resource_id"])
 
     def test_remote_select_surfaces_server_rejections(self) -> None:
         self.onboard()

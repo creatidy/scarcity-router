@@ -467,8 +467,8 @@ class SourceConfig:
         if len(self.context_evidence) > 64:
             raise ServerConfigError("source.context_evidence: maximum 64 entries")
         evidence_keys = [(item.model, item.variant) for item in self.context_evidence]
-        if len(set(evidence_keys)) != len(evidence_keys) or any(model not in self.allowed_models for model, _variant in evidence_keys):
-            raise ServerConfigError("source.context_evidence: model variants must be unique and models explicitly granted")
+        if len(set(evidence_keys)) != len(evidence_keys):
+            raise ServerConfigError("source.context_evidence: model variants must be unique")
 
     def provider(self) -> str:
         """The provider this source kind executes through."""

@@ -634,7 +634,7 @@ class DynamicResourceRoutingTests(unittest.TestCase):
             SourceConfig("a-source", "codex_subscription", "A", "worker-a",
                          allowed_models=("synthetic-model",), capacity_scope_ids=("codex",)),
             SourceConfig("b-source", "codex_subscription", "B", "worker-b",
-                         allowed_models=("synthetic-model",), capacity_scope_ids=("other",)),
+                         allowed_models=("synthetic-model",), capacity_scope_ids=("codex",)),
         ))
         for source_id, worker_id in (("a-source", "worker-a"), ("b-source", "worker-b")):
             _ = sources.apply_inventory(ModelInventoryReport(worker_id=worker_id, sources=(SourceInventory(
@@ -643,20 +643,44 @@ class DynamicResourceRoutingTests(unittest.TestCase):
                 models=(DiscoveredModel("synthetic-model", ("high",)),),
             ),)))
         registrations = sources.derived_registrations()
+        def observed(five: int, weekly: int, other: int) -> RegistrySnapshot:
+            return _registry_snapshot(list(registrations), {
+                item.identity.resource_id: replace(
+                    _observation(item.identity),
+                    quota_facts=tuple(QuotaFact("provider_telemetry", window) for window in (
+                        _snap("openai", five=five, weekly=weekly).windows
+                        if item.identity.resource_id.startswith("a-source:")
+                        else _snap("openai", five=other, weekly=other).windows
+                    )),
+                ) for item in registrations
+            })
         route = RouteRequest(
             catalog=sources.derived_catalog_entries(ModelCatalog(None, None, ())),
             profiles=TaskProfileCatalog(()),
-            registry_snapshot=_registry_snapshot(list(registrations), {
-                item.identity.resource_id: _observation(item.identity) for item in registrations
-            }),
+            registry_snapshot=observed(0, 0, 80),
             policy=neutral_selector_policy(), evaluated_at=EVAL_AT,
             capacity_snapshots=(_snap("openai", five=0, weekly=0, extra_scopes={"other": 80}),),
+            eligibility_reports=(ExecutionEligibility(
+                schema_version=1, provider="openai", source="codex_app_server", retrieved_at=T_OBS,
+                state="policy_blocked", reason_codes=("purchased_credits_present",),
+            ),),
             request=RequestBinding(),
             task_requirement=TaskRequirement("L0", CapabilityMinima(), HardConstraints()),
         )
         decision = route_request(route)
         assert decision.target is not None
         self.assertEqual("b-source:synthetic-model:high", decision.target.resource.resource_id)
+        preserved_pin = PinnedTarget.from_route_target_dict(decision.target.to_dict())
+        self.assertEqual("high", preserved_pin.reasoning_effort)
+        entry = route.catalog.entries[0]
+        drifted = replace(route, catalog=replace(route.catalog, entries=(replace(
+            entry, capacity_bindings=None, capacity_binding_resources=(), resource_capacity_bindings=(),
+        ),)), request=RequestBinding(pinned_target=preserved_pin))
+        self.assertIsNone(route_request(drifted).target)
+        self.assertFalse(admit_pinned_target(drifted, pinned_target=preserved_pin).approved)
+        host_changed = route_request(replace(route, capacity_snapshots=(_snap("openai", five=100, weekly=100),)))
+        assert host_changed.target is not None
+        self.assertEqual(decision.target.resource.resource_id, host_changed.target.resource.resource_id)
         self.assertEqual((), decision.target_alternatives)
         self.assertTrue(any(exclusion.resource_id == "a-source:synthetic-model:high"
                             and exclusion.stage == "capacity"
@@ -666,9 +690,7 @@ class DynamicResourceRoutingTests(unittest.TestCase):
         pin = PinnedTarget("a-source:synthetic-model:high", identity)
         self.assertIsNone(route_request(replace(route, request=RequestBinding(pinned_target=pin))).target)
         self.assertFalse(admit_pinned_target(route, pinned_target=pin).approved)
-        better_a = replace(route, capacity_snapshots=(
-            _snap("openai", five=90, weekly=90, extra_scopes={"other": 60}),
-        ))
+        better_a = replace(route, registry_snapshot=observed(90, 90, 60))
         swapped = route_request(better_a)
         assert swapped.target is not None
         self.assertEqual("a-source:synthetic-model:high", swapped.target.resource.resource_id)
@@ -676,9 +698,19 @@ class DynamicResourceRoutingTests(unittest.TestCase):
         strict_policy = replace(route.policy, resource_policy=replace(
             route.policy.resource_policy, unknown_capacity_mode="strict",
         ))
-        missing = replace(route, policy=strict_policy, capacity_snapshots=())
-        self.assertIsNone(route_request(missing).target)
+        missing = replace(route, policy=strict_policy, registry_snapshot=_registry_snapshot(
+            list(registrations), {item.identity.resource_id: replace(_observation(item.identity), quota_facts=()) for item in registrations}
+        ))
+        missing_decision = route_request(missing)
+        self.assertIsNone(missing_decision.target, missing_decision.to_dict())
         self.assertFalse(admit_pinned_target(missing, pinned_target=pin).approved)
+        strict_no_payg = replace(route, client_authorization=ClientAuthorization(strict_no_payg=True))
+        self.assertIsNone(route_request(strict_no_payg).target)
+        blocked_health = replace(route, registry_snapshot=_registry_snapshot(
+            list(registrations), {item.identity.resource_id: _observation(item.identity, status="auth_required")
+                                  for item in registrations}
+        ))
+        self.assertIsNone(route_request(blocked_health).target)
 
     def test_exact_resource_bounds_enable_without_model_family_assumptions(self) -> None:
         sources = SourceRegistry()

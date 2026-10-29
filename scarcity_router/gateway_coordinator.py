@@ -1516,9 +1516,12 @@ class GatewayApplication:
         effective = replace(effective, strict_no_payg=strict)
         assurances = execution_assurances((entry,), current_adapters, strict)
         codes = _authorization_failure_codes(entry, effective, execution_assurances=assurances, assessed_at=assessed_at)
+        if not codes and self.catalog.catalog_version is None:
+            codes = availability_failure_codes(entry, ())
         if strict and not codes:
             try:
-                _snapshots, reports = self.capacity_source(canonical_instant(assessed_at))
+                reports = (() if self.catalog.catalog_version is None
+                           else self.capacity_source(canonical_instant(assessed_at))[1])
             except Exception:
                 raise GatewayError.api("current source policy evidence is unavailable", code="state_unavailable", http_status=503) from None
             codes = availability_failure_codes(entry, reports)
@@ -1684,7 +1687,9 @@ class GatewayApplication:
             client_grant = self._client_grant(state.client_id)
         try:
             registry_snapshot = registry.registry_snapshot(now=now_ts)
-            capacity_snapshots, eligibility_reports = self.capacity_source(now_ts)
+            capacity_snapshots, eligibility_reports = (
+                ((), ()) if self.catalog.catalog_version is None else self.capacity_source(now_ts)
+            )
         except (CapacityValidationError, ValueError):
             raise GatewayError.api(
                 "the gateway's resource state is unavailable",
@@ -1996,9 +2001,12 @@ class GatewayApplication:
                 + "server-direct HTTP resource",
                 code="unauthorized_target",
             )
+        if self.catalog.catalog_version is None and availability_failure_codes(current_entry, ()):
+            raise GatewayError.permission("the selected source is no longer available", code="source_policy_blocked")
         if strict:
             try:
-                _snapshots, reports = self.capacity_source(canonical_instant(assessed_at))
+                reports = (() if self.catalog.catalog_version is None
+                           else self.capacity_source(canonical_instant(assessed_at))[1])
             except Exception:
                 raise GatewayError.api("current source policy evidence is unavailable", code="state_unavailable", http_status=503) from None
             if availability_failure_codes(current_entry, reports):
@@ -2057,9 +2065,10 @@ class GatewayApplication:
             ),
         )
         state.context = context
-        configured_effort = next(
-            entry.reasoning_effort for entry in self.catalog.entries
-            if entry.identity == target.model
+        configured_effort = (
+            target.evidenced_reasoning_effort
+            if self.catalog.catalog_version is None
+            else next(entry.reasoning_effort for entry in self.catalog.entries if entry.identity == target.model)
         )
         dispatched_effort = request.reasoning_effort
         controls = _lookup_cell(
@@ -2199,7 +2208,7 @@ class GatewayApplication:
                 state.flow_notes = (*state.flow_notes, "source_call_facts_unavailable")
         reported, estimated = _usage_totals(state.calls)
         record = AuditRecord(
-            schema_version=(2 if state.selected_target is not None and state.selected_target.context_evidence_ref is not None else 1),
+            schema_version=(2 if state.selected_target is not None and (state.selected_target.context_evidence_ref is not None or state.selected_target.reasoning_effort is not None) else 1),
             request_id=state.request_id,
             client_id=state.client_id,
             decision_id=state.decision_id,
@@ -2322,6 +2331,7 @@ def _audit_target(target: RouteTarget) -> ExecutedTarget:
         context_evidence_verified_at=target.context_evidence_verified_at,
         context_evidence_valid_until=target.context_evidence_valid_until,
         context_limit_tokens=target.context_limit_tokens,
+        reasoning_effort=target.evidenced_reasoning_effort,
     )
 
 
