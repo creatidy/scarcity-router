@@ -26,7 +26,6 @@ from scarcity_router.model_inventory import (  # noqa: E402
     ModelInventoryReport,
     SourceInventory,
 )
-from scarcity_router.model_tracks import load_track_registry  # noqa: E402
 from scarcity_router.selection_types import REASONING_EFFORTS  # noqa: E402
 from scarcity_router.server_config import (  # noqa: E402
     CONFIG_SCHEMA_VERSION,
@@ -45,6 +44,10 @@ def _config(**overrides: object) -> SourceConfig:
         "kind": "codex_subscription",
         "label": "Personal ChatGPT Pro",
         "worker_id": "worker-1",
+        "allowed_models": (
+            "gpt-6-sol", "gpt-6-luna", "gpt-6-astra", "gpt-6.1-sol",
+            "gpt-6.5-luna", "gpt-6.5-sol", "plan-managed", "glm-5.3",
+        ),
     }
     kwargs.update(overrides)
     # Keys above are fixed literals; dict[str, object] is just the merge vehicle.
@@ -87,14 +90,12 @@ SIX_GEN = (
 
 class AdoptionTests(unittest.TestCase):
     def __init__(self, method_name: str = "runTest") -> None:
-        self.registry: SourceRegistry = SourceRegistry(
-            track_registry=load_track_registry()
-        )
+        self.registry: SourceRegistry = SourceRegistry()
         super().__init__(method_name)
 
     @override
     def setUp(self) -> None:
-        self.registry = SourceRegistry(track_registry=load_track_registry())
+        self.registry = SourceRegistry()
         self.registry.sync_configuration((_config(),))
 
     def _apply(self, models: tuple[DiscoveredModel, ...], **kw: object):
@@ -102,10 +103,36 @@ class AdoptionTests(unittest.TestCase):
             _inventory("personal-openai", "worker-1", models, **kw)  # pyright: ignore[reportArgumentType] - fixed-literal helper
         )
 
-    def test_new_known_track_model_is_adopted_without_manual_configuration(self) -> None:
+    def test_explicit_model_allowlist_limits_adoption(self) -> None:
+        self.registry.sync_configuration((_config(allowed_models=("gpt-6-sol",)),))
+        decisions = self._apply((_model("gpt-6-sol"), _model("gpt-6-astra")))
+        by_slug = {decision.slug: decision for decision in decisions}
+        self.assertEqual("routable", by_slug["gpt-6-sol"].state)
+        self.assertEqual("model_not_allowed", by_slug["gpt-6-astra"].reason)
+        self.assertFalse(any("gpt-6-astra" in r.identity.resource_id
+                             for r in self.registry.derived_registrations()))
+
+    def test_model_allowlist_round_trips_and_rejects_duplicates(self) -> None:
+        config = _config(allowed_models=("gpt-6-sol",))
+        self.assertEqual(config, SourceConfig.from_dict(config.to_dict()))
+        with self.assertRaises(ServerConfigError):
+            _ = _config(allowed_models=("gpt-6-sol", "gpt-6-sol"))
+
+    def test_tightened_model_allowlist_applies_without_new_inventory(self) -> None:
+        from scarcity_router.selection_types import ModelCatalog
+
+        _ = self._apply((_model("gpt-6-sol"), _model("gpt-6-astra")))
+        self.registry.sync_configuration((_config(allowed_models=("gpt-6-sol",)),))
+        self.assertFalse(any("gpt-6-astra" in r.identity.resource_id
+                             for r in self.registry.derived_registrations()))
+        self.assertFalse(any(e.identity.model == "gpt-6-astra"
+                             for e in self.registry.derived_catalog_entries(
+                                 ModelCatalog(1, "2026-09-24", ())
+                             ).entries))
+
+    def test_explicitly_granted_model_is_adopted(self) -> None:
         decisions = self._apply((_model("gpt-6.1-sol", ("low", "high")),))
         self.assertEqual("routable", decisions[0].state)
-        self.assertEqual("openai/sol", decisions[0].track_id)
         registrations = self.registry.derived_registrations()
         # Per-effort materialization (Daybreak finding 3): one exact
         # resource per advertised effort, in the runtime's effort order.
@@ -124,37 +151,37 @@ class AdoptionTests(unittest.TestCase):
     def test_unknown_model_is_discovered_but_never_routable(self) -> None:
         decisions = self._apply((_model("some-new-unclassified-model", ("high",)),))
         self.assertEqual("discovered", decisions[0].state)
-        self.assertEqual("unclassified_track", decisions[0].reason)
+        self.assertEqual("model_not_allowed", decisions[0].reason)
         self.assertEqual((), self.registry.derived_registrations())
         # And it stays visible in the source view.
         view = self.registry.source_view()[0]
         self.assertEqual(1, view["errors"])
 
-    def test_daybreak_is_restricted_never_materialized(self) -> None:
+    def test_ungranted_model_is_not_materialized_regardless_of_name(self) -> None:
         decisions = self._apply((_model("gpt-daybreak-blue-latest", ("high",)),))
-        self.assertEqual("restricted", decisions[0].state)
-        self.assertEqual("restricted_track", decisions[0].reason)
+        self.assertEqual("discovered", decisions[0].state)
+        self.assertEqual("model_not_allowed", decisions[0].reason)
         self.assertEqual((), self.registry.derived_registrations())
         view = self.registry.source_view()[0]
-        self.assertEqual(1, view["restricted"])
+        self.assertEqual(1, view["errors"])
         self.assertEqual(0, view["routable"])
 
     def test_adoption_requires_an_authenticated_source(self) -> None:
         decisions = self._apply(SIX_GEN, auth_state="auth_required")
-        self.assertTrue(all(d.state == "classified" for d in decisions))
+        self.assertTrue(all(d.state == "discovered" for d in decisions))
         self.assertEqual((), self.registry.derived_registrations())
 
-    def test_auto_adopt_disabled_keeps_models_classified(self) -> None:
-        registry = SourceRegistry(track_registry=load_track_registry())
+    def test_auto_adopt_disabled_keeps_models_discovered(self) -> None:
+        registry = SourceRegistry()
         registry.sync_configuration((_config(auto_adopt=False),))
         decisions = registry.apply_inventory(
             _inventory("personal-openai", "worker-1", (_model("gpt-6-sol", ("high",)),))
         )
-        self.assertEqual("classified", decisions[0].state)
+        self.assertEqual("discovered", decisions[0].state)
         self.assertEqual("adoption_disabled", decisions[0].reason)
 
-    def test_allowed_tracks_narrows_adoption(self) -> None:
-        registry = SourceRegistry(track_registry=load_track_registry())
+    def test_legacy_allowed_tracks_fail_closed(self) -> None:
+        registry = SourceRegistry()
         registry.sync_configuration(
             (_config(allowed_tracks=("openai/sol",)),)
         )
@@ -166,9 +193,9 @@ class AdoptionTests(unittest.TestCase):
             )
         )
         states = {d.slug: d.state for d in decisions}
-        self.assertEqual("routable", states["gpt-6-sol"])
-        self.assertEqual("classified", states["gpt-6-luna"])
-        self.assertEqual("track_not_allowed", next(
+        self.assertEqual("discovered", states["gpt-6-sol"])
+        self.assertEqual("discovered", states["gpt-6-luna"])
+        self.assertEqual("legacy_track_policy", next(
             d.reason for d in decisions if d.slug == "gpt-6-luna"
         ))
 
@@ -193,14 +220,12 @@ class AdoptionTests(unittest.TestCase):
 
 class LifecycleTests(unittest.TestCase):
     def __init__(self, method_name: str = "runTest") -> None:
-        self.registry: SourceRegistry = SourceRegistry(
-            track_registry=load_track_registry()
-        )
+        self.registry: SourceRegistry = SourceRegistry()
         super().__init__(method_name)
 
     @override
     def setUp(self) -> None:
-        self.registry = SourceRegistry(track_registry=load_track_registry())
+        self.registry = SourceRegistry()
         self.registry.sync_configuration((_config(),))
         _ = self.registry.apply_inventory(
             _inventory("personal-openai", "worker-1", SIX_GEN)
@@ -246,7 +271,7 @@ class LifecycleTests(unittest.TestCase):
 
 class QuotaPoolTests(unittest.TestCase):
     def test_two_sources_default_to_two_pools_and_two_resources(self) -> None:
-        registry = SourceRegistry(track_registry=load_track_registry())
+        registry = SourceRegistry()
         registry.sync_configuration(
             (
                 _config(source_id="personal-openai"),
@@ -279,7 +304,7 @@ class QuotaPoolTests(unittest.TestCase):
         )
 
     def test_explicit_shared_pool_is_the_only_sharing_path(self) -> None:
-        registry = SourceRegistry(track_registry=load_track_registry())
+        registry = SourceRegistry()
         registry.sync_configuration(
             (
                 _config(source_id="a", quota_pool_id="shared-family"),
@@ -302,7 +327,7 @@ class QuotaPoolTests(unittest.TestCase):
 
 class OwnershipTests(unittest.TestCase):
     def test_derived_resources_own_to_their_configured_worker(self) -> None:
-        registry = SourceRegistry(track_registry=load_track_registry())
+        registry = SourceRegistry()
         registry.sync_configuration(
             (_config(source_id="personal-openai", worker_id="worker-1"),)
         )
@@ -382,14 +407,23 @@ class ConfigurationTests(unittest.TestCase):
 
 
 def _base_catalog():
-    from scarcity_router.selection_app import DEFAULT_CATALOG_PATH, load_catalog
-
-    return load_catalog(DEFAULT_CATALOG_PATH)
+    from scarcity_router.selection_types import (
+        CapabilityAssessment, CapabilityAssessments, ModelCatalog, ModelCatalogEntry,
+        ModelHardProperties, ModelIdentity,
+    )
+    unknown = CapabilityAssessment(None)
+    entry = ModelCatalogEntry(
+        identity=ModelIdentity("openai", "gpt-6-sol", "high"), display_name="Synthetic",
+        hard_properties=ModelHardProperties(),
+        capabilities=CapabilityAssessments(unknown, unknown, unknown, unknown, unknown, unknown),
+        capacity_bindings=None,
+    )
+    return ModelCatalog(None, None, (entry,))
 
 
 class DerivedCatalogTests(unittest.TestCase):
-    def test_floor_entries_are_conservative_and_provenance_bearing(self) -> None:
-        registry = SourceRegistry(track_registry=load_track_registry())
+    def test_discovered_entries_do_not_inherit_family_claims(self) -> None:
+        registry = SourceRegistry()
         registry.sync_configuration((_config(),))
         _ = registry.apply_inventory(
             _inventory(
@@ -404,27 +438,19 @@ class DerivedCatalogTests(unittest.TestCase):
             for e in merged.entries
             if e.identity.model == "gpt-6.1-sol" and e.identity.variant == "high"
         )
-        # Capability inheritance is ONLY the track floor...
-        classified = load_track_registry().classify("openai", "gpt-6.1-sol")
-        assert classified is not None and classified.floor is not None
-        floor = classified.floor
-        self.assertEqual(floor.ratings["reasoning"], entry.capabilities.reasoning.rating)
-        self.assertEqual(floor.ratings["tool_use"], entry.capabilities.tool_use.rating)
-        # ...provenance points at the reviewed artifact...
-        self.assertEqual(
-            "model-tracks.json", entry.capabilities.reasoning.evidence[0].source
-        )
-        self.assertEqual("low", entry.capabilities.reasoning.confidence)
-        # ...context/output carry the owner-reviewed family-continuity
-        # assumption; vision and tool support stay honestly unknown...
-        self.assertEqual(1050000, entry.hard_properties.input_context_tokens)
+        self.assertIsNone(entry.capabilities.reasoning.rating)
+        self.assertIsNone(entry.capabilities.tool_use.rating)
+        self.assertEqual((), entry.capabilities.reasoning.evidence)
+        self.assertIsNone(entry.last_reviewed_on)
+        self.assertIsNone(entry.hard_properties.input_context_tokens)
+        self.assertIsNone(entry.hard_properties.output_tokens)
         self.assertIsNone(entry.hard_properties.supports_vision)
         self.assertIsNone(entry.hard_properties.supports_tool_use)
         # ...and capacity applicability is unknown, never optimistic.
         self.assertIsNone(entry.capacity_bindings)
 
     def test_exact_catalog_entries_always_win(self) -> None:
-        registry = SourceRegistry(track_registry=load_track_registry())
+        registry = SourceRegistry()
         registry.sync_configuration((_config(),))
         _ = registry.apply_inventory(
             _inventory("personal-openai", "worker-1", (_model("gpt-6-sol", ("high",)),))
@@ -436,12 +462,10 @@ class DerivedCatalogTests(unittest.TestCase):
             if e.identity.model == "gpt-6-sol" and e.identity.variant == "high"
         ]
         self.assertEqual(1, len(sol_high))
-        # The reviewed D-053 catalog entry (owner-reviewed display name),
-        # not a re-derived floor entry — exactly one entry for the pair.
-        self.assertEqual("GPT-6 Sol High", sol_high[0].display_name)
+        self.assertEqual("Synthetic", sol_high[0].display_name)
 
     def test_registry_never_mutates_the_base_catalog(self) -> None:
-        registry = SourceRegistry(track_registry=load_track_registry())
+        registry = SourceRegistry()
         registry.sync_configuration((_config(),))
         _ = registry.apply_inventory(
             _inventory("personal-openai", "worker-1", (_model("gpt-6.1-sol", ("high",)),))
@@ -452,11 +476,8 @@ class DerivedCatalogTests(unittest.TestCase):
             any(e.identity.model == "gpt-6.1-sol" for e in base.entries)
         )
 
-    def test_light_family_floor_expansion_is_max_only(self) -> None:
-        # D-054: luna is effort_restriction max_only — the floor entry is
-        # generated at max only, and only when the runtime REPORTS a max
-        # effort. Non-max efforts of a light family never become entries.
-        registry = SourceRegistry(track_registry=load_track_registry())
+    def test_all_reported_efforts_are_preserved_without_family_inference(self) -> None:
+        registry = SourceRegistry()
         registry.sync_configuration((_config(),))
         _ = registry.apply_inventory(
             _inventory(
@@ -469,15 +490,11 @@ class DerivedCatalogTests(unittest.TestCase):
         luna_entries = [
             e for e in merged.entries if e.identity.model == "gpt-6.5-luna"
         ]
-        self.assertEqual(("max",), tuple(e.identity.variant for e in luna_entries))
-        floor = load_track_registry().classify("openai", "gpt-6.5-luna")
-        assert floor is not None and floor.floor is not None
-        self.assertEqual(
-            floor.floor.ratings["reasoning"], luna_entries[0].capabilities.reasoning.rating
-        )
+        self.assertEqual(("low", "medium", "high", "max"), tuple(e.identity.variant for e in luna_entries))
+        self.assertIsNone(luna_entries[0].capabilities.reasoning.rating)
 
-    def test_light_family_without_reported_max_gets_no_floor_entry(self) -> None:
-        registry = SourceRegistry(track_registry=load_track_registry())
+    def test_no_unreported_effort_is_invented(self) -> None:
+        registry = SourceRegistry()
         registry.sync_configuration((_config(),))
         _ = registry.apply_inventory(
             _inventory(
@@ -487,19 +504,16 @@ class DerivedCatalogTests(unittest.TestCase):
             )
         )
         merged = registry.derived_catalog_entries(_base_catalog())
-        self.assertFalse(
-            any(e.identity.model == "gpt-6.5-luna" for e in merged.entries)
-        )
-        # The model itself stays adopted and routable — only the floor
-        # catalog entry is withheld; the D-043 matrix remains the
-        # per-request authority.
+        self.assertEqual({"low", "medium", "high"}, {
+            e.identity.variant for e in merged.entries if e.identity.model == "gpt-6.5-luna"
+        })
         self.assertIn(
             "personal-openai:gpt-6.5-luna:high",
             {r.identity.resource_id for r in registry.derived_registrations()},
         )
 
     def test_unrestricted_track_still_expands_every_reported_effort(self) -> None:
-        registry = SourceRegistry(track_registry=load_track_registry())
+        registry = SourceRegistry()
         registry.sync_configuration((_config(),))
         _ = registry.apply_inventory(
             _inventory(
@@ -521,7 +535,7 @@ class UpgradeSimulationTests(unittest.TestCase):
     """The central acceptance criterion: T0/T1 without user edits."""
 
     def test_new_generation_becomes_routable_without_configuration_change(self) -> None:
-        registry = SourceRegistry(track_registry=load_track_registry())
+        registry = SourceRegistry()
         registry.sync_configuration((_config(),))
         # T0: the source exposes gpt-6-sol.
         _ = registry.apply_inventory(
@@ -543,7 +557,7 @@ class UpgradeSimulationTests(unittest.TestCase):
         rids = {r.identity.resource_id for r in registry.derived_registrations()}
         self.assertIn("personal-openai:gpt-6-sol:high", rids)
         self.assertIn("personal-openai:gpt-6.1-sol:high", rids)
-        # The new generation routes at floor level only.
+        # Discovery must not invent a rating for the new generation.
         merged = registry.derived_catalog_entries(_base_catalog())
         new_entries = [
             e for e in merged.entries if e.identity.model == "gpt-6.1-sol"
@@ -551,7 +565,7 @@ class UpgradeSimulationTests(unittest.TestCase):
         self.assertTrue(new_entries)
         self.assertTrue(
             all(
-                rating is not None and rating <= 4
+                rating is None
                 for e in new_entries
                 for rating in [e.capabilities.reasoning.rating]
             )
@@ -609,7 +623,7 @@ class ZCodeSourceTests(unittest.TestCase):
             _ = self._zcode_config(entitlement="promotional")
 
     def test_adapter_instance_prefix_follows_the_kind(self) -> None:
-        registry = SourceRegistry(track_registry=load_track_registry())
+        registry = SourceRegistry()
         registry.sync_configuration(
             (
                 _config(source_id="personal-openai", worker_id="worker-1"),
@@ -630,7 +644,7 @@ class ZCodeSourceTests(unittest.TestCase):
         # D-063: the reviewed zai/plan track marks the effort-less lane as
         # plan-managed; a healthy-but-unverified source (the honest zcode
         # steady state — no non-inference auth probe exists) adopts it.
-        registry = SourceRegistry(track_registry=load_track_registry())
+        registry = SourceRegistry()
         registry.sync_configuration((self._zcode_config(),))
         decisions = registry.apply_inventory(
             self._zcode_inventory(
@@ -659,7 +673,7 @@ class ZCodeSourceTests(unittest.TestCase):
         self.assertEqual("routable", cast("dict[str, object]", cast("list[object]", view["models"])[0])["state"])
 
     def test_plan_lane_is_rejected_when_the_source_is_unavailable(self) -> None:
-        registry = SourceRegistry(track_registry=load_track_registry())
+        registry = SourceRegistry()
         registry.sync_configuration((self._zcode_config(),))
         decisions = registry.apply_inventory(
             self._zcode_inventory(
@@ -667,7 +681,7 @@ class ZCodeSourceTests(unittest.TestCase):
                 auth_state="unavailable",
             )
         )
-        self.assertEqual("classified", decisions[0].state)
+        self.assertEqual("discovered", decisions[0].state)
         self.assertEqual("source_not_authenticated", decisions[0].reason)
         self.assertEqual((), registry.derived_registrations())
 
@@ -675,7 +689,7 @@ class ZCodeSourceTests(unittest.TestCase):
         # A zcode inventory naming a PHYSICAL slug (e.g. from a future
         # listing) still cannot adopt: zai has no physical-model track,
         # and the lane track matches only the reserved descriptor.
-        registry = SourceRegistry(track_registry=load_track_registry())
+        registry = SourceRegistry()
         registry.sync_configuration((self._zcode_config(),))
         decisions = registry.apply_inventory(
             self._zcode_inventory(
@@ -694,14 +708,12 @@ class ZCodeSourceTests(unittest.TestCase):
         )
 
     def test_lane_catalog_entry_is_effort_less_and_never_reasoning(self) -> None:
-        from scarcity_router.selection_app import DEFAULT_CATALOG_PATH, load_catalog
-
-        registry = SourceRegistry(track_registry=load_track_registry())
+        registry = SourceRegistry()
         registry.sync_configuration((self._zcode_config(),))
         _ = registry.apply_inventory(
             self._zcode_inventory((DiscoveredModel("plan-managed", ()),))
         )
-        merged = registry.derived_catalog_entries(load_catalog(DEFAULT_CATALOG_PATH))
+        merged = registry.derived_catalog_entries(_base_catalog())
         lanes = [
             e for e in merged.entries if e.identity.model == "plan-managed"
         ]
@@ -711,38 +723,14 @@ class ZCodeSourceTests(unittest.TestCase):
         self.assertEqual("plan", entry.identity.variant)
         self.assertIsNone(entry.reasoning_effort)
         self.assertFalse(entry.hard_properties.supports_reasoning_mode)
-        # The lane floor's owner-reviewed family-continuity facts (the
-        # runtime is the enforcement boundary).
-        self.assertEqual(1_000_000, entry.hard_properties.input_context_tokens)
-        self.assertEqual(128_000, entry.hard_properties.output_tokens)
+        self.assertIsNone(entry.hard_properties.input_context_tokens)
+        self.assertIsNone(entry.hard_properties.output_tokens)
         self.assertIsNone(entry.capacity_bindings)
 
     def test_physical_model_adoption_still_requires_reported_efforts(self) -> None:
         # The plan-managed exception is scoped: a physical-model source
         # (codex) listing a model with NO efforts still fails closed.
-        from scarcity_router.model_tracks import (
-            ModelTrack,
-            TrackFloor,
-            TrackRegistry,
-        )
-        from scarcity_router.selection_types import CAPABILITY_DIMENSIONS
-
-        floor = TrackFloor(
-            ratings={dim: 4 for dim in CAPABILITY_DIMENSIONS},
-            assessed_on="2026-09-28",
-            confidence="medium",
-            decision="D-053",
-            rationale="synthetic test floor",
-        )
-        track = ModelTrack(
-            provider="openai",
-            track="sol",
-            display_name="GPT Sol",
-            slug_pattern=r"^gpt-[0-9.]+-sol$",
-            classification="standard",
-            floor=floor,
-        )
-        registry = SourceRegistry(track_registry=TrackRegistry((track,)))
+        registry = SourceRegistry()
         registry.sync_configuration((_config(),))
         decisions = registry.apply_inventory(
             _inventory("personal-openai", "worker-1", (_model("gpt-6-sol", ()),))
@@ -750,32 +738,8 @@ class ZCodeSourceTests(unittest.TestCase):
         self.assertEqual("effort_not_reported", decisions[0].reason)
         self.assertEqual((), registry.derived_registrations())
 
-    def test_hypothetical_listed_model_adopts_with_zcode_surface_facts(self) -> None:
-        # If ZCode ever ships a real listing surface, a listed zai model
-        # with runtime-reported efforts would adopt through the normal
-        # gates — carrying the ZCODE surface facts, never the codex ones.
-        from scarcity_router.execution_sources import (
-            ZCODE_SURFACE_CAPABILITIES,
-        )
-        from scarcity_router.model_tracks import ModelTrack, TrackFloor, TrackRegistry
-        from scarcity_router.selection_types import CAPABILITY_DIMENSIONS
-
-        floor = TrackFloor(
-            ratings={dim: 3 for dim in CAPABILITY_DIMENSIONS},
-            assessed_on="2026-09-28",
-            confidence="low",
-            decision="D-061",
-            rationale="synthetic test floor",
-        )
-        track = ModelTrack(
-            provider="zai",
-            track="plan",
-            display_name="Z.ai Plan",
-            slug_pattern=r"^glm-[a-z0-9.-]+$",
-            classification="standard",
-            floor=floor,
-        )
-        registry = SourceRegistry(track_registry=TrackRegistry((track,)))
+    def test_zcode_physical_model_claim_requires_execution_evidence(self) -> None:
+        registry = SourceRegistry()
         registry.sync_configuration((self._zcode_config(),))
         decisions = registry.apply_inventory(
             self._zcode_inventory(
@@ -783,35 +747,8 @@ class ZCodeSourceTests(unittest.TestCase):
                 auth_state="authenticated",
             )
         )
-        self.assertEqual("routable", decisions[0].state)
-        registrations = registry.derived_registrations()
-        self.assertEqual(len(registrations), 1)
-        capabilities = registrations[0].capabilities
-        self.assertFalse(capabilities.streaming)
-        self.assertFalse(capabilities.tool_calls)
-        self.assertFalse(capabilities.reasoning_controls)
-        self.assertFalse(capabilities.structured_output)
-        self.assertFalse(capabilities.output_limit_control)
-        self.assertIsNone(capabilities.usage_reporting)
-        # The owner-registered lane ceilings (D-063 remediation): the
-        # reviewed plan-family calibration minimum, never a per-model
-        # claim; the runtime is the enforcement backstop.
-        self.assertEqual(1_000_000, capabilities.context_limit_tokens)
-        self.assertEqual(128_000, capabilities.output_limit_tokens)
-        self.assertFalse(capabilities.output_limit_control)
-        self.assertEqual(
-            ZCODE_SURFACE_CAPABILITIES["cancellation"],
-            capabilities.cancellation,
-        )
-        # The floor-derived catalog entry carries the SOURCE's provider,
-        # never a hard-coded one.
-        merged = registry.derived_catalog_entries(_base_catalog())
-        zai_entries = [
-            e
-            for e in merged.entries
-            if e.identity.provider == "zai" and e.identity.model == "glm-5.3"
-        ]
-        self.assertTrue(zai_entries)
+        self.assertEqual("plan_lane_unverified", decisions[0].reason)
+        self.assertEqual((), registry.derived_registrations())
 
     def test_adopted_lane_receives_the_zcode_compatibility_cells(self) -> None:
         # The composed D-043 matrix carries the reviewed ZCode cells for
@@ -821,7 +758,7 @@ class ZCodeSourceTests(unittest.TestCase):
         from scarcity_router.server_composition import build_compatibility_cells
         from scarcity_router.server_config import ServerConfiguration
 
-        registry = SourceRegistry(track_registry=load_track_registry())
+        registry = SourceRegistry()
         registry.sync_configuration((self._zcode_config(),))
         _ = registry.apply_inventory(
             self._zcode_inventory((DiscoveredModel("plan-managed", ()),))
@@ -870,7 +807,7 @@ class DaybreakRemediationTests(unittest.TestCase):
         # Daybreak finding 3: a source advertising ONLY low materializes
         # ONLY a low-variant resource — never a binding for a variant its
         # runtime did not advertise.
-        registry = SourceRegistry(track_registry=load_track_registry())
+        registry = SourceRegistry()
         registry.sync_configuration((_config(),))
         _ = registry.apply_inventory(
             _inventory("personal-openai", "worker-1", (_model("gpt-6-sol", ("low",)),))
@@ -884,7 +821,7 @@ class DaybreakRemediationTests(unittest.TestCase):
     def test_retired_history_is_bounded(self) -> None:
         # Daybreak finding 4: repeated discover/retire cycles cannot grow
         # the retained history without bound.
-        registry = SourceRegistry(track_registry=load_track_registry())
+        registry = SourceRegistry()
         registry.sync_configuration((_config(),))
         for generation in range(80):
             slug = f"gpt-{generation}-sol"

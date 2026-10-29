@@ -13,6 +13,7 @@ Deterministic: synthetic collectors, injected clock, loopback listener.
 from __future__ import annotations
 
 import hashlib
+import copy
 import http.client
 import json
 import unittest
@@ -26,14 +27,16 @@ from unittest.mock import patch
 from scarcity_router.control_api import ControlPlane
 from scarcity_router.errors import RemoteBridgeError
 from scarcity_router.gateway_contracts import GatewayError
-from scarcity_router.routing_core import AdministratorConstraints
+from scarcity_router.routing_core import AdministratorConstraints, ClientAuthorization, ClientRoutingProfile
+from scarcity_router.execution_sources import SourceRegistry
+from scarcity_router.model_inventory import DiscoveredModel, ModelInventoryReport, SourceInventory
+from scarcity_router.resource_state import ResourceHealth, ResourceRegistry, ResourceStateSnapshot, WorkerStateReport
+from scarcity_router.selection_types import ModelCatalog
 from scarcity_router.machine_api import (
     ENVELOPE_SCHEMA_VERSION,
-    invalid_request_payload,
 )
 from scarcity_router.remote import RemoteScarcityClient, RemoteServerConfig
-from scarcity_router.selection_app import load_catalog
-from scarcity_router.server_config import ResourceConfig, ServerConfiguration
+from scarcity_router.server_config import ResourceConfig, ServerConfiguration, SourceConfig
 from scarcity_router.status import collect_status
 
 from tests.openai_http_fixtures import ScriptedProviderServer
@@ -129,6 +132,7 @@ class IdentitySeparationTests(ServerHarness):
         for method, path in (
             ("GET", "/control/state"),
             ("POST", "/control/providers"),
+            ("POST", "/control/sources/example/model-policy"),
             ("DELETE", "/control/clients/whatever"),
         ):
             with self.subTest(path=path):
@@ -161,6 +165,69 @@ class IdentitySeparationTests(ServerHarness):
         self.onboard()
         status, _payload, _headers = self.exchange("GET", "/control/nope")
         self.assertEqual(404, status)
+
+
+class SourcePolicyMigrationTests(ServerHarness):
+    def test_admin_migrates_legacy_track_grant_without_deleting_source(self) -> None:
+        self.onboard()
+        source = SourceConfig("personal-openai", "codex_subscription", "Personal",
+                              "worker-1", allowed_tracks=("openai/sol",))
+        with patch.object(self.plane, "_worker_id_exists", return_value=True):
+            self.plane._save_config(ServerConfiguration(sources=(source,)))  # pyright: ignore[reportPrivateUsage]
+            status, _payload = self.admin_post(
+                "/control/sources/personal-openai/model-policy",
+                {"allowed_models": ["gpt-6-sol"], "capacity_scope_ids": ["codex"]},
+            )
+        self.assertEqual(200, status)
+        updated = self.plane.configuration.source_by_id("personal-openai")
+        assert updated is not None
+        self.assertEqual(("gpt-6-sol",), updated.allowed_models)
+        self.assertEqual(("codex",), updated.capacity_scope_ids)
+        self.assertEqual((), updated.allowed_tracks)
+        self.assertEqual(source.worker_id, updated.worker_id)
+        secret_marker = "SYNTHETIC-SECRET-DO-NOT-ECHO"
+        status, response = self.admin_post(
+            "/control/sources/personal-openai/model-policy", {
+                "allowed_models": ["gpt-6-sol"], "context_evidence": [{
+                    "model": "gpt-6-sol", "variant": "high", "runtime_version": "1.0.0", "input_tokens": 4096,
+                    "evidence_ref": secret_marker, "verified_at": "2026-09-15T12:00:00.000Z",
+                    "valid_until": "2026-09-16T12:00:00.000Z",
+                }],
+            },
+        )
+        self.assertEqual(400, status)
+        self.assertNotIn(secret_marker, json.dumps(response))
+        self.assertEqual(updated, self.plane.configuration.source_by_id("personal-openai"))
+
+    def test_worker_reassignment_does_not_reuse_previous_observation(self) -> None:
+        source = SourceConfig("owned", "codex_subscription", "Owned", "worker-1",
+                              allowed_models=("synthetic-model",))
+        inventory = SourceInventory(
+            source_id="owned", adapter_id="codex:owned", kind="codex_subscription",
+            observed_at="2026-09-16T12:00:00.000Z", auth_state="authenticated",
+            runtime_name="codex", runtime_version="1", models=(DiscoveredModel("synthetic-model", ("high",)),),
+        )
+        with patch.object(self.plane, "_worker_id_exists", return_value=True):
+            self.plane._save_config(ServerConfiguration(sources=(source,)))  # pyright: ignore[reportPrivateUsage]
+            self.plane._apply_source_inventory(ModelInventoryReport(worker_id="worker-1", sources=(inventory,)))  # pyright: ignore[reportPrivateUsage]
+            registration = self.plane.current_application().registry.registry_snapshot(
+                now="2026-09-16T12:00:00.000Z"
+            ).entries[0]
+            observation = ResourceStateSnapshot(
+                schema_version=1, identity=registration.identity,
+                observed_at="2026-09-16T12:00:00.000Z", health=ResourceHealth(status="ok"),
+            )
+            self.plane.apply_worker_report(WorkerStateReport(
+                schema_version=1, worker_id="worker-1", reported_at="2026-09-16T12:00:00.000Z",
+                resources=(observation,),
+            ))
+            new_source = replace(source, worker_id="worker-2")
+            self.plane._save_config(ServerConfiguration(sources=(new_source,)))  # pyright: ignore[reportPrivateUsage]
+            self.plane._apply_source_inventory(ModelInventoryReport(worker_id="worker-2", sources=(inventory,)))  # pyright: ignore[reportPrivateUsage]
+        entry = self.plane.current_application().registry.registry_snapshot(
+            now="2026-09-16T12:00:00.000Z"
+        ).entries[0]
+        self.assertIsNone(entry.observation)
 
 
 class UnauthenticatedMutationTests(ServerHarness):
@@ -204,7 +271,7 @@ class MachineEndpointTests(ServerHarness):
             )
             self.assertEqual(401, status, path)
 
-    def test_select_rejects_unknown_profile_with_frozen_payload(self) -> None:
+    def test_select_rejects_legacy_profile_with_actionable_payload(self) -> None:
         self.onboard()
         status, payload, _headers = self.exchange(
             "POST",
@@ -213,7 +280,9 @@ class MachineEndpointTests(ServerHarness):
             headers={"Authorization": f"Bearer {self.client_key}"},
         )
         self.assertEqual(400, status)
-        self.assertEqual(invalid_request_payload(), payload)
+        error = cast("dict[str, object]", cast("dict[str, object]", payload)["error"])
+        self.assertEqual("invalid_request", error["code"])
+        self.assertIn("explicit requirement", cast(str, error["message"]))
 
 
 class RemoteBridgeParityTests(ServerHarness):
@@ -248,42 +317,63 @@ class RemoteBridgeParityTests(ServerHarness):
     def test_remote_select_and_simulate_round_trip(self) -> None:
         self.onboard()
         client = self._client()
-        decision = client.select({"profile_id": "deep_coding"})
+        requirement: dict[str, object] = {"task_level": "L0", "capability_minima": {}, "hard_constraints": {}}
+        decision = client.select({"requirement": requirement})
         self.assertIn("decision", decision)
         self.assertIsNotNone(decision["decision"])
-        result = client.simulate({"profile_id": "deep_coding", "overrides": {}})
+        self.assertEqual(2, decision["schema_version"])
+        result = client.simulate({"requirement": requirement, "overrides": {}})
         self.assertIn("result", result)
 
-    def test_authenticated_select_decision_carries_reasoning_effort(self) -> None:
-        """D-057: the authenticated /v1/select decision serializes the
-        ranked catalog entry's effort for every candidate (additive v1)."""
+    def test_authenticated_select_without_sources_does_not_invent_models(self) -> None:
         self.onboard()
-        decision = self._client().select({"profile_id": "deep_coding"})
+        decision = self._client().select({"requirement": {
+            "task_level": "L0", "capability_minima": {}, "hard_constraints": {},
+        }})
         payload = cast("dict[str, object]", decision["decision"])
-        catalog = load_catalog(REPO / "model-catalog.json")
-        catalog_efforts = {
-            (entry.identity.provider, entry.identity.model, entry.identity.variant): (
-                entry.reasoning_effort
-            )
-            for entry in catalog.entries
-        }
-        selected = cast("dict[str, object]", payload["selected"])
-        identity = cast("dict[str, object]", selected["identity"])
-        self.assertIn("reasoning_effort", selected)
-        self.assertEqual(
-            catalog_efforts[
-                cast(
-                    "tuple[str, str, str]",
-                    (identity["provider"], identity["model"], identity["variant"]),
-                )
-            ],
-            selected["reasoning_effort"],
-        )
-        for member in ("alternatives", "excluded"):
-            for candidate in cast("list[object]", payload[member]):
-                self.assertIn(
-                    "reasoning_effort", cast("dict[str, object]", candidate), member
-                )
+        self.assertIsNone(payload["selected"])
+        self.assertEqual("runtime_inventory", payload["selection_input_kind"])
+
+    def test_machine_selection_and_simulation_respect_resource_authority(self) -> None:
+        self.onboard()
+        sources = SourceRegistry()
+        sources.sync_configuration((SourceConfig(
+            "owned", "codex_subscription", "Owned", "worker-1", allowed_models=("synthetic-model",),
+        ),))
+        _ = sources.apply_inventory(ModelInventoryReport(worker_id="worker-1", sources=(SourceInventory(
+            source_id="owned", adapter_id="codex:owned", kind="codex_subscription",
+            observed_at="2026-09-16T12:00:00.000Z", auth_state="authenticated",
+            runtime_name="codex", runtime_version="1", models=(DiscoveredModel("synthetic-model", ("high",)),),
+        ),)))
+        registration = sources.derived_registrations()[0]
+        registry = ResourceRegistry(clock=lambda: "2026-09-16T12:00:00.000Z")
+        registry.register(registration)
+        registry.apply_snapshot(ResourceStateSnapshot(
+            schema_version=1, identity=registration.identity,
+            observed_at="2026-09-16T12:00:00.000Z", health=ResourceHealth(status="ok"),
+        ))
+        application = copy.copy(self.plane.current_application())
+        application.catalog = sources.derived_catalog_entries(ModelCatalog(None, None, ()))
+        application.registry = registry
+        application.client_authorizations = None
+        document: dict[str, object] = {"requirement": {"task_level": "L0", "capability_minima": {}, "hard_constraints": {}}}
+        with patch.object(self.plane, "current_application", return_value=application), \
+             patch.object(application.adapters, "supports_resource", return_value=True):
+            selection = self._client().select(document)
+            simulation = self._client().simulate({**document, "overrides": {}})
+            selected = cast("dict[str, object]", selection["decision"])["selected"]
+            self.assertIsNotNone(selected)
+            simulated = cast("dict[str, object]", simulation["result"])
+            self.assertEqual(selected, cast("dict[str, object]", simulated["baseline"])["selected"])
+            future = self._client().simulate({**document, "overrides": {
+                "evaluated_at": "2026-09-17T12:00:00.000Z",
+            }})
+            future_result = cast("dict[str, object]", future["result"])
+            self.assertIsNone(cast("dict[str, object]", future_result["simulated"])["selected"])
+            self.assertIsNotNone(cast("dict[str, object]", self._client().select(document)["decision"])["selected"])
+            application.client_authorizations = {self.client_id: ClientAuthorization(blocked_resource_ids=(registration.identity.resource_id,))}
+            denied = self._client().select(document)
+            self.assertIsNone(cast("dict[str, object]", denied["decision"])["selected"])
 
     def test_remote_select_surfaces_server_rejections(self) -> None:
         self.onboard()
@@ -733,7 +823,7 @@ class ProviderAndResourceTests(ServerHarness):
 
 
 class AliasTests(ServerHarness):
-    def test_alias_crud_reflects_in_models_listing(self) -> None:
+    def test_legacy_alias_creation_is_refused_and_not_advertised(self) -> None:
         self.onboard()
         csrf = _csrf_headers(self.plane, self.cookie)
         status, _payload, _headers = self.exchange(
@@ -742,7 +832,7 @@ class AliasTests(ServerHarness):
             {"profile_id": "deep_coding"},
             headers=csrf,
         )
-        self.assertEqual(200, status)
+        self.assertEqual(400, status)
         status, _payload, _headers = self.exchange(
             "PUT",
             "/control/aliases/broken",
@@ -763,11 +853,7 @@ class AliasTests(ServerHarness):
             connection.close()
         document = cast("dict[str, object]", listing)
         entries = cast("list[dict[str, object]]", document["data"])
-        self.assertEqual(["deep-coding"], [entry["id"] for entry in entries])
-        status, _payload, _headers = self.exchange(
-            "DELETE", "/control/aliases/deep-coding", headers=csrf
-        )
-        self.assertEqual(200, status)
+        self.assertNotIn("deep-coding", [entry["id"] for entry in entries])
 
 
 class ConnectionAndGenerationTests(ServerHarness):
@@ -839,7 +925,7 @@ class ConnectionAndGenerationTests(ServerHarness):
                     return acquire(client_id)
 
                 request = parse_chat_request({
-                    "model": "sr-pin:zai-plan-1/zai/glm-5.3/high",
+                    "model": "sr-pin:zai-plan-1/zai/glm-5.3/unconfigured",
                     "messages": [{"role": "user", "content": "original target only"}],
                 })
                 # Interpose only the scheduling boundary; real admission,
@@ -998,13 +1084,11 @@ class PersistenceRestartTests(ServerHarness):
             "/control/providers",
             _provider_document(secret=FAKE_PROVIDER_SECRET),
         )
-        status, _payload, _headers = self.exchange(
-            "PUT",
-            "/control/aliases/deep-coding",
-            {"profile_id": "deep_coding"},
-            headers=_csrf_headers(self.plane, self.cookie),
-        )
-        self.assertEqual(200, status)
+        # A persisted pre-migration alias remains in state, but is not used
+        # as an invented replacement profile.
+        self.plane._save_config(replace(self.plane.configuration, aliases={  # pyright: ignore[reportPrivateUsage]
+            "deep-coding": ClientRoutingProfile("deep_coding")
+        }))
         data_dir = self.data_dir
         store = self.plane.store
         self.server.shutdown()

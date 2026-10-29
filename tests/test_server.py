@@ -34,7 +34,10 @@ from scarcity_router import (
     TaskRequirement,
 )
 from scarcity_router.cli import main as cli_main
+from scarcity_router.machine_api import parse_selection_document
 from scarcity_router.selection_app import (
+    DEFAULT_CATALOG_PATH,
+    DEFAULT_MODEL_POLICY_PATH,
     load_configured_artifacts,
     select_from_inputs,
     simulate_from_inputs,
@@ -51,8 +54,8 @@ from scarcity_router.providers.openai_codex_acquisition import OpenAICodexObserv
 from tests.observation import paired_observation
 
 REPO = Path(__file__).resolve().parents[1]
-CATALOG_PATH = REPO / "model-catalog.json"
-POLICY_PATH = REPO / "model-policy.json"
+CATALOG_PATH = DEFAULT_CATALOG_PATH
+POLICY_PATH = DEFAULT_MODEL_POLICY_PATH
 FIXED_AT = datetime(2026, 9, 6, 12, 0, tzinfo=timezone.utc)
 
 # D-036 isolation: CLI runs in this module must never read or provision the
@@ -321,7 +324,7 @@ class ServerTestCase(unittest.TestCase):
         self.assertEqual(200, status)
         envelope = cast("dict[str, object]", response)
         self.assertEqual({"schema_version", "decision"}, set(envelope))
-        self.assertEqual(1, envelope["schema_version"])
+        self.assertEqual(2, envelope["schema_version"])
         return cast("dict[str, object]", envelope["decision"])
 
 
@@ -415,23 +418,18 @@ class SelectTests(ServerTestCase):
     """``POST /v1/select`` frozen request semantics."""
 
     def test_profile_path(self) -> None:
-        decision = self._select({"profile_id": "routine_coding"})
-        self.assertEqual("routine_coding", decision["profile_id"])
-        self.assertEqual(9, decision["profile_policy_version"])
-        self.assertEqual("balanced", decision["selector_mode"])
-        selected = cast("dict[str, object]", decision["selected"])
-        identity = cast("dict[str, object]", selected["identity"])
-        self.assertEqual("glm-5.3", identity["model"])
-        self.assertEqual("low", identity["variant"])
+        status, _, response = self._post("/v1/select", {"profile_id": "routine_coding"})
+        self.assertEqual(400, status)
+        self.assertEqual("invalid_request", _error_code(response))
+        self.assertIn("explicit requirement", json.dumps(response))
 
     def test_explicit_requirement_path(self) -> None:
         decision = self._select({"requirement": _REQUIREMENT_L3})
         # The explicit path carries no profile provenance, and the frozen
         # serialization omits the absent profile id entirely.
         self.assertNotIn("profile_id", decision)
-        selected = cast("dict[str, object]", decision["selected"])
-        identity = cast("dict[str, object]", selected["identity"])
-        self.assertEqual("glm-5.3", identity["model"])
+        self.assertIsNone(decision["selected"])
+        self.assertEqual("runtime_inventory", decision["selection_input_kind"])
 
     def test_valid_no_solution_is_http_200(self) -> None:
         payload = {
@@ -447,7 +445,7 @@ class SelectTests(ServerTestCase):
         self.assertIn("no_eligible_candidate", codes)
 
     def test_profile_with_tightening(self) -> None:
-        decision = self._select(
+        status, _, response = self._post("/v1/select",
             {
                 "profile_id": "deep_coding",
                 "tightening": {
@@ -457,10 +455,8 @@ class SelectTests(ServerTestCase):
                 },
             }
         )
-        selected = cast("dict[str, object]", decision["selected"])
-        identity = cast("dict[str, object]", selected["identity"])
-        self.assertEqual("gpt-5.6-terra", identity["model"])
-        self.assertEqual("medium", identity["variant"])
+        self.assertEqual(400, status)
+        self.assertIn("explicit requirement", json.dumps(response))
 
     def test_unknown_profile_is_invalid_request(self) -> None:
         status, _, response = self._post("/v1/select", {"profile_id": "no_such"})
@@ -480,18 +476,18 @@ class SelectTests(ServerTestCase):
 
     def test_selector_policy_null_is_neutral(self) -> None:
         harness = self._serve()
-        without = _select_on(harness, {"profile_id": "routine_coding"})
+        without = _select_on(harness, {"requirement": _REQUIREMENT_L3})
         with_null = _select_on(
-            harness, {"profile_id": "routine_coding", "selector_policy": None}
+            harness, {"requirement": _REQUIREMENT_L3, "selector_policy": None}
         )
         self.assertEqual(without, with_null)
         self.assertEqual("balanced", with_null["selector_mode"])
 
     def test_replenishment_missing_and_empty_mean_none(self) -> None:
         harness = self._serve()
-        baseline = _select_on(harness, {"profile_id": "routine_coding"})
+        baseline = _select_on(harness, {"requirement": _REQUIREMENT_L3})
         empty = _select_on(
-            harness, {"profile_id": "routine_coding", "replenishment_states": []}
+            harness, {"requirement": _REQUIREMENT_L3, "replenishment_states": []}
         )
         self.assertEqual(baseline, empty)
 
@@ -503,7 +499,7 @@ class SelectTests(ServerTestCase):
 
     def test_replenishment_entries_are_parsed(self) -> None:
         payload = {
-            "profile_id": "routine_coding",
+            "requirement": _REQUIREMENT_L3,
             "replenishment_states": [_REPLENISHMENT_STATE],
         }
         status, _, response = self._post("/v1/select", payload)
@@ -513,7 +509,9 @@ class SelectTests(ServerTestCase):
         )
         # The parsed observation reaches the selector core and is visible as
         # replenishment provenance on the openai-scope candidates.
-        self.assertIn("rate_limit_reset", json.dumps(decision))
+        parsed = parse_selection_document(payload)
+        self.assertEqual("rate_limit_reset", parsed.replenishment_states[0].kind)
+        self.assertIsNone(decision["selected"])
 
     def test_invalid_replenishment_entry_rejected(self) -> None:
         broken = {**_REPLENISHMENT_STATE, "available_count": -1}
@@ -641,7 +639,7 @@ class StrictJsonTests(ServerTestCase):
 
     def test_utf8_charset_accepted(self) -> None:
         status, _, _ = self._post_raw(
-            b'{"profile_id": "routine_coding"}',
+            json.dumps({"requirement": _REQUIREMENT_L3}).encode("utf-8"),
             content_type="application/json; charset=utf-8",
         )
         self.assertEqual(200, status)
@@ -718,12 +716,12 @@ class SimulationTests(ServerTestCase):
 
     def test_empty_overrides_is_valid(self) -> None:
         status, _, response = self._post(
-            "/v1/simulate", {"profile_id": "deep_coding", "overrides": {}}
+            "/v1/simulate", {"requirement": _REQUIREMENT_L3, "overrides": {}}
         )
         self.assertEqual(200, status)
         envelope = cast("dict[str, object]", response)
         self.assertEqual({"schema_version", "result"}, set(envelope))
-        self.assertEqual(1, envelope["schema_version"])
+        self.assertEqual(2, envelope["schema_version"])
         result = cast("dict[str, object]", envelope["result"])
         self.assertEqual({"baseline", "simulated", "applied_overrides"}, set(result))
         self.assertEqual(result["baseline"], result["simulated"])
@@ -742,7 +740,7 @@ class SimulationTests(ServerTestCase):
 
     def test_nested_replenishment_null_retains_baseline(self) -> None:
         payload = {
-            "profile_id": "routine_coding",
+            "requirement": _REQUIREMENT_L3,
             "replenishment_states": [_REPLENISHMENT_STATE],
             "overrides": {"replenishment_states": None},
         }
@@ -756,7 +754,7 @@ class SimulationTests(ServerTestCase):
 
     def test_nested_replenishment_empty_clears(self) -> None:
         payload: dict[str, object] = {
-            "profile_id": "routine_coding",
+            "requirement": _REQUIREMENT_L3,
             "replenishment_states": [_REPLENISHMENT_STATE],
             "overrides": {"replenishment_states": []},
         }
@@ -884,7 +882,7 @@ class ErrorBoundaryTests(ServerTestCase):
         status, _, response = _post_json(
             harness,
             "/v1/simulate",
-            {"profile_id": "routine_coding", "overrides": {}},
+            {"requirement": _REQUIREMENT_L3, "overrides": {}},
         )
         self.assertEqual(500, status)
         error = _error_payload(response)
@@ -1051,7 +1049,7 @@ class ParityTests(ServerTestCase):
     def test_rest_select_equals_direct_application(self) -> None:
         collectors = _collectors()
         harness = self._serve(_application(collectors=collectors))
-        _, _, response = _post_json(harness, "/v1/select", {"profile_id": "deep_coding"})
+        _, _, response = _post_json(harness, "/v1/select", {"requirement": _REQUIREMENT_L3})
         envelope = cast("dict[str, object]", response)
         catalog, profiles, version = load_configured_artifacts(
             CATALOG_PATH, POLICY_PATH
@@ -1060,8 +1058,8 @@ class ParityTests(ServerTestCase):
             catalog=catalog,
             profiles=profiles,
             profile_policy_version=version,
-            profile_id="deep_coding",
-            requirement=None,
+            profile_id=None,
+            requirement=TaskRequirement.from_dict(_REQUIREMENT_L3),
             tightening=None,
             policy=None,
             replenishment_states=(),
@@ -1073,7 +1071,7 @@ class ParityTests(ServerTestCase):
     def test_rest_simulate_equals_direct_application(self) -> None:
         collectors = _collectors()
         harness = self._serve(_application(collectors=collectors))
-        payload = {"profile_id": "deep_coding", "overrides": _ZAI_WEEKLY_2}
+        payload = {"requirement": _REQUIREMENT_L3, "overrides": _ZAI_WEEKLY_2}
         _, _, response = _post_json(harness, "/v1/simulate", payload)
         envelope = cast("dict[str, object]", response)
         catalog, profiles, version = load_configured_artifacts(
@@ -1083,8 +1081,8 @@ class ParityTests(ServerTestCase):
             catalog=catalog,
             profiles=profiles,
             profile_policy_version=version,
-            profile_id="deep_coding",
-            requirement=None,
+            profile_id=None,
+            requirement=TaskRequirement.from_dict(_REQUIREMENT_L3),
             tightening=None,
             policy=None,
             replenishment_states=(),
@@ -1122,10 +1120,6 @@ class ParityTests(ServerTestCase):
                     "select",
                     "--requirement",
                     str(requirement_path),
-                    "--catalog",
-                    str(CATALOG_PATH),
-                    "--model-policy",
-                    str(POLICY_PATH),
                     "--json",
                 ],
                 stdout=out,

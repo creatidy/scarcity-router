@@ -49,7 +49,7 @@ RESOURCE_ID = "codex-e2e"
 ADAPTER_ID = "codex"
 
 #: The physical model the Codex resource represents (D-042): a REAL
-#: calibrated slug from the shipped ``model-catalog.json`` — never the
+#: synthetic model slug for the worker fixture — never the
 #: execution surface name. The shipped catalog calibrates ``gpt-5.6-sol``
 #: with the ``medium`` and ``high`` reasoning variants.
 CODEX_CATALOG_MODEL = "gpt-5.6-sol"
@@ -57,7 +57,7 @@ CODEX_CATALOG_EFFORTS: tuple[str, ...] = ("medium", "high")
 
 #: The pinned client reference resolves against the shipped catalog's
 #: calibrated ``gpt-5.6-sol``/``high`` identity.
-PIN_MODEL = f"sr-pin:{RESOURCE_ID}/openai/{CODEX_CATALOG_MODEL}/high"
+PIN_MODEL = f"sr-pin:{RESOURCE_ID}/openai/{CODEX_CATALOG_MODEL}/unconfigured"
 
 PROMPT = "SYNTHETIC-M10B-CODEX-PROMPT-k4t8"
 REPLY = "Hello"
@@ -83,8 +83,7 @@ def codex_identity(
 
     Mirrors ``worker_client.build_registry`` exactly: provider ``openai``,
     the configured PHYSICAL model slug, entitlement ``subscription_included``,
-    channel ``worker_bridged`` — variant-less (the M02 binding rule binds
-    every calibrated variant of the physical model).
+    channel ``worker_bridged`` — variant-less, without an attested effort.
     """
     return ResourceIdentity(
         resource_id=resource_id,

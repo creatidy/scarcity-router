@@ -240,7 +240,7 @@ class LogicalModelInfo:
     provider: str
     reasoning_efforts: tuple[str, ...]
     effective_context_limit_tokens: int | None
-    max_output_tokens: int
+    max_output_tokens: int | None
     routes: tuple[RouteEffectiveLimits, ...] = ()
 
 
@@ -879,6 +879,7 @@ def models_list_payload(
                 "owned_by": OWNED_BY,
                 "x_scarcity_router": {
                     "kind": "logical_model",
+                    "schema_version": 2,
                     "provider": info.provider,
                     "reasoning_efforts": list(info.reasoning_efforts),
                     "effective_context_limit_tokens": (

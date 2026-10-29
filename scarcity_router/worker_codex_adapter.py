@@ -1545,7 +1545,7 @@ class CodexLocalAdapter:
             return {}
         bound: dict[str, tuple[str, str]] = {}
         for model in self._inventory.models:
-            for effort in model.reasoning_efforts:
+            for effort in (value for value in model.reasoning_efforts if value in REASONING_EFFORTS):
                 rid = source_resource_id(self._source_id, model.slug, effort)
                 bound[rid] = (model.slug, effort)
         return bound

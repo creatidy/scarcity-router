@@ -729,7 +729,7 @@ def _second_codex_resource_document(worker_id: str) -> dict[str, object]:
 
 def _pin_body_for(resource_id: str, **extra: object) -> dict[str, object]:
     body: dict[str, object] = {
-        "model": f"sr-pin:{resource_id}/openai/{CODEX_CATALOG_MODEL}/high",
+        "model": f"sr-pin:{resource_id}/openai/{CODEX_CATALOG_MODEL}/unconfigured",
         "messages": [{"role": "user", "content": PROMPT}],
     }
     body.update(extra)
@@ -862,15 +862,9 @@ class TwoCodexResourcesSamePhysicalModelTests(CodexComposedTlsWorld):
 
 
 class PhysicalModelIdentityTests(CodexComposedTlsWorld):
-    """The Codex resource binds the SHIPPED catalog by physical model.
+    """The configured resource binds its exact model without inferred effort."""
 
-    ``(openai, gpt-5.6-sol)`` — the administrator never invents a catalog
-    entry; the pinned reference resolves to the shipped calibrated
-    identity; the adapter receives exactly the selected model; and a
-    configured/selected mismatch fails before anything runs.
-    """
-
-    def test_pinned_request_binds_shipped_catalog_and_pins_exact_identity(
+    def test_pinned_request_binds_configured_exact_identity(
         self,
     ) -> None:
         worker = self.start_codex_worker(chatgpt_scenario())
@@ -883,7 +877,7 @@ class PhysicalModelIdentityTests(CodexComposedTlsWorld):
             status, payload, _headers = self.exchange(
                 "POST",
                 "/v1/chat/completions",
-                _pin_body(reasoning_effort="high"),
+                _pin_body(),
                 headers={"Authorization": f"Bearer {self.client_key}"},
                 timeout=60,
             )
@@ -892,21 +886,21 @@ class PhysicalModelIdentityTests(CodexComposedTlsWorld):
             choices = cast("list[object]", document["choices"])
             message = cast("dict[str, object]", choices[0])["message"]
             self.assertEqual(REPLY, cast("dict[str, object]", message)["content"])
-            # The audited executed target IS the shipped calibrated
-            # identity: exact provider, physical model and variant.
+            # The audited target keeps the configured model and explicitly
+            # represents its unspecified effort.
             record = self.executed_audit_records()[-1]
             target = cast("dict[str, object]", record["executed_target"])
             self.assertEqual(RESOURCE_ID, target.get("resource_id"))
             self.assertEqual("openai", target.get("provider"))
             self.assertEqual(CODEX_CATALOG_MODEL, target.get("model"))
-            self.assertEqual("high", target.get("variant"))
-            # The adapter pinned EXACTLY that model+effort for the turn —
+            self.assertEqual("unconfigured", target.get("variant"))
+            # The adapter pinned EXACTLY that model for the turn —
             # the fake's listing advertises ``gpt-5.6-sol`` (never
             # ``codex``), so this proves the exact-binding chain.
             turn = trace_request(worker.trace_path, "turn/start")
             assert turn is not None
             self.assertEqual(CODEX_CATALOG_MODEL, turn.get("model"))
-            self.assertEqual("high", turn.get("effort"))
+            self.assertIsNone(turn.get("effort"))
             self.assertIn("model/list", trace_methods(worker.trace_path))
         finally:
             worker.stop()
@@ -1589,7 +1583,7 @@ class CodexStreamingExecutionTests(CodexComposedTlsWorld):
         finally:
             worker.stop()
 
-    def test_reasoning_effort_forwarded_verbatim(self) -> None:
+    def test_unattested_effort_is_rejected_before_dispatch(self) -> None:
         worker = self.start_codex_worker(chatgpt_scenario())
         self.configure_codex_resource(worker.worker_id)
         worker.start()
@@ -1602,11 +1596,9 @@ class CodexStreamingExecutionTests(CodexComposedTlsWorld):
                 headers={"Authorization": f"Bearer {self.client_key}"},
                 timeout=60,
             )
-            self.assertEqual(200, status, payload)
-            turn = trace_request(worker.trace_path, "turn/start")
-            assert turn is not None
-            self.assertEqual(CODEX_CATALOG_MODEL, turn.get("model"))
-            self.assertEqual("high", turn.get("effort"))
+            self.assertEqual(400, status, payload)
+            self.assertEqual("reasoning_effort_unverified", cast("dict[str, object]", cast("dict[str, object]", payload)["error"])["code"])
+            self.assertNotIn("turn/start", trace_methods(worker.trace_path))
         finally:
             worker.stop()
 
@@ -1635,7 +1627,7 @@ class CodexStreamingExecutionTests(CodexComposedTlsWorld):
                 "dict[str, object]", cast("dict[str, object]", payload)["error"]
             )
             self.assertEqual(
-                "effort_conflicts_with_target", error_body["code"]
+                "reasoning_effort_unverified", error_body["code"]
             )
             methods = trace_methods(worker.trace_path)
             # Daybreak finding 2: the pin-conflict gate rejects BEFORE any
@@ -2197,7 +2189,7 @@ class CodexStreamingExecutionTests(CodexComposedTlsWorld):
             # Daybreak blocker 7: the selected variant (high) is now always
             # bound — an effort-less request dispatches the variant, never
             # a runtime default.
-            self.assertEqual("high", turn_params.get("effort"))
+            self.assertIsNone(turn_params.get("effort"))
             self.assertNotIn("outputSchema", turn_params)
 
             # The scratch directory is cleaned up after the call.

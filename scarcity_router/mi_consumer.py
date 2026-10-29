@@ -285,7 +285,11 @@ class MIAdmission:
         values: dict[ModelIdentity, tuple[str, int]] = {}
         projected = explained_catalog(catalog, self.captured, at, _admitted_limits=values)
         cut, bindings = self.captured
-        trusted = cut is not None and cut.reference == self.expected
+        if cut is None:
+            # Absence cannot attest an MI claim, but it also does not revoke
+            # independently evidenced local resource capabilities.
+            return projected, frozenset()
+        trusted = cut.reference == self.expected
         bound = {binding.identity for binding in bindings}
         blocked = bound - set(values) if trusted else bound
         entries: list[ModelCatalogEntry] = []

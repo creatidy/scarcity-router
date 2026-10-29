@@ -1,5 +1,9 @@
 # Model calibration
 
+> Historical record: D-084 supersedes this document's static model ratings,
+> permanent catalog and task-profile routing assumptions. The recorded values
+> are not current model evidence and are not loaded by the product.
+
 This file preserves dated calibration records, not a chronological current-state
 summary. At the Creatidy alignment baseline (2026-10-04, `8d9d4b0`), active
 artifacts are catalog v5 / policy v9. The **Catalog v5 correction (D-054)**

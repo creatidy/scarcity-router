@@ -31,10 +31,9 @@ performed around Scarcity Router. It governs role assignment, task routing,
 authoring, review, evidence handling, durable progress, provenance and
 bounded recovery. It does not expand the active selector catalog.
 
-The machine-readable companion is [`model-policy.json`](../model-policy.json).
-The active selector identities and capability calibration remain authoritative
-in [`model-catalog.json`](../model-catalog.json) and
-[`docs/model-calibration.md`](model-calibration.md).
+D-084 removes the static model-policy and catalog artifacts. Development model
+assignment belongs to the authorized harness and owner, not Router product
+configuration. Earlier calibration documents and decisions are historical.
 
 ## Core principles
 
@@ -396,7 +395,7 @@ meaningful commit, advanced gate, new concrete blocker or validated checkpoint.
 Do not repeat identical failures.
 
 General non-delivery defaults remain one initial review, one remediation and
-narrow verification, as described by `model-policy.json`. Repository command
+narrow verification. Repository command
 delivery uses D-069's scoped override, not those generic round counts: the default
 ceiling is 10 whole-PR reviews. The final direct D-077 owner amendment separately sets
 a one-time maximum of 20 for #212/PR #213 only; for every other delivery, D-069A's exact
@@ -544,10 +543,7 @@ SEMANTIC_FIGURE_REVIEWER
 PL_TRANSLATION_EDITOR
 ```
 
-The dated `workflow_role_assignments` section in `model-policy.json` records
-the owner's current descriptive references and authorized alternates. It is
-revisable metadata, is not selector-facing and establishes neither model
-eligibility nor capacity binding.
+These historical role labels are not Router model assignments or routing input.
 
 ## Project-specific overrides
 
@@ -562,9 +558,8 @@ health handling and honest unknown states. No local model is in the active
 catalog today; executable resources enter only through the execution-gateway
 module issues with evidence.
 
-The portable `model-policy.json` artifact remains descriptive and unchanged.
-D-069 is the explicit repository-command override to its generic review/merge
-defaults; it does not redesign the model or change selectors/profiles/ratings.
+D-069 governs repository-command review bounds independently of any model-policy
+artifact. D-084 removes the former static selector profiles and ratings.
 Immutable review objects and serialized phases remain mandatory. Only the sole
 primary context of an explicit owner `/loop` has the narrowly checked PR merge
 and completed-issue closure authority. Never direct-push develop, touch main,

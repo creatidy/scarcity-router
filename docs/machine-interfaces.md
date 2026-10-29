@@ -6,20 +6,24 @@ behavior, versioning, security boundary and parity requirement. Nothing here
 changes selection, scarcity, provider or capacity semantics; those remain
 owned by their existing authoritative documents.
 
-- **Status:** Frozen contract. REST v1, the stdio MCP adapter and their
-  automated parity surface are implemented and covered by live acceptance.
+- **Status:** D-084 migrates selection/simulation output to schema 2 when the
+  input is runtime inventory. Historical schema-1 decisions retain their
+  original meaning; status remains schema 1. The sections below describing
+  static profiles, artifact versions or model-only composed selection are
+  historical where inconsistent with this notice.
 - **Implementation:** The local REST adapter and thin stdio MCP adapter call the
   shared application/core directly. Their transport code owns no selection,
   scarcity, provider or capacity semantics.
 
 ## Recommendation Versus Execution
 
-These v1 interfaces return `SelectionDecision`, not an executable resource,
-provider reservation or admission token. `reasoning_effort` is independently
-catalog-sourced; `variant` is opaque. Even the authenticated composed
-server's `/v1/select` delegates to the recommendation application, not
-resource-aware `route_request`. Do not reconstruct an `sr-pin:` from its
-model-only result or claim Kernel gateway integration from a parity test.
+The local recommendation-only interfaces have no execution-source registry
+and honestly return an empty inventory unless one is supplied by their hosting
+application. The authenticated composed server routes `/v1/select` through
+the resource and authorization core and adds an authorization-projected `route`
+to its schema-2 envelope. This is not a reservation: admission rechecks the
+exact pinned resource. `reasoning_effort` requires evidence for the specific
+source; a variant or model name alone does not establish it.
 
 [#174](https://forgejo.creatidy.com/BioMedical-IT/scarcity-router/issues/174)
 owns the executable recommendation/admission/pin producer-consumer proof;
@@ -85,14 +89,16 @@ never forked:
 - `SelectionDecision.to_dict()` and `SimulationResult.to_dict()` — outputs
   (D-027).
 
-The application layer resolves artifacts (`model-catalog.json`,
-`model-policy.json`) from its configured defaults, exactly as the CLI does
-today. **Artifacts are process configuration, not per-request inputs:** REST
-and MCP clients never supply catalog/model-policy file paths, and never
-supply provider endpoints or credentials. Per-request inputs are exactly the
-requirement source (profile id or explicit `TaskRequirement`), the optional
-tightening, the optional `SelectorPolicy`, the optional replenishment
-observations and, for simulation, the typed `SimulationOverrides`.
+The default application loads no catalog or profile artifact. Clients supply
+an explicit `TaskRequirement`, optional tightening, policy and replenishment
+observations; legacy profile IDs receive an actionable refusal. Simulation
+accepts typed `SimulationOverrides`. Configured executable resources and
+authorized discoveries are composed only by the server with those resources;
+clients cannot supply provider credentials or arbitrary endpoints per request.
+Runtime-inventory decisions contain `decision_schema_version: 2`,
+`selection_input_kind: runtime_inventory`, and null historical catalog version
+and date. When MI is used, the pinned contract's original schema-1 receipt is
+retained intact inside the schema-2 response as `mi_receipt`.
 
 There is no client-supplied evaluation instant for `status`/`select`; each
 invocation obtains one instant from the server clock and shares it across
@@ -590,13 +596,11 @@ Separate contracts carry separate versions; they are never collapsed:
 | --- | --- | --- | --- |
 | `CapacitySnapshot.schema_version` | `3` | [capacity.py](../scarcity_router/capacity.py), `SCHEMA_VERSION`; v3 only, not a v1/v2 capacity migration | `test_capacity.py`: old/future schema, exact types, missing semantics, closed vocabulary |
 | `ExecutionEligibility.schema_version` | `1` | [eligibility.py](../scarcity_router/eligibility.py), `ELIGIBILITY_SCHEMA_VERSION`; v1 only | `test_eligibility.py`: round-trip, enum/unknown-key/version refusal |
-| `Machine envelope` | `1` | [machine_api.py](../scarcity_router/machine_api.py), `ENVELOPE_SCHEMA_VERSION`; REST `/v1/`, MCP, remote recommendation | `test_interfaces_guardrails.py`: direct/CLI/REST/MCP/remote parity, additive eligibility, integer-only envelope/missing document refusal |
-| `catalog_version` | `5` | [model-catalog.json](../model-catalog.json), [ModelCatalog](../scarcity_router/selection_types.py); positive integer CONTENT/calibration generation, no separate schema field | `test_model_calibration.py`, `test_selection_types.py`, `test_model_contracts.py`: provenance/override round-trip; content increment is not recalibration |
-| `policy_version` | `9` | [model-policy.json](../model-policy.json), [load_model_policy](../scarcity_router/selection_app.py); positive integer CONTENT/calibration generation | `test_model_policy.py`, `test_model_calibration.py`, `test_selection_app.py`: profile expansion and decision provenance |
-| `Model policy schema` | `1` | [selection_app.py](../scarcity_router/selection_app.py), `MODEL_POLICY_SCHEMA_VERSION`; declared integer 1 only; bounded legacy projection below | `test_selection_app.py`: future/bool/float/string/null refusal, compatible descriptive additions |
-| `Track registry schema` | `1` | [model_tracks.py](../scarcity_router/model_tracks.py), `TRACK_REGISTRY_SCHEMA_VERSION`; reviewed dated floors, no content counter | `test_model_contracts.py`, `test_execution_sources.py`: strict shape, floor provenance, restricted tracks, generation upgrades |
+| `Machine envelope` | status `1`; runtime selection/simulation `2` | [machine_api.py](../scarcity_router/machine_api.py); historical catalog-based envelopes retain version 1 | `test_dynamic_source_policy.py`, `test_control_api.py`, `test_mi_consumer.py` |
+| `catalog_version` | null for runtime inventory | [ModelCatalog](../scarcity_router/selection_types.py); historical numbered catalog versions retain their original interpretation | `test_dynamic_source_policy.py`: runtime provenance; `test_mi_consumer.py`: exact receipt |
+| Legacy model policy and track schemas | retired | Static policy, profile and family-floor files are not loaded; old input is explicitly refused or retained as inactive state | `test_dynamic_source_policy.py`, `test_control_api.py`, package upgrade checks |
 | `Execution surface` | `1` | [gateway_contracts.py](../scarcity_router/gateway_contracts.py), `EXECUTION_SURFACE_VERSION`; independent Chat Completions ingress | `test_gateway_contracts.py`, `test_gateway_server.py`: request/error/pin semantics, cancellation/tools |
-| `RouteDecision.schema_version` | `1` | [routing_core.py](../scarcity_router/routing_core.py), `ROUTE_DECISION_SCHEMA_VERSION`; executable core decision with D-079 public projection, not the frozen recommendation-only envelope | `test_routing_core.py`, `test_kernel_requirements.py`: exact pins, authorization, no substitution/profile drift |
+| `RouteDecision.schema_version` | `2` for runtime inventory, `1` for historical catalog | [routing_core.py](../scarcity_router/routing_core.py); executable core decision with D-079 public projection | `test_routing_core.py`: exact pins, source quota, authorization and no substitution |
 | `ResourceStateSnapshot.schema_version` | `1` | [resource_state.py](../scarcity_router/resource_state.py), `RESOURCE_STATE_SCHEMA_VERSION`; observation only | `test_resource_state.py`: version/enums/required fields/future observation refusal |
 | `RegistrySnapshot.schema_version` | `1` | [resource_state.py](../scarcity_router/resource_state.py), `REGISTRY_SCHEMA_VERSION`; evaluated server read model | `test_resource_state.py`: current/future snapshot versions |
 | `WorkerStateReport.schema_version` | `1` | [resource_state.py](../scarcity_router/resource_state.py), `WORKER_REPORT_SCHEMA_VERSION`; authenticated grant intersection | `test_resource_state.py`: atomic report rejection; reports cannot redefine registrations |

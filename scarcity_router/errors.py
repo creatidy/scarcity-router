@@ -45,6 +45,10 @@ class ApplicationInputError(SelectionContractError):
     """
 
 
+class LegacyProfileInputError(ApplicationInputError):
+    """A removed global task profile must be replaced by explicit requirements."""
+
+
 class RouteContractValidationError(SelectionContractError):
     """Raised when a routing-core input violates a route-decision invariant.
 

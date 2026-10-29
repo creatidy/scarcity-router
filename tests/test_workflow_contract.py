@@ -305,7 +305,7 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("General non-delivery work retains", agents)
         self.assertIn("generic agent workflow frameworks", agents)
         policy = text("docs/llm-operating-policy.md")
-        self.assertIn("portable `model-policy.json` artifact remains descriptive and unchanged", policy)
+        self.assertIn("D-084 removes the former static selector profiles and ratings", policy)
         self.assertIn("Security-critical work retains rigorous ordinary independent security assessment", policy)
         validation = text(".kilo/rules/validation.md")
         for command in ("uv sync --only-dev", "make check", "uv run basedpyright", "git diff --check"):

@@ -6,9 +6,8 @@ and sdist contents and metadata, then runs one isolated installation
 lifecycle (issue #186) inside a throwaway ``uv tool`` environment:
 
 1. fresh install of the current local wheel plus the installed-surface
-   smokes: console-script help, default catalog/policy resource loading
-   (the versions expected are read from the root-authoritative artifacts,
-   so this check never pins them) without a checkout, cwd dependency or
+   smokes: console-script help, empty runtime-inventory initialization without
+   legacy model artifacts, without a checkout, cwd dependency or
    source-tree environment, official MCP-client initialization and tool
    discovery with clean shutdown and no stdout contamination, and a
    loopback REST ``/healthz`` smoke on a kernel-assigned port with clean
@@ -84,26 +83,6 @@ WHEEL_NAME = f"scarcity_router-{VERSION}-py3-none-any.whl"
 SDIST_NAME = f"scarcity_router-{VERSION}.tar.gz"
 
 
-def _root_artifact_versions() -> tuple[int, int]:
-    """Return the expected packaged catalog/policy versions from the root
-    artifacts — the same files hatch force-includes into the wheel — so the
-    smoke check never pins stale numbers."""
-    catalog = cast(
-        "dict[str, object]",
-        json.loads((REPO / "model-catalog.json").read_text(encoding="utf-8")),
-    )
-    policy = cast(
-        "dict[str, object]",
-        json.loads((REPO / "model-policy.json").read_text(encoding="utf-8")),
-    )
-    try:
-        return int(cast(int, catalog["catalog_version"])), int(cast(int, policy["policy_version"]))
-    except (KeyError, TypeError, ValueError) as error:
-        raise SystemExit(f"package-check: FAIL: cannot read artifact versions: {error}") from error
-
-
-EXPECTED_CATALOG_VERSION, EXPECTED_POLICY_VERSION = _root_artifact_versions()
-
 EXPECTED_ENTRY_POINTS = {
     "console_scripts": {
         "scarcity-router": "scarcity_router.cli:main",
@@ -130,6 +109,9 @@ FORBIDDEN_NAME_PARTS = (
     "quota-snapshots",
     "__pycache__",
     ".pyc",
+    "model-catalog.json",
+    "model-policy.json",
+    "model-tracks.json",
 )
 
 # Hatchling always injects the root .gitignore and PKG-INFO into sdists.
@@ -145,9 +127,6 @@ REQUIRED_WHEEL_NAMES = (
     "scarcity_router/mcp.py",
     "scarcity_router/server.py",
     "scarcity_router/selection_app.py",
-    "scarcity_router/model-catalog.json",
-    "scarcity_router/model-policy.json",
-    "scarcity_router/model-tracks.json",
     "scarcity_router/default-selector-policy.json",
     f"scarcity_router-{VERSION}.dist-info/METADATA",
     f"scarcity_router-{VERSION}.dist-info/entry_points.txt",
@@ -161,9 +140,6 @@ REQUIRED_SDIST_NAMES = (
     "scarcity_router/mcp.py",
     "scarcity_router/server.py",
     "scarcity_router/selection_app.py",
-    "model-catalog.json",
-    "model-policy.json",
-    "model-tracks.json",
     "examples/selector-policy.json",
     "pyproject.toml",
     "README.md",
@@ -351,6 +327,7 @@ def check_mcp(bin_dir: Path, tool_python: Path, home: Path) -> None:
 
 RESOURCE_CHECK = """
 import scarcity_router
+from importlib.resources import files
 from scarcity_router.selection_app import (
     DEFAULT_CATALOG_PATH,
     DEFAULT_MODEL_POLICY_PATH,
@@ -359,13 +336,13 @@ from scarcity_router.selection_app import (
 
 package_dir = scarcity_router.__file__.rsplit("/", 1)[0]
 assert not package_dir.startswith(CHECKOUT), package_dir
-for path in (DEFAULT_CATALOG_PATH, DEFAULT_MODEL_POLICY_PATH):
-    assert str(path).startswith(package_dir + "/"), (path, package_dir)
+for name in ("model-catalog.json", "model-policy.json", "model-tracks.json"):
+    assert not files("scarcity_router").joinpath(name).is_file(), name
 catalog, _profiles, policy_version = load_configured_artifacts(
     DEFAULT_CATALOG_PATH, DEFAULT_MODEL_POLICY_PATH
 )
-assert catalog.catalog_version == @CATALOG_VERSION@, catalog.catalog_version
-assert policy_version == @POLICY_VERSION@, policy_version
+assert catalog.catalog_version is None and not catalog.entries
+assert not _profiles.definitions
 assert scarcity_router.get_version() == @VERSION@, scarcity_router.get_version()
 print("ok")
 """
@@ -375,17 +352,13 @@ def check_installed_resources(tool_python: Path, home: Path) -> None:
     code = (
         RESOURCE_CHECK.replace("CHECKOUT", repr(str(REPO)))
         .replace("@VERSION@", repr(VERSION))
-        .replace("@CATALOG_VERSION@", repr(EXPECTED_CATALOG_VERSION))
-        .replace("@POLICY_VERSION@", repr(EXPECTED_POLICY_VERSION))
     )
     result = _run([str(tool_python), "-I", "-c", code], cwd=home, env=clean_env(home))
     _check(
         result.returncode == 0 and result.stdout.strip().endswith("ok"),
         f"installed resource loading failed:\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}",
     )
-    print(
-        f"PASS installed defaults load catalog {EXPECTED_CATALOG_VERSION} / policy {EXPECTED_POLICY_VERSION} without checkout, cwd or source env"
-    )
+    print("PASS installed defaults use an empty runtime inventory without static artifacts")
 
 
 def check_cli_scripts(bin_dir: Path, home: Path) -> None:
@@ -483,7 +456,7 @@ from scarcity_router.config import (
     default_selector_policy_source,
     load_selector_policy,
 )
-from scarcity_router.server_config import ServerConfiguration
+from scarcity_router.server_config import ServerConfiguration, SourceConfig
 from scarcity_router.server_store import (
     STORE_FILE_NAME,
     ServerStore,
@@ -515,6 +488,10 @@ data_dir = default_server_data_dir()
 store = ServerStore.open(data_dir)
 record = ServerConfiguration.neutral().to_document()
 record["session_ttl_seconds"] = SESSION_TTL_SECONDS
+record["sources"] = [SourceConfig(
+    source_id="upgrade-source", kind="codex_subscription", label="Upgrade fixture",
+    worker_id="upgrade-worker", allowed_tracks=("openai/sol",),
+).to_dict()]
 ServerConfiguration.from_document(record)
 store.save_configuration_document(record, at=@SEED_TIMESTAMP@)
 stored = store.load_configuration_document()
@@ -533,13 +510,25 @@ from pathlib import Path
 
 from scarcity_router.server_config import ServerConfiguration
 from scarcity_router.server_store import ServerStore
+from scarcity_router.execution_sources import SourceRegistry
+from scarcity_router.model_inventory import DiscoveredModel, ModelInventoryReport, SourceInventory
 
 RECORD = json.loads(@RECORD@)
 store = ServerStore.open(Path(@DATA_DIR@))
 stored = store.load_configuration_document()
 store.close()
 assert stored == RECORD, (stored, RECORD)
-ServerConfiguration.from_document(stored)
+config = ServerConfiguration.from_document(stored)
+assert config.sources[0].allowed_tracks == ("openai/sol",)
+registry = SourceRegistry()
+registry.sync_configuration(config.sources)
+decisions = registry.apply_inventory(ModelInventoryReport(worker_id="upgrade-worker", sources=(
+    SourceInventory(source_id="upgrade-source", adapter_id="codex:upgrade-source",
+                    kind="codex_subscription", observed_at="2026-01-01T00:00:00.000Z",
+                    auth_state="authenticated", runtime_name="codex", runtime_version="1",
+                    models=(DiscoveredModel("synthetic-model", ("high",)),)),
+)))
+assert decisions[0].reason == "legacy_track_policy" and not registry.derived_registrations()
 print("ok")
 """
 
@@ -702,12 +691,11 @@ def _verify_state_retained_after_uninstall(state: _SeededState, store_bytes: byt
 
 
 def run_install_lifecycle(root: Path) -> None:
-    """Fresh install → smokes → seed operator state → same-version local-wheel
-    replacement → smokes + retention → uninstall → retained-state proof.
+    """Install, seed state, replace, verify, then uninstall without purging.
 
-    The replacement reinstalls the exact same current local wheel; it is NOT
-    an old-release→new-release upgrade proof (no release exists to upgrade
-    from). Uninstall proves operator state is deliberately retained — the
+    SCARCITY_ROUTER_UPGRADE_BASE_WHEEL optionally selects a prior wheel for the
+    initial install. Without it this tests same-wheel replacement only, not an
+    old-code upgrade. Uninstall deliberately retains operator state — the
     temporary tool is removed, the seeded state is never purged. Every REST
     and MCP smoke joins its process before returning, so no server survives
     into the uninstall step.
@@ -719,9 +707,15 @@ def run_install_lifecycle(root: Path) -> None:
     tool_env = install_env(home, tool_dir, bin_dir)
     wheel = DIST / WHEEL_NAME
 
-    _install_tool_wheel(tool_env, wheel, bin_dir=bin_dir, force=False)
+    baseline_raw = os.environ.get("SCARCITY_ROUTER_UPGRADE_BASE_WHEEL")
+    baseline = Path(baseline_raw) if baseline_raw else wheel
+    _check(baseline.is_file(), f"baseline wheel is missing: {baseline}")
+    if baseline_raw:
+        print("INFO baseline wheel supplied; testing an old-code to current-code replacement")
+    _install_tool_wheel(tool_env, baseline, bin_dir=bin_dir, force=False)
     tool_python = _tool_python(tool_dir)
-    _installed_surface_smokes(bin_dir, tool_python, home)
+    if baseline_raw is None:
+        _installed_surface_smokes(bin_dir, tool_python, home)
 
     seeded = _seed_user_state(home, tool_python)
 

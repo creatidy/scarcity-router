@@ -49,7 +49,6 @@ from scarcity_router.model_inventory import (
     ModelInventoryReport,
     SourceInventory,
 )
-from scarcity_router.model_tracks import load_track_registry
 from scarcity_router.resource_state import (
     ExecutionCapabilities,
     QuotaFact,
@@ -61,11 +60,11 @@ from scarcity_router.resource_state import (
 )
 from scarcity_router.routing_core import (
     AdministratorConstraints,
+    ClientAuthorization,
     ClientRoutingProfile,
     CompatibilityCell,
 )
 from scarcity_router.selector import neutral_selector_policy
-from scarcity_router.selection_app import DEFAULT_CATALOG_PATH, load_catalog
 from scarcity_router.selection_types import (
     CapabilityAssessment,
     CapabilityAssessments,
@@ -112,12 +111,13 @@ FEATURES = (
 # ── Derived-source world ──────────────────────────────────────────────────────
 
 
-def _source_config(source_id: str) -> SourceConfig:
+def _source_config(source_id: str, models: tuple[DiscoveredModel, ...]) -> SourceConfig:
     return SourceConfig(
         source_id=source_id,
         kind="codex_subscription",
         label=f"Source {source_id}",
         worker_id="worker-1",
+        allowed_models=tuple(model.slug for model in models),
     )
 
 
@@ -194,15 +194,19 @@ def derived_world(
 ) -> tuple[ResourceRegistry, ModelCatalog]:
     """A real D-053 adoption world: classified inventory → derived
     registrations → healthy registry, plus the merged floor catalog."""
-    sources = SourceRegistry(track_registry=load_track_registry())
-    sources.sync_configuration(tuple(_source_config(sid) for sid in source_ids))
+    sources = SourceRegistry()
+    sources.sync_configuration(tuple(_source_config(sid, models) for sid in source_ids))
     for source_id in source_ids:
         _ = sources.apply_inventory(_inventory(models, source_id=source_id))
     registry = ResourceRegistry(clock=lambda: OBSERVED)
     for registration in sources.derived_registrations():
+        # Synthetic exact-resource evidence for exercising chat admission.
+        registration = replace(registration, capabilities=replace(
+            registration.capabilities, context_limit_tokens=4096,
+        ))
         registry.register(registration)
         _ = registry.apply_snapshot(_healthy_snapshot(registration.identity))
-    return registry, sources.derived_catalog_entries(load_catalog(DEFAULT_CATALOG_PATH))
+    return registry, sources.derived_catalog_entries(ModelCatalog(None, None, ()))
 
 
 def make_derived_application(
@@ -437,10 +441,9 @@ class LogicalResolutionTests(DerivedHarness):
 class EffortRuleTests(DerivedHarness):
     """Omitted effort: single legal variant uses it; several fail."""
 
-    def test_max_only_family_uses_max_when_omitted(self) -> None:
-        """D-054 consistency: a max-only light family's only calibrated
-        effort is the one used when the client omits the field."""
-        luna_max_only = (DiscoveredModel("gpt-6.5-luna", ("low", "max")),)
+    def test_single_reported_effort_is_used_when_omitted(self) -> None:
+        """A single evidenced effort needs no implicit substitution."""
+        luna_max_only = (DiscoveredModel("gpt-6.5-luna", ("max",)),)
         registry, catalog = derived_world(luna_max_only)
         port = self.make_derived_server(make_derived_application(registry, catalog))
         response = self.post_chat(
@@ -678,11 +681,11 @@ class CatalogEffortTests(DerivedHarness):
         infos = exposed_logical_models(catalog, application.registry, application.limits)
         self.assertEqual(infos[0].reasoning_efforts, ("high",))
 
-    def test_shipped_max_only_http_logical_request_preserves_real_preset_omission(self) -> None:
-        entry = next(
-            entry for entry in load_catalog(DEFAULT_CATALOG_PATH).entries
-            if entry.identity.provider == "zai" and entry.identity.model == "glm-5.3-flash"
-        )
+    def test_http_logical_request_preserves_real_preset_omission(self) -> None:
+        application, _ = self._world((("opaque-high", "high", True),))
+        entry = replace(application.catalog.entries[0],
+                        identity=ModelIdentity("zai", "synthetic-model", "max"),
+                        reasoning_effort="max", capacity_bindings=None)
         self.assertEqual(entry.reasoning_effort, "max")
         identity = ResourceIdentity(
             resource_id="zai-http", channel="server_direct_http", provider="zai",
@@ -711,9 +714,10 @@ class CatalogEffortTests(DerivedHarness):
         self.assertNotIn("thinking", wire)
 
     def test_actual_plan_lane_has_no_effort_or_physical_model_attestation(self) -> None:
-        sources = SourceRegistry(track_registry=load_track_registry())
+        sources = SourceRegistry()
         config = SourceConfig(source_id="zai-plan-1", kind="zcode_subscription",
-                              label="synthetic plan", worker_id="worker-1")
+                              label="synthetic plan", worker_id="worker-1",
+                              allowed_models=("plan-managed",))
         sources.sync_configuration((config,))
         _ = sources.apply_inventory(ModelInventoryReport(worker_id="worker-1", sources=(
             SourceInventory(source_id=config.source_id, adapter_id="zcode:zai-plan-1",
@@ -723,6 +727,9 @@ class CatalogEffortTests(DerivedHarness):
         )))
         registry = ResourceRegistry(clock=lambda: OBSERVED)
         for registration in sources.derived_registrations():
+            registration = replace(registration, capabilities=replace(
+                registration.capabilities, context_limit_tokens=4096,
+            ))
             registry.register(registration)
             _ = registry.apply_snapshot(replace(
                 _healthy_snapshot(registration.identity), quota_facts=(),
@@ -731,7 +738,7 @@ class CatalogEffortTests(DerivedHarness):
         application = make_application(
             registry=registry,
             clock=lambda: EVALUATED,
-            catalog=sources.derived_catalog_entries(load_catalog(DEFAULT_CATALOG_PATH)),
+            catalog=sources.derived_catalog_entries(ModelCatalog(None, None, ())),
             adapters=(adapter,), aliases=build_aliases({}),
             cells=build_compatibility_cells(ServerConfiguration(sources=(config,)),
                                           provider_secret_reader=lambda _provider: "SYNTHETIC",
@@ -767,14 +774,20 @@ class CatalogEffortTests(DerivedHarness):
 class ResolutionBoundaries(DerivedHarness):
     """Not-found stays not-found; availability is availability."""
 
-    def test_unknown_restricted_and_unclassified_stay_model_not_found(
+    def test_model_listing_does_not_expose_blocked_resources(self) -> None:
+        registry, catalog = derived_world(SOL)
+        application = make_derived_application(registry, catalog)
+        blocked = tuple(sorted(entry.identity.resource_id for entry in registry.registry_snapshot().entries))
+        application.client_authorizations = {
+            CLIENT_ID: ClientAuthorization(blocked_resource_ids=blocked)
+        }
+        port = self.make_derived_server(application)
+        self.assertNotIn("gpt-6-sol", self.models_ids(port))
+
+    def test_unreported_models_stay_model_not_found(
         self,
     ) -> None:
-        world = (
-            DiscoveredModel("gpt-6-sol", ("high",)),
-            DiscoveredModel("gpt-daybreak-blue-latest", ("high",)),
-            DiscoveredModel("totally-unclassified-slug", ("high",)),
-        )
+        world = (DiscoveredModel("gpt-6-sol", ("high",)),)
         registry, catalog = derived_world(world)
         port = self.make_derived_server(make_derived_application(registry, catalog))
         for slug in (
@@ -945,13 +958,11 @@ class DiscoveryMetadataTests(DerivedHarness):
         metadata = as_dict(entry["x_scarcity_router"])
         self.assertEqual(metadata["kind"], "logical_model")
         self.assertEqual(metadata["provider"], "openai")
-        # Only the calibrated floor entry's effort — the runtime-reported
-        # non-max efforts have no catalog entry and are not advertised.
-        self.assertEqual(metadata["reasoning_efforts"], ["max"])
-        # Model hard context (1.05M) intersected with the known channel
-        # ceiling (272k) — the channel-bound honest number, never 1.05M.
-        self.assertEqual(metadata["effective_context_limit_tokens"], 272_000)
-        self.assertEqual(metadata["max_output_tokens"], 128_000)
+        # Only exact runtime-reported efforts are advertised.
+        self.assertEqual(metadata["reasoning_efforts"], ["low", "max"])
+        self.assertEqual(metadata["effective_context_limit_tokens"], 4096)
+        self.assertIsNone(metadata["max_output_tokens"])
+        self.assertEqual(metadata["schema_version"], 2)
 
     def test_alias_entry_metadata_marks_kind(self) -> None:
         registry, catalog = derived_world(SOL)

@@ -17,10 +17,8 @@ type on purpose", and the runtime validator must be the one to reject them.
 
 from __future__ import annotations
 
-import json
 import unittest
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import cast
 from zoneinfo import ZoneInfo
 
@@ -33,7 +31,9 @@ from scarcity_router import (
     CapacityScopeRef,
     CapacitySnapshot,
     CapacityWindow,
-    ModelCatalog,
+    CapabilityAssessment,
+    CapabilityAssessments,
+    ModelHardProperties,
     ModelCatalogEntry,
     ModelIdentity,
     ReplenishmentDecision,
@@ -50,9 +50,6 @@ from scarcity_router import (
     evaluate_reservation,
 )
 from scarcity_router.errors import SelectionContractValidationError
-
-REPO = Path(__file__).resolve().parents[1]
-CATALOG_PATH = REPO / "model-catalog.json"
 
 TS = "2026-09-06T12:00:00.000Z"
 RESET = "2026-09-12T09:00:00.000Z"
@@ -73,16 +70,15 @@ def _ill(value: object) -> object:
     return value
 
 
-def _load_catalog() -> dict[tuple[str, str], ModelCatalogEntry]:
-    catalog = ModelCatalog.from_dict(
-        cast(object, json.loads(CATALOG_PATH.read_text(encoding="utf-8")))
-    )
-    return {(e.identity.provider, e.identity.model): e for e in catalog.entries}
+def _synthetic_entry(identity: ModelIdentity, binding: CapacityScopeRef) -> ModelCatalogEntry:
+    unknown = CapabilityAssessment(None)
+    return ModelCatalogEntry(identity=identity, display_name="Synthetic", hard_properties=ModelHardProperties(),
+        capabilities=CapabilityAssessments(unknown, unknown, unknown, unknown, unknown, unknown),
+        capacity_bindings=(binding,))
 
 
-CATALOG = _load_catalog()
-LUNA_ENTRY = CATALOG[("openai", "gpt-5.6-luna")]
-GLM53_ENTRY = CATALOG[("zai", "glm-5.3")]
+LUNA_ENTRY = _synthetic_entry(LUNA, CODEX_SCOPE)
+GLM53_ENTRY = _synthetic_entry(GLM53, CODING_PLAN_SCOPE)
 
 
 def _window(

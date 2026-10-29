@@ -3,7 +3,7 @@
 These tests construct the task-requirement and model-catalog contracts
 (``scarcity_router.selection_types``, D-024) directly and assert the frozen
 invariants, including deterministic serialization, round-trips, the explicit
-unknown states, repository consistency with ``model-policy.json`` and narrow
+unknown states, typed requirement compatibility and narrow
 anti-inference source assertions. They do NOT populate any real rating,
 minimum or catalog entry: no such values exist in M2b.
 
@@ -56,7 +56,6 @@ from scarcity_router import (
 )
 from scarcity_router import selection_types as st
 
-POLICY_PATH = Path(__file__).resolve().parents[1] / "model-policy.json"
 MODULE_PATH = Path(st.__file__).resolve()
 
 UNKNOWN_ASSESSMENT = CapabilityAssessment(rating=None)
@@ -85,13 +84,6 @@ def _unknown_vector() -> CapabilityAssessments:
         tool_use=UNKNOWN_ASSESSMENT,
         translation_multilingual=UNKNOWN_ASSESSMENT,
     )
-
-
-def _load_policy() -> dict[str, object]:
-    value = cast(object, json.loads(POLICY_PATH.read_text(encoding="utf-8")))
-    if not isinstance(value, dict):
-        raise AssertionError("model-policy.json must contain a JSON object")
-    return cast("dict[str, object]", value)
 
 
 # ── Identity primitives ───────────────────────────────────────────────────────
@@ -132,9 +124,11 @@ class IdentityPrimitives(unittest.TestCase):
                 with self.assertRaises(SelectionContractValidationError):
                     _ = CapacityScopeRef(provider="openai", scope_id=bad)
 
-    def test_provider_restricted_to_supported_set(self) -> None:
+    def test_provider_names_are_descriptive_not_authorization(self) -> None:
         self.assertEqual(SUPPORTED_PROVIDERS, frozenset({"openai", "zai"}))
-        for bad in ("anthropic", "ollama", "local", "OpenAI"):
+        for provider in ("anthropic", "ollama", "local"):
+            self.assertEqual(provider, ModelRef(provider=provider, model="m").provider)
+        for bad in ("OpenAI", "bad/path"):
             with self.subTest(bad=bad):
                 with self.assertRaises(SelectionContractValidationError):
                     _ = ModelRef(provider=bad, model="m")
@@ -1227,46 +1221,6 @@ class ErrorFamilyContract(unittest.TestCase):
 
 
 # ── Repository policy consistency ─────────────────────────────────────────────
-
-
-class ModelPolicyConsistency(unittest.TestCase):
-    """The frozen vocabularies must still agree with model-policy.json.
-
-    If the policy artifact changes later, these tests force an explicit
-    contract update in code (and a decision record entry). Numeric minima are
-    deliberately NOT compared because none exist yet.
-    """
-
-    def test_capability_dimensions_match_policy(self) -> None:
-        policy = _load_policy()
-        dims = policy["capability_dimensions"]
-        self.assertIsInstance(dims, list)
-        ids = [
-            cast("dict[str, object]", d)["id"] for d in cast("list[object]", dims)
-        ]
-        self.assertEqual(list(CAPABILITY_DIMENSIONS), ids)
-
-    def test_task_levels_match_policy(self) -> None:
-        policy = _load_policy()
-        levels = policy["task_levels"]
-        self.assertIsInstance(levels, list)
-        ids = [
-            cast("dict[str, object]", level)["id"]
-            for level in cast("list[object]", levels)
-        ]
-        self.assertEqual(list(TASK_LEVELS), ids)
-
-    def test_policy_numeric_minima_are_calibrated(self) -> None:
-        # M2c (D-025) calibrated the numeric profile minima; this supersedes
-        # the earlier deferral state. The authoritative numeric definitions
-        # live in task_profiles[].calibrated_requirement.
-        policy = _load_policy()
-        profile_policy = cast("dict[str, object]", policy["task_profile_policy"])
-        self.assertIs(profile_policy["numeric_minima_included"], True)
-        self.assertEqual(profile_policy["numeric_minima_status"], "calibrated_m2c")
-        for profile in cast("list[object]", policy["task_profiles"]):
-            entry = cast("dict[str, object]", profile)
-            self.assertIn("calibrated_requirement", entry)
 
 
 # ── Anti-inference contract assertions ────────────────────────────────────────

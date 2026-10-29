@@ -104,6 +104,10 @@ def source_resource_id(source_id: str, slug: str, effort: str | None = None) -> 
             f"source_id {source_id!r}: longer than {SOURCE_ID_MAX_LENGTH} chars; "
             + "derived resource ids would exceed the safe-id contract"
         )
+    if ":" in source_id or (effort is not None and ":" in effort):
+        raise ModelInventoryError("source and effort identifiers must not contain ':'")
+    if effort is None and ":" in slug:
+        raise ModelInventoryError("an effort-less source model must not contain ':'")
     combined = f"{source_id}:{slug}" + (f":{effort}" if effort else "")
     # The COMPLETE identity — including the effort suffix — must fit the
     # safe-id contract (Daybreak blocker 2): validated here, before any

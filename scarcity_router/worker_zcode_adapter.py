@@ -149,8 +149,7 @@ from .worker_codex_adapter import (
 ZCODE_ADAPTER_ID = "zcode"
 
 #: The provider identity for the Z.ai subscription lane; resource identity
-#: and snapshots use the same provider vocabulary as the existing Z.ai
-#: catalog entries (model-catalog.json).
+#: and snapshots use the same provider identity as the Z.ai source.
 ZCODE_PROVIDER = "zai"
 
 #: The single reserved plan-lane descriptor slug. This is a ROUTER-SIDE
@@ -158,8 +157,8 @@ ZCODE_PROVIDER = "zai"
 #: a physical model claim: ZCode has no supported listing or steering, so
 #: no physical identity, variant or reasoning effort is ever asserted.
 #: The lane resource is effort-less (``<source_id>:plan-managed``, no
-#: variant) and routes through the normal D-053/D-055 machinery as a
-#: vendor-managed lane (D-063: the owner-reviewed ``zai/plan`` track):
+#: variant) and routes through the normal source machinery as a
+#: vendor-managed lane (D-063, with an explicit administrator grant):
 #: routing to it means exactly "execute through this ZCode plan-managed
 #: lane in the authorized workspace", never "execute through GLM-…".
 PLAN_LANE_SLUG = "plan-managed"

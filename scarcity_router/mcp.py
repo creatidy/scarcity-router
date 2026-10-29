@@ -27,10 +27,11 @@ from mcp.types import (
 )
 
 from . import get_version
-from .errors import ApplicationInputError
+from .errors import ApplicationInputError, LegacyProfileInputError
 from .machine_api import (
     internal_error_payload,
     invalid_request_payload,
+    legacy_profile_payload,
     parse_selection_document,
     parse_simulation_document,
     parse_status_arguments,
@@ -270,6 +271,8 @@ async def _call_tool(
             clock=application.clock,
         )
         return _success_result(simulation_envelope(result))
+    except LegacyProfileInputError:
+        return _text_result(legacy_profile_payload(), is_error=True)
     except ApplicationInputError:
         return _error_result()
     except Exception:

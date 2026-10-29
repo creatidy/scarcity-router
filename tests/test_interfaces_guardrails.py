@@ -54,6 +54,7 @@ from scarcity_router.machine_api import (
     ENVELOPE_SCHEMA_VERSION,
     internal_error_payload,
     invalid_request_payload,
+    legacy_profile_payload,
     parse_selection_document,
     parse_simulation_document,
     selection_envelope,
@@ -71,8 +72,9 @@ from scarcity_router.remote import (
 )
 from scarcity_router.selection_app import (
     ApplicationDependencies,
-    load_catalog,
-    load_model_policy,
+    DEFAULT_CATALOG_PATH,
+    DEFAULT_MODEL_POLICY_PATH,
+    load_configured_artifacts,
     select_from_inputs,
     simulate_from_inputs,
 )
@@ -89,8 +91,9 @@ from scarcity_router.providers.openai_codex_acquisition import (
 from tests.observation import paired_observation
 
 REPO = Path(__file__).resolve().parents[1]
-CATALOG_PATH = REPO / "model-catalog.json"
-POLICY_PATH = REPO / "model-policy.json"
+CATALOG_PATH = DEFAULT_CATALOG_PATH
+POLICY_PATH = DEFAULT_MODEL_POLICY_PATH
+CATALOG, PROFILES, POLICY_VERSION = load_configured_artifacts(CATALOG_PATH, POLICY_PATH)
 FIXED_AT = datetime(2026, 9, 6, 12, 0, tzinfo=timezone.utc)
 RETRIEVED_AT = "2026-09-06T12:00:00.000Z"
 
@@ -408,7 +411,7 @@ class FrozenSurfaceTests(GuardrailTestCase):
         self.assertEqual(200, code)
         self.assertIn("snapshots", cast("dict[str, object]", envelope))
         code, envelope = _rest_json(
-            harness, "POST", "/v1/select", {"profile_id": "deep_coding"}
+            harness, "POST", "/v1/select", {"requirement": _REQUIREMENT_L3}
         )
         self.assertEqual(200, code)
         self.assertIn("decision", cast("dict[str, object]", envelope))
@@ -416,7 +419,7 @@ class FrozenSurfaceTests(GuardrailTestCase):
             harness,
             "POST",
             "/v1/simulate",
-            {"profile_id": "deep_coding", "overrides": {}},
+            {"requirement": _REQUIREMENT_L3, "overrides": {}},
         )
         self.assertEqual(200, code)
         self.assertIn("result", cast("dict[str, object]", envelope))
@@ -574,7 +577,7 @@ class FrozenSemanticsTests(GuardrailTestCase):
         application = _application(collectors)
         harness = self._rest(application)
         status, payload = _rest_json(
-            harness, "POST", "/v1/select", {"profile_id": "scientific_review"}
+            harness, "POST", "/v1/select", {"requirement": _REQUIREMENT_L3}
         )
         self.assertEqual(200, status)
         decision = cast(
@@ -586,15 +589,18 @@ class FrozenSemanticsTests(GuardrailTestCase):
             cast("list[object]", decision["reason_codes"]),
         )
         result = self._mcp(
-            application, "scarcity_select", {"profile_id": "scientific_review"}
+            application, "scarcity_select", {"requirement": _REQUIREMENT_L3}
         )
         self.assertFalse(result.is_error)
         self.assertEqual(
             decision,
             cast("dict[str, object]", _mcp_payload(result)["decision"]),
         )
+        directory = self.enterContext(tempfile.TemporaryDirectory())
+        requirement = Path(directory) / "requirement.json"
+        _ = requirement.write_text(json.dumps(_REQUIREMENT_L3), encoding="utf-8")
         code, _ = self._cli(
-            ["select", "--profile", "scientific_review", "--json"],
+            ["select", "--requirement", str(requirement), "--json"],
             collectors=collectors,
         )
         self.assertEqual(0, code)
@@ -606,12 +612,12 @@ class FrozenSemanticsTests(GuardrailTestCase):
             harness, "POST", "/v1/select", {"profile_id": "not-a-profile"}
         )
         self.assertEqual(400, status)
-        self.assertEqual(invalid_request_payload(), payload)
+        self.assertEqual(legacy_profile_payload(), payload)
         result = self._mcp(
             application, "scarcity_select", {"profile_id": "not-a-profile"}
         )
         self.assertTrue(result.is_error)
-        self.assertEqual(invalid_request_payload(), _mcp_payload(result))
+        self.assertEqual(legacy_profile_payload(), _mcp_payload(result))
         code, _ = self._cli(["select", "--profile", "not-a-profile", "--json"])
         self.assertEqual(1, code)
 
@@ -644,25 +650,25 @@ class FrozenSemanticsTests(GuardrailTestCase):
             harness,
             "POST",
             "/v1/select",
-            {"profile_id": "deep_coding", "replenishment_states": None},
+            {"requirement": _REQUIREMENT_L3, "replenishment_states": None},
         )
         self.assertEqual(400, status)
         self.assertEqual(invalid_request_payload(), payload)
         replenishment_cases: tuple[object, ...] = (None, [])
         for replenishment in replenishment_cases:
-            request: dict[str, object] = {"profile_id": "deep_coding"}
+            request: dict[str, object] = {"requirement": _REQUIREMENT_L3}
             if replenishment is not None:
                 request["replenishment_states"] = replenishment
             status, _ = _rest_json(harness, "POST", "/v1/select", request)
             self.assertEqual(200, status)        # selector_policy: null behaves exactly like missing (server default).
         status_missing, payload_missing = _rest_json(
-            harness, "POST", "/v1/select", {"profile_id": "deep_coding"}
+            harness, "POST", "/v1/select", {"requirement": _REQUIREMENT_L3}
         )
         status_null, payload_null = _rest_json(
             harness,
             "POST",
             "/v1/select",
-            {"profile_id": "deep_coding", "selector_policy": None},
+            {"requirement": _REQUIREMENT_L3, "selector_policy": None},
         )
         self.assertEqual(200, status_missing)
         self.assertEqual(200, status_null)
@@ -688,7 +694,7 @@ class FrozenSemanticsTests(GuardrailTestCase):
         result = self._mcp(
             application,
             "scarcity_select",
-            {"profile_id": "deep_coding", "replenishment_states": None},
+            {"requirement": _REQUIREMENT_L3, "replenishment_states": None},
         )
         self.assertTrue(result.is_error)
         self.assertEqual(invalid_request_payload(), _mcp_payload(result))
@@ -699,21 +705,21 @@ class FrozenSemanticsTests(GuardrailTestCase):
         # overrides is required; the nested replenishment tri-state belongs
         # to SimulationOverrides and is never conflated with select.
         status, _ = _rest_json(
-            harness, "POST", "/v1/simulate", {"profile_id": "deep_coding"}
+            harness, "POST", "/v1/simulate", {"requirement": _REQUIREMENT_L3}
         )
         self.assertEqual(400, status)
         status, _ = _rest_json(
             harness,
             "POST",
             "/v1/simulate",
-            {"profile_id": "deep_coding", "overrides": None},
+            {"requirement": _REQUIREMENT_L3, "overrides": None},
         )
         self.assertEqual(400, status)
         status, _ = _rest_json(
             harness,
             "POST",
             "/v1/simulate",
-            {"profile_id": "deep_coding", "overrides": {}},
+            {"requirement": _REQUIREMENT_L3, "overrides": {}},
         )
         self.assertEqual(200, status)
 
@@ -759,9 +765,9 @@ class GatewayEraParityTests(GuardrailTestCase):
         application = _application(collectors)
         harness = self._rest(application)
         direct = select_from_inputs(
-            catalog=load_catalog(CATALOG_PATH),
-            profiles=load_model_policy(POLICY_PATH)[0],
-            profile_policy_version=load_model_policy(POLICY_PATH)[1],
+            catalog=CATALOG,
+            profiles=PROFILES,
+            profile_policy_version=POLICY_VERSION,
             profile_id=profile_id,
             requirement=requirement,
             tightening=tightening,
@@ -778,23 +784,21 @@ class GatewayEraParityTests(GuardrailTestCase):
         self.assertEqual(200, rest_status)
         mcp_result = self._mcp(application, "scarcity_select", mcp_arguments)
         self.assertFalse(mcp_result.is_error)
-        expected_envelope = {
-            "schema_version": ENVELOPE_SCHEMA_VERSION,
-            "decision": direct.to_dict(),
-        }
+        expected_envelope = selection_envelope(direct)
         self.assertEqual(direct.to_dict(), json.loads(output))
         self.assertEqual(expected_envelope, rest_envelope)
         self.assertEqual(expected_envelope, _mcp_payload(mcp_result))
         self.assertEqual(expected_envelope, _mcp_text_payload(mcp_result))
 
     def test_select_profile_parity(self) -> None:
-        self._assert_select_parity(
-            _collectors(),
-            profile_id="deep_coding",
-            cli_arguments=["select", "--profile", "deep_coding", "--json"],
-            rest_request={"profile_id": "deep_coding"},
-            mcp_arguments={"profile_id": "deep_coding"},
-        )
+        application = _application()
+        status, payload = _rest_json(self._rest(application), "POST", "/v1/select", {"profile_id": "deep_coding"})
+        self.assertEqual(400, status)
+        self.assertEqual(legacy_profile_payload(), payload)
+        result = self._mcp(application, "scarcity_select", {"profile_id": "deep_coding"})
+        self.assertTrue(result.is_error)
+        self.assertEqual(legacy_profile_payload(), _mcp_payload(result))
+        self.assertEqual(1, self._cli(["select", "--profile", "deep_coding", "--json"])[0])
 
     def test_select_explicit_requirement_parity(self) -> None:
         self._assert_select_parity(
@@ -812,21 +816,13 @@ class GatewayEraParityTests(GuardrailTestCase):
         )
 
     def test_select_profile_with_tightening_parity(self) -> None:
-        self._assert_select_parity(
-            _collectors(),
-            profile_id="deep_coding",
-            tightening=TaskRequirement.from_dict(_TIGHTENING),
-            cli_arguments=[
-                "select",
-                "--profile",
-                "deep_coding",
-                "--tighten",
-                str(self._write_fixture("tightening.json", _TIGHTENING)),
-                "--json",
-            ],
-            rest_request={"profile_id": "deep_coding", "tightening": _TIGHTENING},
-            mcp_arguments={"profile_id": "deep_coding", "tightening": _TIGHTENING},
-        )
+        application = _application()
+        request = {"profile_id": "deep_coding", "tightening": _TIGHTENING}
+        status, payload = _rest_json(self._rest(application), "POST", "/v1/select", request)
+        self.assertEqual((400, legacy_profile_payload()), (status, payload))
+        result = self._mcp(application, "scarcity_select", request)
+        self.assertTrue(result.is_error)
+        self.assertEqual(legacy_profile_payload(), _mcp_payload(result))
 
     def _write_fixture(self, name: str, document: object) -> Path:
         directory = tempfile.mkdtemp(prefix="scarcity-guardrail-fixture-")
@@ -839,13 +835,13 @@ class GatewayEraParityTests(GuardrailTestCase):
         collectors = _collectors()
         application = _application(collectors)
         harness = self._rest(application)
-        request = {"profile_id": "deep_coding", "overrides": _ZAI_WEEKLY_2}
+        request = {"requirement": _REQUIREMENT_L3, "overrides": _ZAI_WEEKLY_2}
         direct = simulate_from_inputs(
-            catalog=load_catalog(CATALOG_PATH),
-            profiles=load_model_policy(POLICY_PATH)[0],
-            profile_policy_version=load_model_policy(POLICY_PATH)[1],
-            profile_id="deep_coding",
-            requirement=None,
+            catalog=CATALOG,
+            profiles=PROFILES,
+            profile_policy_version=POLICY_VERSION,
+            profile_id=None,
+            requirement=TaskRequirement.from_dict(_REQUIREMENT_L3),
             tightening=None,
             policy=None,
             replenishment_states=(),
@@ -856,8 +852,8 @@ class GatewayEraParityTests(GuardrailTestCase):
         code, output = self._cli(
             [
                 "simulate",
-                "--profile",
-                "deep_coding",
+                "--requirement",
+                str(self._write_fixture("requirement.json", _REQUIREMENT_L3)),
                 "--overrides",
                 str(self._write_fixture("overrides.json", _ZAI_WEEKLY_2)),
                 "--json",
@@ -871,10 +867,7 @@ class GatewayEraParityTests(GuardrailTestCase):
         self.assertEqual(200, rest_status)
         mcp_result = self._mcp(application, "scarcity_simulate", request)
         self.assertFalse(mcp_result.is_error)
-        expected = {
-            "schema_version": ENVELOPE_SCHEMA_VERSION,
-            "result": direct.to_dict(),
-        }
+        expected = simulation_envelope(direct)
         self.assertEqual(direct.to_dict(), json.loads(output))
         self.assertEqual(expected, rest_envelope)
         self.assertEqual(expected, _mcp_payload(mcp_result))
@@ -910,138 +903,28 @@ class GatewayEraParityTests(GuardrailTestCase):
         self.assertEqual(rest_document, _mcp_text_payload(mcp_result))
 
     def test_select_reasoning_effort_parity(self) -> None:
-        """D-057: every serialized candidate carries its catalog effort,
-        identically on the direct core, CLI, loopback REST and MCP."""
-        collectors = _collectors()
-        application = _application(collectors)
-        harness = self._rest(application)
-        direct = select_from_inputs(
-            catalog=load_catalog(CATALOG_PATH),
-            profiles=load_model_policy(POLICY_PATH)[0],
-            profile_policy_version=load_model_policy(POLICY_PATH)[1],
-            profile_id="deep_coding",
-            requirement=None,
-            tightening=None,
-            policy=None,
-            replenishment_states=(),
-            collectors=collectors,
-            clock=_clock,
+        """An empty inventory never fabricates an effort across interfaces."""
+        self._assert_select_parity(
+            _collectors(), profile_id=None, requirement=TaskRequirement.from_dict(_REQUIREMENT_L3),
+            cli_arguments=["select", "--requirement", str(self._write_fixture("requirement.json", _REQUIREMENT_L3)), "--json"],
+            rest_request={"requirement": _REQUIREMENT_L3},
+            mcp_arguments={"requirement": _REQUIREMENT_L3},
         )
-        code, output = self._cli(
-            ["select", "--profile", "deep_coding", "--json"],
-            collectors=collectors,
-        )
-        self.assertEqual(0, code)
-        rest_status, rest_envelope = _rest_json(
-            harness, "POST", "/v1/select", {"profile_id": "deep_coding"}
-        )
-        self.assertEqual(200, rest_status)
-        mcp_result = self._mcp(
-            application, "scarcity_select", {"profile_id": "deep_coding"}
-        )
-        self.assertFalse(mcp_result.is_error)
-        expected_envelope = {
-            "schema_version": ENVELOPE_SCHEMA_VERSION,
-            "decision": direct.to_dict(),
-        }
-        self.assertEqual(direct.to_dict(), json.loads(output))
-        self.assertEqual(expected_envelope, rest_envelope)
-        self.assertEqual(expected_envelope, _mcp_payload(mcp_result))
-        self.assertEqual(expected_envelope, _mcp_text_payload(mcp_result))
-        # The additive member rides every candidate list on every surface,
-        # and its value is the ranked catalog entry's configured effort.
-        catalog_efforts = {
-            (entry.identity.provider, entry.identity.model, entry.identity.variant): (
-                entry.reasoning_effort
-            )
-            for entry in load_catalog(CATALOG_PATH).entries
-        }
-        rest_document = cast("dict[str, object]", rest_envelope)
-        decision = cast("dict[str, object]", rest_document["decision"])
-
-        def _walk(candidate: object, label: str) -> None:
-            payload = cast("dict[str, object]", candidate)
-            identity = cast("dict[str, object]", payload["identity"])
-            key = cast(
-                "tuple[str, str, str]",
-                (identity["provider"], identity["model"], identity["variant"]),
-            )
-            self.assertIn("reasoning_effort", payload, label)
-            self.assertEqual(catalog_efforts[key], payload["reasoning_effort"], label)
-
-        for member in (
-            "selected",
-            "alternatives",
-            "excluded",
-            "closest_candidates",
-            "recoverable_candidates",
-        ):
-            value = decision[member]
-            if member == "selected":
-                if value is not None:
-                    _walk(value, member)
-            else:
-                for candidate in cast("list[object]", value):
-                    _walk(candidate, member)
 
     def test_execution_eligibility_exclusion_parity(self) -> None:
-        """A blocked provider is excluded BEFORE routing, on every surface."""
+        """Provider block remains visible without inventing candidates."""
         collectors = _collectors(
             openai_state="policy_blocked",
             openai_reason_codes=("purchased_credits_present",),
         )
-        application = _application(collectors)
-        harness = self._rest(application)
-        direct = select_from_inputs(
-            catalog=load_catalog(CATALOG_PATH),
-            profiles=load_model_policy(POLICY_PATH)[0],
-            profile_policy_version=load_model_policy(POLICY_PATH)[1],
-            profile_id="routine_coding",
-            requirement=None,
-            tightening=None,
-            policy=None,
-            replenishment_states=(),
-            collectors=collectors,
-            clock=_clock,
+        observation = collect_status(collectors=collectors, clock=_clock)
+        self.assertEqual("policy_blocked", observation.eligibility[0].state)
+        self._assert_select_parity(
+            collectors, profile_id=None, requirement=TaskRequirement.from_dict(_REQUIREMENT_L3),
+            cli_arguments=["select", "--requirement", str(self._write_fixture("requirement.json", _REQUIREMENT_L3)), "--json"],
+            rest_request={"requirement": _REQUIREMENT_L3},
+            mcp_arguments={"requirement": _REQUIREMENT_L3},
         )
-        excluded = [
-            candidate.to_dict()
-            for candidate in direct.excluded
-            if candidate.exclusion_stage == "execution"
-        ]
-        self.assertTrue(excluded, "expected execution-stage exclusions")
-        for candidate in excluded:
-            report = cast(
-                "dict[str, object]", candidate["execution_eligibility"]
-            )
-            self.assertEqual("policy_blocked", report["state"])
-            self.assertEqual(
-                ["purchased_credits_present"], report["reason_codes"]
-            )
-            self.assertIn(
-                "execution_policy_blocked",
-                cast("list[object]", candidate["reason_codes"]),
-            )
-        code, output = self._cli(
-            ["select", "--profile", "routine_coding", "--json"],
-            collectors=collectors,
-        )
-        self.assertEqual(0, code)
-        rest_status, rest_envelope = _rest_json(
-            harness, "POST", "/v1/select", {"profile_id": "routine_coding"}
-        )
-        self.assertEqual(200, rest_status)
-        mcp_result = self._mcp(
-            application, "scarcity_select", {"profile_id": "routine_coding"}
-        )
-        self.assertFalse(mcp_result.is_error)
-        expected = {
-            "schema_version": ENVELOPE_SCHEMA_VERSION,
-            "decision": direct.to_dict(),
-        }
-        self.assertEqual(direct.to_dict(), json.loads(output))
-        self.assertEqual(expected, rest_envelope)
-        self.assertEqual(expected, _mcp_payload(mcp_result))
 
 
 def _rmtree_quiet(directory: str) -> None:
@@ -1144,8 +1027,7 @@ class _ControlStubHandler(BaseHTTPRequestHandler):
         except (UnicodeDecodeError, ValueError, ApplicationInputError):
             self._json(400, invalid_request_payload())
             return
-        catalog = load_catalog(application.catalog_path)
-        profiles, version = load_model_policy(application.model_policy_path)
+        catalog, profiles, version = load_configured_artifacts(application.catalog_path, application.model_policy_path)
         try:
             decision = select_from_inputs(
                 catalog=catalog,
@@ -1178,8 +1060,7 @@ class _ControlStubHandler(BaseHTTPRequestHandler):
         except (UnicodeDecodeError, ValueError, ApplicationInputError):
             self._json(400, invalid_request_payload())
             return
-        catalog = load_catalog(application.catalog_path)
-        profiles, version = load_model_policy(application.model_policy_path)
+        catalog, profiles, version = load_configured_artifacts(application.catalog_path, application.model_policy_path)
         try:
             result = simulate_from_inputs(
                 catalog=catalog,
@@ -1323,35 +1204,34 @@ class RemoteBridgeTests(GuardrailTestCase):
         local_code, local_status = _rest_json(harness, "GET", "/v1/status")
         self.assertEqual(200, local_code)
         self.assertEqual(local_status, remote_status)
-        remote_decision = client.select({"profile_id": "deep_coding"})
+        remote_decision = client.select({"requirement": _REQUIREMENT_L3})
         local_code, local_decision = _rest_json(
-            harness, "POST", "/v1/select", {"profile_id": "deep_coding"}
+            harness, "POST", "/v1/select", {"requirement": _REQUIREMENT_L3}
         )
         self.assertEqual(200, local_code)
         self.assertEqual(local_decision, remote_decision)
         remote_result = client.simulate(
-            {"profile_id": "deep_coding", "overrides": _ZAI_WEEKLY_2}
+            {"requirement": _REQUIREMENT_L3, "overrides": _ZAI_WEEKLY_2}
         )
         local_code, local_result = _rest_json(
             harness,
             "POST",
             "/v1/simulate",
-            {"profile_id": "deep_coding", "overrides": _ZAI_WEEKLY_2},
+            {"requirement": _REQUIREMENT_L3, "overrides": _ZAI_WEEKLY_2},
         )
         self.assertEqual(200, local_code)
         self.assertEqual(local_result, remote_result)
 
-    def test_remote_select_passes_reasoning_effort_through_verbatim(self) -> None:
-        """D-057: the bridge neither strips nor invents the additive member."""
+    def test_remote_select_does_not_invent_effort_without_sources(self) -> None:
         collectors = _collectors()
         server = self._serve(collectors)
         client = self._client(server)
         harness = self._rest(_application(collectors))
         local_code, local_decision = _rest_json(
-            harness, "POST", "/v1/select", {"profile_id": "deep_coding"}
+            harness, "POST", "/v1/select", {"requirement": _REQUIREMENT_L3}
         )
         self.assertEqual(200, local_code)
-        remote_decision = client.select({"profile_id": "deep_coding"})
+        remote_decision = client.select({"requirement": _REQUIREMENT_L3})
         self.assertEqual(local_decision, remote_decision)
         payload = cast("dict[str, object]", remote_decision["decision"])
         seen: list[object] = []
@@ -1368,15 +1248,13 @@ class RemoteBridgeTests(GuardrailTestCase):
                     seen.append(value)
             else:
                 seen.extend(cast("list[object]", value))
-        self.assertTrue(seen)
-        for candidate in seen:
-            self.assertIn("reasoning_effort", cast("dict[str, object]", candidate))
+        self.assertEqual([], seen)
 
     def test_credential_travels_in_header_only_never_in_the_url(self) -> None:
         server = self._serve()
         client = self._client(server)
         _ = client.status()
-        _ = client.select({"profile_id": "deep_coding"})
+        _ = client.select({"requirement": _REQUIREMENT_L3})
         for _method, path, authorization in server.requests:
             self.assertEqual(f"Bearer {_FAKE_CLIENT_KEY}", authorization, path)
             self.assertNotIn(_FAKE_CLIENT_KEY, path)
@@ -1655,8 +1533,8 @@ class NoExecutionAndNoIdeMutationTests(GuardrailTestCase):
                     ],
                     [
                         "simulate",
-                        "--profile",
-                        "deep_coding",
+                        "--requirement",
+                        str(requirement_path),
                         "--overrides",
                         str(overrides_path),
                         "--json",

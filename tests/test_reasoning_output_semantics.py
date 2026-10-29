@@ -823,7 +823,7 @@ class ServerDirectReasoningEndToEndTests(RealTimeServerHarness):
             "POST",
             "/v1/chat/completions",
             {
-                "model": "sr-pin:zai-plan-1/zai/glm-5.3/max",
+                "model": "sr-pin:zai-plan-1/zai/glm-5.3/unconfigured",
                 "messages": [{"role": "user", "content": PROMPT_MARKER}],
             },
             headers={"Authorization": f"Bearer {self.client_key}"},
@@ -894,7 +894,7 @@ class ServerDirectReasoningEndToEndTests(RealTimeServerHarness):
         connection = self.open_stream(
             "/v1/chat/completions",
             {
-                "model": "sr-pin:zai-plan-1/zai/glm-5.3/max",
+                "model": "sr-pin:zai-plan-1/zai/glm-5.3/unconfigured",
                 "messages": [{"role": "user", "content": "hi"}],
                 "stream": True,
             },

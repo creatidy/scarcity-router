@@ -103,14 +103,9 @@ def _v_safe_id(value: object, fld: str) -> str:
 
 
 def _v_provider(value: object, fld: str) -> str:
-    s = _v_safe_id(value, fld)
-    if s not in SUPPORTED_PROVIDERS:
-        raise SelectionContractValidationError(
-            f"{fld}: unsupported provider {s!r}; supported model providers "
-            + f"are exactly {sorted(SUPPORTED_PROVIDERS)}; adding one is an "
-            + "explicit contract/catalog change"
-        )
-    return s
+    # Provider identity is descriptive, not an entitlement or adapter grant.
+    # Actual routing still requires an authorized, compatible resource.
+    return _v_safe_id(value, fld)
 
 
 def _v_enum(value: object, allowed: frozenset[str], fld: str) -> str:
@@ -1276,7 +1271,7 @@ def _v_reasoning_effort(value: object) -> str | None:
 
 @dataclass(frozen=True)
 class ModelCatalogEntry:
-    """One calibrated invocation configuration (catalog v2, D-032).
+    """One invocation identity and its explicitly evidenced properties.
 
     ``reasoning_effort`` is explicit, never inferred from opaque identity or
     display text. Null means no configured value, not the real setting "none".
@@ -1302,6 +1297,8 @@ class ModelCatalogEntry:
     model_version_date: str | None = None
     last_reviewed_on: str | None = None
     reasoning_effort: str | None = None
+    capacity_binding_resources: tuple[str, ...] | None = None
+    resource_capacity_bindings: tuple[tuple[str, tuple[CapacityScopeRef, ...]], ...] = ()
 
     _REQUIRED: ClassVar[tuple[str, ...]] = (
         "identity",
@@ -1315,10 +1312,40 @@ class ModelCatalogEntry:
         "model_version_date",
         "last_reviewed_on",
         "reasoning_effort",
+        "capacity_binding_resources",
+        "resource_capacity_bindings",
     )
 
     def __post_init__(self) -> None:
         _ = _v_instance_of(self.identity, ModelIdentity, "model_catalog_entry.identity")
+        if self.resource_capacity_bindings.__class__ is not tuple:
+            raise SelectionContractValidationError("model_catalog_entry.resource_capacity_bindings: expected tuple")
+        resource_ids: list[str] = []
+        for binding in self.resource_capacity_bindings:
+            if binding.__class__ is not tuple or len(binding) != 2:
+                raise SelectionContractValidationError("resource_capacity_binding: expected resource and scopes")
+            resource_id, scopes = binding
+            resource_ids.append(_v_safe_id(resource_id, "resource_capacity_binding.resource_id"))
+            _ = _v_tuple_of(scopes, CapacityScopeRef, "resource_capacity_binding.scopes")
+            if not scopes or any(scope.provider != self.identity.provider for scope in scopes):
+                raise SelectionContractValidationError("resource_capacity_binding: nonempty same-provider scopes required")
+            if tuple(sorted(set(scopes), key=lambda item: (item.provider, item.scope_id))) != scopes:
+                raise SelectionContractValidationError("resource_capacity_binding.scopes: expected sorted unique scopes")
+        if resource_ids != sorted(set(resource_ids)):
+            raise SelectionContractValidationError("resource_capacity_bindings: expected sorted unique resources")
+        if self.capacity_binding_resources is not None:
+            _ = _v_tuple_of(self.capacity_binding_resources, str, "model_catalog_entry.capacity_binding_resources")
+            for resource_id in self.capacity_binding_resources:
+                _ = _v_safe_id(resource_id, "model_catalog_entry.capacity_binding_resources")
+            if tuple(sorted(set(self.capacity_binding_resources))) != self.capacity_binding_resources:
+                raise SelectionContractValidationError("model_catalog_entry.capacity_binding_resources: expected sorted unique resource IDs")
+        if resource_ids and (
+            self.capacity_binding_resources is None
+            or not set(resource_ids).issubset(self.capacity_binding_resources)
+        ):
+            raise SelectionContractValidationError(
+                "resource_capacity_bindings: each resource must have exact source identity evidence"
+            )
         _ = _v_text(
             self.display_name, "model_catalog_entry.display_name", max_len=128
         )
@@ -1406,6 +1433,26 @@ class ModelCatalogEntry:
             model_version = _v_text(
                 dd["model_version"], "model_catalog_entry.model_version", max_len=64
             )
+        resources: tuple[str, ...] | None = None
+        raw_resources = dd.get("capacity_binding_resources")
+        if raw_resources is not None:
+            if not isinstance(raw_resources, list):
+                raise SelectionContractValidationError("model_catalog_entry.capacity_binding_resources: expected list")
+            resources = tuple(_v_safe_id(value, "model_catalog_entry.capacity_binding_resources")
+                              for value in cast("list[object]", raw_resources))
+        per_resource: list[tuple[str, tuple[CapacityScopeRef, ...]]] = []
+        raw_per_resource = dd.get("resource_capacity_bindings", [])
+        if not isinstance(raw_per_resource, list):
+            raise SelectionContractValidationError("resource_capacity_bindings: expected list")
+        for value in cast("list[object]", raw_per_resource):
+            item = _v_exact_shape(value, ("resource_id", "scopes"), (), "resource_capacity_binding")
+            scopes = item["scopes"]
+            if not isinstance(scopes, list):
+                raise SelectionContractValidationError("resource_capacity_binding.scopes: expected list")
+            per_resource.append((
+                _v_safe_id(item["resource_id"], "resource_capacity_binding.resource_id"),
+                tuple(CapacityScopeRef.from_dict(scope) for scope in cast("list[object]", scopes)),
+            ))
         return cls(
             identity=ModelIdentity.from_dict(dd["identity"]),
             display_name=_v_text(
@@ -1415,6 +1462,8 @@ class ModelCatalogEntry:
             capabilities=CapabilityAssessments.from_dict(dd["capabilities"]),
             capacity_bindings=bindings,
             reasoning_effort=_v_reasoning_effort(dd.get("reasoning_effort")),
+            capacity_binding_resources=resources,
+            resource_capacity_bindings=tuple(per_resource),
             model_version=model_version,
             model_version_date=_v_opt_date(
                 dd.get("model_version_date"),
@@ -1447,6 +1496,13 @@ class ModelCatalogEntry:
         }
         if self.model_version is not None:
             out["model_version"] = self.model_version
+        if self.capacity_binding_resources is not None:
+            out["capacity_binding_resources"] = list(self.capacity_binding_resources)
+        if self.resource_capacity_bindings:
+            out["resource_capacity_bindings"] = [
+                {"resource_id": resource_id, "scopes": [scope.to_dict() for scope in scopes]}
+                for resource_id, scopes in self.resource_capacity_bindings
+            ]
         if self.model_version_date is not None:
             out["model_version_date"] = self.model_version_date
         if self.last_reviewed_on is not None:
@@ -1464,16 +1520,22 @@ class ModelCatalog:
     entries are sorted by ``(provider, model, variant)``.
     """
 
-    catalog_version: int
-    updated_on: str
+    catalog_version: int | None
+    updated_on: str | None
     entries: tuple[ModelCatalogEntry, ...]
 
     _REQUIRED: ClassVar[tuple[str, ...]] = ("catalog_version", "updated_on", "entries")
     _OPTIONAL: ClassVar[tuple[str, ...]] = ()
 
     def __post_init__(self) -> None:
-        _ = _v_int(self.catalog_version, "model_catalog.catalog_version", lo=1)
-        _ = _v_date(self.updated_on, "model_catalog.updated_on")
+        if self.catalog_version is None:
+            if self.updated_on is not None:
+                raise SelectionContractValidationError(
+                    "model_catalog: runtime inventory has no catalog update date"
+                )
+        else:
+            _ = _v_int(self.catalog_version, "model_catalog.catalog_version", lo=1)
+            _ = _v_date(self.updated_on, "model_catalog.updated_on")
         _ = _v_tuple_of(self.entries, ModelCatalogEntry, "model_catalog.entries")
         seen: set[tuple[str, str, str]] = set()
         for entry in self.entries:
@@ -1498,10 +1560,14 @@ class ModelCatalog:
             ModelCatalogEntry.from_dict(x) for x in cast("list[object]", raw_entries)
         )
         return cls(
-            catalog_version=_v_int(
-                dd["catalog_version"], "model_catalog.catalog_version", lo=1
+            catalog_version=(
+                None if dd["catalog_version"] is None else
+                _v_int(dd["catalog_version"], "model_catalog.catalog_version", lo=1)
             ),
-            updated_on=_v_date(dd["updated_on"], "model_catalog.updated_on"),
+            updated_on=(
+                None if dd["updated_on"] is None else
+                _v_date(dd["updated_on"], "model_catalog.updated_on")
+            ),
             entries=entries,
         )
 

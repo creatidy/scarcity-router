@@ -330,7 +330,7 @@ is unsupported after bounded recovery, report the exact pending gate. Do not req
 a separate worktree, skip acceptance, or equate a technical blocker with
 repository-wide QUEUE_EMPTY.
 
-General non-delivery work retains the descriptive `model-policy.json` defaults
+General non-delivery work retains the operating-policy defaults
 (one initial review, one remediation, narrow verification, 120-minute budget and
 independently bounded worker/reviewer retries). The command-specific ceiling is
 not a target or an extension of product/model/security authority. Diagnose a retry;
@@ -346,8 +346,9 @@ repeated manual work, understandable state). A material UX regression is
 [`docs/llm-operating-policy.md`](docs/llm-operating-policy.md).
 
 The detailed operating policy is
-[`docs/llm-operating-policy.md`](docs/llm-operating-policy.md), and its
-machine-readable companion is [`model-policy.json`](model-policy.json).
+[`docs/llm-operating-policy.md`](docs/llm-operating-policy.md). D-084 removes
+the former static model-governance artifacts; model selection and review
+assignment belong to the owner-authorized harness, not Router product data.
 For command delivery, D-070's shared technical-recovery rule requires classifying
 engineering obstacles separately from owner decisions and attempting bounded
 secret-safe recovery automatically. Record changed conditions, consumed budgets

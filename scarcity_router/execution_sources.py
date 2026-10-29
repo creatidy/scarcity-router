@@ -5,16 +5,13 @@ authenticated execution source bound to one worker. The worker discovers
 what its runtime can execute and reports a bounded ModelInventory; this
 module owns the SERVER half of that contract:
 
-- **Classification** — each discovered slug is classified against the
-  reviewed track registry. Unclassified slugs stay DISCOVERED (visible,
-  never routable); restricted tracks (Daybreak Blue) stay RESTRICTED
-  (visible, never materialized as resources).
 - **Conservative adoption** — an adopted model becomes an exact derived
-  resource (``<source_id>:<slug>``) only through the D-053 gates: known
-  standard track, approved floor, source authenticated, administrator
-  adoption policy permitting. Capability inheritance is ONLY the track
-  floor, expressed as derived catalog entries whose hard properties and
-  capacity applicability stay honestly UNKNOWN.
+  resource (``<source_id>:<slug>``) only when explicitly named in the
+  administrator's model allowlist and the source authentication gate passes.
+  Legacy track restrictions refuse adoption pending explicit migration.
+  Discovery does not prove
+  comparative quality, context limits or capacity applicability, which
+  remain unknown in derived entries.
 - **Deterministic lifecycle** — the source owns it: a model absent from
   an authenticated inventory marks its resource unavailable; after
   ``RETIRE_AFTER_MISSES`` consecutive authenticated observations without
@@ -27,7 +24,7 @@ them and the source configuration references only ids.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from .model_inventory import (
     SOURCE_ID_MAX_LENGTH,
@@ -36,17 +33,15 @@ from .model_inventory import (
     is_source_resource_id,
     source_resource_id,
 )
-from .model_tracks import TrackRegistry, validate_catalog_effort_restriction
 from .resource_state import (
     ExecutionCapabilities,
     ResourceRegistration,
     ResourceIdentity,
 )
 from .selection_types import (
-    CAPABILITY_DIMENSIONS,
     CapabilityAssessment,
     CapabilityAssessments,
-    EvidenceRef,
+    CapacityScopeRef,
     ModelCatalog,
     ModelCatalogEntry,
     ModelHardProperties,
@@ -68,7 +63,7 @@ RETIRE_AFTER_MISSES = 3
 #: this bounds only the in-memory bookkeeping.
 MAX_RETAINED_RETIRED = 64
 
-#: The catalog variant id of a plan-managed lane's single floor entry
+#: The identity qualifier of a plan-managed lane's single entry
 #: (D-063). It is a LANE qualifier, never a reasoning effort: the entry
 #: carries ``reasoning_effort=None`` and ``supports_reasoning_mode=False``,
 #: so an effort-bearing request can never resolve onto the lane (the
@@ -78,9 +73,7 @@ PLAN_LANE_VARIANT = "plan"
 #: Closed adoption states for the source view.
 ADOPTION_STATES: tuple[str, ...] = (
     "discovered",
-    "classified",
     "routable",
-    "restricted",
     "retired",
 )
 
@@ -89,18 +82,7 @@ ADOPTION_STATES: tuple[str, ...] = (
 #: what the reviewed M06 evidence supports and nothing about any specific
 #: model. The D-043 matrix remains the per-request admission authority.
 #:
-#: - ``context_limit_tokens`` — 272000 is the owner-reviewed registration
-#:   fact of the 2026-09-24 sources program (D-053). Re-evidenced
-#:   2026-09-28 (issue #136): the CURRENT runtime
-#:   (``codex-cli 0.155.0-alpha.16.3``) exposes no context-window
-#:   discovery on ``model/list`` or ``modelProvider/capabilities/read``
-#:   and current official documentation publishes no context-window
-#:   number, so the figure could NOT be re-established from provider
-#:   surfaces; it is retained exactly because it is the administrator's
-#:   registered fact, not because current docs confirm it. The runtime's
-#:   own ``contextWindowExceeded`` failure signal stays the enforcement
-#:   backstop. (The original M06 evidence doc never recorded the number —
-#:   a provenance gap now recorded here and in the evidence doc.)
+#: - Context bounds are unknown without exact applicable evidence.
 #: - ``output_limit_control: False`` — re-evidenced 2026-09-28 (issue
 #:   #136): the current app-server turn contract carries NO output-token
 #:   control (``TurnStartParams`` has no such field; candidate fields are
@@ -117,7 +99,6 @@ ADOPTION_STATES: tuple[str, ...] = (
 #:   version 3 may run it; the D-043 matrix cells stay the per-request
 #:   admission authority.
 CODEX_SURFACE_CAPABILITIES: dict[str, object] = {
-    "context_limit_tokens": 272_000,
     "streaming": True,
     "tool_calls": True,
     "structured_output": True,
@@ -133,18 +114,7 @@ CODEX_SURFACE_CAPABILITIES: dict[str, object] = {
 #: evidence supports and nothing about any specific model. The D-043
 #: matrix remains the per-request admission authority.
 #:
-#: - ``context_limit_tokens: 1_000_000`` — the OWNER-REVIEWED
-#:   registration fact of the 2026-09-29 remediation (D-063): no
-#:   context ceiling is published on any supported ZCode surface, so
-#:   the lane carries the reviewed plan-family calibration minimum
-#:   (model-catalog.json: glm-5.3 and glm-5.3-flash both calibrate
-#:   1_000_000 input tokens) exactly the way the codex surface carries
-#:   its owner-reviewed 272_000 registration fact — a bounded
-#:   admission ceiling, never a per-model claim; the runtime remains
-#:   the enforcement backstop. ``output_limit_tokens: 128_000`` — the
-#:   same reviewed family output calibration; ``output_limit_control``
-#:   stays False (no honored explicit-limit control exists, so the
-#:   #136 normalization governs).
+#: - Context and output bounds remain unknown without exact evidence.
 #: - ``streaming: False`` — the stream carries progress events only; the
 #:   single evidenced answer surface is the terminal result line, so no
 #:   incremental text delivery is evidenced.
@@ -159,14 +129,12 @@ CODEX_SURFACE_CAPABILITIES: dict[str, object] = {
 #:   usage member whose internal field names are NOT evidenced; nothing
 #:   is mapped, and unknown stays unknown (never invented telemetry).
 ZCODE_SURFACE_CAPABILITIES: dict[str, object] = {
-    "context_limit_tokens": 1_000_000,
     "streaming": False,
     "tool_calls": False,
     "structured_output": False,
     "reasoning_controls": False,
     "usage_reporting": None,
     "cancellation": True,
-    "output_limit_tokens": 128_000,
     "output_limit_control": False,
 }
 
@@ -187,9 +155,9 @@ _ADAPTER_PREFIX_BY_KIND: dict[str, str] = {
 #: Closed reason codes for non-adopted models (audit + UX remediations).
 ADOPTION_EXCLUSION_CODES: frozenset[str] = frozenset(
     {
-        "unclassified_track",
-        "restricted_track",
-        "track_not_allowed",
+        "model_not_allowed",
+        "legacy_track_policy",
+        "plan_lane_unverified",
         "adoption_disabled",
         "source_not_authenticated",
         "effort_not_reported",
@@ -211,11 +179,10 @@ _DEFAULT_FRESHNESS_SECONDS = 900
 
 @dataclass(frozen=True)
 class AdoptionDecision:
-    """One discovered model's classification/adoption outcome (auditable)."""
+    """One discovered model's adoption outcome (auditable)."""
 
     slug: str
     state: str
-    track_id: str | None
     reason: str | None  # ADOPTION_EXCLUSION_CODES member when not routable
     resource_id: str | None
     efforts: tuple[str, ...] = ()
@@ -227,14 +194,14 @@ class _SourceState:
     inventory: SourceInventory | None = None
     #: Slugs adopted routable as of the last authenticated observation.
     routable: set[str] = field(default_factory=set)
-    #: Adopted models still held registered: slug -> (track_id, efforts).
+    #: Adopted models still held registered: slug -> reported efforts.
     #: An adopted model absent from the LATEST authenticated observation
     #: stays here (routing sees it as stale/unavailable — never usable)
     #: until the miss counter retires it; audit identity is never
     #: erased early and a reappearing model re-materializes in place.
-    adopted: dict[str, tuple[str, tuple[str, ...]]] = field(default_factory=dict)
+    adopted: dict[str, tuple[str, ...]] = field(default_factory=dict)
     miss_counts: dict[str, int] = field(default_factory=dict)
-    retired: dict[str, str] = field(default_factory=dict)  # slug -> track_id
+    retired: dict[str, None] = field(default_factory=dict)
     decisions: tuple[AdoptionDecision, ...] = ()
 
 
@@ -251,10 +218,8 @@ class SourceRegistry:
     def __init__(
         self,
         *,
-        track_registry: TrackRegistry,
         freshness_ttl_seconds: int = _DEFAULT_FRESHNESS_SECONDS,
     ) -> None:
-        self._tracks: TrackRegistry = track_registry
         self._ttl: int = freshness_ttl_seconds
         self._sources: dict[str, _SourceState] = {}
 
@@ -270,6 +235,11 @@ class SourceRegistry:
         kept: dict[str, _SourceState] = {}
         for config in sources:
             existing = self._sources.get(config.source_id)
+            if existing is not None and (
+                existing.config.worker_id != config.worker_id
+                or existing.config.kind != config.kind
+            ):
+                existing = None
             kept[config.source_id] = (
                 existing if existing is not None else _SourceState(config=config)
             )
@@ -292,7 +262,11 @@ class SourceRegistry:
         decisions: list[AdoptionDecision] = []
         for source_inventory in inventory.sources:
             state = self._sources.get(source_inventory.source_id)
-            if state is None:
+            if (state is None or inventory.worker_id != state.config.worker_id
+                    or source_inventory.kind != state.config.kind
+                    or source_inventory.adapter_id != (
+                        f"{_ADAPTER_PREFIX_BY_KIND[state.config.kind]}:{state.config.source_id}"
+                    )):
                 continue
             state.inventory = source_inventory
             decisions.extend(self._decide(state, source_inventory))
@@ -317,44 +291,39 @@ class SourceRegistry:
         for model in source_inventory.models:
             slug = model.slug
             present.add(slug)
-            track = self._tracks.classify(config.provider(), slug)
-            if track is None:
-                decisions.append(
-                    AdoptionDecision(slug, "discovered", None, "unclassified_track", None, model.reasoning_efforts)
-                )
-                continue
-            if track.classification == "restricted":
-                decisions.append(
-                    AdoptionDecision(slug, "restricted", track.track_id(), "restricted_track", None, model.reasoning_efforts)
-                )
-                continue
             if not config.auto_adopt:
                 decisions.append(
-                    AdoptionDecision(slug, "classified", track.track_id(), "adoption_disabled", None, model.reasoning_efforts)
+                    AdoptionDecision(slug, "discovered", "adoption_disabled", None, model.reasoning_efforts)
                 )
                 continue
-            if config.allowed_tracks and track.track_id() not in config.allowed_tracks:
+            if config.allowed_tracks:
                 decisions.append(
-                    AdoptionDecision(slug, "classified", track.track_id(), "track_not_allowed", None, model.reasoning_efforts)
+                    AdoptionDecision(slug, "discovered", "legacy_track_policy", None, model.reasoning_efforts)
                 )
                 continue
-            if track.plan_managed:
+            if slug not in config.allowed_models:
+                decisions.append(
+                    AdoptionDecision(slug, "discovered", "model_not_allowed", None, model.reasoning_efforts)
+                )
+                continue
+            plan_managed = config.kind == "zcode_subscription"
+            if plan_managed:
+                if slug != "plan-managed" or model.reasoning_efforts:
+                    decisions.append(
+                        AdoptionDecision(slug, "discovered", "plan_lane_unverified", None, model.reasoning_efforts)
+                    )
+                    continue
                 if not healthy:
                     decisions.append(
-                        AdoptionDecision(slug, "classified", track.track_id(), "source_not_authenticated", None, model.reasoning_efforts)
+                        AdoptionDecision(slug, "discovered", "source_not_authenticated", None, model.reasoning_efforts)
                     )
                     continue
             elif not authenticated:
                 decisions.append(
-                    AdoptionDecision(slug, "classified", track.track_id(), "source_not_authenticated", None, model.reasoning_efforts)
+                    AdoptionDecision(slug, "discovered", "source_not_authenticated", None, model.reasoning_efforts)
                 )
                 continue
-            if track.floor is None:  # structural: standard tracks carry floors
-                decisions.append(
-                    AdoptionDecision(slug, "classified", track.track_id(), "unclassified_track", None, model.reasoning_efforts)
-                )
-                continue
-            if not track.plan_managed and not any(
+            if not plan_managed and not any(
                 effort in REASONING_EFFORTS for effort in model.reasoning_efforts
             ):
                 # A physical-model source must advertise at least one
@@ -362,21 +331,20 @@ class SourceRegistry:
                 # exception (D-063): its efforts are vendor-managed and
                 # the effort-less report IS the honest lane.
                 decisions.append(
-                    AdoptionDecision(slug, "classified", track.track_id(), "effort_not_reported", None, model.reasoning_efforts)
+                    AdoptionDecision(slug, "discovered", "effort_not_reported", None, model.reasoning_efforts)
                 )
                 continue
             routable_now.add(slug)
-            if track.plan_managed:
+            if plan_managed:
                 # One effort-less lane adoption: the derived resource
                 # carries NO variant (there is no effort to bind) and the
                 # resource id has no effort suffix.
                 _ = _resource_id(config.source_id, slug)
-                state.adopted[slug] = (track.track_id(), ())
+                state.adopted[slug] = ()
                 decisions.append(
                     AdoptionDecision(
                         slug,
                         "routable",
-                        track.track_id(),
                         None,
                         _resource_id(config.source_id, slug),
                         model.reasoning_efforts,
@@ -392,12 +360,11 @@ class SourceRegistry:
             # state.
             for effort in policy_efforts:
                 _ = _resource_id(config.source_id, slug, effort)
-            state.adopted[slug] = (track.track_id(), model.reasoning_efforts)
+            state.adopted[slug] = model.reasoning_efforts
             decisions.append(
                 AdoptionDecision(
                     slug,
                     "routable",
-                    track.track_id(),
                     None,
                     _resource_id(config.source_id, slug, policy_efforts[0]),
                     model.reasoning_efforts,
@@ -411,8 +378,8 @@ class SourceRegistry:
             for slug in sorted(set(state.adopted) - present):
                 misses = state.miss_counts.get(slug, 0) + 1
                 if misses >= RETIRE_AFTER_MISSES:
-                    track_id, _efforts = state.adopted.pop(slug, ("", ()))
-                    state.retired[slug] = track_id
+                    _ = state.adopted.pop(slug, ())
+                    state.retired[slug] = None
                     _ = state.miss_counts.pop(slug, None)
                     # Bounded history (Daybreak finding 4): drop the OLDEST
                     # retired entry beyond the cap.
@@ -444,14 +411,16 @@ class SourceRegistry:
             if state.inventory is None:
                 continue
             for slug in sorted(state.adopted):
-                _track_id, efforts = state.adopted[slug]
+                if _current_exclusion(state.config, slug) is not None:
+                    continue
+                efforts = state.adopted[slug]
                 if not efforts:
                     # D-063: an effort-less adopted model is a plan-managed
                     # lane — ONE variant-less exact resource. No effort or
                     # physical-model qualifier is ever bound to it; a
                     # variant-qualified request can never select it
                     # (routing_core: a variant-less resource binds the
-                    # model's calibrated variants, and the lane's single
+                    # model's independently evidenced variants, and the lane's single
                     # catalog entry is effort-less — an effort-bearing
                     # request is rejected before admission).
                     identity = ResourceIdentity(
@@ -467,14 +436,7 @@ class SourceRegistry:
                         ResourceRegistration(
                             identity=identity,
                             freshness_ttl_seconds=self._ttl,
-                            capabilities=ExecutionCapabilities.from_dict(
-                                dict(
-                                    _SURFACE_CAPABILITIES_BY_KIND.get(
-                                        state.config.kind,
-                                        CODEX_SURFACE_CAPABILITIES,
-                                    )
-                                )
-                            ),
+                            capabilities=_source_capabilities(state, slug, PLAN_LANE_VARIANT),
                         )
                     )
                     continue
@@ -499,31 +461,22 @@ class SourceRegistry:
                             # source kind's execution surface (evidenced,
                             # model-independent): the D-043 matrix stays
                             # the per-request authority.
-                            capabilities=ExecutionCapabilities.from_dict(
-                                dict(
-                                    _SURFACE_CAPABILITIES_BY_KIND.get(
-                                        state.config.kind,
-                                        CODEX_SURFACE_CAPABILITIES,
-                                    )
-                                )
-                            ),
+                            capabilities=_source_capabilities(state, slug, effort),
                         )
                     )
         return tuple(registrations)
 
     def derived_catalog_entries(self, base: ModelCatalog) -> ModelCatalog:
-        """The catalog view with track-floor entries for adopted models.
+        """Extend the legacy catalog view with adopted exact identities.
 
-        Exact reviewed catalog entries always win; the floor-derived
-        entries fill ONLY the (model, effort) pairs the built-in catalog
-        does not calibrate. Hard properties and capacity applicability
-        stay UNKNOWN — a floor is a capability floor, not evidence about
-        context limits or quota consumption. D-054: a track marked
-        ``max_only`` (light family) expands at ``max`` only, and only when
-        the runtime itself reports a ``max`` effort — never invented.
+        Existing exact entries take precedence during migration. Derived
+        entries contain no inherited family ratings or model bounds. Legacy
+        track restrictions prevent adoption until explicitly migrated.
         """
-        validate_catalog_effort_restriction(base, self._tracks)
         extra: list[ModelCatalogEntry] = []
+        scopes_by_identity: dict[tuple[str, str, str], set[tuple[str, ...]]] = {}
+        resources_by_identity: dict[tuple[str, str, str], set[str]] = {}
+        resource_scopes: dict[tuple[str, str, str], dict[str, tuple[CapacityScopeRef, ...]]] = {}
         existing = {
             (entry.identity.provider, entry.identity.model, entry.identity.variant)
             for entry in base.entries
@@ -533,15 +486,12 @@ class SourceRegistry:
             if state.inventory is None:
                 continue
             for slug in sorted(state.adopted):
-                track_id, efforts = state.adopted[slug]
-                track = self._tracks.track_by_id(
-                    state.config.provider(), track_id.split("/", 1)[1]
-                )
-                if track is None or track.floor is None:
+                if _current_exclusion(state.config, slug) is not None:
                     continue
+                efforts = state.adopted[slug]
                 if not efforts:
                     # D-063: a plan-managed lane gets ONE effort-less
-                    # floor entry. Its variant is the lane qualifier
+                    # entry. Its variant is the lane qualifier
                     # (PLAN_LANE_VARIANT), its effort is None, and it
                     # never claims reasoning support — so an
                     # effort-bearing request can never resolve onto the
@@ -549,25 +499,48 @@ class SourceRegistry:
                     # single legal variant through the normal D-055
                     # resolution.
                     key = (state.config.provider(), slug, PLAN_LANE_VARIANT)
+                    scopes_by_identity.setdefault(key, set()).add(state.config.capacity_scope_ids)
+                    resources_by_identity.setdefault(key, set()).add(_resource_id(source_id, slug))
+                    if state.config.capacity_scope_ids:
+                        resource_scopes.setdefault(key, {})[_resource_id(source_id, slug)] = tuple(
+                            CapacityScopeRef(state.config.provider(), scope) for scope in state.config.capacity_scope_ids
+                        )
                     if key not in existing:
                         existing.add(key)
                         extra.append(
-                            _lane_floor_entry(
-                                track.track_id(), track.floor, slug, state.config
-                            )
+                            _discovered_entry(slug, None, state.config)
                         )
                     continue
-                allowed = track.restrict_floor_efforts(tuple(efforts))
-                for effort in [e for e in allowed if e in REASONING_EFFORTS]:
+                for effort in [e for e in efforts if e in REASONING_EFFORTS]:
                     key = (state.config.provider(), slug, effort)
+                    scopes_by_identity.setdefault(key, set()).add(state.config.capacity_scope_ids)
+                    resources_by_identity.setdefault(key, set()).add(_resource_id(source_id, slug, effort))
+                    if state.config.capacity_scope_ids:
+                        resource_scopes.setdefault(key, {})[_resource_id(source_id, slug, effort)] = tuple(
+                            CapacityScopeRef(state.config.provider(), scope) for scope in state.config.capacity_scope_ids
+                        )
                     if key in existing:
                         continue
                     existing.add(key)
                     extra.append(
-                        _floor_entry(track.track_id(), track.floor, slug, effort, state.config)
+                        _discovered_entry(slug, effort, state.config)
                     )
         if not extra:
             return base
+        # Several sources may report the same identity. Only unanimous
+        # explicit bindings are safe in this model-level representation.
+        extra = [replace(
+            entry,
+            capacity_bindings=(entry.capacity_bindings if len(scopes_by_identity[
+                (entry.identity.provider, entry.identity.model, entry.identity.variant)
+            ]) == 1 else None),
+            capacity_binding_resources=tuple(sorted(resources_by_identity[
+                (entry.identity.provider, entry.identity.model, entry.identity.variant)
+            ])),
+            resource_capacity_bindings=tuple(sorted(resource_scopes.get(
+                (entry.identity.provider, entry.identity.model, entry.identity.variant), {}
+            ).items())),
+        ) for entry in extra]
         return ModelCatalog(
             catalog_version=base.catalog_version,
             updated_on=base.updated_on,
@@ -608,18 +581,23 @@ class SourceRegistry:
             routable = restricted = errors = 0
             models: list[dict[str, object]] = []
             if inventory is not None:
-                for decision in state.decisions:
-                    if decision.state == "routable":
-                        routable += 1
-                    elif decision.state == "restricted":
-                        restricted += 1
-                    elif decision.state == "discovered":
-                        errors += 1
                 for model in inventory.models:
+                    decision = _decision_for(state.decisions, model.slug)
+                    reason = _current_exclusion(state.config, model.slug)
+                    effective_state = (
+                        "discovered" if reason is not None else _state_for(state, model.slug)
+                    )
+                    if effective_state == "routable":
+                        routable += 1
+                    elif effective_state == "discovered":
+                        errors += 1
                     models.append(
                         {
                             "slug": model.slug,
-                            "state": _state_for(state, model.slug),
+                            "state": effective_state,
+                            "reason": reason if reason is not None else (
+                                decision.reason if decision is not None else None
+                            ),
                             "reasoning_efforts": list(model.reasoning_efforts),
                         }
                     )
@@ -633,6 +611,8 @@ class SourceRegistry:
                     "source_authenticated": (
                         inventory.auth_state if inventory is not None else "unverified"
                     ),
+                    "runtime_name": inventory.runtime_name if inventory is not None else None,
+                    "runtime_version": inventory.runtime_version if inventory is not None else None,
                     "observed_at": inventory.observed_at if inventory is not None else None,
                     "runtime_version": inventory.runtime_version if inventory is not None else None,
                     "models": models,
@@ -663,6 +643,30 @@ def _decision_for(
     return None
 
 
+def _current_exclusion(config: SourceConfig, slug: str) -> str | None:
+    if not config.auto_adopt:
+        return "adoption_disabled"
+    if config.allowed_tracks:
+        return "legacy_track_policy"
+    if slug not in config.allowed_models:
+        return "model_not_allowed"
+    return None
+
+
+def _source_capabilities(state: _SourceState, slug: str, variant: str) -> ExecutionCapabilities:
+    facts = dict(_SURFACE_CAPABILITIES_BY_KIND.get(state.config.kind, CODEX_SURFACE_CAPABILITIES))
+    evidence = next((item for item in state.config.context_evidence
+                     if item.model == slug and item.variant == variant and state.inventory is not None
+                     and item.runtime_version == state.inventory.runtime_version), None)
+    if evidence is not None:
+        facts["context_limit_tokens"] = evidence.input_tokens
+        facts["context_evidence_ref"] = evidence.evidence_ref
+        facts["context_evidence_valid_until"] = evidence.valid_until
+        facts["context_evidence_verified_at"] = evidence.verified_at
+        facts["context_evidence_runtime_version"] = evidence.runtime_version
+    return ExecutionCapabilities.from_dict(facts)
+
+
 def _resource_id(source_id: str, slug: str, effort: str | None = None) -> str:
     if len(slug) > _MAX_SLUG_LENGTH:
         # Deterministic and honest: an over-long slug stays undiscovered
@@ -680,124 +684,64 @@ def _split_resource_id(resource_id: str) -> tuple[str, str] | None:
     return head, tail
 
 
-def _floor_entry(
-    track_id: str,
-    floor: object,
+def add_configured_resources(
+    base: ModelCatalog, registrations: tuple[ResourceRegistration, ...]
+) -> ModelCatalog:
+    """Add administrator-configured identities without inventing model facts."""
+    if base.catalog_version is not None:
+        return base
+    existing = {(entry.identity.provider, entry.identity.model, entry.identity.variant) for entry in base.entries}
+    extra: list[ModelCatalogEntry] = []
+    unknown = CapabilityAssessment(rating=None)
+    for registration in sorted(registrations, key=lambda item: item.identity.resource_id):
+        identity = registration.identity
+        variant = identity.variant if identity.variant is not None else "unconfigured"
+        key = (identity.provider, identity.model, variant)
+        if key in existing:
+            continue
+        existing.add(key)
+        extra.append(ModelCatalogEntry(
+            identity=ModelIdentity(identity.provider, identity.model, variant),
+            display_name=identity.model, hard_properties=ModelHardProperties(),
+            capabilities=CapabilityAssessments(
+                reasoning=unknown, coding=unknown, scientific_methodological=unknown,
+                writing_editorial=unknown, tool_use=unknown, translation_multilingual=unknown,
+            ),
+            capacity_bindings=None,
+        ))
+    return ModelCatalog(None, None, base.entries + tuple(extra))
+
+
+def _discovered_entry(
     slug: str,
-    effort: str,
+    effort: str | None,
     config: SourceConfig,
 ) -> ModelCatalogEntry:
-    """One conservative track-floor catalog entry (D-053 point 5)."""
-    from .model_tracks import TrackFloor
-
-    assert isinstance(floor, TrackFloor)
-    evidence = (
-        EvidenceRef(
-            source="model-tracks.json",
-            identifier=track_id,
-            version="1",
-            date=floor.assessed_on,
-        ),
-    )
-    assessments: dict[str, CapabilityAssessment] = {
-        dim: CapabilityAssessment(
-            rating=floor.ratings[dim],
-            evidence=evidence,
-            confidence="low",
-            assessed_on=floor.assessed_on,
-            rationale=f"track floor for {track_id}; derived, not exact-model evidence",
-        )
-        for dim in CAPABILITY_DIMENSIONS
-    }
-    continuity = floor.hard_properties_continuity or {}
+    """Represent a discovered identity without inheriting family claims."""
+    unknown = CapabilityAssessment(rating=None)
     return ModelCatalogEntry(
-        # The floor entry serves THIS source kind's provider — never a
-        # hard-coded one (a zai-kind source's floor entry must be a zai
-        # identity, exactly like the codex kind's openai one).
         identity=ModelIdentity(
-            provider=config.provider(), model=slug, variant=effort
+            provider=config.provider(), model=slug,
+            variant=effort if effort is not None else PLAN_LANE_VARIANT,
         ),
         display_name=slug,
         # supports_reasoning_mode is EVIDENCED, not inherited: the entry
         # exists because the runtime itself advertises this reasoning
-        # effort for this slug. Context/output tokens come from the
-        # floor's OWNER-REVIEWED family-continuity assumption (the true
-        # enforcement boundary is the runtime itself); vision and tool
-        # support stay honestly unknown.
+        # effort for this slug. Other model properties remain unknown.
         hard_properties=ModelHardProperties(
-            supports_reasoning_mode=True,
-            input_context_tokens=continuity.get("input_context_tokens"),
-            output_tokens=continuity.get("output_tokens"),
+            supports_reasoning_mode=effort is not None,
         ),
-        capabilities=CapabilityAssessments(**assessments),
-        capacity_bindings=None,
+        capabilities=CapabilityAssessments(
+            reasoning=unknown, coding=unknown, scientific_methodological=unknown,
+            writing_editorial=unknown, tool_use=unknown, translation_multilingual=unknown,
+        ),
+        capacity_bindings=(
+            tuple(CapacityScopeRef(config.provider(), scope) for scope in config.capacity_scope_ids)
+            if config.capacity_scope_ids else None
+        ),
         reasoning_effort=effort,
         model_version_date=None,
-        last_reviewed_on=floor.assessed_on,
-    )
-
-
-def _lane_floor_entry(
-    track_id: str,
-    floor: object,
-    slug: str,
-    config: SourceConfig,
-) -> ModelCatalogEntry:
-    """One effort-less plan-managed lane floor entry (D-063).
-
-    The variant is the LANE qualifier (``PLAN_LANE_VARIANT``), never an
-    effort: ``reasoning_effort`` stays None and reasoning support is
-    evidenced-absent (the vendor manages model selection headless), so
-    an effort-bearing request can never resolve onto the lane while a
-    plain model request resolves to the single legal variant. Hard
-    properties stay honestly UNKNOWN (no continuity assumption exists
-    for an unverifiable physical model) and the floor ratings are the
-    reviewed lane floor — the minimum of the scale, never a model claim.
-    """
-    from .model_tracks import TrackFloor
-
-    assert isinstance(floor, TrackFloor)
-    evidence = (
-        EvidenceRef(
-            source="model-tracks.json",
-            identifier=track_id,
-            version="1",
-            date=floor.assessed_on,
-        ),
-    )
-    assessments: dict[str, CapabilityAssessment] = {
-        dim: CapabilityAssessment(
-            rating=floor.ratings[dim],
-            evidence=evidence,
-            confidence=floor.confidence,
-            assessed_on=floor.assessed_on,
-            rationale=(
-                f"plan-managed lane floor for {track_id}; vendor-managed "
-                + "physical model, never an exact-model claim (D-063)"
-            ),
-        )
-        for dim in CAPABILITY_DIMENSIONS
-    }
-    continuity = floor.hard_properties_continuity or {}
-    return ModelCatalogEntry(
-        identity=ModelIdentity(
-            provider=config.provider(), model=slug, variant=PLAN_LANE_VARIANT
-        ),
-        display_name=slug,
-        # Context/output come from the floor's OWNER-REVIEWED
-        # family-continuity assumption (the reviewed plan-family
-        # calibration; the runtime is the enforcement boundary); reasoning
-        # support stays evidenced-absent (no headless steering).
-        hard_properties=ModelHardProperties(
-            supports_reasoning_mode=False,
-            input_context_tokens=continuity.get("input_context_tokens"),
-            output_tokens=continuity.get("output_tokens"),
-        ),
-        capabilities=CapabilityAssessments(**assessments),
-        capacity_bindings=None,
-        reasoning_effort=None,
-        model_version_date=None,
-        last_reviewed_on=floor.assessed_on,
+        last_reviewed_on=None,
     )
 
 

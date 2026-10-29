@@ -184,6 +184,7 @@ required, CSRF on mutations):
 | `/control/resources/{id}/enabled` | POST | enable/disable (configuration kept, registry updated) |
 | `/control/resources/{id}/connection-test` | POST | quota-free test over real seam data (configuration, worker connection state, the M04 readiness probe); the probe outcome is recorded as the resource's observation; never an inference request |
 | `/control/resources/{id}/generation-test` | POST | real generation probe; requires `{"confirm": true}` AND a configured tester |
+| `/control/sources/{id}/model-policy` | POST | administrator replaces exact `allowed_models` and may set `capacity_scope_ids` and time-bounded exact-model `context_evidence`; clears inactive legacy `allowed_tracks` after explicit grant |
 | `/control/aliases` | GET | list routing aliases |
 | `/control/aliases/{alias}` | PUT / DELETE | bind/unbind an alias to an EXISTING task profile (D-042) |
 | `/control/clients` | GET / POST | list clients / issue a key (plaintext returned exactly once) |

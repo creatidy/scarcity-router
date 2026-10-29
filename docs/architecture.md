@@ -535,18 +535,17 @@ capacity contract uses omitted optional fields for unknown values and explicit
 
 Separate configuration namespaces are expected:
 
-- static catalog and profile data distributed with the project;
+- execution-source configuration and exact administrator model grants;
 - user policy and temporary preferences;
 - collector discovery/configuration without copied secrets;
 - service settings such as refresh interval and local bind address.
 
-The root `model-policy.json` currently carries both selector-facing
-task-profile data and descriptive development/model-role metadata. Separating
-those concerns before a public configuration API is a deferred design choice;
-this cleanup does not split or redesign the artifact.
+Under D-084, task requirements come from the caller or explicit local routing
+configuration, not repository-versioned task profiles or workflow model roles.
+Model facts, source availability and private authorization remain separate.
 
 Do not place secrets in ordinary configuration. Do not make users edit
-`AGENTS.md`, repository policy or the capability catalog for daily choices.
+`AGENTS.md` or repository policy for daily choices.
 
 ## Change isolation and reliability
 
@@ -636,7 +635,7 @@ service.
 | HTTP execution adapters | M04 (#89) | One generic OpenAI-compatible HTTP adapter with evidence-based provider presets; Ollama (direct + worker-bridged transport) | Coordinator dispatch, admin-configured origins/credentials | Provider requests/responses, capability reports | Per-provider gateways; sourcing configuration from client requests |
 | Native worker + transport | M05 (#90) | Outbound TLS/WSS connection, pairing identity, heartbeat, state reporting, local adapter invocation within allowlists, local diagnostics | Server worker-protocol messages, local resources | State reports, streams, usage reports | Routing decisions; generic shell/ssh; expanding its allowlist on request |
 | Codex adapter | M06 (#91) | Codex execution through the official CLI/App Server mechanisms on Desktop/CLI/VS Code installations (worker-side or server-reachable) | Stage-1 evidence, D-039 eligibility, worker isolation | Compatibility matrix entries, execution | GUI automation; token extraction; adopting user projects/plugins |
-| ZCode adapter | M07 (#92) | Implemented (D-061 reopen; D-063 amended 2026-09-29): one headless official-CLI run per dispatched call behind the D-053 source architecture — `zcode:<source_id>` instance, `zcode_subscription` kind (provider `zai`), explicit `--mode edit` (least-authority mode evidenced to edit workspace files), administrator-authorized project workspace (realpath-canonical, per-run re-validated, request-proof), honest unverified auth, plan-managed lane routed through the normal selector with no physical-model claim | Stage-2 evidence, vendor terms (D-061), worker isolation, D-063 design record (amended), `model-tracks.json` zai/plan artifact | Official CLI subprocess only; explicit safe mode; single-owner scope | Third-party or multi-user exposure; credential extraction; direct coding-endpoint calls; quota pooling; model-identity claims |
+| ZCode adapter | M07 (#92) | Implemented (D-061 reopen; D-063 amended 2026-09-29): one headless official-CLI run per dispatched call behind the D-053 source architecture — `zcode:<source_id>` instance, `zcode_subscription` kind (provider `zai`), explicit `--mode edit` (least-authority mode evidenced to edit workspace files), administrator-authorized project workspace (realpath-canonical, per-run re-validated, request-proof), honest unverified auth, plan-managed lane routed through the normal selector with no physical-model claim | Stage-2 evidence, vendor terms (D-061), worker isolation, D-063 design record (amended), explicit plan-lane grant (D-084) | Official CLI subprocess only; explicit safe mode; single-owner scope | Third-party or multi-user exposure; credential extraction; direct coding-endpoint calls; quota pooling; model-identity claims |
 | Interface compatibility | M08 (#93) | Frozen v1 guardrail suite; parity; optional remote bridge | Every module's changes | Green parity suite | Semantic drift in frozen surfaces |
 | Configuration, web UX, diagnostics | M09 (#94) | Admin onboarding, provider configuration, pairing UI, client keys, routing profiles, diagnostics/doctor | Admin actions, server state | Control API + UI; copyable client configuration | A second selector; exporting secrets; author-private defaults |
 | Distribution and acceptance | M10 (#95) | Server container, worker packaging, update path, E2E and security acceptance | All modules | Installable artifacts; honest acceptance matrix | Fictional artifacts; depending on private infrastructure |
@@ -965,14 +964,30 @@ Contracts:
   sources, each with an isolated controlled CODEX home
   (`state_dir/codex-sources/<source_id>/`), auth state, inventory and
   execution identity. No credential or home is shared between sources.
-- **Tracks and adoption.** `model-tracks.json` (reviewed, versioned) maps
-  slug structure to stable capability families (`openai/luna`,
-  `openai/sol`, `openai/astra`, restricted `daybreak`). A discovered model
-  becomes routable only through the conservative floor policy: known track,
-  safely parsed naming, approved track capability floor, runtime-advertised
-  effort, source/auth/health gates, compatibility evidence. Unclassified
-  models stay discovered/not-routable; restricted tracks (Daybreak Blue) are
-  never materialized as routable resources.
+- **Adoption.** A discovered exact model is considered only when explicitly
+  listed in the source's administrator `allowed_models` grant and the source
+  authentication and runtime-effort gates pass. Existing `allowed_tracks`
+  policies refuse adoption until an administrator explicitly replaces them
+  with model IDs; they are never expanded from name patterns. Discovery does
+  not establish quality ratings, model limits, compatibility or entitlement.
+  `capacity_scope_ids` is an explicit administrator assertion that a provider
+  telemetry scope applies to every granted model on this source and account;
+  leave it empty unless that account/scope relationship is established. When
+  sources for one identity are evaluated separately against their own bindings;
+  omitted bindings remain unknown rather than inheriting another source's
+  quota. The administrator model-policy endpoint replaces model grants and may
+  set this binding explicitly. Admission rechecks the exact selected resource.
+  The same endpoint accepts optional `context_evidence` entries for an exact
+  granted model/effort or plan lane: `model`, exact `variant`, observed `runtime_version`, positive
+  `input_tokens`, a non-secret `local:` evidence handle, `verified_at` and
+  `valid_until` in canonical UTC. The administrator is responsible for
+  verifying that attestation; Router does not independently authenticate its
+  underlying evidence. The bound is used only for the matching source, model
+  and runtime version inside the validity interval, and the target records the
+  administrator-attested reference. An omitted, expired or version-mismatched
+  entry remains unknown. The interval is limited to 365 days so a changed
+  runtime/model deployment cannot leave an indefinite assertion. No model-family
+  bound is inferred.
 - **Derived resources.** Deterministic per-source materialization
   (`resource_id = <source_id>:<slug>`), exact slug and efforts,
   source-owned lifecycle: absence from an authenticated inventory →
@@ -1159,7 +1174,7 @@ is imposed by A0; new modules land beside these as their issues require):
 | `machine_api.py` | M08 (+#93); gateway request parsing is new M03-owned code, not a v1 change |
 | `mcp.py`, `cli.py` | M08 (+#93); `doctor` realization and config UX extend via M09 |
 | `config.py` | M09 (+#94) |
-| `model-catalog.json`, `model-policy.json`, `examples/*` | M01/M02/M09 additive evolution |
+| Local selector policy and `examples/*` | M01/M02/M09 additive evolution |
 | New: gateway/coordinator modules, worker package, server control API/UI | M03, M05, M09 respectively |
 
 ## Deferred architecture

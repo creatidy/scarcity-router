@@ -16,6 +16,7 @@ from model_intelligence.evidence import ModelClaim
 from model_intelligence.zai import SCOPE as ZAI_SCOPE
 
 from scarcity_router.machine_api import selection_envelope
+from scarcity_router.resource_state import ResourceRegistryEntry
 from scarcity_router.mi_consumer import MIConsumer, ModelBinding, canonical
 from scarcity_router.routing_core import PinnedTarget, RequestBinding, admit_pinned_target, route_request
 from scarcity_router.selection_types import CapabilityMinima, HardConstraints, TaskRequirement
@@ -167,6 +168,35 @@ class ActiveMIAdmissionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "mi_evaluation_instant_mismatch"):
             _ = admit_pinned_target(replace(active, evaluated_at=request.evaluated_at+timedelta(days=1)), pinned_target=pin)
         self.assertIsNotNone(approved.target)
+
+    def test_runtime_resource_bounds_are_not_lost_when_mi_is_available(self) -> None:
+        request, admission = self.world(amount=16000)
+        unknown_entries = tuple(replace(entry, hard_properties=replace(
+            entry.hard_properties, input_context_tokens=None,
+        ), capacity_binding_resources=("openai-sub",)) for entry in request.catalog.entries)
+        registry_entries: list[ResourceRegistryEntry] = []
+        for resource in request.registry_snapshot.entries:
+            if resource.identity.resource_id == "openai-sub":
+                identity = replace(resource.identity, variant=unknown_entries[0].identity.variant)
+                assert resource.observation is not None
+                resource = replace(resource, identity=identity, observation=replace(resource.observation, identity=identity))
+            registry_entries.append(resource)
+        request = replace(request, catalog=replace(
+            request.catalog, catalog_version=None, updated_on=None, entries=unknown_entries,
+        ), registry_snapshot=replace(request.registry_snapshot, entries=tuple(registry_entries)), mi_admission=admission)
+        pin = PinnedTarget("openai-sub", request.catalog.entries[0].identity)
+        decision = route_request(request)
+        self.assertIsNotNone(decision.target)
+        self.assertTrue(admit_pinned_target(request, pinned_target=pin).approved)
+
+    def test_missing_mi_publication_preserves_independent_local_evidence(self) -> None:
+        request, admission = self.world(amount=16000)
+        missing = replace(admission, captured=(None, admission.captured[1]))
+        request = replace(request, mi_admission=missing)
+        decision = route_request(request)
+        self.assertIsNotNone(decision.target)
+        pin = PinnedTarget("openai-sub", request.catalog.entries[0].identity)
+        self.assertTrue(admit_pinned_target(request, pinned_target=pin).approved)
 
     def test_output_allowance_also_intersects_existing_admission(self) -> None:
         request, admission = self.world(meaning="output-allowance")

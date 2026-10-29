@@ -16,9 +16,7 @@ type on purpose", and the runtime validator must be the one to reject them.
 
 from __future__ import annotations
 
-import json
 import unittest
-from pathlib import Path
 from typing import cast
 
 from scarcity_router import (
@@ -30,7 +28,6 @@ from scarcity_router import (
     CapacitySnapshot,
     CapacityWindow,
     GoverningWindowEvidence,
-    ModelCatalog,
     ModelCatalogEntry,
     ModelHardProperties,
     ModelIdentity,
@@ -50,9 +47,6 @@ from scarcity_router import (
     window_role,
 )
 
-REPO = Path(__file__).resolve().parents[1]
-CATALOG_PATH = REPO / "model-catalog.json"
-
 TS = "2026-09-06T12:00:00.000Z"
 RESET = "2026-09-12T09:00:00.000Z"
 
@@ -64,19 +58,6 @@ def _ill(value: object) -> object:
     type is statically legal; the runtime validator must reject the value.
     """
     return value
-
-
-def _load_catalog() -> dict[tuple[str, str], ModelCatalogEntry]:
-    catalog = ModelCatalog.from_dict(
-        cast(object, json.loads(CATALOG_PATH.read_text(encoding="utf-8")))
-    )
-    return {(e.identity.provider, e.identity.model): e for e in catalog.entries}
-
-
-CATALOG = _load_catalog()
-LUNA = CATALOG[("openai", "gpt-5.6-luna")]
-SOL = CATALOG[("openai", "gpt-5.6-sol")]
-GLM53 = CATALOG[("zai", "glm-5.3")]
 
 
 def _unknown_capabilities() -> CapabilityAssessments:
@@ -110,6 +91,11 @@ def _synthetic_entry(
         capabilities=_unknown_capabilities(),
         capacity_bindings=bindings,
     )
+
+
+LUNA = _synthetic_entry("openai", "gpt-5.6-luna", "max", (CapacityScopeRef("openai", "codex"),))
+SOL = _synthetic_entry("openai", "gpt-5.6-sol", "max", (CapacityScopeRef("openai", "codex"),))
+GLM53 = _synthetic_entry("zai", "glm-5.3", "max", (CapacityScopeRef("zai", "coding_plan"),))
 
 
 def _window(

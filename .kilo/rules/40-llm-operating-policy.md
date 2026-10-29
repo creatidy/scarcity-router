@@ -66,7 +66,7 @@ No automatic Daybreak, hidden launcher, skipped review or generic identity weake
   prompts, task titles or UI labels alone.
 - Prefer a small ready queue; do not maximize concurrency.
 
-The role-assignment metadata is descriptive and non-selector-facing. The
-active catalog remains authoritative for selector eligibility; D-017's
-local-inference exclusion is superseded by D-040, and local resources return
-only as execution-gateway resources through the module issues.
+D-084 removes static Router model and role-assignment artifacts. The harness
+owns review assignments; Router eligibility uses source-bound evidence and
+local authorization. D-017's local-inference exclusion is superseded by
+D-040; local inference remains an execution-gateway resource.

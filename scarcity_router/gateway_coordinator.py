@@ -439,6 +439,7 @@ def exposed_logical_models(
     catalog: ModelCatalog,
     registry: ResourceRegistry,
     limits: GatewayLimits,
+    permitted_resource_ids: frozenset[str] | None = None,
 ) -> tuple[LogicalModelInfo, ...]:
     """The logical models ``GET /v1/models`` exposes (D-055, #136/D-058).
 
@@ -473,6 +474,8 @@ def exposed_logical_models(
     route_channels: dict[tuple[str, str], list[ResourceRegistryEntry]] = {}
     bound: set[tuple[str, str]] = set()
     for entry in snapshot.entries:
+        if permitted_resource_ids is not None and entry.identity.resource_id not in permitted_resource_ids:
+            continue
         key = (entry.identity.provider, entry.identity.model)
         bound.add(key)
         route_channels.setdefault(key, []).append(entry)
@@ -494,13 +497,6 @@ def exposed_logical_models(
             if catalog_entry.identity.model == model
             and catalog_entry.identity.provider == providers[0]
         ]
-        outputs = [
-            catalog_entry.hard_properties.output_tokens
-            for catalog_entry in model_entries
-            if catalog_entry.hard_properties.output_tokens is not None
-        ]
-        if not outputs:
-            continue
         entries = route_channels.get((providers[0], model), ())
         routes: list[RouteEffectiveLimits] = []
         for entry in sorted(entries, key=lambda item: item.identity.resource_id):
@@ -510,13 +506,18 @@ def exposed_logical_models(
             # over-advertises any variant the route serves. A
             # variant-qualified route (one bound variant) reports that
             # variant's own exact intersection.
-            context_values: list[int] = []
-            output_values: list[int] = []
+            context_values: list[int | None] = []
+            output_values: list[int | None] = []
             for catalog_entry in model_entries:
                 if (
                     entry.identity.variant is not None
                     and catalog_entry.identity.variant != entry.identity.variant
                 ):
+                    continue
+                if (catalog.catalog_version is None and entry.identity.variant is None
+                        and catalog_entry.identity.variant != "unconfigured"
+                        and (catalog_entry.capacity_binding_resources is None or
+                             entry.identity.resource_id not in catalog_entry.capacity_binding_resources)):
                     continue
                 route_context = _effective_ceiling(
                     (
@@ -532,18 +533,29 @@ def exposed_logical_models(
                     ),
                     limits.max_output_tokens,
                 )
-                if route_context is not None:
-                    context_values.append(route_context)
-                if route_output is not None:
-                    output_values.append(route_output)
+                if catalog.catalog_version is None:
+                    if (entry.capabilities.context_limit_tokens is None
+                            or (entry.capabilities.context_evidence_valid_until is not None
+                                and (snapshot.generated_at >= entry.capabilities.context_evidence_valid_until
+                                     or (entry.capabilities.context_evidence_verified_at is not None
+                                         and snapshot.generated_at < entry.capabilities.context_evidence_verified_at)))):
+                        route_context = None
+                    if entry.capabilities.output_limit_tokens is None:
+                        route_output = None
+                context_values.append(route_context)
+                output_values.append(route_output)
             routes.append(
                 RouteEffectiveLimits(
                     resource_id=entry.identity.resource_id,
                     effective_context_limit_tokens=(
-                        min(context_values) if context_values else None
+                        min(cast(list[int], context_values))
+                        if context_values and all(value is not None for value in context_values)
+                        else None
                     ),
                     effective_output_limit_tokens=(
-                        min(output_values) if output_values else None
+                        min(cast(list[int], output_values))
+                        if output_values and all(value is not None for value in output_values)
+                        else None
                     ),
                 )
             )
@@ -554,24 +566,17 @@ def exposed_logical_models(
             for route in routes
             if route.effective_output_limit_tokens is not None
         ]
-        if not known_outputs:
-            # Reachable corner case (deliberate, documented skip): exposure
-            # requires SOME variant of the model to carry a calibrated hard
-            # output, but every BOUND route may still bind only variants
-            # whose own hard output is UNKNOWN (e.g. a floor-derived effort
-            # on a control=False channel). D-055's `max_output_tokens` is a
-            # hard number — the model stays unadvertised rather than
-            # guessing one, even though it remains routable; the metadata
-            # contract never advertises what no bound route evidences.
-            continue
         efforts = tuple(
             sorted({
                 catalog_entry.reasoning_effort
                 for catalog_entry in model_entries
                 if catalog_entry.reasoning_effort is not None
                 and any(
-                    entry.identity.variant is None
-                    or entry.identity.variant == catalog_entry.identity.variant
+                    (entry.identity.variant is None or entry.identity.variant == catalog_entry.identity.variant)
+                    and (catalog.catalog_version is not None or
+                         (entry.identity.variant is not None and
+                          (catalog_entry.capacity_binding_resources is None or
+                           entry.identity.resource_id in catalog_entry.capacity_binding_resources)))
                     for entry in entries
                 )
             })
@@ -584,7 +589,7 @@ def exposed_logical_models(
                 effective_context_limit_tokens=(
                     max(known_contexts) if known_contexts else None
                 ),
-                max_output_tokens=max(known_outputs),
+                max_output_tokens=max(known_outputs) if known_outputs else None,
                 routes=tuple(routes),
             )
         )
@@ -816,6 +821,23 @@ class GatewayApplication:
         return self.registry, self.admin_constraints, grant, self.adapters
 
     # ── The lifecycle ────────────────────────────────────────────────────
+
+    def visible_logical_models(self, client_id: str) -> tuple[LogicalModelInfo, ...]:
+        """Expose only resources authorized for this client's current view."""
+        view = self._published_executable_view(client_id)
+        registry, administrator, grant, adapters = view._current_authority(client_id)
+        now = view._now()
+        snapshot = registry.registry_snapshot(now=canonical_instant(now))
+        effective = _effective_authorization(administrator, grant, None)
+        assurances = execution_assurances(snapshot.entries, adapters, grant.strict_no_payg)
+        permitted = frozenset(
+            entry.identity.resource_id for entry in snapshot.entries
+            if adapters.supports_resource(entry.identity)
+            and not _authorization_failure_codes(
+                entry, effective, execution_assurances=assurances, assessed_at=now
+            )
+        )
+        return exposed_logical_models(view.catalog, registry, view.limits, permitted)
 
     def _published_executable_view(self, client_id: str) -> GatewayApplication:
         if self.application_source is None:
@@ -1492,7 +1514,7 @@ class GatewayApplication:
         )
         strict = client.strict_no_payg or record.non_paid_control_scope is not None
         effective = replace(effective, strict_no_payg=strict)
-        assurances = _execution_assurances((entry,), current_adapters, strict)
+        assurances = execution_assurances((entry,), current_adapters, strict)
         codes = _authorization_failure_codes(entry, effective, execution_assurances=assurances, assessed_at=assessed_at)
         if strict and not codes:
             try:
@@ -1675,6 +1697,18 @@ class GatewayApplication:
         explicit_variant = None
         admission_catalog = self.catalog
         candidate_identities = None
+        if (self.catalog.catalog_version is None and resolved.pinned_target is not None
+                and request.reasoning_effort is not None):
+            pinned = resolved.pinned_target
+            fact = next((entry for entry in self.catalog.entries if entry.identity == pinned.model), None)
+            if (fact is None or fact.reasoning_effort != request.reasoning_effort
+                    or fact.capacity_binding_resources is None
+                    or pinned.resource_id not in fact.capacity_binding_resources):
+                raise GatewayError.invalid_request(
+                    "the pinned resource has no evidence for the requested reasoning effort; "
+                    + "discover that exact effort or omit it",
+                    code="reasoning_effort_unverified", param="reasoning_effort",
+                )
         if resolved.kind == LOGICAL_KIND and not selecting:
             # D-071: narrow by catalog effort before the authoritative core.
             admission_catalog = _resolve_logical_effort(
@@ -1707,6 +1741,13 @@ class GatewayApplication:
                 raise executable_error()
             state.routing_profile = routing_profile.profile_id
             state.routing_policy_version = self.profile_policy_version
+        if routing_profile is not None and not any(
+            definition.profile_id == routing_profile.profile_id for definition in self.profiles.definitions
+        ):
+            raise GatewayError.invalid_request(
+                "legacy profile alias is unsupported; use an exact model and explicit requirements",
+                code="unsupported_legacy_profile", param="model",
+            )
         continuation_capable: frozenset[str] | None = None
         if self.continuation_capability_source is not None:
             try:
@@ -1728,7 +1769,7 @@ class GatewayApplication:
                 compatibility_cells=self.compatibility_cells,
                 admin_constraints=administrator,
                 client_authorization=client_grant,
-                execution_assurances=_execution_assurances(registry_snapshot.entries, adapters, client_grant.strict_no_payg),
+                execution_assurances=execution_assurances(registry_snapshot.entries, adapters, client_grant.strict_no_payg),
                 routing_profile=routing_profile,
                 request=binding,
                 profile_policy_version=(
@@ -1937,7 +1978,7 @@ class GatewayApplication:
         )
         strict = state.strict_no_payg or client.strict_no_payg
         effective = replace(effective, strict_no_payg=strict)
-        assurances = () if current_entry is None else _execution_assurances((current_entry,), current_adapters, strict)
+        assurances = () if current_entry is None else execution_assurances((current_entry,), current_adapters, strict)
         codes = () if current_entry is None else _authorization_failure_codes(
             current_entry, effective,
             execution_assurances=assurances,
@@ -1962,6 +2003,17 @@ class GatewayApplication:
                 raise GatewayError.api("current source policy evidence is unavailable", code="state_unavailable", http_status=503) from None
             if availability_failure_codes(current_entry, reports):
                 raise GatewayError.permission("the current source remains blocked by eligibility policy", code="source_policy_blocked")
+        if target.context_evidence_ref is not None:
+            capabilities = current_entry.capabilities
+            now_text = canonical_instant(assessed_at)
+            if (capabilities.context_evidence_ref != target.context_evidence_ref
+                    or capabilities.context_evidence_runtime_version != target.context_evidence_runtime_version
+                    or capabilities.context_evidence_verified_at != target.context_evidence_verified_at
+                    or capabilities.context_evidence_valid_until != target.context_evidence_valid_until
+                    or capabilities.context_limit_tokens != target.context_limit_tokens
+                    or target.context_evidence_verified_at is None or target.context_evidence_valid_until is None
+                    or not (target.context_evidence_verified_at <= now_text < target.context_evidence_valid_until)):
+                raise GatewayError.api("the selected source context evidence changed or expired; retry with current evidence", code="context_evidence_stale", http_status=503)
         state.call_fact_entry = current_entry
         state.assurance_at = assessed_at
         if strict:
@@ -2147,6 +2199,7 @@ class GatewayApplication:
                 state.flow_notes = (*state.flow_notes, "source_call_facts_unavailable")
         reported, estimated = _usage_totals(state.calls)
         record = AuditRecord(
+            schema_version=(2 if state.selected_target is not None and state.selected_target.context_evidence_ref is not None else 1),
             request_id=state.request_id,
             client_id=state.client_id,
             decision_id=state.decision_id,
@@ -2264,6 +2317,11 @@ def _audit_target(target: RouteTarget) -> ExecutedTarget:
         provider=target.resource.provider,
         model=target.model.model,
         variant=target.model.variant,
+        context_evidence_ref=target.context_evidence_ref,
+        context_evidence_runtime_version=target.context_evidence_runtime_version,
+        context_evidence_verified_at=target.context_evidence_verified_at,
+        context_evidence_valid_until=target.context_evidence_valid_until,
+        context_limit_tokens=target.context_limit_tokens,
     )
 
 
@@ -2282,7 +2340,7 @@ def _target_capabilities(
     return None
 
 
-def _execution_assurances(
+def execution_assurances(
     entries: tuple[ResourceRegistryEntry, ...], adapters: AdapterRegistry, strict: bool,
 ) -> tuple[ExecutionAssurance, ...]:
     if not strict:
