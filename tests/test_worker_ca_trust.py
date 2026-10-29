@@ -24,7 +24,7 @@ import unittest.mock
 from collections.abc import Callable
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
-from typing import cast, override
+from typing import cast, final, override
 
 from tests.m10_fixtures import TlsMaterials
 from tests.test_worker_service import SYNTHETIC_ORIGIN as SERVICE_ORIGIN
@@ -289,6 +289,12 @@ class CaFileValidationTests(unittest.TestCase):
 
 
 class WindowsHandleValidationTests(unittest.TestCase):
+    @final
+    class ObjectAttributes(ctypes.Structure):
+        _fields_ = [("length", ctypes.c_ulong), ("root", ctypes.c_void_p),
+                    ("name", ctypes.c_void_p), ("attributes", ctypes.c_ulong),
+                    ("security_descriptor", ctypes.c_void_p), ("security_qos", ctypes.c_void_p)]
+
     class Function:
         def __init__(self, callback: Callable[[tuple[object, ...]], object]) -> None:
             self.argtypes: object = None
@@ -302,8 +308,18 @@ class WindowsHandleValidationTests(unittest.TestCase):
 
     class Kernel:
         def __init__(self, *, reparse_handle: int | None = None, file_type: int = 1) -> None:
-            handles = iter((100, 101, 102))
-            self.CreateFileW: WindowsHandleValidationTests.Function = WindowsHandleValidationTests.Function(lambda _args: next(handles))
+            handles = iter((101, 102))
+            self.CreateFileW: WindowsHandleValidationTests.Function = WindowsHandleValidationTests.Function(lambda _args: 100)
+            self.relative_opens: list[tuple[int, int, int, int]] = []
+            def relative(args: tuple[object, ...]) -> object:
+                attributes = ctypes.cast(cast("ctypes.c_void_p", args[2]), ctypes.POINTER(WindowsHandleValidationTests.ObjectAttributes)).contents
+                self.relative_opens.append((cast(int, getattr(attributes, "root")),
+                                            cast(int, getattr(attributes, "attributes")),
+                                            cast(int, args[6]), cast(int, args[8])))
+                handle = ctypes.cast(cast("ctypes.c_void_p", args[0]), ctypes.POINTER(ctypes.c_void_p))
+                handle[0] = next(handles)
+                return 0
+            self.NtCreateFile: WindowsHandleValidationTests.Function = WindowsHandleValidationTests.Function(relative)
             self.GetDriveTypeW: WindowsHandleValidationTests.Function = WindowsHandleValidationTests.Function(lambda _args: 3)
             self.GetFileType: WindowsHandleValidationTests.Function = WindowsHandleValidationTests.Function(lambda _args: file_type)
             self.CloseHandle: WindowsHandleValidationTests.Function = WindowsHandleValidationTests.Function(lambda _args: True)
@@ -330,7 +346,7 @@ class WindowsHandleValidationTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(WindowsCaOpenError):
                 _ = open_windows_regular(value)
 
-    def test_native_open_pins_parents_and_refuses_delete_sharing(self) -> None:
+    def test_native_open_pins_parents_and_refuses_write_and_delete_sharing(self) -> None:
         from scarcity_router.worker_ca_windows import open_windows_regular
 
         kernel = self.Kernel()
@@ -339,11 +355,71 @@ class WindowsHandleValidationTests(unittest.TestCase):
               unittest.mock.patch("scarcity_router.worker_ca_windows.importlib.import_module", return_value=runtime)):
             self.assertEqual(42, open_windows_regular(r"C:\certs\root.pem"))
         calls = kernel.CreateFileW.calls
-        self.assertEqual(["C:\\", "C:\\certs", "C:\\certs\\root.pem"], [item[0] for item in calls])
-        self.assertTrue(all(cast(int, item[2]) & 4 == 0 for item in calls))
-        self.assertTrue(all(cast(int, item[5]) & 0x00200000 for item in calls))
+        self.assertEqual(["C:\\"], [item[0] for item in calls])
+        self.assertEqual([100, 101], [item[0] for item in kernel.relative_opens])
+        self.assertTrue(all(item[1] & 0x1000 for item in kernel.relative_opens))
+        self.assertTrue(all(item[2] & 6 == 0 for item in kernel.relative_opens))
+        self.assertTrue(all(item[3] & 0x00200000 for item in kernel.relative_opens))
+        self.assertTrue(all(item[3] & 0x00400000 for item in kernel.relative_opens))
+        self.assertTrue(all(item[3] & 0x100 for item in kernel.relative_opens))
+        self.assertEqual(0, kernel.relative_opens[0][3] & 0x1)  # no undocumented directory/option combination
         self.assertEqual([(101,), (100,)], kernel.CloseHandle.calls)
         self.assertEqual(1, len(runtime.calls))
+
+    def test_parent_reparse_mutation_after_inspection_is_denied(self) -> None:
+        from scarcity_router.worker_ca_windows import WindowsCaOpenError, open_windows_regular
+
+        kernel = self.Kernel()
+        runtime = self.Runtime()
+        original = kernel.NtCreateFile.callback
+        mutation_detected = False
+        def concurrent_open(args: tuple[object, ...]) -> object:
+            nonlocal mutation_detected
+            if len(kernel.NtCreateFile.calls) == 2:
+                attributes = ctypes.cast(cast("ctypes.c_void_p", args[2]), ctypes.POINTER(self.ObjectAttributes)).contents
+                self.assertEqual(101, cast(int, getattr(attributes, "root")))
+                self.assertTrue(cast(int, getattr(attributes, "attributes")) & 0x1000)
+                mutation_detected = True
+                return 0xC000050B  # STATUS_REPARSE_POINT_ENCOUNTERED
+            return original(args)
+        kernel.NtCreateFile.callback = concurrent_open
+        with (unittest.mock.patch.object(ctypes, "WinDLL", create=True, return_value=kernel),
+              unittest.mock.patch("scarcity_router.worker_ca_windows.importlib.import_module", return_value=runtime),
+              self.assertRaises(WindowsCaOpenError)):
+            _ = open_windows_regular(r"C:\certs\root.pem")
+        self.assertTrue(mutation_detected)
+        self.assertEqual([], runtime.calls)
+
+    def test_existing_writer_causes_safe_open_failure_before_descendant(self) -> None:
+        from scarcity_router.worker_ca_windows import WindowsCaOpenError, open_windows_regular
+
+        kernel = self.Kernel()
+        kernel.NtCreateFile.callback = lambda _args: 0xC0000043  # STATUS_SHARING_VIOLATION
+        runtime = self.Runtime()
+        with (unittest.mock.patch.object(ctypes, "WinDLL", create=True, return_value=kernel),
+              unittest.mock.patch("scarcity_router.worker_ca_windows.importlib.import_module", return_value=runtime),
+              self.assertRaises(WindowsCaOpenError)):
+            _ = open_windows_regular(r"C:\certs\root.pem")
+        self.assertEqual(1, len(kernel.CreateFileW.calls))
+        self.assertEqual(1, len(kernel.NtCreateFile.calls))
+        self.assertEqual([], runtime.calls)
+
+    def test_oplock_partial_success_is_closed_and_refused(self) -> None:
+        from scarcity_router.worker_ca_windows import WindowsCaOpenError, open_windows_regular
+
+        kernel = self.Kernel()
+        original = kernel.NtCreateFile.callback
+        def oplocked(args: tuple[object, ...]) -> object:
+            _ = original(args)  # An alternate success may still return a handle.
+            return 0x00000108  # STATUS_OPLOCK_BREAK_IN_PROGRESS
+        kernel.NtCreateFile.callback = oplocked
+        runtime = self.Runtime()
+        with (unittest.mock.patch.object(ctypes, "WinDLL", create=True, return_value=kernel),
+              unittest.mock.patch("scarcity_router.worker_ca_windows.importlib.import_module", return_value=runtime),
+              self.assertRaises(WindowsCaOpenError)):
+            _ = open_windows_regular(r"C:\certs\root.pem")
+        self.assertEqual([(101,), (100,)], kernel.CloseHandle.calls)
+        self.assertEqual([], runtime.calls)
 
     def test_reparse_parent_and_non_disk_object_are_refused(self) -> None:
         from scarcity_router.worker_ca_windows import WindowsCaOpenError, open_windows_regular
@@ -474,6 +550,59 @@ class StoreTrustPersistenceTests(unittest.TestCase):
         with sqlite3.connect(self.path) as connection:
             rows = connection.execute("SELECT value FROM worker_state").fetchall()
         self.assertNotIn("PRIVATE KEY", str(rows))
+
+    def test_commit_failure_rolls_back_and_connection_remains_usable(self) -> None:
+        store = self._store()
+        original = WorkerCaTrust(PAIR_ORIGIN, "/etc/scarcity/original-ca.pem")
+        replacement = WorkerCaTrust(PAIR_ORIGIN, "/etc/scarcity/replacement-ca.pem")
+        store.save_identity_with_ca(_identity(), original)
+        connection = store._connection  # pyright: ignore[reportPrivateUsage] - exercise real SQLite COMMIT failure
+        _ = connection.execute("PRAGMA busy_timeout=0")
+        with sqlite3.connect(self.path, isolation_level=None) as reader:
+            _ = reader.execute("BEGIN")
+            _ = reader.execute("SELECT value FROM worker_state").fetchall()
+            with self.assertRaises(sqlite3.OperationalError):
+                store.save_ca_trust(replacement, expected_identity=_identity())
+            self.assertFalse(connection.in_transaction)
+            self.assertEqual(_identity(), store.load_identity())
+            self.assertEqual(original, store.load_ca_trust())
+            _ = reader.execute("ROLLBACK")
+        rotated = WorkerLocalIdentity(worker_id="w-ca-1", credential="synthetic-rotated-credential", server_origin=PAIR_ORIGIN)
+        store.save_identity(rotated)
+        self.assertEqual(rotated, store.load_identity())
+        self.assertEqual(original, store.load_ca_trust())
+
+    def test_successful_pair_repairs_malformed_identity_and_clears_or_replaces_trust(self) -> None:
+        store = self._store()
+        original = WorkerCaTrust(PAIR_ORIGIN, "/etc/scarcity/original-ca.pem")
+        replacement = WorkerCaTrust(PAIR_ORIGIN, "/etc/scarcity/replacement-ca.pem")
+        for new_trust in (None, replacement):
+            with self.subTest(replacement=new_trust is not None):
+                store.save_identity_with_ca(_identity(), original)
+                with sqlite3.connect(self.path) as connection:
+                    _ = connection.execute("UPDATE worker_state SET value = ? WHERE key = 'identity'", ("corrupted",))
+                with self.assertRaises(ValueError):
+                    _ = store.load_identity()
+                with self.assertRaises(ValueError):
+                    store.save_identity(_identity(worker_id="rotation"))
+                paired = _identity(worker_id="replacement")
+                store.save_identity_with_ca(paired, new_trust, allow_corrupt_previous=True)
+                self.assertEqual(paired, store.load_identity())
+                self.assertEqual(new_trust, store.load_ca_trust())
+
+    def test_malformed_identity_pair_write_failure_rolls_back_all_rows(self) -> None:
+        store = self._store()
+        original = WorkerCaTrust(PAIR_ORIGIN, "/etc/scarcity/original-ca.pem")
+        replacement = WorkerCaTrust(PAIR_ORIGIN, "/etc/scarcity/replacement-ca.pem")
+        store.save_identity_with_ca(_identity(), original)
+        with sqlite3.connect(self.path) as connection:
+            _ = connection.execute("UPDATE worker_state SET value = ? WHERE key = 'identity'", ("corrupted",))
+        with unittest.mock.patch.object(store, "_write_ca_trust_row", side_effect=sqlite3.OperationalError("synthetic failure")):
+            with self.assertRaises(sqlite3.OperationalError):
+                store.save_identity_with_ca(_identity(worker_id="replacement"), replacement, allow_corrupt_previous=True)
+        with self.assertRaises(ValueError):
+            _ = store.load_identity()
+        self.assertEqual(original, store.load_ca_trust())
 
     def test_stored_trust_survives_reopen_and_credential_rotation(self) -> None:
         trust = WorkerCaTrust(
@@ -764,6 +893,30 @@ class RuntimeCaPersistenceTests(unittest.TestCase):
         self.assertEqual("w-fake-pair", identity.worker_id)
         self.assertEqual(SYNTHETIC_CODE, server.saw_pairing_code)
         self.assertEqual(trust, self.store.load_ca_trust())
+
+    def test_successful_pair_repairs_malformed_identity_without_inheriting_old_trust(self) -> None:
+        self.store.save_ca_trust(WorkerCaTrust(PAIR_ORIGIN, "/etc/scarcity/old.pem"))
+        with sqlite3.connect(os.path.join(self._tmp.name, "s.db")) as connection:
+            _ = connection.execute("UPDATE worker_state SET value = ? WHERE key = 'identity'", ("broken",))
+        server = FakeSessionServer()
+        identity = self._runtime(server).pair(SYNTHETIC_CODE)
+        self.assertEqual("w-fake-pair", identity.worker_id)
+        self.assertEqual(identity, self.store.load_identity())
+        self.assertIsNone(self.store.load_ca_trust())
+
+    def test_successful_pair_write_failure_preserves_malformed_identity_and_trust(self) -> None:
+        original = WorkerCaTrust(PAIR_ORIGIN, "/etc/scarcity/old.pem")
+        self.store.save_ca_trust(original)
+        with sqlite3.connect(os.path.join(self._tmp.name, "s.db")) as connection:
+            _ = connection.execute("UPDATE worker_state SET value = ? WHERE key = 'identity'", ("broken",))
+        server = FakeSessionServer()
+        with unittest.mock.patch.object(self.store, "_write_ca_trust_row", side_effect=sqlite3.OperationalError("synthetic")):
+            with self.assertRaises(sqlite3.OperationalError):
+                _ = self._runtime(server).pair(SYNTHETIC_CODE, ca_trust=WorkerCaTrust(PAIR_ORIGIN, "/etc/scarcity/new.pem"))
+        self.assertEqual(SYNTHETIC_CODE, server.saw_pairing_code)
+        with self.assertRaises(ValueError):
+            _ = self.store.load_identity()
+        self.assertEqual(original, self.store.load_ca_trust())
 
     def test_pair_rejection_preserves_old_identity_and_trust(self) -> None:
         old_trust = WorkerCaTrust(

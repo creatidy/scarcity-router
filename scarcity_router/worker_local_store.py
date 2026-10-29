@@ -174,12 +174,23 @@ class _Transaction:
     def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
         _ = exc_type, exc, traceback
         if exc_type is None:
-            _ = self._connection.execute("COMMIT")
-        else:
             try:
+                _ = self._connection.execute("COMMIT")
+                return
+            except BaseException:
+                self._rollback_or_close()
+                raise
+        self._rollback_or_close()
+
+    def _rollback_or_close(self) -> None:
+        try:
+            if self._connection.in_transaction:
                 _ = self._connection.execute("ROLLBACK")
+        except sqlite3.Error:
+            try:
+                self._connection.close()
             except sqlite3.Error:
-                pass  # the connection is unusable; the original failure wins
+                pass  # preserve the original error; never reuse this connection
 
 
 class WorkerLocalStore:
@@ -285,10 +296,22 @@ class WorkerLocalStore:
         )
         if row is None:
             return None
-        parts = str(row[0]).split("\n")
+        return self._decode_identity_document(row[0]).server_origin
+
+    @classmethod
+    def _decode_identity_document(cls, value: object) -> WorkerLocalIdentity:
+        if not isinstance(value, str):
+            raise ValueError("worker_local_store: the stored identity is malformed")
+        parts = value.split("\n")
         if len(parts) != 4:
             raise ValueError("worker_local_store: the stored identity is malformed")
-        return parts[2]
+        worker_id, credential, origin, label = parts
+        identity = WorkerLocalIdentity(worker_id, credential, origin, label or None)
+        try:
+            _ = cls._identity_document(identity)
+        except ValueError:
+            raise ValueError("worker_local_store: the stored identity is malformed") from None
+        return identity
 
     def _transaction(self) -> "_Transaction":
         """One explicit SQLite transaction (pairing-level atomicity)."""
@@ -304,7 +327,8 @@ class WorkerLocalStore:
         self.save_identity_with_ca(identity, None)
 
     def save_identity_with_ca(
-        self, identity: WorkerLocalIdentity, ca_trust: WorkerCaTrust | None
+        self, identity: WorkerLocalIdentity, ca_trust: WorkerCaTrust | None,
+        *, allow_corrupt_previous: bool = False,
     ) -> None:
         """Persist identity and applicable CA trust in ONE transaction.
 
@@ -322,7 +346,12 @@ class WorkerLocalStore:
         ca_document = None if ca_trust is None else trust_to_json(ca_trust)
         with self._lock:
             with self._transaction():
-                previous_origin = self._stored_identity_origin()
+                try:
+                    previous_origin = self._stored_identity_origin()
+                except ValueError:
+                    if not allow_corrupt_previous:
+                        raise
+                    previous_origin = None
                 self._write_identity_row(identity_document)
                 if ca_document is not None:
                     self._write_ca_trust_row(ca_document)
@@ -347,17 +376,7 @@ class WorkerLocalStore:
             )
         if row is None:
             return None
-        parts = str(row[0]).split("\n")
-        if len(parts) != 4:
-            # A corrupted identity is a loud failure, never a guess.
-            raise ValueError("worker_local_store: the stored identity is malformed")
-        worker_id, credential, origin, label = parts
-        return WorkerLocalIdentity(
-            worker_id=worker_id,
-            credential=credential,
-            server_origin=origin,
-            device_label=label or None,
-        )
+        return self._decode_identity_document(row[0])
 
     def clear_identity(self) -> None:
         """Forget the paired identity AND its origin-bound CA trust.

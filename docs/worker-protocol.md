@@ -262,7 +262,8 @@ semantics and changes nothing else:
   relative to held no-follow directory descriptors, pins a regular file
   before opening it for data and requires a usable `/proc/self/fd` interface;
   unsupported platforms or missing safety primitives fail closed. Windows
-  opens components with held no-follow handles and without delete sharing;
+  opens each component relative to the previously verified directory handle
+  with `OBJ_DONT_REPARSE`, also denying write and delete sharing;
   only regular files on local fixed or RAM disks are accepted, and reparse
   points, network paths, device names and alternate streams are refused. These
   limits do not affect the ordinary platform-trust path when no private CA is

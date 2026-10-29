@@ -613,7 +613,7 @@ class WorkerRuntime:
                 server_origin=self._origin_key(),
                 device_label=self._device_label,
             )
-            self._store.save_identity_with_ca(identity, ca_trust)
+            self._store.save_identity_with_ca(identity, ca_trust, allow_corrupt_previous=True)
             self._note("info", "pairing completed")
             return identity
         finally:
