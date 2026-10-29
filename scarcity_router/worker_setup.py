@@ -53,6 +53,7 @@ from dataclasses import dataclass
 from typing import Protocol, cast
 
 from .gateway_validation import v_safe_id, v_text
+from .worker_ca_trust import WorkerCaTrust, WorkerCaTrustError
 from .worker_client import (
     ConnectFactory,
     WorkerConfigError,
@@ -358,13 +359,16 @@ def pair_worker(
     store: WorkerLocalStore,
     device_label: str | None = None,
     connect_factory: ConnectFactory | None = None,
+    ca_trust: WorkerCaTrust | None = None,
 ) -> WorkerLocalIdentity:
     """Redeem one pairing code through the EXISTING runtime pairing path.
 
     A thin orchestration over ``WorkerRuntime.pair`` — the protocol
-    handshake, server acceptance and atomic identity persistence are the
-    runtime's, not duplicated here. Nothing is persisted unless the
-    server accepts the code.
+    handshake, server acceptance and atomic identity(+CA-trust)
+    persistence are the runtime's, not duplicated here. Nothing is
+    persisted unless the server accepts the code. ``ca_trust`` carries an
+    explicit private-CA pairing (packaged CLI path); the first-run GUI
+    passes ``None``, which preserves any existing origin-bound trust.
     """
     runtime = WorkerRuntime(
         origin=origin,
@@ -374,7 +378,7 @@ def pair_worker(
             connect_factory if connect_factory is not None else default_connect_factory
         ),
     )
-    return runtime.pair(pairing_code)
+    return runtime.pair(pairing_code, ca_trust=ca_trust)
 
 
 def describe_pairing_failure(exc: Exception) -> str:
@@ -419,6 +423,8 @@ def describe_pairing_failure(exc: Exception) -> str:
             )
         return text
     if isinstance(exc, WorkerConfigError):
+        return str(exc)
+    if isinstance(exc, WorkerCaTrustError):
         return str(exc)
     if isinstance(exc, WorkerProtocolError):
         return "the server answered the pairing request with a malformed message."

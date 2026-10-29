@@ -249,6 +249,34 @@ def _quit_when_terminal(
 
 
 class RunTrayWorkerTests(unittest.TestCase):
+    def test_private_ca_failure_shows_safe_actionable_recovery(self) -> None:
+        from scarcity_router.worker_ca_trust import WorkerCaTrustError
+
+        for during_run in (False, True):
+            with self.subTest(during_run=during_run), tempfile.TemporaryDirectory() as parent:
+                view = FakeView()
+                class BrokenCaRuntime:
+                    def run(self) -> str:
+                        raise WorkerCaTrustError("SYNTHETIC-SECRET-NOT-FOR-OUTPUT")
+                    def diagnostics(self) -> tuple[str, ...]:
+                        return ()
+                    def request_stop(self) -> None:
+                        return None
+                def make_runtime() -> "windows_tray.TrayRuntime":
+                    if not during_run:
+                        raise WorkerCaTrustError("SYNTHETIC-SECRET-NOT-FOR-OUTPUT")
+                    return BrokenCaRuntime()
+                def make_view(model: TrayStateModel) -> "windows_tray.TrayView":
+                    return _quit_when_terminal(view, model, STATE_ERROR)
+                run_tray_worker(runtime_factory=make_runtime, view_factory=make_view,
+                                state_dir=parent, worker_id=None, server_origin=None)
+                text = view.calls[-1][1]
+                log = (Path(parent) / windows_tray.WORKER_LOG_NAME).read_text(encoding="utf-8")
+                self.assertIn("--ca-cert PATH", text)
+                self.assertIn("re-pair", text)
+                self.assertNotIn("SYNTHETIC-SECRET", text)
+                self.assertNotIn("SYNTHETIC-SECRET", log)
+
     def test_lifecycle_running_then_exhausted_shows_disconnected(self) -> None:
         view = FakeView()
         runtime = FakeRuntime(reason="reconnect_budget_exhausted", immediate=True)

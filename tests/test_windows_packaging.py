@@ -114,6 +114,7 @@ class SpecShapeTests(unittest.TestCase):
             "PIL.Image",
             "PIL.ImageDraw",
             "tkinter",
+            "msvcrt",
         ):
             self.assertIn(required, hidden_names)
 
