@@ -119,7 +119,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import cast
 
-from .worker_ca_trust import effective_stored_ca_path, validate_ca_cert_file
+from .worker_ca_trust import WorkerCaTrustError, effective_stored_ca_path, validate_ca_cert_file
 from .worker_identity_store import canonical_home, open_private_state_dir, open_trusted_worker_directory
 from .worker_local_store import WorkerLocalStore, default_worker_state_dir, zcode_state_home
 
@@ -1306,7 +1306,13 @@ def install_service(
         # the service would start against THIS file: validate it now —
         # before any unit write, daemon-reload or systemctl side effect.
         # A removed/corrupt/oversize CA file refuses installation.
-        _ = validate_ca_cert_file(stored_ca)
+        ca_path = validate_ca_cert_file(stored_ca)
+        if any(ca_path == hidden or ca_path.is_relative_to(hidden) for hidden in (Path("/tmp"), Path("/var/tmp"))):
+            raise WorkerCaTrustError(
+                "the stored --ca-cert path is hidden from the service by PrivateTmp; "
+                + "place the certificate in a stable service-readable location outside /tmp and /var/tmp, "
+                + "then update trust with a verified worker run before installing"
+            )
     selection = ServiceSelection.from_arguments(arguments)
     # Daybreak blocker: every filesystem-valued argument resolves ONCE,
     # here, to the canonical absolute path that is both validated and

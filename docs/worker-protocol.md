@@ -292,9 +292,13 @@ semantics and changes nothing else:
   one additional `worker_state` key older software does not read, and
   because the CA only ever ADDS trust to the default verified context,
   old software (or a removed row) behaves exactly as before; ignoring
-  the record cannot bypass verification. The generated systemd user
-  unit consumes the stored trust automatically through the ordinary
-  `run` command (install validates it before writing the unit); the
+   the record cannot bypass verification. The generated systemd user
+   unit consumes the stored trust automatically through the ordinary
+   `run` command (install validates it before writing the unit). Because
+   `PrivateTmp=true` hides the host's `/tmp` and `/var/tmp`, installation
+   refuses a stored canonical CA path beneath either location. Put the CA
+   in a stable service-readable location and update trust through a verified
+   worker run before installing. The
   Windows first-run GUI has no CA field, so the first private-CA
   onboarding is the one explicit CLI step.
 - **Revocation.** `WorkerAdminService.revoke_worker` (M09 seam) revokes

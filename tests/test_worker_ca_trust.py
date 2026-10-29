@@ -1563,17 +1563,43 @@ class ServiceInstallTrustTests(unittest.TestCase):
         finally:
             store.close()
 
+    @unittest.skipUnless(Path("/dev/shm").is_dir() and os.access("/dev/shm", os.W_OK), "service-visible OS temporary directory unavailable")
     def test_install_with_valid_stored_trust_writes_a_clean_unit(self) -> None:
+        with tempfile.TemporaryDirectory[str](dir="/dev/shm") as directory:
+            ca_file = Path(directory) / "synthetic-ca.pem"
+            _ = ca_file.write_bytes(self.tls.ca_file.read_bytes())
+            self._store_trust(str(ca_file.resolve()))
+            code, _out, err = self.world.install()
+            self.assertEqual(0, code, err)
+            unit_text = self.world.unit_path.read_text(encoding="utf-8")
+            # The unit consumes trust through `run` + the store, not an
+            # environment, certificate payload or CLI secret.
+            self.assertNotIn("BEGIN CERTIFICATE", unit_text)
+            self.assertNotIn("SSL_CERT_FILE", unit_text)
+            self.assertNotIn("--ca-cert", unit_text)
+            self.assertNotIn(str(ca_file), unit_text)
+
+    def test_install_rejects_private_tmp_ca_without_systemctl_or_unit_write(self) -> None:
         self._store_trust(str(self.tls.ca_file))
         code, _out, err = self.world.install()
-        self.assertEqual(0, code, err)
-        unit_text = self.world.unit_path.read_text(encoding="utf-8")
-        # The unit consumes the trust through `run` + the store: no CA
-        # material, path or environment hack appears in it.
-        self.assertNotIn("BEGIN CERTIFICATE", unit_text)
-        self.assertNotIn("SSL_CERT_FILE", unit_text)
-        self.assertNotIn("--ca-cert", unit_text)
-        self.assertNotIn(str(self.tls.ca_file), unit_text)
+        self.assertEqual(2, code)
+        self.assertIn("PrivateTmp", err)
+        self.assertIn("outside /tmp and /var/tmp", err)
+        self.assertNotIn(str(self.tls.ca_file), err)
+        self.assertFalse(self.world.unit_path.exists())
+        self.assertEqual([], self.world.systemctl_calls)
+
+    @unittest.skipUnless(Path("/var/tmp").is_dir() and os.access("/var/tmp", os.W_OK), "OS /var/tmp unavailable")
+    def test_install_rejects_var_tmp_ca_without_systemctl_or_unit_write(self) -> None:
+        with tempfile.TemporaryDirectory[str](dir="/var/tmp") as directory:
+            ca_file = Path(directory) / "synthetic-ca.pem"
+            _ = ca_file.write_bytes(self.tls.ca_file.read_bytes())
+            self._store_trust(str(ca_file.resolve()))
+            code, _out, err = self.world.install()
+            self.assertEqual(2, code)
+            self.assertIn("PrivateTmp", err)
+            self.assertFalse(self.world.unit_path.exists())
+            self.assertEqual([], self.world.systemctl_calls)
 
     def test_install_refuses_when_the_stored_ca_file_is_gone(self) -> None:
         self._store_trust(str(self.tls.ca_file))
