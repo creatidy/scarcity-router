@@ -30,7 +30,12 @@ from scarcity_router import (
     CapacityWindow,
     HappyHourDecision,
     ModelCatalog,
+    ModelCatalogEntry,
+    ModelHardProperties,
     ModelIdentity,
+    CapabilityAssessment,
+    CapabilityAssessments,
+    CapacityScopeRef,
     SelectionContractValidationError,
     SelectionDecision,
     SelectorPolicy,
@@ -44,7 +49,6 @@ from scarcity_router import (
 )
 
 REPO = Path(__file__).resolve().parents[1]
-CATALOG_PATH = REPO / "model-catalog.json"
 EXAMPLE_POLICY_PATH = REPO / "examples" / "selector-policy.json"
 
 RETRIEVED_AT = "2026-09-13T00:00:00.000Z"
@@ -141,9 +145,15 @@ def _snap(
 
 
 def _catalog() -> ModelCatalog:
-    return ModelCatalog.from_dict(
-        cast(object, json.loads(CATALOG_PATH.read_text(encoding="utf-8")))
+    unknown = CapabilityAssessment(None)
+    capabilities = CapabilityAssessments(unknown, unknown, unknown, unknown, unknown, unknown)
+    entries = tuple(
+        ModelCatalogEntry(identity, "Synthetic", ModelHardProperties(supports_reasoning_mode=True),
+                          capabilities, (CapacityScopeRef(identity.provider, scope),),
+                          reasoning_effort=identity.variant)
+        for identity, scope in ((FLASH, "coding_plan"), (GLM53, "coding_plan"), (GPT6_ASTRA, "codex"))
     )
+    return ModelCatalog(None, None, entries)
 
 
 def _requirement() -> TaskRequirement:

@@ -15,10 +15,8 @@ type on purpose", and the runtime validator must be the one to reject them.
 
 from __future__ import annotations
 
-import json
 import unittest
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import cast
 from unittest import mock
 
@@ -42,13 +40,12 @@ from scarcity_router import (
     neutral_selector_policy,
     simulate_selection,
 )
-from scarcity_router.selection_types import TaskProfileCatalog
+from scarcity_router.selection_types import (
+    CapabilityAssessment, CapabilityAssessments, CapabilityMinima, EvidenceRef,
+    HardConstraints, ModelCatalogEntry, ModelHardProperties, ModelIdentity,
+)
 from scarcity_router.simulation import CapacityPercentageOverride
 from scarcity_router.simulation import select_model as select_model_core
-
-REPO = Path(__file__).resolve().parents[1]
-CATALOG_PATH = REPO / "model-catalog.json"
-POLICY_PATH = REPO / "model-policy.json"
 
 FIXED_AT = datetime(2026, 9, 6, 12, 0, tzinfo=timezone.utc)
 RETRIEVED_AT = "2026-09-06T12:00:00.000Z"
@@ -59,31 +56,32 @@ def _ill(value: object) -> object:
     return value
 
 
-def _load_catalog() -> ModelCatalog:
-    return ModelCatalog.from_dict(
-        cast(object, json.loads(CATALOG_PATH.read_text(encoding="utf-8")))
-    )
-
-
-def _load_profiles() -> TaskProfileCatalog:
-    document = cast(
-        "dict[str, object]", json.loads(POLICY_PATH.read_text(encoding="utf-8"))
-    )
-    definitions: list[dict[str, object]] = []
-    for item in cast("list[object]", document["task_profiles"]):
-        entry = cast("dict[str, object]", item)
-        definitions.append(
-            {
-                "profile_id": entry["id"],
-                "requirement": entry["calibrated_requirement"],
-            }
+def _entry(provider: str, model: str, effort: str, coding: int, science: int) -> ModelCatalogEntry:
+    def assessment(value: int) -> CapabilityAssessment:
+        return CapabilityAssessment(
+            value, (EvidenceRef("synthetic", "fixture", date="2026-09-01"),),
+            "medium", "2026-09-01", "synthetic test evidence",
         )
-    return TaskProfileCatalog.from_dict({"definitions": definitions})
+    coding_value, science_value = assessment(coding), assessment(science)
+    return ModelCatalogEntry(
+        ModelIdentity(provider, model, effort), "Synthetic fixture", ModelHardProperties(supports_reasoning_mode=True),
+        CapabilityAssessments(coding_value, coding_value, science_value,
+                              coding_value, coding_value, coding_value),
+        (CapacityScopeRef(provider, "codex" if provider == "openai" else "coding_plan"),),
+        reasoning_effort=effort,
+    )
 
 
-CATALOG = _load_catalog()
-PROFILES = _load_profiles()
-DEEP_CODING = PROFILES.resolve("deep_coding")
+CATALOG = ModelCatalog(1, "2026-09-01", (
+    _entry("openai", "fixture-small", "max", 1, 1),
+    _entry("openai", "fixture-code", "medium", 4, 1),
+    _entry("openai", "fixture-science", "high", 4, 4),
+    _entry("zai", "fixture-remote", "max", 4, 1),
+    _entry("zai", "fixture-light", "max", 1, 1),
+))
+DEEP_CODING = TaskRequirement("L0", CapabilityMinima(coding=3), HardConstraints())
+ROUTINE = TaskRequirement("L0", CapabilityMinima(), HardConstraints())
+SCIENTIFIC = TaskRequirement("L0", CapabilityMinima(scientific_methodological=3), HardConstraints())
 
 
 def _snap(provider: str, five: int | None, weekly: int | None) -> CapacitySnapshot:
@@ -206,9 +204,9 @@ class CapacityOverrideTests(unittest.TestCase):
         )
         assert result.baseline.selected is not None
         assert result.simulated.selected is not None
-        self.assertEqual("glm-5.3", result.baseline.selected.identity.model)
+        self.assertEqual("fixture-remote", result.baseline.selected.identity.model)
         self.assertEqual(
-            "gpt-5.6-terra", result.simulated.selected.identity.model
+            "fixture-code", result.simulated.selected.identity.model
         )
 
     def test_override_preserves_everything_but_percentages(self) -> None:
@@ -499,15 +497,15 @@ class ReplacementTests(unittest.TestCase):
         assert result.baseline.selected is not None
         assert result.simulated.selected is not None
         # Monday 12:00 UTC is outside the blackout; Monday 01:30 is inside.
-        self.assertEqual("glm-5.3", result.baseline.selected.identity.model)
+        self.assertEqual("fixture-remote", result.baseline.selected.identity.model)
         self.assertEqual(
-            "gpt-5.6-terra", result.simulated.selected.identity.model
+            "fixture-code", result.simulated.selected.identity.model
         )
         excluded = {
             (c.identity.provider, c.identity.model): c
             for c in result.simulated.excluded
         }
-        glm = excluded[("zai", "glm-5.3")]
+        glm = excluded[("zai", "fixture-remote")]
         self.assertEqual("policy_blackout", glm.exclusion_stage)
 
     def test_policy_replacement(self) -> None:
@@ -534,21 +532,21 @@ class ReplacementTests(unittest.TestCase):
         )
         result = _simulate(
             SimulationOverrides(selector_policy=simulated_policy),
-            requirement=PROFILES.resolve("routine_coding"),
+            requirement=ROUTINE,
         )
         assert result.baseline.selected is not None
         assert result.simulated.selected is not None
         # L1 routine work is below the reservation minimum: Z.ai blocked in
         # the simulated run only; the baseline policy is untouched.
-        self.assertEqual("glm-5.3", result.baseline.selected.identity.model)
+        self.assertEqual("fixture-light", result.baseline.selected.identity.model)
         self.assertEqual(
-            "gpt-5.6-luna", result.simulated.selected.identity.model
+            "fixture-code", result.simulated.selected.identity.model
         )
         excluded = {
             (c.identity.provider, c.identity.model): c
             for c in result.simulated.excluded
         }
-        flash = excluded[("zai", "glm-5.3-flash")]
+        flash = excluded[("zai", "fixture-light")]
         self.assertEqual("reservation", flash.exclusion_stage)
 
     def test_replenishment_replacement(self) -> None:
@@ -577,7 +575,7 @@ class ReplacementTests(unittest.TestCase):
             SimulationOverrides(replenishment_states=()),
             snapshots=exhausted,
             policy=recoverable_policy,
-            requirement=PROFILES.resolve("scientific_review"),
+            requirement=SCIENTIFIC,
         )
         self.assertEqual((), without_states.baseline.recoverable_candidates)
         self.assertEqual((), without_states.simulated.recoverable_candidates)
@@ -586,19 +584,19 @@ class ReplacementTests(unittest.TestCase):
             SimulationOverrides(replenishment_states=(state,)),
             snapshots=exhausted,
             policy=recoverable_policy,
-            requirement=PROFILES.resolve("scientific_review"),
+            requirement=SCIENTIFIC,
         )
         self.assertIsNone(replaced.simulated.selected)
         self.assertEqual(1, len(replaced.simulated.recoverable_candidates))
         self.assertEqual(
-            "gpt-5.6-sol",
+            "fixture-science",
             replaced.simulated.recoverable_candidates[0].identity.model,
         )
         # Current capacity facts are unchanged by replenishment visibility.
         sol = [
             c
             for c in replaced.simulated.excluded
-            if c.identity.model == "gpt-5.6-sol"
+            if c.identity.model == "fixture-science"
         ][0]
         assert sol.scarcity_assessment is not None
         self.assertEqual(10000, sol.scarcity_assessment.penalty_units)

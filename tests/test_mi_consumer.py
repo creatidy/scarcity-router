@@ -26,19 +26,30 @@ from model_intelligence.utilization import decode_decision_utilization
 from scarcity_router.capacity import CapacitySnapshot, CapacityWindow
 from scarcity_router.machine_api import selection_envelope
 from scarcity_router.mi_consumer import MIAdmission, MIConsumer, ModelBinding, canonical, explained_catalog
-from scarcity_router.selection_app import load_configured_artifacts, select_from_inputs
-from scarcity_router.selection_types import TaskRequirement
+from scarcity_router.selection_app import select_from_inputs
+from scarcity_router.selection_types import (
+    CapabilityAssessment, CapabilityAssessments, CapacityScopeRef, ModelCatalog,
+    ModelCatalogEntry, ModelHardProperties, ModelIdentity, TaskProfileCatalog, TaskRequirement,
+)
 from scarcity_router.status import StatusCollectors
 from scarcity_router.providers.openai_codex_acquisition import OpenAICodexObservation
 from tests.observation import paired_observation
 
-ROOT = Path(__file__).resolve().parents[1]
 T = datetime(2026, 10, 26, 0, 0, 0, 123456, tzinfo=timezone.utc)
 DAY = timedelta(days=1)
 BOUND = 256 * 1024
-BOOTSTRAP, PROFILES, POLICY_VERSION = load_configured_artifacts(ROOT / "model-catalog.json", ROOT / "model-policy.json")
-ENTRY = BOOTSTRAP.entries[0]
-CATALOG = replace(BOOTSTRAP, entries=(ENTRY,))
+UNKNOWN = CapabilityAssessment(None)
+ENTRY = ModelCatalogEntry(
+    identity=ModelIdentity("openai", "synthetic-model", "high"),
+    display_name="Synthetic model", hard_properties=ModelHardProperties(
+        supports_reasoning_mode=True, input_context_tokens=8192, output_tokens=8192,
+    ),
+    capabilities=CapabilityAssessments(UNKNOWN, UNKNOWN, UNKNOWN, UNKNOWN, UNKNOWN, UNKNOWN),
+    capacity_bindings=(CapacityScopeRef("openai", "codex"),), reasoning_effort="high",
+)
+CATALOG = ModelCatalog(1, "2026-10-26", (ENTRY,))
+PROFILES = TaskProfileCatalog(())
+POLICY_VERSION = 1
 SUBJECT = Model(
     "owned-id", ENTRY.identity.provider, ENTRY.identity.model,
     revision="owned-revision", channel="owned-channel", interface_id="owned-api",
@@ -93,6 +104,29 @@ def collectors() -> StatusCollectors:
 
 
 class MIConsumerTests(unittest.TestCase):
+    def test_runtime_inventory_preserves_the_exact_mi_v1_receipt(self) -> None:
+        owner = consumer(public())
+        decision = select_from_inputs(
+            catalog=replace(CATALOG, catalog_version=None, updated_on=None),
+            profiles=PROFILES, profile_policy_version=POLICY_VERSION,
+            profile_id=None,
+            requirement=TaskRequirement.from_dict({"task_level": "L0", "capability_minima": {}, "hard_constraints": {}}),
+            tightening=None, policy=None, collectors=collectors(), clock=lambda: T,
+            mi_consumer=owner,
+        )
+        assert decision.mi_use is not None and decision.mi_use.cut is not None
+        envelope = selection_envelope(decision)
+        self.assertEqual(2, envelope["schema_version"])
+        receipt = cast(dict[str, object], envelope["mi_receipt"])
+        self.assertEqual(1, receipt["schema_version"])
+        self.assertEqual(envelope["decision"], receipt["decision"])
+        verified = decode_decision_utilization(
+            decision.mi_use.utilization, response=canonical(receipt),
+            expected_cut=decision.mi_use.cut.reference, evaluated_at=T,
+            decision=decision.mi_use.decision, context=decision.mi_use.context, max_bytes=BOUND,
+        )
+        self.assertEqual(decision.mi_use.cut.reference, verified.cut)
+
     def decision(self, owner: MIConsumer | None, *, at: datetime = T, dependencies: StatusCollectors | None = None, admission: MIAdmission | None = None, requirement: TaskRequirement | None = None):
         return select_from_inputs(
             catalog=CATALOG, profiles=PROFILES, profile_policy_version=POLICY_VERSION,

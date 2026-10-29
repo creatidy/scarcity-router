@@ -7,12 +7,9 @@ safe candidate. Absence of a report keeps the pre-D-039 behavior unchanged.
 
 from __future__ import annotations
 
-import json
 import unittest
 from dataclasses import replace
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import cast
 
 from scarcity_router.capacity import CapacitySnapshot, CapacityWindow
 from scarcity_router.eligibility import ELIGIBILITY_SCHEMA_VERSION, ExecutionEligibility
@@ -25,44 +22,30 @@ from scarcity_router.selector import (
     neutral_selector_policy,
     select_model,
 )
-from scarcity_router.selection_types import ModelCatalog, TaskProfileCatalog
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-CATALOG_PATH = REPO_ROOT / "model-catalog.json"
-POLICY_PATH = REPO_ROOT / "model-policy.json"
+from scarcity_router.selection_types import (
+    CapabilityAssessment, CapabilityAssessments, CapabilityMinima, CapacityScopeRef,
+    HardConstraints, ModelCatalog, ModelCatalogEntry, ModelHardProperties, ModelIdentity,
+    TaskRequirement,
+)
 
 FIXED_AT = datetime(2026, 9, 16, 12, 0, tzinfo=timezone.utc)
 RETRIEVED_AT = "2026-09-16T12:00:00.000Z"
 
 
-def _load_catalog() -> ModelCatalog:
-    payload = cast(
-        "dict[str, object]",
-        json.loads(CATALOG_PATH.read_text(encoding="utf-8")),
+def _entry(provider: str, model: str, scope: str) -> ModelCatalogEntry:
+    unknown = CapabilityAssessment(None)
+    return ModelCatalogEntry(
+        identity=ModelIdentity(provider, model, "max"), display_name="Synthetic",
+        hard_properties=ModelHardProperties(),
+        capabilities=CapabilityAssessments(unknown, unknown, unknown, unknown, unknown, unknown),
+        capacity_bindings=(CapacityScopeRef(provider, scope),),
     )
-    return ModelCatalog.from_dict(payload)
 
 
-def _load_profiles() -> TaskProfileCatalog:
-    document = cast(
-        "dict[str, object]",
-        json.loads(POLICY_PATH.read_text(encoding="utf-8")),
-    )
-    raw_profiles = cast("list[object]", document["task_profiles"])
-    definitions: list[dict[str, object]] = []
-    for item in raw_profiles:
-        entry = cast("dict[str, object]", item)
-        definitions.append(
-            {
-                "profile_id": entry["id"],
-                "requirement": entry["calibrated_requirement"],
-            }
-        )
-    return TaskProfileCatalog.from_dict({"definitions": definitions})
-
-
-CATALOG = _load_catalog()
-PROFILES = _load_profiles()
+CATALOG = ModelCatalog(None, None, (
+    _entry("openai", "gpt-5.6-luna", "codex"), _entry("zai", "synthetic", "coding_plan"),
+))
+REQUIREMENT = TaskRequirement("L0", CapabilityMinima(), HardConstraints())
 
 
 def _snap(provider: str, five: int = 50, weekly: int = 50) -> CapacitySnapshot:
@@ -117,7 +100,7 @@ def _select(
 ) -> SelectionDecision:
     return select_model(
         catalog=CATALOG,
-        requirement=PROFILES.resolve("routine_coding"),
+        requirement=REQUIREMENT,
         policy=neutral_selector_policy(),
         snapshots=snapshots,
         evaluated_at=FIXED_AT,
@@ -235,7 +218,7 @@ class EligibilityGateTests(unittest.TestCase):
         )
         decision = select_model(
             catalog=CATALOG,
-            requirement=PROFILES.resolve("routine_coding"),
+            requirement=REQUIREMENT,
             policy=neutral_selector_policy(),
             snapshots=[_snap("openai"), _snap("zai")],
             evaluated_at=FIXED_AT,

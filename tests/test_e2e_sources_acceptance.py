@@ -10,10 +10,9 @@ OpenAI-compatible surface to the exact derived resource.
 
 Central acceptance criteria pinned here:
 
-- upgrade (T0 → T1): a new generation becomes routable with ZERO
-  administrator configuration change;
-- unknown models stay discovered/not-routable; Daybreak stays
-  restricted and is never materialized;
+- upgrade (T0 → T1): a new generation remains discovered until an
+  administrator explicitly grants the exact model;
+- ungranted models stay discovered/not-routable regardless of their names;
 - two independent Codex sources run in ONE worker process with strict
   home isolation and distinct quota pools;
 - exact binding: the executed audit target equals the selected derived
@@ -24,8 +23,10 @@ from __future__ import annotations
 
 import json
 import tempfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import cast
+from unittest import mock
 
 from tests.m10_fixtures import wait_until
 from tests.m10_codex_fixtures import (
@@ -36,6 +37,7 @@ from tests.m10_codex_fixtures import (
 import unittest
 
 from scarcity_router.resource_state import ResourceRegistryEntry
+from scarcity_router.control_api import format_utc
 from tests.test_e2e_codex_acceptance import (
     CodexComposedTlsWorld,
     CodexWorker,
@@ -149,10 +151,14 @@ class SourcesComposedWorld(CodexComposedTlsWorld):
             connect_factory=factory,
         )
         self.addCleanup(worker.close)
-        # The administrator configures the SOURCE (never a model slug).
+        # The administrator explicitly grants the exact test model.
         for source_id in source_ids:
             status, payload = self.admin_post(
                 "/control/sources", codex_source_document(identity.worker_id, source_id=source_id)
+            )
+            assert status == 200, payload
+            status, payload = self.admin_post(
+                f"/control/sources/{source_id}/model-policy", {"allowed_models": ["gpt-6-sol"]}
             )
             assert status == 200, payload
         return worker
@@ -267,9 +273,9 @@ def _registry_for(
 
 
 class SourceUpgradeAcceptanceTests(SourcesComposedWorld):
-    """T0 → T1: the new generation needs NO configuration change."""
+    """T0 → T1: an exact new-model grant is required."""
 
-    def test_new_generation_becomes_routable_and_executes_exactly(self) -> None:
+    def test_granted_model_executes_only_after_exact_context_attestation(self) -> None:
         # T0: the runtime exposes gpt-6-sol.
         worker = self.start_source_worker(_scenario(("gpt-6-sol",)))
         worker.start()
@@ -286,13 +292,58 @@ class SourceUpgradeAcceptanceTests(SourcesComposedWorld):
                 headers={"Authorization": f"Bearer {self.client_key}"},
                 timeout=60,
             )
+            # The synthetic source does not attest a context ceiling, so
+            # chat admission must refuse rather than invent one.
+            self.assertEqual(400, status, payload)
+            self.assertEqual("context_limit_unknown", cast("dict[str, object]", cast("dict[str, object]", payload)["error"])["code"])
+            now = datetime.now(timezone.utc)
+            runtime_version = self.source_view(SOURCE_ID)["runtime_version"]
+            self.assertIsInstance(runtime_version, str)
+            status, payload = self.admin_post(f"/control/sources/{SOURCE_ID}/model-policy", {
+                "allowed_models": ["gpt-6-sol"], "context_evidence": [{
+                    "model": "gpt-6-sol", "variant": "high", "runtime_version": runtime_version, "input_tokens": 4096,
+                    "evidence_ref": "local:synthetic-adapter-test", "verified_at": format_utc(now - timedelta(minutes=1)),
+                    "valid_until": format_utc(now + timedelta(hours=1)),
+                }],
+            })
+            self.assertEqual(200, status, payload)
+            status, payload, _headers = self.exchange(
+                "POST", "/v1/chat/completions",
+                {"model": pin, "messages": [{"role": "user", "content": PROMPT}]},
+                headers={"Authorization": f"Bearer {self.client_key}"}, timeout=60,
+            )
             self.assertEqual(200, status, payload)
             record = self._last_executed_record()
-            self.assertEqual("completed", record["result_status"])
             executed = cast("dict[str, object]", record["executed_target"])
             self.assertEqual(DERIVED_SOL, executed["resource_id"])
             self.assertEqual("gpt-6-sol", executed["model"])
             self.assertEqual("high", executed["variant"])
+            self.assertEqual(2, record["schema_version"])
+            evidence = cast("dict[str, object]", executed["context_evidence"])
+            self.assertEqual("administrator_attested", evidence["kind"])
+            self.assertEqual("local:synthetic-adapter-test", evidence["reference"])
+            self.assertEqual(runtime_version, evidence["runtime_version"])
+            from scarcity_router import gateway_coordinator
+            from scarcity_router.routing_core import AdmissionDecision, PinnedTarget, RouteRequest, admit_pinned_target
+
+            original_admission = admit_pinned_target
+
+            def revoke_after_admission(request: RouteRequest, *, pinned_target: PinnedTarget) -> AdmissionDecision:
+                result = original_admission(request, pinned_target=pinned_target)
+                if result.approved:
+                    self.plane.service_set_source_model_policy(
+                        SOURCE_ID, {"allowed_models": ["gpt-6-sol"], "context_evidence": []}
+                    )
+                return result
+
+            with mock.patch.object(gateway_coordinator, "admit_pinned_target", side_effect=revoke_after_admission):
+                status, payload, _headers = self.exchange(
+                    "POST", "/v1/chat/completions",
+                    {"model": pin, "messages": [{"role": "user", "content": PROMPT}]},
+                    headers={"Authorization": f"Bearer {self.client_key}"}, timeout=60,
+                )
+            self.assertEqual(503, status, payload)
+            self.assertEqual("context_evidence_stale", cast("dict[str, object]", cast("dict[str, object]", payload)["error"])["code"])
             # No configuration document changed (T0 was pure discovery).
             self.assertEqual(
                 (SOURCE_ID,),
@@ -302,43 +353,47 @@ class SourceUpgradeAcceptanceTests(SourcesComposedWorld):
         finally:
             worker.stop()
 
-    def test_provider_adds_a_generation_without_any_reconfiguration(self) -> None:
+    def test_new_generation_requires_an_explicit_model_grant(self) -> None:
         worker = self.start_source_worker(_scenario(("gpt-6-sol",)))
         worker.start()
         try:
             self.wait_for_derived(DERIVED_SOL)
             config_before = self.plane.configuration.to_document()
             # T1: the PROVIDER adds gpt-6.1-sol to its runtime listing.
-            # The user changes nothing: the same source's next bounded
-            # discovery re-observes and adoption materializes it.
+            # Discovery alone must not authorize the new identity.
             worker.spawner.scenario["models"] = _scenario(
                 ("gpt-6-sol", "gpt-6.1-sol")
             )["models"]
-            wait_until(
-                lambda: DERIVED_NEW_GEN in self.derived_resource_ids(),
-                timeout=30,
+            wait_until(lambda: any(
+                item["slug"] == "gpt-6.1-sol" for item in cast("list[dict[str, object]]", self.source_view(SOURCE_ID)["detected_models"])
+            ), timeout=30)
+            self.assertNotIn(DERIVED_NEW_GEN, self.derived_resource_ids())
+            status, payload = self.admin_post(
+                f"/control/sources/{SOURCE_ID}/model-policy",
+                {"allowed_models": ["gpt-6-sol", "gpt-6.1-sol"]},
             )
+            self.assertEqual(200, status, payload)
+            wait_until(lambda: DERIVED_NEW_GEN in self.derived_resource_ids(), timeout=30)
             rids = self.derived_resource_ids()
             self.assertIn(DERIVED_SOL, rids)
             self.assertIn(DERIVED_NEW_GEN, rids)
-            self.assertEqual(config_before, self.plane.configuration.to_document())
-            # The new generation routes at the conservative track floor.
+            self.assertNotEqual(config_before, self.plane.configuration.to_document())
             wait_until(
                 lambda: any(
                     e.identity.model == "gpt-6.1-sol"
                     for e in self.plane.current_application().catalog.entries
                 ),
                 timeout=20,
-                message="floor entries for the new generation are missing",
+                message="entries for the new generation are missing",
             )
             entries = [
                 e
                 for e in self.plane.current_application().catalog.entries
                 if e.identity.model == "gpt-6.1-sol"
             ]
-            self.assertTrue(entries, "floor entries for the new generation are missing")
+            self.assertTrue(entries, "entries for the new generation are missing")
             self.assertTrue(
-                all(e.hard_properties.input_context_tokens == 1_050_000 for e in entries)
+                all(e.hard_properties.input_context_tokens is None and e.capabilities.reasoning.rating is None for e in entries)
             )
         finally:
             worker.stop()
@@ -368,14 +423,14 @@ class UnknownAndRestrictedModelsTests(SourcesComposedWorld):
             )
             view = self.source_view(SOURCE_ID)
             self.assertEqual(1, view["routable"])
-            self.assertEqual(1, view["restricted"])  # Daybreak, honestly shown
-            self.assertEqual(1, view["errors"])  # the unclassified slug
+            self.assertEqual(0, view["restricted"])
+            self.assertEqual(2, view["errors"])
             detected = cast("list[dict[str, object]]", view["detected_models"])
             states = {
                 cast("str", m["slug"]): cast("str", m["state"]) for m in detected
             }
             self.assertEqual("routable", states["gpt-6-sol"])
-            self.assertEqual("restricted", states["gpt-daybreak-blue-latest"])
+            self.assertEqual("discovered", states["gpt-daybreak-blue-latest"])
             self.assertEqual("discovered", states["some-new-unclassified-model"])
             # A pin to the unclassified model fails explicitly — it is
             # never silently routed merely because the runtime lists it.
@@ -465,10 +520,8 @@ class TwoSourcesOneWorkerTests(SourcesComposedWorld):
                     headers={"Authorization": f"Bearer {self.client_key}"},
                     timeout=60,
                 )
-                self.assertEqual(200, status, payload)
-                record = self._last_executed_record()
-                executed = cast("dict[str, object]", record["executed_target"])
-                self.assertEqual(rid, executed["resource_id"])
+                self.assertEqual(400, status, payload)
+                self.assertEqual("context_limit_unknown", cast("dict[str, object]", cast("dict[str, object]", payload)["error"])["code"])
         finally:
             worker.stop()
 

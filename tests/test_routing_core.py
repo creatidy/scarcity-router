@@ -28,6 +28,8 @@ from typing import cast
 
 from scarcity_router.capacity import CapacityDiagnostic, CapacitySnapshot, CapacityWindow
 from scarcity_router.eligibility import ExecutionEligibility
+from scarcity_router.execution_sources import SourceRegistry
+from scarcity_router.model_inventory import DiscoveredModel, ModelInventoryReport, SourceInventory
 from scarcity_router.errors import (
     RouteContractValidationError,
     SelectionContractValidationError,
@@ -62,6 +64,7 @@ from scarcity_router.routing_core import (
     route_request,
 )
 from scarcity_router.selector import neutral_selector_policy
+from scarcity_router.server_config import SourceConfig, SourceContextEvidence
 from scarcity_router.selection_types import (
     CapabilityAssessment,
     CapabilityAssessments,
@@ -552,6 +555,248 @@ def _pin(
 
 
 # ── determinism and decision identity ─────────────────────────────────────────
+
+
+class DynamicResourceRoutingTests(unittest.TestCase):
+    def test_expiring_exact_context_attestation_preserves_provenance(self) -> None:
+        sources = SourceRegistry()
+        sources.sync_configuration((SourceConfig(
+            "owned-source", "codex_subscription", "Owned", "worker-1",
+            allowed_models=("synthetic-model",), context_evidence=(SourceContextEvidence(
+                "synthetic-model", "high", "1.0.0", 4096, "local:synthetic-evidence", "2026-09-15T12:06:00.000Z", "2026-09-15T12:00:00.000Z"
+            ),),
+        ),))
+        _ = sources.apply_inventory(ModelInventoryReport(worker_id="worker-1", sources=(
+            SourceInventory(source_id="owned-source", adapter_id="codex:owned-source",
+                            kind="codex_subscription", observed_at=T_OBS,
+                            auth_state="authenticated", runtime_name="codex", runtime_version="1.0.0",
+                            models=(DiscoveredModel("synthetic-model", ("high",)),), runtime_version_exact=True),
+        )))
+        registration = sources.derived_registrations()[0]
+        route = RouteRequest(
+            catalog=sources.derived_catalog_entries(ModelCatalog(None, None, ())),
+            profiles=TaskProfileCatalog(()), registry_snapshot=_registry_snapshot(
+                [registration], {registration.identity.resource_id: _observation(registration.identity)}
+            ), policy=neutral_selector_policy(), evaluated_at=EVAL_AT,
+            capacity_snapshots=(_snap("openai"),), request=RequestBinding(minimum_input_context_tokens=1024),
+            task_requirement=TaskRequirement("L0", CapabilityMinima(), HardConstraints()),
+        )
+        selected = route_request(route)
+        assert selected.target is not None
+        self.assertEqual("local:synthetic-evidence", selected.target.context_evidence_ref)
+        self.assertEqual("administrator_attested", cast(dict[str, object], selected.target.to_dict()["context_evidence"])["kind"])
+        pin = PinnedTarget.from_route_target_dict(selected.target.to_dict())
+        self.assertTrue(admit_pinned_target(route, pinned_target=pin).approved)
+        expired = replace(route, evaluated_at=EVAL_AT + timedelta(minutes=1))
+        self.assertIsNone(route_request(expired).target)
+        self.assertFalse(admit_pinned_target(expired, pinned_target=pin).approved)
+        future_capabilities = replace(registration.capabilities,
+            context_evidence_verified_at="2026-09-15T12:05:30.000Z",
+            context_evidence_valid_until="2026-09-15T12:06:30.000Z")
+        future_registration = replace(registration, capabilities=future_capabilities)
+        future_route = replace(route, registry_snapshot=_registry_snapshot(
+            [future_registration], {registration.identity.resource_id: _observation(registration.identity)}
+        ))
+        self.assertIsNone(route_request(future_route).target)
+
+    def test_resource_explicit_tool_absence_is_not_overridden_by_matrix(self) -> None:
+        sources = SourceRegistry()
+        sources.sync_configuration((SourceConfig(
+            "owned-source", "codex_subscription", "Owned", "worker-1",
+            allowed_models=("synthetic-model",),
+        ),))
+        _ = sources.apply_inventory(ModelInventoryReport(worker_id="worker-1", sources=(
+            SourceInventory(source_id="owned-source", adapter_id="codex:owned-source",
+                            kind="codex_subscription", observed_at=T_OBS,
+                            auth_state="authenticated", runtime_name="codex", runtime_version="1",
+                            models=(DiscoveredModel("synthetic-model", ("high",)),)),
+        )))
+        identity = _identity(resource_id="independent", channel="server_direct_http", provider="openai",
+                             model="synthetic-model", variant="high", entitlement="subscription_included")
+        registration = _registration(identity)
+        registration = replace(registration, capabilities=replace(registration.capabilities, tool_calls=False))
+        route = RouteRequest(
+            catalog=sources.derived_catalog_entries(ModelCatalog(None, None, ())),
+            profiles=TaskProfileCatalog(()), registry_snapshot=_registry_snapshot(
+                [registration], {identity.resource_id: _observation(identity)}
+            ), policy=neutral_selector_policy(), evaluated_at=EVAL_AT,
+            capacity_snapshots=(_snap("openai"),), compatibility_cells=(
+                _pass_cell("server_direct_http", "openai", "synthetic-model", "tool_calls"),
+            ),
+            request=RequestBinding(requires_tool_calls=True),
+            task_requirement=TaskRequirement("L0", CapabilityMinima(), HardConstraints()),
+        )
+        self.assertIsNone(route_request(route).target)
+
+    def test_per_resource_scope_scarcity_and_exact_admission(self) -> None:
+        sources = SourceRegistry()
+        sources.sync_configuration((
+            SourceConfig("a-source", "codex_subscription", "A", "worker-a",
+                         allowed_models=("synthetic-model",), capacity_scope_ids=("codex",)),
+            SourceConfig("b-source", "codex_subscription", "B", "worker-b",
+                         allowed_models=("synthetic-model",), capacity_scope_ids=("codex",)),
+        ))
+        for source_id, worker_id in (("a-source", "worker-a"), ("b-source", "worker-b")):
+            _ = sources.apply_inventory(ModelInventoryReport(worker_id=worker_id, sources=(SourceInventory(
+                source_id=source_id, adapter_id=f"codex:{source_id}", kind="codex_subscription",
+                observed_at=T_OBS, auth_state="authenticated", runtime_name="codex", runtime_version="1",
+                models=(DiscoveredModel("synthetic-model", ("high",)),),
+            ),)))
+        registrations = sources.derived_registrations()
+        def observed(five: int, weekly: int, other: int) -> RegistrySnapshot:
+            return _registry_snapshot(list(registrations), {
+                item.identity.resource_id: replace(
+                    _observation(item.identity),
+                    quota_facts=tuple(QuotaFact("provider_telemetry", window) for window in (
+                        _snap("openai", five=five, weekly=weekly).windows
+                        if item.identity.resource_id.startswith("a-source:")
+                        else _snap("openai", five=other, weekly=other).windows
+                    )),
+                ) for item in registrations
+            })
+        route = RouteRequest(
+            catalog=sources.derived_catalog_entries(ModelCatalog(None, None, ())),
+            profiles=TaskProfileCatalog(()),
+            registry_snapshot=observed(0, 0, 80),
+            policy=neutral_selector_policy(), evaluated_at=EVAL_AT,
+            capacity_snapshots=(_snap("openai", five=0, weekly=0, extra_scopes={"other": 80}),),
+            eligibility_reports=(ExecutionEligibility(
+                schema_version=1, provider="openai", source="codex_app_server", retrieved_at=T_OBS,
+                state="policy_blocked", reason_codes=("purchased_credits_present",),
+            ),),
+            request=RequestBinding(),
+            task_requirement=TaskRequirement("L0", CapabilityMinima(), HardConstraints()),
+        )
+        decision = route_request(route)
+        assert decision.target is not None
+        self.assertEqual("b-source:synthetic-model:high", decision.target.resource.resource_id)
+        preserved_pin = PinnedTarget.from_route_target_dict(decision.target.to_dict())
+        self.assertEqual("high", preserved_pin.reasoning_effort)
+        entry = route.catalog.entries[0]
+        drifted = replace(route, catalog=replace(route.catalog, entries=(replace(
+            entry, capacity_bindings=None, capacity_binding_resources=(), resource_capacity_bindings=(),
+        ),)), request=RequestBinding(pinned_target=preserved_pin))
+        self.assertIsNone(route_request(drifted).target)
+        self.assertFalse(admit_pinned_target(drifted, pinned_target=preserved_pin).approved)
+        host_changed = route_request(replace(route, capacity_snapshots=(_snap("openai", five=100, weekly=100),)))
+        assert host_changed.target is not None
+        self.assertEqual(decision.target.resource.resource_id, host_changed.target.resource.resource_id)
+        self.assertEqual((), decision.target_alternatives)
+        self.assertTrue(any(exclusion.resource_id == "a-source:synthetic-model:high"
+                            and exclusion.stage == "capacity"
+                            and "capacity_unavailable" in exclusion.reason_codes
+                            for exclusion in decision.target_exclusions))
+        identity = ModelIdentity("openai", "synthetic-model", "high")
+        pin = PinnedTarget("a-source:synthetic-model:high", identity)
+        self.assertIsNone(route_request(replace(route, request=RequestBinding(pinned_target=pin))).target)
+        self.assertFalse(admit_pinned_target(route, pinned_target=pin).approved)
+        better_a = replace(route, registry_snapshot=observed(90, 90, 60))
+        swapped = route_request(better_a)
+        assert swapped.target is not None
+        self.assertEqual("a-source:synthetic-model:high", swapped.target.resource.resource_id)
+        self.assertEqual("b-source:synthetic-model:high", swapped.target_alternatives[0].resource.resource_id)
+        strict_policy = replace(route.policy, resource_policy=replace(
+            route.policy.resource_policy, unknown_capacity_mode="strict",
+        ))
+        missing = replace(route, policy=strict_policy, registry_snapshot=_registry_snapshot(
+            list(registrations), {item.identity.resource_id: replace(_observation(item.identity), quota_facts=()) for item in registrations}
+        ))
+        missing_decision = route_request(missing)
+        self.assertIsNone(missing_decision.target, missing_decision.to_dict())
+        self.assertFalse(admit_pinned_target(missing, pinned_target=pin).approved)
+        strict_no_payg = replace(route, client_authorization=ClientAuthorization(strict_no_payg=True))
+        self.assertIsNone(route_request(strict_no_payg).target)
+        blocked_health = replace(route, registry_snapshot=_registry_snapshot(
+            list(registrations), {item.identity.resource_id: _observation(item.identity, status="auth_required")
+                                  for item in registrations}
+        ))
+        self.assertIsNone(route_request(blocked_health).target)
+
+    def test_exact_resource_bounds_enable_without_model_family_assumptions(self) -> None:
+        sources = SourceRegistry()
+        sources.sync_configuration((SourceConfig(
+            "owned-source", "codex_subscription", "Owned", "worker-1",
+            allowed_models=("synthetic-model",), capacity_scope_ids=("codex",),
+        ),))
+        _ = sources.apply_inventory(ModelInventoryReport(worker_id="worker-1", sources=(
+            SourceInventory(
+                source_id="owned-source", adapter_id="codex:owned-source", kind="codex_subscription",
+                observed_at=T_OBS, auth_state="authenticated", runtime_name="codex", runtime_version="1",
+                models=(DiscoveredModel("synthetic-model", ("high",)),),
+            ),
+        )))
+        identity = _identity(resource_id="attested-worker", channel="worker_bridged",
+                             provider="openai", model="synthetic-model", variant="high",
+                             entitlement="subscription_included")
+        registration = _registration(identity, context_limit=2048)
+        route = RouteRequest(
+            catalog=sources.derived_catalog_entries(ModelCatalog(None, None, ())),
+            profiles=TaskProfileCatalog(()),
+            registry_snapshot=_registry_snapshot([registration], {identity.resource_id: _observation(identity)}),
+            policy=neutral_selector_policy(), evaluated_at=EVAL_AT,
+            capacity_snapshots=(_snap("openai"),),
+            request=RequestBinding(minimum_input_context_tokens=1024),
+            task_requirement=TaskRequirement("L0", CapabilityMinima(), HardConstraints()),
+        )
+        self.assertEqual(ROUTE_STATUS_SELECTED, route_request(route).status)
+        too_large = replace(route, request=RequestBinding(minimum_input_context_tokens=4096))
+        self.assertEqual(ROUTE_STATUS_NO_SOLUTION, route_request(too_large).status)
+        unknown = replace(registration, capabilities=replace(registration.capabilities, context_limit_tokens=None))
+        unknown_route = replace(route, registry_snapshot=_registry_snapshot(
+            [unknown], {identity.resource_id: _observation(identity)}
+        ))
+        self.assertEqual(ROUTE_STATUS_NO_SOLUTION, route_request(unknown_route).status)
+        # A separately registered resource is not automatically tied to the
+        # source's account scope, even when it names the same physical model.
+        distinct_resource = replace(route, request=RequestBinding(),
+                                    capacity_snapshots=(_snap("openai", five=0, weekly=0),))
+        distinct_decision = route_request(distinct_resource)
+        self.assertEqual(ROUTE_STATUS_SELECTED, distinct_decision.status)
+        assert distinct_decision.selection.selected is not None
+        assessment = distinct_decision.selection.selected.scarcity_assessment
+        assert assessment is not None
+        self.assertEqual("unknown", assessment.state)
+        requested_effort = replace(route, task_requirement=TaskRequirement(
+            "L0", CapabilityMinima(), HardConstraints(
+                required_variant="high", requires_reasoning_mode=True,
+            ),
+        ))
+        self.assertIsNone(route_request(requested_effort).target)
+
+    def test_discovery_to_exact_authorized_target_without_mi(self) -> None:
+        sources = SourceRegistry()
+        sources.sync_configuration((SourceConfig(
+            "owned-source", "codex_subscription", "Owned", "worker-1",
+            allowed_models=("synthetic-model",),
+        ),))
+        _ = sources.apply_inventory(ModelInventoryReport(worker_id="worker-1", sources=(
+            SourceInventory(
+                source_id="owned-source", adapter_id="codex:owned-source", kind="codex_subscription",
+                observed_at=T_OBS, auth_state="authenticated", runtime_name="codex", runtime_version="1",
+                models=(DiscoveredModel("synthetic-model", ("high",)),),
+            ),
+        )))
+        registration = sources.derived_registrations()[0]
+        snapshot = _registry_snapshot([registration], {
+            registration.identity.resource_id: _observation(registration.identity),
+        })
+        catalog = sources.derived_catalog_entries(ModelCatalog(None, None, ()))
+        pin = _pin(registration.identity.resource_id, "openai", "synthetic-model", "high")
+        route = RouteRequest(
+            catalog=catalog, profiles=TaskProfileCatalog(()), registry_snapshot=snapshot,
+            policy=neutral_selector_policy(), evaluated_at=EVAL_AT,
+            capacity_snapshots=(_snap("openai"),), request=RequestBinding(pinned_target=pin),
+            task_requirement=TaskRequirement("L0", CapabilityMinima(), HardConstraints()),
+        )
+        selected = route_request(route)
+        self.assertEqual(ROUTE_STATUS_SELECTED, selected.status)
+        assert selected.target is not None
+        self.assertEqual(pin.model, selected.target.model)
+        rejected = route_request(replace(route, request=RequestBinding(
+            pinned_target=replace(pin, model=replace(pin.model, variant="low")),
+        )))
+        self.assertEqual(ROUTE_STATUS_NO_SOLUTION, rejected.status)
+        self.assertIsNone(rejected.target)
 
 
 class DeterminismTests(unittest.TestCase):

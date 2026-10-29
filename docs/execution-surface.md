@@ -169,8 +169,9 @@ correctness/security review. The prior per-PR Daybreak requirement is superseded
 by the [final project release audit](llm-operating-policy.md#final-release-candidate-audit),
 not by transferring the historical #174/#185-only exception or waiving findings.
 
-The public `sr-pin:<resource_id>/<provider>/<model>/<variant>` and optional
-`@<decision_id>` go through exact `admit_pinned_target`, which rechecks
+The public `sr-pin:<resource_id>/<provider>/<model>/<variant>` supports an
+optional explicit `~<reasoning_effort>` followed by optional `@<decision_id>`.
+Both the variant and effort remain distinct, and admission rechecks
 current authorization/state without competitive reranking. Pins are not
 credentials, quota reservations or physical-model attestations for a
 plan-managed lane. Another authorized role/Attempt may obtain a new decision;
@@ -263,7 +264,7 @@ The genuine task/profile output floor likewise intersects the current gateway
 output allowance even when no generation cap was requested. This is a separate
 requirement check, never a synthesized generation ceiling.
 The composed publisher supplies the complete current application, including
-catalog/calibration, profiles/version, aliases, compatibility, policy and gateway
+runtime identities and evidence, explicit requirements, compatibility, policy and gateway
 limits. An operation takes a transient read-only view sharing that publication's
 runtime handles, not a second inventory or service. Admission uses its coherent
 authority inputs; final dispatch still performs the existing live revocation check.
@@ -272,10 +273,12 @@ The authenticated HTTP ingress also rejects its transient bearer appearing insid
 reflected demand strings, including embedded tags. Credentials are not retained,
 logged or placed in refusal messages; no durable plaintext credential store is added.
 
-The version-1 executable envelope contains `route`, the actual existing RouteDecision,
-and `execution`, null on no solution, otherwise a ready-to-use exact `model` pin,
-catalog `reasoning_effort` (including distinct null/none/plan semantics), and complete
-`execution_requirements`. It is not a new ranking DTO. Typed route refusals preserve
+Historical catalog-backed responses use executable envelope and route version 1;
+runtime-inventory responses use version 2 for both, with explicit runtime-inventory
+selection provenance. Each contains `route`, the actual RouteDecision, and
+`execution`, null on no solution, otherwise a ready-to-use exact `model` pin,
+resource-evidenced `reasoning_effort` (including distinct null/none/plan semantics),
+and complete `execution_requirements`. It is not a new ranking DTO. Typed route refusals preserve
 the layer; unsupported physical observation cannot become a verified assertion.
 Resource disclosure is checked independently against the same effective core
 authorization, even when binding failed before the authorization gate. Denied
@@ -283,15 +286,17 @@ identities become `restricted`, private detail and denied promotion provenance
 are omitted, and the actual refusal layer/reason codes remain.
 This is the authenticated public projection of the actual core decision, not an
 additional ranking or a way to inventory resources denied to the client.
-The pin is produced/verified through existing serialization/parser semantics,
-including optional `@decision_id` provenance, not a newly invented spelling.
+Version-2 effort-bearing pins include explicit `~<reasoning_effort>` before optional
+`@<decision_id>` provenance. Existing pins without `~` remain valid and never infer
+an effort from the variant. The producer, parser and consumer verify the same pin.
 
-`execution_requirements` is an opt-in closed version-1 context containing the
+`execution_requirements` is an opt-in closed version-1 historical or version-2
+runtime-inventory context containing the
 complete resolved `requirement`, structural `binding`, `profile_policy_version`
 and `profile_expansion` (the latter two explicitly null when no profile is used),
 and mandatory `reasoning_effort` including an explicit null expectation. Missing
-effort is not null. The exact current catalog configuration must match this
-retained value; null-to-configured calibration drift refuses before dispatch,
+effort is not null. The exact current resource evidence must match this retained
+value; null-to-configured evidence drift refuses before dispatch,
 including variant-qualified HTTP and native worker targets. A retained null keeps
 deliberate omission of the native control, not adoption of a later default.
 It is an additional demand, not an approval, grant, publisher attestation or
@@ -659,8 +664,8 @@ ways; anything else is `model_not_found`. The resolution order is:
 pinned reference, then alias, then logical model.
 
 1. **Pinned executable-target reference** — the exact reference syntax
-   `sr-pin:<resource_id>/<provider>/<model>/<variant>`, optionally
-   carrying `@<decision_id>` audit provenance from a prior
+   `sr-pin:<resource_id>/<provider>/<model>/<variant>`, optionally carrying
+   explicit `~<reasoning_effort>` and then `@<decision_id>` audit provenance from a prior
    recommendation. The reference is EXACT: all four identifier components
    are required and admission approves exactly that resource and variant.
    A no-longer-bound identity is the explicit `pinned_model_not_bound`

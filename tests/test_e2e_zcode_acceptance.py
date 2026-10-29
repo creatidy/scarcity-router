@@ -28,6 +28,7 @@ import os
 import subprocess
 import tempfile
 import threading
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import cast, override
 
@@ -37,6 +38,7 @@ from tests.test_e2e_sources_acceptance import SourcesComposedWorld
 import unittest
 
 from scarcity_router.worker_client import WorkerRuntime
+from scarcity_router.control_api import format_utc
 from tests.test_e2e_codex_acceptance import CodexWorker
 from tests.test_worker_zcode_adapter import FakeZCodeSpawner
 
@@ -222,8 +224,7 @@ class ZcodeComposedWorld(SourcesComposedWorld):
             spawner=spawner,
             close=plumbing.close,
         )
-        # The administrator configures the SOURCE (kind
-        # zcode_subscription; no model slug anywhere).
+        # The administrator explicitly grants the plan lane, not a physical model.
         status, payload = self.admin_post(
             "/control/sources",
             {
@@ -233,6 +234,10 @@ class ZcodeComposedWorld(SourcesComposedWorld):
                 "worker_id": identity.worker_id,
                 "entitlement": "subscription_included",
             },
+        )
+        assert status == 200, payload
+        status, payload = self.admin_post(
+            f"/control/sources/{SOURCE_ID}/model-policy", {"allowed_models": ["plan-managed"]}
         )
         assert status == 200, payload
         return worker
@@ -254,6 +259,18 @@ class ZcodeComposedWorld(SourcesComposedWorld):
             timeout=45,
             message=f"the plan lane {LANE} never materialized fresh",
         )
+        view = next(item for item in self.plane.sources_view() if item["source_id"] == SOURCE_ID)
+        runtime_version = view["runtime_version"]
+        assert isinstance(runtime_version, str)
+        now = datetime.now(timezone.utc)
+        status, payload = self.admin_post(f"/control/sources/{SOURCE_ID}/model-policy", {
+            "allowed_models": ["plan-managed"], "context_evidence": [{
+                "model": "plan-managed", "variant": "plan", "runtime_version": runtime_version, "input_tokens": 4096,
+                "evidence_ref": "local:synthetic-lane-test", "verified_at": format_utc(now - timedelta(minutes=1)),
+                "valid_until": format_utc(now + timedelta(hours=1)),
+            }],
+        })
+        self.assertEqual(200, status, payload)
 
     @override
     def _last_executed_record(self) -> dict[str, object]:
@@ -292,10 +309,10 @@ class PlanLaneRoutingAcceptanceTests(ZcodeComposedWorld):
                             "metadata": {"inference_only": "false", "workspace": str(workspace)},
                         }, headers={"Authorization": f"Bearer {key}"}, timeout=30,
                     )
-                    self.assertIn(status, (403, 503), payload)
+                    self.assertIn(status, (403, 404, 503), payload)
                     body = cast("dict[str, object]", payload)
                     error = cast("dict[str, object]", body["error"])
-                    self.assertIn(error["code"], ("unauthorized_channel", "unauthorized_target", "no_eligible_target"))
+                    self.assertIn(error["code"], ("unauthorized_channel", "unauthorized_target", "no_eligible_target", "model_not_found"))
             self.assertEqual(worker.spawner.run_specs, [])
             self.assertEqual((workspace / "notes.txt").read_text(), "original line\n")
             self.assertEqual(_git_status(workspace), "")

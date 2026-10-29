@@ -1194,8 +1194,7 @@ def _add_selection_arguments(parser: argparse.ArgumentParser) -> None:
     _ = parser.add_argument("--codex-model", default=None, metavar="SLUG",
                          help="the physical model slug the Codex resource "
                               + "represents (required with --allow-codex; must "
-                              + "match a calibrated catalog model, e.g. "
-                              + "gpt-5.6-sol)")
+                              + "match the runtime's reported model identity)")
     _ = parser.add_argument("--codex-resource", default=None, metavar="ID",
                          help="the registry resource id the Codex adapter serves "
                               + "(required with --resource when both adapters are "

@@ -13,7 +13,6 @@ from __future__ import annotations
 import io
 import re
 import sys
-import tempfile
 import tomllib
 import unittest
 from collections.abc import Mapping
@@ -34,14 +33,11 @@ from scarcity_router.selection_app import (
     DEFAULT_MODEL_POLICY_PATH,
     REPO_ROOT,
     load_configured_artifacts,
-    resolve_default_artifact,
 )
 from scarcity_router.server import build_parser as build_server_parser
 
 REPO = Path(__file__).resolve().parents[1]
 PACKAGE_DIR = REPO_ROOT / "scarcity_router"
-EXPECTED_CATALOG_VERSION = 5
-EXPECTED_POLICY_VERSION = 9
 
 EXPECTED_SCRIPTS = {
     "scarcity-router": "scarcity_router.cli:main",
@@ -102,11 +98,9 @@ class PackagingMetadataTests(unittest.TestCase):
         self.assertIn(get_version(), captured.getvalue())
 
     def test_no_committed_artifact_duplicates_in_package(self) -> None:
-        # The root copies stay the single committed authoritative artifacts;
-        # the wheel maps them in at build time (force-include), so a checkout
-        # must not carry packaged duplicates.
-        self.assertFalse((PACKAGE_DIR / "model-catalog.json").is_file())
-        self.assertFalse((PACKAGE_DIR / "model-policy.json").is_file())
+        for name in ("model-catalog.json", "model-policy.json", "model-tracks.json"):
+            self.assertFalse((PACKAGE_DIR / name).is_file())
+            self.assertFalse((REPO / name).is_file())
         # The default user selector policy (D-036) follows the same rule:
         # the committed example is the single authoritative copy.
         self.assertFalse((PACKAGE_DIR / "default-selector-policy.json").is_file())
@@ -136,37 +130,15 @@ class PackagingMetadataTests(unittest.TestCase):
 
 
 class DefaultArtifactTests(unittest.TestCase):
-    """Default catalog/policy resolution for both execution contexts."""
+    """No static model artifact is required by application defaults."""
 
-    def test_source_tree_defaults_are_the_root_authoritative_copies(self) -> None:
-        self.assertEqual(REPO_ROOT / "model-catalog.json", DEFAULT_CATALOG_PATH)
-        self.assertEqual(REPO_ROOT / "model-policy.json", DEFAULT_MODEL_POLICY_PATH)
-        self.assertTrue(DEFAULT_CATALOG_PATH.is_file())
-        self.assertTrue(DEFAULT_MODEL_POLICY_PATH.is_file())
-
-    def test_source_tree_defaults_load_current_artifact_versions(self) -> None:
-        catalog, _profiles, policy_version = load_configured_artifacts(
+    def test_default_input_is_an_empty_runtime_inventory(self) -> None:
+        catalog, profiles, _policy_version = load_configured_artifacts(
             DEFAULT_CATALOG_PATH, DEFAULT_MODEL_POLICY_PATH
         )
-        self.assertEqual(EXPECTED_CATALOG_VERSION, catalog.catalog_version)
-        self.assertEqual(EXPECTED_POLICY_VERSION, policy_version)
-
-    def test_resolution_prefers_an_existing_source_root_copy(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            marker = root / "model-catalog.json"
-            _ = marker.write_text("{}", encoding="utf-8")
-            self.assertEqual(marker, resolve_default_artifact("model-catalog.json", source_root=root))
-
-    def test_resolution_falls_back_to_the_packaged_resource(self) -> None:
-        # Without a source-root copy the packaged resource inside
-        # scarcity_router is used: the importlib.resources location of a
-        # filesystem-backed package is the package directory itself.
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            for name in ("model-catalog.json", "model-policy.json"):
-                resolved = resolve_default_artifact(name, source_root=root)
-                self.assertEqual(PACKAGE_DIR / name, resolved)
+        self.assertIsNone(catalog.catalog_version)
+        self.assertEqual((), catalog.entries)
+        self.assertEqual((), profiles.definitions)
 
 
 class ConsoleScriptSurfaceTests(unittest.TestCase):

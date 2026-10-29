@@ -19,11 +19,8 @@ transport owns requirement resolution or application semantics.
 Caller-supplied input violations raise ``ApplicationInputError`` so adapters
 can classify client errors by type (D-030).
 
-The default artifact paths resolve through ``resolve_default_artifact``:
-the repository-root ``model-catalog.json`` and ``model-policy.json`` win in
-a source tree (the single committed authoritative copies), and the packaged
-resource copies inside ``scarcity_router`` are used by an installed
-package (D-034). Explicit path overrides always replace the defaults.
+Legacy catalog and policy path overrides are refused; no static model
+artifacts are loaded. Execution-source composition supplies runtime entries.
 
 Strict JSON loading uses only the standard library: ``object_pairs_hook``
 rejects duplicate object keys, ``parse_constant`` rejects NaN/Infinity and
@@ -32,9 +29,7 @@ malformed JSON raises ``ValueError`` — never a raw payload dump.
 
 from __future__ import annotations
 
-import importlib.resources
 import json
-from collections.abc import Mapping
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -45,6 +40,7 @@ if TYPE_CHECKING:
 
 from .errors import (
     ApplicationInputError,
+    LegacyProfileInputError,
     SelectionContractValidationError,
     SimulationOverrideApplicationError,
 )
@@ -63,7 +59,6 @@ from .selection_types import (
     ModelIdentity,
     ModelCatalog,
     TaskProfileCatalog,
-    TaskProfileDefinition,
     TaskRequirement,
 )
 from .simulation import SimulationOverrides, SimulationResult, simulate_selection
@@ -71,42 +66,12 @@ from .status import Clock, StatusCollectors, collect_status
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
-
-def resolve_default_artifact(name: str, *, source_root: Path = REPO_ROOT) -> Path:
-    """Resolve one default artifact path for source-tree and installed runs.
-
-    Source tree: the repository-root authoritative copy wins, so a checkout
-    always uses the single committed root artifact and never depends on
-    packaging state. Installed package: the packaged resource copy inside
-    ``scarcity_router`` (mapped into the wheel at build time; no committed
-    duplicate) is used. Resolution depends only on the module location,
-    never on the working directory or environment variables. Explicit
-    ``--catalog`` / ``--model-policy`` overrides bypass it entirely.
-    """
-    source_copy = source_root / name
-    if source_copy.is_file():
-        return source_copy
-    # Regular (wheel) installs resolve to a real filesystem path; the
-    # context manager only matters for archive-based imports.
-    with importlib.resources.as_file(
-        importlib.resources.files("scarcity_router").joinpath(name)
-    ) as resource_path:
-        return resource_path
-
-
-DEFAULT_CATALOG_PATH = resolve_default_artifact("model-catalog.json")
-DEFAULT_MODEL_POLICY_PATH = resolve_default_artifact("model-policy.json")
-MODEL_POLICY_SCHEMA_VERSION = 1
+# Compatibility sentinels only; these paths are never opened.
+DEFAULT_CATALOG_PATH = Path("model-catalog.json")
+DEFAULT_MODEL_POLICY_PATH = Path("model-policy.json")
 
 
 # ── Strict JSON loading ───────────────────────────────────────────────────────
-
-
-def _as_str_object_mapping(value: object) -> Mapping[str, object] | None:
-    """Narrow a boundary mapping to ``str`` keys, or return ``None``."""
-    if isinstance(value, Mapping):
-        return cast(Mapping[str, object], value)
-    return None
 
 
 def _reject_duplicate_key(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -148,143 +113,6 @@ def _load_json_file(path: Path, *, label: str) -> object:
 
 
 # ── Artifact loaders ──────────────────────────────────────────────────────────
-
-
-def load_catalog(path: Path) -> ModelCatalog:
-    """Load and validate a model-catalog artifact through ``ModelCatalog``."""
-    document = _load_json_file(path, label="model catalog")
-    return ModelCatalog.from_dict(document)
-
-
-def load_model_policy(path: Path) -> tuple[TaskProfileCatalog, int]:
-    """Build the ``TaskProfileCatalog`` from the calibrated profile artifact.
-
-    Only ``task_profiles[].id`` and ``task_profiles[].calibrated_requirement``
-    feed selection; model classes, workflow exemplars, indicative capability
-    needs and descriptive role text are never used. The artifact's
-    ``policy_version`` is returned for decision provenance.
-
-    The optional ``evaluation_profiles`` section (M3.1, issue #79) adds
-    explicitly evaluation-only profile definitions to the same catalog so
-    they resolve by exact ``profile_id`` like any other profile. They differ
-    from formal calibrated profiles contractually: each entry MUST carry
-    ``evaluation_only: true`` and MUST pin the exact identity under evaluation
-    (``required_provider`` + ``required_model`` + ``required_variant`` in its
-    calibrated requirement's hard constraints). They never participate in
-    ordinary routing — a profile is only ever applied when a client
-    explicitly names its id.
-    """
-    document = _load_json_file(path, label="model policy")
-    mapping = cast(Mapping[str, object] | None, document if isinstance(document, Mapping) else None)
-    if mapping is None:
-        raise SelectionContractValidationError(
-            "model policy: expected a JSON object at the top level"
-        )
-    # Shipped minimal user artifacts omit the declaration; their existing
-    # calibrated-profile projection is schema 1, not a future-schema fallback.
-    if "schema_version" in mapping:
-        schema = mapping["schema_version"]
-        if type(schema) is not int or schema != MODEL_POLICY_SCHEMA_VERSION:
-            raise SelectionContractValidationError(
-                "model policy: unsupported schema_version; expected integer 1; "
-                + "upgrade the program before loading a newer policy shape"
-            )
-    raw_version = mapping.get("policy_version")
-    if isinstance(raw_version, bool) or not isinstance(raw_version, int) or raw_version < 1:
-        raise SelectionContractValidationError(
-            "model policy: policy_version must be an integer >= 1"
-        )
-    raw_profiles = mapping.get("task_profiles")
-    if not isinstance(raw_profiles, list):
-        raise SelectionContractValidationError(
-            "model policy: task_profiles must be a list, got "
-            + f"{type(raw_profiles).__name__}"
-        )
-    definitions: list[TaskProfileDefinition] = []
-    for item in cast(list[object], raw_profiles):
-        entry = cast(Mapping[str, object] | None, item if isinstance(item, Mapping) else None)
-        if entry is None:
-            raise SelectionContractValidationError(
-                "model policy: each task_profiles entry must be an object"
-            )
-        profile_id = entry.get("id")
-        if not isinstance(profile_id, str) or not profile_id:
-            raise SelectionContractValidationError(
-                "model policy: task_profiles[].id must be a non-empty string"
-            )
-        raw_requirement = _as_str_object_mapping(entry.get("calibrated_requirement"))
-        if raw_requirement is None:
-            raise SelectionContractValidationError(
-                f"model policy: task profile {profile_id!r} has no "
-                + "calibrated_requirement object; it is the sole "
-                + "selector-facing numeric definition"
-            )
-        definitions.append(
-            TaskProfileDefinition(
-                profile_id=profile_id,
-                requirement=TaskRequirement.from_dict(raw_requirement),
-            )
-        )
-    definitions.extend(_load_evaluation_profiles(mapping))
-    return TaskProfileCatalog(definitions=tuple(definitions)), raw_version
-
-
-def _load_evaluation_profiles(mapping: Mapping[str, object]) -> list[TaskProfileDefinition]:
-    """Load the optional ``evaluation_profiles`` section with its strict shape.
-
-    The section is deliberately separate from ``task_profiles``: formal
-    calibrated profiles never name providers or models, while evaluation
-    profiles MUST pin the exact identity under evaluation and MUST declare
-    ``evaluation_only: true``. Anything else fails closed as a configuration
-    error rather than degrading into an ordinary profile.
-    """
-    raw_section = mapping.get("evaluation_profiles")
-    if raw_section is None:
-        return []
-    if not isinstance(raw_section, list):
-        raise SelectionContractValidationError(
-            "model policy: evaluation_profiles must be a list, got "
-            + f"{type(raw_section).__name__}"
-        )
-    definitions: list[TaskProfileDefinition] = []
-    for item in cast(list[object], raw_section):
-        entry = cast(Mapping[str, object] | None, item if isinstance(item, Mapping) else None)
-        if entry is None:
-            raise SelectionContractValidationError(
-                "model policy: each evaluation_profiles entry must be an object"
-            )
-        profile_id = entry.get("id")
-        if not isinstance(profile_id, str) or not profile_id:
-            raise SelectionContractValidationError(
-                "model policy: evaluation_profiles[].id must be a non-empty string"
-            )
-        if entry.get("evaluation_only") is not True:
-            raise SelectionContractValidationError(
-                f"model policy: evaluation profile {profile_id!r} must declare "
-                + "evaluation_only: true; evaluation identities are never ordinary "
-                + "calibrated profiles"
-            )
-        raw_requirement = _as_str_object_mapping(entry.get("calibrated_requirement"))
-        if raw_requirement is None:
-            raise SelectionContractValidationError(
-                f"model policy: evaluation profile {profile_id!r} has no calibrated_requirement object"
-            )
-        requirement = TaskRequirement.from_dict(raw_requirement)
-        hard = requirement.hard_constraints
-        pinned = (
-            hard.required_provider is not None
-            and hard.required_model is not None
-            and hard.required_variant is not None
-            and hard.required_model.provider == hard.required_provider
-        )
-        if not pinned:
-            raise SelectionContractValidationError(
-                f"model policy: evaluation profile {profile_id!r} must pin the exact "
-                + "identity under evaluation (required_provider + required_model + "
-                + "required_variant with agreeing providers)"
-            )
-        definitions.append(TaskProfileDefinition(profile_id=profile_id, requirement=requirement))
-    return definitions
 
 
 def load_selector_policy(path: Path) -> SelectorPolicy:
@@ -364,6 +192,10 @@ def resolve_requirement(
             "resolve_requirement: exactly one requirement source is required: "
             + "a profile id or an explicit TaskRequirement"
         )
+    if not profiles.definitions:
+        raise LegacyProfileInputError(
+            "legacy task profiles are unavailable; supply an explicit TaskRequirement"
+        )
     try:
         base = profiles.resolve(profile_id)
     except SelectionContractValidationError as exc:
@@ -422,17 +254,17 @@ def load_configured_artifacts(
     catalog_path: Path,
     model_policy_path: Path,
 ) -> tuple[ModelCatalog, TaskProfileCatalog, int]:
-    """Load the two process-configured application artifacts.
+    """Initialize an empty runtime view; reject legacy file overrides.
 
-    Catalog and profile artifacts are server configuration, never
-    per-request inputs (D-028): every caller — CLI runner or machine
-    adapter — loads them through this one authoritative loader. A loading
-    or validation failure is a server configuration failure, not a
-    client-input error.
+    Execution sources extend this view with authorized discovered identities.
+    Recommendation-only callers without source access see no invented models.
     """
-    catalog = load_catalog(catalog_path)
-    profiles, profile_policy_version = load_model_policy(model_policy_path)
-    return catalog, profiles, profile_policy_version
+    if catalog_path != DEFAULT_CATALOG_PATH or model_policy_path != DEFAULT_MODEL_POLICY_PATH:
+        raise SelectionContractValidationError(
+            "legacy catalog and model-policy files are no longer supported; "
+            + "configure execution sources and supply explicit task requirements"
+        )
+    return ModelCatalog(None, None, ()), TaskProfileCatalog(()), 1
 
 
 # ── Typed in-memory application seam (M3b, D-030) ────────────────────────────
@@ -852,14 +684,11 @@ def _replenishment_label(evaluation: ReplenishmentEvaluation) -> str:
 def _short_state(candidate: CandidateEvaluation) -> str:
     scarcity = candidate.scarcity_assessment
     if scarcity is not None and scarcity.state == "known":
-        text = (
-            f"{scarcity.label}, penalty {scarcity.penalty_units}, "
-            + f"margin {candidate.capability_margin}"
-        )
+        text = f"{scarcity.label}, penalty {scarcity.penalty_units}"
         if candidate.short_window_below_floor:
             text += ", SHORT WINDOW BELOW FLOOR"
         return text
-    return f"degraded unknown capacity, margin {candidate.capability_margin}"
+    return "degraded unknown capacity"
 
 
 def _tactical_capacity_line(candidate: CandidateEvaluation) -> str | None:
@@ -917,7 +746,6 @@ def _explain_sections(decision: SelectionDecision) -> list[str]:
         lines.append(f"  {_scarcity_line(selected)}")
         lines.append(
             f"  Ranking: capacity={capacity_class}, "
-            + f"capability margin={selected.capability_margin}, "
             + f"mode={decision.selector_mode}"
         )
         lines.extend("  " + line for line in _happy_hour_lines(selected))
@@ -1051,9 +879,13 @@ def _explain_sections(decision: SelectionDecision) -> list[str]:
             for candidate in decision.recoverable_candidates
         )
 
+    source = (
+        "runtime inventory"
+        if decision.catalog_version is None
+        else f"catalog {decision.catalog_version} ({decision.catalog_updated_on})"
+    )
     versions = (
-        f"Versions: catalog {decision.catalog_version} "
-        + f"({decision.catalog_updated_on}); resource policy v"
+        f"Selection input: {source}; resource policy v"
         + f"{decision.resource_policy_version}; mode {decision.selector_mode}"
     )
     if decision.profile_policy_version is not None:
@@ -1088,7 +920,6 @@ def render_select_human(decision: SelectionDecision, *, explain: bool = False) -
             )
         lines.append(f"Selected: {_identity_label(selected)}")
         lines.append(_scarcity_line(selected))
-        lines.append(f"Capability margin: {selected.capability_margin}")
         lines.extend(_happy_hour_lines(selected))
     else:
         lines.append("No eligible candidate")
@@ -1169,12 +1000,9 @@ __all__ = [
     "DEFAULT_CATALOG_PATH",
     "DEFAULT_MODEL_POLICY_PATH",
     "SelectionApplication",
-    "load_catalog",
     "load_configured_artifacts",
-    "load_model_policy",
     "load_replenishment_states",
     "load_requirement",
-    "resolve_default_artifact",
     "load_selector_policy",
     "load_simulation_overrides",
     "load_strict_json",

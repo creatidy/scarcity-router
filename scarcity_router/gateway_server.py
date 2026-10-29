@@ -102,7 +102,7 @@ from .gateway_contracts import (
     hash_client_key,
     GatewayLimits,
 )
-from .gateway_coordinator import GatewayApplication, exposed_logical_models
+from .gateway_coordinator import GatewayApplication
 from .gateway_validation import v_str_object_mapping
 from .gateway_openai import (
     ChatCompletionRequest,
@@ -352,7 +352,7 @@ class GatewayRequestHandler(BaseHTTPRequestHandler):
             self._refuse_router_loops()
             path = self.path.split("?", 1)[0].split("#", 1)[0]
             if method == "GET" and path == "/v1/models":
-                self._route_models()
+                self._route_models(client_id)
                 return
             if method == "POST" and path == "/v1/chat/completions":
                 self._route_chat_completions(client_id)
@@ -474,13 +474,15 @@ class GatewayRequestHandler(BaseHTTPRequestHandler):
             elif isinstance(item, list):
                 pending.extend(cast(list[object], item))
 
-    def _route_models(self) -> None:
+    def _route_models(self, client_id: str) -> None:
         application = self._application()
+        known_profiles = {definition.profile_id for definition in application.profiles.definitions}
+        aliases = tuple(alias for alias in application.aliases.aliases
+                        if (profile := application.aliases.resolve(alias)) is not None
+                        and profile.profile_id in known_profiles)
         payload = models_list_payload(
-            application.aliases.aliases,
-            exposed_logical_models(
-                application.catalog, application.registry, application.limits
-            ),
+            aliases,
+            application.visible_logical_models(client_id),
         )
         self._send_json(HTTPStatus.OK, payload)
 

@@ -33,6 +33,7 @@ from scarcity_router.capacity import (
 )
 from scarcity_router.eligibility import ExecutionEligibility
 from scarcity_router.execution_sources import SourceRegistry
+from scarcity_router.execution_sources import add_configured_resources
 from scarcity_router.gateway_adapters import AdapterRegistry
 from scarcity_router.gateway_audit import BoundedAuditTrail
 from scarcity_router.gateway_audit import ExecutedTarget
@@ -49,7 +50,6 @@ from scarcity_router.model_inventory import (
     ModelInventoryReport,
     SourceInventory,
 )
-from scarcity_router.model_tracks import load_track_registry
 from scarcity_router.resource_state import (
     ExecutionCapabilities,
     QuotaFact,
@@ -61,11 +61,11 @@ from scarcity_router.resource_state import (
 )
 from scarcity_router.routing_core import (
     AdministratorConstraints,
+    ClientAuthorization,
     ClientRoutingProfile,
     CompatibilityCell,
 )
 from scarcity_router.selector import neutral_selector_policy
-from scarcity_router.selection_app import DEFAULT_CATALOG_PATH, load_catalog
 from scarcity_router.selection_types import (
     CapabilityAssessment,
     CapabilityAssessments,
@@ -112,12 +112,13 @@ FEATURES = (
 # ── Derived-source world ──────────────────────────────────────────────────────
 
 
-def _source_config(source_id: str) -> SourceConfig:
+def _source_config(source_id: str, models: tuple[DiscoveredModel, ...]) -> SourceConfig:
     return SourceConfig(
         source_id=source_id,
         kind="codex_subscription",
         label=f"Source {source_id}",
         worker_id="worker-1",
+        allowed_models=tuple(model.slug for model in models),
     )
 
 
@@ -194,15 +195,19 @@ def derived_world(
 ) -> tuple[ResourceRegistry, ModelCatalog]:
     """A real D-053 adoption world: classified inventory → derived
     registrations → healthy registry, plus the merged floor catalog."""
-    sources = SourceRegistry(track_registry=load_track_registry())
-    sources.sync_configuration(tuple(_source_config(sid) for sid in source_ids))
+    sources = SourceRegistry()
+    sources.sync_configuration(tuple(_source_config(sid, models) for sid in source_ids))
     for source_id in source_ids:
         _ = sources.apply_inventory(_inventory(models, source_id=source_id))
     registry = ResourceRegistry(clock=lambda: OBSERVED)
     for registration in sources.derived_registrations():
+        # Synthetic exact-resource evidence for exercising chat admission.
+        registration = replace(registration, capabilities=replace(
+            registration.capabilities, context_limit_tokens=4096,
+        ))
         registry.register(registration)
         _ = registry.apply_snapshot(_healthy_snapshot(registration.identity))
-    return registry, sources.derived_catalog_entries(load_catalog(DEFAULT_CATALOG_PATH))
+    return registry, sources.derived_catalog_entries(ModelCatalog(None, None, ()))
 
 
 def make_derived_application(
@@ -359,6 +364,123 @@ SOL = (DiscoveredModel("gpt-6-sol", ("high", "max")),)
 class LogicalResolutionTests(DerivedHarness):
     """Bare logical ids route to the EXACT identity — never substituted."""
 
+    def test_pinned_manual_resource_does_not_inherit_another_sources_effort(self) -> None:
+        registry, catalog = derived_world(SOL)
+        identity = ResourceIdentity(resource_id="manual-resource", channel="worker_bridged",
+                                    provider="openai", model="gpt-6-sol", variant="high",
+                                    entitlement="subscription_included")
+        registration = ResourceRegistration(identity=identity, freshness_ttl_seconds=7200,
+                                             poll_interval_seconds=1800,
+                                             capabilities=ExecutionCapabilities(context_limit_tokens=4096))
+        registry.register(registration)
+        _ = registry.apply_snapshot(_healthy_snapshot(identity))
+        application = make_derived_application(registry, catalog)
+        _ = self.make_derived_server(application)
+        adapter = application.adapters.resolve("worker_bridged")
+        assert isinstance(adapter, ScriptedAdapter)
+        _ = application.execute(client_id=CLIENT_ID, request=parse_chat_request({
+            "model": "sr-pin:manual-resource/openai/gpt-6-sol/high",
+            "messages": [{"role": "user", "content": "hello"}],
+        }))
+        self.assertIsNone(adapter.dispatches[-1].reasoning_effort)
+        record = audit_records(application)[-1]
+        assert record.executed_target is not None
+        self.assertIsNone(record.executed_target.reasoning_effort)
+
+    def test_remote_source_does_not_query_unrelated_server_collector(self) -> None:
+        registry, catalog = derived_world(SOL)
+        application = make_derived_application(registry, catalog)
+        _ = self.make_derived_server(application)
+        def unrelated(_now: str) -> tuple[tuple[CapacitySnapshot, ...], tuple[ExecutionEligibility, ...]]:
+            raise RuntimeError("unrelated server-local account is unavailable")
+        application.capacity_source = unrelated
+        _ = application.execute(client_id=CLIENT_ID, request=parse_chat_request({
+            "model": "sr-pin:personal-openai:gpt-6-sol:high/openai/gpt-6-sol/high",
+            "messages": [{"role": "user", "content": "hello"}],
+        }))
+        record = audit_records(application)[-1]
+        assert record.executed_target is not None
+        self.assertEqual("high", record.executed_target.reasoning_effort)
+
+    def test_selected_manual_alternative_never_inherits_discovered_effort(self) -> None:
+        registry, catalog = derived_world((DiscoveredModel("gpt-6-sol", ("high",)),))
+        identity = ResourceIdentity(resource_id="a-manual", channel="worker_bridged", provider="openai",
+                                    model="gpt-6-sol", variant="high", entitlement="subscription_included")
+        registry.register(ResourceRegistration(identity=identity, freshness_ttl_seconds=7200,
+                                               poll_interval_seconds=1800,
+                                               capabilities=ExecutionCapabilities(context_limit_tokens=4096)))
+        _ = registry.apply_snapshot(_healthy_snapshot(identity))
+        application = make_derived_application(registry, catalog)
+        application.client_authorizations = {
+            CLIENT_ID: ClientAuthorization(blocked_resource_ids=("personal-openai:gpt-6-sol:high",))
+        }
+        _ = self.make_derived_server(application)
+        adapter = application.adapters.resolve("worker_bridged")
+        assert isinstance(adapter, ScriptedAdapter)
+        _ = application.execute(client_id=CLIENT_ID, request=parse_chat_request({
+            "model": "gpt-6-sol", "messages": [{"role": "user", "content": "hello"}],
+        }))
+        self.assertEqual("a-manual", adapter.dispatches[-1].resource.resource_id)
+        self.assertIsNone(adapter.dispatches[-1].reasoning_effort)
+        record = audit_records(application)[-1]
+        assert record.executed_target is not None
+        self.assertIsNone(record.executed_target.reasoning_effort)
+
+    def test_blocked_source_does_not_impose_effort_on_unqualified_resource(self) -> None:
+        registry, catalog = derived_world((DiscoveredModel("synthetic-model", ("high",)),))
+        identity = ResourceIdentity(resource_id="manual-unqualified", channel="worker_bridged",
+                                    provider="openai", model="synthetic-model", variant=None,
+                                    entitlement="subscription_included")
+        registration = ResourceRegistration(identity=identity, freshness_ttl_seconds=7200,
+                                            poll_interval_seconds=1800,
+                                            capabilities=ExecutionCapabilities(context_limit_tokens=4096))
+        registry.register(registration)
+        _ = registry.apply_snapshot(_healthy_snapshot(identity))
+        catalog = add_configured_resources(catalog, (registration,))
+        application = make_derived_application(registry, catalog)
+        application.client_authorizations = {
+            CLIENT_ID: ClientAuthorization(blocked_resource_ids=("personal-openai:synthetic-model:high",))
+        }
+        port = self.make_derived_server(application)
+        metadata = as_dict(self.models_entry(port, "synthetic-model")["x_scarcity_router"])
+        self.assertEqual([], metadata["reasoning_efforts"])
+        adapter = application.adapters.resolve("worker_bridged")
+        assert isinstance(adapter, ScriptedAdapter)
+        body: dict[str, object] = {"model": "synthetic-model", "messages": [{"role": "user", "content": "hello"}]}
+        response = self.post_chat(port, body)
+        self.assertEqual(200, response.status, response.read())
+        self.assertEqual("manual-unqualified", adapter.dispatches[-1].resource.resource_id)
+        self.assertIsNone(adapter.dispatches[-1].reasoning_effort)
+        for effort in ("high", "none"):
+            with self.subTest(effort=effort):
+                refused = self.post_chat(port, {**body, "reasoning_effort": effort})
+                self.assertEqual(400, refused.status)
+                payload = cast(object, json.loads(refused.read()))
+                self.assertEqual("compatibility_unknown", as_dict(as_dict(payload)["error"])["code"])
+        self.assertEqual(1, adapter.dispatch_count)
+
+    def test_blocked_provider_cannot_make_authorized_model_ambiguous(self) -> None:
+        registry, catalog = derived_world((DiscoveredModel("synthetic-model", ("high",)),))
+        identity = ResourceIdentity(resource_id="authorized-other", channel="worker_bridged",
+                                    provider="zai", model="synthetic-model", variant=None,
+                                    entitlement="subscription_included")
+        registration = ResourceRegistration(identity=identity, freshness_ttl_seconds=7200,
+                                            poll_interval_seconds=1800,
+                                            capabilities=ExecutionCapabilities(context_limit_tokens=4096))
+        registry.register(registration)
+        _ = registry.apply_snapshot(_healthy_snapshot(identity))
+        application = make_derived_application(registry, add_configured_resources(catalog, (registration,)))
+        application.client_authorizations = {CLIENT_ID: ClientAuthorization(allowed_providers=("zai",))}
+        _ = self.make_derived_server(application)
+        adapter = application.adapters.resolve("worker_bridged")
+        assert isinstance(adapter, ScriptedAdapter)
+        _ = application.execute(client_id=CLIENT_ID, request=parse_chat_request({
+            "model": "synthetic-model", "messages": [{"role": "user", "content": "hello"}],
+        }))
+        self.assertEqual("authorized-other", adapter.dispatches[-1].resource.resource_id)
+        self.assertEqual("zai", adapter.dispatches[-1].model.provider)
+        self.assertIsNone(adapter.dispatches[-1].reasoning_effort)
+
     def test_bare_logical_model_routes_to_the_exact_identity(self) -> None:
         registry, catalog = derived_world(SOL)
         port = self.make_derived_server(make_derived_application(registry, catalog))
@@ -437,10 +559,9 @@ class LogicalResolutionTests(DerivedHarness):
 class EffortRuleTests(DerivedHarness):
     """Omitted effort: single legal variant uses it; several fail."""
 
-    def test_max_only_family_uses_max_when_omitted(self) -> None:
-        """D-054 consistency: a max-only light family's only calibrated
-        effort is the one used when the client omits the field."""
-        luna_max_only = (DiscoveredModel("gpt-6.5-luna", ("low", "max")),)
+    def test_single_reported_effort_is_used_when_omitted(self) -> None:
+        """A single evidenced effort needs no implicit substitution."""
+        luna_max_only = (DiscoveredModel("gpt-6.5-luna", ("max",)),)
         registry, catalog = derived_world(luna_max_only)
         port = self.make_derived_server(make_derived_application(registry, catalog))
         response = self.post_chat(
@@ -678,11 +799,11 @@ class CatalogEffortTests(DerivedHarness):
         infos = exposed_logical_models(catalog, application.registry, application.limits)
         self.assertEqual(infos[0].reasoning_efforts, ("high",))
 
-    def test_shipped_max_only_http_logical_request_preserves_real_preset_omission(self) -> None:
-        entry = next(
-            entry for entry in load_catalog(DEFAULT_CATALOG_PATH).entries
-            if entry.identity.provider == "zai" and entry.identity.model == "glm-5.3-flash"
-        )
+    def test_http_logical_request_preserves_real_preset_omission(self) -> None:
+        application, _ = self._world((("opaque-high", "high", True),))
+        entry = replace(application.catalog.entries[0],
+                        identity=ModelIdentity("zai", "synthetic-model", "max"),
+                        reasoning_effort="max", capacity_bindings=None)
         self.assertEqual(entry.reasoning_effort, "max")
         identity = ResourceIdentity(
             resource_id="zai-http", channel="server_direct_http", provider="zai",
@@ -711,9 +832,10 @@ class CatalogEffortTests(DerivedHarness):
         self.assertNotIn("thinking", wire)
 
     def test_actual_plan_lane_has_no_effort_or_physical_model_attestation(self) -> None:
-        sources = SourceRegistry(track_registry=load_track_registry())
+        sources = SourceRegistry()
         config = SourceConfig(source_id="zai-plan-1", kind="zcode_subscription",
-                              label="synthetic plan", worker_id="worker-1")
+                              label="synthetic plan", worker_id="worker-1",
+                              allowed_models=("plan-managed",))
         sources.sync_configuration((config,))
         _ = sources.apply_inventory(ModelInventoryReport(worker_id="worker-1", sources=(
             SourceInventory(source_id=config.source_id, adapter_id="zcode:zai-plan-1",
@@ -723,6 +845,9 @@ class CatalogEffortTests(DerivedHarness):
         )))
         registry = ResourceRegistry(clock=lambda: OBSERVED)
         for registration in sources.derived_registrations():
+            registration = replace(registration, capabilities=replace(
+                registration.capabilities, context_limit_tokens=4096,
+            ))
             registry.register(registration)
             _ = registry.apply_snapshot(replace(
                 _healthy_snapshot(registration.identity), quota_facts=(),
@@ -731,7 +856,7 @@ class CatalogEffortTests(DerivedHarness):
         application = make_application(
             registry=registry,
             clock=lambda: EVALUATED,
-            catalog=sources.derived_catalog_entries(load_catalog(DEFAULT_CATALOG_PATH)),
+            catalog=sources.derived_catalog_entries(ModelCatalog(None, None, ())),
             adapters=(adapter,), aliases=build_aliases({}),
             cells=build_compatibility_cells(ServerConfiguration(sources=(config,)),
                                           provider_secret_reader=lambda _provider: "SYNTHETIC",
@@ -767,14 +892,20 @@ class CatalogEffortTests(DerivedHarness):
 class ResolutionBoundaries(DerivedHarness):
     """Not-found stays not-found; availability is availability."""
 
-    def test_unknown_restricted_and_unclassified_stay_model_not_found(
+    def test_model_listing_does_not_expose_blocked_resources(self) -> None:
+        registry, catalog = derived_world(SOL)
+        application = make_derived_application(registry, catalog)
+        blocked = tuple(sorted(entry.identity.resource_id for entry in registry.registry_snapshot().entries))
+        application.client_authorizations = {
+            CLIENT_ID: ClientAuthorization(blocked_resource_ids=blocked)
+        }
+        port = self.make_derived_server(application)
+        self.assertNotIn("gpt-6-sol", self.models_ids(port))
+
+    def test_unreported_models_stay_model_not_found(
         self,
     ) -> None:
-        world = (
-            DiscoveredModel("gpt-6-sol", ("high",)),
-            DiscoveredModel("gpt-daybreak-blue-latest", ("high",)),
-            DiscoveredModel("totally-unclassified-slug", ("high",)),
-        )
+        world = (DiscoveredModel("gpt-6-sol", ("high",)),)
         registry, catalog = derived_world(world)
         port = self.make_derived_server(make_derived_application(registry, catalog))
         for slug in (
@@ -945,13 +1076,11 @@ class DiscoveryMetadataTests(DerivedHarness):
         metadata = as_dict(entry["x_scarcity_router"])
         self.assertEqual(metadata["kind"], "logical_model")
         self.assertEqual(metadata["provider"], "openai")
-        # Only the calibrated floor entry's effort — the runtime-reported
-        # non-max efforts have no catalog entry and are not advertised.
-        self.assertEqual(metadata["reasoning_efforts"], ["max"])
-        # Model hard context (1.05M) intersected with the known channel
-        # ceiling (272k) — the channel-bound honest number, never 1.05M.
-        self.assertEqual(metadata["effective_context_limit_tokens"], 272_000)
-        self.assertEqual(metadata["max_output_tokens"], 128_000)
+        # Only exact runtime-reported efforts are advertised.
+        self.assertEqual(metadata["reasoning_efforts"], ["low", "max"])
+        self.assertEqual(metadata["effective_context_limit_tokens"], 4096)
+        self.assertIsNone(metadata["max_output_tokens"])
+        self.assertEqual(metadata["schema_version"], 2)
 
     def test_alias_entry_metadata_marks_kind(self) -> None:
         registry, catalog = derived_world(SOL)

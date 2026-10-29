@@ -30,6 +30,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Protocol
 
 from .gateway_contracts import UsageTokens
+from .runtime_version import validate_runtime_version
 from .gateway_validation import (
     exact_shape,
     v_canonical_ts,
@@ -93,35 +94,75 @@ class ExecutedTarget:
     provider: str
     model: str
     variant: str
+    context_evidence_ref: str | None = None
+    context_evidence_runtime_version: str | None = None
+    context_evidence_verified_at: str | None = None
+    context_evidence_valid_until: str | None = None
+    context_limit_tokens: int | None = None
+    reasoning_effort: str | None = None
 
     def __post_init__(self) -> None:
         _ = v_safe_id(self.resource_id, "executed_target.resource_id")
         _ = v_safe_id(self.provider, "executed_target.provider")
         _ = v_safe_id(self.model, "executed_target.model")
         _ = v_safe_id(self.variant, "executed_target.variant")
+        if self.reasoning_effort is not None:
+            _ = v_safe_id(self.reasoning_effort, "executed_target.reasoning_effort")
+        evidence = (self.context_evidence_ref, self.context_evidence_runtime_version,
+                    self.context_evidence_verified_at, self.context_evidence_valid_until, self.context_limit_tokens)
+        if any(item is not None for item in evidence):
+            if any(item is None for item in evidence):
+                raise ValueError("executed_target: incomplete context evidence")
+            _ = v_safe_id(self.context_evidence_ref, "executed_target.context_evidence_ref")
+            _ = validate_runtime_version(self.context_evidence_runtime_version)
+            verified = v_canonical_ts(self.context_evidence_verified_at, "executed_target.context_evidence_verified_at")
+            until = v_canonical_ts(self.context_evidence_valid_until, "executed_target.context_evidence_valid_until")
+            _ = v_int(self.context_limit_tokens, "executed_target.context_limit_tokens", lo=1)
+            if verified >= until:
+                raise ValueError("executed_target: invalid context evidence interval")
 
     @classmethod
     def from_dict(cls, d: object) -> "ExecutedTarget":
         dd = exact_shape(
             d,
             ("resource_id", "provider", "model", "variant"),
-            (),
+            ("context_evidence", "reasoning_effort"),
             "executed_target",
         )
+        evidence = dd.get("context_evidence")
+        detail = (exact_shape(evidence, ("kind", "reference", "runtime_version", "verified_at", "valid_until", "input_tokens"), (), "context_evidence")
+                  if evidence is not None else None)
+        if detail is not None and detail["kind"] != "administrator_attested":
+            raise ValueError("context_evidence: unsupported kind")
         return cls(
             resource_id=v_safe_id(dd["resource_id"], "executed_target.resource_id"),
             provider=v_safe_id(dd["provider"], "executed_target.provider"),
             model=v_safe_id(dd["model"], "executed_target.model"),
             variant=v_safe_id(dd["variant"], "executed_target.variant"),
+            context_evidence_ref=v_safe_id(detail["reference"], "context_evidence.reference") if detail is not None else None,
+            context_evidence_runtime_version=validate_runtime_version(detail["runtime_version"]) if detail is not None else None,
+            context_evidence_verified_at=v_canonical_ts(detail["verified_at"], "context_evidence.verified_at") if detail is not None else None,
+            context_evidence_valid_until=v_canonical_ts(detail["valid_until"], "context_evidence.valid_until") if detail is not None else None,
+            context_limit_tokens=v_int(detail["input_tokens"], "context_evidence.input_tokens", lo=1) if detail is not None else None,
+            reasoning_effort=v_safe_id(dd["reasoning_effort"], "executed_target.reasoning_effort") if "reasoning_effort" in dd else None,
         )
 
-    def to_dict(self) -> dict[str, str]:
-        return {
+    def to_dict(self) -> dict[str, object]:
+        out: dict[str, object] = {
             "resource_id": self.resource_id,
             "provider": self.provider,
             "model": self.model,
             "variant": self.variant,
         }
+        if self.context_evidence_ref is not None:
+            out["context_evidence"] = {"kind": "administrator_attested", "reference": self.context_evidence_ref,
+                                       "runtime_version": self.context_evidence_runtime_version,
+                                       "verified_at": self.context_evidence_verified_at,
+                                       "valid_until": self.context_evidence_valid_until,
+                                       "input_tokens": self.context_limit_tokens}
+        if self.reasoning_effort is not None:
+            out["reasoning_effort"] = self.reasoning_effort
+        return out
 
 
 @dataclass(frozen=True)
@@ -218,9 +259,10 @@ class AuditRecord:
             )
         _ = v_int(self.call_count, "audit_record.call_count", lo=0)
         _ = v_int(self.schema_version, "audit_record.schema_version", lo=1)
-        if self.schema_version != AUDIT_SCHEMA_VERSION:
+        expected_schema = 2 if self.selected_target is not None and (self.selected_target.context_evidence_ref is not None or self.selected_target.reasoning_effort is not None) else AUDIT_SCHEMA_VERSION
+        if self.schema_version != expected_schema:
             raise ValueError(
-                f"audit_record.schema_version: expected {AUDIT_SCHEMA_VERSION}, "
+                f"audit_record.schema_version: expected {expected_schema}, "
                 + f"got {self.schema_version!r}"
             )
         # Cross-field honesty invariants.

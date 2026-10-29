@@ -124,13 +124,21 @@ class RecommendationOnlySurfaceTests(unittest.TestCase):
             status, payload = _rest_post(
                 port,
                 "/v1/select",
-                {"profile_id": "routine_coding"},
+                {"requirement": {"task_level": "L0", "capability_minima": {}, "hard_constraints": {}}},
                 host_header,
             )
             self.assertEqual(200, status)
             envelope = cast("dict[str, object]", payload)
-            self.assertEqual(1, envelope["schema_version"])
+            self.assertEqual(2, envelope["schema_version"])
             self.assertIn("decision", envelope)
+            status, payload = _rest_post(
+                port, "/v1/select", {"profile_id": "routine_coding"}, host_header,
+            )
+            self.assertEqual(400, status)
+            self.assertEqual(
+                "legacy task profiles are unsupported; provide an explicit requirement",
+                cast("dict[str, object]", cast("dict[str, object]", payload)["error"])["message"],
+            )
         finally:
             server.shutdown()
             server.server_close()
@@ -580,8 +588,10 @@ class RemoteBridgeTests(RealTimeServerHarness):
         client = RemoteScarcityClient(config)
         status_document = client.status()
         self.assertEqual(1, status_document["schema_version"])
-        selection = client.select({"profile_id": "routine_coding"})
-        self.assertEqual(1, selection["schema_version"])
+        selection = client.select({"requirement": {
+            "task_level": "L0", "capability_minima": {}, "hard_constraints": {},
+        }})
+        self.assertEqual(2, selection["schema_version"])
         self.assertIn("decision", selection)
         # Wrong key: explicit failure, never silent degradation.
         bad_config = RemoteServerConfig(
@@ -683,7 +693,7 @@ class DiagnosticsAndExportTests(RealTimeServerHarness):
             "POST",
             "/v1/chat/completions",
             {
-                "model": "sr-pin:zai-plan-1/zai/glm-5.3/max",
+                "model": "sr-pin:zai-plan-1/zai/glm-5.3/unconfigured",
                 "messages": [{"role": "user", "content": PROMPT_MARKER}],
             },
             headers={"Authorization": f"Bearer {self.client_key}"},
@@ -774,7 +784,7 @@ class FirstRunAvailabilityTests(RealTimeServerHarness):
             "POST",
             "/v1/chat/completions",
             {
-                "model": "sr-pin:fake-openai-1/openai/gpt-5.6-luna/max",
+                "model": "sr-pin:fake-openai-1/openai/gpt-5.6-luna/unconfigured",
                 "messages": [{"role": "user", "content": PROMPT_MARKER}],
             },
             headers={"Authorization": f"Bearer {self.client_key}"},

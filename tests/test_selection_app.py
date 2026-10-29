@@ -21,7 +21,6 @@ from typing import cast
 from unittest import mock
 from zoneinfo import ZoneInfo
 
-from collections.abc import Callable
 from scarcity_router import (
     CapacityDiagnostic,
     CapabilityMinima,
@@ -35,10 +34,7 @@ from scarcity_router import (
     select_model,
 )
 from scarcity_router.cli import build_parser, main
-from scarcity_router.errors import SelectionContractValidationError
 from scarcity_router.selection_app import (
-    load_configured_artifacts,
-    load_model_policy,
     load_selector_policy,
     load_strict_json,
     render_select_human,
@@ -143,14 +139,7 @@ def _select_args(*extra: str) -> list[str]:
     # The module's throwaway XDG_CONFIG_HOME holds a neutral user config, so
     # unflagged runs keep their pre-D-036 neutral behavior; explicit
     # --selector-policy tests below pass their own file.
-    return [
-        "select",
-        *extra,
-        "--catalog",
-        str(CATALOG_PATH),
-        "--model-policy",
-        str(POLICY_PATH),
-    ]
+    return ["select", *extra]
 
 
 class StatusCompatibilityTests(unittest.TestCase):
@@ -193,39 +182,21 @@ class SelectCommandTests(unittest.TestCase):
 
     def test_select_profile_human(self) -> None:
         code, out, err = _run(_select_args("--profile", "routine_coding"))
-        self.assertEqual(0, code)
-        self.assertEqual("", err)
-        self.assertIn("Selected: GLM-5.3 Low (zai/glm-5.3/low)", out)
-        self.assertIn("Profile: routine_coding", out)
-        self.assertIn(
-            "Scarcity: plentiful — 80% blended remaining "
-            + "(short 80% / weekly 80%), penalty 400",
-            out,
-        )
-        self.assertIn("Capability margin: 0", out)
-        self.assertIn("Policy: balanced", out)
+        self.assertEqual(1, code)
+        self.assertEqual("", out)
+        self.assertIn("explicit TaskRequirement", err)
 
     def test_select_profile_json(self) -> None:
-        code, out, _ = _run(_select_args("--profile", "routine_coding", "--json"))
-        self.assertEqual(0, code)
-        decision = cast("dict[str, object]", json.loads(out))
-        self.assertEqual("routine_coding", decision["profile_id"])
-        self.assertEqual(9, decision["profile_policy_version"])
-        self.assertEqual("balanced", decision["selector_mode"])
-        self.assertEqual(["selected_balanced"], decision["reason_codes"])
-        selected = cast("dict[str, object]", decision["selected"])
-        identity = cast("dict[str, object]", selected["identity"])
-        self.assertEqual("glm-5.3", identity["model"])
-        self.assertEqual("low", identity["variant"])
+        code, out, err = _run(_select_args("--profile", "routine_coding", "--json"))
+        self.assertEqual(1, code)
+        self.assertEqual("", out)
+        self.assertIn("explicit TaskRequirement", err)
 
     def test_select_profile_explain(self) -> None:
-        code, out, _ = _run(_select_args("--profile", "deep_coding", "--explain"))
-        self.assertEqual(0, code)
-        self.assertIn("Resolved requirement:", out)
-        self.assertIn("Alternatives (exact ranking order):", out)
-        self.assertIn("Excluded candidates:", out)
-        self.assertIn("capability:", out)
-        self.assertIn("Versions: catalog 5 (2026-09-26)", out)
+        code, out, err = _run(_select_args("--profile", "deep_coding", "--explain"))
+        self.assertEqual(1, code)
+        self.assertEqual("", out)
+        self.assertIn("explicit TaskRequirement", err)
 
     def test_select_requirement_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -251,7 +222,7 @@ class SelectCommandTests(unittest.TestCase):
                 _select_args("--requirement", str(requirement_path))
             )
             self.assertEqual(0, code)
-            self.assertIn("Selected: GLM-5.3 Max (zai/glm-5.3/max)", out)
+            self.assertIn("No eligible candidate", out)
             self.assertIn("Requirement: explicit", out)
 
     def test_select_profile_with_tighten(self) -> None:
@@ -267,7 +238,7 @@ class SelectCommandTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            code, out, _ = _run(
+            code, out, err = _run(
                 _select_args(
                     "--profile",
                     "deep_coding",
@@ -276,12 +247,9 @@ class SelectCommandTests(unittest.TestCase):
                     "--explain",
                 )
             )
-            self.assertEqual(0, code)
-            # GLM-5.3 (vision known false) is excluded; Terra is selected.
-            self.assertIn(
-                "Selected: GPT-5.6 Terra Medium (openai/gpt-5.6-terra/medium)", out
-            )
-            self.assertIn("requires_vision unsupported", out)
+            self.assertEqual(1, code)
+            self.assertEqual("", out)
+            self.assertIn("explicit TaskRequirement", err)
 
     def test_tighten_with_requirement_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -338,9 +306,14 @@ class SelectCommandTests(unittest.TestCase):
             # A valid structured no-solution is a legitimate result.
             self.assertEqual(0, code)
             self.assertIn("No eligible candidate", out)
-            self.assertIn("Closest candidates:", out)
+            self.assertNotIn("Closest candidates:", out)
 
     def test_degraded_selection_warns(self) -> None:
+        from scarcity_router.selection_app import render_select_human
+        from scarcity_router.selection_types import CapabilityMinima, HardConstraints, TaskRequirement
+        from scarcity_router.selector import select_model
+        from tests.test_mi_consumer import CATALOG
+
         def unknown_openai(*, retrieved_at: str) -> OpenAICodexObservation:
             _ = retrieved_at
             return paired_observation(
@@ -367,22 +340,19 @@ class SelectCommandTests(unittest.TestCase):
                 diagnostics=(CapacityDiagnostic(code="telemetry_unknown"),),
             )
 
-        out = io.StringIO()
-        code = main(
-            ["select", "--profile", "routine_coding",
-             "--catalog", str(CATALOG_PATH), "--model-policy", str(POLICY_PATH)],
-            stdout=out,
-            collectors=StatusCollectors(openai=unknown_openai, zai=unknown_zai),
-            clock=_clock,
+        decision = select_model(
+            catalog=CATALOG, requirement=TaskRequirement("L0", CapabilityMinima(), HardConstraints()),
+            policy=neutral_selector_policy(),
+            snapshots=(unknown_openai(retrieved_at=RETRIEVED_AT).snapshot, unknown_zai(retrieved_at=RETRIEVED_AT)),
+            evaluated_at=FIXED_AT,
         )
-        self.assertEqual(0, code)
-        rendered = out.getvalue()
+        rendered = render_select_human(decision)
         # A degraded selection is explicit, with the normalized unknown
         # reason and no fake percentage.
         self.assertIn("WARNING: selected with unknown capacity", rendered)
         self.assertIn("Unknown reason: unknown_capacity_degraded", rendered)
         self.assertIn("Scarcity: unknown — provider_snapshot_not_ok", rendered)
-        self.assertIn("Capability margin: 0", rendered)
+        self.assertNotIn("Capability margin", rendered)
         self.assertIn(
             "Reason: selected_balanced,selected_degraded_capacity", rendered
         )
@@ -411,20 +381,22 @@ class SimulateCommandTests(unittest.TestCase):
         )
         return path
 
+    def _requirement_file(self, tmp: str) -> Path:
+        path = Path(tmp) / "requirement.json"
+        _ = path.write_text('{"task_level":"L0","capability_minima":{},"hard_constraints":{}}', encoding="utf-8")
+        return path
+
     def test_simulate_human(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             overrides = self._overrides_file(tmp)
+            requirement = self._requirement_file(tmp)
             code, out, err = _run(
                 [
                     "simulate",
-                    "--profile",
-                    "deep_coding",
+                    "--requirement",
+                    str(requirement),
                     "--overrides",
                     str(overrides),
-                    "--catalog",
-                    str(CATALOG_PATH),
-                    "--model-policy",
-                    str(POLICY_PATH),
                 ]
             )
             self.assertEqual(0, code)
@@ -437,24 +409,21 @@ class SimulateCommandTests(unittest.TestCase):
             )
             current_block = out.split("SIMULATED", 1)[0]
             simulated_block = out.split("SIMULATED", 1)[1]
-            self.assertIn("GLM-5.3 Max", current_block)
-            self.assertIn("GPT-5.6 Terra Medium", simulated_block)
+            self.assertIn("No eligible candidate", current_block)
+            self.assertIn("No eligible candidate", simulated_block)
 
     def test_simulate_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             overrides = self._overrides_file(tmp)
+            requirement = self._requirement_file(tmp)
             code, out, _ = _run(
                 [
                     "simulate",
-                    "--profile",
-                    "deep_coding",
+                    "--requirement",
+                    str(requirement),
                     "--overrides",
                     str(overrides),
                     "--json",
-                    "--catalog",
-                    str(CATALOG_PATH),
-                    "--model-policy",
-                    str(POLICY_PATH),
                 ]
             )
             self.assertEqual(0, code)
@@ -463,99 +432,13 @@ class SimulateCommandTests(unittest.TestCase):
                 {"baseline", "simulated", "applied_overrides"}, set(payload)
             )
             baseline = cast("dict[str, object]", payload["baseline"])
-            baseline_selected = cast("dict[str, object]", baseline["selected"])
-            baseline_identity = cast(
-                "dict[str, object]", baseline_selected["identity"]
-            )
-            self.assertEqual("glm-5.3", baseline_identity["model"])
+            self.assertIsNone(baseline["selected"])
             simulated = cast("dict[str, object]", payload["simulated"])
-            simulated_selected = cast("dict[str, object]", simulated["selected"])
-            simulated_identity = cast(
-                "dict[str, object]", simulated_selected["identity"]
-            )
-            self.assertEqual("gpt-5.6-terra", simulated_identity["model"])
-            self.assertEqual("medium", simulated_identity["variant"])
+            self.assertIsNone(simulated["selected"])
             applied = cast("dict[str, object]", payload["applied_overrides"])
             percentages = cast("list[object]", applied["capacity_percentages"])
             first_override = cast("dict[str, object]", percentages[0])
             self.assertEqual(2, first_override["remaining_percent"])
-
-
-class EvaluationProfileTests(unittest.TestCase):
-    """The M3.1 evaluation_profiles section (issue #79).
-
-    Evaluation profiles are resolvable only by exact id, must declare
-    ``evaluation_only: true`` and must pin the exact identity under
-    evaluation. They never change ordinary profile routing.
-    """
-
-    def test_evaluation_profiles_resolve_and_pin_identities(self) -> None:
-        _catalog, profiles, version = load_configured_artifacts(CATALOG_PATH, POLICY_PATH)
-        self.assertEqual(9, version)
-        expected = {
-            "m31-repo-review-low": ("zai", "glm-5.3", "low"),
-            "m31-repo-review-high": ("zai", "glm-5.3", "high"),
-            "m31-repo-review-max": ("zai", "glm-5.3", "max"),
-        }
-        for profile_id, (provider, model, variant) in expected.items():
-            requirement = profiles.resolve(profile_id)
-            hard = requirement.hard_constraints
-            self.assertEqual(provider, hard.required_provider)
-            assert hard.required_model is not None
-            self.assertEqual((provider, model), (hard.required_model.provider, hard.required_model.model))
-            self.assertEqual(variant, hard.required_variant)
-        # The formal calibrated profiles are untouched by the section.
-        for formal in ("routine_coding", "deep_coding", "scientific_review"):
-            self.assertIsNone(profiles.resolve(formal).hard_constraints.required_provider)
-
-    def test_evaluation_profile_selects_pinned_identity(self) -> None:
-        code, out, err = _run(
-            _select_args("--profile", "m31-repo-review-low", "--json")
-        )
-        self.assertEqual((0, ""), (code, err))
-        decision = cast("dict[str, object]", json.loads(out))
-        selected = cast("dict[str, object]", decision["selected"])
-        identity = cast("dict[str, object]", selected["identity"])
-        self.assertEqual("zai", identity["provider"])
-        self.assertEqual("glm-5.3", identity["model"])
-        self.assertEqual("low", identity["variant"])
-
-    def _policy_without(self, tmp: str, transform: Callable[[list[object]], None]) -> str:
-        document = cast("dict[str, object]", json.loads(POLICY_PATH.read_text(encoding="utf-8")))
-        transform(cast("list[object]", document["evaluation_profiles"]))
-        path = Path(tmp) / "policy.json"
-        _ = path.write_text(json.dumps(document), encoding="utf-8")
-        return str(path)
-
-    def test_missing_evaluation_only_marker_fails_closed(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            def strip_marker(entries: list[object]) -> None:
-                first = cast("dict[str, object]", entries[0])
-                del first["evaluation_only"]
-
-            policy = self._policy_without(tmp, strip_marker)
-            with self.assertRaises(SelectionContractValidationError):
-                _ = load_model_policy(Path(policy))
-
-    def test_unpinned_evaluation_profile_fails_closed(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            def strip_variant(entries: list[object]) -> None:
-                first = cast("dict[str, object]", entries[0])
-                requirement = cast("dict[str, object]", first["calibrated_requirement"])
-                del cast("dict[str, object]", requirement["hard_constraints"])["required_variant"]
-
-            policy = self._policy_without(tmp, strip_variant)
-            with self.assertRaises(SelectionContractValidationError):
-                _ = load_model_policy(Path(policy))
-
-    def test_evaluation_section_is_optional(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            document = cast("dict[str, object]", json.loads(POLICY_PATH.read_text(encoding="utf-8")))
-            del document["evaluation_profiles"]
-            path = Path(tmp) / "policy.json"
-            _ = path.write_text(json.dumps(document), encoding="utf-8")
-            _profiles, version = load_model_policy(Path(path))
-            self.assertEqual(9, version)
 
 
 class ArtifactFailureTests(unittest.TestCase):
@@ -566,38 +449,10 @@ class ArtifactFailureTests(unittest.TestCase):
         _ = path.write_text(content, encoding="utf-8")
         return str(path)
 
-    def test_policy_declared_shape_is_exact_and_legacy_projection_is_preserved(self) -> None:
-        document = cast("dict[str, object]", json.loads(POLICY_PATH.read_text(encoding="utf-8")))
-        expected_profiles, expected_version = load_model_policy(POLICY_PATH)
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "policy.json"
-            for version in (True, 1.0, "1", None, 0, 2, "SYNTHETIC-SECRET"):
-                with self.subTest(version=version):
-                    document["schema_version"] = version
-                    _ = path.write_text(json.dumps(document), encoding="utf-8")
-                    with self.assertRaises(SelectionContractValidationError) as caught:
-                        _ = load_model_policy(path)
-                    self.assertIn("upgrade", str(caught.exception))
-                    self.assertNotIn("SYNTHETIC-SECRET", str(caught.exception))
-            del document["schema_version"]
-            document["additive_descriptive_metadata"] = {"note": "not selector authority"}
-            _ = path.write_text(json.dumps(document), encoding="utf-8")
-            profiles, version = load_model_policy(path)
-            self.assertEqual(expected_version, version)
-            self.assertEqual(expected_profiles.to_dict(), profiles.to_dict())
-            document["schema_version"] = 1
-            document["policy_version"] = expected_version + 1
-            _ = path.write_text(json.dumps(document), encoding="utf-8")
-            profiles, version = load_model_policy(path)
-            self.assertEqual(expected_version + 1, version)
-            self.assertEqual(expected_profiles.to_dict(), profiles.to_dict())
-
     def test_unsupported_policy_shape_refuses_before_capacity_collection(self) -> None:
-        document = cast("dict[str, object]", json.loads(POLICY_PATH.read_text(encoding="utf-8")))
-        document["schema_version"] = 2
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "policy.json"
-            _ = path.write_text(json.dumps(document), encoding="utf-8")
+            _ = path.write_text('{"schema_version":2}', encoding="utf-8")
             with mock.patch("scarcity_router.selection_app.collect_status") as collect:
                 code, out, err = _run([
                     "select", "--profile", "routine_coding", "--catalog", str(CATALOG_PATH),
@@ -605,7 +460,7 @@ class ArtifactFailureTests(unittest.TestCase):
                 ])
             collect.assert_not_called()
             self.assertEqual((1, ""), (code, out))
-            self.assertIn("upgrade", err)
+            self.assertIn("unsupported", err)
 
     def test_malformed_catalog(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -643,7 +498,7 @@ class ArtifactFailureTests(unittest.TestCase):
                 ]
             )
             self.assertEqual(1, code)
-            self.assertIn("duplicate object key", err)
+            self.assertIn("unsupported", err)
 
     def test_malformed_requirement(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -736,18 +591,14 @@ class ExplainRenderingTests(unittest.TestCase):
     """Human --explain surfaces governing capacity, reservations, preference."""
 
     def _catalog(self) -> ModelCatalog:
-        return ModelCatalog.from_dict(
-            cast(object, json.loads(CATALOG_PATH.read_text(encoding="utf-8")))
-        )
+        from tests.test_simulation import CATALOG
+        return CATALOG
 
     def _deep_coding(self) -> TaskRequirement:
         return TaskRequirement(
             task_level="L3",
-            capability_minima=CapabilityMinima(reasoning=4, coding=5, tool_use=4),
-            hard_constraints=HardConstraints(
-                requires_tool_use=True,
-                requires_reasoning_mode=True,
-            ),
+            capability_minima=CapabilityMinima(),
+            hard_constraints=HardConstraints(),
         )
 
     def _snap98(self) -> tuple[CapacitySnapshot, CapacitySnapshot]:
@@ -848,7 +699,10 @@ class StrictJsonAndRenderingTests(unittest.TestCase):
 
     def test_rendering_is_deterministic(self) -> None:
         collectors = _collectors()
-        json_args = _select_args("--profile", "routine_coding", "--json")
+        directory = self.enterContext(tempfile.TemporaryDirectory())
+        requirement = Path(directory) / "requirement.json"
+        _ = requirement.write_text('{"task_level":"L0","capability_minima":{},"hard_constraints":{}}', encoding="utf-8")
+        json_args = _select_args("--requirement", str(requirement), "--json")
         first = io.StringIO()
         second = io.StringIO()
         self.assertEqual(
@@ -864,7 +718,7 @@ class StrictJsonAndRenderingTests(unittest.TestCase):
         self.assertEqual(
             json.dumps(document, indent=2, sort_keys=True) + "\n", first.getvalue()
         )
-        human_args = _select_args("--profile", "routine_coding")
+        human_args = _select_args("--requirement", str(requirement))
         human_first = io.StringIO()
         human_second = io.StringIO()
         self.assertEqual(
@@ -903,18 +757,18 @@ class StrictJsonAndRenderingTests(unittest.TestCase):
 def _select_with_example_policy_at(
     policy_path: Path, at: datetime, *extra: str
 ) -> tuple[int, str, str]:
-    """Run one ``select`` against a policy file at an explicit instant."""
+    """Run policy behavior against explicit synthetic local test inputs."""
+    from tests.test_config import synthetic_inputs
     out = io.StringIO()
     err = io.StringIO()
     original_stderr = sys.stderr
     sys.stderr = err
     try:
-        code = main(
-            _select_args("--selector-policy", str(policy_path), *extra),
-            stdout=out,
-            collectors=_collectors(),
-            clock=lambda: at,
-        )
+        with mock.patch("scarcity_router.selection_app.load_configured_artifacts", return_value=synthetic_inputs()):
+            code = main(
+                _select_args("--selector-policy", str(policy_path), *extra),
+                stdout=out, collectors=_collectors(), clock=lambda: at,
+            )
     finally:
         sys.stderr = original_stderr
     return code, out.getvalue(), err.getvalue()

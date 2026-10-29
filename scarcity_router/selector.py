@@ -883,33 +883,12 @@ def evaluate_capability_sufficiency(
 def capability_margin(
     minima: CapabilityMinima, capabilities: CapabilityAssessments
 ) -> int:
-    """The frozen ``balanced`` capability margin for a sufficient candidate.
-
-    Exactly ``SUM(effective_rating - required_minimum)`` over every capability
-    dimension that has an explicit minimum; unrequired dimensions do not
-    participate. All contributions are nonnegative because the candidate
-    already passed sufficiency. No averaging, no weights, no task-level
-    bonus, no confidence multiplier, no benchmark score and no hard-property
-    margin. A requirement with no capability minima yields 0.
-    """
-    _ = _v_instance_of(minima, CapabilityMinima, "capability_margin.minima")
-    _ = _v_instance_of(
-        capabilities, CapabilityAssessments, "capability_margin.capabilities"
+    """Reject the retired public scoring helper without fabricating a score."""
+    _ = minima, capabilities
+    raise SelectionContractValidationError(
+        "capability margin scoring was removed; use explicit requirements "
+        + "and evaluate supported capabilities against their evidence"
     )
-    assessments = dict(_assessment_items(capabilities))
-    margin = 0
-    for dimension, required in _minima_items(minima):
-        if required is None:
-            continue
-        effective = assessments[dimension].effective_rating
-        if effective is None:
-            raise SelectionContractValidationError(
-                "capability_margin: required dimension "
-                + f"{dimension!r} has no effective rating; margin is only "
-                + "defined for capability-sufficient candidates"
-            )
-        margin += effective - required
-    return margin
 
 
 # ── Candidate evaluation ──────────────────────────────────────────────────────
@@ -1122,11 +1101,6 @@ class CandidateEvaluation:
                     "candidate_evaluation: an eligible candidate carries no "
                     + "failure records"
                 )
-            if self.capability_margin is None:
-                raise SelectionContractValidationError(
-                    "candidate_evaluation: an eligible candidate carries its "
-                    + "capability margin"
-                )
             return
 
         _ = _v_enum(
@@ -1303,7 +1277,9 @@ def _evaluate_candidate(
             capability_failures=capability_failures,
             reason_codes=("capability_failed",),
         )
-    margin = capability_margin(requirement.capability_minima, entry.capabilities)
+    # No numerical suitability score is manufactured for a successful match.
+    # Explicit minima have already been checked against available evidence.
+    margin = None
 
     scarcity = assess_scarcity(entry, snapshots)
     unknown_decision = resource_policy.apply_unknown_capacity(scarcity)
@@ -1446,11 +1422,11 @@ class _EffortState(IntEnum):
     UNCONFIGURED = 1
 
 
-def _ranking_key(
+def candidate_ranking_key(
     evaluation: CandidateEvaluation,
     preference_order: tuple[ModelIdentity, ...],
     reasoning_effort: str | None,
-) -> tuple[int, int, int, int, tuple[_EffortState, tuple[int, ...]], int, int, str, str, str]:
+) -> tuple[int, int, int, tuple[_EffortState, tuple[int, ...]], int, int, str, str, str]:
     """The exact ``balanced`` ranking key (D-027, amended by D-032, D-035
     and D-037).
 
@@ -1464,10 +1440,12 @@ def _ranking_key(
        candidates only — since D-037 the penalty derives from the frozen
        strategic/tactical role blend, still ``(100 - effective)^2`` on
        scale 10000;
-    4. capability margin (lower wins);
-    5. known effort in normalized order, then unconfigured effort;
-    6. explicit preference order (listed before unlisted, then index);
-    7. stable ``(provider, model, variant)`` identity.
+    4. known effort in normalized order, then unconfigured effort;
+    5. explicit preference order (listed before unlisted, then index);
+    6. stable ``(provider, model, variant)`` identity.
+
+    Capability margins remain in legacy decision records, but are not a
+    measure of resource scarcity and do not determine candidate order.
     """
     scarcity = evaluation.scarcity_assessment
     penalty = 0
@@ -1488,11 +1466,6 @@ def _ranking_key(
     # candidate's full-price quota is exactly what the window exists to
     # avoid. The preference never bypasses eligibility stages.
     happy_class = 0 if evaluation.happy_hour_decision is not None else 1
-    margin = (
-        evaluation.capability_margin
-        if evaluation.capability_margin is not None
-        else 0
-    )
     preference_class, preference_index = _preference_key(
         preference_order, evaluation.identity
     )
@@ -1508,7 +1481,6 @@ def _ranking_key(
         capacity_class,
         happy_class,
         penalty,
-        margin,
         effort_key,
         preference_class,
         preference_index,
@@ -1539,8 +1511,8 @@ class SelectionDecision:
 
     evaluated_at: datetime
     requirement: TaskRequirement
-    catalog_version: int
-    catalog_updated_on: str
+    catalog_version: int | None
+    catalog_updated_on: str | None
     selector_mode: str
     resource_policy_version: int
     selected: CandidateEvaluation | None
@@ -1580,12 +1552,18 @@ class SelectionDecision:
         _ = _v_instance_of(
             self.requirement, TaskRequirement, "selection_decision.requirement"
         )
-        _ = _v_int(
-            self.catalog_version, "selection_decision.catalog_version", lo=1
-        )
-        _ = _v_nonempty_str(
-            self.catalog_updated_on, "selection_decision.catalog_updated_on"
-        )
+        if self.catalog_version is None:
+            if self.catalog_updated_on is not None:
+                raise SelectionContractValidationError(
+                    "selection_decision: runtime inventory has no catalog update date"
+                )
+        else:
+            _ = _v_int(
+                self.catalog_version, "selection_decision.catalog_version", lo=1
+            )
+            _ = _v_nonempty_str(
+                self.catalog_updated_on, "selection_decision.catalog_updated_on"
+            )
         _ = _v_enum(
             self.selector_mode, SELECTOR_MODES, "selection_decision.selector_mode"
         )
@@ -1757,6 +1735,9 @@ class SelectionDecision:
             "degraded": self.degraded,
             "reason_codes": list(self.reason_codes),
         }
+        if self.catalog_version is None:
+            out["decision_schema_version"] = 2
+            out["selection_input_kind"] = "runtime_inventory"
         if self.profile_id is not None:
             out["profile_id"] = self.profile_id
         if self.profile_policy_version is not None:
@@ -1905,11 +1886,30 @@ def select_model(
         )
         for entry in entries
     ]
+    return assemble_evaluations(
+        catalog=catalog, requirement=requirement, policy=policy, evaluated_at=evaluated_at,
+        evaluations=tuple(evaluations), profile_id=profile_id,
+        profile_policy_version=profile_policy_version,
+    )
+
+
+def assemble_evaluations(
+    *, catalog: ModelCatalog, requirement: TaskRequirement, policy: SelectorPolicy,
+    evaluated_at: datetime, evaluations: tuple[CandidateEvaluation, ...],
+    profile_id: str | None, profile_policy_version: int | None,
+) -> SelectionDecision:
+    """Assemble independently evaluated candidates using the selector's ordering."""
+    entries = sorted(catalog.entries, key=lambda entry: _identity_key(entry.identity))
+    if {_identity_key(entry.identity) for entry in entries} != {
+        _identity_key(item.identity) for item in evaluations
+    } or len(entries) != len(evaluations):
+        raise SelectionContractValidationError("candidate evaluations must match the catalog identities")
+    evaluations = tuple(sorted(evaluations, key=lambda item: _identity_key(item.identity)))
     eligible = [evaluation for evaluation in evaluations if evaluation.eligible]
     effort_by_identity = {entry.identity: entry.reasoning_effort for entry in entries}
     ranked = sorted(
         eligible,
-        key=lambda evaluation: _ranking_key(
+        key=lambda evaluation: candidate_ranking_key(
             evaluation, policy.preference_order, effort_by_identity[evaluation.identity]
         ),
     )

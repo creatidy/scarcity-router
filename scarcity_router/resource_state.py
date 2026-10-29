@@ -113,6 +113,16 @@ from typing import ClassVar, cast
 
 from .capacity import CapacityDiagnostic, CapacitySnapshot, CapacityWindow
 from .errors import CapacityValidationError
+from .runtime_version import validate_runtime_version
+
+
+def _v_opt_runtime_version(value: object) -> str | None:
+    if value is None:
+        return None
+    try:
+        return validate_runtime_version(value)
+    except ValueError:
+        raise CapacityValidationError("capabilities.context_evidence_runtime_version: invalid version") from None
 
 # ── Frozen value sets ─────────────────────────────────────────────────────────
 
@@ -778,6 +788,10 @@ class ExecutionCapabilities:
     #: rule applies). ``None`` is UNKNOWN — consumers keep the
     #: refuse-not-drop backstop.
     output_limit_control: bool | None = None
+    context_evidence_ref: str | None = None
+    context_evidence_valid_until: str | None = None
+    context_evidence_verified_at: str | None = None
+    context_evidence_runtime_version: str | None = None
 
     _REQUIRED: ClassVar[tuple[str, ...]] = ()
     _OPTIONAL: ClassVar[tuple[str, ...]] = (
@@ -790,6 +804,10 @@ class ExecutionCapabilities:
         "context_limit_tokens",
         "output_limit_tokens",
         "output_limit_control",
+        "context_evidence_ref",
+        "context_evidence_valid_until",
+        "context_evidence_verified_at",
+        "context_evidence_runtime_version",
     )
 
     def __post_init__(self) -> None:
@@ -802,6 +820,21 @@ class ExecutionCapabilities:
         _ = _v_opt_int(self.context_limit_tokens, "capabilities.context_limit_tokens", lo=1)
         _ = _v_opt_int(self.output_limit_tokens, "capabilities.output_limit_tokens", lo=1)
         _ = _v_opt_bool(self.output_limit_control, "capabilities.output_limit_control")
+        if self.context_evidence_ref is None and (self.context_evidence_valid_until is not None or self.context_evidence_verified_at is not None or self.context_evidence_runtime_version is not None):
+            raise CapacityValidationError("capabilities: context evidence requires a reference")
+        if self.context_evidence_ref is not None:
+            _ = _v_safe_id(self.context_evidence_ref, "capabilities.context_evidence_ref")
+            try:
+                _ = validate_runtime_version(self.context_evidence_runtime_version)
+            except ValueError:
+                raise CapacityValidationError("capabilities.context_evidence_runtime_version: invalid version") from None
+            _ = _v_ts(self.context_evidence_valid_until, "capabilities.context_evidence_valid_until")
+            _ = _v_ts(self.context_evidence_verified_at, "capabilities.context_evidence_verified_at")
+            if (self.context_evidence_valid_until is None or self.context_evidence_verified_at is None
+                    or self.context_evidence_verified_at >= self.context_evidence_valid_until):
+                raise CapacityValidationError("capabilities: invalid context evidence interval")
+            if self.context_limit_tokens is None:
+                raise CapacityValidationError("capabilities: context evidence requires a context limit")
 
     @classmethod
     def from_dict(cls, d: object) -> "ExecutionCapabilities":
@@ -828,6 +861,10 @@ class ExecutionCapabilities:
             output_limit_control=_v_opt_bool(
                 dd.get("output_limit_control"), "capabilities.output_limit_control"
             ),
+            context_evidence_ref=_v_opt_safe_id(dd.get("context_evidence_ref"), "capabilities.context_evidence_ref"),
+            context_evidence_valid_until=_v_opt_ts(dd.get("context_evidence_valid_until"), "capabilities.context_evidence_valid_until"),
+            context_evidence_verified_at=_v_opt_ts(dd.get("context_evidence_verified_at"), "capabilities.context_evidence_verified_at"),
+            context_evidence_runtime_version=_v_opt_runtime_version(dd.get("context_evidence_runtime_version")),
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -850,6 +887,11 @@ class ExecutionCapabilities:
             out["output_limit_tokens"] = self.output_limit_tokens
         if self.output_limit_control is not None:
             out["output_limit_control"] = self.output_limit_control
+        if self.context_evidence_ref is not None:
+            out["context_evidence_ref"] = self.context_evidence_ref
+            out["context_evidence_valid_until"] = self.context_evidence_valid_until
+            out["context_evidence_verified_at"] = self.context_evidence_verified_at
+            out["context_evidence_runtime_version"] = self.context_evidence_runtime_version
         return out
 
 

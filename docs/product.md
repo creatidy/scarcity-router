@@ -32,7 +32,7 @@ budget in the current selector.
 Scarcity Router recommends the least scarce model that satisfies the task. It
 combines four independent inputs:
 
-- a curated, multidimensional model capability catalog;
+- exact resource identities and applicable evidenced capabilities;
 - provider-independent task requirements and hard constraints;
 - measured runtime capacity and health;
 - user reservation policy and temporary preferences.

@@ -36,11 +36,12 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import ClassVar, cast, override
 
-from .errors import ApplicationInputError
+from .errors import ApplicationInputError, LegacyProfileInputError
 from .machine_api import (
     ENVELOPE_SCHEMA_VERSION,
     internal_error_payload,
     invalid_request_payload,
+    legacy_profile_payload,
     parse_selection_document,
     parse_simulation_document,
     selection_envelope,
@@ -122,6 +123,8 @@ class RestRequestHandler(BaseHTTPRequestHandler):
         try:
             self._require_valid_host()
             self._process()
+        except LegacyProfileInputError:
+            self._send_json(HTTPStatus.BAD_REQUEST, legacy_profile_payload())
         except ApplicationInputError:
             self._send_json(HTTPStatus.BAD_REQUEST, invalid_request_payload())
         except Exception:

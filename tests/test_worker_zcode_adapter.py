@@ -349,6 +349,14 @@ class DiscoveryTests(unittest.TestCase):
             (self.harness.adapter.lane_resource_id,),
         )
 
+    def test_prerelease_identity_is_preserved_across_runtime_upgrade(self) -> None:
+        self.harness.spawner.version = SUPPORTED_VERSION + "-alpha.1"
+        first = self.harness.adapter.observe_inventory()
+        self.assertEqual(SUPPORTED_VERSION + "-alpha.1", first.runtime_version)
+        self.harness.spawner.version = SUPPORTED_VERSION + "-alpha.2"
+        second = self.harness.adapter.observe_inventory()
+        self.assertEqual(SUPPORTED_VERSION + "-alpha.2", second.runtime_version)
+
     def test_unsupported_version_is_unavailable(self) -> None:
         self.harness.close()
         self.harness = Harness(version="0.15.2")

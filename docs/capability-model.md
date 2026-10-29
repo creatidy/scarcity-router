@@ -17,15 +17,18 @@ TaskSpec/harness/data-authority contract; #175 owns the exact coverage/mapping
 study and producer-consumer acceptance. No second quality scale or new fields
 are specified here.
 
-MI owns public model/interface/benchmark/offer evidence. Router's local
-catalog and reviewed adoption floors remain a working bootstrap/projection
-until #176 proves admitted versioned snapshot consumption and #185 migration.
-Retain provenance and calibration version; conflicting/expired knowledge must
-follow the future approved admission contract, never renew an expired
-promotion merely because refresh failed. No Router crawler or independent
+MI owns public model/interface/benchmark/offer evidence. D-084 removes the
+local static bootstrap catalog, adoption floors and inferred rating matrix.
+Router applies explicit requirements to applicable evidence and preserves
+unknowns. Retain exact provenance; conflicting or expired knowledge must
+not be promoted merely because refresh failed. No Router crawler or independent
 public-facts database, and no private quota/credentials sent to MI. Runtime
 outcome calibration (#177) needs local contextual evidence and human review;
 raw success percentages are not causal capability ratings.
+
+Historical examples below describing the removed model catalog, fixed profile
+assignments or capability-margin ordering are superseded by D-084; they are
+not executable model facts or current routing policy.
 
 ## Task levels
 

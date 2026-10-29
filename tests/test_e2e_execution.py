@@ -226,7 +226,7 @@ class ServerDirectEndToEndTests(_ServerDirectWorld):
             "POST",
             "/v1/chat/completions",
             {
-                "model": "sr-pin:zai-plan-1/zai/glm-5.3/max",
+                "model": "sr-pin:zai-plan-1/zai/glm-5.3/unconfigured",
                 "messages": [{"role": "user", "content": PROMPT_MARKER}],
             },
             headers={"Authorization": f"Bearer {self.client_key}"},
@@ -278,7 +278,7 @@ class ServerDirectEndToEndTests(_ServerDirectWorld):
         connection = self.open_stream(
             "/v1/chat/completions",
             {
-                "model": "sr-pin:zai-plan-1/zai/glm-5.3/max",
+                "model": "sr-pin:zai-plan-1/zai/glm-5.3/unconfigured",
                 "messages": [{"role": "user", "content": "hi"}],
                 "stream": True,
             },
@@ -308,7 +308,7 @@ class ServerDirectEndToEndTests(_ServerDirectWorld):
             "POST",
             "/v1/chat/completions",
             {
-                "model": "sr-pin:zai-plan-1/zai/glm-5.3/max",
+                "model": "sr-pin:zai-plan-1/zai/glm-5.3/unconfigured",
                 "messages": [{"role": "user", "content": "hi"}],
             },
             headers={"Authorization": f"Bearer {self.client_key}"},
@@ -546,7 +546,7 @@ class WorkerBridgedExecutionTests(WorkerWorld):
                 "POST",
                 "/v1/chat/completions",
                 {
-                    "model": "sr-pin:e2e-ollama/zai/glm-5.3/max",
+                    "model": "sr-pin:e2e-ollama/zai/glm-5.3/unconfigured",
                     "messages": [{"role": "user", "content": PROMPT_MARKER}],
                 },
                 headers={"Authorization": f"Bearer {self.client_key}"},
@@ -636,7 +636,7 @@ class WorkerBridgedExecutionTests(WorkerWorld):
                 "POST",
                 "/v1/chat/completions",
                 {
-                    "model": "sr-pin:e2e-ollama/zai/glm-5.3/max",
+                    "model": "sr-pin:e2e-ollama/zai/glm-5.3/unconfigured",
                     "messages": [{"role": "user", "content": PROMPT_MARKER}],
                 },
                 headers={"Authorization": f"Bearer {self.client_key}"},
@@ -710,7 +710,7 @@ class WorkerBridgedExecutionTests(WorkerWorld):
                 "POST",
                 "/v1/chat/completions",
                 {
-                    "model": "sr-pin:e2e-ollama/zai/glm-5.3/max",
+                    "model": "sr-pin:e2e-ollama/zai/glm-5.3/unconfigured",
                     "messages": [{"role": "user", "content": PROMPT_MARKER}],
                 },
                 headers={"Authorization": f"Bearer {self.client_key}"},
@@ -782,7 +782,7 @@ class WorkerBridgedExecutionTests(WorkerWorld):
                 "POST",
                 "/v1/chat/completions",
                 {
-                    "model": "sr-pin:e2e-ollama/zai/glm-5.3/max",
+                    "model": "sr-pin:e2e-ollama/zai/glm-5.3/unconfigured",
                     "messages": [{"role": "user", "content": "hi"}],
                 },
                 headers={"Authorization": f"Bearer {self.client_key}"},

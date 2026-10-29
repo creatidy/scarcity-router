@@ -28,13 +28,13 @@ def prepare_executable_completion(
             raise ValueError
         envelope = cast(dict[str, object], response)
         if (set(envelope) != {"schema_version", "route", "execution"}
-            or type(envelope["schema_version"]) is not int or envelope["schema_version"] != 1):
+            or type(envelope["schema_version"]) is not int or envelope["schema_version"] not in (1, 2)):
             raise ValueError
         if not isinstance(envelope["route"], dict) or not isinstance(envelope["execution"], dict):
             raise ValueError
         route = cast(dict[str, object], envelope["route"])
         if (route.get("status") != "selected" or type(route.get("schema_version")) is not int
-            or route["schema_version"] != 1):
+            or route["schema_version"] != envelope["schema_version"]):
             raise ValueError
         execution = cast(dict[str, object], envelope["execution"])
         if set(execution) != {"model", "reasoning_effort", "execution_requirements"}:
@@ -44,14 +44,16 @@ def prepare_executable_completion(
         if pin != target:
             raise ValueError
         context = ExecutableRequirements.from_dict(execution["execution_requirements"])
-        if context.reasoning_effort != execution["reasoning_effort"]:
+        if (context.schema_version != envelope["schema_version"]
+                or context.reasoning_effort != execution["reasoning_effort"]):
             raise ValueError
         if context.binding.profile_alias is not None:
             if context.binding.profile_alias != _model:
                 raise ValueError
         elif _model.startswith("sr-pin:"):
             expected_pin = parse_pinned_reference(_model)
-            if expected_pin.resource_id != pin.resource_id or expected_pin.model != pin.model:
+            if (expected_pin.resource_id != pin.resource_id or expected_pin.model != pin.model
+                    or (expected_pin.reasoning_effort is not None and expected_pin.reasoning_effort != pin.reasoning_effort)):
                 raise ValueError
         elif context.binding.explicit_model is None or context.binding.explicit_model.model != _model:
             raise ValueError
@@ -59,12 +61,27 @@ def prepare_executable_completion(
             raise ValueError
         if expected_binding.pinned_target is not None:
             original = expected_binding.pinned_target
-            if original.resource_id != pin.resource_id or original.model != pin.model:
+            if (original.resource_id != pin.resource_id or original.model != pin.model
+                    or (original.reasoning_effort is not None and original.reasoning_effort != pin.reasoning_effort)):
                 raise ValueError
             expected_binding = replace(expected_binding, pinned_target=pin)
         if merge_binding(expected_binding, context.binding) != context.binding:
             raise ValueError
         selection = cast(dict[str, object], route["selection"])
+        if envelope["schema_version"] == 2:
+            if (selection.get("decision_schema_version") != 2
+                    or selection.get("selection_input_kind") != "runtime_inventory"
+                    or "catalog_version" not in selection or "catalog_updated_on" not in selection
+                    or selection.get("catalog_version") is not None
+                    or selection.get("catalog_updated_on") is not None
+                    or pin.reasoning_effort != execution["reasoning_effort"]):
+                raise ValueError
+        elif (selection.get("decision_schema_version") is not None
+              or selection.get("selection_input_kind") is not None
+              or type(selection.get("catalog_version")) is not int
+              or cast(int, selection["catalog_version"]) < 1
+              or not isinstance(selection.get("catalog_updated_on"), str)):
+            raise ValueError
         selected = cast(dict[str, object], selection["selected"])
         selected_requirement = tighten_requirement(context.requirement, TaskRequirement(
             task_level=context.requirement.task_level, capability_minima=CapabilityMinima(),

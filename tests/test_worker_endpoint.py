@@ -766,6 +766,26 @@ class EndpointContinuationTests(EndpointTestCase):
         )
         return worker
 
+    def test_live_capability_mapping_includes_v3_but_not_unknown_resource(self) -> None:
+        _ = self._connect_v3()
+        _ = self.bound_session()
+        self.assertEqual(frozenset((RESOURCE_ID,)), self.endpoint.continuation_capable_resource_ids(
+            (RESOURCE_ID, "unknown-resource")
+        ))
+
+    def test_live_v2_worker_is_not_continuation_capable(self) -> None:
+        worker = self.connect_worker()
+        code = self.store.begin_pairing(label="test-v2")
+        worker.send_raw({"type": "pair_request", "pairing_code": code.pairing_code,
+                         "supported_versions": [2, 1], "device_label": "test-v2"})
+        answer = worker.read_server_message()
+        assert isinstance(answer, PairResultMessage)
+        self.assertEqual(2, answer.negotiated_version)
+        self.assign(RESOURCE_ID, answer.worker_id)
+        _ = worker.send_state_report(build_worker_report(worker_id=answer.worker_id, resource_id=RESOURCE_ID))
+        _ = self.bound_session()
+        self.assertEqual(frozenset(), self.endpoint.continuation_capable_resource_ids((RESOURCE_ID,)))
+
     def _dispatch(self, session: WorkerSession) -> tuple[str, PendingAttempt]:
         call: AdapterCall = _worker_call()
         message = ExecuteMessage(

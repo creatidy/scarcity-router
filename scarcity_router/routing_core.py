@@ -131,7 +131,7 @@ import hashlib
 import json
 import re
 import unicodedata
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, ClassVar, TypeVar, cast
@@ -142,6 +142,7 @@ if TYPE_CHECKING:
 from .capacity import CapacitySnapshot
 from .eligibility import ExecutionEligibility
 from .errors import RouteContractValidationError
+from .runtime_version import validate_runtime_version
 from .execution_assurance import ExecutionAssurance, NON_PAID_REFUSAL_CODES
 from .policy import ReplenishmentState
 from .resource_state import (
@@ -156,8 +157,11 @@ from .resource_state import (
     route_output_code,
 )
 from .selector import (
+    CandidateEvaluation,
     SelectionDecision,
     SelectorPolicy,
+    assemble_evaluations,
+    candidate_ranking_key,
     canonical_instant,
     evaluate_capability_sufficiency,
     evaluate_hard_constraints,
@@ -169,6 +173,7 @@ from .selection_types import (
     EvidenceRef,
     HardConstraints,
     ModelCatalog,
+    ModelCatalogEntry,
     ModelIdentity,
     ModelRef,
     TaskProfileCatalog,
@@ -196,6 +201,8 @@ ROUTE_EXCLUSION_STAGES: tuple[str, ...] = (
     "authorization",
     "availability",
     "compatibility",
+    "capacity",
+    "policy",
 )
 
 # Closed target-exclusion reason vocabulary, grouped by stage. Dimension and
@@ -204,6 +211,7 @@ ROUTE_EXCLUSION_STAGES: tuple[str, ...] = (
 TARGET_EXCLUSION_REASON_CODES: frozenset[str] = frozenset({
     # binding
     "capability_unassessed",
+    "reasoning_effort_unverified",
     # authorization
     "unauthorized_provider",
     "unauthorized_channel",
@@ -226,10 +234,15 @@ TARGET_EXCLUSION_REASON_CODES: frozenset[str] = frozenset({
     "output_limit_unknown",
     "output_limit_insufficient",
     "output_limit_unenforceable",
+    "capacity_unavailable",
+    "capacity_unknown_blocked",
+    "policy_blocked",
+    "reservation_blocked",
+    "reservation_unknown",
 }) | NON_PAID_REFUSAL_CODES
 
 _STAGE_REASONS: dict[str, frozenset[str]] = {
-    "binding": frozenset({"capability_unassessed"}),
+    "binding": frozenset({"capability_unassessed", "reasoning_effort_unverified"}),
     "authorization": frozenset({
         "unauthorized_provider",
         "unauthorized_channel",
@@ -257,6 +270,8 @@ _STAGE_REASONS: dict[str, frozenset[str]] = {
         "output_limit_insufficient",
         "output_limit_unenforceable",
     }),
+    "capacity": frozenset({"capacity_unavailable", "capacity_unknown_blocked"}),
+    "policy": frozenset({"policy_blocked", "reservation_blocked", "reservation_unknown"}),
 }
 
 # Route-level decision reason codes. Model-level selection reasons live in
@@ -278,6 +293,9 @@ ADMISSION_REASON_CODES: frozenset[str] = frozenset({
     "pinned_request_failed",
     "hard_constraint_failed",
     "capability_failed",
+    "reasoning_effort_unverified",
+    "capacity_failed",
+    "policy_failed",
 })
 
 # Entitlement classes with a marginal monetary spend: the only ones a
@@ -873,15 +891,18 @@ class PinnedTarget:
     resource_id: str
     model: ModelIdentity
     decision_id: str | None = None
+    reasoning_effort: str | None = None
 
     _REQUIRED: ClassVar[tuple[str, ...]] = ("resource_id", "model")
-    _OPTIONAL: ClassVar[tuple[str, ...]] = ("decision_id",)
+    _OPTIONAL: ClassVar[tuple[str, ...]] = ("decision_id", "reasoning_effort")
 
     def __post_init__(self) -> None:
         _ = _v_safe_id(self.resource_id, "pinned_target.resource_id")
         _ = _v_instance_of(self.model, ModelIdentity, "pinned_target.model")
         if self.decision_id is not None:
             _ = _v_safe_id(self.decision_id, "pinned_target.decision_id")
+        if self.reasoning_effort is not None:
+            _ = _v_safe_id(self.reasoning_effort, "pinned_target.reasoning_effort")
 
     @classmethod
     def from_dict(cls, d: object) -> "PinnedTarget":
@@ -894,6 +915,8 @@ class PinnedTarget:
                 if not _optional_present(dd, "decision_id")
                 else _v_safe_id(dd["decision_id"], "pinned_target.decision_id")
             ),
+            reasoning_effort=(None if not _optional_present(dd, "reasoning_effort")
+                              else _v_safe_id(dd["reasoning_effort"], "pinned_target.reasoning_effort")),
         )
 
     @classmethod
@@ -913,6 +936,7 @@ class PinnedTarget:
             resource_id=target.resource.resource_id,
             model=target.model,
             decision_id=decision_id,
+            reasoning_effort=target.evidenced_reasoning_effort,
         )
 
     @classmethod
@@ -934,6 +958,8 @@ class PinnedTarget:
                 "routing_profile",
                 "promotion_sources",
                 "shares_quota_pool_with_selected",
+                "context_evidence",
+                "reasoning_effort",
             ),
             "route_target",
         )
@@ -949,6 +975,8 @@ class PinnedTarget:
             ),
             model=ModelIdentity.from_dict(dd["model"]),
             decision_id=decision_id,
+            reasoning_effort=(None if not _optional_present(dd, "reasoning_effort")
+                              else _v_safe_id(dd["reasoning_effort"], "route_target.reasoning_effort")),
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -958,6 +986,8 @@ class PinnedTarget:
         }
         if self.decision_id is not None:
             out["decision_id"] = self.decision_id
+        if self.reasoning_effort is not None:
+            out["reasoning_effort"] = self.reasoning_effort
         return out
 
 
@@ -1350,6 +1380,12 @@ def _bind_identities(
             identity.variant is None
             or identity.variant == catalog_entry.identity.variant
         )
+        and (
+            catalog.catalog_version is not None or identity.variant is not None
+            or catalog_entry.identity.variant == "unconfigured"
+            or (catalog_entry.capacity_binding_resources is not None
+                and identity.resource_id in catalog_entry.capacity_binding_resources)
+        )
     )
 
 
@@ -1702,6 +1738,16 @@ def _evaluate_resource(
     every resource regardless of the gate outcome so expired preferences
     stay explainable.
     """
+    if (entry.capabilities.context_evidence_valid_until is not None
+            and (canonical_instant(evaluated_at) >= entry.capabilities.context_evidence_valid_until
+                 or (entry.capabilities.context_evidence_verified_at is not None
+                     and canonical_instant(evaluated_at) < entry.capabilities.context_evidence_verified_at))):
+        entry = replace(entry, capabilities=replace(
+            entry.capabilities, context_limit_tokens=None,
+            context_evidence_ref=None, context_evidence_valid_until=None,
+            context_evidence_verified_at=None,
+            context_evidence_runtime_version=None,
+        ))
     bound = _bind_identities(entry, catalog)
     promotion_sources, _ = _promotion_preference(entry, evaluated_at)
     if not bound:
@@ -1797,7 +1843,10 @@ def _evaluate_resource(
             failure = _compatibility_failure(
                 entry, request, cells, requirement, *_request_output_context(request, entry, catalog),
                 configured_reasoning_required=configured_reasoning_required or (
-                    candidate.reasoning_effort is not None and (require_catalog_effort or identity in (mi_effort_required or ()))
+                    candidate.reasoning_effort is not None
+                    and (catalog.catalog_version is not None or (candidate.capacity_binding_resources is not None
+                         and entry.identity.resource_id in candidate.capacity_binding_resources))
+                    and (require_catalog_effort or identity in (mi_effort_required or ()))
                 ),
             )
             if not failure[0]:
@@ -1850,6 +1899,12 @@ class RouteTarget:
     routing_profile: str | None = None
     promotion_sources: tuple[str, ...] = ()
     shares_quota_pool_with_selected: bool = False
+    context_evidence_ref: str | None = None
+    context_evidence_valid_until: str | None = None
+    context_evidence_verified_at: str | None = None
+    context_evidence_runtime_version: str | None = None
+    context_limit_tokens: int | None = None
+    evidenced_reasoning_effort: str | None = None
 
     def __post_init__(self) -> None:
         _ = _v_instance_of(self.resource, ResourceIdentity, "route_target.resource")
@@ -1864,6 +1919,23 @@ class RouteTarget:
             self.shares_quota_pool_with_selected,
             "route_target.shares_quota_pool_with_selected",
         )
+        if self.context_evidence_ref is not None:
+            _ = _v_safe_id(self.context_evidence_ref, "route_target.context_evidence_ref")
+            if self.context_evidence_valid_until is None or self.context_evidence_verified_at is None or self.context_evidence_runtime_version is None or self.context_limit_tokens is None:
+                raise RouteContractValidationError("route_target: incomplete context evidence")
+            try:
+                _ = validate_runtime_version(self.context_evidence_runtime_version)
+            except ValueError:
+                raise RouteContractValidationError("route_target: invalid runtime version") from None
+            _ = _parse_canonical_ts(self.context_evidence_valid_until, "route_target.context_evidence_valid_until")
+            _ = _parse_canonical_ts(self.context_evidence_verified_at, "route_target.context_evidence_verified_at")
+            if self.context_evidence_verified_at >= self.context_evidence_valid_until:
+                raise RouteContractValidationError("route_target: invalid context evidence interval")
+            _ = _v_int(self.context_limit_tokens, "route_target.context_limit_tokens", lo=1)
+        elif self.context_evidence_valid_until is not None or self.context_evidence_verified_at is not None or self.context_evidence_runtime_version is not None or self.context_limit_tokens is not None:
+            raise RouteContractValidationError("route_target: incomplete context evidence")
+        if self.evidenced_reasoning_effort is not None:
+            _ = _v_safe_id(self.evidenced_reasoning_effort, "route_target.reasoning_effort")
 
     def to_dict(self) -> dict[str, object]:
         out: dict[str, object] = {
@@ -1877,6 +1949,15 @@ class RouteTarget:
             out["promotion_sources"] = list(self.promotion_sources)
         if self.shares_quota_pool_with_selected:
             out["shares_quota_pool_with_selected"] = True
+        if self.context_evidence_ref is not None:
+            out["context_evidence"] = {
+                "kind": "administrator_attested", "reference": self.context_evidence_ref,
+                "valid_until": self.context_evidence_valid_until, "input_tokens": self.context_limit_tokens,
+                "verified_at": self.context_evidence_verified_at,
+                "runtime_version": self.context_evidence_runtime_version,
+            }
+        if self.evidenced_reasoning_effort is not None:
+            out["reasoning_effort"] = self.evidenced_reasoning_effort
         return out
 
 
@@ -1898,6 +1979,7 @@ class TargetExclusion:
     channel: str | None = None
     provider: str | None = None
     model: str | None = None
+    variant: str | None = None
     health_status: str | None = None
     freshness: str | None = None
     compatibility_feature: str | None = None
@@ -1909,6 +1991,7 @@ class TargetExclusion:
         "channel",
         "provider",
         "model",
+        "variant",
         "health_status",
         "freshness",
         "compatibility_feature",
@@ -1940,6 +2023,8 @@ class TargetExclusion:
             _ = _v_safe_id(self.provider, "target_exclusion.provider")
         if self.model is not None:
             _ = _v_safe_id(self.model, "target_exclusion.model")
+        if self.variant is not None:
+            _ = _v_safe_id(self.variant, "target_exclusion.variant")
         if self.health_status is not None:
             _ = _v_enum(
                 self.health_status,
@@ -2016,6 +2101,10 @@ class TargetExclusion:
                 if not _optional_present(dd, "model")
                 else _v_safe_id(dd["model"], "target_exclusion.model")
             ),
+            variant=(
+                None if not _optional_present(dd, "variant")
+                else _v_safe_id(dd["variant"], "target_exclusion.variant")
+            ),
             health_status=(
                 None
                 if not _optional_present(dd, "health_status")
@@ -2065,6 +2154,8 @@ class TargetExclusion:
             out["provider"] = self.provider
         if self.model is not None:
             out["model"] = self.model
+        if self.variant is not None:
+            out["variant"] = self.variant
         if self.health_status is not None:
             out["health_status"] = self.health_status
         if self.freshness is not None:
@@ -2136,15 +2227,20 @@ class RouteDecision:
             "route_decision.schema_version",
             lo=ROUTE_DECISION_SCHEMA_VERSION,
         )
-        if self.schema_version != ROUTE_DECISION_SCHEMA_VERSION:
+        if self.schema_version not in (1, 2):
             raise RouteContractValidationError(
                 f"route_decision.schema_version: expected int "
-                + f"{ROUTE_DECISION_SCHEMA_VERSION}, got {self.schema_version!r}"
+                + f"1 or 2, got {self.schema_version!r}"
             )
         _ = _v_enum(self.status, ROUTE_STATUSES, "route_decision.status")
         _ = _v_instance_of(
             self.selection, SelectionDecision, "route_decision.selection"
         )
+        expected_schema = 2 if self.selection.catalog_version is None else 1
+        if self.schema_version != expected_schema:
+            raise RouteContractValidationError(
+                "route_decision.schema_version does not match selection provenance"
+            )
         _ = _v_int(self.registry_revision, "route_decision.registry_revision", lo=0)
         _ = _v_text(
             self.registry_generated_at,
@@ -2454,6 +2550,10 @@ class RouteRequest:
             ReplenishmentState,
             "route_request.replenishment_states",
         )
+        if self.catalog.catalog_version is None and self.replenishment_states:
+            raise RouteContractValidationError(
+                "runtime routing cannot associate provider-only replenishment observations with an exact resource"
+            )
         reports = _v_tuple_of(
             self.eligibility_reports,
             ExecutionEligibility,
@@ -2631,6 +2731,7 @@ def _route_target(
     identity: ModelIdentity,
     routing_profile: str | None,
     shares_with_selected: bool,
+    evidenced_reasoning_effort: str | None = None,
 ) -> RouteTarget:
     resource = gate.entry.identity
     return RouteTarget(
@@ -2640,6 +2741,13 @@ def _route_target(
         routing_profile=routing_profile,
         promotion_sources=gate.promotion_sources,
         shares_quota_pool_with_selected=shares_with_selected,
+        context_evidence_ref=gate.entry.capabilities.context_evidence_ref,
+        context_evidence_valid_until=gate.entry.capabilities.context_evidence_valid_until,
+        context_evidence_verified_at=gate.entry.capabilities.context_evidence_verified_at,
+        context_evidence_runtime_version=gate.entry.capabilities.context_evidence_runtime_version,
+        context_limit_tokens=(gate.entry.capabilities.context_limit_tokens
+                              if gate.entry.capabilities.context_evidence_ref is not None else None),
+        evidenced_reasoning_effort=evidenced_reasoning_effort,
     )
 
 
@@ -2674,7 +2782,8 @@ def _order_key(gate: _ResourceGate) -> tuple[int, str]:
 
 
 def _narrowed_catalog(
-    request: RouteRequest, routable_keys: set[tuple[str, str, str]]
+    request: RouteRequest, routable_keys: set[tuple[str, str, str]],
+    gates: Sequence[_ResourceGate],
 ) -> ModelCatalog:
     """The narrowed catalog view: the same versioned artifact, fewer entries.
 
@@ -2687,19 +2796,65 @@ def _narrowed_catalog(
         routable_keys = routable_keys & {
             _identity_key(identity) for identity in request.candidate_identities
         }
+    entries: list[ModelCatalogEntry] = []
+    for entry in request.catalog.entries:
+        key = _identity_key(entry.identity)
+        if key not in routable_keys:
+            continue
+        if request.catalog.catalog_version is None:
+            matching_gates = [
+                gate for gate in gates
+                if gate.qualified and any(_identity_key(item) == key for item in gate.bound_identities)
+                and (request.request.pinned_target is None
+                     or gate.entry.identity.resource_id == request.request.pinned_target.resource_id)
+            ]
+            capabilities = [gate.entry.capabilities for gate in matching_gates]
+            inputs = [cap.context_limit_tokens for cap in capabilities]
+            outputs = [cap.output_limit_tokens for cap in capabilities]
+            tools = [cap.tool_calls for cap in capabilities]
+            input_bound = min(cast(list[int], inputs)) if inputs and all(v is not None for v in inputs) else None
+            output_bound = min(cast(list[int], outputs)) if outputs and all(v is not None for v in outputs) else None
+            hard = entry.hard_properties
+            tool_support = (
+                False if hard.supports_tool_use is False or any(value is False for value in tools)
+                else True if request.request.requires_tool_calls and matching_gates
+                else True if tools and all(value is True for value in tools)
+                else hard.supports_tool_use
+            )
+            if hard.input_context_tokens is not None and input_bound is not None:
+                input_bound = min(hard.input_context_tokens, input_bound)
+            if hard.output_tokens is not None and output_bound is not None:
+                output_bound = min(hard.output_tokens, output_bound)
+            entry = replace(entry, hard_properties=replace(
+                hard,
+                supports_tool_use=tool_support,
+                input_context_tokens=input_bound if input_bound is not None else hard.input_context_tokens,
+                output_tokens=output_bound if output_bound is not None else hard.output_tokens,
+            ))
+            if (len(matching_gates) == 1 and entry.reasoning_effort is not None
+                    and (entry.capacity_binding_resources is None
+                         or matching_gates[0].entry.identity.resource_id not in entry.capacity_binding_resources)):
+                # Discovery on one source is not an effort attestation for a
+                # separately configured execution resource.
+                entry = replace(entry, reasoning_effort=None, hard_properties=replace(
+                    entry.hard_properties, supports_reasoning_mode=None,
+                ))
+            if len(matching_gates) == 1:
+                entry = replace(entry, capacity_bindings=dict(entry.resource_capacity_bindings).get(
+                    matching_gates[0].entry.identity.resource_id
+                ))
+            elif entry.capacity_bindings is not None and (
+                entry.capacity_binding_resources is None or any(
+                    gate.entry.identity.resource_id not in entry.capacity_binding_resources
+                    for gate in matching_gates
+                )
+            ):
+                entry = replace(entry, capacity_bindings=None)
+        entries.append(entry)
     return ModelCatalog(
         catalog_version=request.catalog.catalog_version,
         updated_on=request.catalog.updated_on,
-        entries=tuple(
-            sorted(
-                (
-                    entry
-                    for entry in request.catalog.entries
-                    if _identity_key(entry.identity) in routable_keys
-                ),
-                key=lambda entry: _identity_key(entry.identity),
-            )
-        ),
+        entries=tuple(sorted(entries, key=lambda entry: _identity_key(entry.identity))),
     )
 
 
@@ -2708,16 +2863,17 @@ def _run_selection(
     catalog: ModelCatalog,
     requirement: TaskRequirement,
     profile_id: str | None,
+    *, resource_snapshots: tuple[CapacitySnapshot, ...] | None = None,
 ) -> SelectionDecision:
     """Run the UNMODIFIED balanced selector over the narrowed catalog view."""
     return select_model(
         catalog=catalog,
         requirement=requirement,
         policy=request.policy,
-        snapshots=request.capacity_snapshots,
+        snapshots=request.capacity_snapshots if resource_snapshots is None else resource_snapshots,
         evaluated_at=request.evaluated_at,
         replenishment_states=request.replenishment_states,
-        eligibility_reports=request.eligibility_reports,
+        eligibility_reports=request.eligibility_reports if resource_snapshots is None else (),
         profile_id=profile_id,
         profile_policy_version=(
             request.profile_policy_version
@@ -2726,6 +2882,21 @@ def _run_selection(
         ),
         policy_blocked_identities=request.mi_blocked,
     )
+
+
+def _resource_snapshots(gate: _ResourceGate, catalog_entry: ModelCatalogEntry) -> tuple[CapacitySnapshot, ...]:
+    """Project only the selected resource's own explicitly bound telemetry."""
+    observation = gate.entry.observation
+    if observation is None or catalog_entry.capacity_bindings is None:
+        return ()
+    scopes = {item.scope_id for item in catalog_entry.capacity_bindings}
+    windows = tuple(fact.window for fact in observation.quota_facts
+                    if fact.observation_class == "provider_telemetry" and fact.window.scope_id in scopes)
+    return (CapacitySnapshot(
+        schema_version=3, provider=gate.entry.identity.provider, source="resource-observation",
+        retrieved_at=observation.observed_at, status=observation.health.status,
+        windows=windows, diagnostics=observation.health.diagnostics,
+    ),)
 
 
 def _expired_promotion_sources(
@@ -2757,6 +2928,7 @@ def _no_solution_decision(
     relaxed and no candidate is silently substituted.
     """
     return RouteDecision(
+        schema_version=2 if request.catalog.catalog_version is None else 1,
         status=ROUTE_STATUS_NO_SOLUTION,
         selection=selection,
         registry_revision=request.registry_snapshot.revision,
@@ -2829,13 +3001,37 @@ def _mi_inputs(request: RouteRequest, pin: PinnedTarget | None = None) -> tuple[
 
     mi = request.mi_admission
     assert mi is not None
-    catalog, blocked = mi.prepare(request.catalog, request.evaluated_at)
+    local_catalog = request.catalog
+    if local_catalog.catalog_version is None:
+        requirement, _profile_id = _resolve_requirement(request)
+        effective = _effective_authorization(
+            request.admin_constraints, request.client_authorization, request.routing_profile
+        )
+        gates = tuple(
+            _evaluate_resource(
+                entry, request.catalog, effective, request.request,
+                request.compatibility_cells, requirement,
+                () if request.catalog.catalog_version is None else request.eligibility_reports,
+                request.evaluated_at, request.continuation_capable_resource_ids,
+                execution_assurances=request.execution_assurances,
+                available_adapter_resource_ids=request.available_adapter_resource_ids,
+                mi_blocked=request.mi_blocked,
+                mi_effort_required=frozenset(identity for identity, _channel in request.mi_channels),
+            )
+            for entry in request.registry_snapshot.entries
+        )
+        local_catalog = _narrowed_catalog(
+            request, {_identity_key(entry.identity) for entry in request.catalog.entries}, gates
+        )
+    catalog, blocked = mi.prepare(local_catalog, request.evaluated_at)
     context = canonical({
-        "mode": "d082-admission/1",
+        "mode": "runtime-inventory-admission/2" if request.catalog.catalog_version is None else "d082-admission/1",
         "operation": "admit" if pin is not None else "route",
         "admission_reference": asdict(mi.expected),
         "evaluated_at": request.evaluated_at.isoformat(),
-        "bootstrap_catalog": request.catalog.to_dict(), "evaluated_catalog": catalog.to_dict(),
+        **({"selection_input": request.catalog.to_dict()} if request.catalog.catalog_version is None
+           else {"bootstrap_catalog": request.catalog.to_dict()}),
+        "evaluated_catalog": catalog.to_dict(),
         "profiles": request.profiles.to_dict(), "profile_policy_version": request.profile_policy_version,
         "registry": request.registry_snapshot.to_dict(), "policy": request.policy.to_dict(),
         "capacity": [item.to_dict() for item in request.capacity_snapshots],
@@ -2855,8 +3051,12 @@ def _mi_inputs(request: RouteRequest, pin: PinnedTarget | None = None) -> tuple[
         "blocked": [item.to_dict() for item in sorted(request.mi_blocked | blocked, key=_identity_key)],
         "channel_constraints": [{"identity": identity.to_dict(), "channel": channel} for identity, channel in request.mi_channels],
     })
+    admitted_channels = (
+        tuple((binding.identity, binding.subject.channel) for binding in mi.captured[1])
+        if mi.captured[0] is not None else ()
+    )
     return replace(request, catalog=catalog, mi_admission=None, mi_blocked=request.mi_blocked | blocked,
-        mi_channels=(*request.mi_channels, *((binding.identity, binding.subject.channel) for binding in mi.captured[1]))), context
+        mi_channels=(*request.mi_channels, *admitted_channels)), context
 
 
 def route_request(request: RouteRequest) -> RouteDecision:
@@ -2892,7 +3092,7 @@ def route_request(request: RouteRequest) -> RouteDecision:
                 request.request,
                 request.compatibility_cells,
                 requirement,
-                request.eligibility_reports,
+                () if request.catalog.catalog_version is None else request.eligibility_reports,
                 request.evaluated_at,
                 request.continuation_capable_resource_ids,
                 configured_reasoning_required=request.candidate_identities is not None and any(
@@ -2909,6 +3109,8 @@ def route_request(request: RouteRequest) -> RouteDecision:
                         and cell.value in ("PASS", "PARTIAL")
                     ))
                     and candidate.reasoning_effort is not None
+                    and (request.catalog.catalog_version is not None or (candidate.capacity_binding_resources is not None
+                         and entry.identity.resource_id in candidate.capacity_binding_resources))
                     for candidate in request.catalog.entries
                 ),
                 execution_assurances=request.execution_assurances,
@@ -2981,12 +3183,81 @@ def route_request(request: RouteRequest) -> RouteDecision:
         else:
             routable_keys = pinned_keys
 
-    selection = _run_selection(
-        request, _narrowed_catalog(request, routable_keys), requirement, profile_id
-    )
-    target_exclusions = tuple(
-        _target_exclusion(gate) for gate in gates if not gate.qualified
-    )
+    eligible_gates: dict[tuple[str, str, str], list[_ResourceGate]] = {}
+    resource_exclusions: list[TargetExclusion] = []
+    scoped_evaluations: list[CandidateEvaluation] = []
+    if request.catalog.catalog_version is None:
+        entries_by_key = {_identity_key(entry.identity): entry for entry in request.catalog.entries}
+        selected_entries: list[ModelCatalogEntry] = []
+        for key in sorted(routable_keys):
+            model_entry = entries_by_key[key]
+            one_model = replace(request, catalog=ModelCatalog(None, None, (model_entry,)))
+            candidates: list[tuple[tuple[object, ...], _ResourceGate, ModelCatalogEntry]] = []
+            fallback: ModelCatalogEntry | None = None
+            fallback_evaluation: CandidateEvaluation | None = None
+            evaluations_by_resource: dict[str, CandidateEvaluation] = {}
+            for gate in qualified_by_identity[key]:
+                if pinned_gate is not None and gate.entry.identity.resource_id != pinned_gate.entry.identity.resource_id:
+                    continue
+                local = _narrowed_catalog(one_model, {key}, (gate,))
+                if not local.entries:
+                    continue
+                entry = local.entries[0]
+                pin_effort = request.request.pinned_target.reasoning_effort if request.request.pinned_target is not None else None
+                if pin_effort is not None and entry.reasoning_effort != pin_effort:
+                    resource_exclusions.append(TargetExclusion(
+                        resource_id=gate.entry.identity.resource_id, stage="binding",
+                        reason_codes=("reasoning_effort_unverified",), channel=gate.entry.identity.channel,
+                        provider=entry.identity.provider, model=entry.identity.model, variant=entry.identity.variant,
+                    ))
+                    continue
+                fallback = entry if fallback is None else fallback
+                evaluated = _run_selection(request, local, requirement, profile_id,
+                                           resource_snapshots=_resource_snapshots(gate, entry))
+                if evaluated.selected is not None:
+                    evaluations_by_resource[gate.entry.identity.resource_id] = evaluated.selected
+                    rank = candidate_ranking_key(evaluated.selected, request.policy.preference_order,
+                                                 reasoning_effort=entry.reasoning_effort)
+                    candidates.append(((rank, _order_key(gate)), gate, entry))
+                elif evaluated.excluded:
+                    rejected = evaluated.excluded[0]
+                    if fallback_evaluation is None:
+                        fallback_evaluation = rejected
+                    stage = ("capacity" if rejected.exclusion_stage == "capacity" else
+                             "policy" if rejected.exclusion_stage in ("policy_blackout", "reservation") else None)
+                    if stage is not None:
+                        codes = tuple(sorted(set(rejected.reason_codes) & _STAGE_REASONS[stage]))
+                        if codes:
+                            resource_exclusions.append(TargetExclusion(
+                                resource_id=gate.entry.identity.resource_id, stage=stage,
+                                reason_codes=codes, channel=gate.entry.identity.channel,
+                                provider=entry.identity.provider, model=entry.identity.model,
+                                variant=entry.identity.variant,
+                            ))
+            if candidates:
+                candidates.sort(key=lambda item: item[0])
+                selected_entries.append(candidates[0][2])
+                eligible_gates[key] = [item[1] for item in candidates]
+                scoped_evaluations.append(evaluations_by_resource[candidates[0][1].entry.identity.resource_id])
+            elif fallback is not None:
+                selected_entries.append(fallback)
+                if fallback_evaluation is None:
+                    raise RouteContractValidationError("resource evaluation omitted its candidate")
+                scoped_evaluations.append(fallback_evaluation)
+        narrowed = ModelCatalog(None, None, tuple(selected_entries))
+        selection = assemble_evaluations(
+            catalog=narrowed, requirement=requirement, policy=request.policy,
+            evaluated_at=request.evaluated_at, evaluations=tuple(scoped_evaluations),
+            profile_id=profile_id,
+            profile_policy_version=request.profile_policy_version if request.routing_profile is not None else None,
+        )
+    else:
+        narrowed = _narrowed_catalog(request, routable_keys, gates)
+        selection = _run_selection(request, narrowed, requirement, profile_id)
+    target_exclusions = tuple(sorted(
+        (*(_target_exclusion(gate) for gate in gates if not gate.qualified), *resource_exclusions),
+        key=lambda item: (item.resource_id, item.model or "", item.variant or "", item.stage),
+    ))
     all_keys = {_identity_key(entry.identity) for entry in request.catalog.entries}
     unroutable_keys = tuple(sorted(all_keys - routable_keys))
     expired_promotions = _expired_promotion_sources(gates, request.evaluated_at)
@@ -3005,9 +3276,17 @@ def route_request(request: RouteRequest) -> RouteDecision:
         )
 
     selected_identity = selection.selected.identity
-    selected_gates = sorted(
-        qualified_by_identity[_identity_key(selected_identity)], key=_order_key
+    selected_gates = (
+        eligible_gates[_identity_key(selected_identity)]
+        if request.catalog.catalog_version is None
+        else sorted(qualified_by_identity[_identity_key(selected_identity)], key=_order_key)
     )
+    def target_effort(gate: _ResourceGate) -> str | None:
+        if request.catalog.catalog_version is not None:
+            return None
+        scoped = _narrowed_catalog(request, {_identity_key(selected_identity)}, (gate,))
+        return scoped.entries[0].reasoning_effort if scoped.entries else None
+
     if pinned_gate is not None:
         # A pinned target is honored exactly: the pinned resource is the
         # target and there are no alternatives — never a competitive pick
@@ -3038,11 +3317,13 @@ def route_request(request: RouteRequest) -> RouteDecision:
                 shares_with_selected=bool(
                     set(gate.entry.identity.quota_pool_ids) & selected_pools
                 ),
+                evidenced_reasoning_effort=target_effort(gate),
             )
             for gate in selected_gates[1:]
         )
-    target = _route_target(selected_gate, selected_identity, profile_id, False)
+    target = _route_target(selected_gate, selected_identity, profile_id, False, target_effort(selected_gate))
     return RouteDecision(
+        schema_version=2 if request.catalog.catalog_version is None else 1,
         status=ROUTE_STATUS_SELECTED,
         selection=selection,
         registry_revision=request.registry_snapshot.revision,
@@ -3156,7 +3437,7 @@ def admit_pinned_target(
         admission_binding,
         request.compatibility_cells,
         requirement,
-        request.eligibility_reports,
+        () if request.catalog.catalog_version is None else request.eligibility_reports,
         request.evaluated_at,
         request.continuation_capable_resource_ids,
         execution_assurances=request.execution_assurances,
@@ -3180,7 +3461,19 @@ def admit_pinned_target(
             reason_codes=("admission_rejected", "pinned_model_not_bound"),
             bound_decision_id=decision_id,
         )
-    catalog_entry = next(entry for entry in request.catalog.entries if entry.identity == pinned_target.model)
+    admitted_catalog = _narrowed_catalog(request, {_identity_key(pinned_target.model)}, (gate,))
+    if not admitted_catalog.entries:
+        return AdmissionDecision(
+            resource_id=resource_id, approved=False,
+            reason_codes=("admission_rejected", "pinned_model_not_bound"), bound_decision_id=decision_id,
+        )
+    catalog_entry = admitted_catalog.entries[0]
+    if (pinned_target.reasoning_effort is not None
+            and catalog_entry.reasoning_effort != pinned_target.reasoning_effort):
+        return AdmissionDecision(
+            resource_id=resource_id, approved=False,
+            reason_codes=("admission_rejected", "reasoning_effort_unverified"), bound_decision_id=decision_id,
+        )
     # Reuse the selector's authoritative per-candidate predicates, not ranking
     # or a substitute identity. A resource gate alone is not model sufficiency.
     if evaluate_hard_constraints(requirement.hard_constraints, catalog_entry):
@@ -3193,11 +3486,23 @@ def admit_pinned_target(
             resource_id=resource_id, approved=False,
             reason_codes=("admission_rejected", "capability_failed"), bound_decision_id=decision_id,
         )
+    if request.catalog.catalog_version is None:
+        checked = _run_selection(request, admitted_catalog, requirement, profile_id,
+                                 resource_snapshots=_resource_snapshots(gate, catalog_entry))
+        if checked.selected is None:
+            stage = checked.excluded[0].exclusion_stage if checked.excluded else None
+            code = "capacity_failed" if stage == "capacity" else "policy_failed"
+            return AdmissionDecision(
+                resource_id=resource_id, approved=False,
+                reason_codes=tuple(sorted(("admission_rejected", code))),
+                bound_decision_id=decision_id,
+            )
     return AdmissionDecision(
         resource_id=resource_id,
         approved=True,
         reason_codes=("admission_approved",),
-        target=_route_target(gate, pinned_target.model, profile_id, False),
+        target=_route_target(gate, pinned_target.model, profile_id, False,
+                             catalog_entry.reasoning_effort if request.catalog.catalog_version is None else None),
         bound_decision_id=decision_id,
     )
 

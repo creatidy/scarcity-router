@@ -32,6 +32,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from types import MappingProxyType
 from typing import cast
 from urllib.parse import urlsplit
@@ -40,11 +41,13 @@ from .gateway_contracts import GatewayLimits
 from .gateway_validation import (
     exact_shape,
     v_bool,
+    v_canonical_ts,
     v_int,
     v_safe_id,
     v_str,
     v_str_object_mapping,
 )
+from .runtime_version import validate_runtime_version
 from .resource_state import ResourceRegistration
 from .routing_core import (
     AdministratorConstraints,
@@ -318,6 +321,55 @@ def _registration_from_document(d: object) -> ResourceRegistration:
 
 
 @dataclass(frozen=True)
+class SourceContextEvidence:
+    """Administrator-attested exact-model context bound and validity."""
+
+    model: str
+    variant: str
+    runtime_version: str
+    input_tokens: int
+    evidence_ref: str
+    valid_until: str
+    verified_at: str
+
+    def __post_init__(self) -> None:
+        _ = v_safe_id(self.model, "source_context.model")
+        _ = v_safe_id(self.variant, "source_context.variant")
+        try:
+            _ = validate_runtime_version(self.runtime_version)
+        except ValueError:
+            raise ServerConfigError("source_context.runtime_version: expected a complete observed runtime version") from None
+        _ = v_safe_id(self.evidence_ref, "source_context.evidence_ref")
+        if not self.evidence_ref.startswith("local:"):
+            raise ServerConfigError("source_context.evidence_ref: use a non-secret local: evidence handle")
+        _ = v_int(self.input_tokens, "source_context.input_tokens", lo=1)
+        try:
+            _ = v_canonical_ts(self.valid_until, "source_context.valid_until")
+            until = datetime.strptime(self.valid_until, "%Y-%m-%dT%H:%M:%S.%fZ")
+            _ = v_canonical_ts(self.verified_at, "source_context.verified_at")
+            verified = datetime.strptime(self.verified_at, "%Y-%m-%dT%H:%M:%S.%fZ")
+            if verified >= until or until - verified > timedelta(days=365):
+                raise ValueError("invalid evidence interval")
+        except ValueError:
+            raise ServerConfigError("source_context.valid_until: invalid canonical timestamp") from None
+
+    @classmethod
+    def from_dict(cls, value: object) -> "SourceContextEvidence":
+        data = exact_shape(value, ("model", "variant", "runtime_version", "input_tokens", "evidence_ref", "valid_until", "verified_at"), (), "source_context")
+        return cls(model=v_str(data["model"], "source_context.model"),
+                   variant=v_str(data["variant"], "source_context.variant"),
+                   runtime_version=v_str(data["runtime_version"], "source_context.runtime_version"),
+                   input_tokens=v_int(data["input_tokens"], "source_context.input_tokens", lo=1),
+                   evidence_ref=v_str(data["evidence_ref"], "source_context.evidence_ref"),
+                   valid_until=v_str(data["valid_until"], "source_context.valid_until"),
+                   verified_at=v_str(data["verified_at"], "source_context.verified_at"))
+
+    def to_dict(self) -> dict[str, object]:
+        return {"model": self.model, "variant": self.variant, "runtime_version": self.runtime_version, "input_tokens": self.input_tokens,
+                "evidence_ref": self.evidence_ref, "valid_until": self.valid_until, "verified_at": self.verified_at}
+
+
+@dataclass(frozen=True)
 class SourceConfig:
     """One execution source's administrator configuration (D-053).
 
@@ -327,9 +379,13 @@ class SourceConfig:
     kind), a human ``label``, the owning ``worker_id`` (the M05-paired
     device whose controlled homes serve this source), the
     ``entitlement`` its capacity draws from, and the adoption policy.
-    Physical models are NOT configured here — they are discovered and
-    adopted per D-053; an exact model pin stays an ADVANCED routing
-    concern, never a source-setup requirement.
+    Physical models are discovered by the source. ``allowed_models`` is an
+    exact administrator grant over discovered identities; an empty list
+    grants none. Legacy ``allowed_tracks`` is retained for safe migration
+    but prevents adoption rather than widening the old policy.
+    ``capacity_scope_ids`` is an explicit administrator assertion that the
+    configured provider telemetry scopes apply to every granted model on
+    this source and its account. Empty means unknown, not unlimited quota.
 
     The optional explicit ``quota_pool_id`` is the ONLY way two sources
     ever share a quota pool: absent it, every source derives its own
@@ -345,6 +401,9 @@ class SourceConfig:
     quota_pool_id: str | None = None
     auto_adopt: bool = True
     allowed_tracks: tuple[str, ...] = ()
+    allowed_models: tuple[str, ...] = ()
+    capacity_scope_ids: tuple[str, ...] = ()
+    context_evidence: tuple[SourceContextEvidence, ...] = ()
 
     def __post_init__(self) -> None:
         if len(self.source_id) > SOURCE_ID_MAX_LENGTH:
@@ -390,6 +449,27 @@ class SourceConfig:
                 )
             _ = v_safe_id(provider, "source.allowed_tracks.provider")
             _ = v_safe_id(track, "source.allowed_tracks.track")
+        if len(self.allowed_models) > 64:
+            raise ServerConfigError("source.allowed_models: maximum 64 models")
+        for model in self.allowed_models:
+            _ = v_safe_id(model, "source.allowed_models")
+        if len(set(self.allowed_models)) != len(self.allowed_models):
+            raise ServerConfigError("source.allowed_models: duplicate model")
+        if len(self.capacity_scope_ids) > 64:
+            raise ServerConfigError("source.capacity_scope_ids: maximum 64 scopes")
+        for scope in self.capacity_scope_ids:
+            _ = v_safe_id(scope, "source.capacity_scope_ids")
+        if tuple(sorted(set(self.capacity_scope_ids))) != self.capacity_scope_ids:
+            raise ServerConfigError("source.capacity_scope_ids: scopes must be sorted and unique")
+        if self.context_evidence.__class__ is not tuple or any(
+            item.__class__ is not SourceContextEvidence for item in self.context_evidence
+        ):
+            raise ServerConfigError("source.context_evidence: expected typed evidence entries")
+        if len(self.context_evidence) > 64:
+            raise ServerConfigError("source.context_evidence: maximum 64 entries")
+        evidence_keys = [(item.model, item.variant) for item in self.context_evidence]
+        if len(set(evidence_keys)) != len(evidence_keys):
+            raise ServerConfigError("source.context_evidence: model variants must be unique")
 
     def provider(self) -> str:
         """The provider this source kind executes through."""
@@ -414,6 +494,12 @@ class SourceConfig:
             out["quota_pool_id"] = self.quota_pool_id
         if self.allowed_tracks:
             out["allowed_tracks"] = list(self.allowed_tracks)
+        if self.allowed_models:
+            out["allowed_models"] = list(self.allowed_models)
+        if self.capacity_scope_ids:
+            out["capacity_scope_ids"] = list(self.capacity_scope_ids)
+        if self.context_evidence:
+            out["context_evidence"] = [item.to_dict() for item in self.context_evidence]
         return out
 
     @classmethod
@@ -426,6 +512,9 @@ class SourceConfig:
                 "quota_pool_id",
                 "auto_adopt",
                 "allowed_tracks",
+                "allowed_models",
+                "capacity_scope_ids",
+                "context_evidence",
             ),
             "source",
         )
@@ -438,6 +527,28 @@ class SourceConfig:
                 v_str(item, "source.allowed_tracks")
                 for item in cast("list[object]", allowed_raw)
             )
+        models_raw = dd.get("allowed_models")
+        models: tuple[str, ...] = ()
+        if models_raw is not None:
+            if not isinstance(models_raw, list):
+                raise ServerConfigError("source.allowed_models must be an array")
+            models = tuple(
+                v_str(item, "source.allowed_models")
+                for item in cast("list[object]", models_raw)
+            )
+        scopes_raw = dd.get("capacity_scope_ids")
+        scopes: tuple[str, ...] = ()
+        if scopes_raw is not None:
+            if not isinstance(scopes_raw, list):
+                raise ServerConfigError("source.capacity_scope_ids must be an array")
+            scopes = tuple(
+                v_str(item, "source.capacity_scope_ids")
+                for item in cast("list[object]", scopes_raw)
+            )
+        evidence_raw = dd.get("context_evidence", [])
+        if not isinstance(evidence_raw, list):
+            raise ServerConfigError("source.context_evidence must be an array")
+        evidence = tuple(SourceContextEvidence.from_dict(item) for item in cast("list[object]", evidence_raw))
         try:
             return cls(
                 source_id=v_str(dd["source_id"], "source.source_id"),
@@ -460,6 +571,9 @@ class SourceConfig:
                     else True
                 ),
                 allowed_tracks=allowed,
+                allowed_models=models,
+                capacity_scope_ids=scopes,
+                context_evidence=evidence,
             )
         except ServerConfigError:
             raise

@@ -1,8 +1,6 @@
 # Packaging and tooling configuration for the `scarcity-router` local
-# distribution (issue #63, D-034). The build backend is Hatchling: uv_build
-# cannot map the root-authoritative model-catalog.json / model-policy.json
-# into the wheel without committed in-package duplicates, while Hatchling's
-# force-include maps the single root copies into the wheel at build time.
+# distribution (issue #63, D-034). The build backend is Hatchling and maps
+# the default local selector policy into the wheel without duplicate copies.
 # basedpyright remains the declared development-only gate, resolved and
 # pinned via uv.lock so every run uses the same tool version.
 
@@ -54,15 +52,8 @@ allow-direct-references = true
 [tool.hatch.build.targets.wheel]
 packages = ["scarcity_router"]
 
-# Map the two root-authoritative artifacts into the wheel as installed
-# package resources. No duplicate copies are committed in the package.
-# Map the two root-authoritative artifacts plus the default user selector
-# policy (D-036) into the wheel as installed package resources. No duplicate
-# copies are committed in the package.
+# The selector policy is local resource policy, not a model catalog.
 [tool.hatch.build.targets.wheel.force-include]
-"model-catalog.json" = "scarcity_router/model-catalog.json"
-"model-policy.json" = "scarcity_router/model-policy.json"
-"model-tracks.json" = "scarcity_router/model-tracks.json"
 "examples/selector-policy.json" = "scarcity_router/default-selector-policy.json"
 
 # Minimal sdist: exactly what rebuilding the wheel requires. Tests, docs,
@@ -71,9 +62,6 @@ packages = ["scarcity_router"]
 [tool.hatch.build.targets.sdist]
 include = [
     "/scarcity_router",
-    "/model-catalog.json",
-    "/model-policy.json",
-    "/model-tracks.json",
     "/examples/selector-policy.json",
     "/pyproject.toml",
     "/README.md",

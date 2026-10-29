@@ -6790,3 +6790,28 @@ No MI/Kernel mutation, model inference, Daybreak, release or deployment is autho
   weakened security guarantees or retirement of working functionality. A new
   read-only consumer identity or exposed network contract under #183 still requires
   explicit security authorization.
+
+## D-084: Remove static model governance (#234, 2026-10-28)
+
+- **Status:** Accepted by direct owner directive 2026-10-28; implementation in
+  progress under #234. This decision does not assert that the migration is complete.
+- **Decision:** Remove the repository-versioned model catalog, model policy and
+  track registry, including family-inherited quality floors and workflow model
+  assignments. Router selects and admits authorized executable resources using
+  actual source discovery, adapter evidence, applicable trusted MI evidence and
+  local policy. Kernel/harness owns task requirements and review/acceptance; MI
+  owns public facts and provenance; Router does not assign agents or reviewers.
+- **Supersession:** Supersedes D-082 and earlier decisions only insofar as they
+  require permanent static bootstrap models, inherited family ratings, calibrated
+  task profiles or rating-based routing. Historical decisions and their original
+  evidence remain unchanged. Preserve exact identity, authorization, applicable
+  evidence, conflict/withdrawal and immutable decision provenance; do not infer
+  entitlement, capability, model quality or quota from names or discovery.
+- **Migration:** Existing user policy and historical records must not be silently
+  reinterpreted. Unsupported inputs require explicit, actionable refusal or a
+  versioned migration; no fabricated equivalent rating or automatic expansion of
+  an old track grant. Empty inventory must not manufacture recommendations.
+- **Delivery:** #234 requires source-based positive and refusal tests, installed
+  upgrade/package validation, full gates, and a fresh independent GPT-6.1 Sol High
+  native review before authorized integration. No live inference, release,
+  deployment or external-repository mutation is authorized by this decision.

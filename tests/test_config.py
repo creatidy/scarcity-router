@@ -18,7 +18,7 @@ import stat
 import tempfile
 import unittest
 from collections.abc import Generator
-from contextlib import contextmanager, redirect_stderr
+from contextlib import contextmanager, nullcontext, redirect_stderr
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import cast
@@ -31,6 +31,11 @@ from scarcity_router import (
     SelectorPolicy,
 )
 from scarcity_router.cli import main as cli_main
+from scarcity_router.selection_types import (
+    CapabilityAssessment, CapabilityAssessments, CapabilityMinima, CapacityScopeRef,
+    HardConstraints, ModelCatalog, ModelCatalogEntry, ModelHardProperties, ModelIdentity,
+    TaskProfileCatalog, TaskProfileDefinition, TaskRequirement,
+)
 from scarcity_router.config import (
     SELECTOR_POLICY_FILE_NAME,
     default_selector_policy_path,
@@ -46,8 +51,21 @@ from scarcity_router.providers.openai_codex_acquisition import OpenAICodexObserv
 from tests.observation import paired_observation
 
 REPO = Path(__file__).resolve().parents[1]
-CATALOG_PATH = REPO / "model-catalog.json"
-POLICY_PATH = REPO / "model-policy.json"
+def synthetic_inputs() -> tuple[ModelCatalog, TaskProfileCatalog, int]:
+    unknown = CapabilityAssessment(None)
+    assessments = CapabilityAssessments(unknown, unknown, unknown, unknown, unknown, unknown)
+    entries = tuple(ModelCatalogEntry(
+        ModelIdentity(provider, model, "max"), "Synthetic", ModelHardProperties(supports_reasoning_mode=True),
+        assessments, (CapacityScopeRef(provider, scope),), reasoning_effort="max",
+    ) for provider, model, scope in (
+        ("openai", "gpt-5.6-luna", "codex"),
+        ("zai", "glm-5.3", "coding_plan"),
+        ("zai", "glm-5.3-flash", "coding_plan"),
+    ))
+    profiles = TaskProfileCatalog((TaskProfileDefinition(
+        "routine_coding", TaskRequirement("L0", CapabilityMinima(), HardConstraints())
+    ),))
+    return ModelCatalog(1, "2026-09-01", entries), profiles, 1
 EXAMPLE_PATH = REPO / "examples" / SELECTOR_POLICY_FILE_NAME
 
 # A Monday 15:00 Asia/Singapore instant: inside the example policy's
@@ -136,14 +154,9 @@ class _Quiet(unittest.TestCase):
         out = io.StringIO()
         err = io.StringIO()
         full_argv = list(argv)
-        if artifacts:
-            full_argv += [
-                "--catalog",
-                str(CATALOG_PATH),
-                "--model-policy",
-                str(POLICY_PATH),
-            ]
-        with redirect_stderr(err):
+        override = (mock.patch("scarcity_router.selection_app.load_configured_artifacts",
+                               return_value=synthetic_inputs()) if artifacts else nullcontext())
+        with redirect_stderr(err), override:
             code = cli_main(
                 full_argv,
                 stdout=out,

@@ -126,11 +126,11 @@ This exposes exactly four commands:
   launch and provides the same `pair` / `run` commands directly (see
   the worker section below).
 
-The installed commands load the packaged default catalog and model policy
-as package resources, so they work without a
-repository checkout and independent of the current directory; explicit
-`--catalog` and `--model-policy` flags always override the defaults. The
-default user selector policy is packaged the same way and provisioned into
+Installed commands do not load a static model catalog or task-profile policy.
+Without a configured executable source, selection returns no invented models.
+Legacy `--catalog` and `--model-policy` overrides are refused; use explicit
+requirements and administrator-authorized execution sources. The
+default user selector policy is packaged and provisioned into
 `~/.config/scarcity-router/` (see
 [Default configuration location](#default-configuration-location)).
 
@@ -141,9 +141,6 @@ module CLI:
 uv sync --only-dev
 uv run python -m scarcity_router --help
 ```
-
-In a checkout the defaults resolve to the repository-root
-`model-catalog.json` and `model-policy.json`.
 
 ## Check Capacity
 
@@ -213,12 +210,20 @@ worker-source telemetry uses the same binary discovery as worker login.
 
 ## Select A Model
 
-Use a calibrated task profile or provide a complete requirement document:
+Supply explicit task requirements. The former global profile IDs are no longer
+supported. For example, `task.json` can contain:
+
+```json
+{"task_level":"L0","capability_minima":{},"hard_constraints":{}}
+```
+
+The standalone CLI has no configured execution-source registry and returns an
+honest no-solution result, rather than inventing candidates. Use the authenticated
+composed server's `/v1/select` to select its configured and authorized resources.
 
 ```bash
-uv run python -m scarcity_router select --profile routine_coding --explain
-uv run python -m scarcity_router select --profile deep_coding --json
-uv run python -m scarcity_router select --requirement task.json
+uv run python -m scarcity_router select --requirement task.json --explain
+uv run python -m scarcity_router select --requirement task.json --json
 ```
 
 The result includes the selected candidate, alternatives, exclusions, capacity
@@ -228,7 +233,7 @@ selector:
 
 ```bash
 uv run python -m scarcity_router simulate \
-  --profile routine_coding --overrides simulation.json
+  --requirement task.json --overrides simulation.json
 ```
 
 ### Default configuration location
@@ -290,7 +295,7 @@ Use it with the CLI:
 
 ```bash
 uv run python -m scarcity_router select \
-  --profile routine_coding --selector-policy examples/selector-policy.json
+  --requirement task.json --selector-policy examples/selector-policy.json
 ```
 
 or install it once with `scarcity-router install-config` and omit the flag
@@ -312,20 +317,19 @@ inside the blackout window):
 
 ```bash
 uv run python -m scarcity_router simulate \
-  --profile routine_coding \
+  --requirement task.json \
   --selector-policy examples/selector-policy.json \
   --overrides overrides.json --explain
 ```
 
-both GLM models appear under the exclusion stage `policy_blackout`, each
-naming the rule: `blackout rule zai-peak-hours-sgt (preserve_zai_offpeak)`.
-With `{"evaluated_at": "2026-09-15T02:00:00+08:00"}` (inside the campaign
-window) GLM-5.3-Flash wins despite scarcer quota and names
-`happy hour rule zai-flash-campaign-night-sgt`.
+When the composed server has corresponding authorized resources and applicable
+evidence, its simulation reports the matching blackout or preference. The
+standalone CLI has no source registry, so it cannot manufacture these models
+or demonstrate a winner from the policy file alone.
 
 The mechanism is documented in
 [`docs/selection-policy.md`](docs/selection-policy.md); the example file is
-opt-in configuration, so a missing config file keeps the neutral policy.
+also provisioned as the default user policy when no user policy exists.
 
 ## MCP Integration
 

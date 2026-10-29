@@ -410,17 +410,19 @@ def _safe_server_error_code(raw: bytes) -> str | None:
 def _validate_envelope(
     document: object, result_key: str, endpoint: str
 ) -> dict[str, object]:
-    """Require the exact machine-interface v1 envelope for one operation."""
+    """Accept historical v1 and explicitly marked inventory-backed v2."""
     mapping = _as_str_object_mapping(document)
     if mapping is None:
         raise RemoteBridgeError(
             f"remote server returned a non-object response for {endpoint}"
         )
     version = mapping.get("schema_version")
-    if type(version) is not int or version != ENVELOPE_SCHEMA_VERSION:
+    if type(version) is not int or not (
+        version == ENVELOPE_SCHEMA_VERSION or (version == 2 and result_key != "snapshots")
+    ):
         raise RemoteBridgeError(
             f"remote server returned an unsupported machine-interface "
-            + f"envelope schema_version for {endpoint}; expected integer 1; "
+            + f"envelope schema_version for {endpoint}; expected supported version; "
             + "use compatible client/server releases before retrying"
         )
     payload = mapping.get(result_key)
@@ -434,6 +436,28 @@ def _validate_envelope(
             f"remote server response for {endpoint} is missing the "
             + f"{result_key!r} contract document"
         )
+    if version == 2:
+        result = _as_str_object_mapping(payload)
+        assert result is not None
+        decisions = (
+            (result,) if result_key == "decision" else
+            (result.get("baseline"), result.get("simulated"))
+        )
+        for value in decisions:
+            item = _as_str_object_mapping(value)
+            if (item is None or item.get("decision_schema_version") != 2
+                    or item.get("selection_input_kind") != "runtime_inventory"
+                    or item.get("catalog_version") is not None
+                    or item.get("catalog_updated_on") is not None):
+                raise RemoteBridgeError(
+                    f"remote server returned invalid runtime-inventory provenance for {endpoint}"
+                )
+        if "mi_receipt" in mapping:
+            receipt = _as_str_object_mapping(mapping["mi_receipt"])
+            if (receipt is None or receipt.get("schema_version") != 1
+                    or receipt.get("decision") != result
+                    or receipt.get("mi_utilization") != mapping.get("mi_utilization")):
+                raise RemoteBridgeError(f"remote server returned inconsistent MI receipt for {endpoint}")
     # JSON objects deserialize as dicts; the shape above is already verified.
     return cast("dict[str, object]", mapping)
 

@@ -335,7 +335,7 @@ class NetworkDisciplineTests(RealTimeServerHarness):
             "POST",
             "/v1/chat/completions",
             {
-                "model": "sr-pin:zai-plan-1/zai/glm-5.3/max",
+                "model": "sr-pin:zai-plan-1/zai/glm-5.3/unconfigured",
                 "messages": [{"role": "user", "content": "hi"}],
             },
             headers={"Authorization": f"Bearer {self.client_key}"},

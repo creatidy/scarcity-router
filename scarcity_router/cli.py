@@ -8,10 +8,8 @@ module entry point (``status.main``) is preserved unchanged for direct
 callers; the dispatcher re-uses the same collect/render primitives so the
 status output contract is identical.
 
-Default artifact paths resolve through ``selection_app.resolve_default_artifact``:
-the repository-root ``model-catalog.json`` and ``model-policy.json`` in a
-source tree, the packaged resource copies in an installed package; explicit
-``--catalog`` / ``--model-policy`` overrides always win.
+Legacy ``--catalog`` and ``--model-policy`` options are explicitly refused;
+the default selection input contains no invented static models.
 
 The user selector policy resolves through ``config.py`` (D-036): an explicit
 ``--selector-policy`` file wins; otherwise the default user configuration
@@ -205,7 +203,7 @@ def _fill_requirement_arguments(parser: argparse.ArgumentParser) -> None:
     _ = group.add_argument(
         "--profile",
         metavar="PROFILE",
-        help="calibrated task profile id from model-policy.json",
+        help="legacy profile identifier (unsupported; use --requirement)",
     )
     _ = group.add_argument(
         "--requirement",
@@ -243,14 +241,12 @@ def _fill_requirement_arguments(parser: argparse.ArgumentParser) -> None:
     _ = parser.add_argument(
         "--catalog",
         metavar="FILE",
-        default=str(DEFAULT_CATALOG_PATH),
-        help="model catalog JSON (default: the source-tree or packaged default catalog)",
+        help="legacy option, no longer supported",
     )
     _ = parser.add_argument(
         "--model-policy",
         metavar="FILE",
-        default=str(DEFAULT_MODEL_POLICY_PATH),
-        help="model policy JSON (default: the source-tree or packaged default policy)",
+        help="legacy option, no longer supported",
     )
 
 
@@ -525,6 +521,10 @@ def _run_status(
 def _resolve_requirement_paths(
     args: dict[str, object],
 ) -> tuple[str | None, Path | None, Path | None]:
+    if args.get("catalog") is not None or args.get("model_policy") is not None:
+        raise ValueError(
+            "legacy --catalog and --model-policy are unsupported; use configured sources and --requirement"
+        )
     profile_id = args.get("profile")
     requirement = _optional_path(args.get("requirement"))
     tighten = _optional_path(args.get("tighten"))
@@ -553,8 +553,6 @@ def _run_select(
         tighten_path=tighten_path,
         selector_policy_path=_resolve_selector_policy_path(args),
         replenishment_path=_optional_path(args.get("replenishment")),
-        catalog_path=Path(cast(str, args.get("catalog"))),
-        model_policy_path=Path(cast(str, args.get("model_policy"))),
         collectors=collectors,
         clock=clock,
     )
@@ -586,8 +584,6 @@ def _run_simulate(
         tighten_path=tighten_path,
         selector_policy_path=_resolve_selector_policy_path(args),
         replenishment_path=_optional_path(args.get("replenishment")),
-        catalog_path=Path(cast(str, args.get("catalog"))),
-        model_policy_path=Path(cast(str, args.get("model_policy"))),
         collectors=collectors,
         clock=clock,
     )

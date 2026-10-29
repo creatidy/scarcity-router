@@ -59,13 +59,16 @@ class ExecutableRequirements:
     profile_policy_version: int | None = None
     profile_expansion: TaskRequirement | None = None
     reasoning_effort: str | None = None
+    schema_version: int = 1
 
     @classmethod
     def from_dict(cls, value: object) -> ExecutableRequirements:
         try:
             fields = _object(value, {"schema_version", "requirement", "binding",
                                      "profile_policy_version", "profile_expansion", "reasoning_effort"})
-            _version(fields["schema_version"])
+            schema = fields["schema_version"]
+            if type(schema) is not int or schema not in (1, 2):
+                raise ValueError
             _ = _object(fields["requirement"], {"task_level", "capability_minima", "hard_constraints"})
             requirement = TaskRequirement.from_dict(fields["requirement"])
             binding = RequestBinding.from_dict(fields["binding"])
@@ -74,19 +77,23 @@ class ExecutableRequirements:
             effort = fields["reasoning_effort"]
             if effort is not None and (not isinstance(effort, str) or effort not in REASONING_EFFORTS):
                 raise ValueError
+            if schema == 1 and binding.pinned_target is not None and binding.pinned_target.reasoning_effort is not None:
+                raise ValueError
+            if schema == 2 and (binding.pinned_target is None or binding.pinned_target.reasoning_effort != effort):
+                raise ValueError
             if binding.profile_alias is None:
                 if version is not None or expansion is not None:
                     raise ValueError
-                return cls(requirement, binding, reasoning_effort=effort)
+                return cls(requirement, binding, reasoning_effort=effort, schema_version=schema)
             if type(version) is not int or version < 1 or expansion is None:
                 raise ValueError
-            return cls(requirement, binding, version, TaskRequirement.from_dict(expansion), effort)
+            return cls(requirement, binding, version, TaskRequirement.from_dict(expansion), effort, schema)
         except (ValueError, SelectionContractError, TypeError, RecursionError):
             raise executable_error() from None
 
     def to_dict(self) -> dict[str, object]:
         return {
-            "schema_version": 1, "requirement": self.requirement.to_dict(),
+            "schema_version": self.schema_version, "requirement": self.requirement.to_dict(),
             "binding": self.binding.to_dict(),
             "profile_policy_version": self.profile_policy_version,
             "profile_expansion": None if self.profile_expansion is None else self.profile_expansion.to_dict(),
@@ -102,7 +109,12 @@ class ExecutableRequirements:
             if self.binding.pinned_target is None or route.request.pinned_target != self.binding.pinned_target:
                 raise ValueError
             entry = next((candidate for candidate in route.catalog.entries if candidate.identity == self.binding.pinned_target.model), None)
-            if entry is None or entry.reasoning_effort != self.reasoning_effort:
+            if entry is None:
+                raise ValueError
+            if route.catalog.catalog_version is None:
+                if self.schema_version != 2 or self.binding.pinned_target.reasoning_effort != self.reasoning_effort:
+                    raise ValueError
+            elif self.schema_version != 1 or entry.reasoning_effort != self.reasoning_effort:
                 raise ValueError
             if self.binding.profile_alias is not None:
                 profile = route.routing_profile

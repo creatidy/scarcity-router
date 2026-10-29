@@ -182,19 +182,32 @@ def status_envelope(
 
 
 def selection_envelope(decision: SelectionDecision) -> dict[str, object]:
-    """Build the exact machine-interface v1 selection envelope."""
+    """Use v2 for inventory-backed decisions; preserve v1 for historical inputs."""
     if decision.mi_use is not None:
-        return decision.mi_use.envelope(decision.to_dict())
+        receipt = decision.mi_use.envelope(decision.to_dict())
+        if decision.catalog_version is None:
+            # The pinned MI utilization contract verifies its v1 envelope.
+            # Retain it intact inside the versioned runtime-inventory response.
+            return {
+                "schema_version": 2,
+                "decision": receipt["decision"],
+                "mi_utilization": receipt["mi_utilization"],
+                "mi_receipt": receipt,
+            }
+        return receipt
     return {
-        "schema_version": ENVELOPE_SCHEMA_VERSION,
+        "schema_version": 2 if decision.catalog_version is None else ENVELOPE_SCHEMA_VERSION,
         "decision": decision.to_dict(),
     }
 
 
 def simulation_envelope(result: SimulationResult) -> dict[str, object]:
-    """Build the exact machine-interface v1 simulation envelope."""
+    """Use v2 when either decision is backed by runtime inventory."""
     return {
-        "schema_version": ENVELOPE_SCHEMA_VERSION,
+        "schema_version": (
+            2 if result.baseline.catalog_version is None or result.simulated.catalog_version is None
+            else ENVELOPE_SCHEMA_VERSION
+        ),
         "result": result.to_dict(),
     }
 
@@ -207,6 +220,12 @@ def invalid_request_payload() -> dict[str, object]:
             "message": "invalid request",
         }
     }
+
+
+def legacy_profile_payload() -> dict[str, object]:
+    """A fixed actionable error, without echoing untrusted input."""
+    return {"error": {"code": "invalid_request", "message":
+            "legacy task profiles are unsupported; provide an explicit requirement"}}
 
 
 def internal_error_payload() -> dict[str, object]:

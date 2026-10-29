@@ -72,6 +72,121 @@ def serialized_identities(value: object) -> set[tuple[str, str, str]]:
 
 
 class ExecutableContractTests(unittest.TestCase):
+    def test_runtime_inventory_select_prepare_admit_and_dispatch_round_trip(self) -> None:
+        from tests.test_logical_model_resolution import derived_world, make_derived_application
+        from scarcity_router.model_inventory import DiscoveredModel
+
+        registry, catalog = derived_world((DiscoveredModel("synthetic-model", ("high",)),))
+        application = make_derived_application(registry, catalog)
+        adapter = application.adapters.resolve("worker_bridged")
+        assert isinstance(adapter, ScriptedAdapter)
+        document: dict[str, object] = {
+            "schema_version": 1,
+            "model": "sr-pin:personal-openai:synthetic-model:high/openai/synthetic-model/high",
+            "requirement": {"task_level": "L0", "capability_minima": {}, "hard_constraints": {}},
+            "binding": {},
+        }
+        response = application.select_executable(client_id=CLIENT_ID, document=document)
+        self.assertEqual(2, response["schema_version"])
+        self.assertEqual(2, as_dict(response["route"])["schema_version"])
+        execution = as_dict(response["execution"])
+        self.assertEqual("high", execution["reasoning_effort"])
+        pin = parse_pinned_reference(cast(str, execution["model"]))
+        self.assertEqual("high", pin.reasoning_effort)
+        prepared = prepare_executable_completion(response, expected_request=document, completion=COMPLETION)
+        _ = application.execute(client_id=CLIENT_ID, request=parse_chat_request(prepared))
+        self.assertEqual(1, adapter.dispatch_count)
+
+        self.assertEqual("high", adapter.dispatches[-1].reasoning_effort)
+        self.assertEqual("synthetic-model", adapter.dispatches[-1].model.model)
+
+        for mutation in ("outer_version", "route_version", "unknown_version", "provenance",
+                         "missing_provenance", "pin_effort", "target_effort", "retained_version"):
+            with self.subTest(mutation=mutation):
+                invalid = copy.deepcopy(response)
+                if mutation == "outer_version":
+                    invalid["schema_version"] = 1
+                elif mutation == "route_version":
+                    as_dict(invalid["route"])["schema_version"] = 1
+                elif mutation == "unknown_version":
+                    invalid["schema_version"] = 3
+                elif mutation == "provenance":
+                    as_dict(as_dict(invalid["route"])["selection"])["selection_input_kind"] = "catalog"
+                elif mutation == "missing_provenance":
+                    del as_dict(as_dict(invalid["route"])["selection"])["catalog_version"]
+                elif mutation == "pin_effort":
+                    changed = as_dict(invalid["execution"])
+                    changed["model"] = cast(str, changed["model"]).replace("~high", "~low")
+                elif mutation == "target_effort":
+                    as_dict(as_dict(invalid["route"])["target"])["reasoning_effort"] = "low"
+                else:
+                    as_dict(as_dict(invalid["execution"])["execution_requirements"])["schema_version"] = 1
+                with self.assertRaises(GatewayError):
+                    _ = prepare_executable_completion(invalid, expected_request=document, completion=COMPLETION)
+        entry = application.catalog.entries[0]
+        application.catalog = replace(application.catalog, entries=(replace(
+            entry, capacity_bindings=None, capacity_binding_resources=(), resource_capacity_bindings=(),
+        ),))
+        with self.assertRaises(GatewayError) as caught:
+            _ = application.execute(client_id=CLIENT_ID, request=parse_chat_request(prepared))
+        self.assertEqual("reasoning_effort_unverified", caught.exception.code)
+        self.assertEqual(1, adapter.dispatch_count)
+
+    def test_runtime_executable_manual_resource_does_not_inherit_effort(self) -> None:
+        from tests.test_logical_model_resolution import derived_world, make_derived_application, OBSERVED
+        from scarcity_router.model_inventory import DiscoveredModel
+        from scarcity_router.resource_state import ExecutionCapabilities, ResourceHealth, ResourceIdentity, ResourceStateSnapshot
+
+        registry, catalog = derived_world((DiscoveredModel("synthetic-model", ("high",)),))
+        identity = ResourceIdentity(resource_id="manual", channel="worker_bridged", provider="openai",
+                                    model="synthetic-model", variant="high", entitlement="subscription_included")
+        registry.register(ResourceRegistration(identity=identity, freshness_ttl_seconds=7200,
+                                               poll_interval_seconds=1800,
+                                               capabilities=ExecutionCapabilities(context_limit_tokens=4096)))
+        _ = registry.apply_snapshot(ResourceStateSnapshot(
+            schema_version=1, identity=identity, observed_at=OBSERVED, health=ResourceHealth(status="ok"),
+        ))
+        application = make_derived_application(registry, catalog)
+        application.client_authorizations = {
+            CLIENT_ID: ClientAuthorization(blocked_resource_ids=("personal-openai:synthetic-model:high",))
+        }
+        adapter = application.adapters.resolve("worker_bridged")
+        assert isinstance(adapter, ScriptedAdapter)
+        document: dict[str, object] = {
+            "schema_version": 1, "model": "synthetic-model",
+            "requirement": {"task_level": "L0", "capability_minima": {}, "hard_constraints": {}},
+            "binding": {},
+        }
+        response = application.select_executable(client_id=CLIENT_ID, document=document)
+        execution = as_dict(response["execution"])
+        self.assertIsNone(execution["reasoning_effort"])
+        prepared = prepare_executable_completion(response, expected_request=document, completion=COMPLETION)
+        _ = application.execute(client_id=CLIENT_ID, request=parse_chat_request(prepared))
+        self.assertEqual("manual", adapter.dispatches[-1].resource.resource_id)
+        self.assertIsNone(adapter.dispatches[-1].reasoning_effort)
+
+    def test_runtime_explicit_none_effort_remains_distinct_from_absence(self) -> None:
+        from tests.test_logical_model_resolution import derived_world, make_derived_application
+        from scarcity_router.model_inventory import DiscoveredModel
+
+        registry, catalog = derived_world((DiscoveredModel("synthetic-model", ("none",)),))
+        application = make_derived_application(registry, catalog)
+        adapter = application.adapters.resolve("worker_bridged")
+        assert isinstance(adapter, ScriptedAdapter)
+        document: dict[str, object] = {
+            "schema_version": 1,
+            "model": "sr-pin:personal-openai:synthetic-model:none/openai/synthetic-model/none",
+            "requirement": {"task_level": "L0", "capability_minima": {}, "hard_constraints": {}},
+            "binding": {},
+        }
+        response = application.select_executable(client_id=CLIENT_ID, document=document)
+        execution = as_dict(response["execution"])
+        self.assertEqual("none", execution["reasoning_effort"])
+        self.assertEqual("none", parse_pinned_reference(cast(str, execution["model"])).reasoning_effort)
+        prepared = prepare_executable_completion(response, expected_request=document, completion=COMPLETION)
+        _ = application.execute(client_id=CLIENT_ID, request=parse_chat_request(prepared))
+        self.assertEqual("none", adapter.dispatches[-1].reasoning_effort)
+
     def test_producer_decision_does_not_reuse_accepted_review_numbers(self) -> None:
         root = Path(__file__).resolve().parents[1]
         decisions = (root / "docs/decisions.md").read_text()
@@ -466,6 +581,15 @@ class ExecutableContractTests(unittest.TestCase):
             pin = parse_pinned_reference(reference)
             self.assertEqual(pin.model.variant, "max")
             self.assertEqual(pin.decision_id, "rd-fixture" if "@" in reference else None)
+            self.assertIsNone(pin.reasoning_effort)
+        explicit = parse_pinned_reference("sr-pin:r/openai/model/opaque~high@rd-fixture")
+        self.assertEqual("opaque", explicit.model.variant)
+        self.assertEqual("high", explicit.reasoning_effort)
+        self.assertEqual("rd-fixture", explicit.decision_id)
+        for invalid in ("sr-pin:r/openai/model/opaque~", "sr-pin:r/openai/model/opaque~invented",
+                        "sr-pin:r/openai/model/opaque~high~low"):
+            with self.subTest(invalid=invalid), self.assertRaises(GatewayError):
+                _ = parse_pinned_reference(invalid)
 
     def test_opaque_variant_does_not_infer_effort_and_null_differs_from_none(self) -> None:
         for effort in (None, "none", "max"):

@@ -115,6 +115,12 @@ class DockerBuildContextParityTests(unittest.TestCase):
         missing = sorted(tree for tree in packages if not _covered(copied, tree))
         self.assertEqual([], missing, f"wheel package trees absent from the Dockerfile build stage: {missing}")
 
+    def test_legacy_model_governance_is_not_a_build_input(self) -> None:
+        force_include, _packages = _wheel_packaging_inputs()
+        legacy = {"model-catalog.json", "model-policy.json", "model-tracks.json"}
+        self.assertFalse(legacy & force_include)
+        self.assertFalse(legacy & _build_stage_copy_sources())
+
 
 if __name__ == "__main__":
     _ = unittest.main()

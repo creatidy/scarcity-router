@@ -28,15 +28,18 @@ from mcp.client.stdio import StdioServerParameters, stdio_client
 from mcp.shared.memory import create_client_server_memory_streams
 from mcp.types import CallToolResult, JSONRPCRequest, TextContent, Tool
 
-from scarcity_router import CapacityDiagnostic, CapacitySnapshot, CapacityWindow
+from scarcity_router import CapacityDiagnostic, CapacitySnapshot, CapacityWindow, TaskRequirement
 from scarcity_router.cli import main as cli_main
 from scarcity_router.machine_api import (
     invalid_request_payload,
+    legacy_profile_payload,
     internal_error_payload,
 )
 from scarcity_router.mcp import MCP_TOOL_NAMES, build_server
 from scarcity_router.selection_app import (
     ApplicationDependencies,
+    DEFAULT_CATALOG_PATH,
+    DEFAULT_MODEL_POLICY_PATH,
     load_configured_artifacts,
     select_from_inputs,
     simulate_from_inputs,
@@ -48,8 +51,9 @@ from scarcity_router.providers.openai_codex_acquisition import OpenAICodexObserv
 from tests.observation import paired_observation
 
 REPO = Path(__file__).resolve().parents[1]
-CATALOG_PATH = REPO / "model-catalog.json"
-POLICY_PATH = REPO / "model-policy.json"
+CATALOG_PATH = DEFAULT_CATALOG_PATH
+POLICY_PATH = DEFAULT_MODEL_POLICY_PATH
+REQUIREMENT: dict[str, object] = {"task_level": "L0", "capability_minima": {}, "hard_constraints": {}}
 FIXED_AT = datetime(2026, 9, 6, 12, 0, tzinfo=timezone.utc)
 
 # D-036 isolation: CLI/adapter runs in this module must never read or
@@ -320,8 +324,8 @@ class McpTestCase(unittest.TestCase):
         self,
         *,
         collectors: StatusCollectors | None = None,
-        catalog_path: Path = CATALOG_PATH,
-        model_policy_path: Path = POLICY_PATH,
+        catalog_path: Path = DEFAULT_CATALOG_PATH,
+        model_policy_path: Path = DEFAULT_MODEL_POLICY_PATH,
     ) -> ApplicationDependencies:
         return ApplicationDependencies(
             catalog_path=catalog_path,
@@ -366,6 +370,24 @@ class McpTestCase(unittest.TestCase):
         harness = _RestHarness(application)
         self.addCleanup(harness.close)
         return harness
+
+
+class RuntimeInventoryMcpTests(McpTestCase):
+    def test_empty_runtime_inventory_and_legacy_refusal(self) -> None:
+        application = ApplicationDependencies(collectors=_collectors(), clock=_clock)
+        result = self._call(application, "scarcity_select", {"requirement": {
+            "task_level": "L0", "capability_minima": {}, "hard_constraints": {},
+        }})
+        self.assertFalse(result.is_error)
+        payload = _text_payload(result)
+        self.assertEqual(2, payload["schema_version"])
+        decision = cast("dict[str, object]", payload["decision"])
+        self.assertIsNone(decision["selected"])
+        self.assertEqual("runtime_inventory", decision["selection_input_kind"])
+        refused = self._call(application, "scarcity_select", {"profile_id": "routine_coding"})
+        self.assertTrue(refused.is_error)
+        error = cast("dict[str, object]", _error_payload(refused)["error"])
+        self.assertIn("explicit requirement", cast(str, error["message"]))
 
 
 class DiscoveryTests(McpTestCase):
@@ -502,78 +524,29 @@ class StatusTests(McpTestCase):
 
 
 class SelectTests(McpTestCase):
-    def test_five_effort_profiles_match_direct_cli_rest_and_mcp_v1(self) -> None:
+    def test_legacy_global_profiles_are_refused_by_rest_and_mcp(self) -> None:
         application = self._application(collectors=_collectors(zai_weekly=0))
-        catalog, profiles, version = load_configured_artifacts(CATALOG_PATH, POLICY_PATH)
         harness = self._rest(application)
-        expected = {
-            "routine_coding": ("gpt-5.6-luna", "max"),
-            "deep_coding": ("gpt-5.6-terra", "medium"),
-            "scientific_review": ("gpt-5.6-sol", "high"),
-            "orchestration": ("gpt-5.6-luna", "max"),
-            "translation": ("gpt-5.6-sol", "high"),
-        }
-        for profile_id, (model, variant) in expected.items():
+        for profile_id in ("routine_coding", "deep_coding", "scientific_review", "orchestration", "translation"):
             with self.subTest(profile_id=profile_id):
-                direct = select_from_inputs(
-                    catalog=catalog, profiles=profiles, profile_policy_version=version,
-                    profile_id=profile_id, requirement=None, tightening=None, policy=None,
-                    replenishment_states=(), collectors=application.collectors,
-                    clock=application.clock,
-                )
-                assert direct.selected is not None
-                self.assertEqual(direct.selected.identity.to_dict(), {
-                    "provider": "openai", "model": model, "variant": variant,
-                })
-                cli = self._cli_json(application, ["select", "--profile", profile_id, "--json"])
                 status, rest = _rest_request(harness, "POST", "/v1/select", {"profile_id": profile_id})
-                self.assertEqual(200, status)
+                self.assertEqual(400, status)
                 result = self._call(application, "scarcity_select", {"profile_id": profile_id})
-                self.assertFalse(result.is_error)
-                envelope = {"schema_version": 1, "decision": direct.to_dict()}
-                self.assertEqual(direct.to_dict(), cli)
-                self.assertEqual(envelope, rest)
-                self.assertEqual(envelope, cast(dict[str, object], result.structured_content))
-                self.assertEqual(envelope, _text_payload(result))
+                self.assertTrue(result.is_error)
+                self.assertEqual(legacy_profile_payload(), rest)
+                self.assertEqual(legacy_profile_payload(), _error_payload(result))
 
     def test_profile_and_explicit_requirement_paths(self) -> None:
         application = self._application()
         profile_result = self._call(
             application, "scarcity_select", {"profile_id": "deep_coding"}
         )
-        self.assertFalse(profile_result.is_error)
+        self.assertTrue(profile_result.is_error)
+        self.assertEqual(legacy_profile_payload(), _error_payload(profile_result))
         catalog, profiles, version = load_configured_artifacts(
             CATALOG_PATH, POLICY_PATH
         )
-        profile_direct = select_from_inputs(
-            catalog=catalog,
-            profiles=profiles,
-            profile_policy_version=version,
-            profile_id="deep_coding",
-            requirement=None,
-            tightening=None,
-            policy=None,
-            replenishment_states=(),
-            collectors=application.collectors,
-            clock=application.clock,
-        )
-        cli = self._cli_json(
-            application, ["select", "--profile", "deep_coding", "--json"]
-        )
-        harness = self._rest(application)
-        status, rest = _rest_request(
-            harness, "POST", "/v1/select", {"profile_id": "deep_coding"}
-        )
-        self.assertEqual(200, status)
-        rest_decision = cast(dict[str, object], rest)["decision"]
-        self.assertEqual(profile_direct.to_dict(), cli)
-        self.assertEqual(profile_direct.to_dict(), rest_decision)
-        self.assertEqual(
-            profile_direct.to_dict(),
-            cast(dict[str, object], profile_result.structured_content)["decision"],
-        )
-
-        explicit = profiles.resolve("deep_coding").to_dict()
+        explicit = REQUIREMENT
         explicit_result = self._call(
             application, "scarcity_select", {"requirement": explicit}
         )
@@ -583,7 +556,7 @@ class SelectTests(McpTestCase):
             profiles=profiles,
             profile_policy_version=version,
             profile_id=None,
-            requirement=profiles.resolve("deep_coding"),
+            requirement=TaskRequirement.from_dict(REQUIREMENT),
             tightening=None,
             policy=None,
             replenishment_states=(),
@@ -600,7 +573,7 @@ class SelectTests(McpTestCase):
             collectors=_collectors(openai_five=0, openai_weekly=0)
         )
         result = self._call(
-            application, "scarcity_select", {"profile_id": "scientific_review"}
+            application, "scarcity_select", {"requirement": REQUIREMENT}
         )
         self.assertFalse(result.is_error)
         decision = cast(dict[str, object], result.structured_content)["decision"]
@@ -613,8 +586,7 @@ class SelectTests(McpTestCase):
 
     def test_invalid_logical_inputs_are_structured_and_safe(self) -> None:
         application = self._application()
-        _, profiles, _ = load_configured_artifacts(CATALOG_PATH, POLICY_PATH)
-        requirement = profiles.resolve("deep_coding").to_dict()
+        requirement = REQUIREMENT
         cases: tuple[Mapping[str, object], ...] = (
             {"profile_id": "unknown-profile"},
             {"profile_id": "deep_coding", "requirement": requirement},
@@ -626,7 +598,8 @@ class SelectTests(McpTestCase):
             with self.subTest(arguments=arguments):
                 result = self._call(application, "scarcity_select", arguments)
                 self.assertTrue(result.is_error)
-                self.assertEqual(invalid_request_payload(), _error_payload(result))
+                expected = legacy_profile_payload() if arguments == {"profile_id": "unknown-profile"} else invalid_request_payload()
+                self.assertEqual(expected, _error_payload(result))
                 self.assertEqual(_error_payload(result), _text_payload(result))
                 self.assertNotIn("do-not-reflect", json.dumps(_error_payload(result)))
 
@@ -637,12 +610,14 @@ class SimulationTests(McpTestCase):
         empty = self._call(
             application,
             "scarcity_simulate",
-            {"profile_id": "deep_coding", "overrides": {}},
+            {"requirement": REQUIREMENT, "overrides": {}},
         )
         self.assertFalse(empty.is_error)
 
         with tempfile.TemporaryDirectory() as directory:
             override_path = Path(directory) / "overrides.json"
+            requirement_path = Path(directory) / "requirement.json"
+            _ = requirement_path.write_text(json.dumps(REQUIREMENT), encoding="utf-8")
             _ = override_path.write_text(
                 json.dumps(BASE_OVERRIDES), encoding="utf-8"
             )
@@ -650,8 +625,8 @@ class SimulationTests(McpTestCase):
                 application,
                 [
                     "simulate",
-                    "--profile",
-                    "deep_coding",
+                    "--requirement",
+                    str(requirement_path),
                     "--overrides",
                     str(override_path),
                     "--json",
@@ -665,8 +640,8 @@ class SimulationTests(McpTestCase):
             catalog=catalog,
             profiles=profiles,
             profile_policy_version=version,
-            profile_id="deep_coding",
-            requirement=None,
+            profile_id=None,
+            requirement=TaskRequirement.from_dict(REQUIREMENT),
             tightening=None,
             policy=None,
             replenishment_states=(),
@@ -679,13 +654,13 @@ class SimulationTests(McpTestCase):
             harness,
             "POST",
             "/v1/simulate",
-            {"profile_id": "deep_coding", "overrides": BASE_OVERRIDES},
+            {"requirement": REQUIREMENT, "overrides": BASE_OVERRIDES},
         )
         self.assertEqual(200, status)
         mcp = self._call(
             application,
             "scarcity_simulate",
-            {"profile_id": "deep_coding", "overrides": BASE_OVERRIDES},
+            {"requirement": REQUIREMENT, "overrides": BASE_OVERRIDES},
         )
         self.assertFalse(mcp.is_error)
         rest_result = cast(dict[str, object], rest)["result"]
@@ -698,7 +673,7 @@ class SimulationTests(McpTestCase):
     def test_semantic_and_schema_override_errors_are_invalid_requests(self) -> None:
         application = self._application()
         nonexistent = {
-            "profile_id": "deep_coding",
+            "requirement": REQUIREMENT,
             "overrides": {
                 "capacity_percentages": [
                     {
@@ -712,7 +687,7 @@ class SimulationTests(McpTestCase):
             },
         }
         invalid_schema = {
-            "profile_id": "deep_coding",
+            "requirement": REQUIREMENT,
             "overrides": {"capacity_percentages": [{"provider": "zai"}]},
         }
         for arguments in (nonexistent, invalid_schema):
@@ -732,7 +707,7 @@ class SimulationTests(McpTestCase):
             )
         )
         non_ok = {
-            "profile_id": "deep_coding",
+            "requirement": REQUIREMENT,
             "overrides": {
                 "capacity_percentages": [
                     {

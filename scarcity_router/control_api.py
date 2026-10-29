@@ -48,6 +48,7 @@ import hashlib
 import hmac
 import secrets
 import threading
+from dataclasses import replace
 from collections.abc import Callable, Mapping
 from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
@@ -74,7 +75,7 @@ from .control_errors import (
     MACHINE_SIMULATE_PATH,
     MACHINE_STATUS_PATH,
 )
-from .errors import ApplicationInputError, RouteContractValidationError
+from .errors import ApplicationInputError, CapacityValidationError, RouteContractValidationError
 from .gateway_adapters import AdapterRegistry
 from .gateway_audit import AuditRecord, BoundedAuditTrail
 from .gateway_contracts import (
@@ -84,28 +85,29 @@ from .gateway_contracts import (
     GatewayLimits,
     hash_client_key,
 )
-from .gateway_coordinator import GatewayApplication, RoutingAliasTable
+from .gateway_coordinator import GatewayApplication, RoutingAliasTable, execution_assurances
 from .gateway_continuation import ContinuationRegistry
 from .gateway_server import GATEWAY_ORIGIN_HEADER, GatewayRequestHandler
 from .gateway_validation import v_safe_id
 from .machine_api import (
     parse_selection_document,
     parse_simulation_document,
+    ParsedSelectionInputs,
     selection_envelope,
     simulation_envelope,
     status_envelope,
 )
 from .capacity import CapacityDiagnostic, CapacitySnapshot
 from .eligibility import ExecutionEligibility
-from .execution_sources import SourceRegistry
+from .execution_sources import SourceRegistry, add_configured_resources
 from .model_inventory import is_source_resource_id
 from .model_inventory import ModelInventoryReport
-from .model_tracks import load_track_registry
 from .resource_state import (
     RESOURCE_STATE_SCHEMA_VERSION,
     ResourceHealth,
     ResourceRegistration,
     ResourceRegistry,
+    RegistrySnapshot,
     ResourceStateSnapshot,
     WorkerStateReport,
 )
@@ -113,17 +115,20 @@ from .routing_core import (
     AdministratorConstraints,
     ClientAuthorization,
     ClientRoutingProfile,
+    RequestBinding,
+    RouteRequest,
+    public_route_document,
+    route_request,
 )
 from .config import resolve_default_selector_policy
 from .selector import SelectorPolicy, neutral_selector_policy
+from .simulation import CapacityPercentageOverride, SimulationResult
 from .selection_app import (
     DEFAULT_CATALOG_PATH,
     DEFAULT_MODEL_POLICY_PATH,
-    load_catalog,
     load_configured_artifacts,
-    load_model_policy,
     load_strict_json,
-    select_from_inputs,
+    resolve_requirement,
     simulate_from_inputs,
 )
 from .server_composition import (
@@ -377,12 +382,8 @@ class ControlPlane:
         # document. The resolver is re-read on every call, so each
         # configuration change (add/remove/enable/unassign) is
         # authoritative immediately — no pushed-copy staleness window.
-        # D-053: the server-side execution-source registry (derived
-        # resources, track-floor catalog entries, source views). The
-        # reviewed track artifact loads with the other calibrated inputs.
-        self._source_registry: SourceRegistry = SourceRegistry(
-            track_registry=load_track_registry()
-        )
+        # Server-side state for discovered, administrator-granted resources.
+        self._source_registry: SourceRegistry = SourceRegistry()
         self._worker_endpoint = WorkerEndpoint(
             identity_store=self._worker_identity_store,
             registry=self,
@@ -874,31 +875,78 @@ class ControlPlane:
         if method != "POST":
             raise ControlHTTPError.method_not_allowed()
         document = self._require_json_body(handler)
-        catalog = load_catalog(self._catalog_path)
-        profiles, policy_version = load_model_policy(self._model_policy_path)
+        catalog, profiles, policy_version = load_configured_artifacts(
+            self._catalog_path, self._model_policy_path
+        )
         try:
             if path == MACHINE_SELECT_PATH:
                 parsed = parse_selection_document(document)
-                decision = select_from_inputs(
-                    catalog=catalog,
-                    profiles=profiles,
-                    profile_policy_version=policy_version,
-                    profile_id=parsed.profile_id,
-                    requirement=parsed.requirement,
-                    tightening=parsed.tightening,
-                    policy=(
-                        parsed.policy
-                        if parsed.policy is not None
-                        else self._default_policy()
-                    ),
-                    replenishment_states=parsed.replenishment_states,
-                    collectors=self._collectors,
-                    clock=self._clock,
-                )
-                _ = client_id
-                self._send_json(handler, HTTPStatus.OK, selection_envelope(decision))
+                if parsed.replenishment_states:
+                    raise ControlHTTPError.invalid_request(
+                        "provider-only replenishment observations cannot be associated with an exact source"
+                    )
+                if parsed.profile_id is not None and not profiles.definitions:
+                    raise ControlHTTPError.invalid_request(
+                        "legacy task profiles are unsupported; provide an explicit requirement"
+                    )
+                route_input = self._machine_route_request(parsed, client_id)
+                routed = route_request(route_input)
+                public_route = public_route_document(routed, route_input)
+                envelope = selection_envelope(routed.selection)
+                envelope["decision"] = public_route["selection"]
+                envelope["route"] = public_route
+                self._send_json(handler, HTTPStatus.OK, envelope)
                 return
             parsed, overrides = parse_simulation_document(document)
+            if parsed.replenishment_states or overrides.replenishment_states:
+                raise ControlHTTPError.invalid_request(
+                    "provider-only replenishment observations cannot be associated with an exact source"
+                )
+            if parsed.profile_id is not None and not profiles.definitions:
+                raise ControlHTTPError.invalid_request(
+                    "legacy task profiles are unsupported; provide an explicit requirement"
+                )
+            if self.current_application().catalog.entries:
+                route_input = self._machine_route_request(parsed, client_id)
+                baseline = route_request(route_input)
+                baseline_public = public_route_document(baseline, route_input)
+                simulated_at = overrides.evaluated_at or route_input.evaluated_at
+                simulated_registry = self._simulate_source_capacity(
+                    route_input, route_input.registry_snapshot, overrides.capacity_percentages, baseline_public
+                )
+                if simulated_at != route_input.evaluated_at:
+                    scratch = ResourceRegistry()
+                    for entry in simulated_registry.entries:
+                        scratch.register(ResourceRegistration(
+                            identity=entry.identity, freshness_ttl_seconds=entry.freshness_ttl_seconds,
+                            poll_interval_seconds=entry.poll_interval_seconds,
+                            capabilities=entry.capabilities, cost=entry.cost,
+                        ))
+                        if entry.observation is not None:
+                            scratch.apply_snapshot(entry.observation)
+                    simulated_registry = replace(
+                        scratch.registry_snapshot(now=format_utc(simulated_at)),
+                        revision=route_input.registry_snapshot.revision,
+                    )
+                changed_input = replace(
+                    route_input,
+                    evaluated_at=simulated_at,
+                    registry_snapshot=simulated_registry,
+                    policy=overrides.selector_policy or route_input.policy,
+                    replenishment_states=(overrides.replenishment_states
+                                          if overrides.replenishment_states is not None
+                                          else route_input.replenishment_states),
+                )
+                simulated = route_request(changed_input)
+                result = SimulationResult(baseline.selection, simulated.selection, overrides)
+                envelope = simulation_envelope(result)
+                result_document = cast("dict[str, object]", envelope["result"])
+                simulated_public = public_route_document(simulated, changed_input)
+                result_document["baseline"] = baseline_public["selection"]
+                result_document["simulated"] = simulated_public["selection"]
+                envelope["routes"] = {"baseline": baseline_public, "simulated": simulated_public}
+                self._send_json(handler, HTTPStatus.OK, envelope)
+                return
             result = simulate_from_inputs(
                 catalog=catalog,
                 profiles=profiles,
@@ -918,8 +966,107 @@ class ControlPlane:
             )
             _ = client_id
             self._send_json(handler, HTTPStatus.OK, simulation_envelope(result))
-        except ApplicationInputError:
+        except (ApplicationInputError, CapacityValidationError):
             raise ControlHTTPError.invalid_request() from None
+
+    def _machine_route_request(self, parsed: ParsedSelectionInputs, client_id: str) -> RouteRequest:
+        application = self.current_application()
+        requirement, _profile_id = resolve_requirement(
+            profiles=application.profiles, profile_id=parsed.profile_id,
+            explicit_requirement=parsed.requirement, tightening=parsed.tightening,
+        )
+        evaluated_at = self._clock()
+        snapshot = application.registry.registry_snapshot(now=format_utc(evaluated_at))
+        grants = application.client_authorizations
+        grant = ClientAuthorization() if grants is None else grants.get(client_id, ClientAuthorization())
+        continuation_capable: frozenset[str] | None = None
+        if application.continuation_capability_source is not None:
+            try:
+                continuation_capable = application.continuation_capability_source()
+            except Exception:  # noqa: BLE001 - missing live capability must fail closed
+                continuation_capable = None
+        return RouteRequest(
+            catalog=application.catalog, profiles=application.profiles,
+            registry_snapshot=snapshot, policy=parsed.policy or self._default_policy(),
+            evaluated_at=evaluated_at, capacity_snapshots=(),
+            eligibility_reports=(),
+            replenishment_states=parsed.replenishment_states,
+            compatibility_cells=application.compatibility_cells,
+            admin_constraints=application.admin_constraints,
+            client_authorization=grant, task_requirement=requirement,
+            request=RequestBinding(),
+            continuation_capable_resource_ids=continuation_capable,
+            execution_assurances=execution_assurances(snapshot.entries, application.adapters, grant.strict_no_payg),
+            available_adapter_resource_ids=frozenset(
+                entry.identity.resource_id for entry in snapshot.entries
+                if application.adapters.supports_resource(entry.identity)
+            ),
+        )
+
+    @staticmethod
+    def _simulate_source_capacity(
+        request: RouteRequest, snapshot: RegistrySnapshot,
+        overrides: tuple[CapacityPercentageOverride, ...], visible_route: dict[str, object],
+    ) -> RegistrySnapshot:
+        """Override one already-observed authorized resource window, never host telemetry."""
+        if not overrides:
+            return snapshot
+        visible: set[str] = set()
+        target = visible_route.get("target")
+        if isinstance(target, dict):
+            resource = cast("dict[str, object]", target).get("resource")
+            if isinstance(resource, dict) and isinstance(cast("dict[str, object]", resource).get("resource_id"), str):
+                visible.add(cast(str, cast("dict[str, object]", resource)["resource_id"]))
+        for member in ("target_alternatives", "target_exclusions"):
+            items = visible_route.get(member, [])
+            if not isinstance(items, list):
+                continue
+            for raw in cast("list[object]", items):
+                if not isinstance(raw, dict):
+                    continue
+                item = cast("dict[str, object]", raw)
+                resource = item.get("resource")
+                resource_id = (cast("dict[str, object]", resource).get("resource_id")
+                               if isinstance(resource, dict) else item.get("resource_id"))
+                if isinstance(resource_id, str) and resource_id != "restricted":
+                    visible.add(resource_id)
+        bindings = {(resource_id, scope.provider, scope.scope_id)
+                    for entry in request.catalog.entries
+                    for resource_id, scopes in entry.resource_capacity_bindings for scope in scopes}
+        entries = list(snapshot.entries)
+        changed: set[tuple[str, int]] = set()
+        for override in overrides:
+            matches: list[tuple[int, int]] = []
+            for index, entry in enumerate(entries):
+                observation = entry.observation
+                if (entry.identity.resource_id not in visible or entry.freshness != "fresh" or observation is None
+                        or observation.health.status != "ok" or
+                        (entry.identity.resource_id, override.provider, override.scope_id) not in bindings):
+                    continue
+                for fact_index, fact in enumerate(observation.quota_facts):
+                    window = fact.window
+                    if (fact.observation_class == "provider_telemetry" and window.scope_id == override.scope_id
+                            and window.resource == override.resource and window.kind == override.kind
+                            and (override.window_id is None or window.window_id == override.window_id)):
+                        matches.append((index, fact_index))
+            if len(matches) != 1:
+                raise ControlHTTPError.invalid_request("capacity override must identify exactly one authorized resource window")
+            index, fact_index = matches[0]
+            entry = entries[index]
+            observation = entry.observation
+            assert observation is not None
+            fact = observation.quota_facts[fact_index]
+            if (fact.window.used_percent is None or fact.window.remaining_percent is None
+                    or (entry.identity.resource_id, fact_index) in changed):
+                raise ControlHTTPError.invalid_request("capacity override requires one known, not previously overridden window")
+            changed.add((entry.identity.resource_id, fact_index))
+            facts = list(observation.quota_facts)
+            facts[fact_index] = replace(fact, window=replace(
+                fact.window, remaining_percent=override.remaining_percent,
+                used_percent=100 - override.remaining_percent,
+            ))
+            entries[index] = replace(entry, observation=replace(observation, quota_facts=tuple(facts)))
+        return replace(snapshot, entries=tuple(entries))
 
     def _default_policy(self) -> SelectorPolicy:
         """The D-036 server default policy, else the documented neutral."""
@@ -1014,6 +1161,11 @@ class ControlPlane:
             return
         if len(parts) == 2 and parts[0] == "sources" and method == "DELETE":
             self.service_remove_source(parts[1])
+            self._send_json(handler, HTTPStatus.OK, {"status": "ok"})
+            return
+        if len(parts) == 3 and parts[0] == "sources" and parts[2] == "model-policy" and method == "POST":
+            document = self._require_json_body(handler)
+            self.service_set_source_model_policy(parts[1], document)
             self._send_json(handler, HTTPStatus.OK, {"status": "ok"})
             return
         if len(parts) == 3 and parts[0] == "resources":
@@ -1240,8 +1392,8 @@ class ControlPlane:
         """Add one execution source (D-053). No model slugs here."""
         try:
             source = SourceConfig.from_dict(document)
-        except (ValueError, ServerConfigError) as exc:
-            raise ControlHTTPError.invalid_request(str(exc)) from None
+        except (ValueError, ServerConfigError):
+            raise ControlHTTPError.invalid_request("invalid source configuration") from None
         if self._config.source_by_id(source.source_id) is not None:
             raise ControlHTTPError.conflict(
                 f"source {source.source_id!r} already exists"
@@ -1283,9 +1435,58 @@ class ControlPlane:
         )
         self._save_config(self._updated(sources=sources))
 
+    def service_set_source_model_policy(
+        self, source_id: str, document: Mapping[str, object]
+    ) -> None:
+        """Replace a source's grant with explicitly named model identities."""
+        source = self._config.source_by_id(source_id)
+        if source is None:
+            raise ControlHTTPError.not_found("unknown source")
+        raw = document.get("allowed_models")
+        if (not {"allowed_models"} <= set(document)
+                or set(document) - {"allowed_models", "capacity_scope_ids", "context_evidence", "auto_adopt"}
+                or not isinstance(raw, list)):
+            raise ControlHTTPError.invalid_request(
+                "provide allowed_models as an array of exact discovered model IDs"
+            )
+        raw_models = cast("list[object]", raw)
+        if len(raw_models) > 64 or not all(isinstance(value, str) for value in raw_models):
+            raise ControlHTTPError.invalid_request(
+                "allowed_models must contain at most 64 model IDs"
+            )
+        updated = source.to_dict()
+        _ = updated.pop("allowed_tracks", None)
+        updated["allowed_models"] = raw_models
+        if "auto_adopt" in document:
+            if not isinstance(document["auto_adopt"], bool):
+                raise ControlHTTPError.invalid_request("auto_adopt must be a boolean")
+            updated["auto_adopt"] = document["auto_adopt"]
+        if "capacity_scope_ids" in document:
+            scope_values = document["capacity_scope_ids"]
+            if not isinstance(scope_values, list):
+                raise ControlHTTPError.invalid_request("capacity_scope_ids must be an array")
+            updated["capacity_scope_ids"] = cast("list[object]", scope_values)
+        if "context_evidence" in document:
+            evidence_values = document["context_evidence"]
+            if not isinstance(evidence_values, list):
+                raise ControlHTTPError.invalid_request("context_evidence must be an array")
+            updated["context_evidence"] = cast("list[object]", evidence_values)
+        try:
+            replacement = SourceConfig.from_dict(updated)
+            self._save_config(self._updated(sources=tuple(
+                replacement if item.source_id == source_id else item
+                for item in self._config.sources
+            )))
+        except (ValueError, ServerConfigError):
+            raise ControlHTTPError.invalid_request(
+                "invalid source policy; use unique model IDs, sorted scopes, "
+                + "and valid exact-model context evidence"
+            ) from None
+
     def sources_view(self) -> list[dict[str, object]]:
         """The read-only source view (D-053 point 10): no raw payloads."""
         views = {view["source_id"]: view for view in self._source_registry.source_view()}
+        connected_workers = {state.worker_id for state in self._worker_endpoint.worker_connection_state() if state.connected}
         out: list[dict[str, object]] = []
         for source in self._config.sources:
             live = views.get(source.source_id, {})
@@ -1296,10 +1497,17 @@ class ControlPlane:
                     "kind": source.kind,
                     "worker_id": source.worker_id,
                     "auto_adopt": source.auto_adopt,
-                    "connected": bool(live.get("connected")),
+                    "allowed_models": list(source.allowed_models),
+                    "capacity_scope_ids": list(source.capacity_scope_ids),
+                    "context_evidence": [item.to_dict() for item in source.context_evidence],
+                    "legacy_track_policy": bool(source.allowed_tracks),
+                    "connected": source.worker_id in connected_workers,
                     "source_authenticated": live.get(
                         "source_authenticated", "unverified"
                     ),
+                    "runtime_name": live.get("runtime_name"),
+                    "runtime_version": live.get("runtime_version"),
+                    "runtime_version_exact": bool(live.get("runtime_version_exact")),
                     "detected_models": live.get("models", []),
                     "routable": live.get("routable", 0),
                     "restricted": live.get("restricted", 0),
@@ -1372,11 +1580,13 @@ class ControlPlane:
             profile = ClientRoutingProfile.from_dict(dict(document))
         except (ValueError, ServerConfigError) as exc:
             raise ControlHTTPError.invalid_request(str(exc)) from None
-        catalog_profiles, _version = load_model_policy(self._model_policy_path)
+        _, catalog_profiles, _version = load_configured_artifacts(
+            self._catalog_path, self._model_policy_path
+        )
         known = {definition.profile_id for definition in catalog_profiles.definitions}
         if profile.profile_id not in known:
             raise ControlHTTPError.invalid_request(
-                "alias references an unknown profile_id"
+                "legacy profile aliases are unsupported; use explicit requirements and an exact model"
             )
         aliases = dict(self._config.aliases)
         aliases[alias] = profile
@@ -1676,8 +1886,10 @@ class ControlPlane:
         return self._connection_test_document(resource_id)
 
     def known_profile_ids(self) -> tuple[str, ...]:
-        """Profile ids an alias may bind (from the authoritative artifact)."""
-        profiles, _version = load_model_policy(self._model_policy_path)
+        """Return configured profile IDs; legacy global profiles are unavailable."""
+        _, profiles, _version = load_configured_artifacts(
+            self._catalog_path, self._model_policy_path
+        )
         return tuple(
             sorted({definition.profile_id for definition in profiles.definitions})
         )
@@ -2044,6 +2256,14 @@ class ControlPlane:
         _ = build_compatibility_cells(
             config, provider_secret_reader=self._store.get_provider_secret
         )
+        changed_sources = {
+            previous.source_id for previous in self._config.sources
+            if (current := config.source_by_id(previous.source_id)) is None
+            or current.worker_id != previous.worker_id or current.kind != previous.kind
+        }
+        for resource_id in tuple(self._observations):
+            if is_source_resource_id(resource_id) and resource_id.partition(":")[0] in changed_sources:
+                _ = self._observations.pop(resource_id, None)
         self._config = config
         self._sink.update_retention(config.audit_retention)
         self._rebuild_application()
@@ -2077,10 +2297,10 @@ class ControlPlane:
         )
         # D-053: source-derived state participates like configured
         # registrations — the derived set is recomputed from the latest
-        # inventories, then the catalog view gains the conservative
-        # track-floor entries for adopted models.
+        # inventories with explicit administrator grants.
         self._source_registry.sync_configuration(self._config.sources)
         catalog = self._source_registry.derived_catalog_entries(catalog)
+        catalog = add_configured_resources(catalog, self._config.enabled_registrations())
         registry = ResourceRegistry(clock=self._registry_clock)
         for registration in self._config.enabled_registrations():
             resource_id = registration.identity.resource_id

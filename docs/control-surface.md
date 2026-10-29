@@ -184,6 +184,8 @@ required, CSRF on mutations):
 | `/control/resources/{id}/enabled` | POST | enable/disable (configuration kept, registry updated) |
 | `/control/resources/{id}/connection-test` | POST | quota-free test over real seam data (configuration, worker connection state, the M04 readiness probe); the probe outcome is recorded as the resource's observation; never an inference request |
 | `/control/resources/{id}/generation-test` | POST | real generation probe; requires `{"confirm": true}` AND a configured tester |
+| `/control/sources/{id}/model-policy` | POST | administrator replaces exact `allowed_models` and may set `capacity_scope_ids` and time-bounded exact-model `context_evidence`; clears inactive legacy `allowed_tracks` after explicit grant |
+
 | `/control/aliases` | GET | list routing aliases |
 | `/control/aliases/{alias}` | PUT / DELETE | bind/unbind an alias to an EXISTING task profile (D-042) |
 | `/control/clients` | GET / POST | list clients / issue a key (plaintext returned exactly once) |
@@ -194,6 +196,14 @@ required, CSRF on mutations):
 | `/control/workers/{id}/rotate` | POST | rotate the per-device credential (shown once) |
 | `/control/diagnostics` | GET | the shared diagnostics report (below) |
 | `/control/export` | GET | secret-free configuration export |
+
+The Sources page exposes these actions without requiring direct API calls.
+Model permission and context attestation are separate explicit actions. Revoking
+a model leaves its attestation dormant rather than deleting user state; the page
+can remove a dormant attestation explicitly. Existing legacy track policy stays
+inactive until the administrator confirms replacement with exact grants. Scope
+bindings apply only to telemetry reported by that source's worker, never a
+server-local account that happens to have the same provider name.
 
 Client keys are stored only as SHA-256 hashes and compared in constant
 time through the M03 `ClientKeyDirectory`; issuing a key returns the
