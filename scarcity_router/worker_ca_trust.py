@@ -43,6 +43,7 @@ import stat
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, cast
+from urllib.parse import urlsplit
 
 #: The trust record's schema version. A mismatch is a loud typed failure,
 #: never a guess (the same discipline as the identity/settings versions).
@@ -97,8 +98,32 @@ class WorkerCaTrust:
     ca_path: str
 
 
+def _validate_trust_fields(trust: WorkerCaTrust) -> None:
+    """Enforce the persisted origin/path boundary without storing file contents."""
+    if type(trust.server_origin) is not str or type(trust.ca_path) is not str:
+        raise WorkerCaTrustError("the CA trust record must contain an origin and canonical file path")
+    path = trust.ca_path
+    if (not path or not os.path.isabs(path) or os.path.normpath(path) != path
+            or any(character in path for character in ("\x00", "\n", "\r"))
+            or "-----BEGIN" in path.upper() or "-----END" in path.upper()):
+        raise WorkerCaTrustError("the CA trust record must contain a canonical absolute file path, not certificate material")
+    try:
+        if os.path.normcase(os.path.realpath(path)) != os.path.normcase(path):
+            raise WorkerCaTrustError("the CA trust record must contain a canonical absolute file path")
+        origin = urlsplit(trust.server_origin)
+        host, port = origin.hostname, origin.port
+        if (origin.scheme != "srws" or host is None or port is None or not 1 <= port <= 65535
+                or origin.username is not None or origin.password is not None
+                or origin.path or origin.query or origin.fragment
+                or trust.server_origin != f"srws://{host}:{port}"):
+            raise WorkerCaTrustError("the CA trust record requires a canonical verified TLS origin")
+    except (OSError, ValueError):
+        raise WorkerCaTrustError("the CA trust record requires a canonical verified TLS origin and file path") from None
+
+
 def trust_to_json(trust: WorkerCaTrust) -> str:
     """The bounded canonical JSON document for one trust record."""
+    _validate_trust_fields(trust)
     document: dict[str, object] = {
         "schema_version": WORKER_CA_TRUST_SCHEMA_VERSION,
         "server_origin": trust.server_origin,
@@ -112,6 +137,15 @@ def trust_to_json(trust: WorkerCaTrust) -> str:
     return text
 
 
+def _unique_trust_pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise WorkerCaTrustError("the stored CA trust record has duplicate fields")
+        result[key] = value
+    return result
+
+
 def trust_from_json(text: str) -> WorkerCaTrust:
     """Parse one stored trust record (strict; fails closed).
 
@@ -121,12 +155,14 @@ def trust_from_json(text: str) -> WorkerCaTrust:
     silently ignored trust change.
     """
     try:
-        parsed = cast("object", json.loads(text))
-    except (json.JSONDecodeError, ValueError) as exc:
+        if len(text) > MAX_CA_TRUST_JSON_CHARS:
+            raise WorkerCaTrustError("the stored CA trust record is too large")
+        parsed = cast("object", json.loads(text, object_pairs_hook=_unique_trust_pairs))
+    except (json.JSONDecodeError, ValueError):
         raise WorkerCaTrustError(
             "the stored CA trust record is malformed; use --ca-cert on a "
             + "verified run for the paired origin to replace it"
-        ) from exc
+        ) from None
     if not isinstance(parsed, dict):
         raise WorkerCaTrustError(
             "the stored CA trust record is malformed; use --ca-cert on a "
@@ -143,8 +179,7 @@ def trust_from_json(text: str) -> WorkerCaTrust:
         raise WorkerCaTrustError("the stored CA trust record has a malformed schema version")
     if version != WORKER_CA_TRUST_SCHEMA_VERSION:
         raise WorkerCaTrustError(
-            f"the stored CA trust record uses schema version {version}, "
-            + f"not {WORKER_CA_TRUST_SCHEMA_VERSION}; use --ca-cert on a "
+            "the stored CA trust record uses an unsupported schema version; use --ca-cert on a "
             + "verified run for the paired origin to replace it"
         )
     server_origin = document["server_origin"]
@@ -159,12 +194,76 @@ def trust_from_json(text: str) -> WorkerCaTrust:
             + "path; use --ca-cert on a verified run for the paired origin "
             + "to replace it"
         )
-    return WorkerCaTrust(server_origin=server_origin, ca_path=ca_path)
+    trust = WorkerCaTrust(server_origin=server_origin, ca_path=ca_path)
+    _validate_trust_fields(trust)
+    return trust
 
 
 _O_CLOEXEC = getattr(os, "O_CLOEXEC", 0)
 _O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 _O_NONBLOCK = getattr(os, "O_NONBLOCK", 0)
+_O_PATH = getattr(os, "O_PATH", 0)
+_O_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
+_OPEN_SUPPORTS_DIR_FD = os.open in os.supports_dir_fd
+
+
+def _open_anchored_regular(path: Path) -> int:
+    """Open an exact regular file through no-follow directory descriptors."""
+    if os.name == "nt":
+        from .worker_ca_windows import WindowsCaOpenError, open_windows_regular
+
+        try:
+            return open_windows_regular(os.fspath(path))
+        except WindowsCaOpenError:
+            raise WorkerCaTrustError(
+                "--ca-cert: the Windows path could not be opened safely; "
+                + "use a regular local certificate file without reparse points"
+            ) from None
+    if (os.name != "posix" or not all((_O_PATH, _O_DIRECTORY, _O_NOFOLLOW, _O_NONBLOCK))
+            or not _OPEN_SUPPORTS_DIR_FD):
+        raise WorkerCaTrustError(
+            "--ca-cert: safe private-CA file handling is unavailable on this platform; "
+            + "use platform trust or a supported Linux worker"
+        )
+    opened: list[int] = []
+    read_fd: int | None = None
+    try:
+        directory = os.open(os.path.sep, _O_PATH | _O_DIRECTORY | _O_NOFOLLOW | _O_CLOEXEC)
+        opened.append(directory)
+        parts = path.parts[1:]
+        if not parts:
+            raise WorkerCaTrustError("--ca-cert: the path is not a regular file")
+        for part in parts[:-1]:
+            directory = os.open(part, _O_PATH | _O_DIRECTORY | _O_NOFOLLOW | _O_CLOEXEC, dir_fd=directory)
+            opened.append(directory)
+        handle = os.open(parts[-1], _O_PATH | _O_NOFOLLOW | _O_CLOEXEC, dir_fd=directory)
+        opened.append(handle)
+        original = os.fstat(handle)
+        if not stat.S_ISREG(original.st_mode):
+            raise WorkerCaTrustError("--ca-cert: the path is not a regular file; pass a PEM CA certificate file")
+        # O_PATH pins the verified object before any potentially blocking
+        # data-open. Linux procfs reopens that descriptor, not the pathname.
+        read_fd = os.open(f"/proc/self/fd/{handle}", os.O_RDONLY | _O_NONBLOCK | _O_CLOEXEC)
+        reopened = os.fstat(read_fd)
+        if not stat.S_ISREG(reopened.st_mode) or (reopened.st_dev, reopened.st_ino) != (original.st_dev, original.st_ino):
+            raise WorkerCaTrustError("--ca-cert: the file changed while opening; retry with a stable CA file")
+        result, read_fd = read_fd, None
+        return result
+    except OSError:
+        raise WorkerCaTrustError(
+            "--ca-cert: the file could not be opened safely; check its path and permissions"
+        ) from None
+    finally:
+        if read_fd is not None:
+            try:
+                os.close(read_fd)
+            except OSError:
+                pass
+        for descriptor in reversed(opened):
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
 
 
 def _read_validated_ca_material(
@@ -180,29 +279,28 @@ def _read_validated_ca_material(
     """
     try:
         text_argument = os.fspath(path)
-    except TypeError as exc:
+    except TypeError:
         raise WorkerCaTrustError(
             "--ca-cert needs the path of a PEM CA certificate file"
-        ) from exc
-    if not text_argument:
+        ) from None
+    if type(text_argument) is not str or not text_argument:
         raise WorkerCaTrustError("--ca-cert needs the path of a PEM CA certificate file")
     try:
-        resolved = Path(os.path.realpath(text_argument))
-    except OSError as exc:
+        # On Windows, do not follow a reparse point while normalizing: the
+        # handle walk below verifies each component before reading data.
+        resolved = Path(os.path.abspath(text_argument) if os.name == "nt" else os.path.realpath(text_argument))
+    except (OSError, ValueError):
         raise WorkerCaTrustError(
             "--ca-cert: the file could not be read; check that the path "
             + "names an existing readable PEM certificate file"
-        ) from exc
+        ) from None
     try:
-        fd = os.open(
-            os.fspath(resolved),
-            os.O_RDONLY | _O_CLOEXEC | _O_NOFOLLOW | _O_NONBLOCK,
-        )
-    except OSError as exc:
+        fd = _open_anchored_regular(resolved)
+    except OSError:
         raise WorkerCaTrustError(
             "--ca-cert: the file could not be read; check that the path "
             + "names an existing readable PEM certificate file"
-        ) from exc
+        ) from None
     try:
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode):
@@ -224,11 +322,11 @@ def _read_validated_ca_material(
             chunks.append(chunk)
             total += len(chunk)
         data = b"".join(chunks)
-    except OSError as exc:
+    except OSError:
         raise WorkerCaTrustError(
             "--ca-cert: the file could not be read; check the file's "
             + "permissions"
-        ) from exc
+        ) from None
     finally:
         try:
             os.close(fd)
@@ -241,11 +339,11 @@ def _read_validated_ca_material(
         )
     try:
         text = data.decode("ascii")
-    except UnicodeDecodeError as exc:
+    except UnicodeDecodeError:
         raise WorkerCaTrustError(
             "--ca-cert: the file is not a PEM certificate file (binary "
             + "content is refused)"
-        ) from exc
+        ) from None
     markers = cast("list[str]", _PEM_ANY_BEGIN.findall(text))
     if any(marker != "CERTIFICATE" for marker in markers):
         raise WorkerCaTrustError(
@@ -262,11 +360,11 @@ def _read_validated_ca_material(
     for block in blocks:
         try:
             der = ssl.PEM_cert_to_DER_cert(block)
-        except (ValueError, ssl.SSLError) as exc:
+        except (ValueError, ssl.SSLError):
             raise WorkerCaTrustError(
                 "--ca-cert: a certificate in the file could not be "
                 + "parsed; pass a valid certificates-only PEM CA file"
-            ) from exc
+            ) from None
         if not der:
             # base64 decoding is lenient (non-alphabet bytes are
             # discarded); an empty DER means the block was not a
@@ -289,11 +387,11 @@ def _read_validated_ca_material(
         # bounded descriptor content already checked above, not a second
         # pathname read that could observe a replacement file.
         context.load_verify_locations(cadata=text)
-    except (ssl.SSLError, OSError, ValueError) as exc:
+    except (ssl.SSLError, OSError, ValueError):
         raise WorkerCaTrustError(
             "--ca-cert: a certificate in the file could not be parsed; "
             + "pass a valid certificates-only PEM CA file"
-        ) from exc
+        ) from None
     return resolved, text
 
 

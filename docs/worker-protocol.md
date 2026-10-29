@@ -258,6 +258,16 @@ semantics and changes nothing else:
   certificates-only PEM document — binary, oversize, non-regular,
   corrupt and private-key-bearing files fail closed before any network
   use, and error messages never echo the path or file content. The
+  explicit flag cannot be empty. Linux opens each resolved path component
+  relative to held no-follow directory descriptors, pins a regular file
+  before opening it for data and requires a usable `/proc/self/fd` interface;
+  unsupported platforms or missing safety primitives fail closed. Windows
+  opens components with held no-follow handles and without delete sharing;
+  only regular files on local fixed or RAM disks are accepted, and reparse
+  points, network paths, device names and alternate streams are refused. These
+  limits do not affect the ordinary platform-trust path when no private CA is
+  configured. The Windows native behavior requires separate live Windows
+  acceptance; synthetic handle tests are not live-platform proof. The
   CANONICAL absolute path (never the certificate contents) is stored as
   one bounded, explicitly versioned JSON row in the EXISTING worker
   store, bound to the exact origin it was paired for; it never applies

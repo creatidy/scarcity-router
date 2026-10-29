@@ -63,7 +63,7 @@ from pathlib import Path
 from typing import Protocol, TypeVar, runtime_checkable
 
 from . import worker_setup
-from .worker_ca_trust import WorkerCaTrust, validate_ca_cert_file
+from .worker_ca_trust import WorkerCaTrust, WorkerCaTrustError, validate_ca_cert_file
 from .worker_client import (
     ConnectFactory,
     WorkerConfigError,
@@ -448,6 +448,18 @@ def run_tray_worker(
     def write_log(runtime: TrayRuntime) -> None:
         append_worker_log(directory, runtime.diagnostics())
 
+    def report_ca_error() -> None:
+        message = (
+            "Private CA trust is invalid, missing, or unsupported. Verify the CA file, "
+            + "then run the worker with --ca-cert PATH against the paired TLS origin; "
+            + "re-pair if the origin changed."
+        )
+        model.mark_error(message)
+        try:
+            append_worker_log(directory, (message,))
+        except OSError:
+            pass
+
     def request_stop(runtime: TrayRuntime) -> None:
         runtime.request_stop()
 
@@ -480,6 +492,9 @@ def run_tray_worker(
             restart_requested.clear()
             try:
                 runtime = runtime_factory()
+            except WorkerCaTrustError:
+                report_ca_error()
+                return
             except Exception as exc:
                 model.mark_error(f"cannot start runtime ({type(exc).__name__})")
                 return
@@ -487,6 +502,11 @@ def run_tray_worker(
             model.mark_running()
             try:
                 reason: str = str(runtime.run())
+            except WorkerCaTrustError:
+                report_ca_error()
+                write_log(runtime)
+                runtime_box.clear()
+                return
             except Exception as exc:
                 model.mark_error(f"runtime failure ({type(exc).__name__})")
                 write_log(runtime)
@@ -796,11 +816,9 @@ def build_runtime(
     arguments = effective_arguments(cli_arguments, settings)
     registry = build_local_adapter_registry(arguments, state_dir)
     ca_argument = cli_arguments.get("ca_cert")
-    explicit_ca = (
-        str(validate_ca_cert_file(ca_argument))
-        if isinstance(ca_argument, str) and ca_argument
-        else None
-    )
+    if ca_argument is not None and not isinstance(ca_argument, str):
+        raise WorkerConfigError("--ca-cert needs the path of a PEM CA certificate file")
+    explicit_ca = str(validate_ca_cert_file(ca_argument)) if ca_argument is not None else None
     connect_factory, pending_trust = resolve_run_trust(
         store, origin, explicit_ca
     )
@@ -953,7 +971,9 @@ def _packaged_pair(rest: list[str], *, connect_factory: ConnectFactory | None) -
         # first private-CA onboarding is this one explicit CLI step.
         ca_argument = arguments.get("ca_cert")
         ca_trust: WorkerCaTrust | None = None
-        if isinstance(ca_argument, str) and ca_argument:
+        if ca_argument is not None:
+            if not isinstance(ca_argument, str):
+                raise WorkerConfigError("--ca-cert needs the path of a PEM CA certificate file")
             ca_path = validate_ca_cert_file(ca_argument)
             if connect_factory is None:
                 connect_factory = ca_connect_factory(str(ca_path))

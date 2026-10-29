@@ -11,12 +11,14 @@ public host.
 from __future__ import annotations
 
 import io
+import ctypes
 import os
 import sqlite3
 import socket
 import ssl
 import tempfile
 import threading
+import traceback
 import unittest
 import unittest.mock
 from collections.abc import Callable
@@ -109,6 +111,12 @@ class CaFileValidationTests(unittest.TestCase):
         resolved = validate_ca_cert_file(noncanonical)
         self.assertEqual(Path(os.path.realpath(str(self.tls.ca_file))), resolved)
         self.assertTrue(resolved.is_absolute())
+
+    @unittest.skipUnless(os.name == "posix" and hasattr(os, "O_PATH"), "Linux symlink compatibility")
+    def test_operator_supplied_symlink_resolves_before_anchored_open(self) -> None:
+        link = self._path("operator-link.pem")
+        link.symlink_to(self.tls.ca_file)
+        self.assertEqual(self.tls.ca_file.resolve(), validate_ca_cert_file(link))
 
     def test_missing_file_fails_closed(self) -> None:
         with self.assertRaises(WorkerCaTrustError):
@@ -206,10 +214,160 @@ class CaFileValidationTests(unittest.TestCase):
             self.assertNotIn("BEGIN", message)
             self.assertNotIn(SYNTHETIC_CREDENTIAL, message)
 
+    def test_chained_traceback_never_exposes_untrusted_file_path(self) -> None:
+        secret = "SYNTHETIC-SECRET-IN-PATH"
+        try:
+            _ = validate_ca_cert_file(self._path(secret))
+        except WorkerCaTrustError as exc:
+            rendered = "".join(traceback.format_exception(exc))
+        else:
+            self.fail("missing CA unexpectedly accepted")
+        self.assertNotIn(secret, rendered)
+
     def test_supplemented_context_keeps_verification_hard_on(self) -> None:
         context = tls_context_for_worker_ca(self.tls.ca_file)
         self.assertEqual(ssl.CERT_REQUIRED, context.verify_mode)
         self.assertTrue(context.check_hostname)
+
+    @unittest.skipUnless(os.name == "posix" and hasattr(os, "mkfifo") and hasattr(os, "O_PATH"), "Linux anchored FIFO test")
+    def test_fifo_is_refused_without_opening_it_for_data(self) -> None:
+        fifo = self._path("blocking-fifo")
+        os.mkfifo(fifo)
+        with self.assertRaisesRegex(WorkerCaTrustError, "regular file"):
+            _ = validate_ca_cert_file(fifo)
+
+    @unittest.skipUnless(os.name == "posix", "POSIX safety capability test")
+    def test_missing_safety_capability_refuses_instead_of_falling_back(self) -> None:
+        with unittest.mock.patch("scarcity_router.worker_ca_trust._O_NOFOLLOW", 0):
+            with self.assertRaisesRegex(WorkerCaTrustError, "safe private-CA file handling is unavailable"):
+                _ = validate_ca_cert_file(self.tls.ca_file)
+
+    @unittest.skipUnless(os.name == "posix" and hasattr(os, "O_PATH"), "Linux parent-race test")
+    def test_swapped_parent_symlink_is_never_followed(self) -> None:
+        root = self._path("trusted-parent")
+        root.mkdir()
+        ca = root / "ca.pem"
+        _ = ca.write_bytes(self.tls.ca_file.read_bytes())
+        alternative = self._path("alternative")
+        alternative.mkdir()
+        _ = (alternative / "ca.pem").write_bytes(self.tls.ca_file.read_bytes())
+        original_open = os.open
+        swapped = False
+
+        def swap_parent(path: object, flags: int, mode: int = 0o777, *, dir_fd: int | None = None) -> int:
+            nonlocal swapped
+            if path == "trusted-parent" and dir_fd is not None and not swapped:
+                swapped = True
+                _ = root.rename(self._path("original-parent"))
+                root.symlink_to(alternative, target_is_directory=True)
+            return original_open(cast("str", path), flags, mode, dir_fd=dir_fd)
+
+        with unittest.mock.patch("scarcity_router.worker_ca_trust.os.open", side_effect=swap_parent):
+            with self.assertRaises(WorkerCaTrustError):
+                _ = validate_ca_cert_file(ca)
+        self.assertTrue(swapped)
+
+    @unittest.skipUnless(os.name == "posix" and hasattr(os, "O_PATH") and hasattr(os, "mkfifo"), "Linux final-object race test")
+    def test_regular_file_replaced_by_fifo_is_refused_before_data_open(self) -> None:
+        ca = self._path("raced.pem")
+        _ = ca.write_bytes(self.tls.ca_file.read_bytes())
+        original_open = os.open
+        swapped = False
+
+        def swap_final(path: object, flags: int, mode: int = 0o777, *, dir_fd: int | None = None) -> int:
+            nonlocal swapped
+            if path == "raced.pem" and dir_fd is not None and not swapped:
+                swapped = True
+                _ = ca.rename(self._path("previous.pem"))
+                os.mkfifo(ca)
+            return original_open(cast("str", path), flags, mode, dir_fd=dir_fd)
+
+        with unittest.mock.patch("scarcity_router.worker_ca_trust.os.open", side_effect=swap_final):
+            with self.assertRaisesRegex(WorkerCaTrustError, "regular file"):
+                _ = validate_ca_cert_file(ca)
+        self.assertTrue(swapped)
+
+
+class WindowsHandleValidationTests(unittest.TestCase):
+    class Function:
+        def __init__(self, callback: Callable[[tuple[object, ...]], object]) -> None:
+            self.argtypes: object = None
+            self.restype: object = None
+            self.callback: Callable[[tuple[object, ...]], object] = callback
+            self.calls: list[tuple[object, ...]] = []
+
+        def __call__(self, *args: object) -> object:
+            self.calls.append(args)
+            return self.callback(args)
+
+    class Kernel:
+        def __init__(self, *, reparse_handle: int | None = None, file_type: int = 1) -> None:
+            handles = iter((100, 101, 102))
+            self.CreateFileW: WindowsHandleValidationTests.Function = WindowsHandleValidationTests.Function(lambda _args: next(handles))
+            self.GetDriveTypeW: WindowsHandleValidationTests.Function = WindowsHandleValidationTests.Function(lambda _args: 3)
+            self.GetFileType: WindowsHandleValidationTests.Function = WindowsHandleValidationTests.Function(lambda _args: file_type)
+            self.CloseHandle: WindowsHandleValidationTests.Function = WindowsHandleValidationTests.Function(lambda _args: True)
+            def info(args: tuple[object, ...]) -> object:
+                handle = cast(int, args[0])
+                attributes = (0x10 if handle in (100, 101) else 0) | (0x400 if handle == reparse_handle else 0)
+                values = (ctypes.c_ulong * 2)(attributes, 0)
+                _ = ctypes.memmove(cast("ctypes.c_void_p", args[2]), ctypes.byref(values), ctypes.sizeof(values))
+                return True
+            self.GetFileInformationByHandleEx: WindowsHandleValidationTests.Function = WindowsHandleValidationTests.Function(info)
+
+    class Runtime:
+        def __init__(self) -> None:
+            self.calls: list[tuple[int, int]] = []
+        def open_osfhandle(self, handle: int, flags: int) -> int:
+            self.calls.append((handle, flags))
+            return 42
+
+    def test_dos_devices_network_and_stream_paths_fail_before_native_open(self) -> None:
+        from scarcity_router.worker_ca_windows import WindowsCaOpenError, open_windows_regular
+
+        for value in (r"\\server\share\ca.pem", r"\\.\pipe\worker", r"C:\x\NUL.pem",
+                      r"C:\x\COM¹.txt", r"C:\x\ca.pem:stream", r"C:\x\bad?.pem"):
+            with self.subTest(value=value), self.assertRaises(WindowsCaOpenError):
+                _ = open_windows_regular(value)
+
+    def test_native_open_pins_parents_and_refuses_delete_sharing(self) -> None:
+        from scarcity_router.worker_ca_windows import open_windows_regular
+
+        kernel = self.Kernel()
+        runtime = self.Runtime()
+        with (unittest.mock.patch.object(ctypes, "WinDLL", create=True, return_value=kernel),
+              unittest.mock.patch("scarcity_router.worker_ca_windows.importlib.import_module", return_value=runtime)):
+            self.assertEqual(42, open_windows_regular(r"C:\certs\root.pem"))
+        calls = kernel.CreateFileW.calls
+        self.assertEqual(["C:\\", "C:\\certs", "C:\\certs\\root.pem"], [item[0] for item in calls])
+        self.assertTrue(all(cast(int, item[2]) & 4 == 0 for item in calls))
+        self.assertTrue(all(cast(int, item[5]) & 0x00200000 for item in calls))
+        self.assertEqual([(101,), (100,)], kernel.CloseHandle.calls)
+        self.assertEqual(1, len(runtime.calls))
+
+    def test_reparse_parent_and_non_disk_object_are_refused(self) -> None:
+        from scarcity_router.worker_ca_windows import WindowsCaOpenError, open_windows_regular
+
+        for kernel in (self.Kernel(reparse_handle=101), self.Kernel(file_type=3)):
+            runtime = self.Runtime()
+            with (unittest.mock.patch.object(ctypes, "WinDLL", create=True, return_value=kernel),
+                  unittest.mock.patch("scarcity_router.worker_ca_windows.importlib.import_module", return_value=runtime),
+                  self.assertRaises(WindowsCaOpenError)):
+                _ = open_windows_regular(r"C:\certs\root.pem")
+            self.assertEqual([], runtime.calls)
+
+    def test_platform_dispatch_reports_windows_failures_without_raw_details(self) -> None:
+        from scarcity_router import worker_ca_trust
+        from scarcity_router.worker_ca_windows import WindowsCaOpenError
+
+        path = Path("/synthetic/ca.pem")
+        with (unittest.mock.patch.object(os, "name", "nt"),
+              unittest.mock.patch("scarcity_router.worker_ca_windows.open_windows_regular",
+                                  side_effect=WindowsCaOpenError("SYNTHETIC-SECRET")),
+              self.assertRaises(WorkerCaTrustError) as caught):
+            _ = worker_ca_trust._open_anchored_regular(path)  # pyright: ignore[reportPrivateUsage]
+        self.assertIn("Windows", str(caught.exception))
+        self.assertNotIn("SYNTHETIC-SECRET", str(caught.exception))
 
 
 # ── Trust record + store persistence ──────────────────────────────────────────
@@ -248,6 +406,24 @@ class TrustRecordTests(unittest.TestCase):
                 + f'"server_origin":"{PAIR_ORIGIN}"}}'
             )
 
+    def test_duplicate_fields_and_oversized_stored_records_are_refused(self) -> None:
+        duplicate = ('{"schema_version":1,"server_origin":"' + PAIR_ORIGIN
+                     + '","ca_path":"/tmp/ca.pem","ca_path":"/tmp/other.pem"}')
+        with self.assertRaises(WorkerCaTrustError):
+            _ = trust_from_json(duplicate)
+        with self.assertRaises(WorkerCaTrustError):
+            _ = trust_from_json(" " * 4097)
+
+    def test_persistence_rejects_untrusted_path_material_and_noncanonical_origin(self) -> None:
+        for path in ("relative.pem", "/tmp/../ca.pem", "/tmp/-----BEGIN PRIVATE KEY-----", "/tmp/ca\nsecret"):
+            with self.subTest(path=path), self.assertRaises(WorkerCaTrustError) as caught:
+                _ = trust_to_json(WorkerCaTrust(PAIR_ORIGIN, path))
+            self.assertNotIn(path, str(caught.exception))
+        for origin in ("srw://localhost:8790", "srws://GATEWAY.local:8790", "srws://user:secret@gateway.local:8790"):
+            with self.subTest(origin=origin), self.assertRaises(WorkerCaTrustError) as caught:
+                _ = trust_to_json(WorkerCaTrust(origin, "/tmp/ca.pem"))
+            self.assertNotIn("secret", str(caught.exception))
+
 
 class StoreTrustPersistenceTests(unittest.TestCase):
     _tmp: tempfile.TemporaryDirectory[str]
@@ -283,6 +459,21 @@ class StoreTrustPersistenceTests(unittest.TestCase):
         self.assertIsNone(store.load_ca_trust())
         # Opening/reading wrote no new rows.
         self.assertEqual({"schema_version", "identity"}, self._keys())
+
+    def test_invalid_trust_never_changes_identity_or_persisted_record(self) -> None:
+        store = self._store()
+        original = WorkerCaTrust(PAIR_ORIGIN, "/etc/scarcity/ca.pem")
+        store.save_identity_with_ca(_identity(), original)
+        invalid = WorkerCaTrust(PAIR_ORIGIN, "/tmp/-----BEGIN PRIVATE KEY-----")
+        with self.assertRaises(WorkerCaTrustError):
+            store.save_identity_with_ca(_identity(worker_id="replacement"), invalid)
+        with self.assertRaises(WorkerCaTrustError):
+            store.save_ca_trust(invalid)
+        self.assertEqual(_identity(), store.load_identity())
+        self.assertEqual(original, store.load_ca_trust())
+        with sqlite3.connect(self.path) as connection:
+            rows = connection.execute("SELECT value FROM worker_state").fetchall()
+        self.assertNotIn("PRIVATE KEY", str(rows))
 
     def test_stored_trust_survives_reopen_and_credential_rotation(self) -> None:
         trust = WorkerCaTrust(
@@ -843,6 +1034,32 @@ class CliCaFlagTests(unittest.TestCase):
             finally:
                 store.close()
 
+    def test_empty_ca_flag_is_explicit_and_never_sends_pairing_code(self) -> None:
+        with tempfile.TemporaryDirectory[str]() as tmp, redirect_stderr(io.StringIO()) as stderr:
+            with unittest.mock.patch.object(worker_client, "default_connect_factory", side_effect=AssertionError("network must not run")):
+                code = worker_client.main([
+                    "pair", "--server", PAIR_ORIGIN, "--code", SYNTHETIC_CODE,
+                    "--ca-cert=", "--state-dir", tmp,
+                ])
+            self.assertEqual(2, code)
+            self.assertIn("--ca-cert", stderr.getvalue())
+            store = WorkerLocalStore(os.path.join(tmp, "worker-state.db"))
+            try:
+                self.assertIsNone(store.load_identity())
+                self.assertIsNone(store.load_ca_trust())
+            finally:
+                store.close()
+
+    def test_empty_run_ca_flag_fails_before_state_lock(self) -> None:
+        with tempfile.TemporaryDirectory[str]() as tmp, redirect_stderr(io.StringIO()) as stderr:
+            store = WorkerLocalStore(os.path.join(tmp, "worker-state.db"))
+            store.save_identity(_identity())
+            store.close()
+            code = worker_client.main(["run", "--ca-cert=", "--state-dir", tmp])
+            self.assertEqual(2, code)
+            self.assertIn("--ca-cert", stderr.getvalue())
+            self.assertFalse((Path(tmp) / "worker.lock").exists())
+
     def test_run_with_invalid_ca_fails_before_the_state_lock(self) -> None:
         stderr = io.StringIO()
         with tempfile.TemporaryDirectory[str]() as tmp:
@@ -1353,6 +1570,29 @@ class SetupAndTrayCompatTests(unittest.TestCase):
             self.assertEqual(
                 [str(Path(os.path.realpath(str(tls.ca_file))))], captured
             )
+
+    def test_empty_ca_flag_is_refused_by_tray_and_packaged_pair(self) -> None:
+        from scarcity_router import windows_tray
+
+        with tempfile.TemporaryDirectory[str]() as tmp:
+            store = WorkerLocalStore(os.path.join(tmp, "s.db"))
+            self.addCleanup(store.close)
+            store.save_identity(_identity())
+            with unittest.mock.patch.object(windows_tray, "resolve_run_trust", side_effect=AssertionError("must not resolve")):
+                with self.assertRaises(WorkerCaTrustError):
+                    _ = windows_tray.build_runtime(
+                        origin=worker_client.WorkerOrigin.parse(PAIR_ORIGIN), store=store,
+                        cli_arguments={"ca_cert": ""}, state_dir=None,
+                    )
+            with (unittest.mock.patch.object(windows_tray, "_attach_parent_console", return_value=True),
+                  unittest.mock.patch.object(windows_tray.worker_setup, "pair_worker", side_effect=AssertionError("must not pair")),
+                  redirect_stderr(io.StringIO())):
+                result = windows_tray._packaged_pair(  # pyright: ignore[reportPrivateUsage]
+                    ["--server", PAIR_ORIGIN, "--code", SYNTHETIC_CODE, "--ca-cert=", "--state-dir", tmp],
+                    connect_factory=None,
+                )
+            self.assertEqual(2, result)
+            self.assertEqual(_identity(), store.load_identity())
 
     def test_describe_pairing_failure_maps_ca_errors_safely(self) -> None:
         from scarcity_router import worker_setup

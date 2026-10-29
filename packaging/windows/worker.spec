@@ -35,6 +35,7 @@ a = Analysis(
         "PIL.Image",
         "PIL.ImageDraw",
         "tkinter",
+        "msvcrt",
     ],
     hookspath=[],
     hooksconfig={},

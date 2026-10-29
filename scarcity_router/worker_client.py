@@ -1708,7 +1708,9 @@ def main(argv: list[str] | None = None) -> int:
                 ca_argument = arguments.get("ca_cert")
                 connect_factory: ConnectFactory = default_connect_factory
                 ca_trust: WorkerCaTrust | None = None
-                if isinstance(ca_argument, str) and ca_argument:
+                if ca_argument is not None:
+                    if not isinstance(ca_argument, str):
+                        raise WorkerConfigError("--ca-cert needs the path of a PEM CA certificate file")
                     ca_path = validate_ca_cert_file(ca_argument)
                     connect_factory = ca_connect_factory(str(ca_path))
                     ca_trust = WorkerCaTrust(
@@ -1818,7 +1820,9 @@ def main(argv: list[str] | None = None) -> int:
                 # every stored state untouched.
                 run_ca_argument = arguments.get("ca_cert")
                 explicit_ca: str | None = None
-                if isinstance(run_ca_argument, str) and run_ca_argument:
+                if run_ca_argument is not None:
+                    if not isinstance(run_ca_argument, str):
+                        raise WorkerConfigError("--ca-cert needs the path of a PEM CA certificate file")
                     explicit_ca = str(validate_ca_cert_file(run_ca_argument))
                 connect_factory, pending_trust = resolve_run_trust(
                     store, origin, explicit_ca
