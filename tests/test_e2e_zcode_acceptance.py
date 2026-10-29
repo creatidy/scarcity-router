@@ -309,10 +309,10 @@ class PlanLaneRoutingAcceptanceTests(ZcodeComposedWorld):
                             "metadata": {"inference_only": "false", "workspace": str(workspace)},
                         }, headers={"Authorization": f"Bearer {key}"}, timeout=30,
                     )
-                    self.assertIn(status, (403, 503), payload)
+                    self.assertIn(status, (403, 404, 503), payload)
                     body = cast("dict[str, object]", payload)
                     error = cast("dict[str, object]", body["error"])
-                    self.assertIn(error["code"], ("unauthorized_channel", "unauthorized_target", "no_eligible_target"))
+                    self.assertIn(error["code"], ("unauthorized_channel", "unauthorized_target", "no_eligible_target", "model_not_found"))
             self.assertEqual(worker.spawner.run_specs, [])
             self.assertEqual((workspace / "notes.txt").read_text(), "original line\n")
             self.assertEqual(_git_status(workspace), "")

@@ -175,7 +175,7 @@ from .routing_core import (
 )
 from .selector import canonical_instant
 from .selector import SelectorPolicy
-from .selection_types import ModelCatalog, ModelIdentity, ModelRef, TaskProfileCatalog, REASONING_EFFORTS
+from .selection_types import ModelCatalog, ModelCatalogEntry, ModelIdentity, ModelRef, TaskProfileCatalog, REASONING_EFFORTS
 
 # ── Model-field resolution ────────────────────────────────────────────────────
 
@@ -363,17 +363,23 @@ def resolve_model_string(
 
 
 def _resolve_logical_effort(
-    resolved: ResolvedModel, requested_effort: str | None, catalog: ModelCatalog
+    resolved: ResolvedModel, requested_effort: str | None, catalog: ModelCatalog,
+    resource_entries: tuple[ModelCatalogEntry, ...] | None = None,
 ) -> ModelCatalog:
     """Intersect exact logical identity with configured effort, never variant text."""
     assert resolved.explicit_model is not None
     entries = tuple(
         entry
-        for entry in catalog.entries
+        for entry in (catalog.entries if resource_entries is None else resource_entries)
         if entry.identity.provider == resolved.explicit_model.provider
         and entry.identity.model == resolved.explicit_model.model
         and entry.identity.variant in resolved.available_variants
     )
+    if not entries:
+        raise GatewayError.not_found(
+            "the requested model does not exist on this gateway",
+            code="model_not_found",
+        )
     if requested_effort is not None:
         matches = tuple(
             entry for entry in entries if entry.reasoning_effort == requested_effort
@@ -400,11 +406,42 @@ def _resolve_logical_effort(
             code="reasoning_effort_required",
             param="reasoning_effort",
         )
+    unique = {entry.identity: entry for entry in entries}
     return ModelCatalog(
         catalog_version=catalog.catalog_version,
         updated_on=catalog.updated_on,
-        entries=entries,
+        entries=tuple(unique.values()),
     )
+
+
+def _authorized_logical_entries(
+    catalog: ModelCatalog, snapshot: RegistrySnapshot,
+    administrator: AdministratorConstraints, grant: ClientAuthorization,
+    adapters: AdapterRegistry, at: datetime,
+) -> tuple[ModelCatalogEntry, ...]:
+    """Project invocation evidence from resources authorized for this caller."""
+    effective = _effective_authorization(administrator, grant, None)
+    assurances = execution_assurances(snapshot.entries, adapters, grant.strict_no_payg)
+    result: list[ModelCatalogEntry] = []
+    for resource in snapshot.entries:
+        identity = resource.identity
+        if (not adapters.supports_resource(identity)
+                or _authorization_failure_codes(resource, effective, execution_assurances=assurances, assessed_at=at)):
+            continue
+        for entry in catalog.entries:
+            if (entry.identity.provider != identity.provider or entry.identity.model != identity.model
+                    or (identity.variant is not None and entry.identity.variant != identity.variant)):
+                continue
+            source_bound = (entry.capacity_binding_resources is not None
+                            and identity.resource_id in entry.capacity_binding_resources)
+            if identity.variant is None and entry.identity.variant != "unconfigured" and not source_bound:
+                continue
+            if entry.reasoning_effort is not None and not source_bound:
+                entry = replace(entry, reasoning_effort=None, hard_properties=replace(
+                    entry.hard_properties, supports_reasoning_mode=None,
+                ))
+            result.append(entry)
+    return tuple(result)
 
 
 def _variant_hard_limits(
@@ -582,7 +619,7 @@ def exposed_logical_models(
                     (entry.identity.variant is None or entry.identity.variant == catalog_entry.identity.variant)
                     and (catalog.catalog_version is not None or
                          (entry.identity.variant is not None and
-                          (catalog_entry.capacity_binding_resources is None or
+                          (catalog_entry.capacity_binding_resources is not None and
                            entry.identity.resource_id in catalog_entry.capacity_binding_resources)))
                     for entry in entries
                 )
@@ -805,6 +842,19 @@ class GatewayApplication:
     def _client_grant(self, client_id: str) -> ClientAuthorization:
         return self._current_authority(client_id)[2]
 
+    def _resolve_client_model(self, model: str, client_id: str, at: datetime) -> ResolvedModel:
+        if (self.catalog.catalog_version is not None or model.startswith(PIN_PREFIX)
+                or self.aliases.resolve(model) is not None):
+            return resolve_model_string(model, self.aliases, self.catalog)
+        registry, administrator, grant, adapters = (
+            self._admission_authority if self._admission_authority is not None else self._current_authority(client_id)
+        )
+        snapshot = registry.registry_snapshot(now=canonical_instant(at))
+        entries = _authorized_logical_entries(self.catalog, snapshot, administrator, grant, adapters, at)
+        permitted = {entry.identity for entry in entries}
+        catalog = ModelCatalog(None, None, tuple(entry for entry in self.catalog.entries if entry.identity in permitted))
+        return resolve_model_string(model, self.aliases, catalog)
+
     def _current_authority(
         self, client_id: str,
     ) -> tuple[ResourceRegistry, AdministratorConstraints, ClientAuthorization, AdapterRegistry]:
@@ -889,7 +939,7 @@ class GatewayApplication:
         already announced on a stream; it must be a safe identifier and is
         otherwise generated here.
         """
-        if request.execution_requirements is not None:
+        if request.execution_requirements is not None or self.catalog.catalog_version is None:
             view = self._published_executable_view(client_id)
             if view is not self:
                 return view.execute(client_id=client_id, request=request, emit_chunk=emit_chunk, request_id=request_id)
@@ -984,7 +1034,7 @@ class GatewayApplication:
         emit_chunk: StreamEmitter | None,
     ) -> CompletionOutcome:
         self._enforce_request_limits(request.capabilities)
-        resolved = resolve_model_string(request.model, self.aliases, self.catalog)
+        resolved = self._resolve_client_model(request.model, client_id, started)
         self._admit(started=started, request=request, resolved=resolved, state=state)
         target = state.target
         if target is None:  # pragma: no cover - admission sets it or raises
@@ -1623,7 +1673,8 @@ class GatewayApplication:
                     pending.extend(cast(list[object], value))
                 elif isinstance(value, str) and self.client_key_directory.authenticate(value) is not None:
                     raise executable_error()
-        resolved = resolve_model_string(model, self.aliases, self.catalog)
+        started = self._now()
+        resolved = self._resolve_client_model(model, client_id, started)
         caps = RequestCapabilities(
             requires_tool_calls=demands.requires_tool_calls, requires_tool_results=False,
             requires_roles_history=False, requires_structured_output=demands.requires_structured_output,
@@ -1633,7 +1684,6 @@ class GatewayApplication:
             requested_output_tokens=demands.maximum_output_tokens,
         )
         self._enforce_request_limits(caps)
-        started = self._now()
         state = _LifecycleState(request_id="route", client_id=client_id, started_at=canonical_instant(started))
         query = ChatCompletionRequest(model, (), caps.requires_streaming, False, caps)
         route = self._routing_request(started=started, request=query, resolved=resolved, state=state, selecting=True)
@@ -1690,7 +1740,7 @@ class GatewayApplication:
     ) -> RouteRequest:
         """The same current authority/state/structural inputs for selection and admission."""
         now_ts = canonical_instant(started)
-        current = selecting or request.execution_requirements is not None
+        current = selecting or request.execution_requirements is not None or self.catalog.catalog_version is None
         if current:
             registry, administrator, client_grant, adapters = (
                 self._admission_authority if self._admission_authority is not None else self._current_authority(state.client_id))
@@ -1729,7 +1779,9 @@ class GatewayApplication:
         if resolved.kind == LOGICAL_KIND and not selecting:
             # D-071: narrow by catalog effort before the authoritative core.
             admission_catalog = _resolve_logical_effort(
-                resolved, request.reasoning_effort, self.catalog
+                resolved, request.reasoning_effort, self.catalog,
+                _authorized_logical_entries(self.catalog, registry_snapshot, administrator, client_grant, adapters, started)
+                if self.catalog.catalog_version is None else None,
             )
             if len(admission_catalog.entries) == 1:
                 explicit_variant = admission_catalog.entries[0].identity.variant

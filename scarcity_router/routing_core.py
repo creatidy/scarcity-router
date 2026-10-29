@@ -1843,8 +1843,8 @@ def _evaluate_resource(
                 entry, request, cells, requirement, *_request_output_context(request, entry, catalog),
                 configured_reasoning_required=configured_reasoning_required or (
                     candidate.reasoning_effort is not None
-                    and (catalog.catalog_version is not None or candidate.capacity_binding_resources is None
-                         or entry.identity.resource_id in candidate.capacity_binding_resources)
+                    and (catalog.catalog_version is not None or (candidate.capacity_binding_resources is not None
+                         and entry.identity.resource_id in candidate.capacity_binding_resources))
                     and (require_catalog_effort or identity in (mi_effort_required or ()))
                 ),
             )
@@ -2827,8 +2827,9 @@ def _narrowed_catalog(
                 input_context_tokens=input_bound if input_bound is not None else hard.input_context_tokens,
                 output_tokens=output_bound if output_bound is not None else hard.output_tokens,
             ))
-            if (len(matching_gates) == 1 and entry.capacity_binding_resources is not None
-                    and matching_gates[0].entry.identity.resource_id not in entry.capacity_binding_resources):
+            if (len(matching_gates) == 1 and entry.reasoning_effort is not None
+                    and (entry.capacity_binding_resources is None
+                         or matching_gates[0].entry.identity.resource_id not in entry.capacity_binding_resources)):
                 # Discovery on one source is not an effort attestation for a
                 # separately configured execution resource.
                 entry = replace(entry, reasoning_effort=None, hard_properties=replace(
@@ -3100,8 +3101,8 @@ def route_request(request: RouteRequest) -> RouteDecision:
                         and cell.value in ("PASS", "PARTIAL")
                     ))
                     and candidate.reasoning_effort is not None
-                    and (request.catalog.catalog_version is not None or candidate.capacity_binding_resources is None
-                         or entry.identity.resource_id in candidate.capacity_binding_resources)
+                    and (request.catalog.catalog_version is not None or (candidate.capacity_binding_resources is not None
+                         and entry.identity.resource_id in candidate.capacity_binding_resources))
                     for candidate in request.catalog.entries
                 ),
                 execution_assurances=request.execution_assurances,

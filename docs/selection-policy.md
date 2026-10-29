@@ -57,6 +57,8 @@ configured resource. An unqualified configured resource is represented by the
 `unconfigured` invocation qualifier, not a fabricated effort. The plan-managed
 ZCode lane has no attested physical model or effort and is not represented as
 one; its existing workspace authority and migration constraints remain in force.
+Logical model and effort options are resolved from the client's currently
+authorized resource-scoped identities, not from denied providers or sources.
 
 No configured or authorized resource means no candidate, not a recommendation
 from hardcoded models. Unknown capacity remains explicit. The configured

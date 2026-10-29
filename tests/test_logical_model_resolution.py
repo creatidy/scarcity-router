@@ -33,6 +33,7 @@ from scarcity_router.capacity import (
 )
 from scarcity_router.eligibility import ExecutionEligibility
 from scarcity_router.execution_sources import SourceRegistry
+from scarcity_router.execution_sources import add_configured_resources
 from scarcity_router.gateway_adapters import AdapterRegistry
 from scarcity_router.gateway_audit import BoundedAuditTrail
 from scarcity_router.gateway_audit import ExecutedTarget
@@ -424,6 +425,61 @@ class LogicalResolutionTests(DerivedHarness):
         record = audit_records(application)[-1]
         assert record.executed_target is not None
         self.assertIsNone(record.executed_target.reasoning_effort)
+
+    def test_blocked_source_does_not_impose_effort_on_unqualified_resource(self) -> None:
+        registry, catalog = derived_world((DiscoveredModel("synthetic-model", ("high",)),))
+        identity = ResourceIdentity(resource_id="manual-unqualified", channel="worker_bridged",
+                                    provider="openai", model="synthetic-model", variant=None,
+                                    entitlement="subscription_included")
+        registration = ResourceRegistration(identity=identity, freshness_ttl_seconds=7200,
+                                            poll_interval_seconds=1800,
+                                            capabilities=ExecutionCapabilities(context_limit_tokens=4096))
+        registry.register(registration)
+        _ = registry.apply_snapshot(_healthy_snapshot(identity))
+        catalog = add_configured_resources(catalog, (registration,))
+        application = make_derived_application(registry, catalog)
+        application.client_authorizations = {
+            CLIENT_ID: ClientAuthorization(blocked_resource_ids=("personal-openai:synthetic-model:high",))
+        }
+        port = self.make_derived_server(application)
+        metadata = as_dict(self.models_entry(port, "synthetic-model")["x_scarcity_router"])
+        self.assertEqual([], metadata["reasoning_efforts"])
+        adapter = application.adapters.resolve("worker_bridged")
+        assert isinstance(adapter, ScriptedAdapter)
+        body: dict[str, object] = {"model": "synthetic-model", "messages": [{"role": "user", "content": "hello"}]}
+        response = self.post_chat(port, body)
+        self.assertEqual(200, response.status, response.read())
+        self.assertEqual("manual-unqualified", adapter.dispatches[-1].resource.resource_id)
+        self.assertIsNone(adapter.dispatches[-1].reasoning_effort)
+        for effort in ("high", "none"):
+            with self.subTest(effort=effort):
+                refused = self.post_chat(port, {**body, "reasoning_effort": effort})
+                self.assertEqual(400, refused.status)
+                payload = cast(object, json.loads(refused.read()))
+                self.assertEqual("compatibility_unknown", as_dict(as_dict(payload)["error"])["code"])
+        self.assertEqual(1, adapter.dispatch_count)
+
+    def test_blocked_provider_cannot_make_authorized_model_ambiguous(self) -> None:
+        registry, catalog = derived_world((DiscoveredModel("synthetic-model", ("high",)),))
+        identity = ResourceIdentity(resource_id="authorized-other", channel="worker_bridged",
+                                    provider="zai", model="synthetic-model", variant=None,
+                                    entitlement="subscription_included")
+        registration = ResourceRegistration(identity=identity, freshness_ttl_seconds=7200,
+                                            poll_interval_seconds=1800,
+                                            capabilities=ExecutionCapabilities(context_limit_tokens=4096))
+        registry.register(registration)
+        _ = registry.apply_snapshot(_healthy_snapshot(identity))
+        application = make_derived_application(registry, add_configured_resources(catalog, (registration,)))
+        application.client_authorizations = {CLIENT_ID: ClientAuthorization(allowed_providers=("zai",))}
+        _ = self.make_derived_server(application)
+        adapter = application.adapters.resolve("worker_bridged")
+        assert isinstance(adapter, ScriptedAdapter)
+        _ = application.execute(client_id=CLIENT_ID, request=parse_chat_request({
+            "model": "synthetic-model", "messages": [{"role": "user", "content": "hello"}],
+        }))
+        self.assertEqual("authorized-other", adapter.dispatches[-1].resource.resource_id)
+        self.assertEqual("zai", adapter.dispatches[-1].model.provider)
+        self.assertIsNone(adapter.dispatches[-1].reasoning_effort)
 
     def test_bare_logical_model_routes_to_the_exact_identity(self) -> None:
         registry, catalog = derived_world(SOL)
