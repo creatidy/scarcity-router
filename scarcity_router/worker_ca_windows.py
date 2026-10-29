@@ -98,7 +98,7 @@ _RESERVED = frozenset({"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"} |
                       {f"{prefix}{digit}" for prefix in ("COM", "LPT") for digit in "¹²³"})
 
 
-def _local_components(path: str) -> tuple[str, tuple[str, ...]]:
+def validate_windows_ca_path(path: str) -> tuple[str, tuple[str, ...]]:
     """Reject remote, device, alternate-stream and ambiguous DOS paths."""
     drive, tail = ntpath.splitdrive(path)
     if len(path) > 4096 or re.fullmatch(r"[A-Za-z]:", drive) is None or not tail.startswith("\\"):
@@ -119,7 +119,7 @@ def _local_components(path: str) -> tuple[str, tuple[str, ...]]:
 
 def open_windows_regular(path: str) -> int:
     """Open a regular file without following or racing reparse-point parents."""
-    root, parts = _local_components(path)
+    root, parts = validate_windows_ca_path(path)
     try:
         loader = cast(_Loader, getattr(ctypes, "WinDLL"))
         kernel = cast(_Kernel, loader("kernel32", use_last_error=True))

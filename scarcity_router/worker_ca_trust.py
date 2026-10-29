@@ -36,6 +36,7 @@ as before; nothing can bypass verification by ignoring or removing it.
 from __future__ import annotations
 
 import json
+import ntpath
 import os
 import re
 import ssl
@@ -103,12 +104,17 @@ def _validate_trust_fields(trust: WorkerCaTrust) -> None:
     if type(trust.server_origin) is not str or type(trust.ca_path) is not str:
         raise WorkerCaTrustError("the CA trust record must contain an origin and canonical file path")
     path = trust.ca_path
-    if (not path or not os.path.isabs(path) or os.path.normpath(path) != path
+    path_module = ntpath if os.name == "nt" else os.path
+    if (not path or not path_module.isabs(path) or path_module.normpath(path) != path
             or any(character in path for character in ("\x00", "\n", "\r"))
             or "-----BEGIN" in path.upper() or "-----END" in path.upper()):
         raise WorkerCaTrustError("the CA trust record must contain a canonical absolute file path, not certificate material")
     try:
-        if os.path.normcase(os.path.realpath(path)) != os.path.normcase(path):
+        if os.name == "nt":
+            from .worker_ca_windows import validate_windows_ca_path
+
+            _ = validate_windows_ca_path(path)
+        elif os.path.normcase(os.path.realpath(path)) != os.path.normcase(path):
             raise WorkerCaTrustError("the CA trust record must contain a canonical absolute file path")
         origin = urlsplit(trust.server_origin)
         host, port = origin.hostname, origin.port
@@ -188,7 +194,8 @@ def trust_from_json(text: str) -> WorkerCaTrust:
         raise WorkerCaTrustError("the stored CA trust record is malformed")
     if not server_origin or not ca_path:
         raise WorkerCaTrustError("the stored CA trust record is malformed")
-    if not os.path.isabs(ca_path):
+    path_module = ntpath if os.name == "nt" else os.path
+    if not path_module.isabs(ca_path):
         raise WorkerCaTrustError(
             "the stored CA trust record does not carry an absolute CA "
             + "path; use --ca-cert on a verified run for the paired origin "

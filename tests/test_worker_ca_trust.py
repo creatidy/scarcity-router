@@ -500,6 +500,13 @@ class TrustRecordTests(unittest.TestCase):
                 _ = trust_to_json(WorkerCaTrust(origin, "/tmp/ca.pem"))
             self.assertNotIn("secret", str(caught.exception))
 
+    def test_windows_record_round_trip_never_resolves_filesystem_paths(self) -> None:
+        record = WorkerCaTrust(PAIR_ORIGIN, r"C:\trusted\ca.pem")
+        with (unittest.mock.patch.object(os, "name", "nt"),
+              unittest.mock.patch.object(os.path, "realpath", side_effect=AssertionError("following resolver invoked"))):
+            encoded = trust_to_json(record)
+            self.assertEqual(record, trust_from_json(encoded))
+
 
 class StoreTrustPersistenceTests(unittest.TestCase):
     _tmp: tempfile.TemporaryDirectory[str]
@@ -535,6 +542,14 @@ class StoreTrustPersistenceTests(unittest.TestCase):
         self.assertIsNone(store.load_ca_trust())
         # Opening/reading wrote no new rows.
         self.assertEqual({"schema_version", "identity"}, self._keys())
+
+    def test_windows_pair_persistence_and_load_are_lexical_only(self) -> None:
+        store = self._store()
+        trust = WorkerCaTrust(PAIR_ORIGIN, r"C:\trusted\ca.pem")
+        with (unittest.mock.patch.object(os, "name", "nt"),
+              unittest.mock.patch.object(os.path, "realpath", side_effect=AssertionError("following resolver invoked"))):
+            store.save_identity_with_ca(_identity(), trust, allow_corrupt_previous=True)
+            self.assertEqual(trust, store.load_ca_trust())
 
     def test_invalid_trust_never_changes_identity_or_persisted_record(self) -> None:
         store = self._store()
