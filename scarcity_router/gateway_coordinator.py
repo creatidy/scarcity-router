@@ -175,7 +175,7 @@ from .routing_core import (
 )
 from .selector import canonical_instant
 from .selector import SelectorPolicy
-from .selection_types import ModelCatalog, ModelIdentity, ModelRef, TaskProfileCatalog
+from .selection_types import ModelCatalog, ModelIdentity, ModelRef, TaskProfileCatalog, REASONING_EFFORTS
 
 # ── Model-field resolution ────────────────────────────────────────────────────
 
@@ -249,7 +249,7 @@ class RoutingAliasTable:
 
 
 def parse_pinned_reference(model: str) -> PinnedTarget:
-    """Parse ``sr-pin:<resource_id>/<provider>/<model>/<variant>[@<decision>]``.
+    """Parse ``sr-pin:<resource>/<provider>/<model>/<variant>[~<effort>][@<decision>]``.
 
     The reference is EXACT — all four identifier components are required;
     a reference that omits any component is a request error, never
@@ -276,6 +276,12 @@ def parse_pinned_reference(model: str) -> PinnedTarget:
     if len(parts) != 4:
         raise invalid
     resource_raw, provider_raw, model_raw, variant_raw = parts
+    effort: str | None = None
+    if "~" in variant_raw:
+        variant_raw, separator, effort_raw = variant_raw.partition("~")
+        if separator != "~" or effort_raw not in REASONING_EFFORTS:
+            raise invalid
+        effort = effort_raw
     try:
         resource_id = v_safe_id(resource_raw, "pin.resource_id")
         provider = v_safe_id(provider_raw, "pin.provider")
@@ -287,6 +293,7 @@ def parse_pinned_reference(model: str) -> PinnedTarget:
         resource_id=resource_id,
         model=ModelIdentity(provider=provider, model=model_name, variant=variant),
         decision_id=decision_id,
+        reasoning_effort=effort,
     )
 
 
@@ -1641,6 +1648,8 @@ class GatewayApplication:
         if decision.target is not None:
             pin = PinnedTarget.from_route_target(decision.target, decision_id=decision.decision_id)
             model_pin = f"{PIN_PREFIX}{pin.resource_id}/{pin.model.provider}/{pin.model.model}/{pin.model.variant}"
+            if pin.reasoning_effort is not None:
+                model_pin += f"~{pin.reasoning_effort}"
             if pin.decision_id is not None:
                 model_pin += f"@{pin.decision_id}"
             if parse_pinned_reference(model_pin) != pin:
@@ -1649,16 +1658,19 @@ class GatewayApplication:
             profile = route.routing_profile
             selected = decision.selection.selected
             assert selected is not None
+            if decision.schema_version == 2 and selected.reasoning_effort != pin.reasoning_effort:
+                raise executable_error()
             context = ExecutableRequirements(
                 executable_quality_requirement(route), binding,
                 route.profile_policy_version if profile is not None else None,
                 route.profiles.resolve(profile.profile_id) if profile is not None else None,
                 reasoning_effort=selected.reasoning_effort,
+                schema_version=2 if decision.schema_version == 2 else 1,
             )
             execution = {"model": model_pin, "reasoning_effort": selected.reasoning_effort,
                          "execution_requirements": context.to_dict()}
         public_route = public_route_document(decision, route)
-        return {"schema_version": 1, "route": public_route, "execution": execution}
+        return {"schema_version": decision.schema_version, "route": public_route, "execution": execution}
 
     def _enforce_executable_limits(self, route: RouteRequest, caps: RequestCapabilities) -> None:
         self._enforce_request_limits(replace(caps, estimated_input_tokens=route.request.minimum_input_context_tokens))

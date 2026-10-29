@@ -1842,7 +1842,10 @@ def _evaluate_resource(
             failure = _compatibility_failure(
                 entry, request, cells, requirement, *_request_output_context(request, entry, catalog),
                 configured_reasoning_required=configured_reasoning_required or (
-                    candidate.reasoning_effort is not None and (require_catalog_effort or identity in (mi_effort_required or ()))
+                    candidate.reasoning_effort is not None
+                    and (catalog.catalog_version is not None or candidate.capacity_binding_resources is None
+                         or entry.identity.resource_id in candidate.capacity_binding_resources)
+                    and (require_catalog_effort or identity in (mi_effort_required or ()))
                 ),
             )
             if not failure[0]:
@@ -3097,6 +3100,8 @@ def route_request(request: RouteRequest) -> RouteDecision:
                         and cell.value in ("PASS", "PARTIAL")
                     ))
                     and candidate.reasoning_effort is not None
+                    and (request.catalog.catalog_version is not None or candidate.capacity_binding_resources is None
+                         or entry.identity.resource_id in candidate.capacity_binding_resources)
                     for candidate in request.catalog.entries
                 ),
                 execution_assurances=request.execution_assurances,
