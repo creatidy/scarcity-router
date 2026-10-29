@@ -198,6 +198,23 @@ class ActiveMIAdmissionTests(unittest.TestCase):
         pin = PinnedTarget("openai-sub", request.catalog.entries[0].identity)
         self.assertTrue(admit_pinned_target(request, pinned_target=pin).approved)
 
+    def test_absent_mi_does_not_add_channel_constraints(self) -> None:
+        request, admission = self.world(amount=16000, channel="server_direct_http")
+        missing = replace(admission, captured=(None, admission.captured[1]))
+        request = replace(request, mi_admission=missing,
+                          admin_constraints=replace(request.admin_constraints,
+                              blocked_resource_ids=("openai-payg", "openai-worker")))
+        pin = PinnedTarget("openai-sub", request.catalog.entries[0].identity)
+        request = replace(request, candidate_identities=(pin.model,))
+        decision = route_request(request)
+        self.assertIsNotNone(decision.target)
+        assert decision.target is not None
+        self.assertEqual("local_app_adapter", decision.target.resource.channel)
+        self.assertTrue(admit_pinned_target(request, pinned_target=pin).approved)
+        independently_scoped = replace(request, mi_channels=((pin.model, "worker_bridged"),))
+        self.assertIsNone(route_request(independently_scoped).target)
+        self.assertFalse(admit_pinned_target(independently_scoped, pinned_target=pin).approved)
+
     def test_output_allowance_also_intersects_existing_admission(self) -> None:
         request, admission = self.world(meaning="output-allowance")
         request = replace(request, request=RequestBinding(maximum_output_tokens=8000))

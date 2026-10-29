@@ -857,6 +857,52 @@ class CodexAdapterTests(unittest.TestCase):
         params = harness.trace_request("turn/start")
         self.assertIsNone(params)
 
+    def test_prerelease_upgrade_invalidates_exact_runtime_context_evidence(self) -> None:
+        from scarcity_router.execution_sources import SourceRegistry
+        from scarcity_router.model_inventory import ModelInventoryReport
+        from scarcity_router.server_config import SourceConfig, SourceContextEvidence
+
+        harness = self._harness(version="0.154.0-alpha.6.2")
+        adapter = CodexLocalAdapter(
+            source_id="synthetic-source", state_dir=harness.state_dir, pinned_binary=FAKE,
+            spawner=harness.spawner, path_lookup=_bwrap_lookup, platform_name="linux", platform_release="6.x-generic",
+        )
+        registry = SourceRegistry()
+        registry.sync_configuration((SourceConfig(
+            "synthetic-source", "codex_subscription", "Synthetic", "worker-1", allowed_models=(SLUG,),
+            context_evidence=(SourceContextEvidence(SLUG, "high", "0.154.0-alpha.6.2", 4096,
+                "local:synthetic-prerelease", "2026-12-01T00:00:00.000Z", "2026-10-01T00:00:00.000Z"),),
+        ),))
+        first = adapter.observe_inventory()
+        self.assertEqual("0.154.0-alpha.6.2", first.runtime_version)
+        _ = registry.apply_inventory(ModelInventoryReport(worker_id="worker-1", sources=(first,)))
+        high = next(item for item in registry.derived_registrations() if item.identity.variant == "high")
+        self.assertEqual(4096, high.capabilities.context_limit_tokens)
+        from scarcity_router.gateway_audit import ExecutedTarget
+        audited = ExecutedTarget(
+            resource_id=high.identity.resource_id, provider="openai", model=SLUG, variant="high",
+            context_evidence_ref=high.capabilities.context_evidence_ref,
+            context_evidence_runtime_version=high.capabilities.context_evidence_runtime_version,
+            context_evidence_verified_at=high.capabilities.context_evidence_verified_at,
+            context_evidence_valid_until=high.capabilities.context_evidence_valid_until,
+            context_limit_tokens=high.capabilities.context_limit_tokens,
+        )
+        self.assertEqual(audited, ExecutedTarget.from_dict(audited.to_dict()))
+        self.assertEqual("0.154.0-alpha.6.2", audited.context_evidence_runtime_version)
+        harness.spawner.version = "0.154.0-alpha.6.3"
+        second = adapter.observe_inventory()
+        self.assertEqual("0.154.0-alpha.6.3", second.runtime_version)
+        _ = registry.apply_inventory(ModelInventoryReport(worker_id="worker-1", sources=(second,)))
+        high = next(item for item in registry.derived_registrations() if item.identity.variant == "high")
+        self.assertIsNone(high.capabilities.context_limit_tokens)
+        harness.spawner.version = "0.154.0-alpha.6.3 SYNTHETIC-SECRET"
+        ambiguous = adapter.observe_inventory()
+        self.assertEqual("", ambiguous.runtime_version)
+        self.assertNotIn("SYNTHETIC-SECRET", json.dumps(ambiguous.to_dict()))
+        _ = registry.apply_inventory(ModelInventoryReport(worker_id="worker-1", sources=(ambiguous,)))
+        high = next(item for item in registry.derived_registrations() if item.identity.variant == "high")
+        self.assertIsNone(high.capabilities.context_limit_tokens)
+
     def _gateway_world(
         self, effort: str | None, *, include_low: bool = False,
     ) -> tuple[GatewayApplication, ScriptedAdapter]:

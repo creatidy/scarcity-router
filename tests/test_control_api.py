@@ -27,12 +27,12 @@ from unittest.mock import patch
 from scarcity_router.control_api import ControlPlane
 from scarcity_router.errors import RemoteBridgeError
 from scarcity_router.gateway_contracts import GatewayError
-from scarcity_router.routing_core import AdministratorConstraints, ClientAuthorization, ClientRoutingProfile
+from scarcity_router.routing_core import AdministratorConstraints, ClientAuthorization, ClientRoutingProfile, CompatibilityCell
 from scarcity_router.execution_sources import SourceRegistry
 from scarcity_router.model_inventory import DiscoveredModel, ModelInventoryReport, SourceInventory
 from scarcity_router.resource_state import QuotaFact, ResourceHealth, ResourceRegistry, ResourceStateSnapshot, WorkerStateReport
 from scarcity_router.capacity import CapacityWindow
-from scarcity_router.selection_types import ModelCatalog
+from scarcity_router.selection_types import EvidenceRef, ModelCatalog
 from scarcity_router.machine_api import (
     ENVELOPE_SCHEMA_VERSION,
 )
@@ -381,6 +381,30 @@ class RemoteBridgeParityTests(ServerHarness):
             simulation = self._client().simulate({**document, "overrides": {}})
             selected = cast("dict[str, object]", selection["decision"])["selected"]
             self.assertIsNotNone(selected)
+            application.compatibility_cells = (CompatibilityCell(
+                channel="worker_bridged", provider="openai", model="synthetic-model", feature="tool_calls",
+                value="PASS", adapter="synthetic-adapter", adapter_version="1.0.0",
+                evidence=EvidenceRef(source="synthetic", identifier="tool-fixture", date="2026-09-16"),
+            ),)
+            tools: dict[str, object] = {"requirement": {"task_level": "L0", "capability_minima": {},
+                                                       "hard_constraints": {"requires_tool_use": True}}}
+            application.continuation_capability_source = lambda: frozenset((registration.identity.resource_id,))
+            self.assertIsNotNone(cast("dict[str, object]", self._client().select(tools)["decision"])["selected"])
+            tool_simulation = cast("dict[str, object]", self._client().simulate({**tools, "overrides": {}})["result"])
+            self.assertIsNotNone(cast("dict[str, object]", tool_simulation["simulated"])["selected"])
+            def no_capable_resources() -> frozenset[str]:
+                return frozenset()
+            for source in (None, no_capable_resources):
+                application.continuation_capability_source = source
+                self.assertIsNone(cast("dict[str, object]", self._client().select(tools)["decision"])["selected"])
+                tool_simulation = cast("dict[str, object]", self._client().simulate({**tools, "overrides": {}})["result"])
+                self.assertIsNone(cast("dict[str, object]", tool_simulation["simulated"])["selected"])
+            def failed_capability() -> frozenset[str]:
+                raise RuntimeError("synthetic unavailable capability source")
+            application.continuation_capability_source = failed_capability
+            self.assertIsNone(cast("dict[str, object]", self._client().select(tools)["decision"])["selected"])
+            tool_simulation = cast("dict[str, object]", self._client().simulate({**tools, "overrides": {}})["result"])
+            self.assertIsNone(cast("dict[str, object]", tool_simulation["simulated"])["selected"])
             simulated = cast("dict[str, object]", simulation["result"])
             self.assertEqual(selected, cast("dict[str, object]", simulated["baseline"])["selected"])
             exhausted = self._client().simulate({**document, "overrides": {"capacity_percentages": [{

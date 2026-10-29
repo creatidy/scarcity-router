@@ -30,6 +30,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Protocol
 
 from .gateway_contracts import UsageTokens
+from .runtime_version import validate_runtime_version
 from .gateway_validation import (
     exact_shape,
     v_canonical_ts,
@@ -113,7 +114,7 @@ class ExecutedTarget:
             if any(item is None for item in evidence):
                 raise ValueError("executed_target: incomplete context evidence")
             _ = v_safe_id(self.context_evidence_ref, "executed_target.context_evidence_ref")
-            _ = v_safe_id(self.context_evidence_runtime_version, "executed_target.context_evidence_runtime_version")
+            _ = validate_runtime_version(self.context_evidence_runtime_version)
             verified = v_canonical_ts(self.context_evidence_verified_at, "executed_target.context_evidence_verified_at")
             until = v_canonical_ts(self.context_evidence_valid_until, "executed_target.context_evidence_valid_until")
             _ = v_int(self.context_limit_tokens, "executed_target.context_limit_tokens", lo=1)
@@ -139,7 +140,7 @@ class ExecutedTarget:
             model=v_safe_id(dd["model"], "executed_target.model"),
             variant=v_safe_id(dd["variant"], "executed_target.variant"),
             context_evidence_ref=v_safe_id(detail["reference"], "context_evidence.reference") if detail is not None else None,
-            context_evidence_runtime_version=v_safe_id(detail["runtime_version"], "context_evidence.runtime_version") if detail is not None else None,
+            context_evidence_runtime_version=validate_runtime_version(detail["runtime_version"]) if detail is not None else None,
             context_evidence_verified_at=v_canonical_ts(detail["verified_at"], "context_evidence.verified_at") if detail is not None else None,
             context_evidence_valid_until=v_canonical_ts(detail["valid_until"], "context_evidence.valid_until") if detail is not None else None,
             context_limit_tokens=v_int(detail["input_tokens"], "context_evidence.input_tokens", lo=1) if detail is not None else None,

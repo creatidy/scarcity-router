@@ -142,6 +142,7 @@ if TYPE_CHECKING:
 from .capacity import CapacitySnapshot
 from .eligibility import ExecutionEligibility
 from .errors import RouteContractValidationError
+from .runtime_version import validate_runtime_version
 from .execution_assurance import ExecutionAssurance, NON_PAID_REFUSAL_CODES
 from .policy import ReplenishmentState
 from .resource_state import (
@@ -1922,7 +1923,10 @@ class RouteTarget:
             _ = _v_safe_id(self.context_evidence_ref, "route_target.context_evidence_ref")
             if self.context_evidence_valid_until is None or self.context_evidence_verified_at is None or self.context_evidence_runtime_version is None or self.context_limit_tokens is None:
                 raise RouteContractValidationError("route_target: incomplete context evidence")
-            _ = _v_safe_id(self.context_evidence_runtime_version, "route_target.context_evidence_runtime_version")
+            try:
+                _ = validate_runtime_version(self.context_evidence_runtime_version)
+            except ValueError:
+                raise RouteContractValidationError("route_target: invalid runtime version") from None
             _ = _parse_canonical_ts(self.context_evidence_valid_until, "route_target.context_evidence_valid_until")
             _ = _parse_canonical_ts(self.context_evidence_verified_at, "route_target.context_evidence_verified_at")
             if self.context_evidence_verified_at >= self.context_evidence_valid_until:
@@ -3047,8 +3051,12 @@ def _mi_inputs(request: RouteRequest, pin: PinnedTarget | None = None) -> tuple[
         "blocked": [item.to_dict() for item in sorted(request.mi_blocked | blocked, key=_identity_key)],
         "channel_constraints": [{"identity": identity.to_dict(), "channel": channel} for identity, channel in request.mi_channels],
     })
+    admitted_channels = (
+        tuple((binding.identity, binding.subject.channel) for binding in mi.captured[1])
+        if mi.captured[0] is not None else ()
+    )
     return replace(request, catalog=catalog, mi_admission=None, mi_blocked=request.mi_blocked | blocked,
-        mi_channels=(*request.mi_channels, *((binding.identity, binding.subject.channel) for binding in mi.captured[1]))), context
+        mi_channels=(*request.mi_channels, *admitted_channels)), context
 
 
 def route_request(request: RouteRequest) -> RouteDecision:

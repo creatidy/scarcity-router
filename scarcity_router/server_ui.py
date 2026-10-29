@@ -27,6 +27,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, cast
 
 from .control_errors import ControlHTTPError
+from .runtime_version import validate_runtime_version
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle guard for typing only
     from .control_api import ControlPlane
@@ -1081,6 +1082,10 @@ def _sources(
         evidence = cast("list[dict[str, object]]", source.get("context_evidence") or [])
         legacy = bool(source.get("legacy_track_policy"))
         runtime = source.get("runtime_version")
+        try:
+            runtime_identity = validate_runtime_version(runtime) if source.get("runtime_version_exact") is True else None
+        except ValueError:
+            runtime_identity = None
         detected = {str(model.get("slug")): model for model in models}
         model_lines = ""
         for slug in sorted(set(detected) | set(allowed)):
@@ -1104,7 +1109,9 @@ def _sources(
             efforts = cast("list[str]", model.get("reasoning_efforts") or [])
             if model and not efforts and source.get("kind") == "zcode_subscription":
                 efforts = ["plan"]
-            if is_allowed and isinstance(runtime, str):
+            if is_allowed and runtime_identity is None:
+                model_lines += '<p class="muted">Exact runtime version unavailable; refresh or upgrade the worker before adding context evidence.</p>'
+            if is_allowed and runtime_identity is not None:
                 for variant in efforts:
                     existing = next((item for item in evidence if item.get("model") == slug and item.get("variant") == variant), None)
                     model_lines += (
@@ -1119,8 +1126,8 @@ def _sources(
                         + f'<input type="hidden" name="source_id" value="{_esc(source_id)}">'
                         + f'<input type="hidden" name="model" value="{_esc(slug)}">'
                         + f'<input type="hidden" name="variant" value="{_esc(variant)}">'
-                        + f'<input type="hidden" name="runtime_version" value="{_esc(runtime)}">'
-                        + f'<p>Observed runtime: <code>{_esc(runtime)}</code></p>'
+                        + f'<input type="hidden" name="runtime_version" value="{_esc(runtime_identity)}">'
+                        + f'<p>Observed runtime: <code>{_esc(runtime_identity)}</code></p>'
                         + '<label>Input context tokens <input name="input_tokens" type="number" min="1" required></label> '
                         + '<label>Non-secret evidence handle <input name="evidence_ref" placeholder="local:verified-source" required></label> '
                         + '<label>Verified at (UTC) <input name="verified_at" placeholder="2026-09-15T12:00:00.000Z" required></label> '
@@ -1145,7 +1152,7 @@ def _sources(
             efforts = cast("list[str]", model.get("reasoning_efforts") or [])
             if model and not efforts and source.get("kind") == "zcode_subscription":
                 efforts = ["plan"]
-            if slug in allowed and variant in efforts and isinstance(runtime, str):
+            if slug in allowed and variant in efforts and runtime_identity is not None:
                 continue
             dormant += (
                 f'<li>{_esc(slug)} / {_esc(variant)}: {_esc(str(item.get("evidence_ref")))} '
@@ -1354,6 +1361,7 @@ def _sources_context(
         if discovered is not None and not efforts and source.kind == "zcode_subscription":
             efforts = ["plan"]
         if (model not in source.allowed_models or variant not in efforts or view is None
+                or view.get("runtime_version_exact") is not True
                 or not isinstance(view.get("runtime_version"), str)
                 or form.get("runtime_version") != view.get("runtime_version")):
             raise ControlHTTPError.invalid_request("The allowed model, effort or runtime changed; refresh the Sources page")

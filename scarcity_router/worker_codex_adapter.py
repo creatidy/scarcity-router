@@ -145,6 +145,7 @@ INVENTORY_DEFAULT_TTL_SECONDS = 300.0
 # (model_inventory.source_resource_id); re-exported here for the worker
 # surface that discovers and serves those ids.
 from .model_inventory import SOURCE_ID_MAX_LENGTH, source_resource_id  # noqa: E402
+from .runtime_version import validate_runtime_version  # noqa: E402
 
 #: The provider identity shared with the existing Codex collector
 #: (``providers/openai_codex.py``); resource identity and snapshots must use
@@ -383,16 +384,16 @@ def default_codex_spawner(spec: CodexSpawnSpec) -> CodexProcess:
 # ── Version probe ─────────────────────────────────────────────────────────────
 
 
-def probe_codex_version(
+def _probe_codex_version(
     binary: Path,
     *,
     spawner: CodexSpawner,
     timeout: float = VERSION_PROBE_TIMEOUT_SECONDS,
-) -> tuple[tuple[int, int, int] | None, str | None]:
+) -> tuple[tuple[int, int, int] | None, str | None, str | None]:
     """Run ``<binary> --version`` (bounded) and parse the evidenced shape.
 
-    Returns ``(version_tuple, None)`` on a supported generation or
-    ``(None, closed_reason)`` with one of ``version_probe_failed``,
+    Returns the compatibility tuple, exact bounded identity when available,
+    and a closed reason when probing fails. Reasons include ``version_probe_failed``,
     ``version_unparseable`` or ``version_unsupported``.
     """
     if not math.isfinite(timeout) or timeout <= 0:
@@ -405,7 +406,7 @@ def probe_codex_version(
     try:
         proc = spawner(spec)
     except OSError:
-        return None, "version_probe_failed"
+        return None, None, "version_probe_failed"
     reason: str | None = None
     try:
         try:
@@ -419,27 +420,33 @@ def probe_codex_version(
     stdout = proc.stdout
     try:
         if reason is not None:
-            return None, reason
+            return None, None, reason
         if stdout is None:
-            return None, "version_probe_failed"
+            return None, None, "version_probe_failed"
         try:
             output = stdout.read(MAX_PROBE_OUTPUT_BYTES + 1) or b""
         except (OSError, ValueError, AttributeError):
-            return None, "version_probe_failed"
+            return None, None, "version_probe_failed"
         text = output[:MAX_PROBE_OUTPUT_BYTES].decode(
             encoding="utf-8", errors="replace"
         ).strip()
         if len(output) > MAX_PROBE_OUTPUT_BYTES or not text.startswith(
             _VERSION_PREFIX
         ):
-            return None, "version_unparseable"
+            return None, None, "version_unparseable"
         match = _VERSION_RE.match(text[len(_VERSION_PREFIX) :])
         if match is None:
-            return None, "version_unparseable"
+            return None, None, "version_unparseable"
         version = (int(match.group(1)), int(match.group(2)), int(match.group(3)))
         if version < MIN_SUPPORTED_CODEX_VERSION:
-            return None, "version_unsupported"
-        return version, None
+            return None, None, "version_unsupported"
+        try:
+            identity = validate_runtime_version(text[len(_VERSION_PREFIX):])
+        except ValueError:
+            # Compatibility still uses the documented numeric tuple. An
+            # unverified full identity cannot match a context attestation.
+            identity = None
+        return version, identity, None
     finally:
         # The process is reaped, so both pipes are at EOF: close them here
         # so the probe owns every descriptor it created (no GC-timed
@@ -450,6 +457,15 @@ def probe_codex_version(
                     stream.close()
                 except (OSError, ValueError):
                     pass
+
+
+def probe_codex_version(
+    binary: Path, *, spawner: CodexSpawner,
+    timeout: float = VERSION_PROBE_TIMEOUT_SECONDS,
+) -> tuple[tuple[int, int, int] | None, str | None]:
+    """Return the compatibility tuple without discarding source identity internally."""
+    version, _identity, reason = _probe_codex_version(binary, spawner=spawner, timeout=timeout)
+    return version, reason
 
 
 # ── Sandbox availability (honest platform gating) ─────────────────────────────
@@ -1566,14 +1582,14 @@ class CodexLocalAdapter:
         models: dict[str, tuple[str, ...]] = {}
         try:
             binary = self._discover()
-            version, version_reason = probe_codex_version(
+            version, observed_version, version_reason = _probe_codex_version(
                 binary.path,
                 spawner=self._spawner,
                 timeout=self._version_probe_timeout,
             )
             if version is None or version_reason is not None:
                 raise CodexIneligible(version_reason or "version_unsupported")
-            runtime_version = ".".join(str(part) for part in version)
+            runtime_version = observed_version or ""
             sandbox_reason = check_sandbox_availability(
                 platform_name=self._platform_name,
                 release=self._platform_release,
@@ -1634,6 +1650,7 @@ class CodexLocalAdapter:
             auth_state=auth_state,  # type: ignore[arg-type]
             runtime_name="codex",
             runtime_version=runtime_version,
+            runtime_version_exact=bool(runtime_version),
             models=tuple(
                 DiscoveredModel(slug=slug, reasoning_efforts=efforts)
                 for slug, efforts in sorted(models.items())

@@ -986,8 +986,14 @@ Contracts:
   and runtime version inside the validity interval, and the target records the
   administrator-attested reference. An omitted, expired or version-mismatched
   entry remains unknown. The interval is limited to 365 days so a changed
-  runtime/model deployment cannot leave an indefinite assertion. No model-family
-  bound is inferred.
+  runtime/model deployment cannot leave an indefinite assertion. Matching uses
+  the complete bounded runtime version, including prerelease/build suffixes;
+  a numeric compatibility version alone never identifies an attestation. If
+  a complete version cannot be observed, the context bound remains unknown.
+  Worker inventory schema 2 marks exact version identity; legacy schema 1 is
+  still accepted for discovery but cannot authorize a runtime-bound context
+  attestation. Upgrade the server before workers that emit schema 2.
+  No model-family bound is inferred.
 - **Derived resources.** Deterministic per-source materialization
   (`resource_id = <source_id>:<slug>`), exact slug and efforts,
   source-owned lifecycle: absence from an authenticated inventory →

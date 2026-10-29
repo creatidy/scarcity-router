@@ -570,7 +570,7 @@ class DynamicResourceRoutingTests(unittest.TestCase):
             SourceInventory(source_id="owned-source", adapter_id="codex:owned-source",
                             kind="codex_subscription", observed_at=T_OBS,
                             auth_state="authenticated", runtime_name="codex", runtime_version="1.0.0",
-                            models=(DiscoveredModel("synthetic-model", ("high",)),)),
+                            models=(DiscoveredModel("synthetic-model", ("high",)),), runtime_version_exact=True),
         )))
         registration = sources.derived_registrations()[0]
         route = RouteRequest(

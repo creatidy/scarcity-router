@@ -34,11 +34,12 @@ import json
 import re
 from typing import cast, override
 
-from .gateway_validation import exact_shape, v_int, v_safe_id, v_str
+from .gateway_validation import exact_shape, v_bool, v_int, v_safe_id, v_str
+from .runtime_version import validate_runtime_version
 
 #: The inventory document's own version (changes only via explicit
 #: migration; the worker protocol negotiates transport separately).
-MODEL_INVENTORY_SCHEMA_VERSION = 1
+MODEL_INVENTORY_SCHEMA_VERSION = 2
 
 #: Hard bounds. A source exposes a bounded catalog; anything beyond the
 #: caps is a fail-closed malformed document, never a truncation.
@@ -285,6 +286,7 @@ class SourceInventory:
         "auth_state",
         "runtime_name",
         "runtime_version",
+        "runtime_version_exact",
         "models",
     )
 
@@ -298,6 +300,7 @@ class SourceInventory:
         runtime_name: str,
         runtime_version: str,
         models: tuple[DiscoveredModel, ...],
+        runtime_version_exact: bool = False,
     ) -> None:
         self.source_id: str = v_safe_id(source_id, "source_inventory.source_id")
         self.adapter_id: str = v_safe_id(adapter_id, "source_inventory.adapter_id")
@@ -319,6 +322,12 @@ class SourceInventory:
         if len(version) > _MAX_RUNTIME_VERSION:
             raise ModelInventoryError("source_inventory.runtime_version too long")
         self.runtime_version: str = version
+        self.runtime_version_exact: bool = v_bool(runtime_version_exact, "source_inventory.runtime_version_exact")
+        if self.runtime_version_exact:
+            try:
+                _ = validate_runtime_version(version)
+            except ValueError:
+                raise ModelInventoryError("source_inventory: invalid exact runtime version") from None
         if len(models) > MAX_MODELS_PER_SOURCE:
             raise ModelInventoryError(
                 f"source_inventory {source_id!r}: more than "
@@ -334,7 +343,7 @@ class SourceInventory:
         )
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        out: dict[str, object] = {
             "source_id": self.source_id,
             "adapter_id": self.adapter_id,
             "kind": self.kind,
@@ -344,6 +353,9 @@ class SourceInventory:
             "runtime_version": self.runtime_version,
             "models": [model.to_dict() for model in self.models],
         }
+        if self.runtime_version_exact:
+            out["runtime_version_exact"] = True
+        return out
 
     @classmethod
     def from_dict(cls, d: object) -> "SourceInventory":
@@ -368,7 +380,7 @@ class SourceInventory:
                 "runtime_version",
                 "models",
             ),
-            (),
+            ("runtime_version_exact",),
             "source_inventory",
         )
         models_raw = dd["models"]
@@ -395,6 +407,7 @@ class SourceInventory:
                     DiscoveredModel.from_dict(item)
                     for item in cast("list[object]", models_raw)
                 ),
+                runtime_version_exact=v_bool(dd.get("runtime_version_exact", False), "source_inventory.runtime_version_exact"),
             )
         except (ModelInventoryError, ValueError) as exc:
             raise ModelInventoryError(f"source_inventory: {exc}") from None
@@ -415,13 +428,17 @@ class ModelInventoryReport:
         worker_id: str,
         sources: tuple[SourceInventory, ...] = (),
         *,
-        schema_version: int = MODEL_INVENTORY_SCHEMA_VERSION,
+        schema_version: int | None = None,
     ) -> None:
-        if schema_version != MODEL_INVENTORY_SCHEMA_VERSION:
+        if schema_version is None:
+            schema_version = 2 if any(source.runtime_version_exact for source in sources) else 1
+        if type(schema_version) is not int or schema_version not in (1, MODEL_INVENTORY_SCHEMA_VERSION):
             raise ModelInventoryError(
                 f"inventory.schema_version {schema_version} is not supported "
-                + f"(expected {MODEL_INVENTORY_SCHEMA_VERSION})"
+                + "(expected 1 or 2)"
             )
+        if schema_version == 1 and any(source.runtime_version_exact for source in sources):
+            raise ModelInventoryError("inventory: exact runtime identity requires schema 2")
         self.schema_version: int = schema_version
         self.worker_id: str = v_safe_id(worker_id, "inventory.worker_id")
         if len(sources) > MAX_SOURCES_PER_REPORT:
@@ -476,6 +493,11 @@ class ModelInventoryReport:
             raise ModelInventoryError(
                 f"inventory: more than {MAX_SOURCES_PER_REPORT} sources"
             )
+        if dd["schema_version"] == 1 and any(
+            isinstance(item, dict) and "runtime_version_exact" in item
+            for item in cast("list[object]", sources_raw)
+        ):
+            raise ModelInventoryError("inventory: runtime identity marker requires schema 2")
         try:
             return cls(
                 worker_id=v_str(dd["worker_id"], "inventory.worker_id"),

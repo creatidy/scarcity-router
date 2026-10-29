@@ -311,7 +311,7 @@ class UiMutationFlowTests(ServerHarness):
             SourceInventory(source_id=source.source_id, adapter_id=f"codex:{source.source_id}",
                             kind="codex_subscription", observed_at="2026-09-16T12:00:00.000Z",
                             auth_state="authenticated", runtime_name="codex", runtime_version="1.2.3",
-                            models=(DiscoveredModel("synthetic-model", ("high",)),)),
+                            models=(DiscoveredModel("synthetic-model", ("high",)),), runtime_version_exact=True),
         )))
         status, html, _ = _get(self.port, "/admin/sources", cookie)
         self.assertEqual(200, status)

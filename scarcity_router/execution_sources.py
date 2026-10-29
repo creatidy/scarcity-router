@@ -616,6 +616,7 @@ class SourceRegistry:
                     ),
                     "runtime_name": inventory.runtime_name if inventory is not None else None,
                     "runtime_version": inventory.runtime_version if inventory is not None else None,
+                    "runtime_version_exact": inventory.runtime_version_exact if inventory is not None else False,
                     "observed_at": inventory.observed_at if inventory is not None else None,
                     "models": models,
                     "routable": routable,
@@ -659,6 +660,7 @@ def _source_capabilities(state: _SourceState, slug: str, variant: str) -> Execut
     facts = dict(_SURFACE_CAPABILITIES_BY_KIND.get(state.config.kind, CODEX_SURFACE_CAPABILITIES))
     evidence = next((item for item in state.config.context_evidence
                      if item.model == slug and item.variant == variant and state.inventory is not None
+                     and state.inventory.runtime_version_exact
                      and item.runtime_version == state.inventory.runtime_version), None)
     if evidence is not None:
         facts["context_limit_tokens"] = evidence.input_tokens

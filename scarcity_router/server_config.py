@@ -33,7 +33,6 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-import re
 from types import MappingProxyType
 from typing import cast
 from urllib.parse import urlsplit
@@ -48,6 +47,7 @@ from .gateway_validation import (
     v_str,
     v_str_object_mapping,
 )
+from .runtime_version import validate_runtime_version
 from .resource_state import ResourceRegistration
 from .routing_core import (
     AdministratorConstraints,
@@ -335,9 +335,10 @@ class SourceContextEvidence:
     def __post_init__(self) -> None:
         _ = v_safe_id(self.model, "source_context.model")
         _ = v_safe_id(self.variant, "source_context.variant")
-        _ = v_safe_id(self.runtime_version, "source_context.runtime_version")
-        if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", self.runtime_version) is None:
-            raise ServerConfigError("source_context.runtime_version: expected an observed numeric runtime version")
+        try:
+            _ = validate_runtime_version(self.runtime_version)
+        except ValueError:
+            raise ServerConfigError("source_context.runtime_version: expected a complete observed runtime version") from None
         _ = v_safe_id(self.evidence_ref, "source_context.evidence_ref")
         if not self.evidence_ref.startswith("local:"):
             raise ServerConfigError("source_context.evidence_ref: use a non-secret local: evidence handle")

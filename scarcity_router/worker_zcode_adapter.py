@@ -124,6 +124,7 @@ from .gateway_adapters import (
     FINISH_STOP,
 )
 from .gateway_validation import v_safe_id
+from .runtime_version import validate_runtime_version
 from .model_inventory import (
     SOURCE_ID_MAX_LENGTH,
     DiscoveredModel,
@@ -394,13 +395,13 @@ def _bounded_probe_output(
     return output.decode(encoding="utf-8", errors="replace")
 
 
-def probe_zcode_version(
+def _probe_zcode_version(
     binary: Path,
     *,
     spawner: ChildSpawner,
     timeout: float = VERSION_PROBE_TIMEOUT_SECONDS,
     cwd: Path | None = None,
-) -> tuple[tuple[int, int, int] | None, str | None]:
+) -> tuple[tuple[int, int, int] | None, str | None, str | None]:
     """Run ``<binary> --version`` (bounded) and parse the evidenced shape.
 
     Returns ``(version_tuple, None)`` on a supported generation or
@@ -417,7 +418,7 @@ def probe_zcode_version(
     try:
         proc = spawner(spec)
     except OSError:
-        return None, "version_probe_failed"
+        return None, None, "version_probe_failed"
     reason: str | None = None
     try:
         try:
@@ -434,17 +435,31 @@ def probe_zcode_version(
         # post-termination read below always returns promptly.
         _ = terminate_child_process(proc)
     if reason is not None:
-        return None, reason
+        return None, None, reason
     text = _bounded_probe_output(proc)
     if text is None:
-        return None, "version_probe_failed"
-    match = _VERSION_RE.search(text.strip())
+        return None, None, "version_probe_failed"
+    text = text.strip()
+    match = _VERSION_RE.search(text)
     if match is None:
-        return None, "version_unparseable"
+        return None, None, "version_unparseable"
     version = (int(match.group(2)), int(match.group(3)), int(match.group(4)))
     if version < MIN_SUPPORTED_ZCODE_VERSION:
-        return None, "version_unsupported"
-    return version, None
+        return None, None, "version_unsupported"
+    try:
+        identity = validate_runtime_version(text[match.start(2):].split(maxsplit=1)[0])
+    except ValueError:
+        identity = None
+    return version, identity, None
+
+
+def probe_zcode_version(
+    binary: Path, *, spawner: ChildSpawner,
+    timeout: float = VERSION_PROBE_TIMEOUT_SECONDS, cwd: Path | None = None,
+) -> tuple[tuple[int, int, int] | None, str | None]:
+    """Return the compatibility tuple while retaining full identity internally."""
+    version, _identity, reason = _probe_zcode_version(binary, spawner=spawner, timeout=timeout, cwd=cwd)
+    return version, reason
 
 
 # ── Strict JSON decode (shared discipline with the Codex path) ────────────────
@@ -873,7 +888,7 @@ class ZCodeLocalAdapter:
             workspace_invalid = validate_workspace(self._workspace, self._workspace_identity)
             if workspace_invalid is not None:
                 raise ZCodeIneligible(workspace_invalid)
-            version, version_reason = probe_zcode_version(
+            version, observed_version, version_reason = _probe_zcode_version(
                 binary.path,
                 spawner=self._spawner,
                 timeout=self._version_probe_timeout,
@@ -888,7 +903,7 @@ class ZCodeLocalAdapter:
             if doctor_reason is not None:
                 raise ZCodeIneligible(doctor_reason)
             auth_state = "unverified"
-            runtime_version = ".".join(str(part) for part in version)
+            runtime_version = observed_version or ""
             # The single plan-lane descriptor: no physical model claim,
             # no effort claim (see PLAN_LANE_SLUG).
             models = (DiscoveredModel(slug=PLAN_LANE_SLUG, reasoning_efforts=()),)
@@ -907,6 +922,7 @@ class ZCodeLocalAdapter:
             auth_state=auth_state,  # type: ignore[arg-type]
             runtime_name="zcode",
             runtime_version=runtime_version,
+            runtime_version_exact=bool(runtime_version),
             models=models,
         )
         with self._inventory_lock:

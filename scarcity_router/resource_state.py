@@ -113,6 +113,16 @@ from typing import ClassVar, cast
 
 from .capacity import CapacityDiagnostic, CapacitySnapshot, CapacityWindow
 from .errors import CapacityValidationError
+from .runtime_version import validate_runtime_version
+
+
+def _v_opt_runtime_version(value: object) -> str | None:
+    if value is None:
+        return None
+    try:
+        return validate_runtime_version(value)
+    except ValueError:
+        raise CapacityValidationError("capabilities.context_evidence_runtime_version: invalid version") from None
 
 # ── Frozen value sets ─────────────────────────────────────────────────────────
 
@@ -814,7 +824,10 @@ class ExecutionCapabilities:
             raise CapacityValidationError("capabilities: context evidence requires a reference")
         if self.context_evidence_ref is not None:
             _ = _v_safe_id(self.context_evidence_ref, "capabilities.context_evidence_ref")
-            _ = _v_safe_id(self.context_evidence_runtime_version, "capabilities.context_evidence_runtime_version")
+            try:
+                _ = validate_runtime_version(self.context_evidence_runtime_version)
+            except ValueError:
+                raise CapacityValidationError("capabilities.context_evidence_runtime_version: invalid version") from None
             _ = _v_ts(self.context_evidence_valid_until, "capabilities.context_evidence_valid_until")
             _ = _v_ts(self.context_evidence_verified_at, "capabilities.context_evidence_verified_at")
             if (self.context_evidence_valid_until is None or self.context_evidence_verified_at is None
@@ -851,7 +864,7 @@ class ExecutionCapabilities:
             context_evidence_ref=_v_opt_safe_id(dd.get("context_evidence_ref"), "capabilities.context_evidence_ref"),
             context_evidence_valid_until=_v_opt_ts(dd.get("context_evidence_valid_until"), "capabilities.context_evidence_valid_until"),
             context_evidence_verified_at=_v_opt_ts(dd.get("context_evidence_verified_at"), "capabilities.context_evidence_verified_at"),
-            context_evidence_runtime_version=_v_opt_safe_id(dd.get("context_evidence_runtime_version"), "capabilities.context_evidence_runtime_version"),
+            context_evidence_runtime_version=_v_opt_runtime_version(dd.get("context_evidence_runtime_version")),
         )
 
     def to_dict(self) -> dict[str, object]:

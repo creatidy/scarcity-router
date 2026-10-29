@@ -4,6 +4,7 @@ import unittest
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import cast
 
 from scarcity_router.execution_sources import RETIRE_AFTER_MISSES, SourceRegistry, add_configured_resources
 from scarcity_router.capacity import CapacitySnapshot, CapacityWindow
@@ -33,7 +34,7 @@ def inventory(slug: str, efforts: tuple[str, ...] = ("high",)) -> ModelInventory
         source_id="personal-openai", adapter_id="codex:personal-openai",
         kind="codex_subscription", observed_at="2026-09-24T12:00:00.000Z",
         auth_state="authenticated", runtime_name="codex", runtime_version="0.155.0",
-        models=(DiscoveredModel(slug, efforts),),
+        models=(DiscoveredModel(slug, efforts),), runtime_version_exact=True,
     ),))
 
 
@@ -55,6 +56,39 @@ class DynamicSourcePolicyTests(unittest.TestCase):
         changed = replace(source, context_evidence=(replace(evidence, runtime_version="1.0.0"),))
         registry.sync_configuration((changed,))
         self.assertIsNone(registry.derived_registrations()[0].capabilities.context_limit_tokens)
+
+    def test_full_version_identity_round_trips_without_loss(self) -> None:
+        evidence = SourceContextEvidence("new-model", "high", "0.155.0-alpha.6.2+Build.3", 4096,
+                                         "local:test-attestation", "2026-10-01T00:00:00.000Z", "2026-09-01T00:00:00.000Z")
+        self.assertEqual(evidence, SourceContextEvidence.from_dict(evidence.to_dict()))
+        capabilities = ExecutionCapabilities(
+            context_limit_tokens=4096, context_evidence_ref=evidence.evidence_ref,
+            context_evidence_runtime_version=evidence.runtime_version,
+            context_evidence_verified_at=evidence.verified_at, context_evidence_valid_until=evidence.valid_until,
+        )
+        self.assertEqual(capabilities, ExecutionCapabilities.from_dict(capabilities.to_dict()))
+
+    def test_legacy_inventory_version_is_not_an_exact_runtime_attestation(self) -> None:
+        evidence = SourceContextEvidence("new-model", "high", "0.155.0", 4096,
+                                         "local:legacy-fixture", "2026-10-01T00:00:00.000Z", "2026-09-01T00:00:00.000Z")
+        source = SourceConfig("personal-openai", "codex_subscription", "Personal", "worker-1",
+                              allowed_models=("new-model",), context_evidence=(evidence,))
+        observed = inventory("new-model").sources[0]
+        legacy = SourceInventory(source_id=observed.source_id, adapter_id=observed.adapter_id, kind=observed.kind,
+                                 observed_at=observed.observed_at, auth_state=observed.auth_state,
+                                 runtime_name=observed.runtime_name, runtime_version=observed.runtime_version,
+                                 models=observed.models)
+        report = ModelInventoryReport(worker_id="worker-1", sources=(legacy,))
+        self.assertEqual(1, report.schema_version)
+        registry = SourceRegistry()
+        registry.sync_configuration((source,))
+        _ = registry.apply_inventory(ModelInventoryReport.from_dict(report.to_dict()))
+        self.assertIsNone(registry.derived_registrations()[0].capabilities.context_limit_tokens)
+        forged = report.to_dict()
+        values = cast("list[dict[str, object]]", forged["sources"])
+        values[0]["runtime_version_exact"] = True
+        with self.assertRaises(ValueError):
+            _ = ModelInventoryReport.from_dict(forged)
     def test_configured_local_resource_is_not_an_inferred_model_catalog(self) -> None:
         registration = ResourceRegistration(
             identity=ResourceIdentity(resource_id="local-resource", channel="local_app_adapter",

@@ -979,6 +979,12 @@ class ControlPlane:
         snapshot = application.registry.registry_snapshot(now=format_utc(evaluated_at))
         grants = application.client_authorizations
         grant = ClientAuthorization() if grants is None else grants.get(client_id, ClientAuthorization())
+        continuation_capable: frozenset[str] | None = None
+        if application.continuation_capability_source is not None:
+            try:
+                continuation_capable = application.continuation_capability_source()
+            except Exception:  # noqa: BLE001 - missing live capability must fail closed
+                continuation_capable = None
         return RouteRequest(
             catalog=application.catalog, profiles=application.profiles,
             registry_snapshot=snapshot, policy=parsed.policy or self._default_policy(),
@@ -989,6 +995,7 @@ class ControlPlane:
             admin_constraints=application.admin_constraints,
             client_authorization=grant, task_requirement=requirement,
             request=RequestBinding(),
+            continuation_capable_resource_ids=continuation_capable,
             execution_assurances=execution_assurances(snapshot.entries, application.adapters, grant.strict_no_payg),
             available_adapter_resource_ids=frozenset(
                 entry.identity.resource_id for entry in snapshot.entries
@@ -1500,6 +1507,7 @@ class ControlPlane:
                     ),
                     "runtime_name": live.get("runtime_name"),
                     "runtime_version": live.get("runtime_version"),
+                    "runtime_version_exact": bool(live.get("runtime_version_exact")),
                     "detected_models": live.get("models", []),
                     "routable": live.get("routable", 0),
                     "restricted": live.get("restricted", 0),
