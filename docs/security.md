@@ -416,6 +416,48 @@ from [`docs/decisions.md`](decisions.md) D-056:
   [`docs/worker-protocol.md`](worker-protocol.md)) unless a separate
   explicit decision changes them.
 
+### Certificate Replacement
+
+The composed server accepts externally managed certificate and key paths;
+it does not issue certificates, alter DNS, write keys or schedule renewals.
+The existing Creatidy on-premise Certbot renewal and nginx reload are an
+operator-managed example, not evidence that the separate Router worker
+listener is renewed. An operator must provision an authorized certificate
+for each listener's real DNS name and arrange renewal in their existing
+certificate infrastructure. Do not put DNS credentials or private keys in
+Router configuration, source control or logs.
+
+On a POSIX server, optional verified reload can be enabled by adding
+`--tls-reload-hostname HOST` for the HTTP TLS listener and
+`--worker-tls-reload-hostname HOST` for the worker TLS listener. When reload
+is enabled, every configured TLS listener needs its corresponding hostname.
+The optional `--tls-reload-ca-cert FILE` and
+`--worker-tls-reload-ca-cert FILE` add operator-selected private trust anchors
+to system trust for preflight; they do not modify system or worker trust. The
+server validates each initially configured and replacement key pair through
+an in-memory verified TLS handshake, including chain, hostname and expiry.
+Incompatible, expired, untrusted or unreadable material fails closed.
+
+After the external renewal mechanism has installed both readable files,
+its authorized deploy hook may send `SIGHUP` to the composed server process
+(for the example Compose service, `docker compose kill -s HUP scarcity-router`
+from the correct Compose project). Mount the certificate directory read-only,
+not individual Certbot symlink targets, and ensure the server's service user
+can read the key without making it broadly readable. A successful signal
+delivery is **not** proof of reload: inspect the server diagnostic and verify
+each listener with a normal CA- and hostname-verifying TLS client. The hook
+must report or alert on a failed verification; never fall back to plaintext.
+
+All candidate contexts are verified before replacement. If preflight fails,
+the process keeps serving the previous in-memory contexts and reports a
+credential-free failure; existing connections are not restarted. If that old
+certificate expires, clients correctly reject it. A process restart loads the
+configured files afresh and fails closed if they are invalid, so operators
+must repair or restore authorized files rather than relying on in-memory
+retention across restart. Reload does not authorize a worker origin migration
+or transfer its CA trust. This mechanism has offline and local-process tests;
+it is not evidence of production issuance, live renewal or a deployed hook.
+
 ### Local runtime and adapter isolation
 
 The target restrictions below remain the normal adapter boundary. D-063's
