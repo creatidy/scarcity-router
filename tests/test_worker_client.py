@@ -78,6 +78,7 @@ from scarcity_router.worker_protocol import (  # noqa: E402
     ExecuteChunkMessage,
     ExecuteMessage,
     FrameReader,
+    FrameTransport,
     FrameWriter,
     HelloMessage,
 )
@@ -259,6 +260,30 @@ class PairingRuntimeTests(unittest.TestCase):
             ),
         )
 
+    def test_different_origin_is_refused_before_connecting(self) -> None:
+        self.world.local_store.save_identity(WorkerLocalIdentity(
+            worker_id="worker-test", credential=SYNTHETIC_CREDENTIAL,
+            server_origin="srws://gateway.local:8790",
+        ))
+        calls: list[WorkerOrigin] = []
+
+        def connect(origin: WorkerOrigin) -> FrameTransport:
+            calls.append(origin)
+            raise AssertionError("must not connect")
+
+        before = self.world.local_store.load_identity()
+        for target in ("srws://other.example:8790", "srws://gateway.local:8791", "srw://127.0.0.1:8790"):
+            with self.subTest(target=target):
+                runtime = WorkerRuntime(
+                    origin=WorkerOrigin.parse(target),
+                    store=self.world.local_store,
+                    connect_factory=connect,
+                )
+                self.assertEqual("fatal", runtime.run())
+                self.assertIn("differs from the paired origin", " ".join(runtime.diagnostics()))
+        self.assertEqual([], calls)
+        self.assertEqual(before, self.world.local_store.load_identity())
+
     def test_pair_redeems_code_and_stores_identity(self) -> None:
         _ = self.world.new_transport()
         runtime = self._runtime()
@@ -437,7 +462,7 @@ class RunLoopTests(unittest.TestCase):
             return _DeadTransport()
 
         runtime = WorkerRuntime(
-            origin=WorkerOrigin.parse("srw://127.0.0.1:9"),
+            origin=WorkerOrigin.parse("srws://gateway.local:8790"),
             store=self.world.local_store,
             local_adapters=self.registry,
             connect_factory=dead_factory,

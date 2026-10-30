@@ -319,9 +319,8 @@ def resolve_run_trust(
     - An explicit ``--ca-cert`` overrides the stored trust for this
       process and becomes the PENDING trust — persisted only after a
       verified+authenticated session (the runtime's session-accepted
-      hook), and only when this run targets the PAIRED origin: an
-      ephemeral ``--server`` override pointing elsewhere must not rebind
-      stored trust or identity.
+      hook), and only when this run targets the PAIRED origin. The runtime
+      refuses a different origin before connecting or sending credentials.
     """
     if explicit_ca_path is None:
         key = origin_key(origin)
@@ -624,6 +623,15 @@ class WorkerRuntime:
         identity = self._store.load_identity()
         if identity is None:
             self._note("error", "this worker is not paired yet; run pair first")
+            self._stop_reason = STOP_FATAL
+            return self._stop_reason
+        if WorkerOrigin.parse(identity.server_origin) != self._origin:
+            self._note(
+                "error",
+                "server origin differs from the paired origin; refusing to send the "
+                + "worker credential. Use the paired origin; verified origin migration "
+                + "is not yet supported",
+            )
             self._stop_reason = STOP_FATAL
             return self._stop_reason
         attempt_index = 0
@@ -1386,7 +1394,7 @@ def build_parser() -> argparse.ArgumentParser:
                           help="worker state directory (platform default when omitted)")
     run = commands.add_parser("run", help="connect and serve (reconnecting; the foreground debugging form of the service)")
     _ = run.add_argument("--server", default=None, metavar="URL",
-                         help="server origin (stored value when omitted)")
+                         help="paired server origin (stored value when omitted)")
     _ = run.add_argument("--label", default=None, metavar="LABEL")
     _ = run.add_argument("--ca-cert", default=None, metavar="PATH",
                          help="trust an additional private CA (certificates-only "

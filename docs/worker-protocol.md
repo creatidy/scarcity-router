@@ -230,7 +230,11 @@ semantics and changes nothing else:
   revoked identity → `credential_revoked`; wrong credential →
   `unauthorized`. Failures are fatal and the worker stops instead of
   retrying (revocation and invalid-credential rejection therefore take
-  effect WITHOUT redeployment).
+  effect WITHOUT redeployment). Before opening a connection, the worker
+  refuses a `run --server` origin that differs from its stored paired
+  origin, including a different port or transport scheme. This prevents
+  sending the stored credential to a merely configured endpoint; verified
+  origin migration remains unimplemented under #224.
 - **Storage.** The server store (`worker_identity_store`) keeps only
   salted SHA-256 hashes of codes and credentials, in one SQLite database
   created inside a `0o700` directory with the file forced to `0o600`
@@ -272,7 +276,7 @@ semantics and changes nothing else:
   CANONICAL absolute path (never the certificate contents) is stored as
   one bounded, explicitly versioned JSON row in the EXISTING worker
   store, bound to the exact origin it was paired for; it never applies
-  to a different explicit `--server` target. The trust SUPPLEMENTS the
+  to a different origin. The trust SUPPLEMENTS the
   default verified context (platform roots stay loaded;
   `CERT_REQUIRED` and hostname checking unchanged) — it is not pinning,
   not TOFU, not a system-trust-store mutation, and no
