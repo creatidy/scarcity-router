@@ -252,6 +252,9 @@ class GatewayHTTPServer(ThreadingHTTPServer):
         context = self._tls_context
         if context is not None:
             try:
+                # A peer that never completes TLS must not block reload
+                # maintenance or new connections indefinitely.
+                connection.settimeout(10.0)
                 connection = context.wrap_socket(connection, server_side=True)
             except (ssl.SSLError, OSError):
                 connection.close()

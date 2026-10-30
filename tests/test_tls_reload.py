@@ -160,6 +160,12 @@ class CertificateReloadIntegrationTests(unittest.TestCase):
 
             _ = worker_cert.write_bytes(new_cert)
             _ = worker_key.write_bytes(new_key)
+            stalled = socket.create_connection(("127.0.0.1", http_port), timeout=5)
+            _ = stack.callback(stalled.close)
+            stalled.sendall(b"\x16\x03\x03\x00\xff")
+            with socket.create_connection(("127.0.0.1", http_port), timeout=0.5) as probe:
+                with self.assertRaises(TimeoutError):
+                    _ = tls.client_context().wrap_socket(probe, server_hostname="localhost")
             process.send_signal(signal.SIGHUP)
             _ = self._wait_output(process, b"certificate contexts reloaded")
             new_http = self._peer_certificate(http_port, tls.client_context())
@@ -182,7 +188,7 @@ class CertificateReloadIntegrationTests(unittest.TestCase):
     def _wait_output(process: subprocess.Popen[bytes], marker: bytes) -> bytes:
         assert process.stdout is not None
         output = b""
-        deadline = time.monotonic() + 10
+        deadline = time.monotonic() + 20
         while marker not in output:
             remaining = deadline - time.monotonic()
             if remaining <= 0 or not select.select([process.stdout], [], [], remaining)[0]:
