@@ -170,11 +170,14 @@ class _LifecycleHarness:
 
     def run(self, root: Path, fake: _FakeUv) -> None:
         smokes = self
+        _ = (root / package_check.WHEEL_NAME).write_bytes(b"synthetic wheel")
 
         def counted(*_args: object, **_kwargs: object) -> None:
             smokes.smoke_calls += 1
 
         with (
+            mock.patch.object(package_check, "DIST", root),
+            mock.patch.dict(os.environ),
             mock.patch.object(package_check, "_run", fake),
             mock.patch.object(package_check, "check_cli_scripts", counted),
             mock.patch.object(package_check, "check_installed_resources", counted),
@@ -182,6 +185,7 @@ class _LifecycleHarness:
             mock.patch.object(package_check, "check_rest", counted),
             redirect_stderr(self.stderr),
         ):
+            _ = os.environ.pop("SCARCITY_ROUTER_UPGRADE_BASE_WHEEL", None)
             package_check.run_install_lifecycle(root)
 
 
