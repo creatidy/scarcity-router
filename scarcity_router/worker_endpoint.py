@@ -1235,6 +1235,14 @@ class _EndpointListener:
         address = cast("tuple[str, int]", self._server_socket.getsockname())
         return int(address[1])
 
+    def replace_tls_context(self, context: ssl.SSLContext) -> ssl.SSLContext:
+        """Replace an existing TLS context for subsequent connections only."""
+        previous = self._tls_context
+        if previous is None:
+            raise ValueError("worker listener is not configured for TLS")
+        self._tls_context = context
+        return previous
+
     def serve_in_background(self) -> None:
         if self._accept_thread is not None:
             return

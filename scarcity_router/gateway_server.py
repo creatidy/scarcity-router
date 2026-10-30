@@ -77,7 +77,7 @@ import socket
 import ssl
 import sys
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -241,10 +241,35 @@ class GatewayHTTPServer(ThreadingHTTPServer):
         super().__init__((host, port), GatewayRequestHandler)
         self.application = application
         self.control_plane = control_plane
-        if tls_context is not None:
-            self.socket: socket.socket = tls_context.wrap_socket(
-                self.socket, server_side=True
-            )
+        self.maintenance: Callable[[], None] | None = None
+        self._tls_context: ssl.SSLContext | None = tls_context
+
+    @override
+    def get_request(self) -> tuple[socket.socket, tuple[str, int]]:
+        connection, address = cast(
+            "tuple[socket.socket, tuple[str, int]]", super().get_request()
+        )
+        context = self._tls_context
+        if context is not None:
+            try:
+                connection = context.wrap_socket(connection, server_side=True)
+            except (ssl.SSLError, OSError):
+                connection.close()
+                raise
+        return connection, address
+
+    def replace_tls_context(self, context: ssl.SSLContext) -> ssl.SSLContext:
+        """Replace an existing TLS context for subsequent connections only."""
+        previous = self._tls_context
+        if previous is None:
+            raise ValueError("HTTP listener is not configured for TLS")
+        self._tls_context = context
+        return previous
+
+    @override
+    def service_actions(self) -> None:
+        if self.maintenance is not None:
+            self.maintenance()
 
     @override
     def handle_error(self, request: object, client_address: object) -> None:

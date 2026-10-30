@@ -38,6 +38,7 @@ explicitly unauthenticated (fail closed).
 from __future__ import annotations
 
 import argparse
+import signal
 import sys
 import threading
 from collections.abc import Callable
@@ -60,6 +61,7 @@ from .server_store import (
 )
 from .worker_endpoint import build_tls_context as build_worker_tls_context
 from .worker_protocol import WORKER_PROTOCOL_VERSION
+from .tls_reload import verified_server_context
 
 DEFAULT_DATA_DIR = default_server_data_dir()
 
@@ -154,6 +156,17 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="FILE",
         help="worker-listener TLS private key (required for non-loopback)",
     )
+    for prefix, description in (("tls", "HTTP"), ("worker-tls", "worker")):
+        _ = parser.add_argument(
+            f"--{prefix}-reload-hostname",
+            metavar="HOSTNAME",
+            help=f"verify {description} replacement certificates for this hostname on SIGHUP",
+        )
+        _ = parser.add_argument(
+            f"--{prefix}-reload-ca-cert",
+            metavar="FILE",
+            help=f"additional CA for {description} replacement verification",
+        )
     return parser
 
 
@@ -229,14 +242,38 @@ def main(argv: list[str] | None = None) -> int:
             "a non-loopback worker-protocol listener requires "
             + "--worker-tls-certfile/--worker-tls-keyfile"
         )
+    reload_hostname = arguments["tls_reload_hostname"]
+    reload_ca = arguments["tls_reload_ca_cert"]
+    worker_reload_hostname = arguments["worker_tls_reload_hostname"]
+    worker_reload_ca = arguments["worker_tls_reload_ca_cert"]
+    reload_enabled = reload_hostname is not None or worker_reload_hostname is not None
+    if reload_ca is not None and reload_hostname is None:
+        parser.error("--tls-reload-ca-cert requires --tls-reload-hostname")
+    if worker_reload_ca is not None and worker_reload_hostname is None:
+        parser.error("--worker-tls-reload-ca-cert requires --worker-tls-reload-hostname")
+    if reload_enabled:
+        if not hasattr(signal, "SIGHUP") or threading.current_thread() is not threading.main_thread():
+            parser.error("TLS reload requires SIGHUP and the main thread")
+        if (certfile is not None) != (reload_hostname is not None):
+            parser.error("TLS reload requires a hostname for each configured TLS listener")
+        if (worker_port is not None and worker_certfile is not None) != (worker_reload_hostname is not None):
+            parser.error("TLS reload requires a hostname for each configured TLS listener")
+        if not all(isinstance(name, str) and name for name in (reload_hostname, worker_reload_hostname) if name is not None):
+            parser.error("TLS reload hostnames must be non-empty")
     import_client_keys = arguments["import_client_keys"]
     if import_client_keys is not None and not isinstance(import_client_keys, str):
         parser.error("--import-client-keys must be a path")
     worker_tls_context = None
     if worker_port is not None and worker_certfile is not None and worker_keyfile is not None:
         try:
-            worker_tls_context = build_worker_tls_context(
-                str(worker_certfile), str(worker_keyfile)
+            worker_tls_context = (
+                verified_server_context(
+                    str(worker_certfile), str(worker_keyfile),
+                    hostname=cast(str, worker_reload_hostname),
+                    ca_file=cast("str | None", worker_reload_ca),
+                ) if reload_enabled else build_worker_tls_context(
+                    str(worker_certfile), str(worker_keyfile)
+                )
             )
         except ValueError as exc:
             print(f"server: {exc}", file=sys.stderr)
@@ -254,7 +291,10 @@ def main(argv: list[str] | None = None) -> int:
             imported = _import_client_keys(plane, Path(import_client_keys))
             print(f"imported {imported} client key(s) into the store", flush=True)
         tls_context = (
-            build_tls_context(str(certfile), str(keyfile))
+            (verified_server_context(
+                str(certfile), str(keyfile), hostname=cast(str, reload_hostname),
+                ca_file=cast("str | None", reload_ca),
+            ) if reload_enabled else build_tls_context(str(certfile), str(keyfile)))
             if certfile is not None and keyfile is not None
             else None
         )
@@ -325,11 +365,61 @@ def main(argv: list[str] | None = None) -> int:
             + "--worker-listen-port to enable it)",
             flush=True,
         )
+    previous_hup: object = None
+    reload_requested = 0
+    reload_processed = 0
+    if reload_enabled:
+        def request_reload(_signum: int, _frame: object) -> None:
+            nonlocal reload_requested
+            reload_requested += 1
+
+        def perform_reload() -> None:
+            nonlocal reload_processed
+            requested = reload_requested
+            if requested == reload_processed:
+                return
+            try:
+                new_http = (
+                    verified_server_context(
+                        str(certfile), str(keyfile), hostname=cast(str, reload_hostname),
+                        ca_file=cast("str | None", reload_ca),
+                    ) if certfile is not None else None
+                )
+                new_worker = (
+                    verified_server_context(
+                        str(worker_certfile), str(worker_keyfile),
+                        hostname=cast(str, worker_reload_hostname),
+                        ca_file=cast("str | None", worker_reload_ca),
+                    ) if worker_listener is not None and worker_certfile is not None else None
+                )
+                old_http = server.replace_tls_context(new_http) if new_http is not None else None
+                try:
+                    if new_worker is not None and worker_listener is not None:
+                        _ = worker_listener.replace_tls_context(new_worker)
+                except ValueError:
+                    if old_http is not None:
+                        _ = server.replace_tls_context(old_http)
+                    raise
+            except ValueError as exc:
+                print(
+                    f"server: TLS reload failed ({exc}); retaining active certificate contexts",
+                    file=sys.stderr, flush=True,
+                )
+            else:
+                print("server: verified TLS certificate contexts reloaded", flush=True)
+            finally:
+                reload_processed = requested
+
+        server.maintenance = perform_reload
+        previous_hup = signal.signal(signal.SIGHUP, request_reload)
+        print("server: verified TLS reload ready (SIGHUP)", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
+        if reload_enabled:
+            _ = signal.signal(signal.SIGHUP, cast("signal.Handlers", previous_hup))
         worker_reaper_stop.set()
         if worker_reaper is not None:
             _ = worker_reaper.join(timeout=5)

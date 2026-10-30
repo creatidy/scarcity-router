@@ -6,7 +6,9 @@
 #
 #   Flags that exist: --host, --port, --data-dir, --import-client-keys,
 #   --tls-certfile, --tls-keyfile, --worker-listen-host,
-#   --worker-listen-port, --worker-tls-certfile, --worker-tls-keyfile.
+#   --worker-listen-port, --worker-tls-certfile, --worker-tls-keyfile,
+#   --tls-reload-hostname, --tls-reload-ca-cert,
+#   --worker-tls-reload-hostname, --worker-tls-reload-ca-cert.
 #
 # Deployments (pick ONE `command:` block):
 #
@@ -36,6 +38,10 @@
 #      network_mode: remove; ports: "8787:8787" and "8790:8790"
 #    Restrict exposure at your firewall — the server's own boundary is
 #    authentication and TLS, not IP filtering.
+#    For externally managed renewal and optional verified SIGHUP reload,
+#    see docs/security.md#certificate-replacement. File-by-file bind mounts
+#    are unsuitable for Certbot's replaced symlink targets; use an
+#    appropriately permissioned read-only directory mount instead.
 #
 # Updates: pull the new image tag (once released, the GHCR contract is
 # ghcr.io/creatidy/scarcity-router:X.Y.Z / X.Y / latest), then
