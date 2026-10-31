@@ -65,7 +65,7 @@ from scarcity_router.server_config import (
     ServerConfiguration,
 )
 from scarcity_router.selection_types import ModelIdentity
-from scarcity_router.server_store import MIGRATIONS, ServerStore, canonical_store_path
+from scarcity_router.server_store import MIGRATIONS, STORE_SCHEMA_VERSION, ServerStore, canonical_store_path
 from scarcity_router.worker_identity_store import default_worker_store_path
 from scarcity_router.worker_protocol import SocketTransport
 
@@ -223,7 +223,7 @@ class MigrationFromSchemaOneTests(unittest.TestCase):
             store = ServerStore.open(data_dir)
             self.addCleanup(store.close)
             # The store migrated forward, exactly to the current version.
-            self.assertEqual(2, store.schema_version())
+            self.assertEqual(STORE_SCHEMA_VERSION, store.schema_version())
             _ = store.require_current_schema()
             # Unrelated data survived untouched.
             self.assertEqual(

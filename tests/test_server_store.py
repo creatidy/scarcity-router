@@ -317,7 +317,7 @@ class DatabaseEntryTests(unittest.TestCase):
             direct = ServerStore(relative)
             try:
                 self.assertEqual(relative, direct.path)
-                self.assertEqual(2, direct.schema_version())
+                self.assertEqual(STORE_SCHEMA_VERSION, direct.schema_version())
             finally:
                 direct.close()
             self.assertEqual((0o700, 0o600), (stat.S_IMODE(directory.stat().st_mode), stat.S_IMODE(filename.stat().st_mode)))
@@ -1077,7 +1077,7 @@ class OwnedSchemaRecoveryTests(unittest.TestCase):
                     c.close()
                 store = ServerStore.open(directory)
                 try:
-                    self.assertEqual(2, store.schema_version())
+                    self.assertEqual(STORE_SCHEMA_VERSION, store.schema_version())
                 finally:
                     store.close()
 
@@ -1142,7 +1142,7 @@ class OwnedSchemaRecoveryTests(unittest.TestCase):
                     c.close()
                 store = ServerStore.open(directory)
                 try:
-                    self.assertEqual(2, store.schema_version())
+                    self.assertEqual(STORE_SCHEMA_VERSION, store.schema_version())
                 finally:
                     store.close()
 
@@ -1249,7 +1249,7 @@ os._exit(0)
                     _ = self._crash(path)
                     store = ServerStore.open(path.parent, migrate=migrate)
                     try:
-                        self.assertEqual(2 if migrate else version, store.schema_version())
+                        self.assertEqual(STORE_SCHEMA_VERSION if migrate else version, store.schema_version())
                         self.assertEqual("SYNTHETIC-SECRET", store.get_provider_secret("synthetic"))
                         self.assertEqual(30, store.audit_record_count())
                     finally:
@@ -1352,7 +1352,7 @@ os._exit(0)
                 store = ServerStore.open(directory)
             temporary.assert_not_called()
             self.addCleanup(store.close)
-            self.assertEqual(2, store.schema_version())
+            self.assertEqual(STORE_SCHEMA_VERSION, store.schema_version())
 
     def test_plain_readonly_failure_does_not_authorize_candidate_or_original_recovery(self) -> None:
         with tempfile.TemporaryDirectory() as parent:
@@ -1523,7 +1523,7 @@ import os, sqlite3, sys
 c = sqlite3.connect(sys.argv[1])
 assert c.execute('PRAGMA journal_mode=WAL').fetchone() == ('wal',)
 if sys.argv[2] == 'future':
-    c.execute("INSERT INTO schema_migrations VALUES (3, 'synthetic')")
+    c.execute("INSERT INTO schema_migrations VALUES (4, 'synthetic')")
 else:
     c.execute('DELETE FROM schema_migrations WHERE version=1')
 c.commit()
@@ -1693,18 +1693,19 @@ os._exit(0)
                         self.assertNotIn("SYNTHETIC-SECRET", str(caught.exception))
 
     def test_supported_zero_old_and_current_stores_still_tighten_owned_permissions(self) -> None:
-        for version in (0, 1, 2):
+        for version in (0, 1, 2, STORE_SCHEMA_VERSION):
             with self.subTest(version=version), tempfile.TemporaryDirectory() as parent:
                 data_dir = Path(parent) / "server"
-                store = ServerStore.open(data_dir, migrate=version == 2)
+                store = ServerStore.open(data_dir, migrate=version == STORE_SCHEMA_VERSION)
                 path = store.path
                 store.close()
-                if version == 1:
+                if version in (1, 2):
                     connection = sqlite3.connect(path)
                     try:
-                        for statement in MIGRATIONS[0][1]:
-                            _ = connection.execute(statement)
-                        _ = connection.execute("INSERT INTO schema_migrations VALUES (1, ?)", (T0,))
+                        for number, statements in MIGRATIONS[:version]:
+                            for statement in statements:
+                                _ = connection.execute(statement)
+                            _ = connection.execute("INSERT INTO schema_migrations VALUES (?, ?)", (number, T0))
                         connection.commit()
                     finally:
                         connection.close()
@@ -1750,7 +1751,7 @@ os._exit(0)
                 self.assertEqual([], connection.execute("SELECT name FROM sqlite_master").fetchall())
             store = ServerStore.open(data_dir)
             self.addCleanup(store.close)
-            self.assertEqual((1, 2), store.applied_migration_versions())
+            self.assertEqual(tuple(range(1, STORE_SCHEMA_VERSION + 1)), store.applied_migration_versions())
 
     def test_failed_v1_upgrade_retains_configuration_secrets_and_audit(self) -> None:
         with tempfile.TemporaryDirectory() as parent:
@@ -1787,7 +1788,7 @@ os._exit(0)
                 finally:
                     store.close()
             with ThreadPoolExecutor(max_workers=2) as executor:
-                self.assertEqual([(1, 2), (1, 2)], list(executor.map(open_and_close, range(2))))
+                self.assertEqual([tuple(range(1, STORE_SCHEMA_VERSION + 1))] * 2, list(executor.map(open_and_close, range(2))))
 
     def test_reopen_preserves_written_state(self) -> None:
         """Crash/restart semantics: committed state survives a reopen."""

@@ -114,6 +114,10 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     _ = parser.add_argument(
+        "--mi-config", metavar="FILE", default=None,
+        help="administrator-owned MI trust configuration (requires the optional mi extra)",
+    )
+    _ = parser.add_argument(
         "--tls-certfile",
         default=None,
         metavar="FILE",
@@ -281,11 +285,27 @@ def main(argv: list[str] | None = None) -> int:
     try:
         data_dir = Path(data_dir_value)
         store = ServerStore.open(data_dir)
+        mi_server = None
+        mi_config = arguments["mi_config"]
+        if mi_config is not None:
+            if not isinstance(mi_config, str) or not mi_config:
+                raise ValueError("invalid MI configuration path")
+            try:
+                from .mi_server_config import load_mi_server_config
+            except ImportError:
+                raise ValueError("MI integration requires the optional mi extra") from None
+            try:
+                mi_server = load_mi_server_config(Path(mi_config)).activate(store)
+            except Exception:
+                store.close()
+                raise
         plane = ControlPlane(
             store=store,
             own_origins=(f"http://{host}:{raw_port}", f"https://{host}:{raw_port}"),
             tls=certfile is not None,
             ui_dispatcher=dispatch_ui,
+            mi_server=mi_server,
+            mi_config_path=Path(mi_config) if isinstance(mi_config, str) else None,
         )
         if import_client_keys is not None:
             imported = _import_client_keys(plane, Path(import_client_keys))

@@ -68,7 +68,11 @@ from dataclasses import dataclass, replace
 from collections.abc import Callable, Mapping
 import copy
 from datetime import datetime, timedelta, timezone
-from typing import cast
+from typing import TYPE_CHECKING, cast
+
+if TYPE_CHECKING:
+    from .mi_consumer import MIUse
+    from .mi_server_config import MIServer
 
 from .capacity import CapacitySnapshot
 from .eligibility import ExecutionEligibility
@@ -718,6 +722,7 @@ class GatewayApplication:
         continuation_capability_source: "Callable[[], frozenset[str]] | None" = None,
         replaced_application: "GatewayApplication | None" = None,
         source_call_fact_sink: Callable[[dict[str, object]], None] | None = None,
+        mi_server: MIServer | None = None,
     ) -> None:
         _ = v_instance(catalog, ModelCatalog, "gateway_application.catalog")
         _ = v_instance(profiles, TaskProfileCatalog, "gateway_application.profiles")
@@ -769,6 +774,7 @@ class GatewayApplication:
         self.aliases: RoutingAliasTable = aliases
         self.adapters: AdapterRegistry = adapters
         self.audit: AuditSink = audit
+        self.mi_server: MIServer | None = mi_server
         self.limits: GatewayLimits = (
             limits if limits is not None else GatewayLimits()
         )
@@ -1694,6 +1700,7 @@ class GatewayApplication:
             raise executable_error() from None
         self._enforce_executable_limits(route, caps)
         decision = route_request(route)
+        mi_reference = self._retain_mi(decision.mi_use)
         execution: dict[str, object] | None = None
         if decision.target is not None:
             pin = PinnedTarget.from_route_target(decision.target, decision_id=decision.decision_id)
@@ -1720,7 +1727,10 @@ class GatewayApplication:
             execution = {"model": model_pin, "reasoning_effort": selected.reasoning_effort,
                          "execution_requirements": context.to_dict()}
         public_route = public_route_document(decision, route)
-        return {"schema_version": decision.schema_version, "route": public_route, "execution": execution}
+        result: dict[str, object] = {"schema_version": decision.schema_version, "route": public_route, "execution": execution}
+        if mi_reference is not None:
+            result["mi_utilization"] = mi_reference
+        return result
 
     def _enforce_executable_limits(self, route: RouteRequest, caps: RequestCapabilities) -> None:
         self._enforce_request_limits(replace(caps, estimated_input_tokens=route.request.minimum_input_context_tokens))
@@ -1826,6 +1836,10 @@ class GatewayApplication:
                 # excludes worker_bridged candidates for tool requests.
                 continuation_capable = None
         try:
+            mi_admission = self.mi_server.admission(started) if self.mi_server is not None else None
+        except Exception:
+            raise GatewayError.api("MI evidence state unavailable; reload the trusted publication", code="state_unavailable", http_status=503) from None
+        try:
             state.strict_no_payg = client_grant.strict_no_payg
             request_obj = RouteRequest(
                 catalog=self.catalog,
@@ -1848,6 +1862,7 @@ class GatewayApplication:
                 candidate_identities=candidate_identities,
                 available_adapter_resource_ids=(frozenset(entry.identity.resource_id for entry in registry_snapshot.entries
                     if adapters.supports_resource(entry.identity)) if current else None),
+                mi_admission=mi_admission,
             )
         except (CapacityValidationError, SelectionContractError, ValueError):
             raise GatewayError.api(
@@ -1871,6 +1886,7 @@ class GatewayApplication:
             admission = admit_pinned_target(
                 request_obj, pinned_target=resolved.pinned_target
             )
+            _ = self._retain_mi(admission.mi_use, state.request_id, state.client_id)
             if not admission.approved:
                 raise _admission_rejection(admission, retained_requirements=request.execution_requirements is not None)
             assert admission.target is not None
@@ -1882,6 +1898,7 @@ class GatewayApplication:
             )
             return
         decision = route_request(request_obj)
+        _ = self._retain_mi(decision.mi_use, state.request_id, state.client_id)
         state.decision_id = decision.decision_id
         if decision.status != "selected" or decision.target is None:
             raise _no_eligible_target_error(decision)
@@ -1890,6 +1907,14 @@ class GatewayApplication:
         state.target_capabilities = _target_capabilities(
             registry_snapshot, decision.target
         )
+
+    def _retain_mi(self, use: MIUse | None, request_id: str | None = None, client_id: str | None = None) -> dict[str, object] | None:
+        if self.mi_server is None or use is None:
+            return None
+        try:
+            return self.mi_server.retain(use, request_id, client_id)
+        except Exception:
+            raise GatewayError.api("MI provenance retention is unavailable", code="state_unavailable", http_status=503) from None
 
     def _supplemental_capability_gate(
         self, target: RouteTarget, caps: RequestCapabilities
