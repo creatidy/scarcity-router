@@ -22,6 +22,11 @@ want it, without taking anything away from recommendation-only users.
 
 ## Value proposition
 
+Scarcity Router is a standalone product and an independently deployable
+component of Foundry. Foundry owns integrated installation and acceptance,
+not Router routing or authorization; MI, Kernel, Console and Foundry are not
+mandatory runtime dependencies (D-085).
+
 Within Creatidy, the outcome being optimized is the path to an accepted
 result, including money, subscription quota, elapsed time, corrections,
 review and owner attention. Router contributes source/call facts and

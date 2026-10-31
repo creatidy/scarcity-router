@@ -59,7 +59,7 @@ Every capability in this document carries exactly one status:
 
 | Responsibility | Authority | Status |
 | --- | --- | --- |
-| Issues, branches, pull requests, reviews | Forgejo ([canonical](https://forgejo.creatidy.com/BioMedical-IT/scarcity-router)) | Implemented now |
+| Issues, branches, pull requests, reviews | Forgejo ([canonical](https://forgejo.creatidy.com/Creatidy/scarcity-router)) | Implemented now |
 | Development CI (validation gate + package check) | Forgejo Actions, `.forgejo/workflows/ci.yml` | Implemented now (requires an owner-configured runner) |
 | `develop` → `main` promotion | Human-controlled, deliberate | Implemented now (policy; never automated) |
 | Release tags (`vX.Y.Z`) | Human-controlled, created on stable `main` | Implemented now (policy; none exist yet) |

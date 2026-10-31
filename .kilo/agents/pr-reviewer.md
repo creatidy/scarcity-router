@@ -42,8 +42,8 @@ permission:
     "git show *": allow
     "git diff --merge-base *": allow
     "git ls-tree *": allow
-    "git ls-remote https://forgejo.creatidy.com/BioMedical-IT/scarcity-router refs/heads/develop refs/heads/*": allow
-    "git ls-remote https://forgejo.creatidy.com/BioMedical-IT/scarcity-router.git refs/heads/develop refs/heads/*": allow
+    "git ls-remote https://forgejo.creatidy.com/Creatidy/scarcity-router refs/heads/develop refs/heads/*": allow
+    "git ls-remote https://forgejo.creatidy.com/Creatidy/scarcity-router.git refs/heads/develop refs/heads/*": allow
     "kilo debug agent pr-reviewer": allow
     "make check": allow
     "python3 -m unittest discover -s tests -v": allow

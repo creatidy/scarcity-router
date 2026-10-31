@@ -7,9 +7,10 @@ subscription-backed AI models. It combines current capacity, curated
 capabilities, task requirements and user policy, then returns a recommendation
 with alternatives and an explanation.
 
-It is the resource-selection and inference component of the local-first
-Creatidy system. Kernel owns work intent, authority, harness/workspace
-lifecycle and accepted-result evidence; Model Intelligence owns versioned
+It is a standalone product and the resource-selection and inference component
+of the local-first Creatidy system. Foundry owns integrated installation and
+acceptance, not routing or authorization. Kernel owns work intent, authority,
+harness/workspace lifecycle and accepted-result evidence; Model Intelligence owns versioned
 public knowledge; Console consumes each product's authorized state. The
 goal is an accepted result with responsible use of money, subscription
 quota, time, review and owner attention, not the cheapest token. This is
