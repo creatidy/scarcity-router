@@ -1099,14 +1099,15 @@ class ControlPlane:
         self, method: str, path: str, handler: GatewayRequestHandler
     ) -> None:
         parts = [part for part in path[len(CONTROL_PREFIX) :].split("/") if part]
-        # The bootstrap endpoint authenticates with the first-run password;
+        # Bootstrap requires a separately provisioned first-run claim;
         # everything else needs a session. Worker pairing redemption is not
         # an HTTP endpoint at all: the M05 worker protocol's TLS handshake
         # is the redemption path.
         if parts == ["bootstrap", "admin"] and method == "POST":
             document = self._require_json_body(handler)
             self.service_bootstrap_admin(
-                password=document.get("password"), confirm=document.get("confirm")
+                password=document.get("password"), confirm=document.get("confirm"),
+                claim=document.get("claim"),
             )
             cookie = self._create_admin_session()
             self._send_json(
@@ -1283,7 +1284,7 @@ class ControlPlane:
 
     # ── Administration services (shared by the JSON API and the web UI) ──
 
-    def service_bootstrap_admin(self, *, password: object, confirm: object) -> None:
+    def service_bootstrap_admin(self, *, password: object, confirm: object, claim: object) -> None:
         """First-run administrator setup; fails once an identity exists."""
         if self.admin_configured():
             raise ControlHTTPError.conflict(
@@ -1294,15 +1295,20 @@ class ControlPlane:
             raise ControlHTTPError.invalid_request(
                 "administrator setup requires \"confirm\": true"
             )
+        if not isinstance(claim, str) or not 1 <= len(claim) <= 128:
+            raise ControlHTTPError.unauthenticated("invalid or expired administrator claim")
         salt_hex, hash_hex, iterations = hash_admin_password(
             checked, iterations=self._pbkdf2_iterations
         )
-        self._store.set_admin_identity(
+        consumed = self._store.consume_admin_claim(
+            token_hash=hash_token(claim),
             password_salt_hex=salt_hex,
             password_hash_hex=hash_hex,
             pbkdf2_iterations=iterations,
             at=format_utc(self._clock()),
         )
+        if not consumed:
+            raise ControlHTTPError.unauthenticated("invalid or expired administrator claim")
 
     def service_login(self, document: Mapping[str, object]) -> None:
         """Verify the administrator password; raises 401 on mismatch."""

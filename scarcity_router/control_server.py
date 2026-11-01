@@ -38,14 +38,16 @@ explicitly unauthenticated (fail closed).
 from __future__ import annotations
 
 import argparse
+import secrets
 import signal
 import sys
 import threading
 from collections.abc import Callable
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import cast
 
-from .control_api import ControlPlane
+from .control_api import ControlPlane, format_utc, hash_token
 from .server_ui import dispatch_ui
 from .gateway_server import (
     BIND_HOST,
@@ -103,6 +105,10 @@ def build_parser() -> argparse.ArgumentParser:
             "server data directory holding the durable store "
             + f"(default: {DEFAULT_DATA_DIR})"
         ),
+    )
+    _ = parser.add_argument(
+        "--issue-bootstrap-claim", action="store_true",
+        help="issue a 15-minute first-administrator claim locally and exit",
     )
     _ = parser.add_argument(
         "--import-client-keys",
@@ -285,6 +291,17 @@ def main(argv: list[str] | None = None) -> int:
     try:
         data_dir = Path(data_dir_value)
         store = ServerStore.open(data_dir)
+        if arguments["issue_bootstrap_claim"]:
+            try:
+                claim = secrets.token_urlsafe(32)
+                expires_at = format_utc(datetime.now(timezone.utc) + timedelta(minutes=15))
+                if not store.provision_admin_claim(token_hash=hash_token(claim), expires_at=expires_at):
+                    print("server: administrator already configured; claim not issued", file=sys.stderr)
+                    return 2
+                print(claim, flush=True)
+                return 0
+            finally:
+                store.close()
         mi_server = None
         mi_config = arguments["mi_config"]
         if mi_config is not None:
@@ -367,7 +384,7 @@ def main(argv: list[str] | None = None) -> int:
     if not plane.admin_configured():
         print(
             "first run: no administrator credential exists — open "
-            + f"{origin}/admin to complete onboarding",
+            + f"{origin}/admin; issue a claim locally with --issue-bootstrap-claim",
             flush=True,
         )
     if worker_listener is not None:

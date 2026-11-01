@@ -32,6 +32,7 @@ from scarcity_router.control_api import (
     SESSION_COOKIE_NAME,
     ControlPlane,
     GenerationTester,
+    hash_token,
 )
 from scarcity_router.gateway_server import GatewayHTTPServer, make_gateway_server
 from scarcity_router.server_store import ServerStore, canonical_store_path
@@ -45,6 +46,7 @@ T_NOW = "2026-09-16T12:00:00.000Z"
 #: Conspicuous SYNTHETIC credentials; tests assert these never leak into
 #: any response, export, diagnostic or log.
 FAKE_ADMIN_PASSWORD = "synthetic-admin-password-NOT-A-SECRET-01"
+FAKE_ADMIN_CLAIM = "synthetic-administrator-claim-for-testing"
 FAKE_PROVIDER_SECRET = "SYNTHETIC-PROVIDER-SECRET-MARKER-0002"
 
 PBKDF2_TEST_ITERATIONS = 1000
@@ -185,6 +187,7 @@ class ServerHarness(unittest.TestCase):
         from scarcity_router.server_ui import dispatch_ui
 
         store = ServerStore.open(data_dir)
+        _ = store.provision_admin_claim(token_hash=hash_token(FAKE_ADMIN_CLAIM), expires_at="9999-01-01T00:00:00.000Z")
         return ControlPlane(
             store=store,
             clock=fixed_clock,
@@ -218,6 +221,9 @@ class ServerHarness(unittest.TestCase):
 
     def onboard(self, *, login: bool = True) -> None:
         """Complete first-run setup and hold an administrator session."""
+        _ = self.plane.store.provision_admin_claim(
+            token_hash=hash_token(FAKE_ADMIN_CLAIM), expires_at="9999-01-01T00:00:00.000Z"
+        )
         status, payload, headers = self.exchange(
             "POST",
             "/control/bootstrap/admin",
@@ -245,6 +251,8 @@ class ServerHarness(unittest.TestCase):
         with_session: bool = True,
     ) -> tuple[int, object, list[tuple[str, str]]]:
         body = raw_body
+        if path == "/control/bootstrap/admin" and isinstance(payload, dict) and "claim" not in payload:
+            payload = {**cast("dict[str, object]", payload), "claim": FAKE_ADMIN_CLAIM}
         if payload is not None:
             body = json.dumps(payload).encode("utf-8")
         merged: dict[str, str] = {}

@@ -62,7 +62,7 @@ from typing import Callable, cast
 
 from .gateway_validation import v_safe_id, v_str
 
-STORE_SCHEMA_VERSION = 3
+STORE_SCHEMA_VERSION = 4
 
 STORE_FILE_NAME = "server-state.sqlite3"
 DATA_DIR_NAME = "scarcity-router"
@@ -223,6 +223,12 @@ MIGRATIONS: tuple[tuple[int, tuple[str, ...]], ...] = (
             "CREATE TABLE mi_retained_cuts (digest TEXT PRIMARY KEY, payload BLOB NOT NULL)",
             "CREATE TABLE mi_decision_receipts (receipt_id TEXT PRIMARY KEY, payload BLOB NOT NULL)",
             "CREATE TABLE mi_request_receipts (client_id TEXT NOT NULL, request_id TEXT NOT NULL, receipt_id TEXT NOT NULL, PRIMARY KEY (client_id, request_id))",
+        ),
+    ),
+    (
+        4,
+        (
+            "CREATE TABLE administrator_claim (id INTEGER PRIMARY KEY CHECK (id = 1), token_hash TEXT NOT NULL, expires_at TEXT NOT NULL)",
         ),
     ),
 )
@@ -1334,6 +1340,55 @@ class ServerStore:
         return cast(str, row["receipt_id"]) if row is not None else None
 
     # ── Administrator identity and sessions ──────────────────────────────
+
+    def provision_admin_claim(self, *, token_hash: str, expires_at: str) -> bool:
+        """Replace an unconsumed claim only while no administrator exists."""
+        with self._lock:
+            try:
+                _ = self._connection.execute("BEGIN IMMEDIATE")
+                if _fetch_row(self._connection, "SELECT id FROM administrator_identity WHERE id = 1") is not None:
+                    _ = self._connection.execute("ROLLBACK")
+                    return False
+                _ = self._connection.execute(
+                    "INSERT INTO administrator_claim (id, token_hash, expires_at) VALUES (1, ?, ?) "
+                    + "ON CONFLICT(id) DO UPDATE SET token_hash = excluded.token_hash, expires_at = excluded.expires_at",
+                    (token_hash, expires_at),
+                )
+                _ = self._connection.execute("COMMIT")
+                return True
+            except sqlite3.Error:
+                if self._connection.in_transaction:
+                    _ = self._connection.execute("ROLLBACK")
+                raise ServerStoreError("server store claim provisioning failed") from None
+
+    def consume_admin_claim(
+        self, *, token_hash: str, password_salt_hex: str, password_hash_hex: str,
+        pbkdf2_iterations: int, at: str,
+    ) -> bool:
+        """Consume the live claim and create the first identity in one transaction."""
+        with self._lock:
+            try:
+                _ = self._connection.execute("BEGIN IMMEDIATE")
+                if _fetch_row(self._connection, "SELECT id FROM administrator_identity WHERE id = 1") is not None:
+                    _ = self._connection.execute("ROLLBACK")
+                    return False
+                deleted = self._connection.execute(
+                    "DELETE FROM administrator_claim WHERE id = 1 AND token_hash = ? AND expires_at > ?",
+                    (token_hash, at),
+                )
+                if deleted.rowcount != 1:
+                    _ = self._connection.execute("ROLLBACK")
+                    return False
+                _ = self._connection.execute(
+                    "INSERT INTO administrator_identity (id, password_salt_hex, password_hash_hex, pbkdf2_iterations, created_at, updated_at) VALUES (1, ?, ?, ?, ?, ?)",
+                    (password_salt_hex, password_hash_hex, pbkdf2_iterations, at, at),
+                )
+                _ = self._connection.execute("COMMIT")
+                return True
+            except sqlite3.Error:
+                if self._connection.in_transaction:
+                    _ = self._connection.execute("ROLLBACK")
+                raise ServerStoreError("server store administrator claim failed") from None
 
     def admin_identity(self) -> AdminIdentityRecord | None:
         with self._lock:

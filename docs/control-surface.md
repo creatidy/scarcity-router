@@ -146,12 +146,38 @@ liveness reveals nothing beyond "the process is serving".
 
 A fresh deployment has NO administrator credential and NO client keys:
 every inference request is explicitly unauthenticated (fail closed) and
-every web path redirects to forced onboarding. Onboarding
-(`POST /control/bootstrap/admin`, or the `/admin/onboarding` page) is
-refused with `409` once an administrator exists. There is no default
+every web path redirects to forced onboarding. Listener access alone does
+not confer first-administrator authority. On the server host, as the OS user
+that owns the server data directory, run the following in the same Python
+environment as the server (use its actual data directory if non-default):
+
+```sh
+python -m scarcity_router.control_server --data-dir /path/to/server-data --issue-bootstrap-claim
+```
+
+This local administrative operation prints a random claim once to standard
+output, not to server logs or a URL. Run it in a private terminal; do not place
+its output in logs, shell history, tickets or other shared channels. It expires
+after 15 minutes. On `/admin/onboarding`, enter the claim and a new password;
+for the JSON path, send `claim`, `password` and `confirm: true` in the request
+body to `POST /control/bootstrap/admin`. Use loopback HTTP only locally, or
+verified TLS for remote access. Browser onboarding requires a same-origin POST.
+
+The protected store contains only a hash and expiry, never the claim itself.
+Issuing another claim locally invalidates the prior one, allowing recovery from
+loss or expiration before an administrator exists. Restart does not extend its
+expiry. Claim consumption and first identity insertion commit together; a failed
+transaction consumes neither. An already configured administrator cannot be
+replaced by issuing or replaying a claim. If the identity committed but the
+session response was lost, log in with the chosen password; there is no
+unauthenticated reset. Back up and protect the server data directory: OS-level
+write access to it is administrative authority.
+
+Onboarding is refused with `409` once an administrator exists; an invalid,
+expired or already consumed claim otherwise receives `401`. There is no default
 password; the password (minimum 12 characters, explicit confirmation) is
-stored only as a PBKDF2-HMAC-SHA256 verifier with a fresh per-instance
-salt, and setting it revokes every existing session. Login issues a
+stored only as a PBKDF2-HMAC-SHA256 verifier with a fresh per-instance salt.
+Login issues a
 random session token (stored only as a SHA-256 hash, fixed-lifetime) in
 an `HttpOnly; SameSite=Strict` cookie (`Secure` on TLS); logout deletes
 it. Mutations require the per-session CSRF token (derived from the

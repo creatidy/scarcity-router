@@ -323,7 +323,11 @@ def _onboarding(
             + "strong password to finish first-run setup. There is no default "
             + "password (D-044); the credential is stored only as a PBKDF2 "
             + "verifier.</p>"
+            + "<p>On the server, run <code>python -m scarcity_router.control_server --issue-bootstrap-claim</code> "
+            + "with the same data directory, then enter the short-lived claim below.</p>"
             + "<form method=\"post\" action=\"/admin/onboarding\">"
+            + "<label for=\"claim\">Administrator claim</label>"
+            + "<input id=\"claim\" name=\"claim\" type=\"password\" autocomplete=\"off\" required>"
             + "<label for=\"password\">Administrator password (at least 12 characters)</label>"
             + "<input id=\"password\" name=\"password\" type=\"password\" "
             + "autocomplete=\"new-password\" required minlength=\"12\">"
@@ -336,10 +340,16 @@ def _onboarding(
             handler, 200, _page(plane, handler, "First-run setup", body, authenticated=False)
         )
         return
+    origins = handler.headers.get_all("Origin")
+    hosts = handler.headers.get_all("Host")
+    expected = f"{'https' if plane.is_tls else 'http'}://{hosts[0]}" if hosts and len(hosts) == 1 else ""
+    if origins != [expected] or handler.headers.get("Sec-Fetch-Site") not in (None, "same-origin"):
+        raise ControlHTTPError.forbidden("onboarding requires a same-origin request")
     form = plane.read_form(handler)
     plane.service_bootstrap_admin(
         password=form.get("password"),
         confirm=form.get("confirm") == "yes",
+        claim=form.get("claim"),
     )
     cookie = plane.create_session_cookie()
     _redirect_with_cookie(plane, handler, "/admin", cookie)

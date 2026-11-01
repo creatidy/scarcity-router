@@ -359,12 +359,13 @@ class DoctorCliTests(unittest.TestCase):
         self.assertIn("versions", document)
 
     def test_server_mode_reports_store_state(self) -> None:
-        from scarcity_router.control_api import ControlPlane
+        from scarcity_router.control_api import ControlPlane, hash_token
         from scarcity_router.server_store import STORE_SCHEMA_VERSION, ServerStore
 
         with tempfile.TemporaryDirectory() as parent:
             data_dir = Path(parent) / "server"
             store = ServerStore.open(data_dir)
+            _ = store.provision_admin_claim(token_hash=hash_token("synthetic-claim"), expires_at="9999-01-01T00:00:00.000Z")
             plane = ControlPlane(
                 store=store,
                 clock=lambda: T_EVAL,
@@ -372,7 +373,7 @@ class DoctorCliTests(unittest.TestCase):
                 version="0.1.0.test",
             )
             plane.service_bootstrap_admin(
-                password="synthetic-admin-password-NOT-A-SECRET-01", confirm=True
+                password="synthetic-admin-password-NOT-A-SECRET-01", confirm=True, claim="synthetic-claim"
             )
             _ = plane.service_add_provider(
                 {

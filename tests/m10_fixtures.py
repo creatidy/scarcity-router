@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, cast, override
 
-from scarcity_router.control_api import ControlPlane
+from scarcity_router.control_api import ControlPlane, hash_token
 from scarcity_router.gateway_server import GatewayHTTPServer, make_gateway_server
 from scarcity_router.server_store import ServerStore
 
@@ -29,6 +29,7 @@ if TYPE_CHECKING:  # pragma: no cover - type-only import
 
 from tests.server_fixtures import (
     FAKE_ADMIN_PASSWORD,
+    FAKE_ADMIN_CLAIM,
     PBKDF2_TEST_ITERATIONS,
     synthetic_collectors,
 )
@@ -95,6 +96,7 @@ class RealTimeServerHarness(unittest.TestCase):
         from scarcity_router.server_ui import dispatch_ui
 
         store = ServerStore.open(data_dir)
+        _ = store.provision_admin_claim(token_hash=hash_token(FAKE_ADMIN_CLAIM), expires_at="9999-01-01T00:00:00.000Z")
         return ControlPlane(
             store=store,
             clock=None,  # real clock: real dispatch paths need real deadlines
@@ -168,6 +170,8 @@ class RealTimeServerHarness(unittest.TestCase):
         from scarcity_router.control_api import SESSION_COOKIE_NAME
 
         body = raw_body
+        if path == "/control/bootstrap/admin" and isinstance(payload, dict) and "claim" not in payload:
+            payload = {**cast("dict[str, object]", payload), "claim": FAKE_ADMIN_CLAIM}
         if payload is not None:
             body = json.dumps(payload).encode("utf-8")
         merged: dict[str, str] = {}
