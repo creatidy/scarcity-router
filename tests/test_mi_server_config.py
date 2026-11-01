@@ -223,6 +223,29 @@ class MIServerHTTPTests(ServerHarness):
         self.assertEqual(400, status)
         self.assertEqual(reference, server.admission(fixture.T).expected)
 
+    def test_binding_only_reload_invalidates_other_instance_not_captured_decision(self) -> None:
+        self.onboard()
+        server = self.plane.current_application().mi_server
+        assert server is not None
+        second_store = ServerStore.open(self.data_dir)
+        self.addCleanup(second_store.close)
+        path = self.data_dir / "trust.json"
+        second = load_mi_server_config(path).activate(second_store)
+        captured = second.admission(fixture.T)
+        document = configuration(self.data_dir / "publication.json")
+        bindings = cast(list[dict[str, object]], document["bindings"])
+        added = copy.deepcopy(bindings[0])
+        identity = cast(dict[str, object], added["identity"])
+        identity["variant"] = "additional-variant"
+        bindings.append(added)
+        _ = path.write_text(json.dumps(document))
+        status, _ = self.admin_post("/control/mi/reload", {})
+        self.assertEqual(200, status)
+        self.assertEqual(1, len(captured.captured[1]))
+        self.assertEqual(2, len(server.admission(fixture.T).captured[1]))
+        with self.assertRaisesRegex(ValueError, "mi_cut_changed_restart_or_reload"):
+            _ = second.admission(fixture.T)
+
 
 if __name__ == "__main__":
     _ = unittest.main()

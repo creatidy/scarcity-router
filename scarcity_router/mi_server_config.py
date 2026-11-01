@@ -97,16 +97,19 @@ class MIServerConfig:
     reference: CutReference
     publication: Path
     max_bytes: int
+    trust_digest: str
 
     def activate(self, store: ServerStore) -> MIServer:
         """Validate a candidate against the durable prior cut before publishing it."""
         try:
             data = _read_regular(self.publication, self.max_bytes)
-            record = canonical({"reference": asdict(self.reference), "data": base64.b64encode(data).decode("ascii")})
+            record = canonical({"reference": asdict(self.reference), "data": base64.b64encode(data).decode("ascii"),
+                                "trust_digest": self.trust_digest})
 
             def validate(previous: bytes | None) -> None:
                 if previous is not None:
-                    old = _object(cast(object, json.loads(previous)), frozenset({"reference", "data"}))
+                    old = _object(cast(object, json.loads(previous)), frozenset({"reference", "data", "trust_digest"}))
+                    _ = _text(old["trust_digest"])
                     ref = _object(old["reference"], frozenset({"format_version", "payload_schema", "sha256"}))
                     version = ref["format_version"]
                     if type(version) is not int:
@@ -222,6 +225,6 @@ def load_mi_server_config(path: Path) -> MIServerConfig:
         publication = Path(_text(root["publication"]))
         if not publication.is_absolute():
             raise ValueError("publication-path")
-        return MIServerConfig(consumer, reference, publication, max_bytes)
+        return MIServerConfig(consumer, reference, publication, max_bytes, hashlib.sha256(canonical(root)).hexdigest())
     except (OSError, ValueError, TypeError, KeyError, UnicodeError, RecursionError, OverflowError):
         raise ValueError("mi_server_configuration_invalid") from None
