@@ -89,9 +89,61 @@ class MIInstalledServerTests(unittest.TestCase):
             self.assertTrue(Path(installed_path).resolve().is_relative_to(venv.resolve()))
 
             data_dir = root / "state"
+            wrong_store_claim = subprocess.run(
+                [str(python), "-I", "-m", "scarcity_router.control_server", "--issue-bootstrap-claim"],
+                cwd=root, env=offline, capture_output=True, timeout=30, check=False,
+            )
+            self.assertEqual(0, wrong_store_claim.returncode, "default-store issuance failed")
+            wrong_claim = wrong_store_claim.stdout.decode().strip()
+            issued_claim = subprocess.run(
+                [str(python), "-I", "-m", "scarcity_router.control_server", "--data-dir", str(data_dir), "--issue-bootstrap-claim"],
+                cwd=root, env=offline, capture_output=True, timeout=30, check=False,
+            )
+            self.assertEqual(0, issued_claim.returncode, "installed claim issuance failed")
+            claim = issued_claim.stdout.decode().strip()
+            self.assertTrue(claim)
+            with socket.socket() as probe:
+                probe.bind(("127.0.0.1", 0))
+                bootstrap_port = cast(tuple[str, int], probe.getsockname())[1]
+            bootstrap_server = subprocess.Popen(
+                [str(python), "-I", "-m", "scarcity_router.control_server", "--port", str(bootstrap_port), "--data-dir", str(data_dir)],
+                cwd=root, env=offline, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            try:
+                deadline = time.monotonic() + 20
+                status = 0
+                while time.monotonic() < deadline:
+                    if bootstrap_server.poll() is not None:
+                        self.fail("installed bootstrap server exited before serving")
+                    connection = http.client.HTTPConnection("127.0.0.1", bootstrap_port, timeout=2)
+                    try:
+                        connection.request("POST", "/control/bootstrap/admin", body=json.dumps({
+                            "password": "synthetic-administrator-password", "confirm": True, "claim": wrong_claim,
+                        }), headers={"Content-Type": "application/json"})
+                        rejected = connection.getresponse()
+                        _ = rejected.read()
+                        self.assertEqual(401, rejected.status)
+                        connection.request("POST", "/control/bootstrap/admin", body=json.dumps({
+                            "password": "synthetic-administrator-password", "confirm": True, "claim": claim,
+                        }), headers={"Content-Type": "application/json"})
+                        reply = connection.getresponse()
+                        _ = reply.read()
+                        status = reply.status
+                        break
+                    except OSError:
+                        time.sleep(0.05)
+                    finally:
+                        connection.close()
+                self.assertEqual(200, status)
+            finally:
+                bootstrap_server.send_signal(signal.SIGINT)
+                try:
+                    _ = bootstrap_server.wait(timeout=20)
+                except subprocess.TimeoutExpired:
+                    bootstrap_server.kill()
+                    _ = bootstrap_server.wait(timeout=10)
             store = ServerStore.open(data_dir)
             plane = ControlPlane(store=store, pbkdf2_iterations=1000)
-            plane.service_bootstrap_admin(password="synthetic-administrator-password", confirm=True)
             issued = plane.service_issue_client_key({"label": "synthetic-acceptance"})
             client_key = cast(str, issued["api_key"])
             plane.close_worker_store()

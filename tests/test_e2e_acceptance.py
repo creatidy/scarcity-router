@@ -474,7 +474,9 @@ class RestartPersistenceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as parent:
             data_dir = Path(parent) / "server"
             store = ServerStore.open(data_dir)
-            from scarcity_router.control_api import ControlPlane
+            from scarcity_router.control_api import ControlPlane, hash_token
+
+            _ = store.provision_admin_claim(token_hash=hash_token("synthetic-claim"), expires_at="9999-01-01T00:00:00.000Z")
 
             plane = ControlPlane(
                 store=store,
@@ -483,7 +485,7 @@ class RestartPersistenceTests(unittest.TestCase):
                 version="0.1.0.test",
             )
             _ = plane.service_bootstrap_admin(
-                password=FAKE_ADMIN_PASSWORD, confirm=True
+                password=FAKE_ADMIN_PASSWORD, confirm=True, claim="synthetic-claim"
             )
             _ = plane.service_add_provider(
                 {

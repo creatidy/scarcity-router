@@ -148,6 +148,8 @@ class CompositionStartupTests(unittest.TestCase):
                     self.assertEqual(401, response.status)
                     connection.close()
                     # Onboarding, then a client key, then the control API.
+                    from scarcity_router.control_api import hash_token
+                    _ = store.provision_admin_claim(token_hash=hash_token("synthetic-claim"), expires_at="9999-01-01T00:00:00.000Z")
                     connection = http.client.HTTPConnection(
                         "127.0.0.1", port, timeout=10
                     )
@@ -158,6 +160,7 @@ class CompositionStartupTests(unittest.TestCase):
                             {
                                 "password": FAKE_ADMIN_PASSWORD,
                                 "confirm": True,
+                                "claim": "synthetic-claim",
                             }
                         ),
                         headers={"Content-Type": "application/json"},

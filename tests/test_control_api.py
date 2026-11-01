@@ -16,6 +16,7 @@ import hashlib
 import copy
 import http.client
 import json
+import threading
 import unittest
 from collections.abc import Callable
 from contextlib import AbstractContextManager
@@ -25,6 +26,7 @@ from typing import cast, override
 from unittest.mock import patch
 
 from scarcity_router.control_api import ControlPlane
+from scarcity_router.control_errors import ControlHTTPError
 from scarcity_router.errors import RemoteBridgeError
 from scarcity_router.gateway_contracts import GatewayError
 from scarcity_router.routing_core import AdministratorConstraints, ClientAuthorization, ClientRoutingProfile, CompatibilityCell
@@ -44,6 +46,7 @@ from tests.openai_http_fixtures import ScriptedProviderServer
 from tests.gateway_fixtures import observation, canonical, parse_chat_request
 from tests.server_fixtures import (
     FAKE_ADMIN_PASSWORD,
+    FAKE_ADMIN_CLAIM,
     FAKE_PROVIDER_SECRET,
     T_EVAL,
     ServerHarness,
@@ -60,6 +63,137 @@ def _csrf_headers(plane: ControlPlane, cookie: str) -> dict[str, str]:
 
 
 class FirstRunTests(ServerHarness):
+    def test_concurrent_bootstrap_has_one_winner(self) -> None:
+        from scarcity_router.control_api import hash_admin_password
+
+        barrier = threading.Barrier(2)
+        outcomes: list[str] = []
+
+        def synchronized_hash(password: str, *, iterations: int) -> tuple[str, str, int]:
+            _ = barrier.wait(timeout=10)
+            return hash_admin_password(password, iterations=iterations)
+
+        def claim() -> None:
+            try:
+                self.plane.service_bootstrap_admin(password=FAKE_ADMIN_PASSWORD, confirm=True, claim=FAKE_ADMIN_CLAIM)
+            except ControlHTTPError:
+                outcomes.append("refused")
+            else:
+                outcomes.append("accepted")
+
+        with patch("scarcity_router.control_api.hash_admin_password", synchronized_hash):
+            workers = [threading.Thread(target=claim) for _ in range(2)]
+            for worker in workers:
+                worker.start()
+            for worker in workers:
+                worker.join(timeout=15)
+        self.assertTrue(all(not worker.is_alive() for worker in workers))
+        self.assertCountEqual(["accepted", "refused"], outcomes)
+
+    def test_claim_required_expiry_and_reprovision(self) -> None:
+        from scarcity_router.control_api import hash_token
+
+        for claim in (None, "incorrect"):
+            status, _body, headers = self.exchange("POST", "/control/bootstrap/admin", {
+                "password": FAKE_ADMIN_PASSWORD, "confirm": True, "claim": claim,
+            })
+            self.assertEqual(401, status)
+            self.assertFalse(any(name.lower() == "set-cookie" for name, _ in headers))
+        self.assertTrue(self.plane.store.provision_admin_claim(
+            token_hash=hash_token(FAKE_ADMIN_CLAIM), expires_at="2026-09-16T12:00:00.000Z"))
+        status, _body, _headers = self.exchange("POST", "/control/bootstrap/admin", {
+            "password": FAKE_ADMIN_PASSWORD, "confirm": True,
+        })
+        self.assertEqual(401, status)
+        self.assertTrue(self.plane.store.provision_admin_claim(
+            token_hash=hash_token(FAKE_ADMIN_CLAIM), expires_at="9999-01-01T00:00:00.000Z"))
+        self.onboard(login=False)
+        self.assertFalse(self.plane.store.provision_admin_claim(
+            token_hash=hash_token("replacement"), expires_at="9999-01-01T00:00:00.000Z"))
+
+    def test_concurrent_http_claims_one_session(self) -> None:
+        from scarcity_router.control_api import hash_admin_password
+
+        barrier = threading.Barrier(2)
+        responses: list[tuple[int, object, list[tuple[str, str]]]] = []
+
+        def synchronized_hash(password: str, *, iterations: int) -> tuple[str, str, int]:
+            _ = barrier.wait(timeout=10)
+            return hash_admin_password(password, iterations=iterations)
+
+        def request() -> None:
+            responses.append(self.exchange("POST", "/control/bootstrap/admin", {
+                "password": FAKE_ADMIN_PASSWORD, "confirm": True,
+            }))
+
+        with patch("scarcity_router.control_api.hash_admin_password", synchronized_hash):
+            workers = [threading.Thread(target=request) for _ in range(2)]
+            for worker in workers:
+                worker.start()
+            for worker in workers:
+                worker.join(timeout=15)
+        self.assertTrue(all(not worker.is_alive() for worker in workers))
+        self.assertCountEqual([200, 401], [response[0] for response in responses])
+        self.assertEqual(1, sum(name.lower() == "set-cookie" for _, _, headers in responses for name, _ in headers))
+
+    def test_claim_survives_failed_transaction_and_restart(self) -> None:
+        from scarcity_router.control_api import hash_token
+        from scarcity_router.server_store import ServerStoreError
+
+        store = self.plane.store
+        connection = store._connection  # pyright: ignore[reportPrivateUsage]
+        _ = connection.execute(
+            "CREATE TRIGGER fail_bootstrap BEFORE INSERT ON administrator_identity "
+            + "BEGIN SELECT RAISE(ABORT, 'synthetic failure'); END"
+        )
+        with self.assertRaises(ServerStoreError):
+            _ = store.consume_admin_claim(token_hash=hash_token(FAKE_ADMIN_CLAIM),
+                password_salt_hex="aa", password_hash_hex="bb", pbkdf2_iterations=1000,
+                at="2026-09-16T12:00:00.000Z")
+        _ = connection.execute("DROP TRIGGER fail_bootstrap")
+        self.assertIsNone(store.admin_identity())
+        from scarcity_router.server_store import ServerStore
+        other = ServerStore.open(self.data_dir)
+        try:
+            self.assertTrue(other.consume_admin_claim(token_hash=hash_token(FAKE_ADMIN_CLAIM),
+                password_salt_hex="aa", password_hash_hex="bb", pbkdf2_iterations=1000,
+                at="2026-09-16T12:00:00.000Z"))
+            self.assertFalse(store.consume_admin_claim(token_hash=hash_token(FAKE_ADMIN_CLAIM),
+                password_salt_hex="cc", password_hash_hex="dd", pbkdf2_iterations=1000,
+                at="2026-09-16T12:00:00.000Z"))
+            identity = store.admin_identity()
+            assert identity is not None
+            self.assertEqual("bb", identity.password_hash_hex)
+        finally:
+            other.close()
+
+    def test_two_store_instances_compete_for_same_claim(self) -> None:
+        from scarcity_router.control_api import hash_token
+        from scarcity_router.server_store import ServerStore
+
+        other = ServerStore.open(self.data_dir)
+        barrier = threading.Barrier(2)
+        results: list[bool] = []
+
+        def consume(store: ServerStore, password_hash: str) -> None:
+            _ = barrier.wait(timeout=10)
+            results.append(store.consume_admin_claim(
+                token_hash=hash_token(FAKE_ADMIN_CLAIM), password_salt_hex="aa",
+                password_hash_hex=password_hash, pbkdf2_iterations=1000,
+                at="2026-09-16T12:00:00.000Z"))
+
+        workers = [threading.Thread(target=consume, args=(store, str(index)))
+                   for index, store in enumerate((self.plane.store, other))]
+        try:
+            for worker in workers:
+                worker.start()
+            for worker in workers:
+                worker.join(timeout=15)
+            self.assertTrue(all(not worker.is_alive() for worker in workers))
+            self.assertCountEqual([True, False], results)
+        finally:
+            other.close()
+
     def test_no_admin_configured_forces_onboarding(self) -> None:
         status, _payload, _headers = self.exchange("GET", "/control/state")
         self.assertEqual(401, status)

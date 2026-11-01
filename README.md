@@ -416,11 +416,18 @@ table and measured first-run steps live in
 
 ```bash
 docker build -t scarcity-router .
-docker compose up -d          # examples/docker-compose.yml, loopback default
+docker compose -f examples/docker-compose.yml up -d  # loopback default
+# In a private terminal, issue a 15-minute claim against the running /data store:
+docker compose -f examples/docker-compose.yml exec scarcity-router python -m scarcity_router.control_server --data-dir /data --issue-bootstrap-claim
 # open http://127.0.0.1:8787/admin and complete first-run onboarding:
-# create the administrator password -> add a provider endpoint ->
+# enter the claim and create the administrator password -> add a provider endpoint ->
 # add a resource -> issue a client key (shown exactly once)
 ```
+
+Keep the claim out of logs and shared channels. For recovery before an
+administrator exists, issue a new claim against the same store. Custom
+installations must use their running server's actual `--data-dir`; see
+[`docs/control-surface.md`](docs/control-surface.md#first-run-state-and-administrator-onboarding).
 
 Defaults are loopback-only. LAN/VPN exposure requires verified TLS
 certificates (`--host 0.0.0.0 --tls-certfile ... --tls-keyfile ...`) — the

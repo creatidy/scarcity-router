@@ -98,17 +98,18 @@ installs the default user policy; `scarcity-router-mcp` needs no flags.
 ### Server (container)
 
 1. `docker build -t scarcity-router .` (pre-release; post-release the image comes from GHCR by tag)
-2. `docker compose up -d` (loopback default)
-3. Open `http://127.0.0.1:8787/admin`
-4. Create the administrator password (forced onboarding form)
+2. `docker compose -f examples/docker-compose.yml up -d` (loopback default)
+3. In a private terminal, issue a 15-minute claim against the running volume:
+   `docker compose -f examples/docker-compose.yml exec scarcity-router python -m scarcity_router.control_server --data-dir /data --issue-bootstrap-claim`
+4. Open `http://127.0.0.1:8787/admin`, enter the claim and create the administrator password
 5. Add a provider endpoint (+ credential) — Providers page
 6. Add a resource bound to that endpoint — Resources page
 7. Issue a client key — Clients page (revealed exactly once)
 8. Point an OpenAI-compatible client at the server (base URL, key, alias
    or `sr-pin:` reference — copyable from the UI)
 
-**Measured friction: 8 steps** (3 commands/forms are copy-paste from the
-docs; the UI is server-rendered HTML with no JavaScript requirement).
+**Current sequence: 8 steps.** Claim issuance is a new security step, not
+part of the earlier measured walkthrough; the UI remains server-rendered HTML.
 
 Friction notes (measured, deliberate):
 

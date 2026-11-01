@@ -19,6 +19,7 @@ from scarcity_router.model_inventory import DiscoveredModel, ModelInventoryRepor
 
 from tests.server_fixtures import (
     FAKE_ADMIN_PASSWORD,
+    FAKE_ADMIN_CLAIM,
     FAKE_PROVIDER_SECRET,
     ServerHarness,
 )
@@ -37,8 +38,12 @@ class _UiSession:
 
 
 def _form(port: int, path: str, fields: dict[str, str], cookie: str | None) -> tuple[int, str, list[tuple[str, str]]]:
+    if path == "/admin/onboarding":
+        fields = {"claim": FAKE_ADMIN_CLAIM, **fields}
     body = urllib.parse.urlencode(fields).encode("utf-8")
     headers = {"Content-Type": "application/x-www-form-urlencoded"}
+    if path == "/admin/onboarding":
+        headers["Origin"] = f"http://127.0.0.1:{port}"
     if cookie:
         headers["Cookie"] = cookie
     connection = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
@@ -74,6 +79,22 @@ def _csrf_of(html: str) -> str:
 
 
 class OnboardingFlowTests(ServerHarness):
+    def test_first_run_identifies_same_store_requirement(self) -> None:
+        status, html, _headers = _get(self.port, "/admin/onboarding", None)
+        self.assertEqual(200, status)
+        self.assertIn("--data-dir /path/to/server-data", html)
+        self.assertIn("different directory will not work", html)
+        self.assertNotIn(str(self.data_dir), html)
+
+    def test_cross_origin_onboarding_refused_without_session(self) -> None:
+        body = urllib.parse.urlencode({"claim": FAKE_ADMIN_CLAIM,
+            "password": FAKE_ADMIN_PASSWORD, "confirm": "yes"}).encode()
+        status, _body, headers = self.exchange("POST", "/admin/onboarding", raw_body=body,
+            headers={"Content-Type": "application/x-www-form-urlencoded", "Origin": "https://attacker.invalid"})
+        self.assertEqual(403, status)
+        self.assertFalse(any(name.lower() == "set-cookie" for name, _ in headers))
+        self.assertFalse(self.plane.admin_configured())
+
     def test_first_run_renders_onboarding_then_dashboard(self) -> None:
         status, html, _headers = _get(self.port, "/", None)
         self.assertEqual(303, status)

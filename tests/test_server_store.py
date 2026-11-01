@@ -1523,7 +1523,7 @@ import os, sqlite3, sys
 c = sqlite3.connect(sys.argv[1])
 assert c.execute('PRAGMA journal_mode=WAL').fetchone() == ('wal',)
 if sys.argv[2] == 'future':
-    c.execute("INSERT INTO schema_migrations VALUES (4, 'synthetic')")
+    c.execute("INSERT INTO schema_migrations VALUES (?, 'synthetic')", (int(sys.argv[3]),))
 else:
     c.execute('DELETE FROM schema_migrations WHERE version=1')
 c.commit()
@@ -1540,7 +1540,7 @@ os._exit(0)
                     store.append_audit_record(payload={"pin": "synthetic-pin"}, recorded_at=T0,
                                              max_records=100, max_age_seconds=1000)
                     store.close()
-                    _ = subprocess.run([sys.executable, "-c", writer, str(path), damage],
+                    _ = subprocess.run([sys.executable, "-c", writer, str(path), damage, str(STORE_SCHEMA_VERSION + 1)],
                                        env={"PATH": os.defpath, "HOME": parent, "TMPDIR": parent},
                                        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
                     wal = Path(str(path) + "-wal")
