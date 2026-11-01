@@ -8,7 +8,7 @@ from dataclasses import replace
 from typing import cast
 from unittest.mock import patch
 
-from scarcity_router.control_api import ProducerCursor, ProducerEventSnapshot
+from scarcity_router.control_api import ProducerCursor, ProducerEvent, ProducerEventSnapshot
 from scarcity_router.capacity import CapacityDiagnostic, CapacityWindow
 from scarcity_router.errors import CapacityValidationError
 from scarcity_router.execution_sources import SourceRegistry
@@ -339,25 +339,45 @@ class ProducerEventTests(ServerHarness):
         replay = self.plane.producer_replay(initial.cursor)
         self.assertEqual(2, len(replay.events))
         self.assertEqual(replay.events, self.plane.producer_replay(initial.cursor).events)
-        sequence = initial.cursor.sequence
+        cursor = initial.cursor
         document = cast("dict[str, object]", json.loads(initial.payload))
         self.assertEqual(1, document["schema_version"])
         self.assertEqual("execution_gateway", document["mode"])
+
+        def deliver(event: ProducerEvent) -> bool:
+            nonlocal cursor, document
+            if event.cursor.epoch != cursor.epoch:
+                return False
+            if event.cursor.sequence <= cursor.sequence:
+                return True
+            if event.cursor.sequence != cursor.sequence + 1:
+                return False
+            document = cast("dict[str, object]", json.loads(event.payload))
+            cursor = event.cursor
+            return True
+
+        before_document = document.copy()
         reordered = replay.events[1]
-        self.assertGreater(reordered.cursor.sequence, sequence + 1)
-        # The consumer rejects an out-of-order delivery and resumes from its
-        # last applied cursor instead of accepting a gap as complete history.
-        recovered = self.plane.producer_replay(initial.cursor)
+        if not deliver(reordered):
+            self.assertEqual(initial.cursor, cursor)
+            self.assertEqual(before_document, document)
+            recovered = self.plane.producer_replay(cursor)
+        else:
+            self.fail("out-of-order event was accepted")
         self.assertIsNone(recovered.resync)
         self.assertEqual(replay.events, recovered.events)
-        for event in (recovered.events[0], recovered.events[0], recovered.events[1], reordered):
-            if event.cursor.sequence <= sequence:
-                continue
-            self.assertEqual(sequence + 1, event.cursor.sequence)
-            document = cast("dict[str, object]", json.loads(event.payload))
-            sequence = event.cursor.sequence
+        self.assertTrue(deliver(recovered.events[0]))
+        after_first, first_cursor = document.copy(), cursor
+        self.assertTrue(deliver(recovered.events[0]))
+        self.assertEqual(first_cursor, cursor)
+        self.assertEqual(after_first, document)
+        self.assertTrue(deliver(recovered.events[1]))
+        after_recovery, recovered_cursor = document.copy(), cursor
+        self.assertTrue(deliver(reordered))
+        self.assertEqual(recovered_cursor, cursor)
+        self.assertEqual(after_recovery, document)
         current = self.plane.producer_event_snapshot()
-        self.assertEqual(current.cursor.sequence, sequence)
+        self.assertEqual(current.cursor, cursor)
         self.assertEqual(json.loads(current.payload), document)
 
     def test_consumer_reconstructs_partial_failure_usage_and_source_inventory(self) -> None:
