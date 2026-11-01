@@ -345,7 +345,12 @@ class ProducerEventTests(ServerHarness):
         self.assertEqual("execution_gateway", document["mode"])
         reordered = replay.events[1]
         self.assertGreater(reordered.cursor.sequence, sequence + 1)
-        for event in (replay.events[0], replay.events[0], replay.events[1]):
+        # The consumer rejects an out-of-order delivery and resumes from its
+        # last applied cursor instead of accepting a gap as complete history.
+        recovered = self.plane.producer_replay(initial.cursor)
+        self.assertIsNone(recovered.resync)
+        self.assertEqual(replay.events, recovered.events)
+        for event in (recovered.events[0], recovered.events[0], recovered.events[1], reordered):
             if event.cursor.sequence <= sequence:
                 continue
             self.assertEqual(sequence + 1, event.cursor.sequence)
@@ -354,6 +359,61 @@ class ProducerEventTests(ServerHarness):
         current = self.plane.producer_event_snapshot()
         self.assertEqual(current.cursor.sequence, sequence)
         self.assertEqual(json.loads(current.payload), document)
+
+    def test_consumer_reconstructs_partial_failure_usage_and_source_inventory(self) -> None:
+        self.plane._registry_clock = lambda: NOW  # pyright: ignore[reportPrivateUsage]
+        identities = tuple(ResourceIdentity(resource_id, "local_app_adapter", "ollama", resource_id, "local_ungated")
+                           for resource_id in ("healthy", "failed", "unknown", "disabled"))
+        resources = tuple(ResourceConfig(ResourceRegistration(identity, freshness_ttl_seconds=60),
+                                         enabled=identity.resource_id != "disabled") for identity in identities)
+        source = SourceConfig("owned", "codex_subscription", "Owned", "worker-1", allowed_models=("allowed",))
+        inventory = ModelInventoryReport(worker_id="worker-1", sources=(SourceInventory(
+            source_id="owned", adapter_id="codex:owned", kind="codex_subscription", observed_at=NOW,
+            auth_state="authenticated", runtime_name="codex", runtime_version="1",
+            models=(DiscoveredModel("allowed", ("high",)),),
+        ),))
+        baseline = self.plane.producer_event_snapshot()
+        fact = QuotaFact(observation_class="provider_telemetry", window=CapacityWindow.from_dict({
+            "resource": "tokens", "kind": "five_hour", "duration_seconds": 18000,
+            "used_percent": 6, "remaining_percent": 94, "resets_at": FUTURE,
+        }))
+        healthy = ResourceStateSnapshot(schema_version=1, identity=identities[0], observed_at=NOW,
+                                        health=ResourceHealth(status="ok"), quota_facts=(fact,))
+        failed = ResourceStateSnapshot(
+            schema_version=1, identity=identities[1], observed_at=NOW,
+            health=ResourceHealth(status="unavailable", diagnostics=(CapacityDiagnostic("source_unavailable"),)),
+        )
+        with patch.object(self.plane, "_worker_id_exists", return_value=True):
+            self.plane._save_config(ServerConfiguration(resources=resources, sources=(source,)))  # pyright: ignore[reportPrivateUsage]
+            self.plane._apply_source_inventory(inventory)  # pyright: ignore[reportPrivateUsage]
+        self.plane.apply_resource_observation(healthy)
+        self.plane.apply_resource_observation(failed)
+        replay = self.plane.producer_replay(baseline.cursor)
+        self.assertIsNone(replay.resync)
+        self.assertTrue(replay.provenance_current)
+        self.assertGreaterEqual(len(replay.events), 4)
+        for previous, event in zip((baseline.cursor.sequence, *(e.cursor.sequence for e in replay.events[:-1])), replay.events):
+            self.assertEqual(previous + 1, event.cursor.sequence)
+        document = cast("dict[str, object]", json.loads(replay.events[-1].payload))
+        self.assertEqual(1, document["schema_version"])
+        self.assertEqual("execution_gateway", document["mode"])
+        entries = cast("list[dict[str, object]]", document["resources"])
+        by_id = {cast("dict[str, object]", entry["identity"])["resource_id"]: entry for entry in entries}
+        self.assertEqual("ok", by_id["healthy"]["health"])
+        facts = cast("list[dict[str, object]]", by_id["healthy"]["quota_facts"])
+        self.assertEqual("provider_telemetry", facts[0]["observation_class"])
+        self.assertEqual(6, cast("dict[str, object]", facts[0]["window"])["used_percent"])
+        self.assertEqual("unavailable", by_id["failed"]["health"])
+        self.assertEqual("unavailable", by_id["failed"]["availability"])
+        self.assertEqual("unknown", by_id["unknown"]["availability"])
+        self.assertEqual("disabled", by_id["disabled"]["availability"])
+        self.assertEqual("source", by_id["owned:allowed:high"]["origin"])
+        self.assertEqual(False, by_id["owned:allowed:high"]["worker_connected"])
+        sources = cast("list[dict[str, object]]", document["sources"])
+        self.assertEqual("unknown", sources[0]["inventory_freshness"])
+        discoveries = cast("list[dict[str, object]]", document["discoveries"])
+        self.assertEqual("routable", discoveries[0]["state"])
+        self.assertEqual(json.loads(self.plane.producer_event_snapshot().payload), document)
 
     def test_new_epoch_between_position_check_and_replay_fences_old_producer(self) -> None:
         cursor = self.plane.producer_event_snapshot().cursor
