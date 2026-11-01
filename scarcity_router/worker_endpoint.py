@@ -76,6 +76,7 @@ from .resource_state import (
     ResourceStateSnapshot,
     WorkerStateReport,
 )
+from .server_store import ServerStoreError
 from .worker_identity_store import (
     ERR_CREDENTIAL_REVOKED,
     ERR_PAIRING_EXPIRED,
@@ -447,13 +448,16 @@ class WorkerSession:
         (in-process ``attach_transport`` sessions that never
         authenticated) is a no-op by ``dict.pop`` semantics.
         """
-        with self._endpoint._lock:  # pyright: ignore[reportPrivateUsage] - same-program endpoint seam
-            if self._state.closed:
-                return
-            self._state.closed = True
-            pending = list(self._state.pending.values())
-            self._state.pending.clear()
-            _ = self._endpoint._sessions.pop(id(self), None)  # pyright: ignore[reportPrivateUsage] - same-program endpoint seam
+        with self._endpoint.publication_lock:
+            self._endpoint.connection_changed()
+            with self._endpoint._lock:  # pyright: ignore[reportPrivateUsage] - same-program endpoint seam
+                if self._state.closed:
+                    return
+                self._state.closed = True
+                pending = list(self._state.pending.values())
+                self._state.pending.clear()
+                _ = self._endpoint._sessions.pop(id(self), None)  # pyright: ignore[reportPrivateUsage] - same-program endpoint seam
+            self._endpoint.connection_changed()
         for attempt in pending:
             attempt.resolve_interrupted(note or "session closed")
         try:
@@ -538,10 +542,13 @@ class WorkerSession:
             self._send_error(ErrorMessage(code=code, message=exc.message, fatal=True))
             self.close(note=f"pairing rejected: {exc.code}")
             return
-        with endpoint._lock:  # pyright: ignore[reportPrivateUsage] - same-program endpoint seam
-            self._state.worker_id = worker_id
-            self._state.authenticated = True
-            endpoint._sessions[id(self)] = self  # pyright: ignore[reportPrivateUsage] - same-program endpoint seam
+        with endpoint.publication_lock:
+            endpoint.connection_changed()
+            with endpoint._lock:  # pyright: ignore[reportPrivateUsage] - same-program endpoint seam
+                self._state.worker_id = worker_id
+                self._state.authenticated = True
+                endpoint._sessions[id(self)] = self  # pyright: ignore[reportPrivateUsage] - same-program endpoint seam
+            endpoint.connection_changed()
         endpoint.record_connected(worker_id)
         self._state.writer.write_message(
             PairResultMessage(
@@ -561,10 +568,13 @@ class WorkerSession:
             self._send_error(ErrorMessage(code=code, message=exc.message, fatal=True))
             self.close(note=f"authentication rejected: {code}")
             return
-        with endpoint._lock:  # pyright: ignore[reportPrivateUsage] - same-program endpoint seam
-            self._state.worker_id = hello.worker_id
-            self._state.authenticated = True
-            endpoint._sessions[id(self)] = self  # pyright: ignore[reportPrivateUsage] - same-program endpoint seam
+        with endpoint.publication_lock:
+            endpoint.connection_changed()
+            with endpoint._lock:  # pyright: ignore[reportPrivateUsage] - same-program endpoint seam
+                self._state.worker_id = hello.worker_id
+                self._state.authenticated = True
+                endpoint._sessions[id(self)] = self  # pyright: ignore[reportPrivateUsage] - same-program endpoint seam
+            endpoint.connection_changed()
         endpoint.record_connected(hello.worker_id)
         self._state.writer.write_message(
             HelloAckMessage(
@@ -688,6 +698,50 @@ class WorkerSession:
                     )
                     return
                 seen_source_ids.add(source_inventory.source_id)
+        # Configuration is authoritative even for newly discovered models.
+        # Recheck inside the atomic sink as well, since it can change here.
+        for snapshot in report.resources:
+            configured = endpoint.configured_owner(snapshot.identity.resource_id)
+            if configured != worker_id:
+                self._send_error(
+                    ErrorMessage(
+                        code=ERR_MALFORMED,
+                        message="resource "
+                        + repr(snapshot.identity.resource_id)
+                        + " is not configured for this worker; the report "
+                        + "was rejected",
+                        fatal=False,
+                    )
+                )
+                return
+        if endpoint.atomic_report_sink is not None:
+            failure: ErrorMessage | None = None
+            with endpoint.publication_lock:
+                try:
+                    applied_report = endpoint.atomic_report_sink(report, tuple(applied_inventories))
+                except ServerStoreError:
+                    failure = ErrorMessage(
+                        code=ERR_INTERNAL, message="resource state is temporarily unavailable", fatal=True,
+                    )
+                except (CapacityValidationError, ValueError) as exc:
+                    failure = ErrorMessage(
+                        code=ERR_MALFORMED, message=f"the state report was not applied: {exc}", fatal=False,
+                    )
+                else:
+                    with endpoint._lock:  # pyright: ignore[reportPrivateUsage]
+                        for snapshot in applied_report.resources:
+                            endpoint._observed_bindings[snapshot.identity.resource_id] = worker_id  # pyright: ignore[reportPrivateUsage]
+            if failure is not None:
+                if failure.fatal:
+                    try:
+                        self._send_error(failure)
+                    finally:
+                        self.close(note="resource state unavailable")
+                else:
+                    self._send_error(failure)
+                return
+            self._state.writer.write_message(StateReportAckMessage().to_payload())
+            return
         for inventory in applied_inventories:
             sink = endpoint.inventory_sink
             if sink is not None:
@@ -707,28 +761,6 @@ class WorkerSession:
                         )
                     )
                     return
-        # AUTHORIZATION (D-049 amendment): current administrator
-        # configuration is the only source of resource-to-worker
-        # ownership. Every reported resource must be configured to THIS
-        # authenticated worker (or derived from a source configured on
-        # it, D-053); otherwise the ENTIRE report is rejected
-        # fail-closed — the M01 registry and the observed/live bindings
-        # change nothing (atomic, matching apply_worker_report), so an
-        # unauthorized report can never overwrite a previously valid one.
-        for snapshot in report.resources:
-            configured = endpoint.configured_owner(snapshot.identity.resource_id)
-            if configured != worker_id:
-                self._send_error(
-                    ErrorMessage(
-                        code=ERR_MALFORMED,
-                        message="resource "
-                        + repr(snapshot.identity.resource_id)
-                        + " is not configured for this worker; the report "
-                        + "was rejected",
-                        fatal=False,
-                    )
-                )
-                return
         # D-053 reconciliation: a source worker honestly reports EVERY
         # model its runtime lists, but only ADOPTED models are registered
         # (restricted/unclassified models never materialize). A
@@ -966,6 +998,9 @@ class WorkerEndpoint:
         # (wired by the composed server; None means inventories are
         # accepted-and-dropped for v2 workers with no source domain).
         self.inventory_sink: Callable[[ModelInventoryReport], None] | None = None
+        self.atomic_report_sink: Callable[[WorkerStateReport, tuple[ModelInventoryReport, ...]], WorkerStateReport] | None = None
+        self.publication_lock: threading.RLock = threading.RLock()
+        self.connection_changed: Callable[[], None] = lambda: None
         #: D-053 seams (wired by the composed server): membership over the
         #: live M01 registry, and the source-derived-binding test for the
         #: authenticated worker. Defaults deny everything.

@@ -48,6 +48,7 @@ import hashlib
 import os
 import errno
 import re
+import secrets
 import shutil
 import sqlite3
 import stat
@@ -62,7 +63,7 @@ from typing import Callable, cast
 
 from .gateway_validation import v_safe_id, v_str
 
-STORE_SCHEMA_VERSION = 4
+STORE_SCHEMA_VERSION = 5
 
 STORE_FILE_NAME = "server-state.sqlite3"
 DATA_DIR_NAME = "scarcity-router"
@@ -231,9 +232,19 @@ MIGRATIONS: tuple[tuple[int, tuple[str, ...]], ...] = (
             "CREATE TABLE administrator_claim (id INTEGER PRIMARY KEY CHECK (id = 1), token_hash TEXT NOT NULL, expires_at TEXT NOT NULL)",
         ),
     ),
+    (
+        5,
+        (
+            "CREATE TABLE producer_stream (id INTEGER PRIMARY KEY CHECK (id = 1), epoch TEXT NOT NULL, sequence INTEGER NOT NULL, epoch_start INTEGER NOT NULL, retention_floor INTEGER NOT NULL)",
+            "CREATE TABLE producer_events (sequence INTEGER PRIMARY KEY, epoch TEXT NOT NULL, payload TEXT NOT NULL)",
+        ),
+    ),
 )
 
 _AUDIT_HARD_CAP = 100_000
+_PRODUCER_EVENT_LIMIT = 256
+_PRODUCER_EVENT_BYTES = 16 * 1024 * 1024
+_PRODUCER_RECORD_BYTES = 4 * 1024 * 1024
 _MI_RETAINED_BYTES = 128 * 1024 * 1024
 _RECOVERY_SLOT = ".store-recovery-candidate"
 _RECOVERY_CLAIM = ".store-recovery.claim"
@@ -1194,6 +1205,115 @@ class ServerStore:
                 "server store configuration document is corrupt"
             ) from exc
         return document
+
+    def start_producer_epoch(self) -> tuple[str, int]:
+        """Fence prior processes while retaining bounded historical records."""
+        epoch = secrets.token_hex(16)
+        with self._lock:
+            try:
+                _ = self._connection.execute("BEGIN IMMEDIATE")
+                row = _fetch_row(self._connection, "SELECT sequence FROM producer_stream WHERE id = 1")
+                sequence = 0 if row is None else cast(int, row["sequence"])
+                _ = self._connection.execute(
+                    "INSERT INTO producer_stream (id, epoch, sequence, epoch_start, retention_floor) VALUES (1, ?, ?, ?, ?) "
+                    + "ON CONFLICT(id) DO UPDATE SET epoch = excluded.epoch, epoch_start = excluded.epoch_start",
+                    (epoch, sequence, sequence, sequence),
+                )
+                _ = self._connection.execute("COMMIT")
+                return epoch, sequence
+            except sqlite3.Error:
+                if self._connection.in_transaction:
+                    _ = self._connection.execute("ROLLBACK")
+                raise ServerStoreError("producer epoch storage unavailable") from None
+
+    def append_producer_event(self, epoch: str, payload: str) -> int:
+        """Atomically append one bounded event and trim retained history."""
+        if type(payload) is not str or len(payload.encode("utf-8")) > _PRODUCER_RECORD_BYTES:
+            raise ServerStoreError("producer event exceeds storage bound")
+        with self._lock:
+            try:
+                _ = self._connection.execute("BEGIN IMMEDIATE")
+                row = _fetch_row(self._connection, "SELECT epoch, sequence FROM producer_stream WHERE id = 1")
+                if row is None or row["epoch"] != epoch:
+                    raise ServerStoreError("producer epoch no longer current")
+                sequence = cast(int, row["sequence"]) + 1
+                _ = self._connection.execute(
+                    "INSERT INTO producer_events (sequence, epoch, payload) VALUES (?, ?, ?)",
+                    (sequence, epoch, payload),
+                )
+                _ = self._connection.execute("UPDATE producer_stream SET sequence = ? WHERE id = 1", (sequence,))
+                while True:
+                    size = _fetch_row(self._connection, "SELECT COUNT(*) AS n, COALESCE(SUM(length(CAST(payload AS BLOB))), 0) AS size FROM producer_events")
+                    assert size is not None
+                    if cast(int, size["n"]) <= _PRODUCER_EVENT_LIMIT and cast(int, size["size"]) <= _PRODUCER_EVENT_BYTES:
+                        break
+                    oldest = _fetch_row(self._connection, "SELECT MIN(sequence) AS sequence FROM producer_events")
+                    assert oldest is not None
+                    discarded = cast(int, oldest["sequence"])
+                    _ = self._connection.execute("DELETE FROM producer_events WHERE sequence = ?", (discarded,))
+                    _ = self._connection.execute("UPDATE producer_stream SET retention_floor = ? WHERE id = 1", (discarded,))
+                _ = self._connection.execute("COMMIT")
+                return sequence
+            except sqlite3.Error:
+                if self._connection.in_transaction:
+                    _ = self._connection.execute("ROLLBACK")
+                raise ServerStoreError("producer event storage unavailable") from None
+            except Exception:
+                if self._connection.in_transaction:
+                    _ = self._connection.execute("ROLLBACK")
+                raise
+
+    def check_producer_position(self, epoch: str, sequence: int) -> None:
+        """Refuse a superseded writer or an unexpectedly advanced journal."""
+        with self._lock:
+            try:
+                row = _fetch_row(self._connection, "SELECT epoch, sequence FROM producer_stream WHERE id = 1")
+            except sqlite3.Error:
+                raise ServerStoreError("producer event storage unavailable") from None
+            if row is None or row["epoch"] != epoch or row["sequence"] != sequence:
+                raise ServerStoreError("producer position no longer current")
+
+    def read_producer_events(
+        self, epoch: str, after: int, *, owner_epoch: str | None = None, owner_sequence: int | None = None,
+    ) -> tuple[int, tuple[tuple[int, str], ...], str | None]:
+        """Read one stable retained range and classify resynchronization causes."""
+        if type(epoch) is not str or len(epoch) != 32 or any(ch not in "0123456789abcdef" for ch in epoch) or type(after) is not int or after < 0:
+            raise ServerStoreError("invalid producer cursor")
+        with self._lock:
+            try:
+                _ = self._connection.execute("BEGIN")
+                row = _fetch_row(self._connection, "SELECT epoch, sequence, epoch_start, retention_floor FROM producer_stream WHERE id = 1")
+                if row is None:
+                    raise ServerStoreError("producer epoch unavailable")
+                high = cast(int, row["sequence"])
+                if owner_epoch is not None and (row["epoch"] != owner_epoch or high != owner_sequence):
+                    raise ServerStoreError("producer position no longer current")
+                if row["epoch"] != epoch:
+                    _ = self._connection.execute("COMMIT")
+                    return high, (), "epoch_mismatch"
+                if after < cast(int, row["epoch_start"]) or after > high:
+                    _ = self._connection.execute("COMMIT")
+                    return high, (), "cursor_before_epoch" if after < cast(int, row["epoch_start"]) else "cursor_future"
+                if after < cast(int, row["retention_floor"]):
+                    _ = self._connection.execute("COMMIT")
+                    return high, (), "cursor_expired"
+                rows = _fetch_rows(self._connection, "SELECT sequence, payload FROM producer_events WHERE epoch = ? AND sequence > ? ORDER BY sequence", (epoch, after))
+                events = tuple((cast(int, event["sequence"]), cast(str, event["payload"])) for event in rows)
+                reason = None
+                if len(events) != high - after or any(
+                    sequence != after + index for index, (sequence, _) in enumerate(events, start=1)
+                ):
+                    reason = "history_gap"
+                _ = self._connection.execute("COMMIT")
+                return high, () if reason is not None else events, reason
+            except sqlite3.Error:
+                if self._connection.in_transaction:
+                    _ = self._connection.execute("ROLLBACK")
+                raise ServerStoreError("producer event storage unavailable") from None
+            except Exception:
+                if self._connection.in_transaction:
+                    _ = self._connection.execute("ROLLBACK")
+                raise
 
     def save_configuration_document(self, document: Mapping[str, object], at: str) -> None:
         """Atomically replace the authoritative configuration document."""
