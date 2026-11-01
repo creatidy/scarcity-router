@@ -89,6 +89,12 @@ class MIInstalledServerTests(unittest.TestCase):
             self.assertTrue(Path(installed_path).resolve().is_relative_to(venv.resolve()))
 
             data_dir = root / "state"
+            wrong_store_claim = subprocess.run(
+                [str(python), "-I", "-m", "scarcity_router.control_server", "--issue-bootstrap-claim"],
+                cwd=root, env=offline, capture_output=True, timeout=30, check=False,
+            )
+            self.assertEqual(0, wrong_store_claim.returncode, "default-store issuance failed")
+            wrong_claim = wrong_store_claim.stdout.decode().strip()
             issued_claim = subprocess.run(
                 [str(python), "-I", "-m", "scarcity_router.control_server", "--data-dir", str(data_dir), "--issue-bootstrap-claim"],
                 cwd=root, env=offline, capture_output=True, timeout=30, check=False,
@@ -111,6 +117,12 @@ class MIInstalledServerTests(unittest.TestCase):
                         self.fail("installed bootstrap server exited before serving")
                     connection = http.client.HTTPConnection("127.0.0.1", bootstrap_port, timeout=2)
                     try:
+                        connection.request("POST", "/control/bootstrap/admin", body=json.dumps({
+                            "password": "synthetic-administrator-password", "confirm": True, "claim": wrong_claim,
+                        }), headers={"Content-Type": "application/json"})
+                        rejected = connection.getresponse()
+                        _ = rejected.read()
+                        self.assertEqual(401, rejected.status)
                         connection.request("POST", "/control/bootstrap/admin", body=json.dumps({
                             "password": "synthetic-administrator-password", "confirm": True, "claim": claim,
                         }), headers={"Content-Type": "application/json"})

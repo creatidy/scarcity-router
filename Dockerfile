@@ -19,8 +19,10 @@
 #   docker build -t scarcity-router .
 #
 # Run (loopback-only personal deployment, host networking on Linux):
-#   docker run --rm --network host -v scarcity-router-data:/data scarcity-router
-#   # then open http://127.0.0.1:8787/admin and complete onboarding
+#   docker run -d --name scarcity-router --network host -v scarcity-router-data:/data scarcity-router
+#   # In a private terminal, issue a claim against the running /data volume:
+#   docker exec scarcity-router python -m scarcity_router.control_server --data-dir /data --issue-bootstrap-claim
+#   # Open http://127.0.0.1:8787/admin and enter the claim and password.
 #
 # The image is not published to any registry yet: the release workflow's
 # build-server-image job (linux/amd64) builds and offline-verifies this

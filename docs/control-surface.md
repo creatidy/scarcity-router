@@ -155,6 +155,14 @@ environment as the server (use its actual data directory if non-default):
 python -m scarcity_router.control_server --data-dir /path/to/server-data --issue-bootstrap-claim
 ```
 
+For the repository's Compose example, run from the repository root while the
+service is running, in a private terminal. The command explicitly targets the
+same `/data` volume as the running server:
+
+```sh
+docker compose -f examples/docker-compose.yml exec scarcity-router python -m scarcity_router.control_server --data-dir /data --issue-bootstrap-claim
+```
+
 This local administrative operation prints a random claim once to standard
 output, not to server logs or a URL. Run it in a private terminal; do not place
 its output in logs, shell history, tickets or other shared channels. It expires

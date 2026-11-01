@@ -79,6 +79,13 @@ def _csrf_of(html: str) -> str:
 
 
 class OnboardingFlowTests(ServerHarness):
+    def test_first_run_identifies_same_store_requirement(self) -> None:
+        status, html, _headers = _get(self.port, "/admin/onboarding", None)
+        self.assertEqual(200, status)
+        self.assertIn("--data-dir /path/to/server-data", html)
+        self.assertIn("different directory will not work", html)
+        self.assertNotIn(str(self.data_dir), html)
+
     def test_cross_origin_onboarding_refused_without_session(self) -> None:
         body = urllib.parse.urlencode({"claim": FAKE_ADMIN_CLAIM,
             "password": FAKE_ADMIN_PASSWORD, "confirm": "yes"}).encode()

@@ -15,7 +15,10 @@
 # 1. LOOPBACK-ONLY (default; Linux hosts). The server binds 127.0.0.1
 #    inside the host network namespace, so exactly the host itself can
 #    reach it — the same discipline as a bare-metal loopback install.
-#    Open http://127.0.0.1:8787/admin and complete onboarding.
+#    From the repository root, in a private terminal, issue a claim against
+#    this service's /data store (never place the output in logs):
+#      docker compose -f examples/docker-compose.yml exec scarcity-router python -m scarcity_router.control_server --data-dir /data --issue-bootstrap-claim
+#    Open http://127.0.0.1:8787/admin and enter the claim and password.
 #
 # 2. LAN / VPN EXPOSURE (any host). Any non-loopback bind REQUIRES
 #    verified TLS (D-044); the server refuses to start otherwise. Mount
