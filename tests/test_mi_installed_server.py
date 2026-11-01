@@ -5,6 +5,7 @@ from __future__ import annotations
 import http.client
 import json
 import os
+import re
 import shutil
 import signal
 import socket
@@ -22,30 +23,70 @@ from tests import test_mi_consumer as fixture
 from tests.test_mi_server_config import configuration
 
 ROOT = Path(__file__).resolve().parents[1]
+MI_COMMIT = "d65891668b7e79f7b666c021f02a1b4bf8c4ca9c"
+
+
+def uv_diagnostic(result: subprocess.CompletedProcess[bytes]) -> str:
+    """Show bounded diagnostics without URLs, filesystem paths or control codes."""
+    output = (result.stdout + b"\n" + result.stderr).decode("utf-8", errors="replace")[-4000:]
+    output = re.sub(r"https?://\S+", "<url>", output)
+    output = re.sub(r"(?<![\w])/(?:[^\s:/]+/)*[^\s:]*", "<path>", output)
+    output = "".join(c if c.isprintable() or c == "\n" else "?" for c in output)
+    return f"uv exit {result.returncode}:\n{output}"
 
 
 class MIInstalledServerTests(unittest.TestCase):
+    def test_uv_failure_diagnostics_redact_urls_and_paths(self) -> None:
+        result = subprocess.CompletedProcess([], 1, b"", b"error: https://user:secret@example.test/repo?token=secret /private/location/file\nBecause mcp was not found in the cache")
+        message = uv_diagnostic(result)
+        self.assertIn("mcp was not found in the cache", message)
+        self.assertNotIn("secret", message)
+        self.assertNotIn("/private/location", message)
+
     def test_installed_optional_dependency_and_authenticated_composed_server(self) -> None:
         uv = shutil.which("uv")
         assert uv is not None, "uv is required for installed-package acceptance"
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             env = {"HOME": str(root), "PATH": os.environ.get("PATH", os.defpath),
-                   "UV_CACHE_DIR": os.environ.get("UV_CACHE_DIR", str(Path.home() / ".cache" / "uv")),
-                   "UV_OFFLINE": "1", "UV_PYTHON_DOWNLOADS": "never", "UV_NO_PROGRESS": "1"}
+                   "UV_CACHE_DIR": str(root / "cache"), "UV_DEFAULT_INDEX": "https://pypi.org/simple",
+                   "UV_PYTHON_DOWNLOADS": "never", "UV_NO_PROGRESS": "1"}
+            offline = {**env, "UV_OFFLINE": "1"}
+            result = subprocess.run([uv, "export", "--locked", "--only-group", "dev", "--no-emit-project", "--no-hashes"],
+                                    cwd=ROOT, env=offline, capture_output=True, timeout=120, check=False)
+            self.assertEqual(0, result.returncode, uv_diagnostic(result))
+            constraints = root / "constraints.txt"
+            _ = constraints.write_bytes(result.stdout)
             wheel_dir = root / "wheel"
             result = subprocess.run([uv, "build", "--wheel", "--out-dir", str(wheel_dir)],
                                     cwd=ROOT, env=env, capture_output=True, timeout=120, check=False)
-            self.assertEqual(0, result.returncode, "offline wheel build failed")
+            self.assertEqual(0, result.returncode, uv_diagnostic(result))
             wheel = next(wheel_dir.glob("*.whl"))
+            preparation = root / "preparation"
+            result = subprocess.run([uv, "venv", "--python", sys.executable, str(preparation)],
+                                    env=env, capture_output=True, timeout=120, check=False)
+            self.assertEqual(0, result.returncode, uv_diagnostic(result))
+            result = subprocess.run([uv, "pip", "install", "--python", str(preparation / "bin" / "python"),
+                                     "--constraint", str(constraints), f"{wheel}[mi]"],
+                                    env=env, capture_output=True, timeout=120, check=False)
+            self.assertEqual(0, result.returncode, uv_diagnostic(result))
             venv = root / "venv"
             result = subprocess.run([uv, "venv", "--python", sys.executable, str(venv)],
-                                    env=env, capture_output=True, timeout=120, check=False)
-            self.assertEqual(0, result.returncode, "temporary environment creation failed")
+                                    env=offline, capture_output=True, timeout=120, check=False)
+            self.assertEqual(0, result.returncode, uv_diagnostic(result))
             python = venv / "bin" / "python"
-            result = subprocess.run([uv, "pip", "install", "--python", str(python), f"{wheel}[mi]"],
-                                    env=env, capture_output=True, timeout=120, check=False)
-            self.assertEqual(0, result.returncode, "offline installed MI extra could not be resolved")
+            result = subprocess.run([uv, "pip", "install", "--python", str(python), "--constraint", str(constraints), f"{wheel}[mi]"],
+                                    env=offline, capture_output=True, timeout=120, check=False)
+            self.assertEqual(0, result.returncode, uv_diagnostic(result))
+            result = subprocess.run([str(python), "-c", "import importlib.metadata as m, json, model_intelligence; "
+                                     + "print(json.dumps([m.distribution('model-intelligence').read_text('direct_url.json'), model_intelligence.__file__]))"],
+                                    cwd=root, env=offline, capture_output=True, timeout=30, check=False)
+            self.assertEqual(0, result.returncode, uv_diagnostic(result))
+            provenance, installed_path = cast(list[str], json.loads(result.stdout))
+            direct = cast(dict[str, object], json.loads(provenance))
+            self.assertEqual("https://forgejo.creatidy.com/Creatidy/model-intelligence.git", direct["url"])
+            self.assertEqual(MI_COMMIT, cast(dict[str, str], direct["vcs_info"])["commit_id"])
+            self.assertTrue(Path(installed_path).resolve().is_relative_to(venv.resolve()))
 
             data_dir = root / "state"
             store = ServerStore.open(data_dir)
