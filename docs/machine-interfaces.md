@@ -822,6 +822,57 @@ MI #19 followed Router #176 and is now closed for installed explicit-input
 interoperability, not real-source positive admission. Automatic calibration and
 bootstrap replacement remain disabled.
 
+### Composed Server MI Opt-In (#238)
+
+The composed server does not load MI by default. Install the optional `mi`
+extra, then start `python -m scarcity_router.control_server --mi-config /absolute/path/trust.json`.
+The file is administrator-owned and separate from the publication; a digest
+carried only by the publication is never independent trust. Both files must be
+regular files, not symlinks, and are read with hard bounds. The config has
+exactly these keys:
+
+- `schema_version`: integer `1`.
+- `publication`: absolute local path to the MI artifact.
+- `reference`: exact `format_version`, `payload_schema`, and `sha256` supplied
+  through an independently trusted channel.
+- `scope`: exact `scope_id`, `channel`, `configuration` object and nonempty
+  `source_ids` array. Configuration includes explicit `reasoning_effort`.
+- `bindings`: nonempty array; each item has `identity` (Router `provider`,
+  `model`, `variant`), `subject` (MI `model_id`, `provider_id`,
+  `provider_model_id`, `physical_model_id`, `revision`, `channel`,
+  `interface_id`, `interface_provider_id`, `interface_version`, and
+  `configuration`), plus `dimension`, `meaning`, and `basis`. Use explicit
+  null for unknown optional subject fields; do not invent applicability.
+- `max_bytes`: publication bound from 1 through 16 MiB. The trust config itself
+  is limited to 256 KiB.
+
+An administrator can replace the trusted config and artifact, then send an
+authenticated, CSRF-protected `POST /control/mi/reload` with `{}`. No path or
+trust reference is accepted from the request. The update is checked against the
+previous durable cut before atomic replacement; failed reload retains the old
+cut, and in-flight decisions keep their captured snapshot. A second server
+sharing the store fails closed on new decisions after another server changes
+the cut until restarted or reloaded. An opted-in server fails startup when its
+configuration or publication cannot be trusted; omit `--mi-config` to run the
+unchanged standalone path.
+
+Authenticated `/v1/select`, simulation and executable selection expose only
+the utilization reference. The full MI decision, private routing context,
+manifest and content-addressed cut remain in the protected existing server
+store, not in the client response. They can be read by a trusted local store
+caller using `get_mi_receipt` and `get_retained_mi_cut` for offline verification.
+For execution, `get_mi_receipt_for_request` links the existing audit client and request IDs
+to the retained receipt without exposing private context to the inference client.
+The retained artifacts share a 128 MiB hard bound and are not automatically
+evicted; once full, MI decisions fail closed rather than returning unverifiable
+references. Operators must monitor store capacity and preserve retained
+provenance when managing server data. Store schema version 3 is an additive
+migration; backing up the server data before upgrade remains prudent.
+
+These mechanisms provide synthetic/offline verifiability, not source-owner
+review or live-provider evidence. Private source authorization and independently
+evidenced capabilities remain authoritative regardless of public MI facts.
+
 ### Opt-In MI Admission (#222)
 
 D-082 was explicitly owner-approved on 2026-10-26T22:57:22Z for implementation and

@@ -54,8 +54,11 @@ from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from http.cookies import SimpleCookie
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 from urllib.parse import parse_qsl
+
+if TYPE_CHECKING:
+    from .mi_server_config import MIServer
 
 from .diagnostics import (
     DiagnosticsReport,
@@ -343,9 +346,13 @@ class ControlPlane:
         ui_dispatcher: UiDispatcher | None = None,
         version: str | None = None,
         worker_identity_store: WorkerIdentityStore | None = None,
+        mi_server: MIServer | None = None,
+        mi_config_path: Path | None = None,
     ) -> None:
         self._ui_dispatcher = ui_dispatcher
         self._store = store
+        self._mi_server: MIServer | None = mi_server
+        self._mi_config_path: Path | None = mi_config_path
         self._catalog_path = catalog_path
         self._model_policy_path = model_policy_path
         self._collectors = collectors
@@ -891,10 +898,13 @@ class ControlPlane:
                     )
                 route_input = self._machine_route_request(parsed, client_id)
                 routed = route_request(route_input)
+                mi_reference = self._mi_server.retain(routed.mi_use) if self._mi_server is not None and routed.mi_use is not None else None
                 public_route = public_route_document(routed, route_input)
                 envelope = selection_envelope(routed.selection)
                 envelope["decision"] = public_route["selection"]
                 envelope["route"] = public_route
+                if mi_reference is not None:
+                    envelope["mi_utilization"] = mi_reference
                 self._send_json(handler, HTTPStatus.OK, envelope)
                 return
             parsed, overrides = parse_simulation_document(document)
@@ -906,7 +916,7 @@ class ControlPlane:
                 raise ControlHTTPError.invalid_request(
                     "legacy task profiles are unsupported; provide an explicit requirement"
                 )
-            if self.current_application().catalog.entries:
+            if self.current_application().catalog.entries or self._mi_server is not None:
                 route_input = self._machine_route_request(parsed, client_id)
                 baseline = route_request(route_input)
                 baseline_public = public_route_document(baseline, route_input)
@@ -931,6 +941,8 @@ class ControlPlane:
                 changed_input = replace(
                     route_input,
                     evaluated_at=simulated_at,
+                    mi_admission=(replace(route_input.mi_admission, evaluated_at=simulated_at)
+                                  if route_input.mi_admission is not None else None),
                     registry_snapshot=simulated_registry,
                     policy=overrides.selector_policy or route_input.policy,
                     replenishment_states=(overrides.replenishment_states
@@ -938,6 +950,11 @@ class ControlPlane:
                                           else route_input.replenishment_states),
                 )
                 simulated = route_request(changed_input)
+                mi_references: dict[str, object] | None = None
+                if self._mi_server is not None:
+                    assert baseline.mi_use is not None and simulated.mi_use is not None
+                    mi_references = {"baseline": self._mi_server.retain(baseline.mi_use),
+                                     "simulated": self._mi_server.retain(simulated.mi_use)}
                 result = SimulationResult(baseline.selection, simulated.selection, overrides)
                 envelope = simulation_envelope(result)
                 result_document = cast("dict[str, object]", envelope["result"])
@@ -945,6 +962,8 @@ class ControlPlane:
                 result_document["baseline"] = baseline_public["selection"]
                 result_document["simulated"] = simulated_public["selection"]
                 envelope["routes"] = {"baseline": baseline_public, "simulated": simulated_public}
+                if mi_references is not None:
+                    envelope["mi_utilization"] = mi_references
                 self._send_json(handler, HTTPStatus.OK, envelope)
                 return
             result = simulate_from_inputs(
@@ -997,6 +1016,7 @@ class ControlPlane:
             request=RequestBinding(),
             continuation_capable_resource_ids=continuation_capable,
             execution_assurances=execution_assurances(snapshot.entries, application.adapters, grant.strict_no_payg),
+            mi_admission=self._mi_server.admission(evaluated_at) if self._mi_server is not None else None,
             available_adapter_resource_ids=frozenset(
                 entry.identity.resource_id for entry in snapshot.entries
                 if application.adapters.supports_resource(entry.identity)
@@ -1106,6 +1126,18 @@ class ControlPlane:
             return
         mutating = method in ("POST", "PUT", "DELETE", "PATCH")
         token = self.require_admin_session(handler, mutating=mutating)
+        if parts == ["mi", "reload"] and method == "POST":
+            if self._mi_server is None or self._mi_config_path is None:
+                raise ControlHTTPError.not_found()
+            document = self._require_json_body(handler)
+            if document:
+                raise ControlHTTPError.invalid_request()
+            try:
+                self._mi_server.reload(self._mi_config_path)
+            except (ValueError, ServerStoreError):
+                raise ControlHTTPError.invalid_request("MI publication reload rejected; previous state retained") from None
+            self._send_json(handler, HTTPStatus.OK, {"status": "ok"})
+            return
         if parts == ["session"] and method == "DELETE":
             self._store.delete_session(hash_token(token))
             self._send_json(
@@ -2347,6 +2379,7 @@ class ControlPlane:
             clock=self._clock,
             continuations=self._continuations,
             continuation_capability_source=self._continuation_capable_resources,
+            mi_server=self._mi_server,
         )
 
     def _current_execution_authority(

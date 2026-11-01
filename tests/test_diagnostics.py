@@ -360,7 +360,7 @@ class DoctorCliTests(unittest.TestCase):
 
     def test_server_mode_reports_store_state(self) -> None:
         from scarcity_router.control_api import ControlPlane
-        from scarcity_router.server_store import ServerStore
+        from scarcity_router.server_store import STORE_SCHEMA_VERSION, ServerStore
 
         with tempfile.TemporaryDirectory() as parent:
             data_dir = Path(parent) / "server"
@@ -388,7 +388,7 @@ class DoctorCliTests(unittest.TestCase):
             self.assertEqual(0, code)
             self.assertIn("Administrator identity", output)
             self.assertIn("provider endpoint(s)", output)
-            self.assertIn("store schema version 2", output)
+            self.assertIn(f"store schema version {STORE_SCHEMA_VERSION}", output)
 
     def test_server_mode_json_and_missing_directory(self) -> None:
         with tempfile.TemporaryDirectory() as parent:

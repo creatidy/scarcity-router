@@ -31,6 +31,7 @@ from tests.openai_http_fixtures import ScriptedProviderServer, completion_frame
 from tests.test_gateway_server import ServerHarness, as_dict, as_list
 from tests.test_e2e_codex_acceptance import CodexComposedTlsWorld, chatgpt_scenario
 from tests.m10_codex_fixtures import PIN_MODEL, PROMPT, RESOURCE_ID, trace_events, trace_methods
+from tests.m10_fixtures import wait_until
 
 CANARY = "SYNTHETIC-RESPONSES-NOT-A-CREDENTIAL"
 FUNCTION: dict[str, object] = {"type": "function", "name": "read", "parameters": {"type": "object"}, "strict": False}
@@ -681,8 +682,12 @@ class ResponsesNativeContinuationTests(CodexComposedTlsWorld):
         worker.start()
         try:
             _ = self.wait_for_observation(RESOURCE_ID)
+            continuation_source = self.plane.current_application().continuation_capability_source
+            assert continuation_source is not None
             for permission in (False, True):
                 with self.subTest(permission=permission):
+                    wait_until(lambda: RESOURCE_ID in continuation_source(),
+                               timeout=45, message="worker continuation session did not reconnect")
                     status, payload, _headers = self.exchange(
                         "POST", "/v1/responses", {"model": PIN_MODEL, "input": PROMPT, "store": False,
                                                   "tools": [FUNCTION], "parallel_tool_calls": permission},
@@ -720,6 +725,8 @@ class ResponsesNativeContinuationTests(CodexComposedTlsWorld):
         worker.start()
         try:
             _ = self.wait_for_observation(RESOURCE_ID)
+            continuation_source = self.plane.current_application().continuation_capability_source
+            assert continuation_source is not None
             for stream in (False, True):
                 bodies: tuple[tuple[str, dict[str, object]], ...] = (
                     ("/v1/responses", {"model": PIN_MODEL, "input": PROMPT, "store": False, "stream": stream,
@@ -730,6 +737,8 @@ class ResponsesNativeContinuationTests(CodexComposedTlsWorld):
                 )
                 for path, body in bodies:
                     with self.subTest(stream=stream, path=path):
+                        wait_until(lambda: RESOURCE_ID in continuation_source(),
+                                   timeout=45, message="worker continuation session did not reconnect")
                         status, payload, _headers = self.exchange(
                             "POST", path, body, headers={"Authorization": f"Bearer {self.client_key}"}, timeout=60,
                         )

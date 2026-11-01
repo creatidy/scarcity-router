@@ -44,6 +44,7 @@ all threads (the server's durable writes are administrative and rare).
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import errno
 import re
@@ -61,7 +62,7 @@ from typing import Callable, cast
 
 from .gateway_validation import v_safe_id, v_str
 
-STORE_SCHEMA_VERSION = 2
+STORE_SCHEMA_VERSION = 3
 
 STORE_FILE_NAME = "server-state.sqlite3"
 DATA_DIR_NAME = "scarcity-router"
@@ -213,9 +214,21 @@ MIGRATIONS: tuple[tuple[int, tuple[str, ...]], ...] = (
             "DROP TABLE IF EXISTS worker_pairings",
         ),
     ),
+    # MI artifacts are optional and share the existing protected server store;
+    # absent opt-in leaves both tables empty. No separate evidence service exists.
+    (
+        3,
+        (
+            "CREATE TABLE mi_active_cut (id INTEGER PRIMARY KEY CHECK (id = 1), digest TEXT NOT NULL, payload BLOB NOT NULL)",
+            "CREATE TABLE mi_retained_cuts (digest TEXT PRIMARY KEY, payload BLOB NOT NULL)",
+            "CREATE TABLE mi_decision_receipts (receipt_id TEXT PRIMARY KEY, payload BLOB NOT NULL)",
+            "CREATE TABLE mi_request_receipts (client_id TEXT NOT NULL, request_id TEXT NOT NULL, receipt_id TEXT NOT NULL, PRIMARY KEY (client_id, request_id))",
+        ),
+    ),
 )
 
 _AUDIT_HARD_CAP = 100_000
+_MI_RETAINED_BYTES = 128 * 1024 * 1024
 _RECOVERY_SLOT = ".store-recovery-candidate"
 _RECOVERY_CLAIM = ".store-recovery.claim"
 _RECOVERY_NEXT = ".store-recovery.claim-next"
@@ -1202,6 +1215,123 @@ class ServerStore:
                 "SELECT updated_at FROM server_configuration WHERE id = 1"
             )
         return cast(str, row["updated_at"]) if row is not None else None
+
+    def replace_mi_cut(self, candidate: bytes, digest: str, validate: Callable[[bytes | None], None]) -> None:
+        """Validate against durable history and replace the current cut atomically."""
+        if (type(candidate) is not bytes or len(candidate) > _MI_RETAINED_BYTES
+                or len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest)
+                or hashlib.sha256(candidate).hexdigest() != digest):
+            raise ServerStoreError("MI retained cut exceeds storage bound")
+        with self._lock:
+            try:
+                _ = self._connection.execute("BEGIN IMMEDIATE")
+                row = _fetch_row(self._connection, "SELECT payload FROM mi_active_cut WHERE id = 1")
+                previous = cast(bytes, row["payload"]) if row is not None else None
+                validate(previous)
+                used_row = _fetch_row(self._connection, "SELECT (SELECT COALESCE(SUM(length(payload)), 0) FROM mi_decision_receipts) + (SELECT COALESCE(SUM(length(payload)), 0) FROM mi_retained_cuts) AS n")
+                assert used_row is not None
+                if int(cast(int, used_row["n"])) + len(candidate) > _MI_RETAINED_BYTES:
+                    raise ServerStoreError("MI retained storage limit reached")
+                _ = self._connection.execute(
+                    "INSERT INTO mi_active_cut (id, digest, payload) VALUES (1, ?, ?) "
+                    + "ON CONFLICT(id) DO UPDATE SET digest = excluded.digest, payload = excluded.payload", (digest, candidate),
+                )
+                _ = self._connection.execute("COMMIT")
+            except sqlite3.Error:
+                if self._connection.in_transaction:
+                    _ = self._connection.execute("ROLLBACK")
+                raise ServerStoreError("MI retained cut storage unavailable") from None
+            except Exception:
+                if self._connection.in_transaction:
+                    _ = self._connection.execute("ROLLBACK")
+                raise
+
+    def current_mi_cut_digest(self) -> str | None:
+        with self._lock:
+            row = _fetch_row(self._connection, "SELECT digest FROM mi_active_cut WHERE id = 1")
+        return cast(str, row["digest"]) if row is not None else None
+
+    def retain_mi_receipt(self, receipt_id: str, payload: bytes, cut_id: str | None, cut: bytes | None,
+                          request_id: str | None = None, client_id: str | None = None) -> None:
+        """Retain immutable private decision material or fail without eviction."""
+        if (len(receipt_id) != 64 or any(c not in "0123456789abcdef" for c in receipt_id)
+                or type(payload) is not bytes or len(payload) > _MI_RETAINED_BYTES
+                or (cut_id is None) != (cut is None)
+                or (cut_id is not None and (len(cut_id) != 64 or any(c not in "0123456789abcdef" for c in cut_id)))
+                or (cut is not None and (type(cut) is not bytes or len(cut) > _MI_RETAINED_BYTES
+                                         or hashlib.sha256(cut).hexdigest() != cut_id))):
+            raise ServerStoreError("invalid MI receipt")
+        if (request_id is None) != (client_id is None):
+            raise ServerStoreError("invalid MI request identity")
+        if request_id is not None and client_id is not None:
+            _ = v_safe_id(request_id, "mi_request_id")
+            _ = v_safe_id(client_id, "mi_client_id")
+        with self._lock:
+            try:
+                _ = self._connection.execute("BEGIN IMMEDIATE")
+                existing = _fetch_row(self._connection, "SELECT payload FROM mi_decision_receipts WHERE receipt_id = ?", (receipt_id,))
+                if existing is not None:
+                    if cast(bytes, existing["payload"]) != payload:
+                        raise ServerStoreError("MI receipt identity conflict")
+                    if cut_id is not None:
+                        prior_cut = _fetch_row(self._connection, "SELECT payload FROM mi_retained_cuts WHERE digest = ?", (cut_id,))
+                        if prior_cut is None or cast(bytes, prior_cut["payload"]) != cut:
+                            raise ServerStoreError("MI retained cut missing or inconsistent")
+                else:
+                    existing_cut = _fetch_row(self._connection, "SELECT payload FROM mi_retained_cuts WHERE digest = ?", (cut_id,)) if cut_id is not None else None
+                    if existing_cut is not None and cast(bytes, existing_cut["payload"]) != cut:
+                        raise ServerStoreError("MI cut identity conflict")
+                    row = _fetch_row(self._connection, "SELECT (SELECT COALESCE(SUM(length(payload)), 0) FROM mi_decision_receipts) + (SELECT COALESCE(SUM(length(payload)), 0) FROM mi_retained_cuts) AS n")
+                    active = _fetch_row(self._connection, "SELECT length(payload) AS n FROM mi_active_cut WHERE id = 1")
+                    assert row is not None
+                    used = int(cast(int, row["n"])) + (int(cast(int, active["n"])) if active is not None else 0)
+                    new_cut_size = len(cut) if cut is not None and existing_cut is None else 0
+                    if used + len(payload) + new_cut_size > _MI_RETAINED_BYTES:
+                        raise ServerStoreError("MI retained storage limit reached")
+                    if cut_id is not None and cut is not None and existing_cut is None:
+                        _ = self._connection.execute("INSERT INTO mi_retained_cuts (digest, payload) VALUES (?, ?)", (cut_id, cut))
+                    _ = self._connection.execute("INSERT INTO mi_decision_receipts (receipt_id, payload) VALUES (?, ?)", (receipt_id, payload))
+                if request_id is not None and client_id is not None:
+                    link = _fetch_row(self._connection, "SELECT receipt_id FROM mi_request_receipts WHERE client_id = ? AND request_id = ?", (client_id, request_id))
+                    if link is not None and cast(str, link["receipt_id"]) != receipt_id:
+                        raise ServerStoreError("MI request identity conflict")
+                    if link is None:
+                        count = _fetch_row(self._connection, "SELECT COUNT(*) AS n FROM mi_request_receipts")
+                        assert count is not None
+                        if int(cast(int, count["n"])) >= 100_000:
+                            raise ServerStoreError("MI retained request limit reached")
+                        _ = self._connection.execute("INSERT INTO mi_request_receipts (client_id, request_id, receipt_id) VALUES (?, ?, ?)", (client_id, request_id, receipt_id))
+                _ = self._connection.execute("COMMIT")
+            except sqlite3.Error:
+                if self._connection.in_transaction:
+                    _ = self._connection.execute("ROLLBACK")
+                raise ServerStoreError("MI receipt storage unavailable") from None
+            except Exception:
+                if self._connection.in_transaction:
+                    _ = self._connection.execute("ROLLBACK")
+                raise
+
+    def get_mi_receipt(self, receipt_id: str) -> bytes | None:
+        """Return retained private evidence only to an authorized local caller."""
+        if len(receipt_id) != 64 or any(c not in "0123456789abcdef" for c in receipt_id):
+            raise ServerStoreError("invalid MI receipt")
+        with self._lock:
+            row = _fetch_row(self._connection, "SELECT payload FROM mi_decision_receipts WHERE receipt_id = ?", (receipt_id,))
+        return cast(bytes, row["payload"]) if row is not None else None
+
+    def get_retained_mi_cut(self, digest: str) -> bytes | None:
+        if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
+            raise ServerStoreError("invalid MI cut digest")
+        with self._lock:
+            row = _fetch_row(self._connection, "SELECT payload FROM mi_retained_cuts WHERE digest = ?", (digest,))
+        return cast(bytes, row["payload"]) if row is not None else None
+
+    def get_mi_receipt_for_request(self, client_id: str, request_id: str) -> str | None:
+        _ = v_safe_id(client_id, "mi_client_id")
+        _ = v_safe_id(request_id, "mi_request_id")
+        with self._lock:
+            row = _fetch_row(self._connection, "SELECT receipt_id FROM mi_request_receipts WHERE client_id = ? AND request_id = ?", (client_id, request_id))
+        return cast(str, row["receipt_id"]) if row is not None else None
 
     # ── Administrator identity and sessions ──────────────────────────────
 
