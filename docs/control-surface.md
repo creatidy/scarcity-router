@@ -87,24 +87,26 @@ The internal producer event seam supplies a version-1 execution-gateway mode
 and resource snapshot and a durable
 `(epoch, sequence)` high-water from the same serialized cut. Events contain
 complete snapshots with observation and inventory timestamps. Equivalent
-refreshes do not produce events: the cursor also carries a snapshot-provenance
-digest, and a waiting or reconnecting consumer whose timestamp-only updates
-cannot be reconstructed receives `provenance_changed` plus a fresh snapshot.
-These provenance wakeups do not append duplicate journal events. The digest is a snapshot
-consistency token, not a durable event identity. Freshness boundaries are evaluated on producer
+refreshes do not produce events or wake waiters. The cursor also carries a
+snapshot-provenance digest: replay returns retained semantic events even if
+timestamps have since changed, and explicitly reports `provenance_current=false`
+when replay's timestamps are only last-known observations. A consumer needing
+exact current provenance can request a snapshot; the digest is a consistency
+token, not a durable event identity. Freshness boundaries are evaluated on producer
 access, mutation and a waiting consumer's deadline, without a polling daemon.
 Worker connection/disconnection, configuration, inventory and report changes
 participate in the same publication lock. A composed worker report stages its
 inventories and observations together, then commits one event; rejection or a
 failed journal write rolls back its in-memory state. A journal write failure
-fences the producer until restart rather than returning an untrustworthy cursor.
+fences producer reads until restart rather than returning an untrustworthy
+cursor; operational configuration changes and security revocations continue.
 
 The protected server store retains at most 256 events and 16 MiB total, with a
 4 MiB per-event bound. Event sequence is independent of audit and registry
 revisions. Expired cursors, missing sequences, future cursors and incompatible
 epochs return a resynchronization snapshot and an explicit reason
 (`cursor_expired`, `history_gap`, `cursor_future`, `cursor_before_epoch`,
-`epoch_mismatch`, `schema_mismatch` or `provenance_changed`). Malformed cursors
+`epoch_mismatch` or `schema_mismatch`). Malformed cursors
 are rejected. Every server start opens
 a new epoch: old event identities remain historical records, but a consumer
 resynchronizes rather than treating prior-epoch ephemeral observations as live.

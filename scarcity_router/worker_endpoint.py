@@ -76,6 +76,7 @@ from .resource_state import (
     ResourceStateSnapshot,
     WorkerStateReport,
 )
+from .server_store import ServerStoreError
 from .worker_identity_store import (
     ERR_CREDENTIAL_REVOKED,
     ERR_PAIRING_EXPIRED,
@@ -718,6 +719,10 @@ class WorkerSession:
             with endpoint.publication_lock:
                 try:
                     applied_report = endpoint.atomic_report_sink(report, tuple(applied_inventories))
+                except ServerStoreError:
+                    failure = ErrorMessage(
+                        code=ERR_INTERNAL, message="resource state is temporarily unavailable", fatal=True,
+                    )
                 except (CapacityValidationError, ValueError) as exc:
                     failure = ErrorMessage(
                         code=ERR_MALFORMED, message=f"the state report was not applied: {exc}", fatal=False,
@@ -727,7 +732,13 @@ class WorkerSession:
                         for snapshot in applied_report.resources:
                             endpoint._observed_bindings[snapshot.identity.resource_id] = worker_id  # pyright: ignore[reportPrivateUsage]
             if failure is not None:
-                self._send_error(failure)
+                if failure.fatal:
+                    try:
+                        self._send_error(failure)
+                    finally:
+                        self.close(note="resource state unavailable")
+                else:
+                    self._send_error(failure)
                 return
             self._state.writer.write_message(StateReportAckMessage().to_payload())
             return

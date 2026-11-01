@@ -331,18 +331,18 @@ def _producer_write(
         with self._state_lock:  # pyright: ignore[reportPrivateUsage]
             outer = self._publication_depth == 0  # pyright: ignore[reportPrivateUsage]
             if outer and self._producer_ready:  # pyright: ignore[reportPrivateUsage]
-                self._publish_producer_change()  # pyright: ignore[reportPrivateUsage]
+                self._publish_if_available()  # pyright: ignore[reportPrivateUsage]
             self._publication_depth += 1  # pyright: ignore[reportPrivateUsage]
             try:
                 result = method(self, *args, **kwargs)
             except Exception:
                 if outer and self._producer_ready:  # pyright: ignore[reportPrivateUsage]
-                    self._publish_producer_change()  # pyright: ignore[reportPrivateUsage]
+                    self._publish_if_available()  # pyright: ignore[reportPrivateUsage]
                 raise
             finally:
                 self._publication_depth -= 1  # pyright: ignore[reportPrivateUsage]
             if outer and self._producer_ready:  # pyright: ignore[reportPrivateUsage]
-                self._publish_producer_change()  # pyright: ignore[reportPrivateUsage]
+                self._publish_if_available()  # pyright: ignore[reportPrivateUsage]
             return result
     return locked
 
@@ -373,6 +373,7 @@ class ProducerReplay:
     events: tuple[ProducerEvent, ...]
     resync: ProducerEventSnapshot | None
     reason: str | None
+    provenance_current: bool
 
 
 @dataclass(frozen=True)
@@ -864,17 +865,25 @@ class ControlPlane:
         try:
             self._store.check_producer_position(self._producer_epoch, self._producer_sequence)
             payload, semantic = self._producer_document()
-            payload_changed = payload != self._producer_payload
             if semantic != self._producer_semantic:
                 self._producer_sequence = self._store.append_producer_event(self._producer_epoch, payload)
                 self._producer_semantic = semantic
-            self._producer_payload = payload
-            if payload_changed:
                 self._producer_condition.notify_all()
+            self._producer_payload = payload
         except Exception:
             self._producer_faulted = True
             self._producer_condition.notify_all()
             raise
+
+    def _publish_if_available(self) -> None:
+        """A journal fault fences the producer, never operational authority."""
+        if not self._producer_faulted:
+            try:
+                self._publish_producer_change()
+            except Exception:
+                # Producer reads fail closed until restart; mutations must still
+                # enforce revocation and other operational security changes.
+                pass
 
     def _producer_connection_changed(self) -> None:
         if self._producer_ready:
@@ -901,22 +910,20 @@ class ControlPlane:
         self._publish_producer_change()
         if type(cursor.schema_version) is not int or cursor.schema_version != 1:
             current = self._producer_cursor(self._producer_sequence, self._producer_payload)
-            return ProducerReplay(current, (), ProducerEventSnapshot(current, self._producer_payload), "schema_mismatch")
+            return ProducerReplay(current, (), ProducerEventSnapshot(current, self._producer_payload), "schema_mismatch", True)
         high, rows, reason = self._store.read_producer_events(
             cursor.epoch, cursor.sequence, owner_epoch=self._producer_epoch,
             owner_sequence=self._producer_sequence,
         )
         current = self._producer_cursor(high, self._producer_payload)
         if reason is not None:
-            return ProducerReplay(current, (), ProducerEventSnapshot(current, self._producer_payload), reason)
-        replay_provenance = self._producer_cursor(rows[-1][0], rows[-1][1]).provenance if rows else cursor.provenance
-        if replay_provenance != current.provenance:
-            return ProducerReplay(current, (), ProducerEventSnapshot(current, self._producer_payload), "provenance_changed")
+            return ProducerReplay(current, (), ProducerEventSnapshot(current, self._producer_payload), reason, True)
+        replay_cursor = self._producer_cursor(rows[-1][0], rows[-1][1]) if rows else cursor
         return ProducerReplay(
-            current,
+            replay_cursor,
             tuple(ProducerEvent(self._producer_cursor(sequence, payload), payload)
                   for sequence, payload in rows),
-            None, None,
+            None, None, replay_cursor.provenance == current.provenance,
         )
 
     def _next_producer_expiry(self) -> float | None:

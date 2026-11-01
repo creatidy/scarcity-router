@@ -9,16 +9,19 @@ from typing import cast
 from unittest.mock import patch
 
 from scarcity_router.control_api import ProducerCursor, ProducerEventSnapshot
-from scarcity_router.capacity import CapacityWindow
+from scarcity_router.capacity import CapacityDiagnostic, CapacityWindow
 from scarcity_router.errors import CapacityValidationError
 from scarcity_router.execution_sources import SourceRegistry
+from scarcity_router.gateway_contracts import GatewayError
 from scarcity_router.model_inventory import DiscoveredModel, ModelInventoryReport, SourceInventory
 from scarcity_router.resource_state import QuotaFact, ResourceHealth, ResourceIdentity, ResourceRegistration, ResourceStateSnapshot, WorkerStateReport
 from scarcity_router.server_config import ResourceConfig, ServerConfiguration, SourceConfig
 from scarcity_router.server_store import ServerStoreError
+from scarcity_router.worker_endpoint import AttemptOutcome
 from tests.server_fixtures import ServerHarness
 from tests.worker_fixtures import MemoryTransport, ScriptedWorker
-from scarcity_router.worker_protocol import ErrorMessage, HelloAckMessage, PairResultMessage, StateReportAckMessage
+from scarcity_router.worker_protocol import ErrorMessage, ExecuteMessage, HelloAckMessage, PairResultMessage, StateReportAckMessage
+from tests.test_worker_endpoint import _worker_call  # pyright: ignore[reportPrivateUsage]
 
 NOW = "2026-09-16T12:00:00.000Z"
 NEXT = "2026-09-16T12:00:01.000Z"
@@ -44,18 +47,24 @@ class ProducerEventTests(ServerHarness):
         self.assertEqual((registered.cursor.sequence, observed.cursor.sequence),
                          tuple(event.cursor.sequence for event in replay.events))
         self.assertEqual(observed.payload, replay.events[-1].payload)
-        clock[0] = NEXT
-        self.plane.apply_resource_observation(replace(observation, observed_at=NEXT))
+        for instant in (NEXT, "2026-09-16T12:00:02.000Z", "2026-09-16T12:00:03.000Z"):
+            clock[0] = instant
+            self.plane.apply_resource_observation(replace(observation, observed_at=instant))
         refreshed = self.plane.producer_event_snapshot()
         self.assertEqual(observed.cursor.sequence, refreshed.cursor.sequence)
         self.assertNotEqual(observed.cursor.provenance, refreshed.cursor.provenance)
         refreshed_doc = cast("dict[str, object]", json.loads(refreshed.payload))
-        self.assertEqual(NEXT, cast("list[dict[str, object]]", refreshed_doc["resources"])[0]["observed_at"])
-        resync = self.plane.producer_replay(observed.cursor)
-        self.assertEqual("provenance_changed", resync.reason)
-        self.assertEqual(refreshed, resync.resync)
-        self.assertEqual("provenance_changed", self.plane.producer_replay(initial.cursor).reason)
+        self.assertEqual("2026-09-16T12:00:03.000Z", cast("list[dict[str, object]]", refreshed_doc["resources"])[0]["observed_at"])
+        unchanged = self.plane.producer_replay(observed.cursor)
+        self.assertIsNone(unchanged.resync)
+        self.assertFalse(unchanged.provenance_current)
+        self.assertEqual((), unchanged.events)
+        retained = self.plane.producer_replay(initial.cursor)
+        self.assertEqual(2, len(retained.events))
+        self.assertFalse(retained.provenance_current)
+        self.assertIsNone(retained.resync)
         self.assertEqual((), self.plane.producer_replay(refreshed.cursor).events)
+        self.assertTrue(self.plane.producer_replay(refreshed.cursor).provenance_current)
         clock[0] = FUTURE
         stale = self.plane.producer_event_snapshot()
         self.assertEqual(observed.cursor.sequence + 1, stale.cursor.sequence)
@@ -202,8 +211,7 @@ class ProducerEventTests(ServerHarness):
         identity = ResourceIdentity("local", "local_app_adapter", "ollama", "local", "local_ungated")
         resource = ResourceConfig(ResourceRegistration(identity, freshness_ttl_seconds=60), enabled=False)
         with patch.object(self.plane.store, "append_producer_event", side_effect=ServerStoreError("synthetic")):
-            with self.assertRaises(ServerStoreError):
-                self.plane._save_config(ServerConfiguration(resources=(resource,)))  # pyright: ignore[reportPrivateUsage]
+            self.plane._save_config(ServerConfiguration(resources=(resource,)))  # pyright: ignore[reportPrivateUsage]
         with self.assertRaises(ServerStoreError):
             _ = self.plane.producer_replay(before.cursor)
         restarted = self.make_plane(self.data_dir)
@@ -231,6 +239,81 @@ class ProducerEventTests(ServerHarness):
         self.assertIsNone(self.plane.current_application().registry.registry_snapshot().entries[0].observation)
         with self.assertRaises(ServerStoreError):
             _ = self.plane.producer_replay(before.cursor)
+
+    def test_revocation_remains_effective_when_event_journal_is_faulted(self) -> None:
+        issued = self.plane.service_issue_client_key({"label": "synthetic"})
+        client_id = cast(str, issued["client_id"])
+        key = cast(str, issued["api_key"])
+        admitted = self.plane.current_application()
+        assert admitted.client_key_directory is not None
+        self.assertEqual(client_id, admitted.client_key_directory.authenticate(key))
+        status, _, _ = self.exchange("GET", "/v1/models", headers={"Authorization": f"Bearer {key}"})
+        self.assertEqual(200, status)
+        identity = ResourceIdentity("local", "local_app_adapter", "ollama", "local", "local_ungated")
+        resource = ResourceConfig(ResourceRegistration(identity, freshness_ttl_seconds=60), enabled=False)
+        with patch.object(self.plane.store, "append_producer_event", side_effect=ServerStoreError("synthetic")):
+            self.plane._save_config(ServerConfiguration(resources=(resource,)))  # pyright: ignore[reportPrivateUsage]
+        self.plane.service_revoke_client_key(client_id)
+        current = self.plane.current_application().client_key_directory
+        assert current is not None
+        self.assertIsNone(current.authenticate(key))
+        status, _, _ = self.exchange("GET", "/v1/models", headers={"Authorization": f"Bearer {key}"})
+        self.assertEqual(401, status)
+        assert admitted.authority_source is not None
+        with self.assertRaises(GatewayError):
+            _ = admitted.authority_source(client_id)
+        with self.assertRaises(ServerStoreError):
+            _ = self.plane.producer_event_snapshot()
+
+    def test_worker_storage_failure_closes_session_and_interrupts_attempt(self) -> None:
+        for fault_before_report in (False, True):
+            with self.subTest(already_faulted=fault_before_report):
+                plane = self.make_plane(self.data_dir / ("prior" if fault_before_report else "during"))
+                worker_side, server_side = MemoryTransport.pair()
+                session = plane.worker_endpoint.attach_transport(server_side)
+                thread = threading.Thread(target=session.run, daemon=True)
+                thread.start()
+                worker = ScriptedWorker(worker_side)
+                try:
+                    code = plane._worker_identity_store.begin_pairing(label="synthetic")  # pyright: ignore[reportPrivateUsage]
+                    paired = worker.send_pair(code.pairing_code)
+                    assert isinstance(paired, PairResultMessage)
+                    identity = ResourceIdentity("worker-resource", "worker_bridged", "openai", "model", "subscription_included")
+                    resource = ResourceConfig(ResourceRegistration(identity, freshness_ttl_seconds=60), worker_id=paired.worker_id)
+                    plane._registry_clock = lambda: NOW  # pyright: ignore[reportPrivateUsage]
+                    plane._save_config(ServerConfiguration(resources=(resource,)))  # pyright: ignore[reportPrivateUsage]
+                    pending = session.submit_execute(ExecuteMessage(
+                        request_id="chatcmpl-synthetic", attempt_id="wa-synthetic",
+                        adapter_id="synthetic", deadline="2030-01-01T00:00:00.000Z", call=_worker_call(),
+                    ))
+                    _ = worker.next_execute()
+                    if fault_before_report:
+                        extra = ResourceConfig(ResourceRegistration(
+                            ResourceIdentity("other", "local_app_adapter", "ollama", "local", "local_ungated"),
+                            freshness_ttl_seconds=60,
+                        ), enabled=False)
+                        with patch.object(plane.store, "append_producer_event", side_effect=ServerStoreError("synthetic")):
+                            plane._save_config(ServerConfiguration(resources=(extra, resource)))  # pyright: ignore[reportPrivateUsage]
+                    report = WorkerStateReport(schema_version=1, worker_id=paired.worker_id, reported_at=NOW, resources=(
+                        ResourceStateSnapshot(schema_version=1, identity=identity, observed_at=NOW,
+                                              health=ResourceHealth(status="ok")),
+                    ))
+                    with patch.object(plane.store, "append_producer_event", side_effect=ServerStoreError("synthetic")):
+                        answer = worker.send_state_report(report.to_dict())
+                    self.assertIsInstance(answer, ErrorMessage)
+                    assert isinstance(answer, ErrorMessage)
+                    self.assertTrue(answer.fatal)
+                    thread.join(timeout=5)
+                    self.assertFalse(thread.is_alive())
+                    self.assertEqual((), plane.worker_endpoint.connected_worker_ids())
+                    kind, outcome = pending.take(5)
+                    self.assertEqual("outcome", kind)
+                    self.assertEqual("interrupted", cast(AttemptOutcome, outcome).status)
+                finally:
+                    session.close(note="cleanup")
+                    thread.join(timeout=5)
+                    plane.close_worker_store()
+                    plane.store.close()
 
     def test_invalid_cursor_fails_closed(self) -> None:
         for cursor in (ProducerCursor("bad", 0, "0" * 64), ProducerCursor("0" * 32, -1, "0" * 64),
@@ -333,7 +416,7 @@ class ProducerEventTests(ServerHarness):
         document = cast("dict[str, object]", json.loads(replay.events[0].payload))
         self.assertEqual("stale", cast("list[dict[str, object]]", document["resources"])[0]["freshness"])
 
-    def test_waiter_wakes_for_timestamp_only_provenance_change(self) -> None:
+    def test_waiter_ignores_timestamp_only_refresh_until_semantic_change(self) -> None:
         clock = [NOW]
         self.plane._registry_clock = lambda: clock[0]  # pyright: ignore[reportPrivateUsage]
         identity = ResourceIdentity("local", "local_app_adapter", "ollama", "local", "local_ungated")
@@ -343,7 +426,7 @@ class ProducerEventTests(ServerHarness):
                                             health=ResourceHealth(status="ok"))
         self.plane.apply_resource_observation(observation)
         initial = self.plane.producer_event_snapshot()
-        waiting = threading.Event()
+        waiting, finished = threading.Event(), threading.Event()
         responses: list[object] = []
         condition = self.plane._producer_condition  # pyright: ignore[reportPrivateUsage]
         original_wait = condition.wait
@@ -354,6 +437,7 @@ class ProducerEventTests(ServerHarness):
 
         def wait() -> None:
             responses.append(self.plane.wait_for_producer_events(initial.cursor, timeout_seconds=5))
+            finished.set()
 
         with patch.object(condition, "wait", side_effect=signaled_wait):
             thread = threading.Thread(target=wait)
@@ -361,12 +445,18 @@ class ProducerEventTests(ServerHarness):
             self.assertTrue(waiting.wait(timeout=5))
             clock[0] = NEXT
             self.plane.apply_resource_observation(replace(observation, observed_at=NEXT))
+            self.assertFalse(finished.wait(timeout=0.05))
+            self.plane.apply_resource_observation(replace(
+                observation, observed_at=NEXT,
+                health=ResourceHealth(status="unavailable", diagnostics=(CapacityDiagnostic("source_unavailable"),)),
+            ))
             thread.join(timeout=5)
         self.assertFalse(thread.is_alive())
         replay = self.plane.producer_replay(initial.cursor)
         self.assertEqual(replay, responses[0])
-        self.assertEqual("provenance_changed", replay.reason)
-        self.assertEqual(initial.cursor.sequence, replay.cursor.sequence)
+        self.assertIsNone(replay.reason)
+        self.assertTrue(replay.provenance_current)
+        self.assertEqual(initial.cursor.sequence + 1, replay.cursor.sequence)
 
     def test_past_reset_is_not_a_repeated_wait_deadline(self) -> None:
         self.plane._registry_clock = lambda: NOW  # pyright: ignore[reportPrivateUsage]
