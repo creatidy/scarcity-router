@@ -75,7 +75,7 @@ delivery. Proof-dependent work belongs in a bounded contract/research issue.
 
 ## Repository workflow
 
-Forgejo (`https://forgejo.creatidy.com/BioMedical-IT/scarcity-router`) is the
+Forgejo (`https://forgejo.creatidy.com/Creatidy/scarcity-router`) is the
 canonical repository for issues, pull requests, reviews, branches and
 integration. GitHub (`https://github.com/creatidy/scarcity-router`) is an
 automatic read-only mirror. Do not create or mutate GitHub issues, pull

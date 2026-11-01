@@ -348,7 +348,7 @@ class WorkflowContractTests(unittest.TestCase):
         loop = text(".kilo/command/loop.md")
         for requirement in (
             "At the beginning of EVERY cycle fetch current canonical Forgejo issue state",
-            "list ALL open BioMedical-IT/scarcity-router issues, paging to exhaustion",
+            "list ALL open Creatidy/scarcity-router issues, paging to exhaustion",
             "Require actual issue records (not PRs)",
             "Exclude unmet explicit prerequisites/gates",
             "issues waiting for an unresolved owner decision",
@@ -548,7 +548,7 @@ class WorkflowContractTests(unittest.TestCase):
             "No stash/reset of unrelated owner work",
             "second controller",
             "Do not use Scarcity Router for model selection, execution, orchestration, telemetry or operation",
-            "No mutation outside BioMedical-IT/scarcity-router",
+            "No mutation outside Creatidy/scarcity-router",
             "Model Intelligence, Kernel, Console, creatidy-onprem and other repositories are out of scope",
             "Never touch main, release or deploy",
             "Never push directly to develop",
@@ -706,7 +706,7 @@ class WorkflowContractTests(unittest.TestCase):
             '"*|*": deny', '"*&*": deny',
         ):
             self.assertIn(rule, reviewer)
-        self.assertIn('"git ls-remote https://forgejo.creatidy.com/BioMedical-IT/scarcity-router refs/heads/develop refs/heads/*": allow', reviewer)
+        self.assertIn('"git ls-remote https://forgejo.creatidy.com/Creatidy/scarcity-router refs/heads/develop refs/heads/*": allow', reviewer)
         self.assertIn('"git ls-remote * -*": deny', reviewer)
         self.assertNotIn('"forgejo-mcp_create_', reviewer)
         self.assertNotIn('"forgejo-mcp_update_', reviewer)

@@ -6815,3 +6815,39 @@ No MI/Kernel mutation, model inference, Daybreak, release or deployment is autho
   upgrade/package validation, full gates, and a fresh independent GPT-6.1 Sol High
   native review before authorized integration. No live inference, release,
   deployment or external-repository mutation is authorized by this decision.
+
+## D-085: Standalone and Foundry deployment direction (#239, 2026-10-31)
+
+- **Status:** Owner-directed prospective architecture, subject to independent
+  review and integration. This record does not retire #224's accepted Tier-B
+  requirement or grant additional review capacity.
+- **Context:** The owner directed that Router remain a complete standalone
+  product and an independently deployable Foundry component. Foundry owns
+  integrated installation, Compose, compatible versions and end-to-end
+  acceptance, not routing or authorization. Router owns executable resources,
+  capacity, routing, authorization, evidence admission, execution and provenance;
+  MI owns public evidence and publication provenance; Kernel owns task intent,
+  harness/workspace lifecycle and accepted outcomes; Console presents authorized
+  state. No other product is a mandatory Router runtime dependency.
+- **Transport:** Native loopback HTTP remains supported, including WSL and
+  containers genuinely sharing a verified host loopback namespace. Ordinary
+  bridge or multi-container deployments use authenticated verified TLS, as do
+  LAN, VPN and cross-host connections. Network isolation and loopback port
+  publication alone do not establish a non-routable plaintext boundary. The
+  unprivileged container cannot continuously enforce host Docker/firewall state.
+  Optional Docker Desktop host networking remains unverified. Secure issuance
+  and renewal automation is a future goal, not an implemented claim.
+- **Reconciliation:** D-056 Tier B and D-083 assigned #224 an accepted
+  same-host plaintext mode with proven enforcement. It is unimplemented and
+  unsafe under the tested isolation assumptions, and is not the owner-directed
+  default. Formal retirement or amendment of that specific accepted obligation
+  remains pending explicit owner disposition under #224's governing rules;
+  this decision neither silently removes it nor authorizes implementation of
+  a plaintext exception. #224 also retains outstanding certificate lifecycle,
+  verified origin migration and applicable live acceptance. Its consumed
+  review ordinals and narrow exceptional authority are not transferable.
+- **Evidence:** #224 comments 20027, 20035 and 20057 record topology mutation,
+  Docker Desktop and native WSL observations. Native WSL loopback access was
+  observed; complete authenticated Windows execution and Docker Desktop host
+  networking were not established. Host-header rejection of `localhost` on a
+  `127.0.0.1` bind is a separate security-sensitive behavior, not relaxed here.

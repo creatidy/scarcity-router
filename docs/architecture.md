@@ -8,8 +8,8 @@ on the model request path:
 
 ```text
 provider telemetry ────────> collectors ──> normalized capacity
-model catalog ────────────────────────────> capability data
-task/profile ─────────────────────────────> requirements
+authorized resource evidence ─────────────> capability data
+task requirements ────────────────────────> requirements
 user policy ──────────────────────────────> reservations/preferences
                                              |
                                              v
@@ -50,10 +50,10 @@ Source: **Creatidy shared system architecture**, v1.0, 2026-10-04,
 The full file was not found in workspace searches; this alignment uses the
 owner's repository-specific brief covering source sections 1-5, 7-13 and
 14-18. The hash is a supplied reference, not independently verified bytes.
-The distinct products are Creatidy Kernel (`creatidy-kernel`) and Scarcity
-Router (`scarcity-router`), alongside Model Intelligence and Console. Only
-their actual canonical names are used; no alias, rename or extra product is
-introduced.
+The system includes Creatidy Kernel, Scarcity Router, Model Intelligence,
+Console and Foundry. Router is independently deployable and remains usable
+without the other products; Foundry supplies integrated distribution, not
+Router policy or execution authority (D-085).
 
 The audit baseline is canonical `develop` at
 `8d9d4b04bcb23fe19ff702b6209fbcb1537cdf1b`, fetched on 2026-10-04. It happens
@@ -84,6 +84,7 @@ subscription quota, time, corrections, review and owner attention.
 | Scarcity Router | Providers/accounts/sources/pools, private telemetry, channel compatibility, cost/selection policy, admission, gateway and authorized provider calls | Task intake, workspace/harness orchestration, task acceptance or a generic sandbox |
 | Model Intelligence | External evidence about models/interfaces/benchmarks/public offers, provenance, validity, conflicts and versioned knowledge | Credentials, private remaining quota, local runtime authority or routing |
 | Console | Cross-product views and forwarding authorized commands to their owner | A scheduler, ranking, authority database or direct access to another product's state database |
+| Foundry | Integrated installation, Compose, compatible component versions and end-to-end acceptance | Execution, routing or authorization policy |
 | Existing harness | Model-tool-result loop under Kernel's documented adapter control | Implicit expansion of task authority or hidden substitution within a pinned Attempt |
 
 Agreed target, **not today's proven end-to-end integration**:
@@ -128,8 +129,8 @@ within that resource's currently bound identities (#178), never a sibling
 variant. Identity drift or contradictory explicit model/variant constraints
 produce no solution without substitution. The public gateway pin path uses
 the unchanged exact `admit_pinned_target`; these paths are not conflated.
-Gateway effort discovery/resolution and pinned dispatch use the catalog's
-independent configured effort (#179/D-071), like D-057 recommendation output.
+Gateway effort discovery/resolution and pinned dispatch use independently
+configured effort (#179/D-071), like D-057 recommendation output.
 Opaque variants are never interpreted as effort; plan-managed lanes carry null.
 
 Model, provider, resource, source/account/pool, access mode, effort, harness
@@ -225,19 +226,15 @@ check-to-spawn races remain unproved legacy limitations, not Kernel isolation.
 
 ### Knowledge, economics and observability
 
-Agreed: consume admitted versioned MI knowledge and retain snapshot and
-calibration provenance in decisions. Current local catalog and reviewed
-track floors remain the working bootstrap/projection until #176 proves a
-replacement; Router must not build another public-facts database/crawler.
-MI #9 is a bounded proof, not an approved publication/consumer contract;
-[MI #13](https://forgejo.creatidy.com/Creatidy/model-intelligence/issues/13)
-now owns publication and #15 its production producer. Router #176 owns
-consumption, with actual-used provenance retained by Kernel #55. These are
-registered obligations, not implemented integration. Historical replay needs
-a frozen evidence cut plus evaluation semantics, not just `knowledge(at)`.
+Router's explicit-input MI consumer retains immutable evidence cuts and
+decision-utilization provenance; the composed server does not yet configure it
+(#238). Public evidence cannot authorize private sources or expand independently
+evidenced capabilities. D-084 removed static catalogs and track floors; Router
+must not build another public-facts database or crawler. Installed integration,
+source-owner review and live evidence are separate acceptance claims.
+Historical replay requires a frozen evidence cut and evaluation semantics.
 Refresh failure alone does not cancel a running Attempt; new decisions obey
-approved freshness, and promotions do not extend because refresh failed.
-Exact admission/freshness/migration details remain To prove, not new payloads.
+freshness rules, and promotions do not extend because refresh failed.
 
 Subscription-first includes shared pools, reset windows, remaining capacity,
 channel/plan/model/harness-dependent promotions and quota opportunity cost.
@@ -361,28 +358,19 @@ Freshness evaluation, refresh behavior and durable history are separate concerns
 the initial implementation may be in-memory and refreshed on demand. Secrets and
 raw Authorization values never enter the normalized state.
 
-### Catalog
+### Resource evidence
 
-Contains model identities, provider/account relationships, hard properties and
-curated multidimensional capabilities. Profiles map stable task names to
-requirements. Catalog data is versioned and human-reviewable; it does not read
-runtime quota.
-
-Catalog v2 (D-032) adds explicit normalized `reasoning_effort` per calibrated
-invocation configuration. Model capability, reasoning intensity and subscription
-scarcity are separate inputs: configurations do not inherit vectors from sibling
-efforts or invent separate quota buckets. `ModelIdentity` remains the same
-provider/model/opaque-variant triple. Selector ranking reads catalog effort
-directly after scarcity and capability margin, before preference and identity;
-no interface parses variant to infer effort. Null is unconfigured, distinct from
-the real `"none"` effort setting. Machine-interface decision/envelope schemas
-remain v1 unchanged.
+Authorized source discovery, adapter evidence, applicable trusted public
+evidence and local policy provide the dynamic inventory (D-084). Exact model,
+configuration and effort remain distinct; an opaque variant does not imply
+effort, capability, entitlement or quota. No static catalog or inherited
+quality floor is loaded by installed commands.
 
 ### Policy
 
 Contains default scarcity behavior, reservation rules, preference modes and
 explicit overrides. Runtime policy is separate from repository governance and
-from the catalog, so a user can change today's preference without changing
+from resource evidence, so a user can change today's preference without changing
 source repositories or capability claims. The pure resource-state and
 preservation primitives live in `scarcity_router/scarcity.py` (continuous
 scarcity penalty, explanatory labels, binding applicability, most-restrictive
@@ -393,7 +381,7 @@ the `UserPolicy` container); ranking modes remain the selector's concern.
 
 ### Selector
 
-Consumes only normalized capacity, catalog data, task requirements and policy.
+Consumes normalized capacity, authorized resource evidence, requirements and policy.
 It has no credential access, no provider parsing and no client-specific code.
 It produces a deterministic decision object with the selected model, ranked
 alternatives, exclusions, input provenance and reasons.
@@ -452,7 +440,7 @@ Dependencies point inward:
 ```text
 provider implementations ---> collector contract ---> normalized domain
 CLI / REST / MCP -----------> application service ---> selector/domain
-data files -----------------> catalog/policy loaders -> selector/domain
+authorized resources / policy -----------------------> selector/domain
 ```
 
 The domain must not import a provider, web framework, MCP SDK, CLI framework or
@@ -1071,7 +1059,7 @@ harness path.
 
 Four distinct capability layers feed admission:
 
-1. logical model hard capabilities (catalog, provenance-bearing);
+1. applicable independently evidenced model facts with provenance;
 2. execution-source/channel capabilities — what the route evidences it can
    carry (context ceiling, output ceiling, tool round trip, streaming,
    cancellation);
@@ -1087,7 +1075,7 @@ effective capability = model capability
 
 A powerful model reached through a weaker execution channel exposes the
 weaker effective capability for that route. UNKNOWN stays UNKNOWN: a
-model-catalog maximum is never evidence that every execution source provides
+public model maximum is never evidence that every execution source provides
 it, and an unknown input yields an unknown effective value — `null` in
 metadata, fail-closed in admission — never a guessed number. A request
 routes only to a source whose evidenced capability satisfies the full
@@ -1119,13 +1107,9 @@ architecture. #137 investigates the Codex source under exactly this rule.
 
 Plain HTTP is a SUPPORTED LOCAL TRANSPORT, not an insecure-debug escape
 hatch; HTTPS/TLS remains required for traffic crossing a host trust
-boundary. The authoritative tier policy — loopback (supported, including
-host-network containers), same-host container transport under deployment
-isolation (architecturally permitted, implemented under #224, a property
-of the entire composed HTTP listener rather than a per-surface mix, never
-a global non-loopback plaintext listener), cross-host/LAN/VPN/remote (TLS
-required), remote TLS UX (public CA normal, private CA advanced), and the
-unchanged worker transport — is [`docs/security.md`](security.md) (D-056).
+boundary. Supported loopback, verified TLS for bridge and cross-host
+deployments, the unresolved #224 Tier-B requirement and worker transport
+are described in [`docs/security.md`](security.md) (D-056, D-085).
 
 #### Representative-harness acceptance
 
@@ -1150,7 +1134,7 @@ D-055's `effective_context_limit_tokens` metadata intersection. Accepted
 here and not yet implemented: the effective-limits intersection and its
 model-level aggregation (#136), the client tool round trip on the Codex
 worker source (#137), the same-host container plaintext tier including
-bridge loopback-publish support (implemented under #224), a Responses
+bridge loopback-publish support (unimplemented; disposition pending in #224), a Responses
 adapter, and Tier 3 harness evidence.
 
 ### Migration plan
@@ -1163,7 +1147,8 @@ adapter, and Tier 3 harness evidence.
   (D-045); the worker protocol negotiates versions independently (D-043).
 - Capacity contract v3 is preserved; executable-resource state extends
   through the new resource-state contract (M01), not through a forced v4.
-- Catalog/policy artifacts evolve additively per the D-032 discipline.
+- Existing public contracts and user policy retain their documented migration
+  discipline; static model governance is removed under D-084.
 - Recommendation-only users migrate nothing: zero-configuration continuity
   is an M08/M10 acceptance criterion, not an aspiration.
 

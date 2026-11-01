@@ -347,49 +347,26 @@ provider access or spending ceilings (D-042).
 
 Plain HTTP is a SUPPORTED LOCAL TRANSPORT for client traffic to the
 composed HTTP listener, not an insecure-debug escape hatch; TLS remains
-required whenever a connection crosses a host trust boundary. The tiers,
-from [`docs/decisions.md`](decisions.md) D-056:
+required on non-loopback listeners. The current direction and historical
+Tier-B requirement are reconciled in [`docs/decisions.md`](decisions.md) D-085:
 
-- **A. Loopback — supported, implemented.** `http://127.0.0.1:<port>`,
-  `http://[::1]:<port>`, `http://localhost:<port>` are normal supported
-  configurations for a locally running harness, a locally running Scarcity
+- **A. Loopback — supported, implemented.** Loopback HTTP is supported
+  for a locally running harness, a locally running Scarcity
   Router, and a container sharing the host network namespace (native
   Linux `--network host` shares the host loopback; for example ZCode →
   `http://127.0.0.1:8787/v1` → a local Scarcity Router container). No
-  certificates are required. A standard Docker bridge publish of a
-  loopback port (`-p 127.0.0.1:8787:8787`) is NOT currently supported in
+  certificates are required. Use an authority matching the configured bind:
+  a `127.0.0.1` bind rejects a `localhost` Host header. A standard Docker
+  bridge publish of a loopback port (`-p 127.0.0.1:8787:8787`) is NOT supported in
   plaintext — the published traffic reaches the container on a
-  non-loopback interface, where a plaintext bind is refused — and is part
-  of the accepted container tier in B, implemented under #224 (D-083
-  successor of excluded #139).
-- **B. Same-host container transport — architecturally permitted, NOT
-  implemented; implementation assigned to #224 (D-083 successor of
-  excluded #139).** Plaintext
-  HTTP between containers on one physical host is permitted only where
-  deployment isolation makes the transport host-local and non-routable
-  from external networks: a dedicated Docker network, an `internal: true`
-  Docker network, and a host publication bound ONLY to loopback (for
-  example `-p 127.0.0.1:8787:8787`) as an allowed target of the explicit
-  local-container mode. Plaintext publication reachable from LAN/WAN is
-  forbidden. The implementation may need the server to bind a non-loopback
-  address INSIDE the container in that explicit mode (today's code refuses
-  any non-loopback plaintext bind); what is forbidden is a general/default
-  non-loopback plaintext bind with no deployment-boundary enforcement —
-  #224's implementation must prove the deployment remains host-local and
-  fail closed when the bounded mode is not explicitly selected. The tier
-  applies to the ENTIRE COMPOSED HTTP LISTENER, never a
-  per-surface mix: the server component serves execution,
-  machine-interface, control and administration endpoints on one listener
-  (D-041 one-process composition), so a host-local trust exception that
-  covers inference traffic covers that whole listener; splitting an
-  execution-only plaintext listener off the composed server would be a
-  separate explicit decision, not part of this tier. This is never solved
-  by globally allowing a non-loopback `0.0.0.0` plaintext listener. The
-  implementation must keep explicitly-local container transport
-  meaningfully distinct from arbitrary non-loopback exposure — an
-  explicit deployment/local-transport mode may be defined, but it must be
-  difficult to accidentally turn a LAN-facing endpoint into plaintext.
-  Until that mode lands, non-loopback binds require TLS exactly as today.
+  non-loopback interface, where a plaintext bind is refused. Host networking
+  on Docker Desktop is not established by the native Linux behavior.
+- **B. Bridge and multi-container transport.** Use authentication and
+  verified TLS for the composed listener. A dedicated or internal network,
+  loopback publication or startup-only inspection does not continuously
+  enforce a non-routable boundary. D-056's accepted plaintext Tier-B
+  requirement remains unimplemented in #224 pending formal disposition;
+  it is not supported by the current server or default deployment direction.
 - **C. Cross-host / LAN / VPN / remote — TLS REQUIRED (implemented).**
   Windows-to-LAN, laptop-to-server over VPN, any other machine, and
   internet-facing deployments use HTTPS. Plain HTTP over a VPN is not
@@ -400,13 +377,12 @@ from [`docs/decisions.md`](decisions.md) D-056:
   automated renewal (for example
   `https://scarcity-router.creatidy.com:8787`); a private CA is a supported
   advanced option and is never required for ordinary localhost operation
-  (issue #224 implements the lifecycle). Never introduced in any tier:
+  (automatic issuance and renewal remain open under #224). Never introduced in any tier:
   `verify=false`, certificate-verification bypass, trust-on-first-use, or
   silent HTTPS→HTTP fallback; a scheme change is explicit.
 - **E. Worker transport — unchanged.** These tiers govern CLIENT traffic
-  to the composed HTTP listener as a whole: in an explicit host-local mode
-  that listener may carry execution, machine, control and administration
-  HTTP over plaintext within the accepted local trust boundary, while
+  to the composed HTTP listener as a whole. Supported loopback HTTP can
+  carry execution, machine, control and administration traffic, while
   authentication, authorization, CSRF and credential separation remain
   fully enforced — only transport confidentiality changes inside that
   bounded boundary, and cross-host traffic remains TLS-required. The
