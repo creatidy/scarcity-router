@@ -71,6 +71,23 @@ producer-state correctness integrated from excluded #140 (D-083); #185 owns
 compatible artifact/version transitions. No new transport/API is accepted
 here. A new read-only consumer identity or exposed network contract requires
 explicit security authorization (D-083).
+An internal `ControlPlane.producer_snapshot()` now combines configured and
+source-derived registrations, disabled resources, retained discoveries and
+evaluated observation freshness under the control-plane publication lock.
+Retained inventory misses and bounded retirement state are represented without
+inventing their occurrence times. Worker ownership is rechecked at publication;
+observations are discarded when a configured resource is removed, disabled,
+reassigned, changes identity or changes its backing endpoint. In-flight readiness
+probes cannot publish after an application rebuild.
+It samples actual worker connectivity separately from inventory, and does not
+equate a healthy observation with admission. Source inventory freshness remains
+unknown unless never observed. This in-process projection is not an exposed or
+versioned consumer contract: it has no durable cursor, event journal, history,
+replay, or snapshot/resume guarantee. Worker inventory and resource reports can
+be applied in separate stages; the snapshot is not a promise that a whole worker
+report was accepted atomically. Restart reconstructs configuration but not
+in-memory discovery or observations. #183's event and consumer acceptance gates
+remain open.
 Request audit/trace export is diagnostics, not a settlement ledger. CLI
 status UX (#182) is independent of Console delivery and retains JSON/pipe/
 CI/unknown/no-color behavior.

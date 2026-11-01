@@ -572,6 +572,17 @@ class SourceRegistry:
             return None
         return f"{prefix}:{source_id}"
 
+    def retained_model_lifecycle(self) -> tuple[tuple[str, str, str], ...]:
+        """Retained misses and retirements; neither carries an invented time."""
+        return tuple(
+            (source_id, slug, lifecycle)
+            for source_id, state in sorted(self._sources.items())
+            for slug, lifecycle in sorted(
+                [(slug, "retained_missing") for slug in state.miss_counts]
+                + [(slug, "retired") for slug in state.retired]
+            )
+        )
+
     def source_view(self) -> tuple[dict[str, object], ...]:
         """The read-only per-source view (UI/diagnostics; no raw payloads)."""
         views: list[dict[str, object]] = []

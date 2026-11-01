@@ -48,13 +48,14 @@ import hashlib
 import hmac
 import secrets
 import threading
-from dataclasses import replace
+from dataclasses import dataclass, replace
+from functools import wraps
 from collections.abc import Callable, Mapping
 from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from http.cookies import SimpleCookie
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Concatenate, ParamSpec, TypeVar, cast
 from urllib.parse import parse_qsl
 
 if TYPE_CHECKING:
@@ -107,7 +108,9 @@ from .model_inventory import is_source_resource_id
 from .model_inventory import ModelInventoryReport
 from .resource_state import (
     RESOURCE_STATE_SCHEMA_VERSION,
+    QuotaFact,
     ResourceHealth,
+    ResourceIdentity,
     ResourceRegistration,
     ResourceRegistry,
     RegistrySnapshot,
@@ -303,6 +306,67 @@ class DurableAuditSink:
 
 GenerationTester = Callable[[ResourceConfig], dict[str, object]]
 
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+
+
+def _state_locked(
+    method: Callable[Concatenate[ControlPlane, _P], _R],
+) -> Callable[Concatenate[ControlPlane, _P], _R]:
+    @wraps(method)
+    def locked(self: ControlPlane, *args: _P.args, **kwargs: _P.kwargs) -> _R:
+        with self._state_lock:  # pyright: ignore[reportPrivateUsage] - shared control-plane serialization
+            return method(self, *args, **kwargs)
+    return locked
+
+
+@dataclass(frozen=True)
+class ProducerResource:
+    """Internal resource facts; availability is not an admission decision."""
+
+    identity: ResourceIdentity
+    origin: str
+    enabled: bool
+    worker_connected: bool | None
+    observed_at: str | None
+    freshness: str
+    health: str | None
+    quota_facts: tuple[QuotaFact, ...]
+    availability: str
+
+    @property
+    def resource_id(self) -> str:
+        return self.identity.resource_id
+
+
+@dataclass(frozen=True)
+class ProducerDiscovery:
+    source_id: str
+    model: str
+    state: str
+    reason: str | None
+    observed_at: str | None
+    lifecycle: str | None
+
+
+@dataclass(frozen=True)
+class ProducerSource:
+    source_id: str
+    worker_connected: bool
+    inventory_observed_at: str | None
+    inventory_freshness: str
+    authentication: str
+
+
+@dataclass(frozen=True)
+class ProducerSnapshot:
+    """In-process projection only; no durable cursor or network contract."""
+
+    generated_at: str
+    resources: tuple[ProducerResource, ...]
+    sources: tuple[ProducerSource, ...]
+    discoveries: tuple[ProducerDiscovery, ...]
+
 
 class ControlPlane:
     """The administration and control surface of one server component."""
@@ -318,6 +382,8 @@ class ControlPlane:
     _pbkdf2_iterations: int
     _version: str | None
     _observations: dict[str, ResourceStateSnapshot]
+    _state_lock: threading.RLock
+    _application_generation: int
     _request_state: threading.local
     _config: ServerConfiguration
     _sink: DurableAuditSink
@@ -349,6 +415,8 @@ class ControlPlane:
         mi_server: MIServer | None = None,
         mi_config_path: Path | None = None,
     ) -> None:
+        self._state_lock = threading.RLock()
+        self._application_generation = 0
         self._ui_dispatcher = ui_dispatcher
         self._store = store
         self._mi_server: MIServer | None = mi_server
@@ -492,6 +560,7 @@ class ControlPlane:
         source = self._config.source_by_id(source_id)
         return source is not None and source.worker_id == worker_id
 
+    @_state_locked
     def _apply_source_inventory(self, inventory: ModelInventoryReport) -> None:
         """The endpoint's validated inventory sink (D-053).
 
@@ -500,6 +569,10 @@ class ControlPlane:
         derived registrations, adapter bindings, compatibility cells and
         catalog view all change atomically with the configuration.
         """
+        for source_inventory in inventory.sources:
+            source = self._config.source_by_id(source_inventory.source_id)
+            if source is None or source.worker_id != inventory.worker_id or source.kind != source_inventory.kind:
+                raise ValueError("source inventory no longer belongs to this worker")
         self._source_registry.sync_configuration(self._config.sources)
         _ = self._source_registry.apply_inventory(inventory)
         # Daybreak finding 3 (second half): an inventory that is NOT
@@ -518,6 +591,7 @@ class ControlPlane:
                 _ = self._observations.pop(resource_id, None)
         self._rebuild_application()
 
+    @_state_locked
     def apply_worker_report(self, report: WorkerStateReport) -> None:
         """The M05 endpoint's report sink (the one normalization path).
 
@@ -527,10 +601,91 @@ class ControlPlane:
         them — worker-reported state never silently evaporates because an
         administrator edited another resource.
         """
+        for snapshot in report.resources:
+            if self._configured_worker_owner(snapshot.identity.resource_id) != report.worker_id:
+                raise ValueError("resource no longer belongs to this worker")
         registry = self.current_application().registry
         registry.apply_worker_report(report)
         for snapshot in report.resources:
             self._observations[snapshot.identity.resource_id] = snapshot
+
+    @_state_locked
+    def producer_snapshot(self) -> ProducerSnapshot:
+        """Capture configuration, inventory and registered observations together.
+
+        Worker connectivity is sampled from the endpoint while those inputs
+        are held stable. Discovery is retained inventory, not proof that its
+        worker is still connected or that the inventory is complete or fresh.
+        """
+        registry = self.current_application().registry.registry_snapshot()
+        connected = set(self._worker_endpoint.connected_worker_ids())
+        configured = {item.registration.identity.resource_id: item for item in self._config.resources}
+        resources: list[ProducerResource] = []
+        for entry in registry.entries:
+            resource_id = entry.identity.resource_id
+            config = configured.get(resource_id)
+            worker_id = config.worker_id if config is not None else self._source_registry.owner_of(resource_id)
+            worker_connected = (worker_id in connected) if worker_id is not None else None
+            observation = entry.observation
+            health = None if observation is None else observation.health.status
+            availability = "unknown"
+            if worker_connected is False or (
+                entry.freshness == "fresh"
+                and health in ("unavailable", "auth_required", "unsupported")
+            ):
+                availability = "unavailable"
+            resources.append(ProducerResource(
+                identity=entry.identity,
+                origin="configured" if config is not None else "source",
+                enabled=True,
+                worker_connected=worker_connected,
+                observed_at=None if observation is None else observation.observed_at,
+                freshness=entry.freshness,
+                health=health,
+                quota_facts=() if observation is None else observation.quota_facts,
+                availability=availability,
+            ))
+        for resource_id, config in configured.items():
+            if not config.enabled:
+                resources.append(ProducerResource(
+                    identity=config.registration.identity, origin="configured", enabled=False,
+                    worker_connected=(config.worker_id in connected) if config.worker_id is not None else None,
+                    observed_at=None, freshness="not_evaluated", health=None,
+                    quota_facts=(), availability="disabled",
+                ))
+        discoveries: dict[tuple[str, str], ProducerDiscovery] = {}
+        sources: list[ProducerSource] = []
+        for source in self._source_registry.source_view():
+            source_id = cast(str, source["source_id"])
+            observed_at = cast("str | None", source["observed_at"])
+            sources.append(ProducerSource(
+                source_id=source_id,
+                worker_connected=cast(str, source["worker_id"]) in connected,
+                inventory_observed_at=observed_at,
+                inventory_freshness="unknown" if observed_at is not None else "never_observed",
+                authentication=cast(str, source["source_authenticated"]),
+            ))
+            for model in cast("list[dict[str, object]]", source["models"]):
+                discovery = ProducerDiscovery(
+                    source_id=source_id, model=cast(str, model["slug"]),
+                    state=cast(str, model["state"]), reason=cast("str | None", model["reason"]),
+                    observed_at=observed_at, lifecycle=None,
+                )
+                discoveries[(source_id, discovery.model)] = discovery
+        for source_id, model, lifecycle in self._source_registry.retained_model_lifecycle():
+            key = (source_id, model)
+            existing = discoveries.get(key)
+            discoveries[key] = (
+                replace(existing, lifecycle=lifecycle) if existing is not None else
+                ProducerDiscovery(source_id=source_id, model=model, state="not_in_latest_inventory",
+                                  reason=None, observed_at=None, lifecycle=lifecycle)
+            )
+        return ProducerSnapshot(
+            generated_at=registry.generated_at,
+            resources=tuple(sorted(resources, key=lambda item: item.resource_id)),
+            sources=tuple(sources),
+            discoveries=tuple(discoveries[key] for key in sorted(discoveries)),
+        )
 
     def handles(self, method: str, path: str) -> bool:
         _ = method
@@ -1970,7 +2125,10 @@ class ControlPlane:
         inference request, never quota). Anything not wired here stays
         honestly absent from the checks rather than reported fake-green.
         """
-        resource = self._config.resource_by_id(resource_id)
+        with self._state_lock:
+            resource = self._config.resource_by_id(resource_id)
+            generation = self._application_generation
+            probe_adapter = self._adapters.resolve("server_direct_http")
         if resource is None:
             raise ControlHTTPError.not_found("unknown resource")
         checks: list[dict[str, object]] = []
@@ -2056,8 +2214,8 @@ class ControlPlane:
                     "set the provider credential through the providers page",
                 )
             if bound and identity.channel == "server_direct_http":
-                probed, probe_result = self._probe_provider_health(resource, record)
-                self._record_probe_observation(resource, probe_result)
+                probed, probe_result = self._probe_provider_health(resource, record, probe_adapter)
+                self._record_probe_observation(resource, probe_result, generation)
         passed = all(bool(check["passed"]) for check in checks)
         return {
             "resource_id": resource_id,
@@ -2087,6 +2245,7 @@ class ControlPlane:
         self,
         resource: ResourceConfig,
         record: Callable[[str, bool, str, str], None],
+        adapter: object,
     ) -> tuple[bool, "HealthProbeResult | None"]:
         """Run the M04 adapter's quota-free readiness probe when possible.
 
@@ -2096,7 +2255,6 @@ class ControlPlane:
         no adapter composed for the channel. Those stay honestly absent
         from the check list rather than reported fake-green.
         """
-        adapter = self._adapters.resolve("server_direct_http")
         if not isinstance(adapter, OpenAICompatibleHttpAdapter):
             return False, None
         result = adapter.probe_health(
@@ -2270,6 +2428,7 @@ class ControlPlane:
             ),
         )
 
+    @_state_locked
     def _save_config(self, config: ServerConfiguration) -> None:
         """Validate, apply, then persist one configuration version.
 
@@ -2299,8 +2458,20 @@ class ControlPlane:
             if (current := config.source_by_id(previous.source_id)) is None
             or current.worker_id != previous.worker_id or current.kind != previous.kind
         }
+        changed_resources = {
+            previous.registration.identity.resource_id for previous in self._config.resources
+            if (current := config.resource_by_id(previous.registration.identity.resource_id)) is None
+            or not current.enabled or current.worker_id != previous.worker_id
+            or current.registration.identity != previous.registration.identity
+            or current.endpoint_id != previous.endpoint_id
+            or current.local_adapter_id != previous.local_adapter_id
+            or (previous.endpoint_id is not None and
+                self._config.provider_by_id(previous.endpoint_id) != config.provider_by_id(previous.endpoint_id))
+        }
         for resource_id in tuple(self._observations):
-            if is_source_resource_id(resource_id) and resource_id.partition(":")[0] in changed_sources:
+            if resource_id in changed_resources or (
+                is_source_resource_id(resource_id) and resource_id.partition(":")[0] in changed_sources
+            ):
                 _ = self._observations.pop(resource_id, None)
         self._config = config
         self._sink.update_retention(config.audit_retention)
@@ -2313,6 +2484,7 @@ class ControlPlane:
         """Whether the M05 pairing store knows this worker device."""
         return self._worker_identity_store.get_identity(worker_id) is not None
 
+    @_state_locked
     def _rebuild_application(self) -> None:
         """Rebuild the GatewayApplication from the current configuration.
 
@@ -2339,6 +2511,11 @@ class ControlPlane:
         self._source_registry.sync_configuration(self._config.sources)
         catalog = self._source_registry.derived_catalog_entries(catalog)
         catalog = add_configured_resources(catalog, self._config.enabled_registrations())
+        derived_registrations = self._source_registry.derived_registrations()
+        derived_ids = {registration.identity.resource_id for registration in derived_registrations}
+        for resource_id in tuple(self._observations):
+            if is_source_resource_id(resource_id) and resource_id not in derived_ids:
+                _ = self._observations.pop(resource_id, None)
         registry = ResourceRegistry(clock=self._registry_clock)
         for registration in self._config.enabled_registrations():
             resource_id = registration.identity.resource_id
@@ -2346,7 +2523,7 @@ class ControlPlane:
             observation = self._observations.get(resource_id)
             if observation is not None:
                 registry.apply_snapshot(observation)
-        for registration in self._source_registry.derived_registrations():
+        for registration in derived_registrations:
             resource_id = registration.identity.resource_id
             registry.register(registration)
             observation = self._observations.get(resource_id)
@@ -2387,6 +2564,7 @@ class ControlPlane:
             continuation_capability_source=self._continuation_capable_resources,
             mi_server=self._mi_server,
         )
+        self._application_generation += 1
 
     def _current_execution_authority(
         self, client_id: str,
@@ -2444,6 +2622,7 @@ class ControlPlane:
 
     # ── Observation seam (collectors / M05 transport) ────────────────────
 
+    @_state_locked
     def apply_resource_observation(self, snapshot: ResourceStateSnapshot) -> None:
         """Record one normalized observation (collector or M05 transport).
 
@@ -2452,8 +2631,8 @@ class ControlPlane:
         resource: the registry fails closed on unregistered or mismatched
         identities.
         """
-        self._observations[snapshot.identity.resource_id] = snapshot
         self.current_application().registry.apply_snapshot(snapshot)
+        self._observations[snapshot.identity.resource_id] = snapshot
 
     # ── Server-direct readiness observations (M01 refresh seam) ──────────
 
@@ -2467,10 +2646,12 @@ class ControlPlane:
         "schema_drift": "schema_changed",
     }
 
+    @_state_locked
     def _record_probe_observation(
         self,
         resource: ResourceConfig,
         result: "HealthProbeResult | None",
+        generation: int,
     ) -> None:
         """Record one readiness probe as the resource's observation.
 
@@ -2483,7 +2664,7 @@ class ControlPlane:
         and execution admission must see. A probe that could not run
         changes nothing.
         """
-        if result is None:
+        if result is None or generation != self._application_generation:
             return
         health_status = self._PROBE_OUTCOME_TO_HEALTH.get(result.status)
         if health_status is None:
@@ -2518,16 +2699,18 @@ class ControlPlane:
         state.
         """
         try:
-            registry = self.current_application().registry
-            now = format_utc(self._clock())
-            due = registry.refresh_due(now=now)
+            with self._state_lock:
+                registry = self.current_application().registry
+                now = format_utc(self._clock())
+                due = registry.refresh_due(now=now)
+                adapter = self._adapters.resolve("server_direct_http")
+                generation = self._application_generation
+                resources = tuple(self._config.resource_by_id(resource_id) for resource_id in due)
         except Exception:
             return
-        adapter = self._adapters.resolve("server_direct_http")
         if not isinstance(adapter, OpenAICompatibleHttpAdapter):
             return
-        for resource_id in due:
-            resource = self._config.resource_by_id(resource_id)
+        for resource in resources:
             if (
                 resource is None
                 or not resource.enabled
@@ -2535,10 +2718,10 @@ class ControlPlane:
             ):
                 continue
             try:
-                result = adapter.probe_health(resource_id)
+                result = adapter.probe_health(resource.registration.identity.resource_id)
             except Exception:
                 continue
-            self._record_probe_observation(resource, result)
+            self._record_probe_observation(resource, result, generation)
 
 
 #: Non-``ok`` resource-health statuses require their status-level
