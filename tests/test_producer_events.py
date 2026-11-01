@@ -9,10 +9,11 @@ from typing import cast
 from unittest.mock import patch
 
 from scarcity_router.control_api import ProducerCursor, ProducerEventSnapshot
+from scarcity_router.capacity import CapacityWindow
 from scarcity_router.errors import CapacityValidationError
 from scarcity_router.execution_sources import SourceRegistry
 from scarcity_router.model_inventory import DiscoveredModel, ModelInventoryReport, SourceInventory
-from scarcity_router.resource_state import ResourceHealth, ResourceIdentity, ResourceRegistration, ResourceStateSnapshot, WorkerStateReport
+from scarcity_router.resource_state import QuotaFact, ResourceHealth, ResourceIdentity, ResourceRegistration, ResourceStateSnapshot, WorkerStateReport
 from scarcity_router.server_config import ResourceConfig, ServerConfiguration, SourceConfig
 from scarcity_router.server_store import ServerStoreError
 from tests.server_fixtures import ServerHarness
@@ -331,6 +332,81 @@ class ProducerEventTests(ServerHarness):
         self.assertEqual(1, len(replay.events))
         document = cast("dict[str, object]", json.loads(replay.events[0].payload))
         self.assertEqual("stale", cast("list[dict[str, object]]", document["resources"])[0]["freshness"])
+
+    def test_waiter_wakes_for_timestamp_only_provenance_change(self) -> None:
+        clock = [NOW]
+        self.plane._registry_clock = lambda: clock[0]  # pyright: ignore[reportPrivateUsage]
+        identity = ResourceIdentity("local", "local_app_adapter", "ollama", "local", "local_ungated")
+        resource = ResourceConfig(ResourceRegistration(identity, freshness_ttl_seconds=60))
+        self.plane._save_config(ServerConfiguration(resources=(resource,)))  # pyright: ignore[reportPrivateUsage]
+        observation = ResourceStateSnapshot(schema_version=1, identity=identity, observed_at=NOW,
+                                            health=ResourceHealth(status="ok"))
+        self.plane.apply_resource_observation(observation)
+        initial = self.plane.producer_event_snapshot()
+        waiting = threading.Event()
+        responses: list[object] = []
+        condition = self.plane._producer_condition  # pyright: ignore[reportPrivateUsage]
+        original_wait = condition.wait
+
+        def signaled_wait(timeout: float | None = None) -> bool:
+            waiting.set()
+            return original_wait(timeout)
+
+        def wait() -> None:
+            responses.append(self.plane.wait_for_producer_events(initial.cursor, timeout_seconds=5))
+
+        with patch.object(condition, "wait", side_effect=signaled_wait):
+            thread = threading.Thread(target=wait)
+            thread.start()
+            self.assertTrue(waiting.wait(timeout=5))
+            clock[0] = NEXT
+            self.plane.apply_resource_observation(replace(observation, observed_at=NEXT))
+            thread.join(timeout=5)
+        self.assertFalse(thread.is_alive())
+        replay = self.plane.producer_replay(initial.cursor)
+        self.assertEqual(replay, responses[0])
+        self.assertEqual("provenance_changed", replay.reason)
+        self.assertEqual(initial.cursor.sequence, replay.cursor.sequence)
+
+    def test_past_reset_is_not_a_repeated_wait_deadline(self) -> None:
+        self.plane._registry_clock = lambda: NOW  # pyright: ignore[reportPrivateUsage]
+        identity = ResourceIdentity("local", "local_app_adapter", "ollama", "local", "local_ungated")
+        resource = ResourceConfig(ResourceRegistration(identity, freshness_ttl_seconds=60))
+        self.plane._save_config(ServerConfiguration(resources=(resource,)))  # pyright: ignore[reportPrivateUsage]
+        fact = QuotaFact(observation_class="provider_telemetry", window=CapacityWindow.from_dict({
+            "resource": "tokens", "kind": "five_hour", "duration_seconds": 18000,
+            "used_percent": 6, "remaining_percent": 94, "resets_at": "2026-09-16T11:59:00.000Z",
+        }))
+        self.plane.apply_resource_observation(ResourceStateSnapshot(
+            schema_version=1, identity=identity, observed_at=NOW, health=ResourceHealth(status="ok"),
+            quota_facts=(fact,),
+        ))
+        registry = self.plane.current_application().registry
+        actual = registry.registry_snapshot()
+        self.assertEqual("stale", actual.entries[0].freshness)
+        # Exercise the deadline guard even if a future registry permits this state.
+        synthetic = replace(actual, entries=(replace(actual.entries[0], freshness="fresh"),))
+        with patch.object(registry, "registry_snapshot", return_value=synthetic):
+            self.assertAlmostEqual(60.001, self.plane._next_producer_expiry() or 0, places=3)  # pyright: ignore[reportPrivateUsage]
+
+    def test_boundary_crossing_during_wait_setup_is_not_missed(self) -> None:
+        clock = [NOW]
+        self.plane._registry_clock = lambda: clock[0]  # pyright: ignore[reportPrivateUsage]
+        identity = ResourceIdentity("local", "local_app_adapter", "ollama", "local", "local_ungated")
+        resource = ResourceConfig(ResourceRegistration(identity, freshness_ttl_seconds=1))
+        self.plane._save_config(ServerConfiguration(resources=(resource,)))  # pyright: ignore[reportPrivateUsage]
+        self.plane.apply_resource_observation(ResourceStateSnapshot(
+            schema_version=1, identity=identity, observed_at=NOW, health=ResourceHealth(status="ok"),
+        ))
+        initial = self.plane.producer_event_snapshot()
+
+        def cross() -> None:
+            clock[0] = "2026-09-16T12:00:02.000Z"
+            return None
+
+        with patch.object(self.plane, "_next_producer_expiry", side_effect=cross):
+            replay = self.plane.wait_for_producer_events(initial.cursor, timeout_seconds=5)
+        self.assertEqual(1, len(replay.events))
 
     def test_worker_connection_and_disconnect_are_replayable(self) -> None:
         worker_side, server_side = MemoryTransport.pair()

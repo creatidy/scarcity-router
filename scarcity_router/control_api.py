@@ -864,11 +864,13 @@ class ControlPlane:
         try:
             self._store.check_producer_position(self._producer_epoch, self._producer_sequence)
             payload, semantic = self._producer_document()
+            payload_changed = payload != self._producer_payload
             if semantic != self._producer_semantic:
                 self._producer_sequence = self._store.append_producer_event(self._producer_epoch, payload)
                 self._producer_semantic = semantic
-                self._producer_condition.notify_all()
             self._producer_payload = payload
+            if payload_changed:
+                self._producer_condition.notify_all()
         except Exception:
             self._producer_faulted = True
             self._producer_condition.notify_all()
@@ -927,10 +929,11 @@ class ControlPlane:
                 continue
             observed = datetime.fromisoformat(observation.observed_at.replace("Z", "+00:00"))
             deadlines.append(observed + timedelta(seconds=entry.freshness_ttl_seconds, milliseconds=1))
-            deadlines.extend(
-                datetime.fromisoformat(fact.window.resets_at.replace("Z", "+00:00"))
-                for fact in observation.quota_facts if fact.window.resets_at is not None
-            )
+            for fact in observation.quota_facts:
+                if fact.window.resets_at is not None:
+                    reset = datetime.fromisoformat(fact.window.resets_at.replace("Z", "+00:00"))
+                    if reset > now:
+                        deadlines.append(reset)
         return max(0.001, (min(deadlines) - now).total_seconds()) if deadlines else None
 
     def wait_for_producer_events(self, cursor: ProducerCursor, *, timeout_seconds: float) -> ProducerReplay:
@@ -948,6 +951,10 @@ class ControlPlane:
                 if remaining <= 0:
                     return replay
                 expiration = self._next_producer_expiry()
+                # A boundary can pass between replay and deadline calculation.
+                replay = self.producer_replay(cursor)
+                if replay.events or replay.resync is not None:
+                    return replay
                 _ = self._producer_condition.wait(timeout=remaining if expiration is None else min(remaining, expiration))
 
     def handles(self, method: str, path: str) -> bool:

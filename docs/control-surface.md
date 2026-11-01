@@ -88,8 +88,9 @@ and resource snapshot and a durable
 `(epoch, sequence)` high-water from the same serialized cut. Events contain
 complete snapshots with observation and inventory timestamps. Equivalent
 refreshes do not produce events: the cursor also carries a snapshot-provenance
-digest, and a reconnect whose timestamp-only updates cannot be reconstructed
-receives `provenance_changed` plus a fresh snapshot. The digest is a snapshot
+digest, and a waiting or reconnecting consumer whose timestamp-only updates
+cannot be reconstructed receives `provenance_changed` plus a fresh snapshot.
+These provenance wakeups do not append duplicate journal events. The digest is a snapshot
 consistency token, not a durable event identity. Freshness boundaries are evaluated on producer
 access, mutation and a waiting consumer's deadline, without a polling daemon.
 Worker connection/disconnection, configuration, inventory and report changes
