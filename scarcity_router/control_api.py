@@ -44,11 +44,15 @@ safe structural message.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import hmac
+import json
+import math
 import secrets
 import threading
-from dataclasses import dataclass, replace
+import time
+from dataclasses import asdict, dataclass, replace
 from functools import wraps
 from collections.abc import Callable, Mapping
 from datetime import datetime, timedelta, timezone
@@ -104,8 +108,7 @@ from .machine_api import (
 from .capacity import CapacityDiagnostic, CapacitySnapshot
 from .eligibility import ExecutionEligibility
 from .execution_sources import SourceRegistry, add_configured_resources
-from .model_inventory import is_source_resource_id
-from .model_inventory import ModelInventoryReport
+from .model_inventory import AUTH_UNPROBEABLE_KINDS, ModelInventoryReport, is_source_resource_id
 from .resource_state import (
     RESOURCE_STATE_SCHEMA_VERSION,
     QuotaFact,
@@ -320,6 +323,56 @@ def _state_locked(
     return locked
 
 
+def _producer_write(
+    method: Callable[Concatenate[ControlPlane, _P], _R],
+) -> Callable[Concatenate[ControlPlane, _P], _R]:
+    @wraps(method)
+    def locked(self: ControlPlane, *args: _P.args, **kwargs: _P.kwargs) -> _R:
+        with self._state_lock:  # pyright: ignore[reportPrivateUsage]
+            outer = self._publication_depth == 0  # pyright: ignore[reportPrivateUsage]
+            if outer and self._producer_ready:  # pyright: ignore[reportPrivateUsage]
+                self._publish_producer_change()  # pyright: ignore[reportPrivateUsage]
+            self._publication_depth += 1  # pyright: ignore[reportPrivateUsage]
+            try:
+                result = method(self, *args, **kwargs)
+            except Exception:
+                if outer and self._producer_ready:  # pyright: ignore[reportPrivateUsage]
+                    self._publish_producer_change()  # pyright: ignore[reportPrivateUsage]
+                raise
+            finally:
+                self._publication_depth -= 1  # pyright: ignore[reportPrivateUsage]
+            if outer and self._producer_ready:  # pyright: ignore[reportPrivateUsage]
+                self._publish_producer_change()  # pyright: ignore[reportPrivateUsage]
+            return result
+    return locked
+
+
+@dataclass(frozen=True)
+class ProducerCursor:
+    epoch: str
+    sequence: int
+
+
+@dataclass(frozen=True)
+class ProducerEvent:
+    cursor: ProducerCursor
+    payload: str
+
+
+@dataclass(frozen=True)
+class ProducerEventSnapshot:
+    cursor: ProducerCursor
+    payload: str
+
+
+@dataclass(frozen=True)
+class ProducerReplay:
+    cursor: ProducerCursor
+    events: tuple[ProducerEvent, ...]
+    resync: ProducerEventSnapshot | None
+    reason: str | None
+
+
 @dataclass(frozen=True)
 class ProducerResource:
     """Internal resource facts; availability is not an admission decision."""
@@ -384,6 +437,13 @@ class ControlPlane:
     _observations: dict[str, ResourceStateSnapshot]
     _state_lock: threading.RLock
     _application_generation: int
+    _producer_ready: bool
+    _publication_depth: int
+    _producer_epoch: str
+    _producer_sequence: int
+    _producer_payload: str
+    _producer_faulted: bool
+    _producer_condition: threading.Condition
     _request_state: threading.local
     _config: ServerConfiguration
     _sink: DurableAuditSink
@@ -416,7 +476,14 @@ class ControlPlane:
         mi_config_path: Path | None = None,
     ) -> None:
         self._state_lock = threading.RLock()
+        self._producer_condition = threading.Condition(self._state_lock)
         self._application_generation = 0
+        self._producer_ready = False
+        self._publication_depth = 0
+        self._producer_epoch = ""
+        self._producer_sequence = 0
+        self._producer_payload = ""
+        self._producer_faulted = False
         self._ui_dispatcher = ui_dispatcher
         self._store = store
         self._mi_server: MIServer | None = mi_server
@@ -464,12 +531,15 @@ class ControlPlane:
             registry=self,
             configured_owner=self._configured_worker_owner,
         )
+        self._worker_endpoint.publication_lock = self._state_lock
+        self._worker_endpoint.connection_changed = self._producer_connection_changed
         # D-062 (#137): the ONE client-tool continuation registry, owned
         # beside the worker endpoint so application rebuilds (which
         # recreate adapters and the coordinator) never orphan a pending
         # continuation.
         self._continuations: ContinuationRegistry = ContinuationRegistry()
         self._worker_endpoint.inventory_sink = self._apply_source_inventory
+        self._worker_endpoint.atomic_report_sink = self.apply_combined_worker_report
         self._worker_endpoint.is_registered = self._registry_is_registered
         self._worker_endpoint.is_source_bound = self._registry_is_source_bound
         self._worker_endpoint.is_source_bound_source = (
@@ -484,6 +554,9 @@ class ControlPlane:
         self._sink = DurableAuditSink(store, self._config.audit_retention)
         self._application = None
         self._rebuild_application()
+        self._producer_epoch, self._producer_sequence = self._store.start_producer_epoch()
+        self._producer_payload = self._producer_document()
+        self._producer_ready = True
 
     # ── Server-facing dispatch contract (see gateway_server) ─────────────
 
@@ -498,6 +571,7 @@ class ControlPlane:
     def admin_configured(self) -> bool:
         return self._store.admin_identity() is not None
 
+    @_state_locked
     def current_application(self) -> GatewayApplication:
         application = self._application
         if application is None:  # pragma: no cover - construction invariant
@@ -560,7 +634,7 @@ class ControlPlane:
         source = self._config.source_by_id(source_id)
         return source is not None and source.worker_id == worker_id
 
-    @_state_locked
+    @_producer_write
     def _apply_source_inventory(self, inventory: ModelInventoryReport) -> None:
         """The endpoint's validated inventory sink (D-053).
 
@@ -591,8 +665,11 @@ class ControlPlane:
                 _ = self._observations.pop(resource_id, None)
         self._rebuild_application()
 
-    @_state_locked
     def apply_worker_report(self, report: WorkerStateReport) -> None:
+        _ = self.apply_combined_worker_report(report, ())
+
+    @_producer_write
+    def _apply_worker_report(self, report: WorkerStateReport) -> None:
         """The M05 endpoint's report sink (the one normalization path).
 
         Reports are applied atomically through the live registry (M01
@@ -608,6 +685,73 @@ class ControlPlane:
         registry.apply_worker_report(report)
         for snapshot in report.resources:
             self._observations[snapshot.identity.resource_id] = snapshot
+
+    def apply_combined_worker_report(
+        self, report: WorkerStateReport, inventories: tuple[ModelInventoryReport, ...],
+    ) -> WorkerStateReport:
+        """Publish inventory and observations as one failure-atomic state cut."""
+        with self._state_lock:
+            self._publish_producer_change()
+            old_sources = self._source_registry
+            old_observations = self._observations
+            old_application = self._application
+            old_adapters = self._adapters
+            old_generation = self._application_generation
+            self._source_registry = copy.deepcopy(old_sources) if inventories else old_sources
+            self._observations = dict(old_observations)
+            self._publication_depth += 1
+            try:
+                source_ids: set[str] = set()
+                for inventory in inventories:
+                    for source_inventory in inventory.sources:
+                        if source_inventory.source_id in source_ids:
+                            raise ValueError("duplicate source inventory")
+                        source_ids.add(source_inventory.source_id)
+                        source = self._config.source_by_id(source_inventory.source_id)
+                        prefix = {"codex_subscription": "codex", "zcode_subscription": "zcode"}
+                        if (source is None or source.kind not in prefix
+                                or source_inventory.adapter_id != f"{prefix[source.kind]}:{source.source_id}"):
+                            raise ValueError("source inventory adapter does not match configuration")
+                for snapshot in report.resources:
+                    if self._configured_worker_owner(snapshot.identity.resource_id) != report.worker_id:
+                        raise ValueError("resource no longer belongs to this worker")
+                for inventory in inventories:
+                    if inventory.worker_id != report.worker_id:
+                        raise ValueError("inventory worker does not match report")
+                    self._apply_source_inventory(inventory)
+                if not inventories:
+                    assert old_application is not None
+                    staged = copy.copy(old_application)
+                    staged.registry = copy.deepcopy(old_application.registry)
+                    self._application = staged
+                unauthenticated = {
+                    source.source_id for inventory in inventories for source in inventory.sources
+                    if source.auth_state != "authenticated" and not (
+                        source.kind in AUTH_UNPROBEABLE_KINDS and source.auth_state == "unverified"
+                    )
+                }
+                applied = tuple(
+                    snapshot for snapshot in report.resources
+                    if not (is_source_resource_id(snapshot.identity.resource_id)
+                            and (snapshot.identity.resource_id.partition(":")[0] in unauthenticated
+                                 or not self.current_application().registry.is_registered(snapshot.identity.resource_id)))
+                )
+                accepted = WorkerStateReport(
+                    schema_version=report.schema_version, worker_id=report.worker_id,
+                    reported_at=report.reported_at, resources=applied,
+                )
+                self._apply_worker_report(accepted)
+                self._publish_producer_change()
+                return accepted
+            except Exception:
+                self._source_registry = old_sources
+                self._observations = old_observations
+                self._application = old_application
+                self._adapters = old_adapters
+                self._application_generation = old_generation
+                raise
+            finally:
+                self._publication_depth -= 1
 
     @_state_locked
     def producer_snapshot(self) -> ProducerSnapshot:
@@ -686,6 +830,111 @@ class ControlPlane:
             sources=tuple(sources),
             discoveries=tuple(discoveries[key] for key in sorted(discoveries)),
         )
+
+    def _producer_document(self) -> str:
+        """Stable semantic projection; collection timestamps are not events."""
+        snapshot = self.producer_snapshot()
+        resources: list[dict[str, object]] = []
+        for item in snapshot.resources:
+            resource = cast("dict[str, object]", asdict(item))
+            _ = resource.pop("observed_at")
+            resources.append(resource)
+        sources: list[dict[str, object]] = []
+        for item in snapshot.sources:
+            source = cast("dict[str, object]", asdict(item))
+            _ = source.pop("inventory_observed_at")
+            sources.append(source)
+        discoveries: list[dict[str, object]] = []
+        for item in snapshot.discoveries:
+            discovery = cast("dict[str, object]", asdict(item))
+            _ = discovery.pop("observed_at")
+            discoveries.append(discovery)
+        return json.dumps(
+            {"schema_version": 1, "resources": resources, "sources": sources, "discoveries": discoveries},
+            sort_keys=True, separators=(",", ":"), allow_nan=False,
+        )
+
+    def _publish_producer_change(self) -> None:
+        if self._producer_faulted:
+            raise ServerStoreError("producer requires restart after publication failure")
+        try:
+            self._store.check_producer_position(self._producer_epoch, self._producer_sequence)
+            payload = self._producer_document()
+            if payload != self._producer_payload:
+                self._producer_sequence = self._store.append_producer_event(self._producer_epoch, payload)
+                self._producer_payload = payload
+                self._producer_condition.notify_all()
+        except Exception:
+            self._producer_faulted = True
+            self._producer_condition.notify_all()
+            raise
+
+    def _producer_connection_changed(self) -> None:
+        if self._producer_ready:
+            try:
+                self._publish_producer_change()
+            except Exception:
+                # The journal stays fail-closed; worker cleanup must still run.
+                pass
+
+    @_state_locked
+    def producer_event_snapshot(self) -> ProducerEventSnapshot:
+        """Return a semantic snapshot and durable high-water from one cut."""
+        self._publish_producer_change()
+        return ProducerEventSnapshot(
+            ProducerCursor(self._producer_epoch, self._producer_sequence), self._producer_payload,
+        )
+
+    @_state_locked
+    def producer_replay(self, cursor: ProducerCursor) -> ProducerReplay:
+        """Replay retained changes or provide an explicit resynchronization cut."""
+        self._publish_producer_change()
+        high, rows, reason = self._store.read_producer_events(
+            cursor.epoch, cursor.sequence, owner_epoch=self._producer_epoch,
+            owner_sequence=self._producer_sequence,
+        )
+        current = ProducerCursor(self._producer_epoch, high)
+        if reason is not None:
+            return ProducerReplay(current, (), ProducerEventSnapshot(current, self._producer_payload), reason)
+        return ProducerReplay(
+            current,
+            tuple(ProducerEvent(ProducerCursor(self._producer_epoch, sequence), payload)
+                  for sequence, payload in rows),
+            None, None,
+        )
+
+    def _next_producer_expiry(self) -> float | None:
+        registry = self.current_application().registry.registry_snapshot()
+        now = datetime.fromisoformat(registry.generated_at.replace("Z", "+00:00"))
+        deadlines: list[datetime] = []
+        for entry in registry.entries:
+            observation = entry.observation
+            if observation is None or entry.freshness != "fresh":
+                continue
+            observed = datetime.fromisoformat(observation.observed_at.replace("Z", "+00:00"))
+            deadlines.append(observed + timedelta(seconds=entry.freshness_ttl_seconds, milliseconds=1))
+            deadlines.extend(
+                datetime.fromisoformat(fact.window.resets_at.replace("Z", "+00:00"))
+                for fact in observation.quota_facts if fact.window.resets_at is not None
+            )
+        return max(0.001, (min(deadlines) - now).total_seconds()) if deadlines else None
+
+    def wait_for_producer_events(self, cursor: ProducerCursor, *, timeout_seconds: float) -> ProducerReplay:
+        """Wait in the caller for a change, resync, freshness boundary or timeout."""
+        if (isinstance(timeout_seconds, bool) or not math.isfinite(timeout_seconds)
+                or not 0 <= timeout_seconds <= 60):
+            raise ValueError("producer wait timeout must be between 0 and 60 seconds")
+        deadline = time.monotonic() + timeout_seconds
+        with self._producer_condition:
+            while True:
+                replay = self.producer_replay(cursor)
+                if replay.events or replay.resync is not None:
+                    return replay
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return replay
+                expiration = self._next_producer_expiry()
+                _ = self._producer_condition.wait(timeout=remaining if expiration is None else min(remaining, expiration))
 
     def handles(self, method: str, path: str) -> bool:
         _ = method
@@ -2428,7 +2677,7 @@ class ControlPlane:
             ),
         )
 
-    @_state_locked
+    @_producer_write
     def _save_config(self, config: ServerConfiguration) -> None:
         """Validate, apply, then persist one configuration version.
 
@@ -2484,7 +2733,7 @@ class ControlPlane:
         """Whether the M05 pairing store knows this worker device."""
         return self._worker_identity_store.get_identity(worker_id) is not None
 
-    @_state_locked
+    @_producer_write
     def _rebuild_application(self) -> None:
         """Rebuild the GatewayApplication from the current configuration.
 
@@ -2622,7 +2871,7 @@ class ControlPlane:
 
     # ── Observation seam (collectors / M05 transport) ────────────────────
 
-    @_state_locked
+    @_producer_write
     def apply_resource_observation(self, snapshot: ResourceStateSnapshot) -> None:
         """Record one normalized observation (collector or M05 transport).
 

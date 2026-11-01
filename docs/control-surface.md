@@ -81,13 +81,32 @@ reassigned, changes identity or changes its backing endpoint. In-flight readines
 probes cannot publish after an application rebuild.
 It samples actual worker connectivity separately from inventory, and does not
 equate a healthy observation with admission. Source inventory freshness remains
-unknown unless never observed. This in-process projection is not an exposed or
-versioned consumer contract: it has no durable cursor, event journal, history,
-replay, or snapshot/resume guarantee. Worker inventory and resource reports can
-be applied in separate stages; the snapshot is not a promise that a whole worker
-report was accepted atomically. Restart reconstructs configuration but not
-in-memory discovery or observations. #183's event and consumer acceptance gates
-remain open.
+unknown unless never observed.
+
+The internal producer event seam supplies a version-1 semantic snapshot and a
+durable `(epoch, sequence)` high-water from the same serialized cut. Events
+contain complete semantic snapshots; unchanged observations and collection
+timestamps do not produce events. Freshness boundaries are evaluated on producer
+access, mutation and a waiting consumer's deadline, without a polling daemon.
+Worker connection/disconnection, configuration, inventory and report changes
+participate in the same publication lock. A composed worker report stages its
+inventories and observations together, then commits one event; rejection or a
+failed journal write rolls back its in-memory state. A journal write failure
+fences the producer until restart rather than returning an untrustworthy cursor.
+
+The protected server store retains at most 256 events and 16 MiB total, with a
+4 MiB per-event bound. Event sequence is independent of audit and registry
+revisions. Expired cursors, missing sequences, future cursors and incompatible
+epochs return a resynchronization snapshot and an explicit reason
+(`cursor_expired`, `history_gap`, `cursor_future`, `cursor_before_epoch` or
+`epoch_mismatch`). Malformed cursors are rejected. Every server start opens
+a new epoch: old event identities remain historical records, but a consumer
+resynchronizes rather than treating prior-epoch ephemeral observations as live.
+Configuration is reconstructed after restart; discovery, observations and
+worker connectivity are not reconstructed from event history. A single active
+producer owns an epoch; a newer process fences an older one. These are internal
+interfaces only, not a new externally exposed or authorized consumer contract.
+External consumer authorization and acceptance remain open.
 Request audit/trace export is diagnostics, not a settlement ledger. CLI
 status UX (#182) is independent of Console delivery and retains JSON/pipe/
 CI/unknown/no-color behavior.
