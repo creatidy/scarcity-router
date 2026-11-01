@@ -38,21 +38,32 @@ class ProducerEventTests(ServerHarness):
                                             health=ResourceHealth(status="ok"))
         self.plane.apply_resource_observation(observation)
         observed = self.plane.producer_event_snapshot()
-        clock[0] = NEXT
-        self.plane.apply_resource_observation(replace(observation, observed_at=NEXT))
-        self.assertEqual(observed, self.plane.producer_event_snapshot())
         replay = self.plane.producer_replay(initial.cursor)
         self.assertIsNone(replay.resync)
         self.assertEqual((registered.cursor.sequence, observed.cursor.sequence),
                          tuple(event.cursor.sequence for event in replay.events))
         self.assertEqual(observed.payload, replay.events[-1].payload)
-        self.assertNotIn("observed_at", observed.payload)
+        clock[0] = NEXT
+        self.plane.apply_resource_observation(replace(observation, observed_at=NEXT))
+        refreshed = self.plane.producer_event_snapshot()
+        self.assertEqual(observed.cursor.sequence, refreshed.cursor.sequence)
+        self.assertNotEqual(observed.cursor.provenance, refreshed.cursor.provenance)
+        refreshed_doc = cast("dict[str, object]", json.loads(refreshed.payload))
+        self.assertEqual(NEXT, cast("list[dict[str, object]]", refreshed_doc["resources"])[0]["observed_at"])
+        resync = self.plane.producer_replay(observed.cursor)
+        self.assertEqual("provenance_changed", resync.reason)
+        self.assertEqual(refreshed, resync.resync)
+        self.assertEqual("provenance_changed", self.plane.producer_replay(initial.cursor).reason)
+        self.assertEqual((), self.plane.producer_replay(refreshed.cursor).events)
         clock[0] = FUTURE
         stale = self.plane.producer_event_snapshot()
         self.assertEqual(observed.cursor.sequence + 1, stale.cursor.sequence)
         document = cast("dict[str, object]", json.loads(stale.payload))
         resources = cast("list[dict[str, object]]", document["resources"])
         self.assertEqual("stale", resources[0]["freshness"])
+        replay_after_stale = self.plane.producer_replay(refreshed.cursor)
+        self.assertIsNone(replay_after_stale.resync)
+        self.assertEqual(stale.payload, replay_after_stale.events[-1].payload)
         with patch("scarcity_router.server_store._PRODUCER_EVENT_LIMIT", 1):
             self.plane._save_config(ServerConfiguration(resources=(replace(resource, enabled=False),)))  # pyright: ignore[reportPrivateUsage]
         gap = self.plane.producer_replay(initial.cursor)
@@ -221,13 +232,44 @@ class ProducerEventTests(ServerHarness):
             _ = self.plane.producer_replay(before.cursor)
 
     def test_invalid_cursor_fails_closed(self) -> None:
-        for cursor in (ProducerCursor("bad", 0), ProducerCursor("0" * 32, -1)):
+        for cursor in (ProducerCursor("bad", 0, "0" * 64), ProducerCursor("0" * 32, -1, "0" * 64),
+                       ProducerCursor("0" * 32, 0, "bad")):
             with self.assertRaises(ServerStoreError):
                 _ = self.plane.producer_replay(cursor)
         current = self.plane.producer_event_snapshot()
-        future = self.plane.producer_replay(ProducerCursor(current.cursor.epoch, current.cursor.sequence + 1))
+        future = self.plane.producer_replay(ProducerCursor(
+            current.cursor.epoch, current.cursor.sequence + 1, current.cursor.provenance,
+        ))
         self.assertEqual("cursor_future", future.reason)
         self.assertEqual(current, future.resync)
+        incompatible = self.plane.producer_replay(replace(current.cursor, schema_version=2))
+        self.assertEqual("schema_mismatch", incompatible.reason)
+        self.assertEqual(current, incompatible.resync)
+
+    def test_versioned_consumer_fixture_handles_duplicates_and_reordering(self) -> None:
+        initial = self.plane.producer_event_snapshot()
+        identity = ResourceIdentity("local", "local_app_adapter", "ollama", "local", "local_ungated")
+        resource = ResourceConfig(ResourceRegistration(identity, freshness_ttl_seconds=60), enabled=False)
+        self.plane._save_config(ServerConfiguration(resources=(resource,)))  # pyright: ignore[reportPrivateUsage]
+        self.plane._save_config(ServerConfiguration(resources=(replace(resource, enabled=True),)))  # pyright: ignore[reportPrivateUsage]
+        replay = self.plane.producer_replay(initial.cursor)
+        self.assertEqual(2, len(replay.events))
+        self.assertEqual(replay.events, self.plane.producer_replay(initial.cursor).events)
+        sequence = initial.cursor.sequence
+        document = cast("dict[str, object]", json.loads(initial.payload))
+        self.assertEqual(1, document["schema_version"])
+        self.assertEqual("execution_gateway", document["mode"])
+        reordered = replay.events[1]
+        self.assertGreater(reordered.cursor.sequence, sequence + 1)
+        for event in (replay.events[0], replay.events[0], replay.events[1]):
+            if event.cursor.sequence <= sequence:
+                continue
+            self.assertEqual(sequence + 1, event.cursor.sequence)
+            document = cast("dict[str, object]", json.loads(event.payload))
+            sequence = event.cursor.sequence
+        current = self.plane.producer_event_snapshot()
+        self.assertEqual(current.cursor.sequence, sequence)
+        self.assertEqual(json.loads(current.payload), document)
 
     def test_new_epoch_between_position_check_and_replay_fences_old_producer(self) -> None:
         cursor = self.plane.producer_event_snapshot().cursor
@@ -366,3 +408,72 @@ class ProducerEventTests(ServerHarness):
         finally:
             session.close(note="cleanup")
             thread.join(timeout=5)
+
+    def test_binding_publication_is_serialized_with_reassignment(self) -> None:
+        self.plane._registry_clock = lambda: NOW  # pyright: ignore[reportPrivateUsage]
+        sessions: list[tuple[object, threading.Thread]] = []
+
+        def pair() -> tuple[ScriptedWorker, PairResultMessage, object]:
+            worker_side, server_side = MemoryTransport.pair()
+            session = self.plane.worker_endpoint.attach_transport(server_side)
+            thread = threading.Thread(target=session.run, daemon=True)
+            thread.start()
+            sessions.append((session, thread))
+            worker = ScriptedWorker(worker_side)
+            code = self.plane._worker_identity_store.begin_pairing(label="synthetic")  # pyright: ignore[reportPrivateUsage]
+            paired = worker.send_pair(code.pairing_code)
+            assert isinstance(paired, PairResultMessage)
+            return worker, paired, session
+
+        worker_a, pair_a, _ = pair()
+        worker_b, pair_b, session_b = pair()
+        identity = ResourceIdentity("worker-resource", "worker_bridged", "openai", "model", "subscription_included")
+        resource = ResourceConfig(ResourceRegistration(identity, freshness_ttl_seconds=60), worker_id=pair_a.worker_id)
+        self.plane._save_config(ServerConfiguration(resources=(resource,)))  # pyright: ignore[reportPrivateUsage]
+        observation = ResourceStateSnapshot(schema_version=1, identity=identity, observed_at=NOW,
+                                            health=ResourceHealth(status="ok"))
+        report_a = WorkerStateReport(schema_version=1, worker_id=pair_a.worker_id, reported_at=NOW,
+                                     resources=(observation,))
+        report_b = replace(report_a, worker_id=pair_b.worker_id)
+        accepted, release, changed = threading.Event(), threading.Event(), threading.Event()
+        answers: list[object] = []
+        original = self.plane.apply_combined_worker_report
+
+        def paused(report: WorkerStateReport, inventories: tuple[ModelInventoryReport, ...]) -> WorkerStateReport:
+            result = original(report, inventories)
+            accepted.set()
+            if not release.wait(timeout=5):
+                raise RuntimeError("test timed out")
+            return result
+
+        def send_a() -> None:
+            answers.append(worker_a.send_state_report(report_a.to_dict()))
+
+        def reassign() -> None:
+            self.plane._save_config(ServerConfiguration(  # pyright: ignore[reportPrivateUsage]
+                resources=(replace(resource, worker_id=pair_b.worker_id),),
+            ))
+            changed.set()
+
+        try:
+            with patch.object(self.plane.worker_endpoint, "atomic_report_sink", side_effect=paused):
+                report_thread = threading.Thread(target=send_a)
+                report_thread.start()
+                self.assertTrue(accepted.wait(timeout=5))
+                config_thread = threading.Thread(target=reassign)
+                config_thread.start()
+                try:
+                    self.assertFalse(changed.wait(timeout=0.05))
+                finally:
+                    release.set()
+                    report_thread.join(timeout=5)
+                    config_thread.join(timeout=5)
+            self.assertTrue(changed.is_set())
+            self.assertIsInstance(answers[0], StateReportAckMessage)
+            self.assertIsInstance(worker_b.send_state_report(report_b.to_dict()), StateReportAckMessage)
+            self.assertIs(session_b, self.plane.worker_endpoint.session_for_resource(identity.resource_id))
+        finally:
+            from scarcity_router.worker_endpoint import WorkerSession
+            for session, thread in sessions:
+                cast(WorkerSession, session).close(note="cleanup")
+                thread.join(timeout=5)

@@ -714,16 +714,21 @@ class WorkerSession:
                 )
                 return
         if endpoint.atomic_report_sink is not None:
-            try:
-                applied_report = endpoint.atomic_report_sink(report, tuple(applied_inventories))
-            except (CapacityValidationError, ValueError) as exc:
-                self._send_error(ErrorMessage(
-                    code=ERR_MALFORMED, message=f"the state report was not applied: {exc}", fatal=False,
-                ))
+            failure: ErrorMessage | None = None
+            with endpoint.publication_lock:
+                try:
+                    applied_report = endpoint.atomic_report_sink(report, tuple(applied_inventories))
+                except (CapacityValidationError, ValueError) as exc:
+                    failure = ErrorMessage(
+                        code=ERR_MALFORMED, message=f"the state report was not applied: {exc}", fatal=False,
+                    )
+                else:
+                    with endpoint._lock:  # pyright: ignore[reportPrivateUsage]
+                        for snapshot in applied_report.resources:
+                            endpoint._observed_bindings[snapshot.identity.resource_id] = worker_id  # pyright: ignore[reportPrivateUsage]
+            if failure is not None:
+                self._send_error(failure)
                 return
-            with endpoint._lock:  # pyright: ignore[reportPrivateUsage]
-                for snapshot in applied_report.resources:
-                    endpoint._observed_bindings[snapshot.identity.resource_id] = worker_id  # pyright: ignore[reportPrivateUsage]
             self._state.writer.write_message(StateReportAckMessage().to_payload())
             return
         for inventory in applied_inventories:

@@ -83,10 +83,14 @@ It samples actual worker connectivity separately from inventory, and does not
 equate a healthy observation with admission. Source inventory freshness remains
 unknown unless never observed.
 
-The internal producer event seam supplies a version-1 semantic snapshot and a
-durable `(epoch, sequence)` high-water from the same serialized cut. Events
-contain complete semantic snapshots; unchanged observations and collection
-timestamps do not produce events. Freshness boundaries are evaluated on producer
+The internal producer event seam supplies a version-1 execution-gateway mode
+and resource snapshot and a durable
+`(epoch, sequence)` high-water from the same serialized cut. Events contain
+complete snapshots with observation and inventory timestamps. Equivalent
+refreshes do not produce events: the cursor also carries a snapshot-provenance
+digest, and a reconnect whose timestamp-only updates cannot be reconstructed
+receives `provenance_changed` plus a fresh snapshot. The digest is a snapshot
+consistency token, not a durable event identity. Freshness boundaries are evaluated on producer
 access, mutation and a waiting consumer's deadline, without a polling daemon.
 Worker connection/disconnection, configuration, inventory and report changes
 participate in the same publication lock. A composed worker report stages its
@@ -98,8 +102,9 @@ The protected server store retains at most 256 events and 16 MiB total, with a
 4 MiB per-event bound. Event sequence is independent of audit and registry
 revisions. Expired cursors, missing sequences, future cursors and incompatible
 epochs return a resynchronization snapshot and an explicit reason
-(`cursor_expired`, `history_gap`, `cursor_future`, `cursor_before_epoch` or
-`epoch_mismatch`). Malformed cursors are rejected. Every server start opens
+(`cursor_expired`, `history_gap`, `cursor_future`, `cursor_before_epoch`,
+`epoch_mismatch`, `schema_mismatch` or `provenance_changed`). Malformed cursors
+are rejected. Every server start opens
 a new epoch: old event identities remain historical records, but a consumer
 resynchronizes rather than treating prior-epoch ephemeral observations as live.
 Configuration is reconstructed after restart; discovery, observations and

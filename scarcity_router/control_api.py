@@ -351,6 +351,8 @@ def _producer_write(
 class ProducerCursor:
     epoch: str
     sequence: int
+    provenance: str
+    schema_version: int = 1
 
 
 @dataclass(frozen=True)
@@ -442,6 +444,7 @@ class ControlPlane:
     _producer_epoch: str
     _producer_sequence: int
     _producer_payload: str
+    _producer_semantic: str
     _producer_faulted: bool
     _producer_condition: threading.Condition
     _request_state: threading.local
@@ -483,6 +486,7 @@ class ControlPlane:
         self._producer_epoch = ""
         self._producer_sequence = 0
         self._producer_payload = ""
+        self._producer_semantic = ""
         self._producer_faulted = False
         self._ui_dispatcher = ui_dispatcher
         self._store = store
@@ -555,7 +559,7 @@ class ControlPlane:
         self._application = None
         self._rebuild_application()
         self._producer_epoch, self._producer_sequence = self._store.start_producer_epoch()
-        self._producer_payload = self._producer_document()
+        self._producer_payload, self._producer_semantic = self._producer_document()
         self._producer_ready = True
 
     # ── Server-facing dispatch contract (see gateway_server) ─────────────
@@ -831,39 +835,40 @@ class ControlPlane:
             discoveries=tuple(discoveries[key] for key in sorted(discoveries)),
         )
 
-    def _producer_document(self) -> str:
-        """Stable semantic projection; collection timestamps are not events."""
+    def _producer_document(self) -> tuple[str, str]:
+        """Return full provenance and a timestamp-independent change key."""
         snapshot = self.producer_snapshot()
-        resources: list[dict[str, object]] = []
-        for item in snapshot.resources:
-            resource = cast("dict[str, object]", asdict(item))
+        resources = [cast("dict[str, object]", asdict(item)) for item in snapshot.resources]
+        sources = [cast("dict[str, object]", asdict(item)) for item in snapshot.sources]
+        discoveries = [cast("dict[str, object]", asdict(item)) for item in snapshot.discoveries]
+        document = {
+            "schema_version": 1, "mode": "execution_gateway", "resources": resources,
+            "sources": sources, "discoveries": discoveries,
+        }
+        payload = json.dumps(document, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        for resource in resources:
             _ = resource.pop("observed_at")
-            resources.append(resource)
-        sources: list[dict[str, object]] = []
-        for item in snapshot.sources:
-            source = cast("dict[str, object]", asdict(item))
+        for source in sources:
             _ = source.pop("inventory_observed_at")
-            sources.append(source)
-        discoveries: list[dict[str, object]] = []
-        for item in snapshot.discoveries:
-            discovery = cast("dict[str, object]", asdict(item))
+        for discovery in discoveries:
             _ = discovery.pop("observed_at")
-            discoveries.append(discovery)
-        return json.dumps(
-            {"schema_version": 1, "resources": resources, "sources": sources, "discoveries": discoveries},
-            sort_keys=True, separators=(",", ":"), allow_nan=False,
-        )
+        semantic = json.dumps(document, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        return payload, semantic
+
+    def _producer_cursor(self, sequence: int, payload: str) -> ProducerCursor:
+        return ProducerCursor(self._producer_epoch, sequence, hashlib.sha256(payload.encode("utf-8")).hexdigest())
 
     def _publish_producer_change(self) -> None:
         if self._producer_faulted:
             raise ServerStoreError("producer requires restart after publication failure")
         try:
             self._store.check_producer_position(self._producer_epoch, self._producer_sequence)
-            payload = self._producer_document()
-            if payload != self._producer_payload:
+            payload, semantic = self._producer_document()
+            if semantic != self._producer_semantic:
                 self._producer_sequence = self._store.append_producer_event(self._producer_epoch, payload)
-                self._producer_payload = payload
+                self._producer_semantic = semantic
                 self._producer_condition.notify_all()
+            self._producer_payload = payload
         except Exception:
             self._producer_faulted = True
             self._producer_condition.notify_all()
@@ -882,23 +887,32 @@ class ControlPlane:
         """Return a semantic snapshot and durable high-water from one cut."""
         self._publish_producer_change()
         return ProducerEventSnapshot(
-            ProducerCursor(self._producer_epoch, self._producer_sequence), self._producer_payload,
+            self._producer_cursor(self._producer_sequence, self._producer_payload), self._producer_payload,
         )
 
     @_state_locked
     def producer_replay(self, cursor: ProducerCursor) -> ProducerReplay:
         """Replay retained changes or provide an explicit resynchronization cut."""
+        if (type(cursor.provenance) is not str or len(cursor.provenance) != 64
+                or any(ch not in "0123456789abcdef" for ch in cursor.provenance)):
+            raise ServerStoreError("invalid producer cursor")
         self._publish_producer_change()
+        if type(cursor.schema_version) is not int or cursor.schema_version != 1:
+            current = self._producer_cursor(self._producer_sequence, self._producer_payload)
+            return ProducerReplay(current, (), ProducerEventSnapshot(current, self._producer_payload), "schema_mismatch")
         high, rows, reason = self._store.read_producer_events(
             cursor.epoch, cursor.sequence, owner_epoch=self._producer_epoch,
             owner_sequence=self._producer_sequence,
         )
-        current = ProducerCursor(self._producer_epoch, high)
+        current = self._producer_cursor(high, self._producer_payload)
         if reason is not None:
             return ProducerReplay(current, (), ProducerEventSnapshot(current, self._producer_payload), reason)
+        replay_provenance = self._producer_cursor(rows[-1][0], rows[-1][1]).provenance if rows else cursor.provenance
+        if replay_provenance != current.provenance:
+            return ProducerReplay(current, (), ProducerEventSnapshot(current, self._producer_payload), "provenance_changed")
         return ProducerReplay(
             current,
-            tuple(ProducerEvent(ProducerCursor(self._producer_epoch, sequence), payload)
+            tuple(ProducerEvent(self._producer_cursor(sequence, payload), payload)
                   for sequence, payload in rows),
             None, None,
         )
