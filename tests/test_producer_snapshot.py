@@ -162,6 +162,7 @@ class ProducerSnapshotTests(ServerHarness):
         self.assertEqual("never_observed", self.plane.producer_snapshot().resources[0].freshness)
 
     def test_missing_retirement_and_rediscovery(self) -> None:
+        self.plane._registry_clock = lambda: NOW  # pyright: ignore[reportPrivateUsage]
         source = SourceConfig("owned", "codex_subscription", "Owned", "worker-1", allowed_models=("allowed",))
         initial = SourceInventory(
             source_id="owned", adapter_id="codex:owned", kind="codex_subscription", observed_at=NOW,
@@ -178,6 +179,13 @@ class ProducerSnapshotTests(ServerHarness):
         with patch.object(self.plane, "_worker_id_exists", return_value=True):
             self.plane._save_config(ServerConfiguration(sources=(source,)))  # pyright: ignore[reportPrivateUsage]
             apply(initial)
+            identity = self.plane.current_application().registry.registry_snapshot().entries[0].identity
+            self.plane.apply_worker_report(WorkerStateReport(
+                schema_version=1, worker_id="worker-1", reported_at=NOW,
+                resources=(ResourceStateSnapshot(schema_version=1, identity=identity, observed_at=NOW,
+                                                 health=ResourceHealth(status="ok")),),
+            ))
+            self.assertEqual("fresh", self.plane.producer_snapshot().resources[0].freshness)
             for _ in range(2):
                 apply(missing_inventory)
                 missing = self.plane.producer_snapshot()
@@ -194,6 +202,10 @@ class ProducerSnapshotTests(ServerHarness):
             self.assertEqual("routable", rediscovered.discoveries[0].state)
             self.assertIsNone(rediscovered.discoveries[0].lifecycle)
             self.assertEqual(1, len(rediscovered.resources))
+            self.assertEqual("never_observed", rediscovered.resources[0].freshness)
+            self.assertIsNone(rediscovered.resources[0].health)
+            entry = self.plane.current_application().registry.registry_snapshot().entries[0]
+            self.assertIsNone(entry.observation)
 
     def test_inventory_from_former_owner_is_rejected_after_reassignment(self) -> None:
         source = SourceConfig("owned", "codex_subscription", "Owned", "worker-1", allowed_models=("allowed",))

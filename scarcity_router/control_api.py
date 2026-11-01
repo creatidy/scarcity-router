@@ -2511,6 +2511,11 @@ class ControlPlane:
         self._source_registry.sync_configuration(self._config.sources)
         catalog = self._source_registry.derived_catalog_entries(catalog)
         catalog = add_configured_resources(catalog, self._config.enabled_registrations())
+        derived_registrations = self._source_registry.derived_registrations()
+        derived_ids = {registration.identity.resource_id for registration in derived_registrations}
+        for resource_id in tuple(self._observations):
+            if is_source_resource_id(resource_id) and resource_id not in derived_ids:
+                _ = self._observations.pop(resource_id, None)
         registry = ResourceRegistry(clock=self._registry_clock)
         for registration in self._config.enabled_registrations():
             resource_id = registration.identity.resource_id
@@ -2518,7 +2523,7 @@ class ControlPlane:
             observation = self._observations.get(resource_id)
             if observation is not None:
                 registry.apply_snapshot(observation)
-        for registration in self._source_registry.derived_registrations():
+        for registration in derived_registrations:
             resource_id = registration.identity.resource_id
             registry.register(registration)
             observation = self._observations.get(resource_id)
