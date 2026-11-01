@@ -77,7 +77,8 @@ evaluated observation freshness under the control-plane publication lock.
 Retained inventory misses and bounded retirement state are represented without
 inventing their occurrence times. Worker ownership is rechecked at publication;
 observations are discarded when a configured resource is removed, disabled,
-reassigned or changes identity.
+reassigned, changes identity or changes its backing endpoint. In-flight readiness
+probes cannot publish after an application rebuild.
 It samples actual worker connectivity separately from inventory, and does not
 equate a healthy observation with admission. Source inventory freshness remains
 unknown unless never observed. This in-process projection is not an exposed or

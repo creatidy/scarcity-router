@@ -9,8 +9,9 @@ from unittest.mock import patch
 from scarcity_router.control_api import ProducerSnapshot
 from scarcity_router.errors import CapacityValidationError
 from scarcity_router.model_inventory import DiscoveredModel, ModelInventoryReport, SourceInventory
+from scarcity_router.providers.openai_http_adapter import HealthProbeResult, OpenAICompatibleHttpAdapter
 from scarcity_router.resource_state import ResourceIdentity, ResourceRegistration, ResourceStateSnapshot, ResourceHealth, WorkerStateReport
-from scarcity_router.server_config import ResourceConfig, ServerConfiguration, SourceConfig
+from scarcity_router.server_config import ProviderEndpointConfig, ResourceConfig, ServerConfiguration, SourceConfig
 from tests.server_fixtures import ServerHarness
 
 
@@ -211,6 +212,65 @@ class ProducerSnapshotTests(ServerHarness):
         self.assertEqual((), snapshot.resources)
         self.assertEqual((), snapshot.discoveries)
         self.assertEqual("never_observed", snapshot.sources[0].inventory_freshness)
+
+    def test_endpoint_rebind_and_endpoint_edit_invalidate_observations(self) -> None:
+        self.plane._registry_clock = lambda: NOW  # pyright: ignore[reportPrivateUsage]
+        identity = ResourceIdentity("local", "server_direct_http", "ollama", "model", "local_ungated")
+        resource = ResourceConfig(ResourceRegistration(identity, freshness_ttl_seconds=60), endpoint_id="one")
+        one = ProviderEndpointConfig("one", "ollama", "http://127.0.0.1:1111")
+        two = ProviderEndpointConfig("two", "ollama", "http://127.0.0.1:2222")
+        original = ServerConfiguration(providers=(one, two), resources=(resource,))
+        updated = replace(original, resources=(replace(resource, endpoint_id="two"),))
+        observation = ResourceStateSnapshot(schema_version=1, identity=identity, observed_at=NOW,
+                                            health=ResourceHealth(status="ok"))
+        self.plane._save_config(original)  # pyright: ignore[reportPrivateUsage]
+        self.plane.apply_resource_observation(observation)
+        self.plane._save_config(updated)  # pyright: ignore[reportPrivateUsage]
+        self.assertEqual("never_observed", self.plane.producer_snapshot().resources[0].freshness)
+        self.plane.apply_resource_observation(observation)
+        edited = replace(updated, providers=(one, replace(two, base_url="http://127.0.0.1:3333")))
+        self.plane._save_config(edited)  # pyright: ignore[reportPrivateUsage]
+        self.assertEqual("never_observed", self.plane.producer_snapshot().resources[0].freshness)
+
+    def test_inflight_probes_are_fenced_even_after_endpoint_aba(self) -> None:
+        self.plane._registry_clock = lambda: NOW  # pyright: ignore[reportPrivateUsage]
+        identity = ResourceIdentity("local", "server_direct_http", "ollama", "model", "local_ungated")
+        resource = ResourceConfig(ResourceRegistration(identity, freshness_ttl_seconds=60, poll_interval_seconds=1),
+                                  endpoint_id="one")
+        one = ProviderEndpointConfig("one", "ollama", "http://127.0.0.1:1111")
+        two = ProviderEndpointConfig("two", "ollama", "http://127.0.0.1:2222")
+        original = ServerConfiguration(providers=(one, two), resources=(resource,))
+        updated = replace(original, resources=(replace(resource, endpoint_id="two"),))
+        for action in ("admission", "connection_test"):
+            with self.subTest(action=action):
+                self.plane._save_config(original)  # pyright: ignore[reportPrivateUsage]
+                entered = threading.Event()
+                proceed = threading.Event()
+
+                def paused_probe(_resource_id: str) -> HealthProbeResult:
+                    entered.set()
+                    if not proceed.wait(timeout=5):
+                        raise RuntimeError("test timed out")
+                    return HealthProbeResult(status="ok")
+
+                def probe() -> None:
+                    if action == "admission":
+                        self.plane.prepare_execution_admission()
+                    else:
+                        _ = self.plane.connection_test_document("local")
+
+                with patch.object(OpenAICompatibleHttpAdapter, "probe_health", side_effect=paused_probe):
+                    thread = threading.Thread(target=probe)
+                    thread.start()
+                    try:
+                        self.assertTrue(entered.wait(timeout=5))
+                        self.plane._save_config(updated)  # pyright: ignore[reportPrivateUsage]
+                        self.plane._save_config(original)  # pyright: ignore[reportPrivateUsage]
+                    finally:
+                        proceed.set()
+                        thread.join(timeout=5)
+                self.assertFalse(thread.is_alive())
+                self.assertEqual("never_observed", self.plane.producer_snapshot().resources[0].freshness)
 
     def test_restart_retains_configuration_but_not_discovery(self) -> None:
         source = SourceConfig("owned", "codex_subscription", "Owned", "worker-1", allowed_models=("allowed",))

@@ -383,6 +383,7 @@ class ControlPlane:
     _version: str | None
     _observations: dict[str, ResourceStateSnapshot]
     _state_lock: threading.RLock
+    _application_generation: int
     _request_state: threading.local
     _config: ServerConfiguration
     _sink: DurableAuditSink
@@ -415,6 +416,7 @@ class ControlPlane:
         mi_config_path: Path | None = None,
     ) -> None:
         self._state_lock = threading.RLock()
+        self._application_generation = 0
         self._ui_dispatcher = ui_dispatcher
         self._store = store
         self._mi_server: MIServer | None = mi_server
@@ -2123,7 +2125,10 @@ class ControlPlane:
         inference request, never quota). Anything not wired here stays
         honestly absent from the checks rather than reported fake-green.
         """
-        resource = self._config.resource_by_id(resource_id)
+        with self._state_lock:
+            resource = self._config.resource_by_id(resource_id)
+            generation = self._application_generation
+            probe_adapter = self._adapters.resolve("server_direct_http")
         if resource is None:
             raise ControlHTTPError.not_found("unknown resource")
         checks: list[dict[str, object]] = []
@@ -2209,8 +2214,8 @@ class ControlPlane:
                     "set the provider credential through the providers page",
                 )
             if bound and identity.channel == "server_direct_http":
-                probed, probe_result = self._probe_provider_health(resource, record)
-                self._record_probe_observation(resource, probe_result)
+                probed, probe_result = self._probe_provider_health(resource, record, probe_adapter)
+                self._record_probe_observation(resource, probe_result, generation)
         passed = all(bool(check["passed"]) for check in checks)
         return {
             "resource_id": resource_id,
@@ -2240,6 +2245,7 @@ class ControlPlane:
         self,
         resource: ResourceConfig,
         record: Callable[[str, bool, str, str], None],
+        adapter: object,
     ) -> tuple[bool, "HealthProbeResult | None"]:
         """Run the M04 adapter's quota-free readiness probe when possible.
 
@@ -2249,7 +2255,6 @@ class ControlPlane:
         no adapter composed for the channel. Those stay honestly absent
         from the check list rather than reported fake-green.
         """
-        adapter = self._adapters.resolve("server_direct_http")
         if not isinstance(adapter, OpenAICompatibleHttpAdapter):
             return False, None
         result = adapter.probe_health(
@@ -2458,6 +2463,10 @@ class ControlPlane:
             if (current := config.resource_by_id(previous.registration.identity.resource_id)) is None
             or not current.enabled or current.worker_id != previous.worker_id
             or current.registration.identity != previous.registration.identity
+            or current.endpoint_id != previous.endpoint_id
+            or current.local_adapter_id != previous.local_adapter_id
+            or (previous.endpoint_id is not None and
+                self._config.provider_by_id(previous.endpoint_id) != config.provider_by_id(previous.endpoint_id))
         }
         for resource_id in tuple(self._observations):
             if resource_id in changed_resources or (
@@ -2550,6 +2559,7 @@ class ControlPlane:
             continuation_capability_source=self._continuation_capable_resources,
             mi_server=self._mi_server,
         )
+        self._application_generation += 1
 
     def _current_execution_authority(
         self, client_id: str,
@@ -2631,10 +2641,12 @@ class ControlPlane:
         "schema_drift": "schema_changed",
     }
 
+    @_state_locked
     def _record_probe_observation(
         self,
         resource: ResourceConfig,
         result: "HealthProbeResult | None",
+        generation: int,
     ) -> None:
         """Record one readiness probe as the resource's observation.
 
@@ -2647,7 +2659,7 @@ class ControlPlane:
         and execution admission must see. A probe that could not run
         changes nothing.
         """
-        if result is None:
+        if result is None or generation != self._application_generation:
             return
         health_status = self._PROBE_OUTCOME_TO_HEALTH.get(result.status)
         if health_status is None:
@@ -2682,16 +2694,18 @@ class ControlPlane:
         state.
         """
         try:
-            registry = self.current_application().registry
-            now = format_utc(self._clock())
-            due = registry.refresh_due(now=now)
+            with self._state_lock:
+                registry = self.current_application().registry
+                now = format_utc(self._clock())
+                due = registry.refresh_due(now=now)
+                adapter = self._adapters.resolve("server_direct_http")
+                generation = self._application_generation
+                resources = tuple(self._config.resource_by_id(resource_id) for resource_id in due)
         except Exception:
             return
-        adapter = self._adapters.resolve("server_direct_http")
         if not isinstance(adapter, OpenAICompatibleHttpAdapter):
             return
-        for resource_id in due:
-            resource = self._config.resource_by_id(resource_id)
+        for resource in resources:
             if (
                 resource is None
                 or not resource.enabled
@@ -2699,10 +2713,10 @@ class ControlPlane:
             ):
                 continue
             try:
-                result = adapter.probe_health(resource_id)
+                result = adapter.probe_health(resource.registration.identity.resource_id)
             except Exception:
                 continue
-            self._record_probe_observation(resource, result)
+            self._record_probe_observation(resource, result, generation)
 
 
 #: Non-``ok`` resource-health statuses require their status-level
