@@ -346,6 +346,7 @@ class ProducerDiscovery:
     state: str
     reason: str | None
     observed_at: str | None
+    lifecycle: str | None
 
 
 @dataclass(frozen=True)
@@ -566,6 +567,10 @@ class ControlPlane:
         derived registrations, adapter bindings, compatibility cells and
         catalog view all change atomically with the configuration.
         """
+        for source_inventory in inventory.sources:
+            source = self._config.source_by_id(source_inventory.source_id)
+            if source is None or source.worker_id != inventory.worker_id or source.kind != source_inventory.kind:
+                raise ValueError("source inventory no longer belongs to this worker")
         self._source_registry.sync_configuration(self._config.sources)
         _ = self._source_registry.apply_inventory(inventory)
         # Daybreak finding 3 (second half): an inventory that is NOT
@@ -594,6 +599,9 @@ class ControlPlane:
         them — worker-reported state never silently evaporates because an
         administrator edited another resource.
         """
+        for snapshot in report.resources:
+            if self._configured_worker_owner(snapshot.identity.resource_id) != report.worker_id:
+                raise ValueError("resource no longer belongs to this worker")
         registry = self.current_application().registry
         registry.apply_worker_report(report)
         for snapshot in report.resources:
@@ -643,7 +651,7 @@ class ControlPlane:
                     observed_at=None, freshness="not_evaluated", health=None,
                     quota_facts=(), availability="disabled",
                 ))
-        discoveries: list[ProducerDiscovery] = []
+        discoveries: dict[tuple[str, str], ProducerDiscovery] = {}
         sources: list[ProducerSource] = []
         for source in self._source_registry.source_view():
             source_id = cast(str, source["source_id"])
@@ -656,16 +664,25 @@ class ControlPlane:
                 authentication=cast(str, source["source_authenticated"]),
             ))
             for model in cast("list[dict[str, object]]", source["models"]):
-                discoveries.append(ProducerDiscovery(
+                discovery = ProducerDiscovery(
                     source_id=source_id, model=cast(str, model["slug"]),
                     state=cast(str, model["state"]), reason=cast("str | None", model["reason"]),
-                    observed_at=observed_at,
-                ))
+                    observed_at=observed_at, lifecycle=None,
+                )
+                discoveries[(source_id, discovery.model)] = discovery
+        for source_id, model, lifecycle in self._source_registry.retained_model_lifecycle():
+            key = (source_id, model)
+            existing = discoveries.get(key)
+            discoveries[key] = (
+                replace(existing, lifecycle=lifecycle) if existing is not None else
+                ProducerDiscovery(source_id=source_id, model=model, state="not_in_latest_inventory",
+                                  reason=None, observed_at=None, lifecycle=lifecycle)
+            )
         return ProducerSnapshot(
             generated_at=registry.generated_at,
             resources=tuple(sorted(resources, key=lambda item: item.resource_id)),
             sources=tuple(sources),
-            discoveries=tuple(sorted(discoveries, key=lambda item: (item.source_id, item.model))),
+            discoveries=tuple(discoveries[key] for key in sorted(discoveries)),
         )
 
     def handles(self, method: str, path: str) -> bool:
@@ -2436,8 +2453,16 @@ class ControlPlane:
             if (current := config.source_by_id(previous.source_id)) is None
             or current.worker_id != previous.worker_id or current.kind != previous.kind
         }
+        changed_resources = {
+            previous.registration.identity.resource_id for previous in self._config.resources
+            if (current := config.resource_by_id(previous.registration.identity.resource_id)) is None
+            or not current.enabled or current.worker_id != previous.worker_id
+            or current.registration.identity != previous.registration.identity
+        }
         for resource_id in tuple(self._observations):
-            if is_source_resource_id(resource_id) and resource_id.partition(":")[0] in changed_sources:
+            if resource_id in changed_resources or (
+                is_source_resource_id(resource_id) and resource_id.partition(":")[0] in changed_sources
+            ):
                 _ = self._observations.pop(resource_id, None)
         self._config = config
         self._sink.update_retention(config.audit_retention)

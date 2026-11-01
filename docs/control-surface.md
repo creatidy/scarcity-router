@@ -74,6 +74,10 @@ explicit security authorization (D-083).
 An internal `ControlPlane.producer_snapshot()` now combines configured and
 source-derived registrations, disabled resources, retained discoveries and
 evaluated observation freshness under the control-plane publication lock.
+Retained inventory misses and bounded retirement state are represented without
+inventing their occurrence times. Worker ownership is rechecked at publication;
+observations are discarded when a configured resource is removed, disabled,
+reassigned or changes identity.
 It samples actual worker connectivity separately from inventory, and does not
 equate a healthy observation with admission. Source inventory freshness remains
 unknown unless never observed. This in-process projection is not an exposed or

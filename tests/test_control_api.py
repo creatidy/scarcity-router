@@ -1112,6 +1112,9 @@ class ConnectionAndGenerationTests(ServerHarness):
         for action in ("disable", "remove", "block", "revoke-client"):
             with self.subTest(action=action):
                 save_configuration(baseline)
+                self.plane.apply_resource_observation(observation(
+                    baseline.resources[0].registration.identity, observed_at=canonical(T_EVAL),
+                ))
                 admitted_application = self.plane.current_application()
                 acquire = cast("Callable[[str], AbstractContextManager[object]]", getattr(admitted_application, "_acquire_reservation"))
 

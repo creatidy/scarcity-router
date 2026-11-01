@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import threading
+from dataclasses import replace
 from unittest.mock import patch
 
 from scarcity_router.control_api import ProducerSnapshot
 from scarcity_router.errors import CapacityValidationError
 from scarcity_router.model_inventory import DiscoveredModel, ModelInventoryReport, SourceInventory
-from scarcity_router.resource_state import ResourceIdentity, ResourceRegistration, ResourceStateSnapshot, ResourceHealth
+from scarcity_router.resource_state import ResourceIdentity, ResourceRegistration, ResourceStateSnapshot, ResourceHealth, WorkerStateReport
 from scarcity_router.server_config import ResourceConfig, ServerConfiguration, SourceConfig
 from tests.server_fixtures import ServerHarness
 
@@ -115,6 +116,101 @@ class ProducerSnapshotTests(ServerHarness):
         state = self.plane.producer_snapshot().resources[0]
         self.assertIsNone(state.observed_at)
         self.assertEqual("never_observed", state.freshness)
+
+    def test_reassignment_after_endpoint_check_rejects_old_worker_report(self) -> None:
+        self.plane._registry_clock = lambda: NOW  # pyright: ignore[reportPrivateUsage]
+        identity = ResourceIdentity("worker-resource", "worker_bridged", "openai", "model", "subscription_included")
+        resource = ResourceConfig(ResourceRegistration(identity, freshness_ttl_seconds=60), worker_id="worker-1")
+        observation = ResourceStateSnapshot(schema_version=1, identity=identity, observed_at=NOW,
+                                            health=ResourceHealth(status="ok"))
+        report = WorkerStateReport(schema_version=1, worker_id="worker-1", reported_at=NOW, resources=(observation,))
+        checked = threading.Event()
+        proceed = threading.Event()
+        result: list[str] = []
+
+        def old_worker() -> None:
+            owner = self.plane._configured_worker_owner(identity.resource_id)  # pyright: ignore[reportPrivateUsage]
+            if owner != "worker-1":
+                result.append("wrong initial owner")
+                checked.set()
+                return
+            checked.set()
+            if not proceed.wait(timeout=5):
+                result.append("timed out")
+                return
+            try:
+                self.plane.apply_worker_report(report)
+            except ValueError:
+                result.append("rejected")
+            else:
+                result.append("accepted")
+
+        with patch.object(self.plane, "_worker_id_exists", return_value=True):
+            self.plane._save_config(ServerConfiguration(resources=(resource,)))  # pyright: ignore[reportPrivateUsage]
+            self.plane.apply_worker_report(report)
+            thread = threading.Thread(target=old_worker)
+            thread.start()
+            try:
+                self.assertTrue(checked.wait(timeout=5))
+                self.plane._save_config(ServerConfiguration(resources=(replace(resource, worker_id="worker-2"),)))  # pyright: ignore[reportPrivateUsage]
+            finally:
+                proceed.set()
+                thread.join(timeout=5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(["rejected"], result)
+        self.assertEqual("never_observed", self.plane.producer_snapshot().resources[0].freshness)
+
+    def test_missing_retirement_and_rediscovery(self) -> None:
+        source = SourceConfig("owned", "codex_subscription", "Owned", "worker-1", allowed_models=("allowed",))
+        initial = SourceInventory(
+            source_id="owned", adapter_id="codex:owned", kind="codex_subscription", observed_at=NOW,
+            auth_state="authenticated", runtime_name="codex", runtime_version="1",
+            models=(DiscoveredModel("allowed", ("high",)),),
+        )
+        missing_inventory = SourceInventory(
+            source_id="owned", adapter_id="codex:owned", kind="codex_subscription", observed_at=NOW,
+            auth_state="authenticated", runtime_name="codex", runtime_version="1", models=(),
+        )
+        def apply(inventory: SourceInventory) -> None:
+            self.plane._apply_source_inventory(ModelInventoryReport(worker_id="worker-1", sources=(inventory,)))  # pyright: ignore[reportPrivateUsage]
+
+        with patch.object(self.plane, "_worker_id_exists", return_value=True):
+            self.plane._save_config(ServerConfiguration(sources=(source,)))  # pyright: ignore[reportPrivateUsage]
+            apply(initial)
+            for _ in range(2):
+                apply(missing_inventory)
+                missing = self.plane.producer_snapshot()
+                self.assertEqual("retained_missing", missing.discoveries[0].lifecycle)
+                self.assertEqual("not_in_latest_inventory", missing.discoveries[0].state)
+                self.assertIsNone(missing.discoveries[0].observed_at)
+                self.assertEqual(1, len(missing.resources))
+            apply(missing_inventory)
+            retired = self.plane.producer_snapshot()
+            self.assertEqual("retired", retired.discoveries[0].lifecycle)
+            self.assertEqual((), retired.resources)
+            apply(initial)
+            rediscovered = self.plane.producer_snapshot()
+            self.assertEqual("routable", rediscovered.discoveries[0].state)
+            self.assertIsNone(rediscovered.discoveries[0].lifecycle)
+            self.assertEqual(1, len(rediscovered.resources))
+
+    def test_inventory_from_former_owner_is_rejected_after_reassignment(self) -> None:
+        source = SourceConfig("owned", "codex_subscription", "Owned", "worker-1", allowed_models=("allowed",))
+        inventory = SourceInventory(
+            source_id="owned", adapter_id="codex:owned", kind="codex_subscription", observed_at=NOW,
+            auth_state="authenticated", runtime_name="codex", runtime_version="1",
+            models=(DiscoveredModel("allowed", ("high",)),),
+        )
+        with patch.object(self.plane, "_worker_id_exists", return_value=True):
+            self.plane._save_config(ServerConfiguration(sources=(source,)))  # pyright: ignore[reportPrivateUsage]
+            self.assertEqual("worker-1", self.plane._configured_worker_owner("owned:allowed"))  # pyright: ignore[reportPrivateUsage]
+            self.plane._save_config(ServerConfiguration(sources=(replace(source, worker_id="worker-2"),)))  # pyright: ignore[reportPrivateUsage]
+            with self.assertRaises(ValueError):
+                self.plane._apply_source_inventory(ModelInventoryReport(worker_id="worker-1", sources=(inventory,)))  # pyright: ignore[reportPrivateUsage]
+        snapshot = self.plane.producer_snapshot()
+        self.assertEqual((), snapshot.resources)
+        self.assertEqual((), snapshot.discoveries)
+        self.assertEqual("never_observed", snapshot.sources[0].inventory_freshness)
 
     def test_restart_retains_configuration_but_not_discovery(self) -> None:
         source = SourceConfig("owned", "codex_subscription", "Owned", "worker-1", allowed_models=("allowed",))
