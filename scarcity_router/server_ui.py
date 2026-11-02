@@ -27,6 +27,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, cast
 
 from .control_errors import ControlHTTPError
+from .model_inventory import AUTH_UNPROBEABLE_KINDS
 from .runtime_version import validate_runtime_version
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle guard for typing only
@@ -178,6 +179,7 @@ def _route(
         "/admin/clients/revoke": _clients_revoke,
         "/admin/workers/initiate": _workers_initiate,
         "/admin/workers/revoke": _workers_revoke,
+        "/admin/workers/delete": _workers_delete,
         "/admin/workers/rotate": _workers_rotate,
         "/admin/logout": _logout,
     }
@@ -543,6 +545,8 @@ def _resources(
         return
     csrf = _csrf_of(plane, handler)
     rows = ""
+    snapshot = plane.producer_snapshot()
+    facts = {resource.resource_id: resource for resource in snapshot.resources}
     for resource in plane.resources_view():
         ladder = _as_dict(resource.get("ladder"))
         stages = "".join(
@@ -559,6 +563,14 @@ def _resources(
         )
         identity = _as_dict(resource.get("identity"))
         remediation = ladder.get("remediation")
+        fact = facts.get(str(resource["resource_id"]))
+        observation = (
+            f"Configured &middot; freshness: {_esc(fact.freshness)} &middot; "
+            + f"availability: {_esc('not established' if fact.availability == 'unknown' else fact.availability)}"
+            + (f" &middot; worker: {'connected' if fact.worker_connected else 'disconnected'}"
+               if fact.worker_connected is not None else "")
+            if fact is not None else "Configured &middot; state not established"
+        )
         rows += (
             "<tr>"
             + f"<td><code>{_esc(resource['resource_id'])}</code><br>"
@@ -566,7 +578,7 @@ def _resources(
             + f"{_esc(identity.get('model'))} via {_esc(identity.get('channel'))}"
             + f" ({_esc(identity.get('entitlement'))})</span></td>"
             + f"<td>{_badge(bool(resource['enabled']), 'enabled', 'disabled')}</td>"
-            + f"<td>{stages}"
+            + f"<td>{observation}<br>{stages}"
             + (
                 f"<br><span class=\"muted\">{_esc(remediation)}</span>"
                 if remediation
@@ -592,6 +604,23 @@ def _resources(
             + "<button class=\"secondary\" type=\"submit\">Remove</button></form>"
             + "</td></tr>"
         )
+    for fact in snapshot.resources:
+        if fact.origin != "source":
+            continue
+        identity = fact.identity
+        rows += (
+            f"<tr><td><code>{_esc(fact.resource_id)}</code><br>"
+            + f"{_esc(identity.provider)}/{_esc(identity.model)}"
+            + (f" / {_esc(identity.variant)}" if identity.variant else "")
+            + f"<br>Source: {_esc(fact.resource_id.partition(':')[0])}</td>"
+            + f"<td>{'enabled' if fact.enabled else 'disabled'}</td>"
+            + f"<td>Automatically derived &middot; freshness: {_esc(fact.freshness)}"
+            + f" &middot; health: {_esc(fact.health or 'unknown')}"
+            + f" &middot; availability: {_esc('not established' if fact.availability == 'unknown' else fact.availability)}"
+            + (f" &middot; worker: {'connected' if fact.worker_connected else 'disconnected'}"
+               if fact.worker_connected is not None else "")
+            + "</td><td>Managed by source</td></tr>"
+        )
     if not rows:
         rows = "<tr><td colspan=\"4\" class=\"muted\">No execution resources configured.</td></tr>"
     endpoint_options = "".join(
@@ -606,6 +635,18 @@ def _resources(
         for worker in plane.workers_view()
         if worker.get("status") == "active"
     )
+    limits = plane.limits_view()
+    limit_rows = "".join(
+        f"<tr><td>{_esc(label)}</td><td>{_esc(limits.get(key))} {_esc(unit)}</td></tr>"
+        for key, label, unit in (
+            ("max_request_body_bytes", "Request body", "bytes"),
+            ("max_input_context_tokens", "Estimated input context", "tokens"),
+            ("max_output_tokens", "Requested output ceiling", "tokens"),
+            ("max_concurrent_executions", "Concurrent executions", "requests"),
+            ("max_concurrent_executions_per_client", "Concurrent executions per client", "requests"),
+            ("execution_time_limit_seconds", "Execution time", "seconds"),
+        )
+    )
     body = (
         "<div class=\"notice\">The ladder shows, for each resource: detected, "
         + "authenticated (the WORKER pairing — not the provider account), "
@@ -614,6 +655,9 @@ def _resources(
         + "<table><tr><th>Resource</th><th>State</th><th>Ladder</th><th></th></tr>"
         + rows
         + "</table>"
+        + "<h2>Execution limits</h2><p>These administrator policy ceilings narrow requests; "
+        + "model and channel capabilities may be lower or unknown. A ceiling does not guarantee capacity.</p>"
+        + "<table><tr><th>Policy</th><th>Effective limit</th></tr>" + limit_rows + "</table>"
         + "<h2>Add an execution resource</h2>"
         + "<fieldset><legend>Resource</legend>"
         + _form_open("/admin/resources/add", csrf)
@@ -1060,7 +1104,11 @@ def _workers(
             + f"<td>{_esc(worker.get('last_connected_at') or 'never')}</td>"
             + "<td>"
             + (
-                ""
+                ("<form class=\"inline\" method=\"post\" action=\"/admin/workers/delete\">"
+                 + f'<input type="hidden" name="csrf" value="{_esc(csrf)}">'
+                 + f'<input type="hidden" name="worker_id" value="{_esc(worker["worker_id"])}">'
+                 + '<button class="secondary" type="submit">Delete</button></form>'
+                 if worker.get("can_delete") else "Remove source and resource references before deleting.")
                 if status == "revoked"
                 else "<form class=\"inline\" method=\"post\" action=\"/admin/workers/revoke\">"
                 + f"<input type=\"hidden\" name=\"csrf\" value=\"{_esc(csrf)}\">"
@@ -1095,6 +1143,30 @@ def _workers(
         + "<button type=\"submit\">Generate one-time pairing code</button></form></fieldset>"
     )
     plane.send_html(handler, 200, _page(plane, handler, "Workers and pairing", body))
+
+
+def _source_guidance(source: dict[str, object]) -> str:
+    if not source.get("connected"):
+        return "Worker disconnected. Start or reconnect the paired worker, then wait for its report."
+    if source.get("source_authenticated") == "auth_required":
+        if source.get("kind") == "codex_subscription":
+            return f"Authentication required. On the worker, run {source.get('login_command')} and complete sign-in."
+        return "Authentication required. Sign in to the source on the worker and wait for its report."
+    auth = source.get("source_authenticated")
+    if auth == "unavailable":
+        return "Source runtime unavailable. Check the source installation on the worker and wait for a new report."
+    unprobeable = source.get("kind") in AUTH_UNPROBEABLE_KINDS and auth == "unverified" and bool(source.get("observed_at"))
+    if auth != "authenticated" and not unprobeable:
+        return "Authentication has not been verified; check the worker and its source sign-in."
+    if source.get("restricted"):
+        return "Some models are restricted. Review model permissions and adoption policy below."
+    if source.get("discovered"):
+        return "Models were discovered but not admitted. Review their reported state and source policy below."
+    if not source.get("observed_at"):
+        return "No inventory observed yet. Wait for the connected worker to report."
+    if unprobeable:
+        return "Worker connected; source sign-in cannot be verified without execution. Inventory freshness is not established."
+    return "Source authenticated and worker connected. Inventory freshness is not established."
 
 
 def _sources(
@@ -1200,8 +1272,10 @@ def _sources(
             model_lines += '<li><details><summary>Dormant attestations</summary><p>These do not grant model access.</p><ul>' + dormant + '</ul></details></li>'
         counts = (
             f"{_esc(str(source.get('routable', 0)))} routable &middot; "
-            + f"{_esc(str(source.get('restricted', 0)))} restricted &middot; "
-            + f"{_esc(str(source.get('errors', 0)))} errors"
+            + f"{_esc(str(source.get('restricted', 0)))} local-policy restricted &middot; "
+            + f"{_esc(str(source.get('discovered', 0)))} discovered / unclassified &middot; "
+            + (f"{_esc(str(source.get('errors')))} errors" if source.get("errors_reported") is True
+               else "per-model errors not reported")
         )
         rows += (
             "<tr>"
@@ -1209,17 +1283,18 @@ def _sources(
             + f"<span class=\"muted\"><code>{_esc(str(source.get('source_id')))}</code></span></td>"
             + f"<td>{'connected' if connected else 'not connected'} &middot; "
             + f"last reported source auth: {_esc(auth)}<br>"
-            + f"<span class=\"muted\">on the worker host (SSH) run once: "
-            + f"<code>{_esc(str(source.get('login_command')))}</code> — a device "
-            + f"code prints; complete it in any browser — then install the "
-            + f"worker service (normal deployment): "
-            + f"<code>{_esc(str(source.get('install_command')))}</code> — "
-            + f"foreground debugging run: "
-            + f"<code>{_esc(str(source.get('run_command')))}</code></span></td>"
+            + f"<span class=\"muted\">Inventory freshness: unknown; last observed: {_esc(source.get('observed_at') or 'never')}.</span><br>"
+            + f"{_esc(_source_guidance(source))}"
+            + (f'<details><summary>Worker setup</summary><p>On the worker host: '
+               + f'<code>{_esc(source.get("login_command"))}</code>; then '
+               + f'<code>{_esc(source.get("install_command"))}</code>. '
+               + f'For foreground debugging instead: <code>{_esc(source.get("run_command"))}</code>.</p></details>'
+               if source.get("kind") == "codex_subscription" else "") + "</td>"
             + (
-                f"<td><ul>{model_lines}</ul><p class=\"muted\">{counts}</p></td>"
+                f"<td><ul>{model_lines}</ul><p class=\"muted\">{counts}</p>"
+                + f"<p>Retired: {_esc(', '.join(_as_str_list(source.get('retired'))) or 'none')}</p></td>"
                 if model_lines
-                else f"<td class=\"muted\">{counts}</td>"
+                else f"<td class=\"muted\">{counts}<p>Retired: {_esc(', '.join(_as_str_list(source.get('retired'))) or 'none')}</p></td>"
             )
             + "<td>"
             + ('<p class="error">Legacy track policy is inactive. Explicitly allow models to migrate.</p>' if legacy else "")
@@ -1270,10 +1345,7 @@ def _sources(
         + worker_options
         + "</select></label> "
         + '<button type="submit">Add source</button></form>'
-        + "<p class=\"muted\">After adding, run BOTH printed commands once on the "
-        + "worker host over SSH: the login prints a device code to complete in "
-        + "any browser (no browser needed on the host), then run the worker "
-        + "with the source flag — detected models appear here for explicit approval.</p>"
+        + "<p class=\"muted\">After adding, expand Worker setup for sign-in and startup instructions.</p>"
         + "</div>"
     )
     plane.send_html(handler, 200, _page(plane, handler, "Sources", body))
@@ -1474,6 +1546,22 @@ def _workers_revoke(
         _ = plane.require_admin_session(handler, mutating=True)
         form = plane.read_form(handler)
         plane.service_revoke_worker(form.get("worker_id") or "")
+    except ControlHTTPError as exc:
+        _render_banner_page(plane, handler, "Workers and pairing", "/admin/workers", exc.message, error=True, status=exc.status)
+        return
+    _redirect(plane, handler, "/admin/workers")
+
+
+def _workers_delete(
+    plane: "ControlPlane", method: str, handler: "GatewayRequestHandler"
+) -> None:
+    if method != "POST":
+        plane.send_html(handler, 405, _error_page(plane, handler, "method not allowed"))
+        return
+    try:
+        _ = plane.require_admin_session(handler, mutating=True)
+        form = plane.read_form(handler)
+        plane.service_delete_worker(form.get("worker_id") or "")
     except ControlHTTPError as exc:
         _render_banner_page(plane, handler, "Workers and pairing", "/admin/workers", exc.message, error=True, status=exc.status)
         return

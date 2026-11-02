@@ -1892,6 +1892,7 @@ class ControlPlane:
             )
         )
 
+    @_state_locked
     def service_add_resource(self, document: Mapping[str, object]) -> str:
         try:
             resource = ResourceConfig.from_dict(document)
@@ -1931,6 +1932,7 @@ class ControlPlane:
             raise ControlHTTPError.invalid_request(str(exc)) from None
         return resource_id
 
+    @_state_locked
     def service_add_source(self, document: Mapping[str, object]) -> str:
         """Add one execution source (D-053). No model slugs here."""
         try:
@@ -2054,7 +2056,9 @@ class ControlPlane:
                     "detected_models": live.get("models", []),
                     "routable": live.get("routable", 0),
                     "restricted": live.get("restricted", 0),
+                    "discovered": live.get("discovered", 0),
                     "errors": live.get("errors", 0),
+                    "errors_reported": live.get("errors_reported", False),
                     "retired": live.get("retired", []),
                     "observed_at": live.get("observed_at"),
                     # The worker-side actions are printed, never derived
@@ -2273,6 +2277,25 @@ class ControlPlane:
             # mapping as rotation — a plain 404, never a 500).
             raise ControlHTTPError.not_found("unknown worker") from None
 
+    def _worker_referenced(self, worker_id: str) -> bool:
+        return any(item.worker_id == worker_id for item in self._config.sources) or any(
+            item.worker_id == worker_id for item in self._config.resources
+        )
+
+    @_state_locked
+    def service_delete_worker(self, worker_id: str) -> None:
+        worker = self._worker_identity_store.get_identity(worker_id)
+        if worker is None:
+            raise ControlHTTPError.not_found("unknown worker")
+        if worker.status != "revoked":
+            raise ControlHTTPError.conflict("Revoke this worker before deleting it.")
+        if self._worker_referenced(worker_id):
+            raise ControlHTTPError.conflict("Remove this worker's source and resource references before deleting it.")
+        try:
+            self._worker_identity_store.delete_revoked(worker_id)
+        except (WorkerIdentityError, ValueError):
+            raise ControlHTTPError.conflict("Worker must exist and be revoked before deletion.") from None
+
     # ── Views ────────────────────────────────────────────────────────────
 
     def _state_document(self) -> dict[str, object]:
@@ -2392,6 +2415,7 @@ class ControlPlane:
                     "worker_id": record.worker_id,
                     "label": record.label,
                     "status": record.status,
+                    "can_delete": record.status == "revoked" and not self._worker_referenced(record.worker_id),
                     "created_at": record.created_at,
                     "credential_rotated_at": record.credential_rotated_at,
                     "connected": state.connected if state is not None else False,
@@ -2422,6 +2446,9 @@ class ControlPlane:
 
     def resources_view(self) -> list[dict[str, object]]:
         return self._resources_view()
+
+    def limits_view(self) -> dict[str, int]:
+        return self._config.limits.to_dict()
 
     def aliases_view(self) -> list[dict[str, object]]:
         return self._aliases_view()

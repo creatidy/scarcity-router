@@ -494,6 +494,17 @@ class WorkerIdentityStore:
                     ERR_UNAUTHORIZED, "no worker identity with that id"
                 )
 
+    def delete_revoked(self, worker_id: str) -> None:
+        """Remove only an already revoked identity; audit records are separate."""
+        _ = v_safe_id(worker_id, "worker_id")
+        with self._lock:
+            cursor = self._connection.execute(
+                "DELETE FROM worker_identities WHERE worker_id = ? AND status = 'revoked'",
+                (worker_id,),
+            )
+            if cursor.rowcount != 1:
+                raise WorkerIdentityError(ERR_UNAUTHORIZED, "worker must exist and be revoked")
+
     # ── Administration reads ─────────────────────────────────────────
 
     def list_identities(self) -> tuple[WorkerIdentityRecord, ...]:

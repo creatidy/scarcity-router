@@ -306,6 +306,13 @@ required, CSRF on mutations):
 | `/control/export` | GET | secret-free configuration export |
 
 The Sources page exposes these actions without requiring direct API calls.
+Source counters classify each model in the latest inventory once: routable,
+restricted by local adoption policy (disabled adoption, legacy track policy,
+or absence from the model allowlist), or discovered/unclassified. These
+restrictions do not assert vendor access. Retired models are separate. The
+producer does not report per-model error counts: the existing numeric `errors`
+field is retained for compatibility and `errors_reported: false` explicitly
+means its value is not a measurement. The UI displays "not reported".
 Model permission and context attestation are separate explicit actions. Revoking
 a model leaves its attestation dormant rather than deleting user state; the page
 can remove a dormant attestation explicitly. Existing legacy track policy stays
