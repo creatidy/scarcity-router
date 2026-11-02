@@ -8,6 +8,8 @@ import socket
 import sqlite3
 import tempfile
 import unittest
+from dataclasses import asdict, replace
+from decimal import Decimal
 from pathlib import Path
 from typing import cast, final, override
 from unittest import mock
@@ -147,4 +149,56 @@ class MIStartupTests(unittest.TestCase):
             wrapped.configure_mock(**{"execute.side_effect": execute, "in_transaction": True})
             with self.assertRaises(KeyboardInterrupt):
                 store.replace_mi_cut(b"candidate", hashlib.sha256(b"candidate").hexdigest(), lambda _: None)
+        self.assert_state(self.old)
+
+    def test_intervening_replacement_rejects_stale_startup(self) -> None:
+        from model_intelligence.evidence import ModelClaim
+        from scarcity_router.gateway_server import make_gateway_server
+
+        other = ServerStore.open(self.data)
+        self.addCleanup(other.close)
+        superseded = load_mi_server_config(self.config).activate(other)
+        original = fixture.public()
+        claim = original.evidence.claims[0]
+        assert isinstance(claim, ModelClaim)
+        newer = replace(original, evidence=original.evidence.extend(claims=(
+            replace(claim, claim_id="new-claim", revises=claim.claim_id,
+                    payload=replace(fixture.LIMIT, amount=Decimal(2048))),
+        )))
+        data, reference = fixture.encoded(newer)
+        publication = self.root / "new-publication.json"
+        _ = publication.write_bytes(data)
+        document = configuration(publication)
+        document["reference"] = asdict(reference)
+        newer_config = self.root / "new-trust.json"
+        _ = newer_config.write_text(json.dumps(document))
+        replacement = load_mi_server_config(newer_config)
+        committed: list[str] = []
+
+        def bind_then_replace(*args: object, **kwargs: object) -> object:
+            server = make_gateway_server(*args, **kwargs)  # pyright: ignore[reportArgumentType]
+            committed.append(replacement.activate(other).digest)
+            return server
+
+        with mock.patch("scarcity_router.control_server.make_gateway_server", side_effect=bind_then_replace):
+            self.assertEqual(2, main(self.args))
+        self.assertEqual(1, len(committed))
+        self.assert_state(committed[0])
+        with self.assertRaisesRegex(ValueError, "mi_cut_changed_restart_or_reload"):
+            _ = superseded.admission(fixture.T)
+
+    def test_competing_writer_refuses_without_overwrite(self) -> None:
+        blocker = ServerStore.open(self.data)
+        contender = ServerStore.open(self.data)
+        self.addCleanup(blocker.close)
+        self.addCleanup(contender.close)
+        blocker_connection = blocker._connection  # pyright: ignore[reportPrivateUsage]
+        contender_connection = contender._connection  # pyright: ignore[reportPrivateUsage]
+        _ = contender_connection.execute("PRAGMA busy_timeout=0")
+        _ = blocker_connection.execute("BEGIN IMMEDIATE")
+        try:
+            with self.assertRaisesRegex(ValueError, "mi_publication_activation_failed"):
+                _ = load_mi_server_config(self.config).activate(contender)
+        finally:
+            _ = blocker_connection.execute("ROLLBACK")
         self.assert_state(self.old)
