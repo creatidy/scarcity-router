@@ -856,6 +856,17 @@ the cut until restarted or reloaded. An opted-in server fails startup when its
 configuration or publication cannot be trusted; omit `--mi-config` to run the
 unchanged standalone path.
 
+At startup, HTTP TLS and any configured worker TLS are validated and both
+configured listener sockets are bound before the MI cut is committed. Neither
+listener serves requests before that commit and installation of the active MI
+server. A failure or interruption before the SQLite commit leaves the prior cut
+intact; the existing transaction validates against the current durable cut at
+commit time, including concurrent replacements. Once the commit succeeds, a
+crash or later startup failure may leave the new cut durable even though the
+server never begins serving. Socket readiness and SQLite cannot be committed
+atomically. Restarting retries validation against the durable cut; retained
+decision receipts and their cuts are not replaced by startup activation.
+
 Authenticated `/v1/select`, simulation and executable selection expose only
 the utilization reference. The full MI decision, private routing context,
 manifest and content-addressed cut remain in the protected existing server

@@ -584,6 +584,11 @@ class ControlPlane:
             raise RuntimeError("control plane has no application")
         return application
 
+    def activate_startup_mi(self, mi_server: MIServer) -> None:
+        """Install the committed MI server before either listener serves requests."""
+        self._mi_server = mi_server
+        self._rebuild_application()
+
     @property
     def worker_endpoint(self) -> WorkerEndpoint:
         """The M05 worker-protocol endpoint of this process (composition)."""

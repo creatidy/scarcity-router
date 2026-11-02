@@ -288,21 +288,25 @@ def main(argv: list[str] | None = None) -> int:
         except ValueError as exc:
             print(f"server: {exc}", file=sys.stderr)
             return 2
+    store = None
+    plane = None
+    server = None
+    worker_listener = None
+    worker_reaper: threading.Thread | None = None
+    worker_reaper_stop = threading.Event()
+    startup_complete = False
     try:
         data_dir = Path(data_dir_value)
         store = ServerStore.open(data_dir)
         if arguments["issue_bootstrap_claim"]:
-            try:
-                claim = secrets.token_urlsafe(32)
-                expires_at = format_utc(datetime.now(timezone.utc) + timedelta(minutes=15))
-                if not store.provision_admin_claim(token_hash=hash_token(claim), expires_at=expires_at):
-                    print("server: administrator already configured; claim not issued", file=sys.stderr)
-                    return 2
-                print(claim, flush=True)
-                return 0
-            finally:
-                store.close()
-        mi_server = None
+            claim = secrets.token_urlsafe(32)
+            expires_at = format_utc(datetime.now(timezone.utc) + timedelta(minutes=15))
+            if not store.provision_admin_claim(token_hash=hash_token(claim), expires_at=expires_at):
+                print("server: administrator already configured; claim not issued", file=sys.stderr)
+                return 2
+            print(claim, flush=True)
+            return 0
+        mi_server_config = None
         mi_config = arguments["mi_config"]
         if mi_config is not None:
             if not isinstance(mi_config, str) or not mi_config:
@@ -311,17 +315,12 @@ def main(argv: list[str] | None = None) -> int:
                 from .mi_server_config import load_mi_server_config
             except ImportError:
                 raise ValueError("MI integration requires the optional mi extra") from None
-            try:
-                mi_server = load_mi_server_config(Path(mi_config)).activate(store)
-            except Exception:
-                store.close()
-                raise
+            mi_server_config = load_mi_server_config(Path(mi_config))
         plane = ControlPlane(
             store=store,
             own_origins=(f"http://{host}:{raw_port}", f"https://{host}:{raw_port}"),
             tls=certfile is not None,
             ui_dispatcher=dispatch_ui,
-            mi_server=mi_server,
             mi_config_path=Path(mi_config) if isinstance(mi_config, str) else None,
         )
         if import_client_keys is not None:
@@ -342,9 +341,6 @@ def main(argv: list[str] | None = None) -> int:
             tls_context=tls_context,
             control_plane=plane,
         )
-        worker_listener = None
-        worker_reaper: threading.Thread | None = None
-        worker_reaper_stop = threading.Event()
         if worker_port is not None:
             # The OPTIONAL worker-protocol listener: same process, its own
             # authenticated transport, off unless asked for.
@@ -353,6 +349,11 @@ def main(argv: list[str] | None = None) -> int:
                 port=worker_port,
                 tls_context=worker_tls_context,
             )
+        # Commit only after every configured listener has bound. Neither listener
+        # accepts requests before the active MI server is installed.
+        if mi_server_config is not None:
+            plane.activate_startup_mi(mi_server_config.activate(store))
+        if worker_listener is not None:
             worker_listener.serve_in_background()
             # Heartbeat liveness reaping runs with the listener: silent
             # sessions are closed after the grace window (D-044 bounds).
@@ -368,9 +369,25 @@ def main(argv: list[str] | None = None) -> int:
                 daemon=True,
             )
             worker_reaper.start()
+        startup_complete = True
     except (ValueError, OSError, ServerStoreError) as exc:
         print(f"server: {exc}", file=sys.stderr)
         return 2
+    finally:
+        if not startup_complete:
+            worker_reaper_stop.set()
+            if worker_reaper is not None and worker_reaper.is_alive():
+                worker_reaper.join(timeout=5)
+            if worker_listener is not None:
+                worker_listener.shutdown()
+            if server is not None:
+                server.server_close()
+            if plane is not None:
+                plane.worker_endpoint.close_all_sessions()
+                plane.close_worker_store()
+            if store is not None:
+                store.close()
+    assert server is not None and plane is not None and store is not None
     bound_host, bound_port = cast("tuple[str, int]", server.server_address)
     scheme = "https" if tls_context is not None else "http"
     origin = f"{scheme}://{bound_host}:{bound_port}"

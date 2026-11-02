@@ -1374,7 +1374,7 @@ class ServerStore:
                 if self._connection.in_transaction:
                     _ = self._connection.execute("ROLLBACK")
                 raise ServerStoreError("MI retained cut storage unavailable") from None
-            except Exception:
+            except BaseException:
                 if self._connection.in_transaction:
                     _ = self._connection.execute("ROLLBACK")
                 raise
