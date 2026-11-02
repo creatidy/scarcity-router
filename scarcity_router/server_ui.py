@@ -27,6 +27,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, cast
 
 from .control_errors import ControlHTTPError
+from .model_inventory import AUTH_UNPROBEABLE_KINDS
 from .runtime_version import validate_runtime_version
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle guard for typing only
@@ -1151,7 +1152,11 @@ def _source_guidance(source: dict[str, object]) -> str:
         if source.get("kind") == "codex_subscription":
             return f"Authentication required. On the worker, run {source.get('login_command')} and complete sign-in."
         return "Authentication required. Sign in to the source on the worker and wait for its report."
-    if source.get("source_authenticated") != "authenticated":
+    auth = source.get("source_authenticated")
+    if auth == "unavailable":
+        return "Source runtime unavailable. Check the source installation on the worker and wait for a new report."
+    unprobeable = source.get("kind") in AUTH_UNPROBEABLE_KINDS and auth == "unverified" and bool(source.get("observed_at"))
+    if auth != "authenticated" and not unprobeable:
         return "Authentication has not been verified; check the worker and its source sign-in."
     if source.get("restricted"):
         return "Some models are restricted. Review model permissions and adoption policy below."
@@ -1159,6 +1164,8 @@ def _source_guidance(source: dict[str, object]) -> str:
         return "Models were discovered but not admitted. Review their reported state and source policy below."
     if not source.get("observed_at"):
         return "No inventory observed yet. Wait for the connected worker to report."
+    if unprobeable:
+        return "Worker connected; source sign-in cannot be verified without execution. Inventory freshness is not established."
     return "Source authenticated and worker connected. Inventory freshness is not established."
 
 
